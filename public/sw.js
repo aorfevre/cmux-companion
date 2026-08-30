@@ -1,4 +1,4 @@
-const CACHE = "cmux-companion-v4";
+const CACHE = "cmux-companion-v5";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -49,7 +49,9 @@ self.addEventListener("push", (event) => {
     badge: "/icon-192.png",
     tag: payload.tag || "cmux-companion",
     renotify: true,
-    data: { url: payload.url || "/?view=inbox" },
+    requireInteraction: payload.kind === "attention" || payload.kind === "failure",
+    actions: [{ action: "open", title: payload.kind === "preview" ? "View app" : payload.kind === "attention" ? "Review" : "Open" }],
+    data: { url: payload.url || "/?view=inbox", kind: payload.kind || "attention" },
   }));
 });
 

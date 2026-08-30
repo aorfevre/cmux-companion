@@ -113,6 +113,22 @@ test("paired clients can read state and safely control a terminal", async (t) =>
   assert.deepEqual(cmux.calls[1], ["prompt", TERM_ID, "continue"]);
 });
 
+test("coalesces concurrent dashboard refreshes", async (t) => {
+  const cmux = fakeCmux();
+  let hostCalls = 0;
+  let workspaceCalls = 0;
+  let capabilityCalls = 0;
+  cmux.hostStatus = async () => { hostCalls += 1; await new Promise((resolve) => setTimeout(resolve, 10)); return {}; };
+  cmux.workspaceList = async () => { workspaceCalls += 1; await new Promise((resolve) => setTimeout(resolve, 10)); return { workspaces: [] }; };
+  cmux.capabilities = async () => { capabilityCalls += 1; await new Promise((resolve) => setTimeout(resolve, 10)); return {}; };
+  const app = await buildApp({ cmux, token: TOKEN });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const responses = await Promise.all(Array.from({ length: 5 }, () => app.inject({ url: "/api/bootstrap", headers: { cookie } })));
+  assert.equal(responses.every((response) => response.statusCode === 200), true);
+  assert.deepEqual([hostCalls, workspaceCalls, capabilityCalls], [1, 1, 1]);
+});
+
 test("falls back to an authenticated text screen when replay is unavailable", async (t) => {
   const cmux = fakeCmux();
   cmux.terminalReplay = async () => { throw new CmuxCommandError("unsupported"); };
@@ -177,6 +193,42 @@ test("launches only catalogued repositories and exposes overview/inbox state", a
   assert.equal((await app.inject({ url: `/api/repos/${repo.id}/pull-request`, headers: { cookie } })).json().pullRequest.number, 7);
 });
 
+test("serves repository Markdown and manages private preview actions", async (t) => {
+  const cmux = fakeCmux();
+  const repo = { id: "repo-safe", name: "safe", path: "/approved/safe", scripts: [] };
+  const repoCatalog = {
+    get: async (id) => { if (id !== repo.id) throw new TypeError("Unknown repository"); return repo; },
+    list: async () => [repo],
+    markdown: async (_id, file) => ({ repo, path: file, name: "README.md", content: "# Safe" }),
+    asset: async () => ({ mime: "image/png", content: Buffer.from([0x89, 0x50]) }),
+  };
+  const calls = [];
+  const preview = { id: "preview-safe", workspaceId: WS_ID, repoId: repo.id, targetPort: 3000, status: "detected" };
+  const previewManager = {
+    list: () => ({ previews: [preview], tailnetOnly: true }),
+    syncWorkspaces: async () => {},
+    discover: (value) => { calls.push(["discover", value]); return { preview, created: true }; },
+    enable: async (id) => { calls.push(["enable", id]); return { preview: { ...preview, status: "active" } }; },
+    stop: async (id) => { calls.push(["stop", id]); return { preview: { ...preview, status: "stopped" } }; },
+    restart: async (id) => { calls.push(["restart", id]); return { preview: { ...preview, status: "active" } }; },
+    remove: (id) => { calls.push(["remove", id]); return { removed: true }; },
+  };
+  const app = await buildApp({ cmux, token: TOKEN, repoCatalog, previewManager });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const markdown = await app.inject({ url: `/api/repos/${repo.id}/markdown?file=README.md`, headers: { cookie } });
+  assert.equal(markdown.json().content, "# Safe");
+  const asset = await app.inject({ url: `/api/repos/${repo.id}/assets?file=flow.png`, headers: { cookie } });
+  assert.equal(asset.headers["content-type"], "image/png");
+  assert.equal((await app.inject({ url: "/api/previews", headers: { cookie } })).json().tailnetOnly, true);
+  const detected = await app.inject({ method: "POST", url: "/api/previews/discover", headers, payload: { workspaceId: WS_ID, repoId: repo.id, port: 3000, url: "http://localhost:3000" } });
+  assert.equal(detected.statusCode, 201);
+  for (const action of ["enable", "stop", "restart"]) assert.equal((await app.inject({ method: "POST", url: `/api/previews/${preview.id}/${action}`, headers, payload: {} })).statusCode, 200);
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/previews/${preview.id}`, headers })).statusCode, 200);
+  assert.deepEqual(calls.map((call) => call[0]), ["discover", "enable", "stop", "restart", "remove"]);
+});
+
 test("every state-changing route requires pairing and same-origin requests", async (t) => {
   const app = await buildApp({ cmux: fakeCmux(), token: TOKEN });
   t.after(() => app.close());
@@ -199,6 +251,10 @@ test("every state-changing route requires pairing and same-origin requests", asy
     ["/api/push/settings", {}],
     ["/api/push/unsubscribe", {}],
     ["/api/push/test", {}],
+    ["/api/previews/discover", { workspaceId: WS_ID, port: 3000 }],
+    ["/api/previews/preview-safe/enable", {}],
+    ["/api/previews/preview-safe/stop", {}],
+    ["/api/previews/preview-safe/restart", {}],
   ];
   for (const [url, payload] of mutations) {
     assert.equal((await app.inject({ method: "POST", url, payload })).statusCode, 401, url);

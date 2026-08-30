@@ -31,13 +31,20 @@ export class CmuxClient {
     bin = process.env.CMUX_BIN || DEFAULT_BIN,
     execute = execFileAsync,
     socketPassword = readCredential(process.env.CMUX_SOCKET_PASSWORD_FILE || DEFAULT_PASSWORD_FILE),
+    maxConcurrent = 2,
   } = {}) {
     this.bin = bin;
     this.execute = execute;
     this.socketPassword = socketPassword;
+    this.maxConcurrent = Math.max(1, Math.min(4, Number(maxConcurrent) || 2));
+    this.activeCommands = 0;
+    this.commandQueue = [];
+    this.detailedCache = null;
+    this.detailedPending = null;
   }
 
   async run(args, { timeout = 10_000, maxBuffer = 4 * 1024 * 1024 } = {}) {
+    await this.acquireCommandSlot();
     try {
       const { stdout = "", stderr = "" } = await this.execute(this.bin, args, {
         timeout,
@@ -53,7 +60,23 @@ export class CmuxClient {
       const stderr = String(error.stderr || "").trim();
       const message = stderr || error.message || "cmux command failed";
       throw new CmuxCommandError(message, { code: error.code, stderr });
+    } finally {
+      this.releaseCommandSlot();
     }
+  }
+
+  acquireCommandSlot() {
+    if (this.activeCommands < this.maxConcurrent) {
+      this.activeCommands += 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => this.commandQueue.push(resolve));
+  }
+
+  releaseCommandSlot() {
+    const next = this.commandQueue.shift();
+    if (next) next();
+    else this.activeCommands -= 1;
   }
 
   async runJSON(args, options) {
@@ -89,10 +112,34 @@ export class CmuxClient {
   }
 
   async workspaceListDetailed() {
-    const payload = await this.workspaceList();
+    if (this.detailedCache && Date.now() - this.detailedCache.at < 5_000) return this.detailedCache.value;
+    if (this.detailedPending) return this.detailedPending;
+    this.detailedPending = this.loadWorkspaceListDetailed();
+    try {
+      const value = await this.detailedPending;
+      this.detailedCache = { at: Date.now(), value };
+      return value;
+    } finally {
+      this.detailedPending = null;
+    }
+  }
+
+  async loadWorkspaceListDetailed() {
+    const [payload, localPayload] = await Promise.all([
+      this.workspaceList(),
+      this.runJSON(["list-workspaces"]).catch(() => ({ workspaces: [] })),
+    ]);
     const workspaces = await Promise.all((payload.workspaces || []).map(async (workspace) => {
       const status = await this.workspaceStatus(workspace.id).catch(() => null);
-      return { ...workspace, status };
+      const local = (localPayload.workspaces || []).find((item) => (
+        item.current_directory === workspace.current_directory
+        && (!item.title || !workspace.title || item.title.replace(/^[^\w]+\s*/, "") === workspace.title.replace(/^[^\w]+\s*/, ""))
+      )) || (localPayload.workspaces || []).find((item) => item.current_directory === workspace.current_directory);
+      let listeningPorts = Array.isArray(local?.listening_ports)
+        ? local.listening_ports.map(Number).filter((port) => Number.isInteger(port) && port > 0 && port <= 65_535)
+        : [];
+      if (!listeningPorts.length) listeningPorts = await this.workspaceListeningPorts(workspace.id).catch(() => []);
+      return { ...workspace, status, listening_ports: listeningPorts };
     }));
     return { ...payload, workspaces };
   }
@@ -212,6 +259,30 @@ export class CmuxClient {
       maxBuffer: 8 * 1024 * 1024,
     });
     return parseWorkspaceMetrics(stdout);
+  }
+
+  async workspaceListeningPorts(workspaceId) {
+    assertTarget(workspaceId);
+    const { stdout } = await this.run(["top", "--workspace", workspaceId, "--processes", "--flat", "--format", "tsv"], {
+      timeout: 15_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    const pids = [...new Set(stdout.split("\n").map((line) => {
+      const columns = line.split("\t");
+      return columns[3] === "process" && /^\d+$/.test(columns[4] || "") ? columns[4] : null;
+    }).filter(Boolean))].slice(0, 200);
+    if (!pids.length) return [];
+    const result = await this.execute("/usr/sbin/lsof", [
+      "-nP", "-a", "-p", pids.join(","), "-iTCP", "-sTCP:LISTEN", "-Fpn",
+    ], { timeout: 10_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8", env: process.env });
+    const ports = [];
+    for (const line of String(result.stdout || "").split("\n")) {
+      if (!line.startsWith("n")) continue;
+      const match = line.match(/:(\d{1,5})(?:\s|$)/);
+      const port = Number(match?.[1]);
+      if (Number.isInteger(port) && port > 0 && port <= 65_535 && !ports.includes(port)) ports.push(port);
+    }
+    return ports.sort((left, right) => left - right);
   }
 
   async readScreen(surfaceId, lines = 240) {

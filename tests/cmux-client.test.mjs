@@ -23,6 +23,23 @@ test("uses argv-only cmux commands for screen reads", async () => {
   assert.equal(calls[0].options.shell, undefined);
 });
 
+test("bounds concurrent cmux processes so polling cannot flood the socket", async () => {
+  let active = 0;
+  let maximum = 0;
+  const client = new CmuxClient({
+    maxConcurrent: 2,
+    execute: async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return { stdout: "PONG", stderr: "" };
+    },
+  });
+  await Promise.all(Array.from({ length: 8 }, () => client.ping()));
+  assert.equal(maximum, 2);
+});
+
 test("requests a bounded, screen-anchored terminal replay", async () => {
   const calls = [];
   const client = new CmuxClient({ execute: async (_bin, args, options) => {
@@ -136,4 +153,34 @@ test("validates structured inbox replies", async () => {
 test("parses the compact workspace health metrics row", () => {
   const metrics = parseWorkspaceMetrics("1.2\t1024\t3\tsurface\tsurface:1\tworkspace:1\tshell\n5.5\t2048\t8\tworkspace\tworkspace:1\twindow:1\tProject");
   assert.deepEqual(metrics, { cpuPercent: 5.5, memoryBytes: 2048, processCount: 8, ref: "workspace:1", parent: "window:1", title: "Project" });
+});
+
+test("merges cmux listening ports into the mobile workspace model", async () => {
+  let listCalls = 0;
+  const client = new CmuxClient({ execute: async (_bin, args) => {
+    if (args.includes("mobile.workspace.list")) {
+      listCalls += 1;
+      return { stdout: JSON.stringify({ workspaces: [{ id: ID, title: "Web", current_directory: "/repo", terminals: [] }] }), stderr: "" };
+    }
+    if (args.includes("list-workspaces")) return { stdout: JSON.stringify({ workspaces: [{ title: "Web", current_directory: "/repo", listening_ports: [3000, 5173, "bad"] }] }), stderr: "" };
+    if (args.includes("status")) return { stdout: "{}", stderr: "" };
+    throw new Error(`Unexpected command: ${args.join(" ")}`);
+  }, socketPassword: "secret" });
+  const payload = await client.workspaceListDetailed();
+  const cached = await client.workspaceListDetailed();
+  assert.deepEqual(payload.workspaces[0].listening_ports, [3000, 5173]);
+  assert.equal(cached, payload);
+  assert.equal(listCalls, 1);
+});
+
+test("discovers localhost listeners owned by workspace processes", async () => {
+  const calls = [];
+  const client = new CmuxClient({ execute: async (bin, args) => {
+    calls.push([bin, args]);
+    if (bin === "/usr/sbin/lsof") return { stdout: "p123\nn127.0.0.1:3000\nn*:5173\nn127.0.0.1:3000\n", stderr: "" };
+    return { stdout: `0\t0\t1\tprocess\t123\tworkspace:1\tnode\n0\t0\t1\tprocess\t456\t123\tchild\n`, stderr: "" };
+  }, socketPassword: "secret" });
+  assert.deepEqual(await client.workspaceListeningPorts(ID), [3000, 5173]);
+  assert.equal(calls[1][0], "/usr/sbin/lsof");
+  assert.equal(calls[1][1].includes("123,456"), true);
 });

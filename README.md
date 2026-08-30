@@ -12,7 +12,10 @@ No cloud application server is involved. Terminal output and input travel direct
 - Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
 - Reviews staged, unstaged, and untracked Git changes and per-file diffs
 - Shows the current branch's open pull request, review decision, and check status directly inside its session
-- Sends optional background Web Push alerts for decisions and agent completion
+- Sends contextual Web Push alerts for decisions, failures, completion, PR changes, and detected local apps
+- Opens each decision notification on a focused approval or reply card instead of a generic terminal
+- Makes terminal `.md` references tappable and renders safe repository Markdown, tables, code, and local images on mobile
+- Detects localhost apps and creates explicit, tailnet-only Tailscale Serve links from a private Apps screen
 - Streams cmux activity and reconnects automatically with exponential backoff
 - Renders cmux's native terminal replay grid with exact colors, styles, cursor, cell geometry, and scrollback
 - Opens terminals at the latest output, follows only near the bottom, and preserves scrollback while reading
@@ -44,6 +47,8 @@ cmux CLI → replay grid / safe input RPCs → cmux Unix socket → cmux.app
 ```
 
 The service binds only to `127.0.0.1`. Tailscale Serve is the only network-facing listener. The installer uses HTTPS port 8443 so it does not replace an existing Tailscale Serve handler on port 443.
+
+Local app previews use separate HTTPS ports from 8500 through 8599. This preserves application root paths, redirects, assets, and WebSockets better than path-prefix proxying. A detected app is not exposed until you tap **Make private link**; links remain tailnet-only and Companion never enables Tailscale Funnel.
 
 By default, the phone reflows the full Mac-width replay grid locally, keeping the Mac terminal unchanged while preserving enough history to scroll. The **Fit** control switches between this readable phone layout and the exact terminal grid. Older cmux versions automatically fall back to the authenticated plain-text screen endpoint.
 
@@ -101,6 +106,9 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - The CLI is spawned with argv arrays and never through a shell.
 - Read-only protection is enabled by default on each phone.
 - Push subscriptions and VAPID keys stay in a mode-`0600` file on the Mac; notification content is hidden by default.
+- Alert categories, quiet hours, persistent deduplication, and lock-screen privacy are configurable per phone.
+- Markdown reads are restricted to regular `.md`/`.markdown` files inside allow-listed repositories; canonical paths block traversal and out-of-repo symlinks, rendered HTML is not executed, and local images are type and size restricted.
+- Preview targets must be localhost TCP ports. Tailscale HTTPS ports are allocated from a bounded range, can be stopped from the Apps screen, and are never exposed with Funnel.
 - Pasted images are magic-byte validated, limited to 8 MB, stored with mode `0600`, and removed automatically after seven days.
 
 Treat a paired phone as privileged: unlocking terminal input gives it control of interactive processes running in cmux.
@@ -120,13 +128,18 @@ Verification:
 
 ```bash
 npm test
+npm run test:ui
 npm run lint
+npm run typecheck
 npm run build
 npm run test:live
 npm run test:installed
+npm run test:preview-live
 ```
 
 `test:live` exercises the cmux adapter directly. `test:installed` sends the same read/control flow through the installed HTTP service. Both create an isolated cmux workspace and close it in cleanup; neither uses one of your existing sessions.
+
+`test:preview-live` starts a temporary loopback HTTP server, exposes it through an unused private Tailscale Serve port, verifies HTTPS access, and removes the Serve handler in cleanup.
 
 ## Configuration
 
@@ -137,9 +150,13 @@ npm run test:installed
 | `CMUX_COMPANION_PORT` | `3210` | Companion HTTP port |
 | `CMUX_COMPANION_FRONTEND_PORT` | `3211` | Internal PWA server port |
 | `CMUX_COMPANION_TAILSCALE_PORT` | `8443` | Private HTTPS port |
+| `CMUX_COMPANION_TAILSCALE_BIN` | Tailscale macOS app CLI, then `tailscale` | CLI used to manage private preview links |
 | `CMUX_COMPANION_TOKEN_FILE` | `~/.config/cmux-companion/token` | Pairing token path |
 | `CMUX_COMPANION_REPO_ROOTS` | `~/Developers/karven:~/Developers/rekord` (expanded defaults for this install) | Colon-separated repository roots |
 | `CMUX_COMPANION_PUSH_FILE` | `~/.config/cmux-companion/push.json` | Private push keys and device subscriptions |
+| `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
+| `CMUX_COMPANION_PREVIEW_PORT_START` | `8500` | First Tailscale HTTPS preview port |
+| `CMUX_COMPANION_PREVIEW_PORT_END` | `8599` | Last Tailscale HTTPS preview port |
 
 ## Troubleshooting
 

@@ -59,6 +59,27 @@ test("rejects unknown repositories and hides untracked symlink contents", async 
   assert.equal(result.patch, "Untracked symbolic link (content hidden)");
 });
 
+test("reads safe Markdown and image assets without escaping the repository", async (t) => {
+  const { root, repo, catalog } = await fixture(t);
+  await mkdir(join(repo, "docs"));
+  await writeFile(join(repo, "docs", "guide.md"), "# Guide\n\n![Flow](flow.png)\n");
+  await writeFile(join(repo, "docs", "flow.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const secret = join(root, "secret.md");
+  await writeFile(secret, "private\n");
+  await symlink(secret, join(repo, "docs", "outside.md"));
+  const [record] = await catalog.list();
+  const markdown = await catalog.markdown(record.id, "docs/guide.md");
+  assert.equal(markdown.path, "docs/guide.md");
+  assert.match(markdown.content, /# Guide/);
+  const image = await catalog.asset(record.id, "docs/flow.png");
+  assert.equal(image.mime, "image/png");
+  await writeFile(join(repo, "docs", "fake.png"), "not an image");
+  await assert.rejects(() => catalog.asset(record.id, "docs/fake.png"), /does not match/);
+  await assert.rejects(() => catalog.markdown(record.id, "docs/outside.md"), /outside the approved roots/);
+  await assert.rejects(() => catalog.markdown(record.id, "../secret.md"), /outside the approved roots/);
+  await assert.rejects(() => catalog.markdown(record.id, "package.json"), /not supported/);
+});
+
 test("parses NUL-delimited rename status", () => {
   assert.deepEqual(parseNameStatus("R100\0old.txt\0new.txt\0M\0same.txt\0", "staged"), [
     { path: "new.txt", status: "R", area: "staged" },

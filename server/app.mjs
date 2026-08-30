@@ -24,6 +24,7 @@ export async function buildApp({
   eventHub = null,
   repoCatalog = new RepoCatalog(),
   pushService = null,
+  previewManager = null,
   imageAttachments = new ImageAttachments(),
 } = {}) {
   if (!token) throw new Error("A companion pairing token is required");
@@ -36,7 +37,11 @@ export async function buildApp({
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const pairAttempts = new Map();
   const viewportLeases = new Map();
-  const detachPush = pushService?.attach({ hub, cmux }) || null;
+  let bootstrapSnapshot = null;
+  let bootstrapPending = null;
+  let inboxSnapshot = null;
+  let inboxPending = null;
+  const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
 
   await app.register(websocket, {
     options: {
@@ -106,23 +111,40 @@ export async function buildApp({
     return { paired: false };
   });
 
-  app.get("/api/bootstrap", async () => {
-    const [host, workspacePayload, capabilities] = await Promise.allSettled([
-      cmux.hostStatus(),
-      cmux.workspaceListDetailed ? cmux.workspaceListDetailed() : cmux.workspaceList(),
-      cmux.capabilities(),
-    ]);
-    const connected = workspacePayload.status === "fulfilled";
-    return {
-      connected,
-      host: host.status === "fulfilled" ? host.value : null,
-      workspaces: connected ? workspacePayload.value.workspaces || [] : [],
-      groups: connected ? workspacePayload.value.groups || [] : [],
-      capabilities: capabilities.status === "fulfilled" ? capabilities.value : null,
-      error: connected ? null : "Waiting for cmux",
-      refreshedAt: new Date().toISOString(),
-    };
-  });
+  const loadBootstrap = async () => {
+    if (bootstrapSnapshot && Date.now() - bootstrapSnapshot.at < 1_500) return bootstrapSnapshot.value;
+    if (bootstrapPending) return bootstrapPending;
+    bootstrapPending = (async () => {
+      const [host, workspacePayload, capabilities] = await Promise.allSettled([
+        cmux.hostStatus(),
+        cmux.workspaceListDetailed ? cmux.workspaceListDetailed() : cmux.workspaceList(),
+        cmux.capabilities(),
+      ]);
+      const connected = workspacePayload.status === "fulfilled";
+      if (connected && previewManager) {
+        const repos = await repoCatalog.list().catch(() => []);
+        await previewManager.syncWorkspaces(workspacePayload.value.workspaces || [], repos).catch(() => {});
+      }
+      const value = {
+        connected,
+        host: host.status === "fulfilled" ? host.value : null,
+        workspaces: connected ? workspacePayload.value.workspaces || [] : [],
+        groups: connected ? workspacePayload.value.groups || [] : [],
+        capabilities: capabilities.status === "fulfilled" ? capabilities.value : null,
+        error: connected ? null : "Waiting for cmux",
+        refreshedAt: new Date().toISOString(),
+      };
+      bootstrapSnapshot = { at: Date.now(), value };
+      return value;
+    })();
+    try {
+      return await bootstrapPending;
+    } finally {
+      bootstrapPending = null;
+    }
+  };
+
+  app.get("/api/bootstrap", loadBootstrap);
 
   app.get("/api/workspaces", async () => cmux.workspaceList());
 
@@ -169,16 +191,81 @@ export async function buildApp({
     repoCatalog.pullRequest(request.params.id, { refresh: request.query?.refresh === "1" })
   ));
 
-  app.get("/api/inbox", async () => {
-    const [feed, notifications] = await Promise.all([
-      cmux.pendingFeed(),
-      cmux.notifications().catch(() => ({ notifications: [] })),
-    ]);
-    return normalizeInbox(feed, notifications);
+  app.get("/api/repos/:id/markdown", async (request) => {
+    if (typeof request.query?.file !== "string") throw new TypeError("A Markdown file is required");
+    return repoCatalog.markdown(request.params.id, request.query.file);
   });
+
+  app.get("/api/repos/:id/assets", async (request, reply) => {
+    if (typeof request.query?.file !== "string") throw new TypeError("A Markdown asset is required");
+    const asset = await repoCatalog.asset(request.params.id, request.query.file);
+    return reply.header("Cache-Control", "private, max-age=60").type(asset.mime).send(asset.content);
+  });
+
+  app.get("/api/previews", async () => {
+    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
+    return previewManager.list();
+  });
+
+  app.post("/api/previews/discover", async (request, reply) => {
+    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
+    const payload = await cmux.workspaceListDetailed?.() || await cmux.workspaceList();
+    const workspace = (payload.workspaces || []).find((item) => item.id === request.body?.workspaceId);
+    if (!workspace) throw new TypeError("Unknown workspace");
+    let repo = null;
+    if (request.body?.repoId) repo = await repoCatalog.get(request.body.repoId);
+    const result = previewManager.discover({
+      workspaceId: workspace.id, repoId: repo?.id || null,
+      name: repo?.name || workspace.title || "Local app",
+      targetPort: request.body?.port, sourceUrl: request.body?.url,
+    });
+    return reply.code(result.created ? 201 : 200).send(result);
+  });
+
+  app.post("/api/previews/:id/enable", async (request) => {
+    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
+    return previewManager.enable(request.params.id);
+  });
+
+  app.post("/api/previews/:id/stop", async (request) => {
+    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
+    return previewManager.stop(request.params.id);
+  });
+
+  app.post("/api/previews/:id/restart", async (request) => {
+    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
+    return previewManager.restart(request.params.id);
+  });
+
+  app.delete("/api/previews/:id", async (request) => {
+    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
+    return previewManager.remove(request.params.id);
+  });
+
+  const loadInbox = async () => {
+    if (inboxSnapshot && Date.now() - inboxSnapshot.at < 1_500) return inboxSnapshot.value;
+    if (inboxPending) return inboxPending;
+    inboxPending = (async () => {
+      const [feed, notifications] = await Promise.all([
+        cmux.pendingFeed(),
+        cmux.notifications().catch(() => ({ notifications: [] })),
+      ]);
+      const value = normalizeInbox(feed, notifications);
+      inboxSnapshot = { at: Date.now(), value };
+      return value;
+    })();
+    try {
+      return await inboxPending;
+    } finally {
+      inboxPending = null;
+    }
+  };
+
+  app.get("/api/inbox", loadInbox);
 
   app.post("/api/inbox/:requestId/reply", async (request) => {
     const result = await cmux.feedReply(request.params.requestId, request.body?.kind, request.body || {});
+    inboxSnapshot = null;
     return { ok: true, result };
   });
 
@@ -332,6 +419,8 @@ export function normalizeInbox(feed = {}, notificationPayload = {}) {
       surfaceId: item.surface_id || null,
       source: item.source || null,
       title: item.title || inboxTitle(item.kind),
+      subtitle: item.subtitle || null,
+      body: item.question_prompt || item.plan_summary || item.body || "",
       toolName: item.tool_name || null,
       toolInput: item.tool_input || null,
       questionOptions: item.question_options || item.questions?.[0]?.options || [],

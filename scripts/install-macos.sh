@@ -8,6 +8,13 @@ PLIST_PATH="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 LOG_DIR="${HOME}/Library/Logs"
 NODE_BIN="${CMUX_COMPANION_NODE:-$(command -v node)}"
 TAILSCALE_PORT="${CMUX_COMPANION_TAILSCALE_PORT:-8443}"
+if [[ -n "${CMUX_COMPANION_TAILSCALE_BIN:-}" ]]; then
+  TAILSCALE_BIN="${CMUX_COMPANION_TAILSCALE_BIN}"
+elif [[ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
+  TAILSCALE_BIN="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+else
+  TAILSCALE_BIN="$(command -v tailscale 2>/dev/null || true)"
+fi
 
 cd "${PROJECT_DIR}"
 npm install
@@ -66,9 +73,9 @@ for attempt in {1..80}; do
   sleep 0.25
 done
 
-if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
-  tailscale serve --bg --yes --https="${TAILSCALE_PORT}" http://127.0.0.1:3210 >/dev/null
-  DNS_NAME="$(tailscale status --json | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
+if [[ -n "${TAILSCALE_BIN}" ]] && "${TAILSCALE_BIN}" status >/dev/null 2>&1; then
+  "${TAILSCALE_BIN}" serve --bg --yes --https="${TAILSCALE_PORT}" http://127.0.0.1:3210 >/dev/null
+  DNS_NAME="$("${TAILSCALE_BIN}" status --json | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
   echo "cmux companion is ready at https://${DNS_NAME}:${TAILSCALE_PORT}"
 else
   echo "cmux companion is ready locally at http://127.0.0.1:3210"

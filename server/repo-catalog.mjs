@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -157,6 +157,44 @@ export class RepoCatalog {
     };
   }
 
+  async markdown(id, file) {
+    const resolved = await this.safeFile(id, file, { extensions: new Set([".md", ".markdown"]), maxBytes: 768 * 1024 });
+    return {
+      repo: resolved.repo,
+      path: resolved.path,
+      name: basename(resolved.path),
+      content: await readFile(resolved.absolute, "utf8"),
+    };
+  }
+
+  async asset(id, file) {
+    const mime = {
+      ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+      ".gif": "image/gif", ".webp": "image/webp",
+    }[extname(String(file || "")).toLowerCase()];
+    if (!mime) throw new TypeError("That Markdown asset type is not supported");
+    const resolved = await this.safeFile(id, file, { extensions: new Set(Object.keys({ ".png": 1, ".jpg": 1, ".jpeg": 1, ".gif": 1, ".webp": 1 })), maxBytes: 8 * 1024 * 1024 });
+    const content = await readFile(resolved.absolute);
+    if (detectImageMime(content) !== mime) throw new TypeError("Markdown asset content does not match its image type");
+    return { path: resolved.path, mime, content };
+  }
+
+  async safeFile(id, file, { extensions, maxBytes }) {
+    if (typeof file !== "string" || !file.trim() || file.includes("\0") || file.length > 1_024) throw new TypeError("Invalid repository file");
+    const repo = await this.get(id);
+    const candidate = resolve(repo.path, file.trim());
+    assertInside(repo.path, candidate);
+    const canonicalRepo = await realpath(repo.path);
+    const absolute = await realpath(candidate).catch(() => { throw new TypeError("Repository file does not exist"); });
+    assertInside(canonicalRepo, absolute);
+    const extension = extname(absolute).toLowerCase();
+    if (!extensions.has(extension)) throw new TypeError("That repository file type is not supported");
+    const info = await lstat(absolute);
+    if (!info.isFile()) throw new TypeError("Repository file is not a regular file");
+    if (info.size > maxBytes) throw new TypeError("Repository file is too large");
+    return { repo, absolute, path: relative(canonicalRepo, absolute).split(sep).join("/") };
+  }
+
   async pullRequest(id, { refresh = false } = {}) {
     const repo = await this.get(id);
     const cached = this.prCache.get(id);
@@ -283,6 +321,14 @@ function assertInside(root, path) {
   if (rel === ".." || rel.startsWith(`..${sep}`) || rel.split(sep).includes("..")) {
     throw new TypeError("Repository path is outside the approved roots");
   }
+}
+
+function detectImageMime(buffer) {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer.length >= 6 && ["GIF87a", "GIF89a"].includes(buffer.subarray(0, 6).toString("ascii"))) return "image/gif";
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return null;
 }
 
 function parseRoots(value) {

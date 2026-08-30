@@ -1,6 +1,7 @@
 "use client";
 
 import { CSSProperties, useMemo } from "react";
+import { splitContextLinks } from "./context-links.mjs";
 import { nativeComposerStartRow, normalizeRenderGrid, safeTerminalColor } from "./terminal-grid.mjs";
 
 type TerminalStyle = {
@@ -84,7 +85,7 @@ function spanStyle(style: TerminalStyle | undefined, foreground: string, backgro
   };
 }
 
-export function TerminalGrid({ view, hideNativeComposer = false, reflow = false }: { view: TerminalView | null; hideNativeComposer?: boolean; reflow?: boolean }) {
+export function TerminalGrid({ view, hideNativeComposer = false, reflow = false, onMarkdownLink, onLocalUrl }: { view: TerminalView | null; hideNativeComposer?: boolean; reflow?: boolean; onMarkdownLink?: (path: string) => void; onLocalUrl?: (url: string) => void }) {
   const grid = useMemo(() => view?.mode === "grid" ? normalizeRenderGrid(view.render_grid) as RenderGrid | null : null, [view]);
   const model = useMemo(() => {
     if (!grid) return null;
@@ -98,7 +99,8 @@ export function TerminalGrid({ view, hideNativeComposer = false, reflow = false 
 
   if (!view) return <div className="terminal-loading">Reading terminal…</div>;
   if (view.mode === "text" || !grid || !model) {
-    return <pre className="terminal-fallback">{view.mode === "text" ? view.text || "No terminal output yet." : "Terminal replay is unavailable."}</pre>;
+    const text = view.mode === "text" ? view.text || "No terminal output yet." : "Terminal replay is unavailable.";
+    return <pre className="terminal-fallback">{renderContextText(text, onMarkdownLink, onLocalUrl)}</pre>;
   }
 
   const foreground = safeTerminalColor(grid.terminal_foreground, "#f2f2f2");
@@ -121,7 +123,7 @@ export function TerminalGrid({ view, hideNativeComposer = false, reflow = false 
         const decorative = reflow && chunks.length > 0 && /^[─━═_\s-]+$/.test(chunks.map((chunk) => `${chunk.gap}${chunk.text}`).join(""));
         return <div className={`terminal-grid-row${decorative ? " decorative" : ""}`} key={rowIndex}>
           {reflow ? chunks.map((chunk, spanIndex) => (
-            <span className={model.styles.get(chunk.span.style_id)?.blink ? "terminal-span blinking" : "terminal-span"} key={`${chunk.span.column}-${spanIndex}`} style={spanStyle(model.styles.get(chunk.span.style_id), foreground, background)}>{chunk.gap}{chunk.text}</span>
+            <span className={model.styles.get(chunk.span.style_id)?.blink ? "terminal-span blinking" : "terminal-span"} key={`${chunk.span.column}-${spanIndex}`} style={spanStyle(model.styles.get(chunk.span.style_id), foreground, background)}>{chunk.gap}{renderContextText(chunk.text, onMarkdownLink, onLocalUrl)}</span>
           )) : spans.map((span, spanIndex) => (
             <span
               className={model.styles.get(span.style_id)?.blink ? "terminal-span blinking" : "terminal-span"}
@@ -130,7 +132,7 @@ export function TerminalGrid({ view, hideNativeComposer = false, reflow = false 
                 gridColumn: `${span.column + 1} / span ${span.cell_width}`,
                 ...spanStyle(model.styles.get(span.style_id), foreground, background),
               }}
-            >{span.text}</span>
+            >{renderContextText(span.text, onMarkdownLink, onLocalUrl)}</span>
           ))}
           {!reflow && grid.cursor?.visible && grid.cursor.row < screenRows.length && rowIndex === cursorRow && (
             <i
@@ -142,4 +144,12 @@ export function TerminalGrid({ view, hideNativeComposer = false, reflow = false 
       })}
     </div>
   );
+}
+
+function renderContextText(text: string, onMarkdownLink?: (path: string) => void, onLocalUrl?: (url: string) => void) {
+  return splitContextLinks(text).map((part: { type: string; text: string }, index: number) => {
+    if (part.type === "markdown" && onMarkdownLink) return <button type="button" className="terminal-context-link" onClick={() => onMarkdownLink(part.text)} key={`${index}-${part.text}`}>{part.text}</button>;
+    if (part.type === "local" && onLocalUrl) return <button type="button" className="terminal-context-link preview" onClick={() => onLocalUrl(part.text)} key={`${index}-${part.text}`}>{part.text}</button>;
+    return part.text;
+  });
 }

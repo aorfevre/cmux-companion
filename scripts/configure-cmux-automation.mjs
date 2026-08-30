@@ -54,7 +54,8 @@ source = applyEdits(source, modify(source, ["automation", "socketControlMode"], 
 source = applyEdits(source, modify(source, ["automation", "socketPassword"], socketPassword, { formattingOptions }));
 
 const current = existsSync(configPath) ? readFileSync(configPath, "utf8") : null;
-if (current !== source) {
+const configurationChanged = current !== source;
+if (configurationChanged) {
   if (current !== null) {
     const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
     const backup = `${configPath}.${timestamp}.bak`;
@@ -65,13 +66,16 @@ if (current !== source) {
   writeFileSync(configPath, source, { encoding: "utf8", mode: 0o600 });
 }
 
-try {
+if (!configurationChanged) {
+  console.log("Password-protected cmux automation is already configured.");
+} else try {
   try {
-    execFileSync(cmuxBin, ["reload-config"], { env: process.env, stdio: "pipe" });
+    execFileSync(cmuxBin, ["reload-config"], { env: process.env, stdio: "pipe", timeout: 5_000 });
   } catch {
     execFileSync(cmuxBin, ["reload-config"], {
       env: { ...process.env, CMUX_SOCKET_PASSWORD: socketPassword },
       stdio: "pipe",
+      timeout: 5_000,
     });
   }
   console.log("Enabled password-protected cmux automation and reloaded cmux.");

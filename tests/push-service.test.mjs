@@ -4,7 +4,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PushService } from "../server/push-service.mjs";
+import { classifyEventText, contextUrl, extractMarkdownPaths, isQuiet, PushService } from "../server/push-service.mjs";
 
 function subscription(endpoint = "https://push.example.test/device") {
   return { endpoint, expirationTime: null, keys: { p256dh: "public-key", auth: "auth-key" } };
@@ -44,7 +44,8 @@ test("persists per-device subscriptions and applies privacy/settings filters", a
 test("turns completion and actionable feed events into focused alerts", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "cmux-push-events-"));
   const sender = fakeSender();
-  const service = new PushService({ path: join(directory, "push.json"), sender });
+  const path = join(directory, "push.json");
+  const service = new PushService({ path, sender });
   service.subscribe(subscription());
   const hub = new EventEmitter();
   hub.addConsumer = () => {};
@@ -55,7 +56,58 @@ test("turns completion and actionable feed events into focused alerts", async (t
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.equal(sender.sent.length, 2);
   assert.equal(sender.sent[0].payload.kind, "completion");
-  assert.equal(sender.sent[1].payload.url, "/?workspace=ws-1");
+  assert.equal(sender.sent[1].payload.url, "/?view=inbox&action=req-1&context=attention");
   detach();
+  const secondSender = fakeSender();
+  const reloaded = new PushService({ path, sender: secondSender });
+  const detachReloaded = reloaded.attach({ hub, cmux: { pendingFeed: async () => ({ items: [{ request_id: "req-1", kind: "question", workspace_id: "ws-1" }] }) } });
+  hub.emit("event", { name: "feed.item.received" });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(secondSender.sent.length, 0, "pending decisions are deduplicated across restarts");
+  detachReloaded();
+  t.after(() => import("node:fs/promises").then(({ rm }) => rm(directory, { recursive: true, force: true })));
+});
+
+test("classifies failures, builds contextual links, and respects quiet hours", async (t) => {
+  assert.equal(classifyEventText("npm ERR! command failed"), "failure");
+  assert.equal(classifyEventText("all tests passed"), "attention");
+  assert.equal(classifyEventText("0 tests failed"), "attention");
+  assert.deepEqual(extractMarkdownPaths("Review docs/plan.md and `README.md`"), ["docs/plan.md", "README.md"]);
+  assert.equal(contextUrl({ workspaceId: "ws-1", repoId: "repo-1", file: "docs/plan.md", tab: "changes", kind: "completion" }), "/?workspace=ws-1&repo=repo-1&file=docs%2Fplan.md&tab=changes&context=completion");
+  assert.equal(isQuiet({ quietEnabled: true, quietStart: "22:00", quietEnd: "08:00" }, new Date(2026, 1, 1, 23, 0)), true);
+  assert.equal(isQuiet({ quietEnabled: true, quietStart: "22:00", quietEnd: "08:00" }, new Date(2026, 1, 1, 12, 0)), false);
+  const directory = await mkdtemp(join(tmpdir(), "cmux-push-quiet-"));
+  const sender = fakeSender();
+  const service = new PushService({ path: join(directory, "push.json"), sender, now: () => new Date(2026, 1, 1, 23, 0) });
+  service.subscribe(subscription(), { hideContent: false, quietEnabled: true, quietStart: "22:00", quietEnd: "08:00" });
+  assert.equal((await service.send({ title: "Failed", body: "Build failed", kind: "failure" })).sent, 0);
+  service.updateSettings(subscription().endpoint, { hideContent: false, quietEnabled: false, failure: true, preview: false });
+  await service.send({ title: "Failed", body: "Build failed", kind: "failure", workspaceId: "ws-1", file: "plan.md" });
+  assert.equal(sender.sent.at(-1).payload.kind, "failure");
+  assert.match(sender.sent.at(-1).payload.url, /file=plan.md/);
+  assert.equal((await service.send({ title: "Preview", body: "Ready", kind: "preview" })).sent, 0);
+  t.after(() => import("node:fs/promises").then(({ rm }) => rm(directory, { recursive: true, force: true })));
+});
+
+test("polls active PRs and links changed checks to the repository review", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cmux-push-pr-"));
+  const sender = fakeSender();
+  const service = new PushService({ path: join(directory, "push.json"), sender });
+  service.subscribe(subscription(), { hideContent: false });
+  let failed = false; let previewSyncs = 0;
+  service.cmux = { workspaceListDetailed: async () => ({ workspaces: [{ id: "ws-1", current_directory: "/repo", terminals: [] }] }) };
+  service.repoCatalog = {
+    list: async () => [{ id: "repo-1", path: "/repo" }],
+    pullRequest: async () => ({ pullRequest: { number: 12, reviewDecision: "REVIEW_REQUIRED", mergeState: "UNSTABLE", checks: { passed: 1, pending: failed ? 0 : 1, failed: failed ? 1 : 0, total: 2 } } }),
+  };
+  service.previewManager = { syncWorkspaces: async () => { previewSyncs += 1; } };
+  await service.inspectContext();
+  assert.equal(sender.sent.length, 0, "first inspection establishes a baseline");
+  failed = true;
+  await service.inspectContext();
+  assert.equal(sender.sent[0].payload.kind, "pullRequest");
+  assert.match(sender.sent[0].payload.url, /workspace=ws-1/);
+  assert.match(sender.sent[0].payload.url, /tab=changes/);
+  assert.equal(previewSyncs, 2);
   t.after(() => import("node:fs/promises").then(({ rm }) => rm(directory, { recursive: true, force: true })));
 });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFile, unlink } from "node:fs/promises";
+import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -28,14 +29,16 @@ async function companion(path, token, init = {}) {
   return body;
 }
 
-test("installed companion reads and controls an isolated cmux terminal", { timeout: 30_000 }, async () => {
+test("installed companion reads, controls, and exposes an isolated cmux app", { timeout: 60_000 }, async () => {
   const tokenPath = process.env.CMUX_COMPANION_TOKEN_FILE || join(homedir(), ".config", "cmux-companion", "token");
   const token = (await readFile(tokenPath, "utf8")).trim();
+  const appPort = await availablePreviewTargetPort();
+  const appScript = `require("node:http").createServer((_request,response)=>response.end("${marker}")).listen(${appPort},"127.0.0.1",()=>console.log("${marker}"))`;
   const created = await exec(bin, [
     "new-workspace",
     "--name", title,
     "--cwd", "/tmp",
-    "--command", `printf '${marker}\\n'; sleep 20`,
+    "--command", `${process.execPath} -e ${JSON.stringify(appScript)}`,
     "--focus", "false",
   ], { encoding: "utf8" });
   const workspaceRef = created.stdout.match(/workspace:\d+/)?.[0];
@@ -43,6 +46,8 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
 
   let workspaceId;
   let attachmentPath;
+  let previewId;
+  let previewActive = false;
   try {
     let terminal;
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -61,6 +66,12 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
     assert.ok(companionRepo);
     const pullRequest = await companion(`/api/repos/${companionRepo.id}/pull-request?refresh=1`, token);
     assert.equal(typeof pullRequest.available, "boolean");
+    const markdown = await companion(`/api/repos/${companionRepo.id}/markdown?file=README.md`, token);
+    assert.equal(markdown.path, "README.md");
+    assert.match(markdown.content, /# cmux companion/);
+    const previews = await companion("/api/previews", token);
+    assert.equal(previews.tailnetOnly, true);
+    assert.equal(Array.isArray(previews.previews), true);
     const inbox = await companion("/api/inbox", token);
     assert.equal(Array.isArray(inbox.items), true);
     const uploaded = await companion("/api/attachments/images", token, {
@@ -82,6 +93,26 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
     assert.equal(replay.mode, "grid");
     assert.equal(replay.render_grid.format, "cmux.render-grid.v1");
     assert.match(JSON.stringify(replay.render_grid), new RegExp(marker));
+    let preview;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const current = await companion("/api/previews", token);
+      preview = current.previews.find((item) => item.workspaceId === workspaceId && item.targetPort === appPort);
+      if (preview) break;
+      await companion("/api/bootstrap", token);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    assert.ok(preview?.id, "localhost app was detected from the cmux workspace");
+    previewId = preview.id;
+    const enabled = await companion(`/api/previews/${previewId}/enable`, token, { method: "POST", body: "{}" });
+    previewActive = true;
+    assert.match(enabled.preview.url, /^https:\/\/.*\.ts\.net:\d+$/);
+    const previewResponse = await fetch(enabled.preview.url);
+    assert.equal(previewResponse.status, 200);
+    assert.equal(await previewResponse.text(), marker);
+    await companion(`/api/previews/${previewId}/stop`, token, { method: "POST", body: "{}" });
+    previewActive = false;
+    await companion(`/api/previews/${previewId}`, token, { method: "DELETE", body: "{}" });
+    previewId = null;
     const viewportClient = `installed-test-${process.pid}`;
     try {
       const viewport = await companion(`/api/terminals/${terminal.id}/viewport`, token, {
@@ -105,7 +136,23 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
     });
     assert.equal(controlled.ok, true);
   } finally {
+    if (previewId && previewActive) await companion(`/api/previews/${previewId}/stop`, token, { method: "POST", body: "{}" }).catch(() => {});
+    if (previewId) await companion(`/api/previews/${previewId}`, token, { method: "DELETE", body: "{}" }).catch(() => {});
     if (attachmentPath) await unlink(attachmentPath).catch(() => {});
     await exec(bin, ["workspace", "close", "--workspace", workspaceId || workspaceRef], { encoding: "utf8" });
   }
 });
+
+async function availablePreviewTargetPort() {
+  for (let port = 41_000; port < 42_000; port += 1) {
+    const server = createServer();
+    try {
+      await new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
+      await new Promise((resolve) => server.close(resolve));
+      return port;
+    } catch {
+      if (server.listening) await new Promise((resolve) => server.close(resolve));
+    }
+  }
+  throw new Error("No local preview test port is available");
+}
