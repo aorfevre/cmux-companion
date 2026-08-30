@@ -17,6 +17,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Renders cmux's native terminal replay grid with exact colors, styles, cursor, cell geometry, and scrollback
 - Opens terminals at the latest output, follows only near the bottom, and preserves scrollback while reading
 - Provides persistent terminal text-size controls, readable 16px input, and pinch zoom on mobile
+- Keeps one mobile composer visible and accepts pasted or photo-library images as private local agent attachments
 - Sends prompts and a small, safe allow-list of terminal keys
 - Provides a searchable, provider-labelled `/` shortcut palette for common Codex and Claude workflows
 - Restarts a stuck terminal or closes a workspace with explicit confirmation
@@ -98,6 +99,7 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - The CLI is spawned with argv arrays and never through a shell.
 - Read-only protection is enabled by default on each phone.
 - Push subscriptions and VAPID keys stay in a mode-`0600` file on the Mac; notification content is hidden by default.
+- Pasted images are magic-byte validated, limited to 8 MB, stored with mode `0600`, and removed automatically after seven days.
 
 Treat a paired phone as privileged: unlocking terminal input gives it control of interactive processes running in cmux.
 

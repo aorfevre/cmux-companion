@@ -88,3 +88,16 @@ export function safeTerminalColor(value, fallback) {
     ? value
     : fallback;
 }
+
+export function nativeComposerStartRow(grid) {
+  if (!grid || !Array.isArray(grid.row_spans) || !Number.isInteger(grid.rows) || grid.rows < 4) return grid?.rows || 0;
+  const rows = Array.from({ length: grid.rows }, () => "");
+  for (const span of grid.row_spans) {
+    if (span && Number.isInteger(span.row) && rows[span.row] !== undefined) rows[span.row] += String(span.text || "");
+  }
+  const tail = rows.slice(-5).join("\n");
+  const hasCodexComposer = /Ask Codex to do anything/i.test(tail)
+    || (/\bgpt-[a-z0-9._-]+\b/i.test(tail) && /(?:^|\n)\s*›/m.test(tail));
+  const hasClaudeComposer = /Claude Code/i.test(tail) && /(?:^|\n)\s*[❯>]/m.test(tail);
+  return hasCodexComposer || hasClaudeComposer ? Math.max(0, grid.rows - 4) : grid.rows;
+}

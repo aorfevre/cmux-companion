@@ -65,7 +65,9 @@ test("health is public while cmux data requires pairing", async (t) => {
 
 test("paired clients can read state and safely control a terminal", async (t) => {
   const cmux = fakeCmux();
-  const app = await buildApp({ cmux, token: TOKEN });
+  const savedImages = [];
+  const imageAttachments = { save: async (dataUrl, name) => { savedImages.push([dataUrl, name]); return { path: "/private/image.png", name, mime: "image/png", size: 68 }; } };
+  const app = await buildApp({ cmux, token: TOKEN, imageAttachments });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
 
@@ -90,6 +92,16 @@ test("paired clients can read state and safely control a terminal", async (t) =>
   });
   assert.equal(viewport.statusCode, 200);
   assert.deepEqual(cmux.calls[0], ["viewport", TERM_ID, { clientId: "phone-client-123", generation: 1, columns: 42, rows: 18, clear: false }]);
+
+  const image = await app.inject({
+    method: "POST",
+    url: "/api/attachments/images",
+    headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { dataUrl: "data:image/png;base64,aW1hZ2U=", name: "paste.png" },
+  });
+  assert.equal(image.statusCode, 201);
+  assert.equal(image.json().image.path, "/private/image.png");
+  assert.deepEqual(savedImages[0], ["data:image/png;base64,aW1hZ2U=", "paste.png"]);
 
   const input = await app.inject({
     method: "POST",
@@ -179,6 +191,7 @@ test("every state-changing route requires pairing and same-origin requests", asy
     [`/api/terminals/${TERM_ID}/input`, { text: "x" }],
     [`/api/terminals/${TERM_ID}/key`, { key: "enter" }],
     [`/api/terminals/${TERM_ID}/viewport`, { clientId: "phone-client-123", generation: 1, columns: 42, rows: 18 }],
+    ["/api/attachments/images", { dataUrl: "data:image/png;base64,aW1hZ2U=", name: "x.png" }],
     [`/api/workspaces/${WS_ID}/select`, {}],
     [`/api/inbox/${TERM_ID}/reply`, { kind: "permissionRequest", mode: "deny" }],
     [`/api/notifications/${TERM_ID}/read`, {}],

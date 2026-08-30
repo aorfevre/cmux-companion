@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeRenderGrid, safeTerminalColor, terminalViewSignature } from "../app/terminal-grid.mjs";
+import { nativeComposerStartRow, normalizeRenderGrid, safeTerminalColor, terminalViewSignature } from "../app/terminal-grid.mjs";
 
 test("normalizes a cmux render grid and rejects unsafe spans", () => {
   const grid = normalizeRenderGrid({
@@ -31,4 +31,15 @@ test("terminal signatures change with rendered content but not object identity",
 test("accepts terminal colors without allowing arbitrary CSS", () => {
   assert.equal(safeTerminalColor("#aabbcc", "black"), "#aabbcc");
   assert.equal(safeTerminalColor("url(evil)", "black"), "black");
+});
+
+test("detects the four-row Codex composer without cropping a normal shell", () => {
+  const codex = { rows: 18, row_spans: [
+    { row: 14, text: "                                          " },
+    { row: 15, text: "› Ask Codex to do anything" },
+    { row: 16, text: "                                          " },
+    { row: 17, text: "  gpt-5.6-sol high · ~/repo" },
+  ] };
+  assert.equal(nativeComposerStartRow(codex), 14);
+  assert.equal(nativeComposerStartRow({ rows: 18, row_spans: [{ row: 17, text: "$ ready" }] }), 18);
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,7 @@ const bin = process.env.CMUX_BIN || "/Applications/cmux.app/Contents/Resources/b
 const base = process.env.CMUX_COMPANION_URL || "http://127.0.0.1:3210";
 const marker = `CMUX_COMPANION_INSTALLED_E2E_${process.pid}`;
 const title = `companion-installed-e2e-${process.pid}`;
+const onePixelPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 async function companion(path, token, init = {}) {
   const response = await fetch(`${base}${path}`, {
@@ -23,7 +24,7 @@ async function companion(path, token, init = {}) {
     },
   });
   const body = await response.json();
-  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(response.ok, true, JSON.stringify(body));
   return body;
 }
 
@@ -41,6 +42,7 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
   assert.ok(workspaceRef);
 
   let workspaceId;
+  let attachmentPath;
   try {
     let terminal;
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -61,6 +63,13 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
     assert.equal(typeof pullRequest.available, "boolean");
     const inbox = await companion("/api/inbox", token);
     assert.equal(Array.isArray(inbox.items), true);
+    const uploaded = await companion("/api/attachments/images", token, {
+      method: "POST",
+      body: JSON.stringify({ dataUrl: `data:image/png;base64,${onePixelPng}`, name: "installed-test.png" }),
+    });
+    attachmentPath = uploaded.image.path;
+    assert.equal(uploaded.image.mime, "image/png");
+    assert.equal((await readFile(attachmentPath)).subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
 
     let screen;
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -96,6 +105,7 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
     });
     assert.equal(controlled.ok, true);
   } finally {
+    if (attachmentPath) await unlink(attachmentPath).catch(() => {});
     await exec(bin, ["workspace", "close", "--workspace", workspaceId || workspaceRef], { encoding: "utf8" });
   }
 });

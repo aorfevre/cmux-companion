@@ -3,6 +3,7 @@ import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
 import { CmuxEventHub } from "./event-hub.mjs";
+import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import {
   isAuthorized,
@@ -23,6 +24,7 @@ export async function buildApp({
   eventHub = null,
   repoCatalog = new RepoCatalog(),
   pushService = null,
+  imageAttachments = new ImageAttachments(),
 } = {}) {
   if (!token) throw new Error("A companion pairing token is required");
 
@@ -47,7 +49,7 @@ export async function buildApp({
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-    reply.header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+    reply.header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
 
     const path = request.url.split("?")[0];
     if (path.startsWith("/api/")) {
@@ -246,6 +248,11 @@ export async function buildApp({
     lease.timer.unref?.();
     viewportLeases.set(leaseKey, lease);
     return result;
+  });
+
+  app.post("/api/attachments/images", { bodyLimit: Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 32 * 1024 }, async (request, reply) => {
+    const image = await imageAttachments.save(request.body?.dataUrl, request.body?.name);
+    return reply.code(201).send({ image });
   });
 
   app.post("/api/terminals/:id/input", async (request) => {

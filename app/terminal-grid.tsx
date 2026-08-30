@@ -1,7 +1,7 @@
 "use client";
 
 import { CSSProperties, useMemo } from "react";
-import { normalizeRenderGrid, safeTerminalColor } from "./terminal-grid.mjs";
+import { nativeComposerStartRow, normalizeRenderGrid, safeTerminalColor } from "./terminal-grid.mjs";
 
 type TerminalStyle = {
   id: number;
@@ -67,7 +67,7 @@ function spanStyle(style: TerminalStyle | undefined, foreground: string, backgro
   };
 }
 
-export function TerminalGrid({ view }: { view: TerminalView | null }) {
+export function TerminalGrid({ view, hideNativeComposer = false }: { view: TerminalView | null; hideNativeComposer?: boolean }) {
   const grid = useMemo(() => view?.mode === "grid" ? normalizeRenderGrid(view.render_grid) as RenderGrid | null : null, [view]);
   const model = useMemo(() => {
     if (!grid) return null;
@@ -87,7 +87,8 @@ export function TerminalGrid({ view }: { view: TerminalView | null }) {
   const foreground = safeTerminalColor(grid.terminal_foreground, "#f2f2f2");
   const background = safeTerminalColor(grid.terminal_background, "#050607");
   const cursorColor = safeTerminalColor(grid.terminal_cursor_color, foreground);
-  const allRows = [...model.scrollback, ...model.screen];
+  const screenRows = hideNativeComposer ? model.screen.slice(0, nativeComposerStartRow(grid)) : model.screen;
+  const allRows = [...model.scrollback, ...screenRows];
   const cursorRow = grid.scrollback_rows + (grid.cursor?.row || 0);
   const rootStyle = {
     "--terminal-columns": grid.columns,
@@ -110,7 +111,7 @@ export function TerminalGrid({ view }: { view: TerminalView | null }) {
               }}
             >{span.text}</span>
           ))}
-          {grid.cursor?.visible && rowIndex === cursorRow && (
+          {grid.cursor?.visible && grid.cursor.row < screenRows.length && rowIndex === cursorRow && (
             <i
               className={`terminal-cursor ${grid.cursor.style}${grid.cursor.blinking ? " blinking" : ""}`}
               style={{ gridColumn: `${grid.cursor.column + 1} / span 1`, borderColor: cursorColor, backgroundColor: cursorColor }}
