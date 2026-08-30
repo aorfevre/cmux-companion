@@ -15,6 +15,17 @@ elif [[ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
 else
   TAILSCALE_BIN="$(command -v tailscale 2>/dev/null || true)"
 fi
+DNS_NAME=""
+if [[ -n "${TAILSCALE_BIN}" ]] && "${TAILSCALE_BIN}" status >/dev/null 2>&1; then
+  DNS_NAME="$("${TAILSCALE_BIN}" status --json | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
+fi
+if [[ -n "${CMUX_COMPANION_VAPID_SUBJECT:-}" ]]; then
+  VAPID_SUBJECT="${CMUX_COMPANION_VAPID_SUBJECT}"
+elif [[ -n "${DNS_NAME}" ]]; then
+  VAPID_SUBJECT="https://${DNS_NAME}:${TAILSCALE_PORT}"
+else
+  VAPID_SUBJECT="https://cmux-companion.local"
+fi
 
 cd "${PROJECT_DIR}"
 npm install
@@ -39,6 +50,7 @@ mkdir -p "${HOME}/Library/LaunchAgents" "${LOG_DIR}"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:NODE_ENV string production" "${PLIST_PATH}"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:CMUX_COMPANION_HOST string 127.0.0.1" "${PLIST_PATH}"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:CMUX_COMPANION_PORT string 3210" "${PLIST_PATH}"
+/usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:CMUX_COMPANION_VAPID_SUBJECT string ${VAPID_SUBJECT}" "${PLIST_PATH}"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:TERM string dumb" "${PLIST_PATH}"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:PATH string ${NODE_BIN:h}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" "${PLIST_PATH}"
 /bin/chmod 600 "${PLIST_PATH}"
@@ -74,9 +86,8 @@ for attempt in {1..80}; do
   sleep 0.25
 done
 
-if [[ -n "${TAILSCALE_BIN}" ]] && "${TAILSCALE_BIN}" status >/dev/null 2>&1; then
+if [[ -n "${DNS_NAME}" ]]; then
   "${TAILSCALE_BIN}" serve --bg --yes --https="${TAILSCALE_PORT}" http://127.0.0.1:3210 >/dev/null
-  DNS_NAME="$("${TAILSCALE_BIN}" status --json | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
   echo "cmux companion is ready at https://${DNS_NAME}:${TAILSCALE_PORT}"
 else
   echo "cmux companion is ready locally at http://127.0.0.1:3210"

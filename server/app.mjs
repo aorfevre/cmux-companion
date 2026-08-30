@@ -291,9 +291,9 @@ export async function buildApp({
     return pushService.unsubscribe(request.body?.endpoint);
   });
 
-  app.post("/api/push/test", async () => {
+  app.post("/api/push/test", async (request) => {
     if (!pushService) throw serviceUnavailable("Push alerts are unavailable");
-    return pushService.test();
+    return pushService.test(typeof request.body?.endpoint === "string" ? request.body.endpoint : null);
   });
 
   app.get("/api/terminals/:id/screen", async (request) => {

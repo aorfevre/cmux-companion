@@ -11,11 +11,11 @@ function subscription(endpoint = "https://push.example.test/device") {
 }
 
 function fakeSender() {
-  const sent = [];
+  const sent = []; const vapid = [];
   return {
-    sent,
+    sent, vapid,
     generateVAPIDKeys: () => ({ publicKey: "vapid-public", privateKey: "vapid-private" }),
-    setVapidDetails: () => {},
+    setVapidDetails: (...details) => { vapid.push(details); },
     sendNotification: async (target, payload) => { sent.push({ target, payload: JSON.parse(payload) }); },
   };
 }
@@ -25,6 +25,7 @@ test("persists per-device subscriptions and applies privacy/settings filters", a
   const path = join(directory, "push.json");
   const sender = fakeSender();
   const service = new PushService({ path, sender });
+  assert.equal(sender.vapid[0][0], "https://cmux-companion.local");
   service.subscribe(subscription());
   assert.equal(service.status(subscription().endpoint).subscribed, true);
   assert.equal((await readFile(path, "utf8")).includes("vapid-private"), true);
@@ -38,6 +39,46 @@ test("persists per-device subscriptions and applies privacy/settings filters", a
   assert.equal(result.sent, 0);
   const reloaded = new PushService({ path, sender: fakeSender() });
   assert.equal(reloaded.status(subscription().endpoint).settings.attention, false);
+  t.after(() => import("node:fs/promises").then(({ rm }) => rm(directory, { recursive: true, force: true })));
+});
+
+test("targets test alerts and reports push failures without exposing provider details", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cmux-push-errors-"));
+  const targetedSender = fakeSender();
+  const targeted = new PushService({ path: join(directory, "targeted.json"), sender: targetedSender, vapidSubject: "https://mac.example.test:8443" });
+  targeted.subscribe(subscription("https://push.example.test/first"), { attention: true });
+  targeted.subscribe(subscription("https://push.example.test/second"), { attention: false });
+  const targetResult = await targeted.test("https://push.example.test/second");
+  assert.deepEqual({ sent: targetResult.sent, failed: targetResult.failed, skipped: targetResult.skipped }, { sent: 1, failed: 0, skipped: 1 });
+  assert.equal(targetedSender.sent[0].target.endpoint, "https://push.example.test/second");
+  assert.equal(targetedSender.vapid[0][0], "https://mac.example.test:8443");
+
+  const rejectingSender = fakeSender();
+  rejectingSender.sendNotification = async () => {
+    throw Object.assign(new Error("provider response included private endpoint data"), {
+      statusCode: 403,
+      body: JSON.stringify({ reason: "BadJwtToken", endpoint: "https://secret.push.example/device", secret: "private-auth-key" }),
+    });
+  };
+  const rejecting = new PushService({ path: join(directory, "rejecting.json"), sender: rejectingSender });
+  rejecting.subscribe(subscription());
+  const rejected = await rejecting.test(subscription().endpoint);
+  assert.deepEqual(rejected.error, { code: "sender-authentication", message: "Push sender authentication failed. Reinstall the Mac companion.", statusCode: 403 });
+  assert.deepEqual({ sent: rejected.sent, failed: rejected.failed }, { sent: 0, failed: 1 });
+  assert.doesNotMatch(JSON.stringify(rejected), /secret|private-auth|endpoint data/i);
+  assert.throws(() => new PushService({ path: join(directory, "invalid.json"), sender: fakeSender(), vapidSubject: "mailto:cmux-companion@localhost" }), /VAPID_SUBJECT/);
+  t.after(() => import("node:fs/promises").then(({ rm }) => rm(directory, { recursive: true, force: true })));
+});
+
+test("removes expired subscriptions and does not count them as delivered", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cmux-push-expired-"));
+  const sender = fakeSender();
+  sender.sendNotification = async () => { throw Object.assign(new Error("gone"), { statusCode: 410 }); };
+  const service = new PushService({ path: join(directory, "push.json"), sender });
+  service.subscribe(subscription());
+  const result = await service.test(subscription().endpoint);
+  assert.deepEqual({ sent: result.sent, failed: result.failed, code: result.error.code }, { sent: 0, failed: 1, code: "subscription-expired" });
+  assert.equal(service.status().subscriptionCount, 0);
   t.after(() => import("node:fs/promises").then(({ rm }) => rm(directory, { recursive: true, force: true })));
 });
 

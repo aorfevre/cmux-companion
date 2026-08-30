@@ -8,7 +8,12 @@ const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "push.json");
 const EVENT_KINDS = new Set(["attention", "completion", "failure", "pullRequest", "preview"]);
 
 export class PushService {
-  constructor({ path = process.env.CMUX_COMPANION_PUSH_FILE || DEFAULT_PATH, sender = webpush, now = () => new Date() } = {}) {
+  constructor({
+    path = process.env.CMUX_COMPANION_PUSH_FILE || DEFAULT_PATH,
+    sender = webpush,
+    now = () => new Date(),
+    vapidSubject = process.env.CMUX_COMPANION_VAPID_SUBJECT || "https://cmux-companion.local",
+  } = {}) {
     this.path = path;
     this.sender = sender;
     this.now = now;
@@ -21,6 +26,7 @@ export class PushService {
     this.repoCatalog = null;
     this.previewManager = null;
     this.prFingerprints = new Map();
+    this.vapidSubject = validateVapidSubject(vapidSubject);
     this.ensureKeys();
   }
 
@@ -63,12 +69,21 @@ export class PushService {
     return { subscribed: false };
   }
 
-  async send({ title, body, kind = "attention", workspaceId = null, surfaceId = null, actionId = null, repoId = null, file = null, previewId = null, tab = null, tag = null, bypassQuiet = false }) {
+  async send({ title, body, kind = "attention", workspaceId = null, surfaceId = null, actionId = null, repoId = null, file = null, previewId = null, tab = null, tag = null, bypassQuiet = false, bypassPreferences = false, targetEndpoint = null }) {
     if (!EVENT_KINDS.has(kind)) throw new TypeError("Unsupported notification kind");
     const url = contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, tab, kind });
     const stale = [];
-    const results = await Promise.allSettled(this.state.subscriptions
-      .filter((record) => record.settings[kind] !== false && (bypassQuiet || !isQuiet(record.settings, this.now())))
+    const subscriptions = this.state.subscriptions;
+    const targets = subscriptions
+      .filter((record) => !targetEndpoint || record.endpoint === targetEndpoint)
+      .filter((record) => bypassPreferences || (record.settings[kind] !== false && (bypassQuiet || !isQuiet(record.settings, this.now()))));
+    if (targetEndpoint && !subscriptions.some((record) => record.endpoint === targetEndpoint)) {
+      return { sent: 0, failed: 0, skipped: subscriptions.length, error: { code: "subscription-not-found", message: "This device is no longer registered. Disable and re-enable alerts." } };
+    }
+    if (!subscriptions.length) {
+      return { sent: 0, failed: 0, skipped: 0, error: { code: "no-subscriptions", message: "No device is registered for background alerts." } };
+    }
+    const results = await Promise.allSettled(targets
       .map(async (record) => {
         const payload = JSON.stringify({
           title: record.settings.hideContent ? "cmux companion" : title,
@@ -83,18 +98,24 @@ export class PushService {
           );
         } catch (error) {
           if (error.statusCode === 404 || error.statusCode === 410) stale.push(record.endpoint);
-          else throw error;
+          throw error;
         }
       }));
     if (stale.length) {
       this.state.subscriptions = this.state.subscriptions.filter((item) => !stale.includes(item.endpoint));
       this.save();
     }
-    return { sent: results.filter((result) => result.status === "fulfilled").length, failed: results.filter((result) => result.status === "rejected").length };
+    const failures = results.filter((result) => result.status === "rejected");
+    return {
+      sent: results.filter((result) => result.status === "fulfilled").length,
+      failed: failures.length,
+      skipped: subscriptions.length - targets.length,
+      error: failures.length ? publicPushError(failures[0].reason) : null,
+    };
   }
 
-  test() {
-    return this.send({ title: "cmux companion is ready", body: "Background alerts are enabled on this device.", kind: "attention", tag: "cmux-push-test", bypassQuiet: true });
+  test(endpoint = null) {
+    return this.send({ title: "cmux companion is ready", body: "Background alerts are enabled on this device.", kind: "attention", tag: "cmux-push-test", bypassQuiet: true, bypassPreferences: true, targetEndpoint: endpoint });
   }
 
   attach({ hub, cmux, repoCatalog = null, previewManager = null }) {
@@ -261,7 +282,7 @@ export class PushService {
 
   ensureKeys() {
     if (!this.state.vapid?.publicKey || !this.state.vapid?.privateKey) { this.state.vapid = this.sender.generateVAPIDKeys(); this.save(); }
-    this.sender.setVapidDetails(process.env.CMUX_COMPANION_VAPID_SUBJECT || "mailto:cmux-companion@localhost", this.state.vapid.publicKey, this.state.vapid.privateKey);
+    this.sender.setVapidDetails(this.vapidSubject, this.state.vapid.publicKey, this.state.vapid.privateKey);
   }
 
   load() {
@@ -315,6 +336,36 @@ export function contextUrl({ workspaceId, surfaceId, actionId, repoId, file, pre
 
 function validateSubscription(subscription) {
   if (!subscription || typeof subscription.endpoint !== "string" || !subscription.endpoint.startsWith("https://") || typeof subscription.keys?.p256dh !== "string" || typeof subscription.keys?.auth !== "string") throw new TypeError("Invalid push subscription");
+}
+
+function validateVapidSubject(value) {
+  if (typeof value !== "string") throw new TypeError("Invalid VAPID subject");
+  if (value.startsWith("https://")) {
+    try {
+      const url = new URL(value);
+      if (url.hostname && !url.username && !url.password) return url.href.replace(/\/$/, "");
+    } catch {
+      // Fall through to the actionable configuration error below.
+    }
+  }
+  if (/^mailto:[^@\s]+@[^@\s]+\.[^@\s]+$/i.test(value)) return value;
+  throw new TypeError("CMUX_COMPANION_VAPID_SUBJECT must be a valid HTTPS URL or public email address");
+}
+
+function publicPushError(error) {
+  const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : null;
+  let reason = "";
+  if (typeof error?.body === "string" && error.body.length <= 2_048) {
+    try { reason = String(JSON.parse(error.body)?.reason || ""); } catch { reason = ""; }
+  }
+  if (statusCode === 403 && /jwt|vapid/i.test(reason)) {
+    return { code: "sender-authentication", message: "Push sender authentication failed. Reinstall the Mac companion.", statusCode };
+  }
+  if (statusCode === 404 || statusCode === 410) {
+    return { code: "subscription-expired", message: "This device's alert registration expired. Disable and re-enable alerts.", statusCode };
+  }
+  if (statusCode) return { code: "push-rejected", message: `The push service rejected the alert (HTTP ${statusCode}).`, statusCode };
+  return { code: "push-unreachable", message: "The Mac could not reach the push notification service." };
 }
 
 function normalizeSettings(settings = {}) {
