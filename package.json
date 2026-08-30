@@ -1,0 +1,59 @@
+{
+  "name": "cmux-companion",
+  "version": "0.1.0",
+  "description": "A private, mobile-first cmux companion for your Tailscale network.",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
+    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
+    "companion:dev": "node server/index.mjs",
+    "companion:start": "NODE_ENV=production node server/supervisor.mjs",
+    "install:mac": "./scripts/install-macos.sh",
+    "uninstall:mac": "./scripts/uninstall-macos.sh",
+    "status": "./scripts/status.sh",
+    "test": "node --test tests/cmux-client.test.mjs tests/security.test.mjs tests/api.test.mjs",
+    "test:live": "node --test tests/live-cmux.test.mjs",
+    "test:installed": "node --test tests/installed-companion.live.mjs",
+    "verify": "npm test && npm run lint && npm run build",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+  },
+  "dependencies": {
+    "@fastify/http-proxy": "^11.6.1",
+    "@fastify/websocket": "^11.3.0",
+    "fastify": "^5.12.1",
+    "jsonc-parser": "^3.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "undici": "^7.29.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.2",
+    "@eslint/js": "9.39.4",
+    "@next/eslint-plugin-next": "16.2.6",
+    "@openai/sites-vite-plugin": "0.1.0",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "^0.5.34",
+    "eslint": "9.39.4",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "16.4.0",
+    "react-server-dom-webpack": "^19.2.8",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.59.3",
+    "vinext": "^1.0.0-beta.8",
+    "vite": "^8.2.2",
+    "wrangler": "^4.127.1"
+  },
+  "type": "module"
+}
