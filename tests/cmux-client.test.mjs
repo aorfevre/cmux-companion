@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CmuxClient } from "../server/cmux-client.mjs";
+import { CmuxClient, parseWorkspaceMetrics } from "../server/cmux-client.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 
@@ -64,4 +64,35 @@ test("passes the private socket credential only to cmux child processes", async 
   });
   await client.ping();
   assert.equal(childEnvironment.CMUX_SOCKET_PASSWORD, "private-socket-credential");
+});
+
+test("uses structured RPC for safe workspace launch and shell-quotes prompts", async () => {
+  const calls = [];
+  const client = new CmuxClient({ execute: async (_bin, args) => {
+    calls.push(args);
+    if (args.includes("workspace.create")) return { stdout: JSON.stringify({ workspace_id: ID }), stderr: "" };
+    return { stdout: "{}", stderr: "" };
+  } });
+  const created = await client.workspaceCreate({ cwd: "/approved/repo", title: "Test", agent: "codex", prompt: "fix 'quotes'; touch /tmp/nope" });
+  assert.equal(created.workspace_id, ID);
+  assert.deepEqual(JSON.parse(calls[0][3]), { cwd: "/approved/repo", title: "Test", focus: false });
+  const send = JSON.parse(calls[1][3]);
+  assert.equal(send.workspace_id, ID);
+  assert.equal(send.text, "codex 'fix '\\''quotes'\\''; touch /tmp/nope'\n");
+  await assert.rejects(() => client.workspaceCreate({ cwd: "/tmp", title: "x", agent: "evil" }), /Unsupported agent/);
+});
+
+test("validates structured inbox replies", async () => {
+  const calls = [];
+  const client = new CmuxClient({ execute: async (_bin, args) => { calls.push(args); return { stdout: "{}", stderr: "" }; } });
+  await client.feedReply(ID, "permissionRequest", { mode: "once" });
+  assert.equal(calls[0][2], "feed.permission.reply");
+  assert.deepEqual(JSON.parse(calls[0][3]), { request_id: ID, mode: "once" });
+  assert.throws(() => client.feedReply(ID, "permissionRequest", { mode: "yes" }), /Invalid permission/);
+  assert.throws(() => client.feedReply(ID, "question", { selections: [] }), /Select at least one/);
+});
+
+test("parses the compact workspace health metrics row", () => {
+  const metrics = parseWorkspaceMetrics("1.2\t1024\t3\tsurface\tsurface:1\tworkspace:1\tshell\n5.5\t2048\t8\tworkspace\tworkspace:1\twindow:1\tProject");
+  assert.deepEqual(metrics, { cpuPercent: 5.5, memoryBytes: 2048, processCount: 8, ref: "workspace:1", parent: "window:1", title: "Project" });
 });

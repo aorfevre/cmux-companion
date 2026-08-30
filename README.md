@@ -7,10 +7,15 @@ No cloud application server is involved. Terminal output and input travel direct
 ## What it does
 
 - Shows every cmux workspace and terminal
-- Highlights sessions that are working or need attention
-- Streams cmux activity and reconnects automatically
-- Displays recent terminal output
+- Highlights real cmux status, structured tasks, CPU, memory, and process health
+- Collects permission requests, questions, plans, and meaningful notifications in an action inbox
+- Launches allow-listed local repositories into Codex, Claude, a shell, or a declared package script
+- Reviews staged, unstaged, and untracked Git changes and per-file diffs
+- Sends optional background Web Push alerts for decisions and agent completion
+- Streams cmux activity and reconnects automatically with exponential backoff
+- Opens terminals at the latest output, follows only near the bottom, and preserves scrollback while reading
 - Sends prompts and a small, safe allow-list of terminal keys
+- Restarts a stuck terminal or closes a workspace with explicit confirmation
 - Starts in read-only mode to avoid accidental phone input
 - Installs as a standalone PWA on iPhone
 - Waits quietly when cmux is closed and reconnects when it opens
@@ -82,8 +87,11 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - cmux identifiers must be full UUIDs.
 - Terminal input, keys, and text length are explicitly validated.
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
+- Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
+- Git diff requests are restricted to files currently reported as changed, and untracked symlink content is hidden.
 - The CLI is spawned with argv arrays and never through a shell.
 - Read-only protection is enabled by default on each phone.
+- Push subscriptions and VAPID keys stay in a mode-`0600` file on the Mac; notification content is hidden by default.
 
 Treat a paired phone as privileged: unlocking terminal input gives it control of interactive processes running in cmux.
 
@@ -120,6 +128,8 @@ npm run test:installed
 | `CMUX_COMPANION_FRONTEND_PORT` | `3211` | Internal PWA server port |
 | `CMUX_COMPANION_TAILSCALE_PORT` | `8443` | Private HTTPS port |
 | `CMUX_COMPANION_TOKEN_FILE` | `~/.config/cmux-companion/token` | Pairing token path |
+| `CMUX_COMPANION_REPO_ROOTS` | `~/Developers/karven:~/Developers/rekord` (expanded defaults for this install) | Colon-separated repository roots |
+| `CMUX_COMPANION_PUSH_FILE` | `~/.config/cmux-companion/push.json` | Private push keys and device subscriptions |
 
 ## Troubleshooting
 

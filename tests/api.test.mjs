@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildApp } from "../server/app.mjs";
+import { buildApp, normalizeInbox } from "../server/app.mjs";
 
 const TOKEN = "test-token-that-is-deliberately-long-and-private";
 const WS_ID = "11111111-2222-4333-8444-555555555555";
@@ -27,6 +27,16 @@ function fakeCmux() {
     sendPrompt: async (id, text) => calls.push(["prompt", id, text]),
     sendKey: async (id, key) => calls.push(["key", id, key]),
     selectWorkspace: async (id) => calls.push(["select", id]),
+    workspaceCreate: async (value) => { calls.push(["create", value]); return { workspace_id: WS_ID }; },
+    workspaceOverview: async () => ({ status: { effective: "working" }, todos: { items: [], progress: { completed: 0, total: 0 } }, metrics: null, surfaceHealth: null }),
+    workspaceRename: async (id, title) => calls.push(["rename", id, title]),
+    workspaceClose: async (id) => calls.push(["close", id]),
+    workspaceRespawn: async (id, surfaceId) => calls.push(["respawn", id, surfaceId]),
+    todoAction: async (id, todoId, action) => calls.push(["todo", id, todoId, action]),
+    pendingFeed: async () => ({ items: [] }),
+    notifications: async () => ({ notifications: [] }),
+    feedReply: async (id, kind, body) => calls.push(["reply", id, kind, body]),
+    markNotificationRead: async (id) => calls.push(["read", id]),
   };
 }
 
@@ -99,4 +109,60 @@ test("keeps the dashboard available while cmux is closed", async (t) => {
   assert.equal(response.json().connected, false);
   assert.deepEqual(response.json().workspaces, []);
   assert.equal(response.json().error, "Waiting for cmux");
+});
+
+test("launches only catalogued repositories and exposes overview/inbox state", async (t) => {
+  const cmux = fakeCmux();
+  const repo = { id: "repo-safe", name: "safe", path: "/approved/safe", scripts: ["test"] };
+  const repoCatalog = {
+    cache: null,
+    get: async (id) => { if (id !== repo.id) throw new TypeError("Unknown repository"); return repo; },
+    list: async () => [repo],
+    changes: async () => ({ repo, files: [] }),
+    diff: async () => ({ file: "x", patch: "diff" }),
+  };
+  const app = await buildApp({ cmux, token: TOKEN, repoCatalog });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const launched = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { repoId: repo.id, agent: "codex", prompt: "test it", script: null } });
+  assert.equal(launched.statusCode, 201);
+  assert.deepEqual(cmux.calls.at(-1)[0], "create");
+  assert.equal((await app.inject({ url: `/api/workspaces/${WS_ID}/overview`, headers: { cookie } })).statusCode, 200);
+  assert.equal((await app.inject({ url: "/api/inbox", headers: { cookie } })).statusCode, 200);
+  assert.equal((await app.inject({ url: "/api/repos", headers: { cookie } })).json().repos[0].id, repo.id);
+});
+
+test("every state-changing route requires pairing and same-origin requests", async (t) => {
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const mutations = [
+    ["/api/auth/logout", {}],
+    ["/api/workspaces", { repoId: "x" }],
+    [`/api/workspaces/${WS_ID}/rename`, { title: "x" }],
+    [`/api/workspaces/${WS_ID}/close`, {}],
+    [`/api/workspaces/${WS_ID}/respawn`, { surfaceId: TERM_ID }],
+    [`/api/workspaces/${WS_ID}/todos/${TERM_ID}/check`, {}],
+    [`/api/terminals/${TERM_ID}/input`, { text: "x" }],
+    [`/api/terminals/${TERM_ID}/key`, { key: "enter" }],
+    [`/api/workspaces/${WS_ID}/select`, {}],
+    [`/api/inbox/${TERM_ID}/reply`, { kind: "permissionRequest", mode: "deny" }],
+    [`/api/notifications/${TERM_ID}/read`, {}],
+    ["/api/push/subscribe", {}],
+    ["/api/push/settings", {}],
+    ["/api/push/unsubscribe", {}],
+    ["/api/push/test", {}],
+  ];
+  for (const [url, payload] of mutations) {
+    assert.equal((await app.inject({ method: "POST", url, payload })).statusCode, 401, url);
+    assert.equal((await app.inject({ method: "POST", url, payload, headers: { cookie, host: "mac.tail.test", origin: "https://evil.test" } })).statusCode, 403, url);
+  }
+});
+
+test("normalizes actionable requests separately from unread notifications", () => {
+  const result = normalizeInbox({ items: [{ request_id: TERM_ID, kind: "permissionRequest", workspace_id: WS_ID, tool_name: "exec" }] }, { notifications: [{ id: WS_ID, title: "Done", is_read: false }, { id: TERM_ID, title: "Old", is_read: true }] });
+  assert.equal(result.actionableCount, 1);
+  assert.equal(result.unreadCount, 1);
+  assert.deepEqual(result.items.map((item) => item.type), ["request", "notification"]);
 });

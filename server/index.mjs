@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp } from "./app.mjs";
 import { CmuxClient } from "./cmux-client.mjs";
+import { PushService } from "./push-service.mjs";
 import { ensureToken } from "./security.mjs";
 
 const DEFAULT_TOKEN_PATH = join(homedir(), ".config", "cmux-companion", "token");
@@ -15,9 +16,11 @@ export async function startServer({
   const tokenPath = process.env.CMUX_COMPANION_TOKEN_FILE || DEFAULT_TOKEN_PATH;
   const token = ensureToken(tokenPath);
   const cmux = new CmuxClient();
+  const pushService = new PushService();
   const app = await buildApp({
     cmux,
     token,
+    pushService,
     frontendUpstream,
     logger: process.env.NODE_ENV !== "test",
   });

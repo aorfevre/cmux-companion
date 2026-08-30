@@ -1,4 +1,4 @@
-const CACHE = "cmux-companion-v1";
+const CACHE = "cmux-companion-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -38,4 +38,31 @@ self.addEventListener("fetch", (event) => {
       return response;
     })),
   );
+});
+
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try { payload = event.data?.json() || {}; } catch { payload = { body: event.data?.text() || "A cmux session needs your attention." }; }
+  event.waitUntil(self.registration.showNotification(payload.title || "cmux companion", {
+    body: payload.body || "A session needs your attention.",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    tag: payload.tag || "cmux-companion",
+    renotify: true,
+    data: { url: payload.url || "/?view=inbox" },
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || "/?view=inbox", self.location.origin).href;
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
+    for (const client of clients) {
+      if (new URL(client.url).origin === self.location.origin) {
+        await client.navigate(target);
+        return client.focus();
+      }
+    }
+    return self.clients.openWindow(target);
+  }));
 });

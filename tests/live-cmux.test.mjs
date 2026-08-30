@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import test from "node:test";
 import { CmuxClient } from "../server/cmux-client.mjs";
 
-const exec = promisify(execFile);
 const bin = process.env.CMUX_BIN || "/Applications/cmux.app/Contents/Resources/bin/cmux";
 const marker = `CMUX_COMPANION_E2E_${process.pid}`;
 const title = `companion-e2e-${process.pid}`;
@@ -12,17 +9,10 @@ const title = `companion-e2e-${process.pid}`;
 test("creates, reads, controls, and closes an isolated live cmux workspace", { timeout: 30_000 }, async () => {
   const client = new CmuxClient({ bin });
   await client.ping();
-  const created = await exec(bin, [
-    "new-workspace",
-    "--name", title,
-    "--cwd", "/tmp",
-    "--command", `printf '${marker}\\n'; sleep 20`,
-    "--focus", "false",
-  ], { encoding: "utf8" });
-  const workspaceRef = created.stdout.match(/workspace:\d+/)?.[0];
-  assert.ok(workspaceRef, "cmux returned a workspace reference");
+  const created = await client.workspaceCreate({ cwd: process.cwd(), title, agent: "shell", prompt: marker });
+  assert.ok(created.workspace_id, "cmux returned a workspace id");
 
-  let workspaceId;
+  let workspaceId = created.workspace_id;
   try {
     let terminal;
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -42,8 +32,11 @@ test("creates, reads, controls, and closes an isolated live cmux workspace", { t
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     assert.match(text, new RegExp(marker));
+    const overview = await client.workspaceOverview(workspaceId);
+    assert.equal(typeof overview.status.effective, "string");
+    assert.equal(Array.isArray(overview.todos.items), true);
     await client.sendKey(terminal.id, "ctrl+c");
   } finally {
-    await exec(bin, ["workspace", "close", "--workspace", workspaceId || workspaceRef], { encoding: "utf8" });
+    await client.workspaceClose(workspaceId);
   }
 });
