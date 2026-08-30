@@ -32,6 +32,9 @@ test("creates, reads, controls, and closes an isolated live cmux workspace", { t
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     assert.match(text, new RegExp(marker));
+    const replay = await client.terminalReplay(terminal.id, 80);
+    assert.equal(replay.render_grid.format, "cmux.render-grid.v1");
+    assert.match(JSON.stringify(replay.render_grid), new RegExp(marker));
     const overview = await client.workspaceOverview(workspaceId);
     assert.equal(typeof overview.status.effective, "string");
     assert.equal(Array.isArray(overview.todos.items), true);

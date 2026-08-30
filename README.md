@@ -14,7 +14,9 @@ No cloud application server is involved. Terminal output and input travel direct
 - Shows the current branch's open pull request, review decision, and check status directly inside its session
 - Sends optional background Web Push alerts for decisions and agent completion
 - Streams cmux activity and reconnects automatically with exponential backoff
+- Renders cmux's native terminal replay grid with exact colors, styles, cursor, cell geometry, and scrollback
 - Opens terminals at the latest output, follows only near the bottom, and preserves scrollback while reading
+- Provides persistent terminal text-size controls, readable 16px input, and pinch zoom on mobile
 - Sends prompts and a small, safe allow-list of terminal keys
 - Provides a searchable, provider-labelled `/` shortcut palette for common Codex and Claude workflows
 - Restarts a stuck terminal or closes a workspace with explicit confirmation
@@ -35,10 +37,12 @@ Tailscale Serve :8443
 cmux companion :3210
     │ allow-listed argv calls
     ▼
-cmux CLI → cmux Unix socket → cmux.app
+cmux CLI → replay grid / safe input RPCs → cmux Unix socket → cmux.app
 ```
 
 The service binds only to `127.0.0.1`. Tailscale Serve is the only network-facing listener. The installer uses HTTPS port 8443 so it does not replace an existing Tailscale Serve handler on port 443.
+
+The phone reads cmux's screen-anchored replay grid without reporting a mobile viewport, so viewing a session never changes the terminal dimensions on the Mac. Older cmux versions automatically fall back to the authenticated plain-text screen endpoint.
 
 The installer also enables cmux’s supported password-protected automation mode. It creates a separate socket credential at `~/.config/cmux-companion/cmux-socket-password` and makes a timestamped `cmux.json.*.bak` before changing cmux configuration.
 

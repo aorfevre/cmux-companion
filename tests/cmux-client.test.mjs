@@ -23,6 +23,23 @@ test("uses argv-only cmux commands for screen reads", async () => {
   assert.equal(calls[0].options.shell, undefined);
 });
 
+test("requests a bounded, screen-anchored terminal replay", async () => {
+  const calls = [];
+  const client = new CmuxClient({ execute: async (_bin, args, options) => {
+    calls.push({ args, options });
+    return { stdout: '{"render_grid":{"format":"cmux.render-grid.v1"}}', stderr: "" };
+  } });
+  const replay = await client.terminalReplay(ID, 99_999);
+  assert.equal(replay.render_grid.format, "cmux.render-grid.v1");
+  assert.deepEqual(calls[0].args.slice(0, 3), ["--json", "rpc", "mobile.terminal.replay"]);
+  assert.deepEqual(JSON.parse(calls[0].args[3]), {
+    surface_id: ID,
+    anchor: "screen",
+    max_scrollback_rows: 2_000,
+  });
+  assert.equal(calls[0].options.maxBuffer, 16 * 1024 * 1024);
+});
+
 test("sends a prompt and Enter as separate, allow-listed operations", async () => {
   const calls = [];
   const client = new CmuxClient({

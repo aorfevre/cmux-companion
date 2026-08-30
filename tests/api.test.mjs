@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildApp, normalizeInbox } from "../server/app.mjs";
+import { CmuxCommandError } from "../server/cmux-client.mjs";
 
 const TOKEN = "test-token-that-is-deliberately-long-and-private";
 const WS_ID = "11111111-2222-4333-8444-555555555555";
@@ -22,6 +23,7 @@ function fakeCmux() {
       }],
     }),
     capabilities: async () => ({ methods: ["mobile.workspace.list", "surface.send_text"] }),
+    terminalReplay: async (id, scrollback) => ({ surface_id: id, render_grid: { format: "cmux.render-grid.v1", columns: 80, rows: 24, scrollback_rows: Number(scrollback) } }),
     readScreen: async (id, lines) => ({ text: `screen:${id}`, lines: Number(lines) }),
     sendText: async (id, text) => calls.push(["text", id, text]),
     sendPrompt: async (id, text) => calls.push(["prompt", id, text]),
@@ -56,6 +58,7 @@ test("health is public while cmux data requires pairing", async (t) => {
   t.after(() => app.close());
   assert.equal((await app.inject({ url: "/api/health" })).statusCode, 200);
   assert.equal((await app.inject({ url: "/api/bootstrap" })).statusCode, 401);
+  assert.equal((await app.inject({ url: `/api/terminals/${TERM_ID}/replay` })).statusCode, 401);
   assert.equal((await app.inject({ method: "POST", url: "/api/auth/pair", payload: { token: "wrong" } })).statusCode, 401);
 });
 
@@ -73,6 +76,11 @@ test("paired clients can read state and safely control a terminal", async (t) =>
   assert.equal(screen.statusCode, 200);
   assert.equal(screen.json().lines, 44);
 
+  const replay = await app.inject({ url: `/api/terminals/${TERM_ID}/replay?scrollback=123`, headers: { cookie } });
+  assert.equal(replay.statusCode, 200);
+  assert.equal(replay.json().mode, "grid");
+  assert.equal(replay.json().render_grid.scrollback_rows, 123);
+
   const input = await app.inject({
     method: "POST",
     url: `/api/terminals/${TERM_ID}/input`,
@@ -81,6 +89,18 @@ test("paired clients can read state and safely control a terminal", async (t) =>
   });
   assert.equal(input.statusCode, 200);
   assert.deepEqual(cmux.calls[0], ["prompt", TERM_ID, "continue"]);
+});
+
+test("falls back to an authenticated text screen when replay is unavailable", async (t) => {
+  const cmux = fakeCmux();
+  cmux.terminalReplay = async () => { throw new CmuxCommandError("unsupported"); };
+  const app = await buildApp({ cmux, token: TOKEN });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const fallback = await app.inject({ url: `/api/terminals/${TERM_ID}/replay?scrollback=77`, headers: { cookie } });
+  assert.equal(fallback.statusCode, 200);
+  assert.equal(fallback.json().mode, "text");
+  assert.equal(fallback.json().lines, 77);
 });
 
 test("paired clients cannot mutate from a foreign origin", async (t) => {

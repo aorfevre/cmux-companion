@@ -210,6 +210,20 @@ export async function buildApp({
     return cmux.readScreen(request.params.id, request.query?.lines);
   });
 
+  app.get("/api/terminals/:id/replay", async (request) => {
+    const id = request.params.id;
+    try {
+      const replay = await cmux.terminalReplay(id, request.query?.scrollback);
+      if (replay?.render_grid?.format === "cmux.render-grid.v1") {
+        return { ...replay, mode: "grid" };
+      }
+    } catch (error) {
+      if (!(error instanceof CmuxCommandError)) throw error;
+    }
+    const screen = await cmux.readScreen(id, request.query?.scrollback);
+    return { ...screen, surface_id: id, mode: "text" };
+  });
+
   app.post("/api/terminals/:id/input", async (request) => {
     const { text, enter = false } = request.body || {};
     if (enter) await cmux.sendPrompt(request.params.id, text);

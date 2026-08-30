@@ -69,6 +69,10 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     assert.match(screen.text, new RegExp(marker));
+    const replay = await companion(`/api/terminals/${terminal.id}/replay?scrollback=80`, token);
+    assert.equal(replay.mode, "grid");
+    assert.equal(replay.render_grid.format, "cmux.render-grid.v1");
+    assert.match(JSON.stringify(replay.render_grid), new RegExp(marker));
     const controlled = await companion(`/api/terminals/${terminal.id}/key`, token, {
       method: "POST",
       body: JSON.stringify({ key: "ctrl+c" }),

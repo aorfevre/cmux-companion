@@ -76,11 +76,11 @@ export class CmuxClient {
     return this.runJSON(["rpc", "mobile.host.status", "{}"]);
   }
 
-  rpc(method, params = {}) {
+  rpc(method, params = {}, options) {
     if (!/^[a-z][a-z0-9_.]{1,80}$/.test(String(method || ""))) {
       throw new TypeError("Invalid cmux method");
     }
-    return this.runJSON(["rpc", method, JSON.stringify(params)]);
+    return this.runJSON(["rpc", method, JSON.stringify(params)], options);
   }
 
   workspaceList() {
@@ -223,6 +223,16 @@ export class CmuxClient {
       "--lines", String(safeLines),
     ]);
     return { text: stdout, lines: safeLines };
+  }
+
+  terminalReplay(surfaceId, maxScrollbackRows = 600) {
+    assertTarget(surfaceId);
+    const safeRows = Math.max(0, Math.min(Number(maxScrollbackRows) || 600, 2_000));
+    return this.rpc("mobile.terminal.replay", {
+      surface_id: surfaceId,
+      anchor: "screen",
+      max_scrollback_rows: safeRows,
+    }, { timeout: 15_000, maxBuffer: 16 * 1024 * 1024 });
   }
 
   async sendText(surfaceId, text) {
