@@ -95,6 +95,11 @@ export function nativeComposerStartRow(grid) {
   for (const span of grid.row_spans) {
     if (span && Number.isInteger(span.row) && rows[span.row] !== undefined) rows[span.row] += String(span.text || "");
   }
+  const firstTailRow = Math.max(0, grid.rows - 12);
+  for (let row = firstTailRow; row < grid.rows - 2; row += 1) {
+    const top = rows[row].trim(); const prompt = rows[row + 1].trim(); const bottom = rows[row + 2].trim();
+    if (/^[─━═_-]{10,}$/.test(top) && /^[❯›>]/.test(prompt) && /^[─━═_-]{10,}$/.test(bottom)) return row;
+  }
   const tail = rows.slice(-5).join("\n");
   const hasCodexComposer = /Ask Codex to do anything/i.test(tail)
     || (/\bgpt-[a-z0-9._-]+\b/i.test(tail) && /(?:^|\n)\s*›/m.test(tail));

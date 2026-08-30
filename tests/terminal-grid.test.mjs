@@ -41,5 +41,12 @@ test("detects the four-row Codex composer without cropping a normal shell", () =
     { row: 17, text: "  gpt-5.6-sol high · ~/repo" },
   ] };
   assert.equal(nativeComposerStartRow(codex), 14);
+  const claude = { rows: 18, row_spans: [
+    { row: 10, text: "──────────────────────────────────────────" },
+    { row: 11, text: "❯ go with 3" },
+    { row: 12, text: "──────────────────────────────────────────" },
+    { row: 13, text: "⬆ /gsd-update │ Opus 5" },
+  ] };
+  assert.equal(nativeComposerStartRow(claude), 10);
   assert.equal(nativeComposerStartRow({ rows: 18, row_spans: [{ row: 17, text: "$ ready" }] }), 18);
 });

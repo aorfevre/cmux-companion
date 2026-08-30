@@ -43,7 +43,7 @@ cmux CLI → replay grid / safe input RPCs → cmux Unix socket → cmux.app
 
 The service binds only to `127.0.0.1`. Tailscale Serve is the only network-facing listener. The installer uses HTTPS port 8443 so it does not replace an existing Tailscale Serve handler on port 443.
 
-By default, the phone reports its measured terminal viewport through cmux's supported mobile protocol, so terminal programs reflow to the available phone width instead of requiring horizontal scrolling. The limit is cleared when the terminal view closes and automatically expires if the phone disappears; the **Fit** control can restore the Mac-width grid manually. Older cmux versions automatically fall back to the authenticated plain-text screen endpoint.
+By default, the phone reflows the full Mac-width replay grid locally, keeping the Mac terminal unchanged while preserving enough history to scroll. The **Fit** control switches between this readable phone layout and the exact terminal grid. Older cmux versions automatically fall back to the authenticated plain-text screen endpoint.
 
 The installer also enables cmux’s supported password-protected automation mode. It creates a separate socket credential at `~/.config/cmux-companion/cmux-socket-password` and makes a timestamped `cmux.json.*.bak` before changing cmux configuration.
 

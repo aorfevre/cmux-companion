@@ -52,6 +52,23 @@ function groupedRows(spans: TerminalSpan[], count: number) {
   return rows;
 }
 
+function reflowChunks(spans: TerminalSpan[]) {
+  const ordered = [...spans].sort((left, right) => left.column - right.column);
+  let last = -1;
+  for (let index = 0; index < ordered.length; index += 1) if (ordered[index].text.trim()) last = index;
+  if (last < 0) return [];
+  const chunks: Array<{ gap: string; span: TerminalSpan; text: string }> = [];
+  let column = 0;
+  for (let index = 0; index <= last; index += 1) {
+    const span = ordered[index];
+    const gapWidth = Math.min(8, Math.max(0, span.column - column));
+    const text = (index === last ? span.text.trimEnd() : span.text).replace(/ {9,}/g, "        ");
+    chunks.push({ gap: " ".repeat(gapWidth), span, text });
+    column = Math.max(column, span.column + span.cell_width);
+  }
+  return chunks;
+}
+
 function spanStyle(style: TerminalStyle | undefined, foreground: string, background: string): CSSProperties {
   let color = safeTerminalColor(style?.foreground, foreground);
   let fill = safeTerminalColor(style?.background, background);
@@ -67,7 +84,7 @@ function spanStyle(style: TerminalStyle | undefined, foreground: string, backgro
   };
 }
 
-export function TerminalGrid({ view, hideNativeComposer = false }: { view: TerminalView | null; hideNativeComposer?: boolean }) {
+export function TerminalGrid({ view, hideNativeComposer = false, reflow = false }: { view: TerminalView | null; hideNativeComposer?: boolean; reflow?: boolean }) {
   const grid = useMemo(() => view?.mode === "grid" ? normalizeRenderGrid(view.render_grid) as RenderGrid | null : null, [view]);
   const model = useMemo(() => {
     if (!grid) return null;
@@ -94,14 +111,18 @@ export function TerminalGrid({ view, hideNativeComposer = false }: { view: Termi
     "--terminal-columns": grid.columns,
     "--terminal-foreground": foreground,
     "--terminal-background": background,
-    width: `${grid.columns}ch`,
+    width: reflow ? "100%" : `${grid.columns}ch`,
   } as CSSProperties;
 
   return (
-    <div className="terminal-grid" style={rootStyle} role="log" aria-label="Terminal output">
-      {allRows.map((spans, rowIndex) => (
-        <div className="terminal-grid-row" key={rowIndex}>
-          {spans.map((span, spanIndex) => (
+    <div className={`terminal-grid${reflow ? " reflow" : ""}`} style={rootStyle} role="log" aria-label="Terminal output">
+      {allRows.map((spans, rowIndex) => {
+        const chunks = reflow ? reflowChunks(spans) : [];
+        const decorative = reflow && chunks.length > 0 && /^[─━═_\s-]+$/.test(chunks.map((chunk) => `${chunk.gap}${chunk.text}`).join(""));
+        return <div className={`terminal-grid-row${decorative ? " decorative" : ""}`} key={rowIndex}>
+          {reflow ? chunks.map((chunk, spanIndex) => (
+            <span className={model.styles.get(chunk.span.style_id)?.blink ? "terminal-span blinking" : "terminal-span"} key={`${chunk.span.column}-${spanIndex}`} style={spanStyle(model.styles.get(chunk.span.style_id), foreground, background)}>{chunk.gap}{chunk.text}</span>
+          )) : spans.map((span, spanIndex) => (
             <span
               className={model.styles.get(span.style_id)?.blink ? "terminal-span blinking" : "terminal-span"}
               key={`${span.column}-${spanIndex}`}
@@ -111,14 +132,14 @@ export function TerminalGrid({ view, hideNativeComposer = false }: { view: Termi
               }}
             >{span.text}</span>
           ))}
-          {grid.cursor?.visible && grid.cursor.row < screenRows.length && rowIndex === cursorRow && (
+          {!reflow && grid.cursor?.visible && grid.cursor.row < screenRows.length && rowIndex === cursorRow && (
             <i
               className={`terminal-cursor ${grid.cursor.style}${grid.cursor.blinking ? " blinking" : ""}`}
               style={{ gridColumn: `${grid.cursor.column + 1} / span 1`, borderColor: cursorColor, backgroundColor: cursorColor }}
             />
           )}
-        </div>
-      ))}
+        </div>;
+      })}
     </div>
   );
 }
