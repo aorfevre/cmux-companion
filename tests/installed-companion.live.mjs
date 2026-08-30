@@ -55,7 +55,10 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
     const overview = await companion(`/api/workspaces/${workspaceId}/overview`, token);
     assert.equal(typeof overview.status.effective, "string");
     const repos = await companion("/api/repos", token);
-    assert.ok(repos.repos.some((repo) => repo.name === "cmux-companion"));
+    const companionRepo = repos.repos.find((repo) => repo.name === "cmux-companion");
+    assert.ok(companionRepo);
+    const pullRequest = await companion(`/api/repos/${companionRepo.id}/pull-request?refresh=1`, token);
+    assert.equal(typeof pullRequest.available, "boolean");
     const inbox = await companion("/api/inbox", token);
     assert.equal(Array.isArray(inbox.items), true);
 

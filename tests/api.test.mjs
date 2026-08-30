@@ -120,6 +120,7 @@ test("launches only catalogued repositories and exposes overview/inbox state", a
     list: async () => [repo],
     changes: async () => ({ repo, files: [] }),
     diff: async () => ({ file: "x", patch: "diff" }),
+    pullRequest: async () => ({ available: true, pullRequest: { number: 7, title: "Open PR" } }),
   };
   const app = await buildApp({ cmux, token: TOKEN, repoCatalog });
   t.after(() => app.close());
@@ -131,6 +132,7 @@ test("launches only catalogued repositories and exposes overview/inbox state", a
   assert.equal((await app.inject({ url: `/api/workspaces/${WS_ID}/overview`, headers: { cookie } })).statusCode, 200);
   assert.equal((await app.inject({ url: "/api/inbox", headers: { cookie } })).statusCode, 200);
   assert.equal((await app.inject({ url: "/api/repos", headers: { cookie } })).json().repos[0].id, repo.id);
+  assert.equal((await app.inject({ url: `/api/repos/${repo.id}/pull-request`, headers: { cookie } })).json().pullRequest.number, 7);
 });
 
 test("every state-changing route requires pairing and same-origin requests", async (t) => {

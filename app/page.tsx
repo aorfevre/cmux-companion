@@ -2,6 +2,7 @@
 /* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/label-has-associated-control */
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { slashShortcuts } from "./slash-shortcuts.mjs";
 import { isNearBottom, nextFollowState } from "./terminal-follow.mjs";
 
 type Terminal = { id: string; title: string; current_directory?: string | null; is_focused?: boolean; is_ready?: boolean };
@@ -15,6 +16,7 @@ type Todo = { id: string; text: string; state: string; origin?: string };
 type Overview = { status: WorkspaceStatus; todos: { items: Todo[]; progress: { completed: number; total: number; first_unchecked_text?: string | null } }; metrics: { cpuPercent: number; memoryBytes: number; processCount: number } | null; surfaceHealth: { surfaces?: Array<{ id: string; type: string; in_window: boolean }> } | null };
 type ChangedFile = { path: string; status: string; area: string; areas: string[] };
 type Changes = { repo: Repo; files: ChangedFile[]; summary: { staged: string; unstaged: string }; recentCommit?: { hash: string; subject: string } | null };
+type PullRequest = { number: number; title: string; url: string; state: string; isDraft: boolean; reviewDecision: string; mergeState: string; headBranch: string; baseBranch: string; updatedAt?: string | null; author?: string | null; checks: { passed: number; failed: number; pending: number; total: number } };
 type View = "sessions" | "inbox" | "launch" | "settings";
 type DetailTab = "terminal" | "tasks" | "changes";
 
@@ -122,15 +124,83 @@ function LaunchView({ repos, onReload, onLaunched }: { repos: Repo[]; onReload: 
 }
 
 function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo: Repo | null; tab: DetailTab; screen: string; screenError: string; draft: string; sending: boolean; readOnly: boolean; onBack: () => void; onTab: (tab: DetailTab) => void; onTerminal: (id: string) => void; onDraft: (value: string) => void; onSubmit: (event: FormEvent) => void; onKey: (key: string) => void; onReadOnly: () => void; onRefresh: () => void; onChanged: () => void; onNotice: (message: string) => void }) {
-  return <main className="detail-shell"><header className="detail-header"><button className="back-button" onClick={props.onBack}>‹ <span>Back</span></button><div><strong>{props.workspace.title}</strong><span>{compactPath(props.workspace.current_directory)}</span></div><span className={`status-orb ${sessionState(props.workspace).tone}`} /></header><nav className="detail-tabs">{(["terminal", "tasks", "changes"] as DetailTab[]).map((tab) => <button className={props.tab === tab ? "active" : ""} onClick={() => props.onTab(tab)} key={tab}>{tab === "tasks" ? "Tasks & health" : tab[0].toUpperCase() + tab.slice(1)}</button>)}</nav>{props.tab === "terminal" && <TerminalPanel {...props} />}{props.tab === "tasks" && <HealthPanel workspace={props.workspace} terminal={props.terminal} onChanged={props.onChanged} onNotice={props.onNotice} />}{props.tab === "changes" && <ChangesPanel repo={props.repo} />}</main>;
+  return (
+    <main className="detail-shell">
+      <header className="detail-header"><button className="back-button" onClick={props.onBack}>‹ <span>Back</span></button><div><strong>{props.workspace.title}</strong><span>{compactPath(props.workspace.current_directory)}</span></div><span className={`status-orb ${sessionState(props.workspace).tone}`} /></header>
+      <nav className="detail-tabs">{(["terminal", "tasks", "changes"] as DetailTab[]).map((tab) => <button className={props.tab === tab ? "active" : ""} onClick={() => props.onTab(tab)} key={tab}>{tab === "tasks" ? "Tasks & health" : tab[0].toUpperCase() + tab.slice(1)}</button>)}</nav>
+      <PullRequestBanner repo={props.repo} />
+      {props.tab === "terminal" && <TerminalPanel {...props} />}
+      {props.tab === "tasks" && <HealthPanel workspace={props.workspace} terminal={props.terminal} onChanged={props.onChanged} onNotice={props.onNotice} />}
+      {props.tab === "changes" && <ChangesPanel repo={props.repo} />}
+    </main>
+  );
+}
+
+function PullRequestBanner({ repo }: { repo: Repo | null }) {
+  const [pullRequest, setPullRequest] = useState<PullRequest | null>(null);
+  useEffect(() => {
+    if (!repo) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      api<{ pullRequest: PullRequest | null }>(`/api/repos/${repo.id}/pull-request`)
+        .then((result) => { if (active) setPullRequest(result.pullRequest); })
+        .catch(() => {});
+    }, 0);
+    return () => { active = false; clearTimeout(timer); };
+  }, [repo]);
+  if (!pullRequest) return null;
+  const review = pullRequest.isDraft ? "Draft" : pullRequest.reviewDecision === "APPROVED" ? "Approved" : pullRequest.reviewDecision === "CHANGES_REQUESTED" ? "Changes requested" : "Review needed";
+  const checks = pullRequest.checks.failed ? `${pullRequest.checks.failed} failed` : pullRequest.checks.pending ? `${pullRequest.checks.pending} running` : pullRequest.checks.total ? `${pullRequest.checks.passed}/${pullRequest.checks.total} checks passed` : "No checks";
+  const tone = pullRequest.checks.failed || pullRequest.reviewDecision === "CHANGES_REQUESTED" ? "problem" : pullRequest.checks.pending ? "pending" : "good";
+  return <a className={`pr-banner ${tone}`} href={pullRequest.url} target="_blank" rel="noreferrer"><span className="pr-icon">PR</span><div><strong>#{pullRequest.number} {pullRequest.title}</strong><small>{pullRequest.headBranch} → {pullRequest.baseBranch}</small></div><span className="pr-state"><b>{review}</b><small>{checks}</small></span><em>↗</em></a>;
 }
 
 function TerminalPanel(props: { workspace: Workspace; terminal: Terminal; screen: string; screenError: string; draft: string; sending: boolean; readOnly: boolean; onTerminal: (id: string) => void; onDraft: (value: string) => void; onSubmit: (event: FormEvent) => void; onKey: (key: string) => void; onReadOnly: () => void; onRefresh: () => void }) {
-  const screenRef = useRef<HTMLPreElement>(null); const initial = useRef(true); const following = useRef(true); const previous = useRef(""); const [unseen, setUnseen] = useState(false);
+  const screenRef = useRef<HTMLPreElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const initial = useRef(true);
+  const following = useRef(true);
+  const previous = useRef("");
+  const [unseen, setUnseen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const matchingShortcuts = slashShortcuts(props.draft);
+  const showShortcuts = !props.readOnly && (shortcutsOpen || props.draft.trimStart().startsWith("/"));
   useEffect(() => { initial.current = true; following.current = true; previous.current = ""; }, [props.terminal.id]);
   useEffect(() => { const changed = props.screen !== previous.current; previous.current = props.screen; const next = nextFollowState({ initial: initial.current, following: following.current, contentChanged: changed }); if (next.scroll) requestAnimationFrame(() => { const element = screenRef.current; if (element) element.scrollTop = element.scrollHeight; }); if (next.unseen) setUnseen(true); else if (next.scroll) setUnseen(false); initial.current = false; }, [props.screen]);
   function jumpLatest() { const element = screenRef.current; if (element) element.scrollTop = element.scrollHeight; following.current = true; setUnseen(false); }
-  return <div className="terminal-panel">{props.workspace.terminals.length > 1 && <div className="terminal-tabs">{props.workspace.terminals.map((terminal, index) => <button className={terminal.id === props.terminal.id ? "active" : ""} onClick={() => props.onTerminal(terminal.id)} key={terminal.id}>{index + 1}. {terminal.title}</button>)}</div>}<section className="terminal-window"><div className="terminal-chrome"><div><span /><span /><span /></div><p>{props.terminal.title}</p><button onClick={props.onRefresh}>↻</button></div>{props.screenError ? <div className="terminal-error">{props.screenError}</div> : <pre ref={screenRef} onScroll={(event) => { const near = isNearBottom(event.currentTarget); following.current = near; if (near) setUnseen(false); }}>{props.screen || "Reading terminal…"}</pre>}{unseen && <button className="jump-latest" onClick={jumpLatest}>↓ Jump to latest</button>}</section><div className="terminal-controls"><div className="control-head"><button className={`lock-button ${props.readOnly ? "" : "unlocked"}`} onClick={props.onReadOnly}>{props.readOnly ? "🔒 Read only" : "🔓 Input enabled"}</button><span>Scrollback stays put while you read</span></div><div className="quick-keys">{[["Esc", "escape"], ["Tab", "tab"], ["↑", "up"], ["↓", "down"], ["Ctrl-C", "ctrl+c"], ["Enter", "enter"]].map(([label, key]) => <button disabled={props.readOnly || props.sending} onClick={() => props.onKey(key)} key={key}>{label}</button>)}</div><form className="composer" onSubmit={props.onSubmit}><textarea aria-label="Terminal input" placeholder={props.readOnly ? "Unlock input to interact…" : "Reply or direct the agent…"} value={props.draft} onChange={(event) => props.onDraft(event.target.value)} disabled={props.readOnly || props.sending} rows={2} /><button disabled={props.readOnly || props.sending || !props.draft.trim()}>{props.sending ? "…" : "↑"}</button></form></div></div>;
+  function chooseShortcut(command: string) {
+    props.onDraft(command);
+    setShortcutsOpen(false);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+  return (
+    <div className="terminal-panel">
+      {props.workspace.terminals.length > 1 && <div className="terminal-tabs">{props.workspace.terminals.map((terminal, index) => <button className={terminal.id === props.terminal.id ? "active" : ""} onClick={() => props.onTerminal(terminal.id)} key={terminal.id}>{index + 1}. {terminal.title}</button>)}</div>}
+      <section className="terminal-window">
+        <div className="terminal-chrome"><div><span /><span /><span /></div><p>{props.terminal.title}</p><button onClick={props.onRefresh}>↻</button></div>
+        {props.screenError ? <div className="terminal-error">{props.screenError}</div> : <pre ref={screenRef} onScroll={(event) => { const near = isNearBottom(event.currentTarget); following.current = near; if (near) setUnseen(false); }}>{props.screen || "Reading terminal…"}</pre>}
+        {unseen && <button className="jump-latest" onClick={jumpLatest}>↓ Jump to latest</button>}
+      </section>
+      <div className="terminal-controls">
+        <div className="control-head">
+          <button className={`lock-button ${props.readOnly ? "" : "unlocked"}`} onClick={props.onReadOnly}>{props.readOnly ? "🔒 Read only" : "🔓 Input enabled"}</button>
+          <button className={`shortcut-toggle ${showShortcuts ? "active" : ""}`} disabled={props.readOnly} onClick={() => setShortcutsOpen((current) => !current)} aria-expanded={showShortcuts}>／ Shortcuts</button>
+        </div>
+        {showShortcuts && (
+          <div className="shortcut-palette">
+            <div className="shortcut-palette-head"><strong>Agent shortcuts</strong><span>Tap to insert · send when ready</span></div>
+            {matchingShortcuts.length ? <div className="shortcut-list">{matchingShortcuts.map((shortcut) => (
+              <button type="button" onClick={() => chooseShortcut(shortcut.command)} key={shortcut.command}>
+                <code>{shortcut.command}</code><span>{shortcut.description}</span><small>{shortcut.agents.join(" · ")}</small>
+              </button>
+            ))}</div> : <p className="shortcut-empty">No matching shortcut. Use <button type="button" onClick={() => chooseShortcut("/help")}>/help</button> for the active agent&apos;s full list.</p>}
+          </div>
+        )}
+        <div className="quick-keys">{[["Esc", "escape"], ["Tab", "tab"], ["↑", "up"], ["↓", "down"], ["Ctrl-C", "ctrl+c"], ["Enter", "enter"]].map(([label, key]) => <button disabled={props.readOnly || props.sending} onClick={() => props.onKey(key)} key={key}>{label}</button>)}</div>
+        <form className="composer" onSubmit={props.onSubmit}><textarea ref={composerRef} aria-label="Terminal input" placeholder={props.readOnly ? "Unlock input to interact…" : "Reply, or type / for shortcuts…"} value={props.draft} onChange={(event) => props.onDraft(event.target.value)} disabled={props.readOnly || props.sending} rows={2} /><button disabled={props.readOnly || props.sending || !props.draft.trim()}>{props.sending ? "…" : "↑"}</button></form>
+      </div>
+    </div>
+  );
 }
 
 function HealthPanel({ workspace, terminal, onChanged, onNotice }: { workspace: Workspace; terminal: Terminal; onChanged: () => void; onNotice: (message: string) => void }) {

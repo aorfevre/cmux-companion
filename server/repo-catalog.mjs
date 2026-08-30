@@ -20,6 +20,7 @@ export class RepoCatalog {
     this.execute = execute;
     this.cacheMs = cacheMs;
     this.cache = null;
+    this.prCache = new Map();
   }
 
   async list({ refresh = false } = {}) {
@@ -156,6 +157,33 @@ export class RepoCatalog {
     };
   }
 
+  async pullRequest(id, { refresh = false } = {}) {
+    const repo = await this.get(id);
+    const cached = this.prCache.get(id);
+    if (!refresh && cached && Date.now() - cached.at < 30_000) return cached.value;
+    let value;
+    try {
+      const { stdout = "" } = await this.execute("gh", [
+        "pr", "view",
+        "--json", "number,title,url,state,isDraft,reviewDecision,statusCheckRollup,headRefName,baseRefName,mergeStateStatus,updatedAt,author",
+      ], {
+        cwd: repo.path,
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      });
+      value = { available: true, pullRequest: normalizePullRequest(JSON.parse(stdout)) };
+    } catch (error) {
+      const message = String(error.stderr || error.message || "");
+      value = /no pull requests found|could not find pull request/i.test(message)
+        ? { available: true, pullRequest: null }
+        : { available: false, pullRequest: null };
+    }
+    this.prCache.set(id, { at: Date.now(), value });
+    return value;
+  }
+
   async git(cwd, args, options = {}) {
     const { stdout = "" } = await this.execute("git", ["-C", cwd, ...args], {
       encoding: "utf8",
@@ -183,6 +211,31 @@ export function parsePorcelainV2(output) {
     } else if (line && !line.startsWith("#")) changedFiles += 1;
   }
   return { branch, ahead, behind, changedFiles };
+}
+
+export function normalizePullRequest(value) {
+  const checks = Array.isArray(value.statusCheckRollup) ? value.statusCheckRollup : [];
+  const result = { passed: 0, failed: 0, pending: 0, total: checks.length };
+  for (const check of checks) {
+    const conclusion = String(check.conclusion || check.state || "").toUpperCase();
+    if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion)) result.passed += 1;
+    else if (["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"].includes(conclusion)) result.failed += 1;
+    else result.pending += 1;
+  }
+  return {
+    number: Number(value.number),
+    title: String(value.title || "Untitled pull request"),
+    url: String(value.url || ""),
+    state: String(value.state || "OPEN"),
+    isDraft: Boolean(value.isDraft),
+    reviewDecision: String(value.reviewDecision || "REVIEW_REQUIRED"),
+    mergeState: String(value.mergeStateStatus || "UNKNOWN"),
+    headBranch: String(value.headRefName || ""),
+    baseBranch: String(value.baseRefName || ""),
+    updatedAt: value.updatedAt || null,
+    author: value.author?.login || null,
+    checks: result,
+  };
 }
 
 export function repoId(path) {

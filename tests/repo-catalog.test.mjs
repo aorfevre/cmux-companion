@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { parseNameStatus, RepoCatalog } from "../server/repo-catalog.mjs";
+import { normalizePullRequest, parseNameStatus, RepoCatalog } from "../server/repo-catalog.mjs";
 
 const exec = promisify(execFile);
 
@@ -64,4 +64,26 @@ test("parses NUL-delimited rename status", () => {
     { path: "new.txt", status: "R", area: "staged" },
     { path: "same.txt", status: "M", area: "staged" },
   ]);
+});
+
+test("normalizes open pull request review and check state", () => {
+  const pullRequest = normalizePullRequest({
+    number: 42,
+    title: "Improve mobile workflow",
+    url: "https://github.com/example/repo/pull/42",
+    state: "OPEN",
+    reviewDecision: "APPROVED",
+    mergeStateStatus: "UNSTABLE",
+    headRefName: "feature/mobile",
+    baseRefName: "main",
+    author: { login: "agent" },
+    statusCheckRollup: [
+      { conclusion: "SUCCESS" },
+      { conclusion: "FAILURE" },
+      { status: "IN_PROGRESS" },
+    ],
+  });
+  assert.equal(pullRequest.number, 42);
+  assert.equal(pullRequest.reviewDecision, "APPROVED");
+  assert.deepEqual(pullRequest.checks, { passed: 1, failed: 1, pending: 1, total: 3 });
 });

@@ -162,6 +162,10 @@ export async function buildApp({
     return repoCatalog.diff(request.params.id, file, { staged: request.query?.staged === "1" });
   });
 
+  app.get("/api/repos/:id/pull-request", async (request) => (
+    repoCatalog.pullRequest(request.params.id, { refresh: request.query?.refresh === "1" })
+  ));
+
   app.get("/api/inbox", async () => {
     const [feed, notifications] = await Promise.all([
       cmux.pendingFeed(),

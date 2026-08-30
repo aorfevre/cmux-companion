@@ -11,10 +11,12 @@ No cloud application server is involved. Terminal output and input travel direct
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
 - Launches allow-listed local repositories into Codex, Claude, a shell, or a declared package script
 - Reviews staged, unstaged, and untracked Git changes and per-file diffs
+- Shows the current branch's open pull request, review decision, and check status directly inside its session
 - Sends optional background Web Push alerts for decisions and agent completion
 - Streams cmux activity and reconnects automatically with exponential backoff
 - Opens terminals at the latest output, follows only near the bottom, and preserves scrollback while reading
 - Sends prompts and a small, safe allow-list of terminal keys
+- Provides a searchable, provider-labelled `/` shortcut palette for common Codex and Claude workflows
 - Restarts a stuck terminal or closes a workspace with explicit confirmation
 - Starts in read-only mode to avoid accidental phone input
 - Installs as a standalone PWA on iPhone
