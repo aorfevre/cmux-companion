@@ -116,7 +116,10 @@ test("uses structured RPC for safe workspace launch and shell-quotes prompts", a
   assert.deepEqual(JSON.parse(calls[0][3]), { cwd: "/approved/repo", title: "Test", focus: false });
   const send = JSON.parse(calls[1][3]);
   assert.equal(send.workspace_id, ID);
-  assert.equal(send.text, "codex 'fix '\\''quotes'\\''; touch /tmp/nope'\n");
+  assert.equal(send.text, "xcodex 'fix '\\''quotes'\\''; touch /tmp/nope'\n");
+  calls.length = 0;
+  await client.workspaceCreate({ cwd: "/approved/repo", title: "Claude", agent: "claude" });
+  assert.equal(JSON.parse(calls[1][3]).text, "xclaude\n");
   await assert.rejects(() => client.workspaceCreate({ cwd: "/tmp", title: "x", agent: "evil" }), /Unsupported agent/);
 });
 

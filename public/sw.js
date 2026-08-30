@@ -1,4 +1,4 @@
-const CACHE = "cmux-companion-v3";
+const CACHE = "cmux-companion-v4";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {

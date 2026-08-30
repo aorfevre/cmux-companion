@@ -163,8 +163,8 @@ export class CmuxClient {
     assertTarget(workspaceId);
     let command = "";
     if (script) command = `npm run ${script}`;
-    else if (agent === "codex") command = prompt.trim() ? `codex ${shellQuote(prompt.trim())}` : "codex";
-    else if (agent === "claude") command = prompt.trim() ? `claude ${shellQuote(prompt.trim())}` : "claude";
+    else if (agent === "codex") command = prompt.trim() ? `xcodex ${shellQuote(prompt.trim())}` : "xcodex";
+    else if (agent === "claude") command = prompt.trim() ? `xclaude ${shellQuote(prompt.trim())}` : "xclaude";
     else if (prompt.trim()) command = `printf '%s\\n' ${shellQuote(prompt.trim())}`;
     if (command) await this.rpc("surface.send_text", { workspace_id: workspaceId, text: `${command}\n` });
     return { ...created, workspace_id: workspaceId };

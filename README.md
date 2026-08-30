@@ -9,7 +9,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Shows every cmux workspace and terminal
 - Highlights real cmux status, structured tasks, CPU, memory, and process health
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
-- Launches allow-listed local repositories into Codex, Claude, a shell, or a declared package script
+- Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
 - Reviews staged, unstaged, and untracked Git changes and per-file diffs
 - Shows the current branch's open pull request, review decision, and check status directly inside its session
 - Sends optional background Web Push alerts for decisions and agent completion
@@ -18,6 +18,8 @@ No cloud application server is involved. Terminal output and input travel direct
 - Opens terminals at the latest output, follows only near the bottom, and preserves scrollback while reading
 - Provides persistent terminal text-size controls, readable 16px input, and pinch zoom on mobile
 - Keeps one mobile composer visible and accepts pasted or photo-library images as private local agent attachments
+- Keeps secondary navigation, PR details, display options, shortcuts, and special keys in one session menu
+- Auto-grows short messages and provides a focused full-screen editor for long prompts
 - Sends prompts and a small, safe allow-list of terminal keys
 - Provides a searchable, provider-labelled `/` shortcut palette for common Codex and Claude workflows
 - Restarts a stuck terminal or closes a workspace with explicit confirmation
