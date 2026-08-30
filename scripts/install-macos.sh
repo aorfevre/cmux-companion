@@ -39,6 +39,7 @@ mkdir -p "${HOME}/Library/LaunchAgents" "${LOG_DIR}"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:NODE_ENV string production" "${PLIST_PATH}"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:CMUX_COMPANION_HOST string 127.0.0.1" "${PLIST_PATH}"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:CMUX_COMPANION_PORT string 3210" "${PLIST_PATH}"
+/usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:TERM string dumb" "${PLIST_PATH}"
 /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:PATH string ${NODE_BIN:h}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" "${PLIST_PATH}"
 /bin/chmod 600 "${PLIST_PATH}"
 

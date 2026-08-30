@@ -7,7 +7,7 @@ import { localUrlPort, splitContextLinks, terminalContext } from "./context-link
 import { MarkdownViewer } from "./markdown-viewer";
 import { slashShortcuts } from "./slash-shortcuts.mjs";
 import { isNearBottom, nextFollowState } from "./terminal-follow.mjs";
-import { TerminalGrid, type TerminalView } from "./terminal-grid";
+import { TerminalGrid, type TerminalView } from "./terminal-grid.tsx";
 import { terminalViewSignature } from "./terminal-grid.mjs";
 
 type Terminal = { id: string; title: string; current_directory?: string | null; is_focused?: boolean; is_ready?: boolean };
@@ -187,7 +187,7 @@ function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo
   );
 }
 
-function PullRequestBanner({ repo }: { repo: Repo | null }) {
+export function PullRequestBanner({ repo }: { repo: Repo | null }) {
   const [pullRequest, setPullRequest] = useState<PullRequest | null>(null);
   useEffect(() => {
     if (!repo) return;
@@ -206,7 +206,7 @@ function PullRequestBanner({ repo }: { repo: Repo | null }) {
   return <a className={`pr-banner ${tone}`} href={pullRequest.url} target="_blank" rel="noreferrer"><span className="pr-icon">PR</span><div><strong>#{pullRequest.number} {pullRequest.title}</strong><small>{pullRequest.headBranch} → {pullRequest.baseBranch}</small></div><span className="pr-state"><b>{review}</b><small>{checks}</small></span><em>↗</em></a>;
 }
 
-function TerminalPanel(props: { workspace: Workspace; terminal: Terminal; terminalView: TerminalView | null; screenError: string; draft: string; attachments: ImageAttachment[]; sending: boolean; readOnly: boolean; fontSize: number; fitToPhone: boolean; shortcutsOpen: boolean; onTerminal: (id: string) => void; onDraft: (value: string) => void; onImage: (file: File) => void; onRemoveImage: (path: string) => void; onSubmit: (event: FormEvent) => void; onKey: (key: string) => void; onReadOnly: () => void; onRefresh: () => void; onShortcuts: (open: boolean) => void; onMarkdown: (path: string) => void; onLocalUrl: (url: string) => void }) {
+export function TerminalPanel(props: { workspace: Workspace; terminal: Terminal; terminalView: TerminalView | null; screenError: string; draft: string; attachments: ImageAttachment[]; sending: boolean; readOnly: boolean; fontSize: number; fitToPhone: boolean; shortcutsOpen: boolean; onTerminal: (id: string) => void; onDraft: (value: string) => void; onImage: (file: File) => void; onRemoveImage: (path: string) => void; onSubmit: (event: FormEvent) => void; onKey: (key: string) => void; onReadOnly: () => void; onRefresh: () => void; onShortcuts: (open: boolean) => void; onMarkdown: (path: string) => void; onLocalUrl: (url: string) => void }) {
   const screenRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);

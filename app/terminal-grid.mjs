@@ -106,3 +106,12 @@ export function nativeComposerStartRow(grid) {
   const hasClaudeComposer = /Claude Code/i.test(tail) && /(?:^|\n)\s*[❯>]/m.test(tail);
   return hasCodexComposer || hasClaudeComposer ? Math.max(0, grid.rows - 4) : grid.rows;
 }
+
+export function withoutNativeComposer(text) {
+  const lines = String(text || "").split("\n");
+  const start = nativeComposerStartRow({
+    rows: lines.length,
+    row_spans: lines.map((line, row) => ({ row, text: line })),
+  });
+  return lines.slice(0, start).join("\n").replace(/\n+$/, "");
+}

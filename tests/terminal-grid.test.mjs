@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nativeComposerStartRow, normalizeRenderGrid, safeTerminalColor, terminalViewSignature } from "../app/terminal-grid.mjs";
+import { nativeComposerStartRow, normalizeRenderGrid, safeTerminalColor, terminalViewSignature, withoutNativeComposer } from "../app/terminal-grid.mjs";
 
 test("normalizes a cmux render grid and rejects unsafe spans", () => {
   const grid = normalizeRenderGrid({
@@ -49,4 +49,5 @@ test("detects the four-row Codex composer without cropping a normal shell", () =
   ] };
   assert.equal(nativeComposerStartRow(claude), 10);
   assert.equal(nativeComposerStartRow({ rows: 18, row_spans: [{ row: 17, text: "$ ready" }] }), 18);
+  assert.equal(withoutNativeComposer("result\n\n› Ask Codex to do anything\n\n  gpt-5.6-sol high · ~/repo"), "result");
 });

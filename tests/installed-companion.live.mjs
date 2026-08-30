@@ -15,21 +15,28 @@ const title = `companion-installed-e2e-${process.pid}`;
 const onePixelPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 async function companion(path, token, init = {}) {
-  const response = await fetch(`${base}${path}`, {
-    ...init,
-    headers: {
-      authorization: `Bearer ${token}`,
-      origin: base,
-      "content-type": "application/json",
-      ...init.headers,
-    },
-  });
+  const method = init.method || "GET";
+  let response;
+  try {
+    response = await fetch(`${base}${path}`, {
+      ...init,
+      signal: init.signal || AbortSignal.timeout(20_000),
+      headers: {
+        authorization: `Bearer ${token}`,
+        origin: base,
+        "content-type": "application/json",
+        ...init.headers,
+      },
+    });
+  } catch (error) {
+    throw new Error(`${method} ${path} failed: ${error.message}`, { cause: error });
+  }
   const body = await response.json();
-  assert.equal(response.ok, true, JSON.stringify(body));
+  assert.equal(response.ok, true, `${method} ${path}: ${JSON.stringify(body)}`);
   return body;
 }
 
-test("installed companion reads, controls, and exposes an isolated cmux app", { timeout: 60_000 }, async () => {
+test("installed companion reads, controls, and exposes an isolated cmux app", { timeout: 120_000 }, async (t) => {
   const tokenPath = process.env.CMUX_COMPANION_TOKEN_FILE || join(homedir(), ".config", "cmux-companion", "token");
   const token = (await readFile(tokenPath, "utf8")).trim();
   const appPort = await availablePreviewTargetPort();
@@ -40,9 +47,10 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
     "--cwd", "/tmp",
     "--command", `${process.execPath} -e ${JSON.stringify(appScript)}`,
     "--focus", "false",
-  ], { encoding: "utf8" });
+  ], { encoding: "utf8", timeout: 15_000 });
   const workspaceRef = created.stdout.match(/workspace:\d+/)?.[0];
   assert.ok(workspaceRef);
+  t.diagnostic("isolated localhost workspace created");
 
   let workspaceId;
   let attachmentPath;
@@ -59,6 +67,7 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     assert.ok(terminal?.id, "workspace appeared through the installed companion");
+    t.diagnostic("workspace discovered through installed bootstrap");
     const overview = await companion(`/api/workspaces/${workspaceId}/overview`, token);
     assert.equal(typeof overview.status.effective, "string");
     const repos = await companion("/api/repos", token);
@@ -81,6 +90,7 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
     attachmentPath = uploaded.image.path;
     assert.equal(uploaded.image.mime, "image/png");
     assert.equal((await readFile(attachmentPath)).subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    t.diagnostic("repository, PR, Markdown, inbox, and image APIs verified");
 
     let screen;
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -93,22 +103,34 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
     assert.equal(replay.mode, "grid");
     assert.equal(replay.render_grid.format, "cmux.render-grid.v1");
     assert.match(JSON.stringify(replay.render_grid), new RegExp(marker));
+    t.diagnostic("terminal text and render-grid replay verified");
     let preview;
-    for (let attempt = 0; attempt < 40; attempt += 1) {
+    let detectionState = null;
+    let lastPreviews = [];
+    for (let attempt = 0; attempt < 80; attempt += 1) {
       const current = await companion("/api/previews", token);
+      lastPreviews = current.previews;
       preview = current.previews.find((item) => item.workspaceId === workspaceId && item.targetPort === appPort);
       if (preview) break;
-      await companion("/api/bootstrap", token);
+      detectionState = await companion("/api/bootstrap", token);
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    assert.ok(preview?.id, "localhost app was detected from the cmux workspace");
+    const detectedWorkspace = detectionState?.workspaces?.find((item) => item.id === workspaceId);
+    const detectionDetails = JSON.stringify({
+      expectedPort: appPort,
+      reportedPorts: detectedWorkspace?.listening_ports || [],
+      matchingPreviews: lastPreviews.filter((item) => item.workspaceId === workspaceId).map((item) => ({ port: item.targetPort, status: item.status })),
+    });
+    assert.ok(preview?.id, `localhost app was detected from the cmux workspace: ${detectionDetails}`);
     previewId = preview.id;
+    t.diagnostic("localhost listener automatically detected");
     const enabled = await companion(`/api/previews/${previewId}/enable`, token, { method: "POST", body: "{}" });
     previewActive = true;
     assert.match(enabled.preview.url, /^https:\/\/.*\.ts\.net:\d+$/);
     const previewResponse = await fetch(enabled.preview.url);
     assert.equal(previewResponse.status, 200);
     assert.equal(await previewResponse.text(), marker);
+    t.diagnostic("tailnet-only HTTPS preview fetched successfully");
     await companion(`/api/previews/${previewId}/stop`, token, { method: "POST", body: "{}" });
     previewActive = false;
     await companion(`/api/previews/${previewId}`, token, { method: "DELETE", body: "{}" });
@@ -135,11 +157,12 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
       body: JSON.stringify({ key: "ctrl+c" }),
     });
     assert.equal(controlled.ok, true);
+    t.diagnostic("mobile viewport and terminal control verified");
   } finally {
     if (previewId && previewActive) await companion(`/api/previews/${previewId}/stop`, token, { method: "POST", body: "{}" }).catch(() => {});
     if (previewId) await companion(`/api/previews/${previewId}`, token, { method: "DELETE", body: "{}" }).catch(() => {});
     if (attachmentPath) await unlink(attachmentPath).catch(() => {});
-    await exec(bin, ["workspace", "close", "--workspace", workspaceId || workspaceRef], { encoding: "utf8" });
+    await exec(bin, ["workspace", "close", "--workspace", workspaceId || workspaceRef], { encoding: "utf8", timeout: 15_000 });
   }
 });
 

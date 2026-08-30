@@ -41,6 +41,7 @@ export class CmuxClient {
     this.commandQueue = [];
     this.detailedCache = null;
     this.detailedPending = null;
+    this.statusCache = new Map();
   }
 
   async run(args, { timeout = 10_000, maxBuffer = 4 * 1024 * 1024 } = {}) {
@@ -129,24 +130,51 @@ export class CmuxClient {
       this.workspaceList(),
       this.runJSON(["list-workspaces"]).catch(() => ({ workspaces: [] })),
     ]);
-    const workspaces = await Promise.all((payload.workspaces || []).map(async (workspace) => {
-      const status = await this.workspaceStatus(workspace.id).catch(() => null);
-      const local = (localPayload.workspaces || []).find((item) => (
-        item.current_directory === workspace.current_directory
-        && (!item.title || !workspace.title || item.title.replace(/^[^\w]+\s*/, "") === workspace.title.replace(/^[^\w]+\s*/, ""))
-      )) || (localPayload.workspaces || []).find((item) => item.current_directory === workspace.current_directory);
+    const mobileWorkspaces = payload.workspaces || [];
+    const localWorkspaces = localPayload.workspaces || [];
+    const needsListenerScan = mobileWorkspaces.some((workspace) => {
+      const local = matchLocalWorkspace(workspace, localWorkspaces);
+      return !Array.isArray(local?.listening_ports) || local.listening_ports.length === 0;
+    });
+    const [discoveredPorts, statuses] = await Promise.all([
+      needsListenerScan
+        ? this.workspaceListeningPortsAll(mobileWorkspaces, localWorkspaces).catch(() => new Map())
+        : new Map(),
+      this.recentWorkspaceStatuses(mobileWorkspaces),
+    ]);
+    const workspaces = mobileWorkspaces.map((workspace) => {
+      const local = matchLocalWorkspace(workspace, localWorkspaces);
       let listeningPorts = Array.isArray(local?.listening_ports)
         ? local.listening_ports.map(Number).filter((port) => Number.isInteger(port) && port > 0 && port <= 65_535)
         : [];
-      if (!listeningPorts.length) listeningPorts = await this.workspaceListeningPorts(workspace.id).catch(() => []);
+      if (!listeningPorts.length) listeningPorts = discoveredPorts.get(workspace.id) || [];
+      const status = statuses.get(workspace.id)
+        || normalizeWorkspaceStatus(workspace.status || local?.status || workspace.agent_status || local?.agent_status);
       return { ...workspace, status, listening_ports: listeningPorts };
-    }));
+    });
     return { ...payload, workspaces };
   }
 
   workspaceStatus(workspaceId) {
     assertTarget(workspaceId);
     return this.runJSON(["workspace", "status", "--workspace", workspaceId]);
+  }
+
+  async recentWorkspaceStatuses(workspaces, limit = 6) {
+    const now = Date.now();
+    const activeIds = new Set(workspaces.map((workspace) => workspace.id));
+    for (const id of this.statusCache.keys()) if (!activeIds.has(id)) this.statusCache.delete(id);
+    const prioritized = [...workspaces].sort((left, right) => (
+      workspacePriority(right) - workspacePriority(left)
+    )).slice(0, limit);
+    const entries = await Promise.all(prioritized.map(async (workspace) => {
+      const cached = this.statusCache.get(workspace.id);
+      if (cached && now - cached.at < 15_000) return [workspace.id, cached.value];
+      const value = await this.workspaceStatus(workspace.id).catch(() => cached?.value || null);
+      if (value) this.statusCache.set(workspace.id, { at: Date.now(), value });
+      return [workspace.id, value];
+    }));
+    return new Map(entries.filter((entry) => entry[1]));
   }
 
   todoList(workspaceId) {
@@ -285,6 +313,67 @@ export class CmuxClient {
     return ports.sort((left, right) => left - right);
   }
 
+  async workspaceListeningPortsAll(mobileWorkspaces, localWorkspaces = []) {
+    const { stdout } = await this.run(["top", "--all", "--processes", "--flat", "--format", "tsv"], {
+      timeout: 15_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const nodes = new Map();
+    const processes = [];
+    for (const line of stdout.split("\n")) {
+      const columns = line.split("\t");
+      const kind = columns[3];
+      const ref = columns[4];
+      const parent = columns[5];
+      const title = columns.slice(6).join("\t");
+      if (!kind || !ref) continue;
+      nodes.set(ref, { kind, ref, parent, title });
+      if (kind === "process" && /^\d+$/.test(ref)) processes.push({ pid: ref, parent });
+    }
+    const workspaceByTopRef = new Map();
+    for (const node of nodes.values()) {
+      if (node.kind !== "workspace") continue;
+      const local = localWorkspaces.find((item) => item.ref === node.ref || item.workspace_ref === node.ref)
+        || localWorkspaces.find((item) => cleanTitle(item.title) === cleanTitle(node.title));
+      const mobile = local ? matchMobileWorkspace(local, mobileWorkspaces) : mobileWorkspaces.find((item) => cleanTitle(item.title) === cleanTitle(node.title));
+      if (mobile?.id) workspaceByTopRef.set(node.ref, mobile.id);
+    }
+    const pidToWorkspace = new Map();
+    for (const process of processes) {
+      let ref = process.parent;
+      const visited = new Set();
+      while (ref && !visited.has(ref)) {
+        visited.add(ref);
+        if (workspaceByTopRef.has(ref)) {
+          pidToWorkspace.set(process.pid, workspaceByTopRef.get(ref));
+          break;
+        }
+        ref = nodes.get(ref)?.parent;
+      }
+    }
+    const pids = [...pidToWorkspace.keys()].slice(0, 1_000);
+    if (!pids.length) return new Map();
+    const result = await this.execute("/usr/sbin/lsof", [
+      "-nP", "-a", "-p", pids.join(","), "-iTCP", "-sTCP:LISTEN", "-Fpn",
+    ], { timeout: 10_000, maxBuffer: 8 * 1024 * 1024, encoding: "utf8", env: process.env });
+    const portsByWorkspace = new Map();
+    let currentWorkspace = null;
+    for (const line of String(result.stdout || "").split("\n")) {
+      if (line.startsWith("p")) {
+        currentWorkspace = pidToWorkspace.get(line.slice(1)) || null;
+        continue;
+      }
+      if (!currentWorkspace || !line.startsWith("n")) continue;
+      const port = Number(line.match(/:(\d{1,5})(?:\s|$)/)?.[1]);
+      if (!Number.isInteger(port) || port <= 0 || port > 65_535) continue;
+      const ports = portsByWorkspace.get(currentWorkspace) || [];
+      if (!ports.includes(port)) ports.push(port);
+      portsByWorkspace.set(currentWorkspace, ports);
+    }
+    for (const ports of portsByWorkspace.values()) ports.sort((left, right) => left - right);
+    return portsByWorkspace;
+  }
+
   async readScreen(surfaceId, lines = 240) {
     assertTarget(surfaceId);
     const safeLines = Math.max(20, Math.min(Number(lines) || 240, 2_000));
@@ -378,6 +467,36 @@ export function parseWorkspaceMetrics(output) {
     }
   }
   return null;
+}
+
+function cleanTitle(value) {
+  return String(value || "").replace(/^[^\w]+\s*/, "").trim();
+}
+
+function matchLocalWorkspace(workspace, localWorkspaces) {
+  return localWorkspaces.find((item) => (
+    item.current_directory === workspace.current_directory
+    && (!item.title || !workspace.title || cleanTitle(item.title) === cleanTitle(workspace.title))
+  )) || localWorkspaces.find((item) => item.current_directory === workspace.current_directory)
+    || localWorkspaces.find((item) => cleanTitle(item.title) === cleanTitle(workspace.title));
+}
+
+function matchMobileWorkspace(workspace, mobileWorkspaces) {
+  return mobileWorkspaces.find((item) => (
+    item.current_directory === workspace.current_directory
+    && (!item.title || !workspace.title || cleanTitle(item.title) === cleanTitle(workspace.title))
+  )) || mobileWorkspaces.find((item) => cleanTitle(item.title) === cleanTitle(workspace.title));
+}
+
+function normalizeWorkspaceStatus(value) {
+  if (value && typeof value === "object") return value;
+  if (typeof value === "string" && value.trim()) return { effective: value.trim() };
+  return null;
+}
+
+function workspacePriority(workspace) {
+  const activity = Number(workspace.last_activity_at) || 0;
+  return activity + (workspace.has_unread ? 2e15 : 0) + (workspace.is_selected ? 1e15 : 0);
 }
 
 function shellQuote(value) {

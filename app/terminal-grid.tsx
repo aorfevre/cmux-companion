@@ -2,7 +2,7 @@
 
 import { CSSProperties, useMemo } from "react";
 import { splitContextLinks } from "./context-links.mjs";
-import { nativeComposerStartRow, normalizeRenderGrid, safeTerminalColor } from "./terminal-grid.mjs";
+import { nativeComposerStartRow, normalizeRenderGrid, safeTerminalColor, withoutNativeComposer } from "./terminal-grid.mjs";
 
 type TerminalStyle = {
   id: number;
@@ -99,7 +99,8 @@ export function TerminalGrid({ view, hideNativeComposer = false, reflow = false,
 
   if (!view) return <div className="terminal-loading">Reading terminal…</div>;
   if (view.mode === "text" || !grid || !model) {
-    const text = view.mode === "text" ? view.text || "No terminal output yet." : "Terminal replay is unavailable.";
+    const rawText = view.mode === "text" ? view.text || "No terminal output yet." : "Terminal replay is unavailable.";
+    const text = hideNativeComposer ? withoutNativeComposer(rawText) : rawText;
     return <pre className="terminal-fallback">{renderContextText(text, onMarkdownLink, onLocalUrl)}</pre>;
   }
 

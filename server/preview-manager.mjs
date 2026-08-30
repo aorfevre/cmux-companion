@@ -18,6 +18,7 @@ export class PreviewManager extends EventEmitter {
     execute = execFileAsync,
     checkPort = portIsOpen,
     tailscaleBin = process.env.CMUX_COMPANION_TAILSCALE_BIN || (existsSync(MACOS_TAILSCALE_BIN) ? MACOS_TAILSCALE_BIN : "tailscale"),
+    environment = process.env,
     portStart = Number(process.env.CMUX_COMPANION_PREVIEW_PORT_START || 8500),
     portEnd = Number(process.env.CMUX_COMPANION_PREVIEW_PORT_END || 8599),
   } = {}) {
@@ -26,6 +27,7 @@ export class PreviewManager extends EventEmitter {
     this.execute = execute;
     this.checkPort = checkPort;
     this.tailscaleBin = tailscaleBin;
+    this.environment = { ...environment, TERM: environment.TERM || "dumb" };
     this.portStart = portStart;
     this.portEnd = portEnd;
     this.state = this.load();
@@ -111,7 +113,7 @@ export class PreviewManager extends EventEmitter {
     try {
       await this.execute(this.tailscaleBin, [
         "serve", "--bg", "--yes", `--https=${publicPort}`, `http://127.0.0.1:${preview.targetPort}`,
-      ], { encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024, env: process.env });
+      ], { encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024, env: this.environment });
     } catch {
       throw new TypeError("Tailscale could not create that private preview link");
     }
@@ -130,7 +132,7 @@ export class PreviewManager extends EventEmitter {
     const preview = this.require(id);
     if (preview.publicPort) {
       await this.execute(this.tailscaleBin, ["serve", `--https=${preview.publicPort}`, "off"], {
-        encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024, env: process.env,
+        encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024, env: this.environment,
       });
     }
     preview.status = "stopped";
@@ -167,7 +169,7 @@ export class PreviewManager extends EventEmitter {
     const used = new Set(this.state.previews.map((item) => item.publicPort).filter(Boolean));
     try {
       const { stdout = "" } = await this.execute(this.tailscaleBin, ["serve", "status", "--json"], {
-        encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024, env: process.env,
+        encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024, env: this.environment,
       });
       const status = JSON.parse(stdout);
       for (const port of Object.keys(status.TCP || {})) used.add(Number(port));
@@ -180,9 +182,14 @@ export class PreviewManager extends EventEmitter {
 
   async tailnetHostname() {
     const { stdout = "" } = await this.execute(this.tailscaleBin, ["status", "--json"], {
-      encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024, env: process.env,
+      encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024, env: this.environment,
     });
-    const hostname = JSON.parse(stdout)?.Self?.DNSName?.replace(/\.$/, "");
+    let hostname;
+    try {
+      hostname = JSON.parse(stdout)?.Self?.DNSName?.replace(/\.$/, "");
+    } catch {
+      throw new TypeError("Tailscale DNS name is unavailable");
+    }
     if (!hostname || !/^[a-zA-Z0-9.-]+$/.test(hostname)) throw new TypeError("Tailscale DNS name is unavailable");
     return hostname;
   }

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, test, vi } from "vitest";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
-import { InboxView } from "../app/page";
+import { InboxView, PullRequestBanner, TerminalPanel } from "../app/page";
 import { TerminalGrid } from "../app/terminal-grid.tsx";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -17,6 +17,38 @@ describe("contextual mobile features", () => {
     await userEvent.click(screen.getByRole("button", { name: "http://localhost:3000" }));
     assert.deepEqual(markdown.mock.calls, [["docs/plan.md"]]);
     assert.deepEqual(local.mock.calls, [["http://localhost:3000"]]);
+  });
+
+  test("mobile terminal keeps one composer, hides the native prompt, expands writing, and accepts pasted images", async () => {
+    const image = new File(["image"], "paste.png", { type: "image/png" });
+    const onImage = vi.fn();
+    render(<TerminalPanel
+      workspace={{ id: "workspace-1", title: "Sample", terminals: [{ id: "terminal-1", title: "shell" }] }}
+      terminal={{ id: "terminal-1", title: "shell" }}
+      terminalView={{ mode: "text", text: "result\n\n› Ask Codex to do anything\n\n  gpt-5.6-sol high · ~/repo" }}
+      screenError="" draft="/" attachments={[]} sending={false} readOnly={false} fontSize={14} fitToPhone shortcutsOpen={false}
+      onTerminal={() => {}} onDraft={() => {}} onImage={onImage} onRemoveImage={() => {}} onSubmit={() => {}} onKey={() => {}}
+      onReadOnly={() => {}} onRefresh={() => {}} onShortcuts={() => {}} onMarkdown={() => {}} onLocalUrl={() => {}}
+    />);
+    assert.equal(screen.getAllByRole("textbox").length, 1);
+    assert.equal(screen.queryByText(/Ask Codex to do anything/), null);
+    assert.ok(screen.getByRole("button", { name: /^\/help/ }));
+    const composer = screen.getByRole("textbox", { name: "Terminal input" });
+    fireEvent.paste(composer, { clipboardData: { items: [{ type: "image/png", getAsFile: () => image }] } });
+    assert.equal(onImage.mock.calls[0][0], image);
+    await userEvent.click(screen.getByRole("button", { name: "Open large writing area" }));
+    assert.equal((screen.getByRole("textbox", { name: "Expanded terminal input" }) as HTMLTextAreaElement).value, "/");
+  });
+
+  test("an open pull request appears as a direct project link", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ pullRequest: {
+      number: 12, title: "Mobile companion", url: "https://github.com/example/repo/pull/12", state: "OPEN", isDraft: false,
+      reviewDecision: "APPROVED", mergeState: "CLEAN", headBranch: "feature", baseBranch: "main",
+      checks: { passed: 3, failed: 0, pending: 0, total: 3 },
+    } }), { status: 200 })));
+    render(<PullRequestBanner repo={{ id: "repo-12345678", name: "sample", root: "root", path: "/repo", branch: "feature", ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 0, scripts: [] }} />);
+    const link = await screen.findByRole("link", { name: /#12 Mobile companion/ });
+    assert.equal(link.getAttribute("href"), "https://github.com/example/repo/pull/12");
   });
 
   test("Markdown reader renders rich content and follows safe relative links", async () => {

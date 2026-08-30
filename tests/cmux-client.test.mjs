@@ -40,6 +40,27 @@ test("bounds concurrent cmux processes so polling cannot flood the socket", asyn
   assert.equal(maximum, 2);
 });
 
+test("enriches only the most relevant workspace statuses and caches them", async () => {
+  const calls = [];
+  const workspaces = Array.from({ length: 12 }, (_, index) => ({
+    id: `11111111-2222-4333-8444-${String(index + 1).padStart(12, "0")}`,
+    last_activity_at: index + 1,
+    has_unread: index === 0,
+    is_selected: index === 1,
+  }));
+  const client = new CmuxClient({ execute: async (_bin, args) => {
+    calls.push(args);
+    return { stdout: JSON.stringify({ effective: "working" }), stderr: "" };
+  } });
+  const first = await client.recentWorkspaceStatuses(workspaces);
+  const second = await client.recentWorkspaceStatuses(workspaces);
+  assert.equal(calls.length, 6);
+  assert.equal(first.size, 6);
+  assert.equal(second.size, 6);
+  assert.equal(first.has(workspaces[0].id), true);
+  assert.equal(first.has(workspaces[1].id), true);
+});
+
 test("requests a bounded, screen-anchored terminal replay", async () => {
   const calls = [];
   const client = new CmuxClient({ execute: async (_bin, args, options) => {
@@ -183,4 +204,20 @@ test("discovers localhost listeners owned by workspace processes", async () => {
   assert.deepEqual(await client.workspaceListeningPorts(ID), [3000, 5173]);
   assert.equal(calls[1][0], "/usr/sbin/lsof");
   assert.equal(calls[1][1].includes("123,456"), true);
+});
+
+test("discovers all workspace listeners with one cmux process scan", async () => {
+  const mobile = [{ id: ID, title: "Web", current_directory: "/repo" }];
+  const local = [{ ref: "workspace:7", title: "Web", current_directory: "/repo" }];
+  const client = new CmuxClient({ execute: async (bin, args) => {
+    if (bin === "/usr/sbin/lsof") return { stdout: "p123\nn127.0.0.1:3000\nn*:5173\n", stderr: "" };
+    assert.deepEqual(args, ["top", "--all", "--processes", "--flat", "--format", "tsv"]);
+    return { stdout: [
+      "0\t0\t1\tworkspace\tworkspace:7\twindow:1\tWeb",
+      "0\t0\t1\tsurface\tsurface:9\tworkspace:7\tshell",
+      "0\t0\t1\tprocess\t123\tsurface:9\tnode",
+    ].join("\n"), stderr: "" };
+  }, socketPassword: "secret" });
+  const ports = await client.workspaceListeningPortsAll(mobile, local);
+  assert.deepEqual(ports.get(ID), [3000, 5173]);
 });
