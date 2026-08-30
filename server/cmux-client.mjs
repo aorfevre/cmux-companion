@@ -15,6 +15,7 @@ const ALLOWED_KEYS = new Set([
 ]);
 const ALLOWED_TODO_ACTIONS = new Set(["check", "uncheck", "start"]);
 const ALLOWED_AGENTS = new Set(["shell", "codex", "claude"]);
+const CLIENT_ID_PATTERN = /^[a-zA-Z0-9:_-]{8,128}$/;
 
 export class CmuxCommandError extends Error {
   constructor(message, { code, stderr } = {}) {
@@ -233,6 +234,28 @@ export class CmuxClient {
       anchor: "screen",
       max_scrollback_rows: safeRows,
     }, { timeout: 15_000, maxBuffer: 16 * 1024 * 1024 });
+  }
+
+  terminalViewport(surfaceId, { clientId, generation, columns, rows, clear = false } = {}) {
+    assertTarget(surfaceId);
+    if (!CLIENT_ID_PATTERN.test(String(clientId || ""))) throw new TypeError("Invalid mobile client ID");
+    const safeGeneration = Number(generation);
+    if (!Number.isSafeInteger(safeGeneration) || safeGeneration < 0) throw new TypeError("Invalid viewport generation");
+    const params = {
+      surface_id: surfaceId,
+      client_id: clientId,
+      viewport_generation: safeGeneration,
+    };
+    if (clear) return this.rpc("mobile.terminal.viewport", { ...params, clear: true });
+    const safeColumns = Number(columns);
+    const safeRows = Number(rows);
+    if (!Number.isInteger(safeColumns) || safeColumns < 20 || safeColumns > 300) throw new TypeError("Viewport columns must be between 20 and 300");
+    if (!Number.isInteger(safeRows) || safeRows < 5 || safeRows > 120) throw new TypeError("Viewport rows must be between 5 and 120");
+    return this.rpc("mobile.terminal.viewport", {
+      ...params,
+      viewport_columns: safeColumns,
+      viewport_rows: safeRows,
+    });
   }
 
   async sendText(surfaceId, text) {

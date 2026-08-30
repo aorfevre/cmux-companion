@@ -40,6 +40,27 @@ test("requests a bounded, screen-anchored terminal replay", async () => {
   assert.equal(calls[0].options.maxBuffer, 16 * 1024 * 1024);
 });
 
+test("reports and clears a validated mobile terminal viewport", async () => {
+  const calls = [];
+  const client = new CmuxClient({ execute: async (_bin, args) => { calls.push(args); return { stdout: "{}", stderr: "" }; } });
+  await client.terminalViewport(ID, { clientId: "phone-client-123", generation: 10, columns: 42, rows: 18 });
+  await client.terminalViewport(ID, { clientId: "phone-client-123", generation: 11, clear: true });
+  assert.deepEqual(JSON.parse(calls[0][3]), {
+    surface_id: ID,
+    client_id: "phone-client-123",
+    viewport_generation: 10,
+    viewport_columns: 42,
+    viewport_rows: 18,
+  });
+  assert.deepEqual(JSON.parse(calls[1][3]), {
+    surface_id: ID,
+    client_id: "phone-client-123",
+    viewport_generation: 11,
+    clear: true,
+  });
+  assert.throws(() => client.terminalViewport(ID, { clientId: "bad", generation: 1, columns: 10, rows: 2 }), /client ID/);
+});
+
 test("sends a prompt and Enter as separate, allow-listed operations", async () => {
   const calls = [];
   const client = new CmuxClient({

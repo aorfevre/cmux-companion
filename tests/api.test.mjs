@@ -24,6 +24,7 @@ function fakeCmux() {
     }),
     capabilities: async () => ({ methods: ["mobile.workspace.list", "surface.send_text"] }),
     terminalReplay: async (id, scrollback) => ({ surface_id: id, render_grid: { format: "cmux.render-grid.v1", columns: 80, rows: 24, scrollback_rows: Number(scrollback) } }),
+    terminalViewport: async (id, viewport) => { calls.push(["viewport", id, viewport]); return { surface_id: id, columns: viewport.columns, rows: viewport.rows }; },
     readScreen: async (id, lines) => ({ text: `screen:${id}`, lines: Number(lines) }),
     sendText: async (id, text) => calls.push(["text", id, text]),
     sendPrompt: async (id, text) => calls.push(["prompt", id, text]),
@@ -81,6 +82,15 @@ test("paired clients can read state and safely control a terminal", async (t) =>
   assert.equal(replay.json().mode, "grid");
   assert.equal(replay.json().render_grid.scrollback_rows, 123);
 
+  const viewport = await app.inject({
+    method: "POST",
+    url: `/api/terminals/${TERM_ID}/viewport`,
+    headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { clientId: "phone-client-123", generation: 1, columns: 42, rows: 18 },
+  });
+  assert.equal(viewport.statusCode, 200);
+  assert.deepEqual(cmux.calls[0], ["viewport", TERM_ID, { clientId: "phone-client-123", generation: 1, columns: 42, rows: 18, clear: false }]);
+
   const input = await app.inject({
     method: "POST",
     url: `/api/terminals/${TERM_ID}/input`,
@@ -88,7 +98,7 @@ test("paired clients can read state and safely control a terminal", async (t) =>
     payload: { text: "continue", enter: true },
   });
   assert.equal(input.statusCode, 200);
-  assert.deepEqual(cmux.calls[0], ["prompt", TERM_ID, "continue"]);
+  assert.deepEqual(cmux.calls[1], ["prompt", TERM_ID, "continue"]);
 });
 
 test("falls back to an authenticated text screen when replay is unavailable", async (t) => {
@@ -168,6 +178,7 @@ test("every state-changing route requires pairing and same-origin requests", asy
     [`/api/workspaces/${WS_ID}/todos/${TERM_ID}/check`, {}],
     [`/api/terminals/${TERM_ID}/input`, { text: "x" }],
     [`/api/terminals/${TERM_ID}/key`, { key: "enter" }],
+    [`/api/terminals/${TERM_ID}/viewport`, { clientId: "phone-client-123", generation: 1, columns: 42, rows: 18 }],
     [`/api/workspaces/${WS_ID}/select`, {}],
     [`/api/inbox/${TERM_ID}/reply`, { kind: "permissionRequest", mode: "deny" }],
     [`/api/notifications/${TERM_ID}/read`, {}],

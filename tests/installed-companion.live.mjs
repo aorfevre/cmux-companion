@@ -73,6 +73,23 @@ test("installed companion reads and controls an isolated cmux terminal", { timeo
     assert.equal(replay.mode, "grid");
     assert.equal(replay.render_grid.format, "cmux.render-grid.v1");
     assert.match(JSON.stringify(replay.render_grid), new RegExp(marker));
+    const viewportClient = `installed-test-${process.pid}`;
+    try {
+      const viewport = await companion(`/api/terminals/${terminal.id}/viewport`, token, {
+        method: "POST",
+        body: JSON.stringify({ clientId: viewportClient, generation: 1, columns: 42, rows: 18 }),
+      });
+      assert.equal(viewport.columns, 42);
+      assert.equal(viewport.rows, 18);
+      const fitted = await companion(`/api/terminals/${terminal.id}/replay?scrollback=80`, token);
+      assert.equal(fitted.render_grid.columns, 42);
+      assert.equal(fitted.render_grid.rows, 18);
+    } finally {
+      await companion(`/api/terminals/${terminal.id}/viewport`, token, {
+        method: "POST",
+        body: JSON.stringify({ clientId: viewportClient, generation: 2, clear: true }),
+      });
+    }
     const controlled = await companion(`/api/terminals/${terminal.id}/key`, token, {
       method: "POST",
       body: JSON.stringify({ key: "ctrl+c" }),

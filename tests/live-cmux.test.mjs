@@ -35,6 +35,17 @@ test("creates, reads, controls, and closes an isolated live cmux workspace", { t
     const replay = await client.terminalReplay(terminal.id, 80);
     assert.equal(replay.render_grid.format, "cmux.render-grid.v1");
     assert.match(JSON.stringify(replay.render_grid), new RegExp(marker));
+    const viewportClient = `live-test-${process.pid}`;
+    try {
+      const viewport = await client.terminalViewport(terminal.id, { clientId: viewportClient, generation: 1, columns: 42, rows: 18 });
+      assert.equal(viewport.columns, 42);
+      assert.equal(viewport.rows, 18);
+      const fitted = await client.terminalReplay(terminal.id, 80);
+      assert.equal(fitted.render_grid.columns, 42);
+      assert.equal(fitted.render_grid.rows, 18);
+    } finally {
+      await client.terminalViewport(terminal.id, { clientId: viewportClient, generation: 2, clear: true });
+    }
     const overview = await client.workspaceOverview(workspaceId);
     assert.equal(typeof overview.status.effective, "string");
     assert.equal(Array.isArray(overview.todos.items), true);

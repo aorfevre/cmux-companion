@@ -33,6 +33,7 @@ export async function buildApp({
   });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const pairAttempts = new Map();
+  const viewportLeases = new Map();
   const detachPush = pushService?.attach({ hub, cmux }) || null;
 
   await app.register(websocket, {
@@ -224,6 +225,29 @@ export async function buildApp({
     return { ...screen, surface_id: id, mode: "text" };
   });
 
+  app.post("/api/terminals/:id/viewport", async (request) => {
+    const { clientId, generation, columns, rows, clear = false } = request.body || {};
+    const surfaceId = request.params.id;
+    const leaseKey = `${surfaceId}:${clientId}`;
+    const previous = viewportLeases.get(leaseKey);
+    const result = await cmux.terminalViewport(surfaceId, { clientId, generation, columns, rows, clear });
+    if (clear) {
+      if (previous) clearTimeout(previous.timer);
+      viewportLeases.delete(leaseKey);
+      return result;
+    }
+    if (previous) clearTimeout(previous.timer);
+    const lease = { surfaceId, clientId, generation: Number(generation) + 1, timer: null };
+    lease.timer = setTimeout(async () => {
+      if (viewportLeases.get(leaseKey) !== lease) return;
+      viewportLeases.delete(leaseKey);
+      await cmux.terminalViewport(surfaceId, { clientId, generation: lease.generation, clear: true }).catch(() => {});
+    }, 25_000);
+    lease.timer.unref?.();
+    viewportLeases.set(leaseKey, lease);
+    return result;
+  });
+
   app.post("/api/terminals/:id/input", async (request) => {
     const { text, enter = false } = request.body || {};
     if (enter) await cmux.sendPrompt(request.params.id, text);
@@ -263,6 +287,12 @@ export async function buildApp({
   });
 
   app.addHook("onClose", async () => {
+    const leases = [...viewportLeases.values()];
+    viewportLeases.clear();
+    await Promise.allSettled(leases.map((lease) => {
+      clearTimeout(lease.timer);
+      return cmux.terminalViewport(lease.surfaceId, { clientId: lease.clientId, generation: lease.generation, clear: true });
+    }));
     detachPush?.();
     hub.stop();
   });

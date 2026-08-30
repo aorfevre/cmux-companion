@@ -33,6 +33,7 @@ function compactPath(path?: string | null) { return path ? path.replace(/^\/User
 function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
 function sessionState(workspace: Workspace) { if (workspace.has_unread || workspace.status?.signals?.any_agent_needs_input) return { label: "Needs you", tone: "attention" }; if (workspace.status?.effective === "working" || workspace.status?.signals?.any_agent_running) return { label: "Working", tone: "working" }; if (workspace.status?.effective === "done") return { label: "Done", tone: "done" }; return { label: "Ready", tone: "ready" }; }
 function formatBytes(bytes = 0) { if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`; if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(0)} MB`; return `${(bytes / 1024 ** 3).toFixed(1)} GB`; }
+function mobileViewportClientId() { const key = "cmux-companion-mobile-client"; const existing = localStorage.getItem(key); if (existing) return existing; const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`; const created = `web-${suffix}`; localStorage.setItem(key, created); return created; }
 
 export default function Home() {
   const [auth, setAuth] = useState<"loading" | "paired" | "unpaired" | "offline">("loading");
@@ -159,20 +160,53 @@ function PullRequestBanner({ repo }: { repo: Repo | null }) {
 
 function TerminalPanel(props: { workspace: Workspace; terminal: Terminal; terminalView: TerminalView | null; screenError: string; draft: string; sending: boolean; readOnly: boolean; onTerminal: (id: string) => void; onDraft: (value: string) => void; onSubmit: (event: FormEvent) => void; onKey: (key: string) => void; onReadOnly: () => void; onRefresh: () => void }) {
   const screenRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const viewportGeneration = useRef(0);
   const initial = useRef(true);
   const following = useRef(true);
   const previous = useRef("empty");
   const [unseen, setUnseen] = useState(false);
   const [fontSize, setFontSize] = useState(() => typeof window === "undefined" ? 14 : Number(localStorage.getItem("cmux-companion-terminal-font")) || 14);
+  const [fitToPhone, setFitToPhone] = useState(() => typeof window === "undefined" || localStorage.getItem("cmux-companion-fit-terminal") !== "false");
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchingShortcuts = slashShortcuts(props.draft);
   const showShortcuts = !props.readOnly && (shortcutsOpen || props.draft.trimStart().startsWith("/"));
+  const terminalId = props.terminal.id; const refreshTerminal = props.onRefresh;
   const contentSignature = terminalViewSignature(props.terminalView);
   useEffect(() => { initial.current = true; following.current = true; previous.current = "empty"; }, [props.terminal.id]);
   useEffect(() => { const changed = contentSignature !== previous.current; previous.current = contentSignature; const next = nextFollowState({ initial: initial.current, following: following.current, contentChanged: changed }); if (next.scroll) requestAnimationFrame(() => { const element = screenRef.current; if (element) element.scrollTop = element.scrollHeight; }); if (next.unseen) setUnseen(true); else if (next.scroll) setUnseen(false); initial.current = false; }, [contentSignature]);
+  useEffect(() => {
+    if (!fitToPhone) return;
+    const element = screenRef.current; const measure = measureRef.current;
+    if (!element || !measure) return;
+    const clientId = mobileViewportClientId(); let stopped = false; let timer: ReturnType<typeof setTimeout> | null = null; let lastGrid = "";
+    if (!viewportGeneration.current) viewportGeneration.current = Date.now();
+    const send = () => {
+      if (stopped) return;
+      const box = measure.getBoundingClientRect();
+      const cellWidth = box.width / 10; const lineHeight = box.height;
+      if (!cellWidth || !lineHeight) return;
+      const columns = Math.max(20, Math.min(300, Math.floor((element.clientWidth - 24) / cellWidth)));
+      const rows = Math.max(5, Math.min(120, Math.floor((element.clientHeight - 40) / lineHeight)));
+      const grid = `${columns}x${rows}`;
+      if (grid === lastGrid) return;
+      lastGrid = grid; viewportGeneration.current += 1;
+      void api(`/api/terminals/${terminalId}/viewport`, { method: "POST", body: JSON.stringify({ clientId, generation: viewportGeneration.current, columns, rows }) }).then(() => { if (!stopped) refreshTerminal(); }).catch(() => {});
+    };
+    const schedule = () => { if (timer) clearTimeout(timer); timer = setTimeout(send, 120); };
+    const observer = new ResizeObserver(schedule); observer.observe(element); schedule();
+    const heartbeat = setInterval(() => { lastGrid = ""; send(); }, 10_000);
+    const clear = () => {
+      viewportGeneration.current += 1;
+      void fetch(`/api/terminals/${terminalId}/viewport`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, generation: viewportGeneration.current, clear: true }), keepalive: true }).catch(() => {});
+    };
+    window.addEventListener("pagehide", clear);
+    return () => { stopped = true; observer.disconnect(); clearInterval(heartbeat); if (timer) clearTimeout(timer); window.removeEventListener("pagehide", clear); clear(); };
+  }, [fitToPhone, fontSize, terminalId, refreshTerminal]);
   function jumpLatest() { const element = screenRef.current; if (element) element.scrollTop = element.scrollHeight; following.current = true; setUnseen(false); }
   function changeFont(delta: number) { setFontSize((current) => { const next = Math.max(11, Math.min(20, current + delta)); localStorage.setItem("cmux-companion-terminal-font", String(next)); if (following.current) requestAnimationFrame(jumpLatest); return next; }); }
+  function toggleFit() { setFitToPhone((current) => { const next = !current; localStorage.setItem("cmux-companion-fit-terminal", String(next)); return next; }); }
   function chooseShortcut(command: string) {
     props.onDraft(command);
     setShortcutsOpen(false);
@@ -182,8 +216,8 @@ function TerminalPanel(props: { workspace: Workspace; terminal: Terminal; termin
     <div className="terminal-panel">
       {props.workspace.terminals.length > 1 && <div className="terminal-tabs">{props.workspace.terminals.map((terminal, index) => <button className={terminal.id === props.terminal.id ? "active" : ""} onClick={() => props.onTerminal(terminal.id)} key={terminal.id}>{index + 1}. {terminal.title}</button>)}</div>}
       <section className="terminal-window">
-        <div className="terminal-chrome"><div><span /><span /><span /></div><p>{props.terminal.title}</p><div className="terminal-tools"><button aria-label="Decrease terminal text size" disabled={fontSize <= 11} onClick={() => changeFont(-1)}>A−</button><button aria-label="Increase terminal text size" disabled={fontSize >= 20} onClick={() => changeFont(1)}>A＋</button><button aria-label="Refresh terminal" onClick={props.onRefresh}>↻</button></div></div>
-        {props.screenError ? <div className="terminal-error">{props.screenError}</div> : <div className="terminal-scroll" ref={screenRef} style={{ "--terminal-font-size": `${fontSize}px` } as React.CSSProperties} onScroll={(event) => { const near = isNearBottom(event.currentTarget); following.current = near; if (near) setUnseen(false); }}><TerminalGrid view={props.terminalView} /></div>}
+        <div className="terminal-chrome"><div><span /><span /><span /></div><p>{props.terminal.title}</p><div className="terminal-tools"><button className={fitToPhone ? "fit-active" : ""} aria-label={fitToPhone ? "Use Mac terminal width" : "Fit terminal to phone"} aria-pressed={fitToPhone} onClick={toggleFit}>Fit</button><button aria-label="Decrease terminal text size" disabled={fontSize <= 11} onClick={() => changeFont(-1)}>A−</button><button aria-label="Increase terminal text size" disabled={fontSize >= 20} onClick={() => changeFont(1)}>A＋</button><button aria-label="Refresh terminal" onClick={props.onRefresh}>↻</button></div></div>
+        {props.screenError ? <div className="terminal-error">{props.screenError}</div> : <div className={`terminal-scroll${fitToPhone ? " fit-phone" : ""}`} ref={screenRef} style={{ "--terminal-font-size": `${fontSize}px` } as React.CSSProperties} onScroll={(event) => { const near = isNearBottom(event.currentTarget); following.current = near; if (near) setUnseen(false); }}><span className="terminal-measure" ref={measureRef}>0000000000</span><TerminalGrid view={props.terminalView} /></div>}
         {unseen && <button className="jump-latest" onClick={jumpLatest}>↓ Jump to latest</button>}
       </section>
       <div className="terminal-controls">
