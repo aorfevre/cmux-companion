@@ -8,6 +8,7 @@ No cloud application server is involved. Terminal output and input travel direct
 
 - Shows every cmux workspace and terminal
 - Adds an opt-in **Worktrees Beta** home view that groups parallel branches, agents, Git state, and open pull requests while keeping the existing Sessions view
+- Shows sanitized per-account Claude Code and OpenAI Codex quota from CCS, including reported 5-hour, daily, weekly, monthly, and additional feature windows
 - Highlights real cmux status, structured tasks, CPU, memory, and process health
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
 - Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
@@ -86,6 +87,8 @@ The pairing code is stored with mode `0600` at `~/.config/cmux-companion/token`.
 There is nothing to launch. The lightweight companion starts at login and remains ready. If cmux is not open, the phone UI displays “Waiting for cmux” and reconnects automatically when cmux starts.
 
 The home screen starts in **Sessions**. Use the compact **Sessions / Worktrees Beta** switch below the header to test the worktree dashboard without removing the classic view. The selection persists on that phone; switch back to **Sessions** at any time.
+
+Open **Settings → Licence usage** to see the remaining quota for every Claude Code and OpenAI Codex account registered in CCS. The view refreshes directly from each provider, clearly marks expired accounts that need reconnection, and labels provider-omitted windows as **Not reported** instead of treating them as exhausted.
 
 Worktrees Beta discovers Git's registered worktrees for the configured repository roots, then groups open cmux sessions by their current directory. Each worktree shows its branch, changed-file count, ahead/behind state, latest activity, agent state, and matching open GitHub pull request. **＋ Agent** opens a launcher scoped to that exact registered worktree and starts Codex through `xcodex` or Claude through `xclaude`. The server refreshes and revalidates the Git worktree before launch, so a stale or removed worktree cannot be used as a target.
 
@@ -167,6 +170,7 @@ npm run test:preview-live
 | `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
 | `CMUX_COMPANION_QUEUE_FILE` | `~/.config/cmux-companion/prompt-queue.json` | Persistent follow-up prompt queue |
 | `CMUX_COMPANION_CHROME_BIN` | Google Chrome, Chromium, or Edge in `/Applications` | Browser executable used for private preview capture |
+| `CCS_BIN` | First `ccs` executable in `PATH`, then installed NVM versions | Optional explicit CCS executable used to discover structured account quota support |
 | `CMUX_COMPANION_PREVIEW_PORT_START` | `8500` | First Tailscale HTTPS preview port |
 | `CMUX_COMPANION_PREVIEW_PORT_END` | `8599` | Last Tailscale HTTPS preview port |
 

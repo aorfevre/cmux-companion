@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, test, vi } from "vitest";
+import { AccountUsageView } from "../app/account-usage";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
 import { HomeModeSwitch, InboxView, PullRequestBanner, TerminalPanel } from "../app/page";
@@ -11,6 +12,28 @@ import { WorktreeDashboardView } from "../app/worktree-dashboard";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("contextual mobile features", () => {
+  test("shows CCS quota by account while treating absent windows as unreported", async () => {
+    const usage = { generatedAt: new Date().toISOString(), source: "CCS", available: true, summary: { ready: 1, low: 0, exhausted: 0, reconnect: 1, unavailable: 0 }, providers: [
+      { id: "claude", label: "Claude Code", available: true, accounts: [{ id: "one", label: "one", email: "one@example.test", plan: null, isDefault: true, paused: false, status: "ready", message: null, updatedAt: new Date().toISOString(), windows: [
+        { id: "usage-5h-0", cadence: "5h", label: "Session limit", category: "usage", remainingPercent: 82, resetAt: new Date(Date.now() + 3_600_000).toISOString(), reported: true },
+        { id: "usage-weekly-1", cadence: "weekly", label: "Weekly limit", category: "usage", remainingPercent: 55, resetAt: null, reported: true },
+      ] }] },
+      { id: "codex", label: "OpenAI Codex", available: true, accounts: [{ id: "two", label: "two", email: "two@example.test", plan: "pro", isDefault: false, paused: false, status: "reconnect", message: "Reconnect this account in CCS", updatedAt: null, windows: [] }] },
+    ] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => { void input; return new Response(JSON.stringify(usage), { status: 200, headers: { "content-type": "application/json" } }); });
+    vi.stubGlobal("fetch", fetchMock);
+    const back = vi.fn();
+    render(<AccountUsageView onBack={back} />);
+    assert.ok(await screen.findByText("one@example.test"));
+    assert.ok(screen.getByText("82%"));
+    assert.equal(screen.getAllByText("Not reported").length, 6);
+    assert.ok(screen.getByText("Reconnect this account in CCS"));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh account usage" }));
+    await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("?refresh=1")), true));
+    await userEvent.click(screen.getByRole("button", { name: "‹ Settings" }));
+    assert.equal(back.mock.calls.length, 1);
+  });
+
   test("keeps classic sessions available while the worktree visualization is opt-in", async () => {
     const mode = vi.fn();
     render(<HomeModeSwitch mode="sessions" onMode={mode} />);

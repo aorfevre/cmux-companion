@@ -74,6 +74,11 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
     const repos = await companion("/api/repos", token);
     const companionRepo = repos.repos.find((repo) => repo.name === "cmux-companion");
     assert.ok(companionRepo);
+    const accountUsage = await companion("/api/account-usage?refresh=1", token);
+    assert.equal(accountUsage.source, "CCS");
+    assert.equal(Array.isArray(accountUsage.providers), true);
+    assert.equal(accountUsage.providers.some((provider) => provider.id === "claude"), true);
+    assert.equal(accountUsage.providers.some((provider) => provider.id === "codex"), true);
     const worktreeDashboard = await companion("/api/worktree-dashboard?refresh=1", token);
     const companionWorktree = worktreeDashboard.repositories
       .flatMap((repository) => repository.worktrees)

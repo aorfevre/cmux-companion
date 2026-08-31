@@ -59,8 +59,22 @@ test("health is public while cmux data requires pairing", async (t) => {
   t.after(() => app.close());
   assert.equal((await app.inject({ url: "/api/health" })).statusCode, 200);
   assert.equal((await app.inject({ url: "/api/bootstrap" })).statusCode, 401);
+  assert.equal((await app.inject({ url: "/api/account-usage" })).statusCode, 401);
   assert.equal((await app.inject({ url: `/api/terminals/${TERM_ID}/replay` })).statusCode, 401);
   assert.equal((await app.inject({ method: "POST", url: "/api/auth/pair", payload: { token: "wrong" } })).statusCode, 401);
+});
+
+test("serves authenticated CCS account usage and forwards explicit refresh", async (t) => {
+  const calls = [];
+  const value = { source: "CCS", providers: [], summary: {} };
+  const accountUsage = { snapshot: async (options) => { calls.push(options); return value; } };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, accountUsage });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const response = await app.inject({ url: "/api/account-usage?refresh=1", headers: { cookie } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().source, "CCS");
+  assert.deepEqual(calls, [{ refresh: true }]);
 });
 
 test("paired clients can read state and safely control a terminal", async (t) => {

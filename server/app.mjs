@@ -7,6 +7,7 @@ import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
 import { capturePreview } from "./preview-capture.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import { WorktreeDashboard } from "./worktree-dashboard.mjs";
+import { AccountUsage } from "./account-usage.mjs";
 import {
   isAuthorized,
   isSafeOrigin,
@@ -31,6 +32,7 @@ export async function buildApp({
   promptQueue = null,
   previewCapture = capturePreview,
   imageAttachments = new ImageAttachments(),
+  accountUsage = new AccountUsage(),
 } = {}) {
   if (!token) throw new Error("A companion pairing token is required");
 
@@ -152,6 +154,10 @@ export async function buildApp({
   };
 
   app.get("/api/bootstrap", loadBootstrap);
+
+  app.get("/api/account-usage", async (request) => accountUsage.snapshot({
+    refresh: request.query?.refresh === "1",
+  }));
 
   app.get("/api/workspaces", async () => cmux.workspaceList());
 
