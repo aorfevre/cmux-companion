@@ -99,29 +99,27 @@ test("reports and clears a validated mobile terminal viewport", async () => {
   assert.throws(() => client.terminalViewport(ID, { clientId: "bad", generation: 1, columns: 10, rows: 2 }), /client ID/);
 });
 
-test("sends a multiline prompt as one bracketed paste followed by Enter", async () => {
+test("sends a multiline prompt through cmux's native composed-paste API", async () => {
   const calls = [];
   const client = new CmuxClient({
     execute: async (_bin, args) => {
       calls.push(args);
-      return { stdout: "", stderr: "" };
+      return { stdout: "{}", stderr: "" };
     },
   });
   await client.sendPrompt(ID, "please review\nthen continue");
   assert.deepEqual(calls, [
-    ["send", "--surface", ID, "--", "\u001b[200~please review\nthen continue\u001b[201~"],
-    ["send-key", "--surface", ID, "--", "enter"],
+    ["--json", "rpc", "mobile.terminal.paste", JSON.stringify({ surface_id: ID, text: "please review\nthen continue", submit_key: "return" })],
   ]);
 });
 
 test("rejects arbitrary targets, keys, and oversized input", async () => {
-  const client = new CmuxClient({ execute: async () => ({ stdout: "", stderr: "" }) });
+  const client = new CmuxClient({ execute: async () => ({ stdout: "{}", stderr: "" }) });
   await client.sendPrompt(ID, "x".repeat(16_000));
   await assert.rejects(() => client.readScreen("surface:1"), /Invalid cmux target/);
   await assert.rejects(() => client.sendKey(ID, "cmd+q"), /Unsupported key/);
   await assert.rejects(() => client.sendText(ID, "x".repeat(16_001)), /16,000/);
   await assert.rejects(() => client.sendPrompt(ID, "x".repeat(16_001)), /16,000/);
-  await assert.rejects(() => client.sendPrompt(ID, "unsafe\u001b[201~suffix"), /control sequence/);
 });
 
 test("parses JSON output and rejects malformed JSON", async () => {

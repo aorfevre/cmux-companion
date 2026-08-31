@@ -16,8 +16,6 @@ const ALLOWED_KEYS = new Set([
 const ALLOWED_TODO_ACTIONS = new Set(["check", "uncheck", "start"]);
 const ALLOWED_AGENTS = new Set(["shell", "codex", "claude"]);
 const CLIENT_ID_PATTERN = /^[a-zA-Z0-9:_-]{8,128}$/;
-const BRACKETED_PASTE_START = "\u001b[200~";
-const BRACKETED_PASTE_END = "\u001b[201~";
 
 export class CmuxCommandError extends Error {
   constructor(message, { code, stderr } = {}) {
@@ -438,9 +436,11 @@ export class CmuxClient {
   async sendPrompt(surfaceId, text) {
     assertTarget(surfaceId);
     assertInputText(text);
-    if (text.includes(BRACKETED_PASTE_END)) throw new TypeError("Text contains an unsupported terminal control sequence");
-    await this.run(["send", "--surface", surfaceId, "--", `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`]);
-    await this.sendKey(surfaceId, "enter");
+    return this.rpc("mobile.terminal.paste", {
+      surface_id: surfaceId,
+      text,
+      submit_key: "return",
+    });
   }
 
   async selectWorkspace(workspaceId) {
