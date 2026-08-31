@@ -361,6 +361,74 @@ describe("worktree goal planner", () => {
     await waitFor(() => assert.equal(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/launch")).length, 2));
   });
 
+  // jsdom has no EventSource, so the sheet gets a fake it can drive by hand.
+  function fakeEventSource() {
+    const opened: { url: string; closed: boolean; emit: (data: unknown) => void }[] = [];
+    class FakeEventSource {
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(public url: string) {
+        opened.push({ url, closed: false, emit: (data) => this.onmessage?.({ data: JSON.stringify(data) }) });
+        this.index = opened.length - 1;
+      }
+      index: number;
+      close() { opened[this.index].closed = true; }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    return opened;
+  }
+
+  test("shows the live steps while a plan is being made", async () => {
+    const streams = fakeEventSource();
+    let release: (value: Response) => void = () => {};
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      if (String(input) === "/api/worktree-plans") return new Promise<Response>((resolve) => { release = resolve; });
+      return new Response(JSON.stringify(readyDraft), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([url]) => String(url) === "/api/worktree-plans")?.[1]?.body));
+    assert.match(body.traceId, /^[0-9a-f-]{36}$/);
+    assert.equal(streams.length, 1);
+    assert.ok(streams[0].url.endsWith(`/api/worktree-plans/progress/${body.traceId}`));
+
+    streams[0].emit({ k: "tool", t: "Read server/app.mjs" });
+    streams[0].emit({ k: "text", t: "Thinking…" });
+    assert.ok(await screen.findByText("Read server/app.mjs"));
+    assert.ok(screen.getByText("Thinking…"));
+
+    release(new Response(JSON.stringify(readyDraft), { status: 201 }));
+    assert.ok(await screen.findByText("Build the sheet"));
+    assert.equal(screen.queryByText("Read server/app.mjs"), null);
+  });
+
+  test("closes the progress stream when the sheet closes", async () => {
+    const streams = fakeEventSource();
+    vi.stubGlobal("fetch", vi.fn(async () => new Promise<Response>(() => {})));
+    const view = render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    assert.equal(streams[0].closed, false);
+    view.unmount();
+    assert.equal(streams[0].closed, true);
+  });
+
+  test("ends the stream when the planner reports it is done", async () => {
+    const streams = fakeEventSource();
+    vi.stubGlobal("fetch", vi.fn(async () => new Promise<Response>(() => {})));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    streams[0].emit({ k: "tool", t: "Read server/app.mjs" });
+    assert.ok(await screen.findByText("Read server/app.mjs"));
+    streams[0].emit({ k: "done" });
+    assert.equal(streams[0].closed, true);
+  });
+
   test("attaches a pasted image to the goal and drops it again", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

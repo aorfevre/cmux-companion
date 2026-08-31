@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 
 export type PlanAgent = "claude" | "codex";
@@ -15,6 +15,36 @@ const LOST_SESSION = "The planner lost its session";
 const AGENTS: PlanAgent[] = ["codex", "claude"];
 
 function agentLabel(agent: string) { return agent === "claude" ? "Claude" : "Codex"; }
+
+// The sheet is a leaf with no socket in scope, so it opens its own stream. The
+// trace id exists before the request because round one, the slow one, has no
+// plan id until it finishes.
+function usePlannerProgress(traceId: string) {
+  const [steps, setSteps] = useState<string[]>([]);
+  useEffect(() => {
+    if (!traceId || typeof EventSource === "undefined") return;
+    const source = new EventSource(`/api/worktree-plans/progress/${traceId}`);
+    source.onmessage = (message) => {
+      try {
+        const event = JSON.parse(message.data);
+        if (event.k === "done" || event.k === "error") { source.close(); return; }
+        if (event.t) setSteps((current) => [...current, String(event.t)].slice(-8));
+      } catch { /* a malformed frame is not worth failing the sheet over */ }
+    };
+    // EventSource retries on its own, and the replay buffer refills the list.
+    source.onerror = () => {};
+    return () => source.close();
+  }, [traceId]);
+  return [steps, setSteps] as const;
+}
+
+function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string }) {
+  return <div className="planner-waiting"><span>{waiting}</span>{steps.length > 0 && <ul className="planner-progress">{steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ul>}</div>;
+}
+
+function newTraceId() {
+  return typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : "";
+}
 function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
 
 export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice }: { repository: PlannerRepository; onClose: () => void; onLaunched: () => Promise<void>; onNotice: (message: string) => void }) {
@@ -24,7 +54,9 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
   const [result, setResult] = useState<PlanLaunchResult | null>(null);
   const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch">("");
   const [error, setError] = useState("");
+  const [traceId, setTraceId] = useState("");
   const { attachments, uploading, inputRef, addImages, pasteImages, removeImage } = useImageAttachments(onNotice);
+  const [steps, setSteps] = usePlannerProgress(traceId);
 
   function receive(next: PlanDraft) { setDraft(next); setAnswers({}); setError(""); }
 
@@ -36,18 +68,20 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
 
   async function plan(event: FormEvent) {
     event.preventDefault();
-    setBusy("plan"); setError("");
-    try { receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments) }) })); }
+    const trace = newTraceId();
+    setBusy("plan"); setError(""); setSteps([]); setTraceId(trace);
+    try { receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), traceId: trace }) })); }
     catch (cause) { fail(cause, "Could not plan this goal"); }
-    finally { setBusy(""); }
+    finally { setBusy(""); setTraceId(""); }
   }
 
-  async function answer(body: unknown) {
+  async function answer(body: Record<string, unknown>) {
     if (!draft) return;
-    setBusy("answer"); setError("");
-    try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/answers`, { method: "POST", body: JSON.stringify(body) })); }
+    const trace = newTraceId();
+    setBusy("answer"); setError(""); setSteps([]); setTraceId(trace);
+    try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/answers`, { method: "POST", body: JSON.stringify({ ...body, traceId: trace }) })); }
     catch (cause) { fail(cause, "Could not send those answers"); }
-    finally { setBusy(""); }
+    finally { setBusy(""); setTraceId(""); }
   }
 
   async function editTasks(tasks: PlanTask[]) {
@@ -79,6 +113,7 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       {error && <p className="worktree-action-error">{error}</p>}
+      {busy === "plan" && <ProgressSteps steps={steps} waiting="Reading the repository. The first round is the slowest, because it starts a fresh session." />}
       <div className="worktree-launch-actions"><ImagePickerButton attachments={attachments} disabled={busy === "plan" || uploading > 0} inputRef={inputRef} label="Choose goal images" onFiles={(files) => { void addImages(files); }} /><button type="button" className="primary-button" disabled={busy === "plan" || uploading > 0 || !goal.trim()} onClick={plan}>{busy === "plan" ? "Planning…" : uploading ? `Uploading ${uploading}…` : "Plan this goal"}</button></div>
     </>}
     {draft && !result && draft.status === "questions" && <>
@@ -87,6 +122,7 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
         <label><span>{question.text}</span><textarea aria-label={question.text} value={answers[question.id] || ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} rows={2} maxLength={2_000} /></label>
         {question.options.length > 0 && <div className="planner-options">{question.options.map((option) => <button type="button" key={option} aria-label={`Answer ${question.text} with ${option}`} className={answers[question.id] === option ? "selected" : ""} onClick={() => setAnswers((current) => ({ ...current, [question.id]: option }))}>{option}</button>)}</div>}
       </div>)}</div>
+      {busy === "answer" && <ProgressSteps steps={steps} waiting="Thinking about your answers." />}
       {error && <p className="worktree-action-error">{error}</p>}
       <div className="planner-actions"><button type="button" disabled={busy === "answer"} onClick={() => answer({ skip: true })}>Skip questions</button><button type="button" className="primary-button" disabled={busy === "answer"} onClick={() => answer({ answers: draft.questions.map((question) => ({ id: question.id, text: answers[question.id] || "" })).filter((entry) => entry.text.trim()) })}>{busy === "answer" ? "Sending…" : "Answer"}</button></div>
     </>}

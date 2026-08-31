@@ -421,12 +421,12 @@ test("drives a worktree plan from goal to launch", async (t) => {
   const started = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing" } });
   assert.equal(started.statusCode, 201);
   assert.equal(started.json().planId, "plan-1");
-  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing", images: undefined });
+  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing", images: undefined, onEvent: null });
 
   const answered = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/answers", headers, payload: { answers: [{ id: "q1", text: "Postgres" }] } });
   assert.equal(answered.statusCode, 200);
   assert.equal(answered.json().round, 2);
-  assert.deepEqual(planner.calls[1][2], { answers: [{ id: "q1", text: "Postgres" }], skip: false });
+  assert.deepEqual(planner.calls[1][2], { answers: [{ id: "q1", text: "Postgres" }], skip: false, onEvent: null });
 
   const skipped = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/answers", headers, payload: { skip: true } });
   assert.equal(skipped.statusCode, 200);
@@ -515,4 +515,85 @@ test("turns a bad images value into a 400", async (t) => {
   });
   assert.equal(response.statusCode, 400);
   assert.equal(response.json().error, "Attached images must be a list");
+});
+
+const TRACE = "11111111-2222-4333-8444-555555555555";
+
+test("the progress stream needs the session cookie", async (t) => {
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  t.after(() => app.close());
+  const unpaired = await app.inject({ method: "GET", url: `/api/worktree-plans/progress/${TRACE}` });
+  assert.equal(unpaired.statusCode, 401);
+});
+
+test("rejects a progress id that is not a uuid", async (t) => {
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/worktree-plans/progress/not-a-uuid",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test" },
+  });
+  assert.equal(response.statusCode, 400);
+});
+
+// inject() cannot read a hijacked response that never ends, so this one listens
+// on an ephemeral port and reads the frames off the wire.
+test("streams a tool label to a subscriber, then ends the round", async (t) => {
+  const planner = fakePlanner();
+  planner.start = async (options) => {
+    options.onEvent?.({ k: "tool", t: "Read server/app.mjs" });
+    options.onEvent?.({ k: "text", t: "Thinking…" });
+    return { planId: "plan-1", repositoryId: "repository12345678", goal: "Add billing", round: 1, status: "ready", questions: [], tasks: [] };
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const { port } = app.server.address();
+  const base = `http://127.0.0.1:${port}`;
+  const headers = { authorization: `Bearer ${TOKEN}`, origin: base, "content-type": "application/json" };
+
+  const stream = await fetch(`${base}/api/worktree-plans/progress/${TRACE}`, { headers });
+  assert.equal(stream.status, 200);
+  assert.match(stream.headers.get("content-type"), /text\/event-stream/);
+
+  const frames = [];
+  const reading = (async () => {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const chunk of stream.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      for (const block of buffer.split("\n\n")) {
+        const line = block.trim();
+        if (line.startsWith("data: ")) frames.push(JSON.parse(line.slice(6)));
+      }
+      buffer = buffer.slice(buffer.lastIndexOf("\n\n") + 2);
+      if (frames.some((frame) => frame.k === "done")) return;
+    }
+  })();
+
+  const started = await fetch(`${base}/api/worktree-plans`, { method: "POST", headers, body: JSON.stringify({ repositoryId: "repository12345678", goal: "Add billing", traceId: TRACE }) });
+  assert.equal(started.status, 201);
+  await reading;
+  assert.deepEqual(frames.map((frame) => frame.t || frame.k), ["Read server/app.mjs", "Thinking…", "done"]);
+});
+
+test("a failed round ends its progress stream with an error", async (t) => {
+  const planner = fakePlanner();
+  planner.start = async () => { throw new TypeError("Describe the goal for this repository"); };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const { port } = app.server.address();
+  const base = `http://127.0.0.1:${port}`;
+  const headers = { authorization: `Bearer ${TOKEN}`, origin: base, "content-type": "application/json" };
+
+  const failed = await fetch(`${base}/api/worktree-plans`, { method: "POST", headers, body: JSON.stringify({ repositoryId: "repository12345678", goal: "", traceId: TRACE }) });
+  assert.equal(failed.status, 400);
+  // The buffer outlives the round, so a sheet that reconnects still learns it ended.
+  const stream = await fetch(`${base}/api/worktree-plans/progress/${TRACE}`, { headers });
+  const reader = stream.body.getReader();
+  const { value } = await reader.read();
+  assert.match(new TextDecoder().decode(value), /"k":"error"/);
+  await reader.cancel();
 });
