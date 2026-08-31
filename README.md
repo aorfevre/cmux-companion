@@ -12,6 +12,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Highlights real cmux status, structured tasks, CPU, memory, and process health
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
 - Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
+- Splits one goal into independent tasks with a headless Claude planner, then creates a worktree and starts an agent for each, balancing the work across Claude and Codex by remaining quota
 - Reviews staged, unstaged, and untracked Git changes and per-file diffs
 - Shows the current branch's open pull request, review decision, and check status directly inside its session
 - Sends contextual Web Push alerts for decisions, failures, completion, PR changes, and detected local apps
@@ -92,6 +93,12 @@ Open **Settings → Licence usage** to see the remaining quota for every Claude 
 
 Worktrees Beta discovers Git's registered worktrees for the configured repository roots, then groups open cmux sessions by their current directory. Each worktree shows its branch, changed-file count, ahead/behind state, latest activity, agent state, and matching open GitHub pull request. **＋ Worktree** on a repository creates or opens a branch in a sibling Git worktree and can immediately start its first agent session. **＋ Session** on an existing worktree starts another cmux session there with Codex through `xcodex` or Claude through `xclaude`. The server derives the worktree path, validates Git refs, and refreshes registered worktrees before each action.
 
+**Plan a goal** on a repository sends one goal to a headless Claude session, which decides whether the work splits into independent tasks. The planner may ask clarifying questions first; answer them, or skip to let it decide. It reuses the same Claude session for every round, so only the new turn costs tokens. The proposed plan is shown before anything is created: edit a task, switch its agent, or drop it, then confirm. Each task then branches from the same freshly fetched default remote branch into its own worktree, with one agent session started in each.
+
+The server chooses Codex or Claude per task from live CCS quota, not the model. It takes the lower of each provider's 5-hour and weekly remaining percent, sends the work to the provider with more headroom, and alternates when the two are within ten points. Every task keeps a toggle, so you can override the choice.
+
+A launch of several tasks takes up to a minute, because each worktree is created and inspected in turn. The sheet reports each task as launched or failed. A failed task does not roll back the tasks before it, and a task whose branch already exists is refused rather than started on old work.
+
 ```bash
 npm run status
 npm run status -- --show-token
@@ -112,6 +119,7 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - Terminal input, keys, and text length are explicitly validated.
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
+- The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
 - Git diff requests are restricted to files currently reported as changed, and untracked symlink content is hidden.
 - The CLI is spawned with argv arrays and never through a shell.
 - Read-only protection is enabled by default on each phone.
