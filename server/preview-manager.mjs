@@ -52,6 +52,7 @@ export class PreviewManager extends EventEmitter {
       existing.name = safeName(name, existing.name);
       existing.repoId = safeRepoId(repoId) || existing.repoId || null;
       existing.sourceUrl = normalizeLocalUrl(sourceUrl, port);
+      if (existing.status === "stopped") existing.status = "detected";
       existing.updatedAt = now;
       existing.misses = 0;
       this.save();
@@ -97,7 +98,7 @@ export class PreviewManager extends EventEmitter {
       }
     }
     for (const preview of this.state.previews) {
-      if (present.has(preview.id) || !workspaces.some((workspace) => workspace.id === preview.workspaceId)) continue;
+      if (present.has(preview.id)) continue;
       preview.misses = Number(preview.misses || 0) + 1;
       if (preview.misses >= 2 && preview.status === "active") await this.stop(preview.id, { preserve: true });
       else if (preview.misses >= 2 && preview.status !== "active") preview.status = "stopped";

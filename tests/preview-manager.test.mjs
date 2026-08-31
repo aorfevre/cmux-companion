@@ -39,6 +39,11 @@ test("auto-detects stable workspace ports and rejects unsafe targets", async (t)
   const manager = new PreviewManager({ path: join(directory, "previews.json"), execute: async () => ({ stdout: "{}" }), checkPort: async () => true });
   await manager.syncWorkspaces([{ id: "workspace-123", title: "App", current_directory: "/repo", listening_ports: [3000, 3210, 55_000], terminals: [] }], [{ id: "repo_safe_123", name: "App", path: "/repo" }]);
   assert.deepEqual(manager.list().previews.map((item) => item.targetPort), [3000]);
+  await manager.syncWorkspaces([], []);
+  await manager.syncWorkspaces([], []);
+  assert.equal(manager.list().previews[0].status, "stopped", "closed workspaces move their apps to history");
+  await manager.syncWorkspaces([{ id: "workspace-123", title: "App", current_directory: "/repo", listening_ports: [3000], terminals: [] }], []);
+  assert.equal(manager.list().previews[0].status, "detected", "a restarted local app becomes testable again");
   assert.throws(() => manager.discover({ workspaceId: "bad space", targetPort: 3000 }), /Invalid workspace/);
   assert.throws(() => manager.discover({ workspaceId: "workspace-123", targetPort: 3210 }), /Invalid localhost port/);
   assert.deepEqual(extractLocalUrls("open http://localhost:5173/x and https://127.0.0.1:4443"), [

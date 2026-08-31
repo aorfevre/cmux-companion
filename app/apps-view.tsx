@@ -10,12 +10,13 @@ type Stroke = { points: Point[] };
 
 export function AppsView({ focusedId, onOpenWorkspace, onNotice, onFix }: { focusedId: string | null; onOpenWorkspace: (id: string) => void; onNotice: (message: string) => void; onFix?: (preview: Preview, prompt: string, queue: boolean) => Promise<void> }) {
   const [previews, setPreviews] = useState<Preview[]>([]); const [busy, setBusy] = useState(""); const [error, setError] = useState(""); const [capture, setCapture] = useState<{ preview: Preview; value: Capture } | null>(null);
+  const [filter, setFilter] = useState<"testable" | "history">("testable");
   const load = useCallback(async () => {
     try { const response = await fetch("/api/previews"); const body = await response.json(); if (!response.ok) throw new Error(body.error); setPreviews(body.previews || []); setError(""); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Private previews unavailable"); }
   }, []);
   useEffect(() => { const timer = setTimeout(load, 0); const poll = setInterval(() => { if (document.visibilityState === "visible") load(); }, 8_000); return () => { clearTimeout(timer); clearInterval(poll); }; }, [load]);
-  useEffect(() => { if (!focusedId) return; const timer = setTimeout(() => document.querySelector(`[data-preview="${CSS.escape(focusedId)}"]`)?.scrollIntoView({ block: "center" }), 100); return () => clearTimeout(timer); }, [focusedId, previews]);
+  useEffect(() => { if (!focusedId) return; const timer = setTimeout(() => { const focused = previews.find((preview) => preview.id === focusedId); if (focused?.status === "stopped" && filter !== "history") { setFilter("history"); return; } document.querySelector(`[data-preview="${CSS.escape(focusedId)}"]`)?.scrollIntoView({ block: "center" }); }, 100); return () => clearTimeout(timer); }, [filter, focusedId, previews]);
   async function mutate(preview: Preview, action: "enable" | "stop" | "restart" | "remove") {
     setBusy(preview.id);
     try {
@@ -34,11 +35,50 @@ export function AppsView({ focusedId, onOpenWorkspace, onNotice, onFix }: { focu
     } catch (cause) { onNotice(cause instanceof Error ? cause.message : "Could not capture preview"); }
     finally { setBusy(""); }
   }
+  async function clearHistory() {
+    const stopped = previews.filter((preview) => preview.status === "stopped");
+    if (!stopped.length || !confirm(`Remove ${stopped.length} stopped app${stopped.length === 1 ? "" : "s"} from history?`)) return;
+    setBusy("history");
+    try {
+      for (const preview of stopped) {
+        const response = await fetch(`/api/previews/${preview.id}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}" });
+        if (!response.ok) throw new Error("Could not clear all stopped apps");
+      }
+      await load(); onNotice("Stopped app history cleared");
+    } catch (cause) { onNotice(cause instanceof Error ? cause.message : "Could not clear app history"); }
+    finally { setBusy(""); }
+  }
+  const active = previews.filter((preview) => preview.status === "active");
+  const detected = previews.filter((preview) => preview.status === "detected");
+  const stopped = previews.filter((preview) => preview.status === "stopped");
+  const visible = filter === "history" ? stopped : [...active, ...detected];
   return <section className="subpage apps-page"><div className="page-kicker"><div><p className="eyebrow">TAILNET-ONLY</p><h1>Local apps</h1></div><button className="text-button" onClick={load}>Refresh</button></div><p className="subpage-intro">Open apps running on your Mac through private HTTPS links. Nothing is published to the internet.</p>{error && <div className="apps-warning">{error}</div>}
     {!error && previews.length === 0 && <div className="empty-card"><span>⌁</span><strong>No local apps detected</strong><p>Start a development server in cmux. Localhost links in terminal output will appear here.</p></div>}
-    <div className="preview-list">{previews.map((preview) => <article data-preview={preview.id} className={`preview-card ${preview.id === focusedId ? "focused" : ""}`} key={preview.id}><header><span className={`preview-status ${preview.status}`} /><div><strong>{preview.name}</strong><small>localhost:{preview.targetPort}</small></div><em>{preview.status}</em></header>{preview.url && <a className="preview-url" href={preview.url} target="_blank" rel="noreferrer">{preview.url}<b>↗</b></a>}<div className="preview-actions">{preview.status !== "active" ? <button className="approve" disabled={busy === preview.id} onClick={() => mutate(preview, "enable")}>Make private link</button> : <><a href={preview.url || "#"} target="_blank" rel="noreferrer">Open</a><button disabled={busy === preview.id} onClick={() => navigator.clipboard.writeText(preview.url || "").then(() => onNotice("Preview link copied"))}>Copy</button><button disabled={busy === preview.id} onClick={() => mutate(preview, "restart")}>Restart link</button><button className="deny" disabled={busy === preview.id} onClick={() => mutate(preview, "stop")}>Stop</button></>} {onFix && <button className="fix-preview-button" disabled={busy === preview.id} onClick={() => startFix(preview)}>{busy === preview.id ? "Capturing…" : "◎ Fix this"}</button>}<button disabled={busy === preview.id} onClick={() => onOpenWorkspace(preview.workspaceId)}>Session</button>{preview.status !== "active" && <button className="muted-action" disabled={busy === preview.id} onClick={() => mutate(preview, "remove")}>Remove</button>}</div></article>)}</div>
+    {previews.length > 0 && <><div className="apps-status-summary"><div className="ready"><strong>{active.length}</strong><span>Ready to test</span><small>Open immediately</small></div><div className="detected"><strong>{detected.length}</strong><span>Setup needed</span><small>Running on your Mac</small></div><div><strong>{stopped.length}</strong><span>Offline</span><small>Kept in history</small></div></div><div className="apps-view-tabs" role="tablist" aria-label="App availability"><button role="tab" aria-selected={filter === "testable"} className={filter === "testable" ? "active" : ""} onClick={() => setFilter("testable")}>Testable <b>{active.length + detected.length}</b></button><button role="tab" aria-selected={filter === "history"} className={filter === "history" ? "active" : ""} onClick={() => setFilter("history")}>History <b>{stopped.length}</b></button>{filter === "history" && stopped.length > 0 && <button className="clear-preview-history" disabled={busy === "history"} onClick={clearHistory}>Clear history</button>}</div></>}
+    {!error && previews.length > 0 && visible.length === 0 && <div className="empty-card"><span>✓</span><strong>{filter === "history" ? "No stopped apps" : "Nothing to test yet"}</strong><p>{filter === "history" ? "Stopped apps will appear here." : "Start a development server in cmux, then refresh this screen."}</p></div>}
+    <div className="preview-list">{visible.map((preview) => <PreviewCard preview={preview} focused={preview.id === focusedId} busy={busy === preview.id} onMutate={mutate} onFix={onFix ? startFix : null} onOpenWorkspace={onOpenWorkspace} onNotice={onNotice} key={preview.id} />)}</div>
     {capture && onFix && <FixEditor preview={capture.preview} capture={capture.value} onClose={() => setCapture(null)} onFix={onFix} onNotice={onNotice} />}
   </section>;
+}
+
+function PreviewCard({ preview, focused, busy, onMutate, onFix, onOpenWorkspace, onNotice }: { preview: Preview; focused: boolean; busy: boolean; onMutate: (preview: Preview, action: "enable" | "stop" | "restart" | "remove") => Promise<void>; onFix: ((preview: Preview) => Promise<void>) | null; onOpenWorkspace: (id: string) => void; onNotice: (message: string) => void }) {
+  const active = preview.status === "active";
+  const detected = preview.status === "detected";
+  const label = active ? "Ready to open" : detected ? "Running · setup needed" : "Offline";
+  const guidance = active ? "Available from this device through your private Tailscale network." : detected ? "This app is running on your Mac. Create a private link to test it here." : "This app is not running, so it cannot be tested. Start it again from its cmux session.";
+  return <article data-preview={preview.id} className={`preview-card ${preview.status} ${focused ? "focused" : ""}`}><header><span className={`preview-status ${preview.status}`} /><div><strong>{preview.name}</strong><small>localhost:{preview.targetPort} · {relativePreviewTime(preview.updatedAt)}</small></div><em>{label}</em></header><p className="preview-state-copy">{guidance}</p>
+    {active && preview.url && <a className="preview-primary" href={preview.url} target="_blank" rel="noreferrer">Open app <b>↗</b></a>}
+    {detected && <button className="preview-primary" disabled={busy} onClick={() => onMutate(preview, "enable")}>{busy ? "Creating link…" : "Create private link"}</button>}
+    <div className="preview-secondary">{preview.status !== "stopped" && onFix && <button className="fix-preview-button" disabled={busy} onClick={() => onFix(preview)}>{busy ? "Capturing…" : "◎ Fix this"}</button>}<button disabled={busy} onClick={() => onOpenWorkspace(preview.workspaceId)}>Open session</button><details className="preview-more"><summary>More</summary><div>{active && <><button disabled={busy} onClick={() => navigator.clipboard.writeText(preview.url || "").then(() => onNotice("Preview link copied"))}>Copy link</button><button disabled={busy} onClick={() => onMutate(preview, "restart")}>Restart link</button><button className="deny" disabled={busy} onClick={() => onMutate(preview, "stop")}>Stop link</button></>}{!active && <button className="muted-action" disabled={busy} onClick={() => onMutate(preview, "remove")}>Remove from {detected ? "list" : "history"}</button>}</div></details></div>
+  </article>;
+}
+
+function relativePreviewTime(value: string) {
+  const milliseconds = Date.now() - new Date(value).getTime();
+  if (!Number.isFinite(milliseconds) || milliseconds < 60_000) return "now";
+  const minutes = Math.floor(milliseconds / 60_000); if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60); if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function FixEditor({ preview, capture, onClose, onFix, onNotice }: { preview: Preview; capture: Capture; onClose: () => void; onFix: (preview: Preview, prompt: string, queue: boolean) => Promise<void>; onNotice: (message: string) => void }) {

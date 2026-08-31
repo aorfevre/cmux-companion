@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
@@ -191,16 +191,24 @@ describe("contextual mobile features", () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (String(_input).endsWith("/capture")) return new Response(JSON.stringify({ dataUrl: "data:image/png;base64,iVBORw0KGgo=", viewport: { width: 390, height: 844 }, sourceUrl: "http://localhost:3000/" }), { status: 201 });
       if (init?.method === "POST") { active = true; return new Response(JSON.stringify({ preview: {} }), { status: 200 }); }
-      return new Response(JSON.stringify({ tailnetOnly: true, previews: [{ id: "preview-1", workspaceId: "workspace-1", name: "Web", targetPort: 3000, sourceUrl: "http://localhost:3000", status: active ? "active" : "detected", url: active ? "https://mac.tail.test:8500" : null, updatedAt: "2026-01-01" }] }), { status: 200 });
+      return new Response(JSON.stringify({ tailnetOnly: true, previews: [{ id: "preview-1", workspaceId: "workspace-1", name: "Web", targetPort: 3000, sourceUrl: "http://localhost:3000", status: active ? "active" : "detected", url: active ? "https://mac.tail.test:8500" : null, updatedAt: "2026-01-01" }, { id: "preview-old", workspaceId: "workspace-old", name: "Old app", targetPort: 4000, sourceUrl: "http://localhost:4000", status: "stopped", url: null, updatedAt: "2025-01-01" }] }), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<AppsView focusedId="preview-1" onOpenWorkspace={() => {}} onNotice={() => {}} onFix={async () => {}} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Make private link" }));
-    assert.ok(await screen.findByRole("link", { name: "Open" }));
+    assert.equal(screen.queryByText("Old app"), null);
+    assert.ok(await screen.findByText("Running · setup needed"));
+    await userEvent.click(await screen.findByRole("button", { name: "Create private link" }));
+    assert.ok(await screen.findByRole("link", { name: /Open app/ }));
     assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/previews/preview-1/enable") && init?.method === "POST"), true);
     await userEvent.click(screen.getByRole("button", { name: "◎ Fix this" }));
     assert.ok(await screen.findByRole("dialog", { name: "Annotate preview" }));
     assert.ok(screen.getByRole("img", { name: "Web mobile preview" }));
+    await userEvent.click(screen.getByRole("tab", { name: /History/ }));
+    const oldCard = (await screen.findByText("Old app")).closest("article");
+    assert.ok(oldCard);
+    assert.ok(within(oldCard).getByText("Offline"));
+    assert.equal(within(oldCard).queryByRole("button", { name: "Create private link" }), null);
+    assert.equal(within(oldCard).queryByRole("button", { name: "◎ Fix this" }), null);
   });
 
   test("notification deep link presents only the exact pending decision", async () => {
