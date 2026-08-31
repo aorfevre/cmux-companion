@@ -528,6 +528,7 @@ function publicDraft(draft) {
     planId: draft.planId,
     repositoryId: draft.repositoryId,
     goal: draft.goal,
+    images: draft.images || [],
     round: draft.round,
     status: draft.status,
     questions: draft.questions,

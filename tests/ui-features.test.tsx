@@ -467,6 +467,53 @@ describe("worktree goal planner", () => {
     assert.match(String(planCall?.[1]?.body), /"images":\[\]/);
   });
 
+  test("shows the goal and the attached image in the context panel", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/attachments/images") && init?.method === "POST") return new Response(JSON.stringify({ image: { path: "/attachments/goal.png", name: "goal.png", mime: "image/png", size: 5 } }), { status: 201 });
+      return new Response(JSON.stringify({ ...readyDraft, images: [{ path: "/attachments/goal.png", name: "goal.png" }] }), { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    const goal = screen.getByRole("textbox", { name: "Goal" });
+    await userEvent.type(goal, "Ship the planner");
+    fireEvent.paste(goal, { clipboardData: { items: [{ type: "image/png", getAsFile: () => new File(["image"], "goal.png", { type: "image/png" }) }] } });
+    assert.ok(await screen.findByRole("img", { name: "goal.png" }));
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    assert.ok(await screen.findByText("Build the sheet"));
+    const panel = screen.getByLabelText("Your goal and attachments").closest("details") as HTMLElement;
+    assert.ok(panel);
+    assert.ok(within(panel).getByText("Ship the planner"));
+    assert.ok(within(panel).getByRole("img", { name: "goal.png" }));
+    // The review panel shows what was sent, so it offers no remove button.
+    assert.equal(within(panel).queryByRole("button", { name: "Remove goal.png" }), null);
+  });
+
+  test("names an image it cannot preview instead of showing a broken one", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...readyDraft, images: [{ path: "/attachments/old.png", name: "old.png" }] }), { status: 201 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    const panel = (await screen.findByLabelText("Your goal and attachments")).closest("details") as HTMLElement;
+    assert.ok(panel);
+    assert.ok(within(panel).getByText("old.png"));
+    assert.equal(within(panel).queryByRole("img"), null);
+  });
+
+  test("a click on the backdrop leaves the planner open", async () => {
+    const closed = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(readyDraft), { status: 201 })));
+    const { container } = render(<WorktreePlannerSheet repository={repository} onClose={closed} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    const backdrop = container.querySelector(".session-menu-backdrop");
+    assert.ok(backdrop);
+    await userEvent.click(backdrop);
+    assert.equal(closed.mock.calls.length, 0);
+    assert.equal((screen.getByRole("textbox", { name: "Goal" }) as HTMLTextAreaElement).value, "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Close goal planner sheet" }));
+    assert.equal(closed.mock.calls.length, 1);
+  });
+
   test("names the worktree a failed task left behind", async () => {
     await launchReadyPlan({ planId: "plan-1", base: "main", launched: 0, results: [
       { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "codex", status: "failed", path: "/Users/sample/repo/companion-planner-sheet", error: "The session did not start" },
