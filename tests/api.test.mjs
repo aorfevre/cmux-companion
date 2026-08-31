@@ -55,9 +55,12 @@ async function pairedCookie(app) {
 }
 
 test("health is public while cmux data requires pairing", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN });
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, releaseVersion: { gitSha: "a".repeat(40), builtAt: "2026-08-31T00:00:00.000Z" } });
   t.after(() => app.close());
-  assert.equal((await app.inject({ url: "/api/health" })).statusCode, 200);
+  const health = await app.inject({ url: "/api/health" });
+  assert.equal(health.statusCode, 200);
+  assert.equal(health.json().version.gitSha, "a".repeat(40));
+  assert.equal((await app.inject({ url: "/api/updater/status" })).statusCode, 401);
   assert.equal((await app.inject({ url: "/api/bootstrap" })).statusCode, 401);
   assert.equal((await app.inject({ url: "/api/account-usage" })).statusCode, 401);
   assert.equal((await app.inject({ url: `/api/terminals/${TERM_ID}/replay` })).statusCode, 401);

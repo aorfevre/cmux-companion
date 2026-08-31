@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { readFile } from "node:fs/promises";
 import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
@@ -36,6 +37,11 @@ export async function buildApp({
   imageAttachments = new ImageAttachments(),
   accountUsage = new AccountUsage(),
   ccsReconnect = null,
+  releaseVersion = {
+    gitSha: process.env.CMUX_COMPANION_RELEASE_SHA || "development",
+    builtAt: process.env.CMUX_COMPANION_BUILT_AT || null,
+  },
+  updaterStatePath = process.env.CMUX_COMPANION_UPDATER_STATE || null,
 } = {}) {
   if (!token) throw new Error("A companion pairing token is required");
 
@@ -103,7 +109,29 @@ export async function buildApp({
     ok: true,
     service: "cmux-companion",
     now: new Date().toISOString(),
+    version: releaseVersion,
   }));
+
+  app.get("/api/updater/status", async () => {
+    if (!updaterStatePath) return { available: false };
+    try {
+      const state = JSON.parse(await readFile(updaterStatePath, "utf8"));
+      return {
+        available: true,
+        deployedSha: state.deployedSha || null,
+        observedRemoteSha: state.observedRemoteSha || null,
+        pendingSha: state.pendingSha || null,
+        phase: state.phase || "idle",
+        lastCheckAt: state.lastCheckAt || null,
+        lastSuccessAt: state.lastSuccessAt || null,
+        lastFailureAt: state.lastFailureAt || null,
+        lastError: state.lastError || null,
+        restartExpected: state.restartExpected === true,
+      };
+    } catch {
+      return { available: false };
+    }
+  });
 
   app.get("/api/auth/status", async (request) => ({
     paired: isAuthorized(request, token),
