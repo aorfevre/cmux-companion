@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { WorktreePlanner, assignAgents, describeRunFailure, parsePlannerReply } from "../server/worktree-planner.mjs";
+import { WorktreePlanner, assignAgents, describeRunFailure, finalEnvelope, parsePlannerReply, progressEvent } from "../server/worktree-planner.mjs";
 
 function envelope(text, sessionId = "session-1") {
   return `[i] Preparing CLIProxy...\n[OK] CLIProxy binary ready\n${JSON.stringify({ session_id: sessionId, result: text })}\n`;
@@ -649,4 +649,122 @@ test("a launched task keeps its own prompt when no image is attached", async () 
   await planner.launch(draft.planId);
   const workspace = deps.calls.find((call) => call[0] === "workspace");
   assert.equal(workspace[1].prompt, "Add billing.");
+});
+
+function streamLine(value) { return JSON.stringify(value); }
+function assistantLine(...content) { return streamLine({ type: "assistant", message: { content } }); }
+function resultLine(text, sessionId = "sess-a") { return streamLine({ type: "result", subtype: "success", session_id: sessionId, result: text }); }
+
+test("turns a tool_use line into a short label and never the whole input", () => {
+  const read = progressEvent(assistantLine({ type: "tool_use", name: "Read", input: { file_path: "/repo/sample/server/app.mjs", offset: 40, limit: 200 } }));
+  assert.deepEqual(read, { k: "tool", t: "Read server/app.mjs" });
+  const grep = progressEvent(assistantLine({ type: "tool_use", name: "Grep", input: { pattern: "worktree-plans", path: "/repo/secret" } }));
+  assert.deepEqual(grep, { k: "tool", t: 'Grep "worktree-plans"' });
+  assert.ok(!grep.t.includes("secret"));
+  assert.ok(!read.t.includes("200"));
+});
+
+test("reports prose without repeating what the planner is thinking", () => {
+  assert.deepEqual(progressEvent(assistantLine({ type: "text", text: "The billing module lives in server/billing.mjs and holds the secret key" })), { k: "text", t: "Thinking…" });
+});
+
+test("names an unknown tool without inventing a detail", () => {
+  assert.deepEqual(progressEvent(assistantLine({ type: "tool_use", name: "Skill", input: { command: "anything" } })), { k: "tool", t: "Skill" });
+});
+
+test("drops system, hook and user lines", () => {
+  for (const line of [
+    streamLine({ type: "system", subtype: "init", session_id: "sess-a" }),
+    streamLine({ type: "system", subtype: "hook_started" }),
+    streamLine({ type: "system", subtype: "hook_response" }),
+    streamLine({ type: "system", subtype: "notification" }),
+    streamLine({ type: "user", message: { content: [] } }),
+    resultLine("{}"),
+    "not json at all",
+    "",
+  ]) assert.equal(progressEvent(line), null, `line should be dropped: ${line.slice(0, 40)}`);
+});
+
+test("reads the plan from the final stream-json result line", () => {
+  const stdout = [
+    streamLine({ type: "system", subtype: "init", session_id: "sess-a" }),
+    assistantLine({ type: "tool_use", name: "Read", input: { file_path: "/repo/sample/package.json" } }),
+    resultLine('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}'),
+    "",
+  ].join("\n");
+  const reply = parsePlannerReply(finalEnvelope(stdout));
+  assert.equal(reply.sessionId, "sess-a");
+  assert.equal(reply.status, "ready");
+  assert.equal(reply.tasks[0].branch, "feature/billing");
+});
+
+test("still parses the plain envelope a non-streaming run produces", () => {
+  const plain = envelope('{"questions":[{"text":"Which database?"}]}', "sess-a");
+  assert.equal(finalEnvelope(plain), plain);
+  assert.equal(parsePlannerReply(finalEnvelope(plain)).status, "questions");
+});
+
+test("asks ccs for stream-json with verbose and still terminates the flags", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  const planner = new WorktreePlanner(deps);
+  await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const args = deps.calls.find((call) => call[0] === "ccs")[1];
+  assert.equal(args[args.indexOf("--output-format") + 1], "stream-json");
+  assert.ok(args.includes("--verbose"));
+  assert.equal(args.at(-2), "--");
+});
+
+// A fake execute that feeds NDJSON lines through onLine, the way the real
+// streaming runner does, then resolves with the whole buffer.
+function streamingDeps(lines) {
+  const deps = fakeDeps({ replies: [] });
+  deps.execute = async (bin, args, options) => {
+    deps.calls.push([bin, args, options]);
+    for (const line of lines) options.onLine?.(line);
+    return { stdout: `${lines.join("\n")}\n` };
+  };
+  return deps;
+}
+
+test("reports each tool call before the round resolves", async () => {
+  const lines = [
+    streamLine({ type: "system", subtype: "init", session_id: "sess-a" }),
+    assistantLine({ type: "tool_use", name: "Read", input: { file_path: "/repo/sample/server/app.mjs" } }),
+    assistantLine({ type: "tool_use", name: "Grep", input: { pattern: "worktree-plans" } }),
+    resultLine('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}'),
+  ];
+  const seen = [];
+  let resolved = false;
+  const planner = new WorktreePlanner(streamingDeps(lines));
+  const pending = planner.start({ repositoryId: REPO_ID, goal: "Add billing", onEvent: (event) => { seen.push([event, resolved]); } });
+  const draft = await pending;
+  resolved = true;
+  assert.equal(draft.status, "ready");
+  assert.deepEqual(seen.map(([event]) => event.t), ["Read server/app.mjs", 'Grep "worktree-plans"']);
+  assert.deepEqual(seen.map(([, after]) => after), [false, false], "every step must arrive before the round resolves");
+});
+
+test("sends no progress when the caller asked for none", async () => {
+  const deps = streamingDeps([resultLine('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}')]);
+  const planner = new WorktreePlanner(deps);
+  await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  assert.equal(deps.calls.find((call) => call[0] === "ccs")[2].onLine, undefined);
+});
+
+test("a throwing progress consumer never fails the round", async () => {
+  const lines = [
+    assistantLine({ type: "tool_use", name: "Read", input: { file_path: "/repo/sample/package.json" } }),
+    resultLine('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}'),
+  ];
+  const planner = new WorktreePlanner(streamingDeps(lines));
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", onEvent: () => { throw new Error("the browser went away"); } });
+  assert.equal(draft.status, "ready");
+});
+
+test("says it is retrying when the first sample was unusable", async () => {
+  const deps = fakeDeps({ replies: [envelope("no json here"), envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a")] });
+  const planner = new WorktreePlanner(deps);
+  const seen = [];
+  await planner.start({ repositoryId: REPO_ID, goal: "Add billing", onEvent: (event) => seen.push(event.t) });
+  assert.deepEqual(seen, ["Retrying…"]);
 });

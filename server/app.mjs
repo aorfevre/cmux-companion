@@ -4,6 +4,7 @@ import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
 import { CmuxEventHub } from "./event-hub.mjs";
+import { PlannerProgress, TRACE_ID } from "./planner-progress.mjs";
 import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
 import { capturePreview } from "./preview-capture.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
@@ -32,6 +33,7 @@ export async function buildApp({
   repoCatalog = new RepoCatalog(),
   worktreeDashboard = null,
   worktreePlanner = null,
+  plannerProgress = new PlannerProgress(),
   pushService = null,
   previewManager = null,
   promptQueue = null,
@@ -288,13 +290,55 @@ export async function buildApp({
     return worktrees.setRepositoryArchived(request.params.id, request.body?.archived, { workspaces: bootstrap.workspaces });
   });
 
+  // A round says nothing for minutes. This carries its live steps to the sheet
+  // that started it, keyed by a trace id the client made before it posted.
+  const progressReporter = (traceId) => (
+    TRACE_ID.test(String(traceId || "")) ? (event) => plannerProgress.publish(traceId, event) : null
+  );
+
+  async function reportRound(traceId, run) {
+    try {
+      const draft = await run(progressReporter(traceId));
+      plannerProgress.publish(traceId, { k: "done" });
+      return draft;
+    } catch (cause) {
+      plannerProgress.publish(traceId, { k: "error" });
+      throw cause;
+    }
+  }
+
   app.post("/api/worktree-plans", async (request, reply) => (
-    reply.code(201).send(await planner.start({ repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images }))
+    reply.code(201).send(await reportRound(request.body?.traceId, (onEvent) => (
+      planner.start({ repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, onEvent })
+    )))
   ));
 
   app.post("/api/worktree-plans/:planId/answers", async (request) => (
-    planner.answer(request.params.planId, { answers: request.body?.answers, skip: request.body?.skip === true })
+    reportRound(request.body?.traceId, (onEvent) => (
+      planner.answer(request.params.planId, { answers: request.body?.answers, skip: request.body?.skip === true, onEvent })
+    ))
   ));
+
+  // EventSource cannot set an Authorization header, but it does send cookies,
+  // and the onRequest hook already accepts the cmux_session cookie for /api/.
+  app.get("/api/worktree-plans/progress/:traceId", (request, reply) => {
+    const traceId = String(request.params.traceId || "");
+    if (!TRACE_ID.test(traceId)) throw new TypeError("Invalid progress id");
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    reply.hijack();
+    const write = (event) => { if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`); };
+    const detach = plannerProgress.subscribe(traceId, write);
+    // The stream sits silent through the six seconds of ccs startup, so a
+    // comment line keeps an idle intermediary from closing it.
+    const beat = setInterval(() => { if (!reply.raw.writableEnded) reply.raw.write(": ping\n\n"); }, 15_000);
+    beat.unref?.();
+    reply.raw.on("close", () => { clearInterval(beat); detach(); });
+  });
 
   // A full plan is 8 tasks with prompts of up to 4,000 characters each, which
   // measures about 33KB and so exceeds the global 32KB limit.
