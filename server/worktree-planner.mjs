@@ -94,3 +94,57 @@ function balancedEnd(text, start) {
 function cleanText(value) {
   return typeof value === "string" ? value.trim().slice(0, 4_000) : "";
 }
+
+const USABLE_STATUS = new Set(["ready", "low"]);
+const MIN_HEADROOM = 5;
+const CLOSE_ENOUGH = 10;
+const LABELS = { claude: "Claude", codex: "Codex" };
+
+export function assignAgents(tasks, usage) {
+  const claude = providerHeadroom(usage, "claude");
+  const codex = providerHeadroom(usage, "codex");
+  const list = Array.isArray(tasks) ? tasks : [];
+
+  if (claude === null && codex === null) {
+    return list.map((task) => ({ ...task, agent: "claude", agentReason: "Account usage is unavailable" }));
+  }
+  if (claude === null) return list.map((task) => ({ ...task, ...describe("codex", codex) }));
+  if (codex === null) return list.map((task) => ({ ...task, ...describe("claude", claude) }));
+
+  const roomier = codex > claude ? "codex" : "claude";
+  const other = roomier === "codex" ? "claude" : "codex";
+  const headroom = { claude, codex };
+  if (Math.abs(codex - claude) > CLOSE_ENOUGH) {
+    return list.map((task) => ({ ...task, ...describe(roomier, headroom[roomier]) }));
+  }
+  return list.map((task, index) => {
+    const agent = index % 2 === 0 ? roomier : other;
+    return { ...task, ...describe(agent, headroom[agent]) };
+  });
+}
+
+function describe(agent, percent) {
+  return { agent, agentReason: `${LABELS[agent]} · ${Math.round(percent)}% left` };
+}
+
+// Returns the best headroom across a provider's usable accounts, or null when
+// the provider cannot take work right now.
+function providerHeadroom(usage, id) {
+  const provider = (usage?.providers || []).find((item) => item?.id === id);
+  if (!provider) return null;
+  const scores = (provider.accounts || [])
+    .filter((account) => USABLE_STATUS.has(account?.status))
+    .map(accountHeadroom)
+    .filter((value) => value !== null);
+  if (!scores.length) return null;
+  const best = Math.max(...scores);
+  return best > MIN_HEADROOM ? best : null;
+}
+
+function accountHeadroom(account) {
+  const percents = (account?.windows || [])
+    .filter((window) => window?.category === "usage" && (window.cadence === "5h" || window.cadence === "weekly"))
+    .map((window) => window.remainingPercent)
+    .filter((value) => Number.isFinite(value));
+  return percents.length ? Math.min(...percents) : null;
+}

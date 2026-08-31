@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parsePlannerReply } from "../server/worktree-planner.mjs";
+import { assignAgents, parsePlannerReply } from "../server/worktree-planner.mjs";
 
 function envelope(text, sessionId = "session-1") {
   return `[i] Preparing CLIProxy...\n[OK] CLIProxy binary ready\n${JSON.stringify({ session_id: sessionId, result: text })}\n`;
@@ -72,4 +72,65 @@ test("stays fast on a large reply that ends in brace-heavy prose", () => {
   const started = Date.now();
   assert.throws(() => parsePlannerReply(envelope(text)), /unusable answer/);
   assert.ok(Date.now() - started < 1_000, `parse took ${Date.now() - started}ms`);
+});
+
+function usageFor(claudePercent, codexPercent) {
+  const provider = (id, percent) => ({
+    id,
+    available: percent !== null,
+    accounts: percent === null ? [] : [{
+      status: "ready",
+      windows: [
+        { cadence: "5h", category: "usage", remainingPercent: percent },
+        { cadence: "weekly", category: "usage", remainingPercent: percent + 5 },
+      ],
+    }],
+  });
+  return { providers: [provider("claude", claudePercent), provider("codex", codexPercent)] };
+}
+
+const THREE = [{ id: "t1" }, { id: "t2" }, { id: "t3" }];
+
+test("sends every task to the roomier provider when headroom is far apart", () => {
+  const tasks = assignAgents(THREE, usageFor(20, 90));
+  assert.deepEqual(tasks.map((task) => task.agent), ["codex", "codex", "codex"]);
+  assert.match(tasks[0].agentReason, /Codex/);
+  assert.match(tasks[0].agentReason, /90% left/);
+});
+
+test("alternates when the two providers are within ten points", () => {
+  const tasks = assignAgents(THREE, usageFor(70, 75));
+  assert.deepEqual(tasks.map((task) => task.agent), ["codex", "claude", "codex"]);
+});
+
+test("skips a provider with no headroom left", () => {
+  const tasks = assignAgents(THREE, usageFor(70, 3));
+  assert.deepEqual(tasks.map((task) => task.agent), ["claude", "claude", "claude"]);
+});
+
+test("falls back to claude when no usage is available", () => {
+  const tasks = assignAgents(THREE, usageFor(null, null));
+  assert.deepEqual(tasks.map((task) => task.agent), ["claude", "claude", "claude"]);
+  assert.match(tasks[0].agentReason, /usage is unavailable/i);
+});
+
+test("ignores accounts that need a reconnect", () => {
+  const usage = usageFor(70, 90);
+  usage.providers[1].accounts[0].status = "reconnect";
+  const tasks = assignAgents(THREE, usage);
+  assert.deepEqual(tasks.map((task) => task.agent), ["claude", "claude", "claude"]);
+});
+
+test("keeps the original task fields and does not mutate the input", () => {
+  const input = [{ id: "t1", title: "Billing", branch: "feature/billing", prompt: "Add billing." }];
+  const tasks = assignAgents(input, usageFor(90, 20));
+  assert.equal(tasks[0].title, "Billing");
+  assert.equal(tasks[0].branch, "feature/billing");
+  assert.equal(tasks[0].agent, "claude");
+  assert.equal(input[0].agent, undefined);
+});
+
+test("survives a null usage snapshot", () => {
+  const tasks = assignAgents(THREE, null);
+  assert.deepEqual(tasks.map((task) => task.agent), ["claude", "claude", "claude"]);
 });
