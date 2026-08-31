@@ -116,7 +116,9 @@ describe("contextual mobile features", () => {
     const oldWorktree = screen.getByText("chore/old-work").closest("article");
     assert.ok(oldWorktree);
     await userEvent.click(within(oldWorktree).getByRole("button", { name: "Remove" }));
-    assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/worktree-dashboard/worktree987654321") && init?.method === "DELETE"), true);
+    const removeCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/api/worktree-dashboard/worktree987654321") && init?.method === "DELETE");
+    assert.ok(removeCall);
+    assert.equal(new Headers(removeCall[1]?.headers).has("Content-Type"), false);
   });
 
   test("terminal Markdown and localhost references are interactive", async () => {
