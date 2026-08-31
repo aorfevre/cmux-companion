@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { WorktreePlanner, assignAgents, parsePlannerReply } from "../server/worktree-planner.mjs";
+import { WorktreePlanner, assignAgents, describeRunFailure, parsePlannerReply } from "../server/worktree-planner.mjs";
 
 function envelope(text, sessionId = "session-1") {
   return `[i] Preparing CLIProxy...\n[OK] CLIProxy binary ready\n${JSON.stringify({ session_id: sessionId, result: text })}\n`;
@@ -269,6 +269,33 @@ test("reports a missing ccs binary in plain words", async () => {
   const planner = new WorktreePlanner(deps);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }), /needs the ccs CLI/);
   assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 1);
+});
+
+test("names the missing claude CLI when ccs reports E301", async () => {
+  const stderr = [
+    "   \u001b[31m\u2554\u2550\u2550 ERROR \u2550\u2550\u2557\u001b[0m",
+    "   \u2551   Claude CLI not found   \u2551",
+    "   \u2551   CCS requires Claude CLI to be installed   \u2551",
+    "   \u2551   and available in PATH.   \u2551",
+    "   \u255a\u2550\u2550\u2550\u255d",
+    "",
+    "Error: E301",
+    "https://docs.ccs.kaitran.ca/reference/error-codes#e301",
+  ].join("\n");
+  const failed = Object.assign(new Error("Command failed"), { stderr });
+  const deps = fakeDeps({ replies: [failed] });
+  const planner = new WorktreePlanner(deps);
+  await assert.rejects(
+    () => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }),
+    /cannot find the claude CLI on PATH/,
+  );
+  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 1);
+});
+
+test("describeRunFailure keeps the last real line and drops the docs URL", () => {
+  const stderr = "\u2500\u2500 ERROR \u2500\u2500\nThe account is out of quota\nhttps://example.com/docs";
+  assert.equal(describeRunFailure(stderr), "The planner could not run: The account is out of quota");
+  assert.equal(describeRunFailure(""), "The planner could not run. Try again");
 });
 
 test("reports a timeout in plain words and does not run twice", async () => {
