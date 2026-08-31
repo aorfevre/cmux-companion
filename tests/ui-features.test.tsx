@@ -26,7 +26,9 @@ describe("contextual mobile features", () => {
     render(<AccountUsageView onBack={back} />);
     assert.ok(await screen.findByText("one@example.test"));
     assert.ok(screen.getByText("82%"));
-    assert.equal(screen.getAllByText("Not reported").length, 6);
+    assert.equal(screen.getAllByText("Not reported").length, 3);
+    assert.equal(screen.queryByText("Daily"), null);
+    assert.equal(screen.queryByText("Weekly"), null);
     assert.ok(screen.getByText("Reconnect this account in CCS"));
     await userEvent.click(screen.getByRole("button", { name: "Refresh account usage" }));
     await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("?refresh=1")), true));

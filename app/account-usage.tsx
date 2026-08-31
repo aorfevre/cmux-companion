@@ -11,8 +11,6 @@ type ReconnectSession = { sessionId: string; provider: UsageProvider["id"]; stat
 
 const CORE_WINDOWS: Array<{ cadence: Exclude<Cadence, "other">; label: string }> = [
   { cadence: "5h", label: "5 hours" },
-  { cadence: "daily", label: "Daily" },
-  { cadence: "weekly", label: "Weekly" },
   { cadence: "monthly", label: "Monthly" },
 ];
 
