@@ -437,7 +437,7 @@ test("creates one worktree and one session per task", async () => {
   assert.equal(workspace[1].agent, "claude");
   assert.equal(workspace[1].title, "Billing");
   assert.equal(workspace[1].cwd, "/repo/sample-feature-billing");
-  assert.equal(workspace[1].prompt, "Add billing.");
+  assert.match(workspace[1].prompt, /^Add billing\.\n\nFinish with a pull request:/);
 });
 
 test("fetches the default branch before it creates anything", async () => {
@@ -637,7 +637,7 @@ test("appends the image paths to every launched task prompt", async () => {
   const prompts = deps.calls.filter((call) => call[0] === "workspace").map((call) => call[1].prompt);
   assert.equal(prompts.length, 2);
   for (const prompt of prompts) {
-    assert.match(prompt, /Attached images:\n- \/attachments\/one\.png\n- \/attachments\/two\.png$/);
+    assert.match(prompt, /Attached images:\n- \/attachments\/one\.png\n- \/attachments\/two\.png\n\nFinish with a pull request:/);
   }
   assert.ok(prompts[0].startsWith("Do it.\n\n"));
 });
@@ -648,7 +648,52 @@ test("a launched task keeps its own prompt when no image is attached", async () 
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   const workspace = deps.calls.find((call) => call[0] === "workspace");
-  assert.equal(workspace[1].prompt, "Add billing.");
+  assert.ok(workspace[1].prompt.startsWith("Add billing."));
+  assert.ok(!workspace[1].prompt.includes("Attached image"));
+});
+
+test("appends the pull request step to every task prompt, naming the real base branch", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.update(draft.planId, { tasks: [
+    { id: "t1", title: "Good", branch: "feature/good", prompt: "Do it.", agent: "claude" },
+    { id: "t2", title: "Also", branch: "feature/also", prompt: "Do that.", agent: "codex" },
+  ] });
+  await planner.launch(draft.planId);
+  const prompts = deps.calls.filter((call) => call[0] === "workspace").map((call) => call[1].prompt);
+  assert.equal(prompts.length, 2);
+  for (const prompt of prompts) {
+    assert.match(prompt, /Finish with a pull request:/);
+    assert.match(prompt, /gh pr create/);
+    // The base is origin/main, so the PR must target main, not origin/main.
+    assert.match(prompt, /pull request against main\b/);
+    assert.ok(!prompt.includes("against origin/main"));
+    assert.match(prompt, /even when your own checks fail/);
+    assert.ok(!/draft/i.test(prompt.replace("Do not mark it a draft.", "")));
+  }
+});
+
+test("names a master default branch rather than assuming main", async () => {
+  const deps = launchDeps();
+  deps.git = async (cwd, args) => {
+    deps.calls.push(["git", args]);
+    if (args[0] === "symbolic-ref") return "origin/master\n";
+    return "";
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.base, "origin/master");
+  assert.match(deps.calls.find((call) => call[0] === "workspace")[1].prompt, /pull request against master\b/);
+});
+
+test("tells the planner not to write its own pull request instructions", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  const planner = new WorktreePlanner(deps);
+  await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const prompt = deps.calls.find((call) => call[0] === "ccs")[1].at(-1);
+  assert.match(prompt, /Do not tell a task to commit, to push, or to open a pull request/);
 });
 
 function streamLine(value) { return JSON.stringify(value); }

@@ -388,8 +388,8 @@ export class WorktreePlanner {
         title: task.title,
         agent: task.agent,
         // Each worktree agent is isolated, so every task prompt carries the
-        // image paths itself.
-        prompt: withImages(task.prompt, draft.images),
+        // image paths and the closing pull request step itself.
+        prompt: taskPrompt(task.prompt, draft.images, base),
       });
       return { ...summary, status: "launched", path, workspace };
     } catch (cause) {
@@ -547,6 +547,7 @@ const CONTRACT = [
   "Each task prompt is self-contained: it states the outcome, the files or areas to touch, and how to verify the work.",
   "Return one task when the goal is a single unit of work. That is a valid answer.",
   "Do not include an agent field. The server assigns the agent.",
+  "Do not tell a task to commit, to push, or to open a pull request. The server appends that step to every prompt.",
 ].join("\n");
 
 const OVERRIDES = [
@@ -565,6 +566,24 @@ function imageBlock(images) {
 function withImages(prompt, images) {
   const block = imageBlock(images);
   return block ? `${prompt}\n\n${block}` : prompt;
+}
+
+// The plan ends at a pull request, not at a finished worktree. The agent opens
+// it, because the branch has no commit at launch time and gh would refuse an
+// empty one. Each agent is isolated, so every task prompt carries this itself.
+function pullRequestStep(base) {
+  const branch = String(base || "").replace(/^origin\//, "") || "main";
+  return [
+    "Finish with a pull request:",
+    "1. Commit your work.",
+    "2. Push the branch to origin.",
+    `3. Open a pull request against ${branch} with \`gh pr create\`. Do not mark it a draft.`,
+    "Open the pull request even when your own checks fail. State what failed at the top of its body, so the work stays visible instead of stopping on this machine.",
+  ].join("\n");
+}
+
+function taskPrompt(prompt, images, base) {
+  return [withImages(prompt, images), pullRequestStep(base)].join("\n\n");
 }
 
 function normalizeImages(images) {
