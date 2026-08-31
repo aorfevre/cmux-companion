@@ -247,6 +247,11 @@ export async function buildApp({
     return worktrees.remove(request.params.id, { workspaces: bootstrap.workspaces });
   });
 
+  app.patch("/api/worktree-dashboard/repositories/:id/archive", async (request) => {
+    const bootstrap = await loadBootstrap();
+    return worktrees.setRepositoryArchived(request.params.id, request.body?.archived, { workspaces: bootstrap.workspaces });
+  });
+
   app.get("/api/repos/:id/changes", async (request) => repoCatalog.changes(request.params.id));
 
   app.get("/api/repos/:id/diff", async (request) => {

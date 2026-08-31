@@ -102,13 +102,16 @@ describe("contextual mobile features", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     render(<WorktreeDashboardView onOpenWorkspace={open} onLaunched={launched} onNotice={notice} />);
     assert.ok(await screen.findByText("feature/mobile"));
+    await userEvent.click(screen.getByRole("tab", { name: /Rekord/ }));
+    assert.ok(screen.getByText("No active Rekord projects"));
+    await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
     assert.equal(screen.getByRole("link", { name: /PR #12.*Mobile dashboard/ }).getAttribute("href"), "https://github.test/pr/12");
     await userEvent.click(screen.getByRole("button", { name: /^mobile agent/ }));
     assert.deepEqual(open.mock.calls[0], ["workspace-1"]);
     await userEvent.click(screen.getByRole("button", { name: "Close session mobile agent" }));
     assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/workspaces/workspace-1/close") && init?.method === "POST"), true);
-    await userEvent.click(screen.getAllByRole("button", { name: "＋ Agent" })[0]);
-    assert.ok(screen.getByRole("dialog", { name: "Launch worktree agent" }));
+    await userEvent.click(screen.getAllByRole("button", { name: "＋ Session" })[0]);
+    assert.ok(screen.getByRole("dialog", { name: "Launch worktree session" }));
     await userEvent.click(screen.getByRole("button", { name: "Claude (xclaude)" }));
     const initialTask = screen.getByRole("textbox", { name: "Initial task" });
     await userEvent.type(initialTask, "Review the mobile dashboard");
@@ -129,6 +132,13 @@ describe("contextual mobile features", () => {
     const removeCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/api/worktree-dashboard/worktree987654321") && init?.method === "DELETE");
     assert.ok(removeCall);
     assert.equal(new Headers(removeCall[1]?.headers).has("Content-Type"), false);
+    await userEvent.click(screen.getByRole("button", { name: "Archive companion" }));
+    assert.ok(screen.getByText("No active Karven projects"));
+    assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/repositories/repo-1/archive") && init?.method === "PATCH"), true);
+    await userEvent.click(screen.getByRole("tab", { name: /Archived/ }));
+    assert.ok(screen.getByRole("button", { name: "Unarchive companion" }));
+    await userEvent.click(screen.getByRole("button", { name: "Unarchive companion" }));
+    assert.ok(screen.getByText("No archived Karven projects"));
   });
 
   test("terminal Markdown and localhost references are interactive", async () => {

@@ -90,7 +90,7 @@ The home screen starts in **Sessions**. Use the compact **Sessions / Worktrees B
 
 Open **Settings → Licence usage** to see the remaining quota for every Claude Code and OpenAI Codex account registered in CCS. The view refreshes directly from each provider, clearly marks expired accounts that need reconnection, and labels provider-omitted windows as **Not reported** instead of treating them as exhausted.
 
-Worktrees Beta discovers Git's registered worktrees for the configured repository roots, then groups open cmux sessions by their current directory. Each worktree shows its branch, changed-file count, ahead/behind state, latest activity, agent state, and matching open GitHub pull request. **＋ Agent** opens a launcher scoped to that exact registered worktree and starts Codex through `xcodex` or Claude through `xclaude`. The server refreshes and revalidates the Git worktree before launch, so a stale or removed worktree cannot be used as a target.
+Worktrees Beta discovers Git's registered worktrees for the configured repository roots, then groups open cmux sessions by their current directory. Each worktree shows its branch, changed-file count, ahead/behind state, latest activity, agent state, and matching open GitHub pull request. **＋ Session** opens a launcher scoped to that exact registered worktree and starts a new cmux session with Codex through `xcodex` or Claude through `xclaude`. The server refreshes and revalidates the Git worktree before launch, so a stale or removed worktree cannot be used as a target.
 
 ```bash
 npm run status

@@ -192,6 +192,7 @@ test("serves the opt-in worktree dashboard and launches an agent in a registered
     snapshot: async (input) => { calls.push(["snapshot", input]); return value; },
     resolve: async (id) => { calls.push(["resolve", id]); if (id !== target.id) throw new TypeError("Unknown worktree"); return target; },
     remove: async (id, input) => { calls.push(["remove", id, input]); return { removed: true, branchPreserved: true }; },
+    setRepositoryArchived: async (id, archived, input) => { calls.push(["archive", id, archived, input]); return { repository: { id, archived } }; },
     invalidate: () => calls.push(["invalidate"]),
   };
   const app = await buildApp({ cmux, token: TOKEN, worktreeDashboard });
@@ -207,7 +208,10 @@ test("serves the opt-in worktree dashboard and launches an agent in a registered
   const removed = await app.inject({ method: "DELETE", url: `/api/worktree-dashboard/${target.id}`, headers });
   assert.equal(removed.statusCode, 200);
   assert.equal(removed.json().branchPreserved, true);
-  assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "resolve", "invalidate", "remove"]);
+  const archived = await app.inject({ method: "PATCH", url: "/api/worktree-dashboard/repositories/repository12345678/archive", headers, payload: { archived: true } });
+  assert.equal(archived.statusCode, 200);
+  assert.equal(archived.json().repository.archived, true);
+  assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "resolve", "invalidate", "remove", "archive"]);
 });
 
 test("falls back to an authenticated text screen when replay is unavailable", async (t) => {

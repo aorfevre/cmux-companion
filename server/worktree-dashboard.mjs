@@ -2,16 +2,18 @@ import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { basename, relative, resolve } from "node:path";
 import { normalizePullRequest, parsePorcelainV2 } from "./repo-catalog.mjs";
+import { RepositoryArchive } from "./repository-archive.mjs";
 
 const STATUS_PRIORITY = { ready: 0, done: 1, working: 2, attention: 3 };
 
 export class WorktreeDashboard {
-  constructor({ repoCatalog, cacheMs = 5_000, pullRequestCacheMs = 30_000, canonicalize = realpath } = {}) {
+  constructor({ repoCatalog, cacheMs = 5_000, pullRequestCacheMs = 30_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive() } = {}) {
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
     this.repoCatalog = repoCatalog;
     this.cacheMs = cacheMs;
     this.pullRequestCacheMs = pullRequestCacheMs;
     this.canonicalize = canonicalize;
+    this.repositoryArchive = repositoryArchive;
     this.cache = null;
     this.pullRequestCache = new Map();
     this.targets = new Map();
@@ -50,6 +52,7 @@ export class WorktreeDashboard {
     for (const repository of repositories) {
       for (const worktree of repository.worktrees) finalizeWorktree(worktree);
       repository.summary = summarizeWorktrees(repository.worktrees);
+      repository.archived = this.repositoryArchive.has(repository.id);
     }
 
     const orphanSessions = (workspaces || []).filter((workspace) => !assigned.has(workspace.id)).map(normalizeSession);
@@ -193,6 +196,17 @@ export class WorktreeDashboard {
     this.repoCatalog.cache = null;
     this.invalidate();
     return { removed: true, worktree: { id: worktree.id, branch: worktree.branch, path: worktree.path }, branchPreserved: true };
+  }
+
+  async setRepositoryArchived(id, archived, { workspaces = [] } = {}) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid repository");
+    if (typeof archived !== "boolean") throw new TypeError("Archived must be true or false");
+    const dashboard = await this.snapshot({ workspaces, refresh: true });
+    const repository = dashboard.repositories.find((item) => item.id === id);
+    if (!repository) throw new TypeError("Unknown repository");
+    const saved = this.repositoryArchive.set(id, archived);
+    this.invalidate();
+    return { repository: { id: repository.id, name: repository.name, archived: saved } };
   }
 
   invalidate() {
