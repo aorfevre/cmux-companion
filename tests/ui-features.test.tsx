@@ -88,18 +88,23 @@ describe("contextual mobile features", () => {
         id: "worktree123456789", repoId: "repo-1", path: "/repo/companion-feature", name: "companion-feature", branch: "feature/mobile", isPrimary: false, detached: false, ahead: 2, behind: 0, changedFiles: 3, dirty: true, lastActivity: Math.round(Date.now() / 1000), state: { label: "Working", tone: "working" },
         pullRequest: { number: 12, title: "Mobile dashboard", url: "https://github.test/pr/12", isDraft: false, reviewDecision: "REVIEW_REQUIRED", mergeState: "CLEAN", checks: { passed: 2, failed: 0, pending: 1, total: 3 } },
         sessions: [{ id: "workspace-1", title: "mobile agent", preview: "Editing app/page.tsx", terminalCount: 1, lastActivityAt: Math.round(Date.now() / 1000), provider: "Codex", state: { label: "Working", tone: "working" } }],
+      }, {
+        id: "worktree987654321", repoId: "repo-1", path: "/repo/companion-old", name: "companion-old", branch: "chore/old-work", isPrimary: false, detached: false, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, state: { label: "No session", tone: "ready" }, pullRequest: null, sessions: [],
       }] }] };
     const open = vi.fn(); const launched = vi.fn(async () => {}); const notice = vi.fn();
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST"
       ? new Response(JSON.stringify({ workspace: { workspace_id: "workspace-new" } }), { status: 201 })
       : new Response(JSON.stringify(dashboard), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("confirm", vi.fn(() => true));
     render(<WorktreeDashboardView onOpenWorkspace={open} onLaunched={launched} onNotice={notice} />);
     assert.ok(await screen.findByText("feature/mobile"));
     assert.equal(screen.getByRole("link", { name: /PR #12.*Mobile dashboard/ }).getAttribute("href"), "https://github.test/pr/12");
-    await userEvent.click(screen.getByRole("button", { name: /mobile agent/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^mobile agent/ }));
     assert.deepEqual(open.mock.calls[0], ["workspace-1"]);
-    await userEvent.click(screen.getByRole("button", { name: "＋ Agent" }));
+    await userEvent.click(screen.getByRole("button", { name: "Close session mobile agent" }));
+    assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/workspaces/workspace-1/close") && init?.method === "POST"), true);
+    await userEvent.click(screen.getAllByRole("button", { name: "＋ Agent" })[0]);
     assert.ok(screen.getByRole("dialog", { name: "Launch worktree agent" }));
     await userEvent.click(screen.getByRole("button", { name: "Claude (xclaude)" }));
     await userEvent.type(screen.getByRole("textbox", { name: "Initial task" }), "Review the mobile dashboard");
@@ -108,6 +113,11 @@ describe("contextual mobile features", () => {
     const launchCall = fetchMock.mock.calls.find(([url, init]) => String(url).includes("/worktree123456789/launch") && init?.method === "POST");
     assert.ok(launchCall);
     assert.match(String(launchCall?.[1]?.body), /Review the mobile dashboard/);
+    const oldWorktree = screen.getByText("chore/old-work").closest("article");
+    assert.ok(oldWorktree);
+    await userEvent.click(within(oldWorktree).getByLabelText("Actions for chore/old-work"));
+    await userEvent.click(within(oldWorktree).getByRole("button", { name: "Remove worktree" }));
+    assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/worktree-dashboard/worktree987654321") && init?.method === "DELETE"), true);
   });
 
   test("terminal Markdown and localhost references are interactive", async () => {

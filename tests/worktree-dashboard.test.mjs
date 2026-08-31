@@ -87,3 +87,30 @@ test("coalesces catalog entries that belong to one linked-worktree repository", 
   assert.equal(value.repositories[0].worktrees.length, 2);
   assert.equal(value.repositories[0].worktrees.filter((item) => item.isPrimary).length, 1);
 });
+
+test("removes only clean, idle, non-primary worktrees while preserving their branch", async () => {
+  const calls = [];
+  const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
+  const repoCatalog = {
+    cache: null,
+    list: async () => [{ id: "repo-safe", name: "sample", root: "repo", path: "/repo/sample", branch: "main" }],
+    git: async (cwd, args) => {
+      calls.push([cwd, ...args]);
+      if (args[0] === "worktree" && args[1] === "list") return inventory;
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd.endsWith("feature") ? "feature/mobile" : "main"}\n`;
+      if (args[0] === "log") return "1\n";
+      return "";
+    },
+    execute: async () => { throw new Error("gh unavailable"); },
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const snapshot = await dashboard.snapshot({ workspaces: [] });
+  const primary = snapshot.repositories[0].worktrees.find((item) => item.isPrimary);
+  const feature = snapshot.repositories[0].worktrees.find((item) => !item.isPrimary);
+  await assert.rejects(() => dashboard.remove(primary.id), /primary worktree/);
+  const result = await dashboard.remove(feature.id);
+  assert.equal(result.branchPreserved, true);
+  assert.deepEqual(calls.at(-1), ["/repo/sample", "worktree", "remove", "/repo/sample-feature"]);
+});

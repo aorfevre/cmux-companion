@@ -176,6 +176,7 @@ test("serves the opt-in worktree dashboard and launches an agent in a registered
   const worktreeDashboard = {
     snapshot: async (input) => { calls.push(["snapshot", input]); return value; },
     resolve: async (id) => { calls.push(["resolve", id]); if (id !== target.id) throw new TypeError("Unknown worktree"); return target; },
+    remove: async (id, input) => { calls.push(["remove", id, input]); return { removed: true, branchPreserved: true }; },
     invalidate: () => calls.push(["invalidate"]),
   };
   const app = await buildApp({ cmux, token: TOKEN, worktreeDashboard });
@@ -188,7 +189,10 @@ test("serves the opt-in worktree dashboard and launches an agent in a registered
   const launched = await app.inject({ method: "POST", url: `/api/worktree-dashboard/${target.id}/launch`, headers, payload: { agent: "claude", prompt: "Review mobile UX" } });
   assert.equal(launched.statusCode, 201);
   assert.deepEqual(cmux.calls.at(-1), ["create", { cwd: target.path, title: "safe: feature/mobile", agent: "claude", prompt: "Review mobile UX" }]);
-  assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "resolve", "invalidate"]);
+  const removed = await app.inject({ method: "DELETE", url: `/api/worktree-dashboard/${target.id}`, headers });
+  assert.equal(removed.statusCode, 200);
+  assert.equal(removed.json().branchPreserved, true);
+  assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "resolve", "invalidate", "remove"]);
 });
 
 test("falls back to an authenticated text screen when replay is unavailable", async (t) => {
@@ -349,6 +353,9 @@ test("every state-changing route requires pairing and same-origin requests", asy
     assert.equal((await app.inject({ method: "POST", url, payload })).statusCode, 401, url);
     assert.equal((await app.inject({ method: "POST", url, payload, headers: { cookie, host: "mac.tail.test", origin: "https://evil.test" } })).statusCode, 403, url);
   }
+  const worktreeRemoval = "/api/worktree-dashboard/worktree123456789";
+  assert.equal((await app.inject({ method: "DELETE", url: worktreeRemoval })).statusCode, 401);
+  assert.equal((await app.inject({ method: "DELETE", url: worktreeRemoval, headers: { cookie, host: "mac.tail.test", origin: "https://evil.test" } })).statusCode, 403);
 });
 
 test("normalizes actionable requests separately from unread notifications", () => {

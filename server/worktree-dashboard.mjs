@@ -134,7 +134,7 @@ export class WorktreeDashboard {
         sessions: [],
         state: { label: "No session", tone: "ready" },
       };
-      targets.set(id, { ...worktree, repoName: basename(primaryPath) });
+      targets.set(id, { ...worktree, repoName: basename(primaryPath), repositoryPath: primaryPath });
       return worktree;
     } catch {
       return null;
@@ -168,6 +168,22 @@ export class WorktreeDashboard {
     const target = this.targets.get(id);
     if (!target) throw new TypeError("Unknown worktree");
     return { ...target };
+  }
+
+  async remove(id, { workspaces = [] } = {}) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid worktree");
+    const dashboard = await this.snapshot({ workspaces, refresh: true });
+    const worktree = dashboard.repositories.flatMap((repository) => repository.worktrees).find((item) => item.id === id);
+    const target = this.targets.get(id);
+    if (!worktree || !target) throw new TypeError("Unknown worktree");
+    if (worktree.isPrimary) throw new TypeError("The primary worktree cannot be removed");
+    if (worktree.sessions.length) throw new TypeError("Close this worktree’s sessions before removing it");
+    if (worktree.dirty) throw new TypeError("Commit or stash this worktree’s changes before removing it");
+    if (worktree.locked) throw new TypeError("Unlock this Git worktree before removing it");
+    await this.repoCatalog.git(target.repositoryPath, ["worktree", "remove", target.path]);
+    this.repoCatalog.cache = null;
+    this.invalidate();
+    return { removed: true, worktree: { id: worktree.id, branch: worktree.branch, path: worktree.path }, branchPreserved: true };
   }
 
   invalidate() {

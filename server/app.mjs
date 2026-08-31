@@ -195,7 +195,12 @@ export async function buildApp({
 
   app.post("/api/workspaces/:id/rename", async (request) => cmux.workspaceRename(request.params.id, request.body?.title));
 
-  app.post("/api/workspaces/:id/close", async (request) => cmux.workspaceClose(request.params.id));
+  app.post("/api/workspaces/:id/close", async (request) => {
+    const result = await cmux.workspaceClose(request.params.id);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
+  });
 
   app.post("/api/workspaces/:id/respawn", async (request) => (
     cmux.workspaceRespawn(request.params.id, request.body?.surfaceId)
@@ -230,6 +235,11 @@ export async function buildApp({
       workspace: created,
       worktree: { id: target.id, repoId: target.repoId, branch: target.branch, path: target.path },
     });
+  });
+
+  app.delete("/api/worktree-dashboard/:id", async (request) => {
+    const bootstrap = await loadBootstrap();
+    return worktrees.remove(request.params.id, { workspaces: bootstrap.workspaces });
   });
 
   app.get("/api/repos/:id/changes", async (request) => repoCatalog.changes(request.params.id));
