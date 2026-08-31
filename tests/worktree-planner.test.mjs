@@ -482,7 +482,34 @@ test("rejects a launch while questions are still open", async () => {
 test("forgets the plan after a launch so it cannot run twice", async () => {
   const deps = launchDeps();
   const planner = new WorktreePlanner(deps);
-  const draft = await readyDraft(planner, deps);
-  await planner.launch(draft.planId);
+  const draft = await readyDraft(planner);
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.launched, 1);
   await assert.rejects(() => planner.launch(draft.planId), /Unknown plan/);
+});
+
+test("keeps the plan when every task failed", async () => {
+  const deps = launchDeps();
+  deps.cmux.workspaceCreate = async () => { throw new Error("cmux is not running"); };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  const first = await planner.launch(draft.planId);
+  assert.equal(first.launched, 0);
+  assert.equal(first.results[0].status, "failed");
+  const second = await planner.launch(draft.planId);
+  assert.equal(second.results[0].status, "failed");
+});
+
+test("handles a full ref path from symbolic-ref", async () => {
+  const deps = launchDeps();
+  deps.git = async (cwd, args) => {
+    deps.calls.push(["git", args]);
+    if (args[0] === "symbolic-ref") return "refs/remotes/origin/develop\n";
+    return "";
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.base, "origin/develop");
+  assert.deepEqual(deps.calls.find((call) => call[0] === "git" && call[1][0] === "fetch")[1], ["fetch", "origin", "develop"]);
 });

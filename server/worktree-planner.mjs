@@ -255,8 +255,12 @@ export class WorktreePlanner {
     for (const task of draft.tasks) {
       results.push(await this.#launchTask(draft, task, base));
     }
-    this.drafts.delete(draft.planId);
-    return { planId: draft.planId, base, results };
+    const launched = results.filter((item) => item.status === "launched").length;
+    // Deleting stops a plan running twice. That risk does not exist when nothing
+    // was created, and keeping the draft saves the user a fresh planner round
+    // after a transient failure such as cmux being down.
+    if (launched > 0) this.drafts.delete(draft.planId);
+    return { planId: draft.planId, base, launched, results };
   }
 
   // One task never rolls back another: a half-made plan the user can see and
@@ -287,7 +291,7 @@ export class WorktreePlanner {
     let branch = "main";
     try {
       const output = await this.git(repositoryPath, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-      branch = String(output).trim().replace(/^origin\//, "") || "main";
+      branch = String(output).trim().replace(/^refs\/remotes\/origin\//, "").replace(/^origin\//, "") || "main";
     } catch {
       // No origin/HEAD ref locally. "main" is the safe default; the fetch below
       // reports it plainly if that guess is wrong.
