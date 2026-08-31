@@ -376,3 +376,113 @@ test("drops the oldest draft instead of growing without limit", async () => {
   }
   assert.ok(planner.drafts.size <= 50, `held ${planner.drafts.size} drafts`);
 });
+
+function launchDeps({ createFails = null, gitFails = null } = {}) {
+  const base = fakeDeps({ replies: [envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a")] });
+  base.worktrees.create = async (repositoryId, options) => {
+    base.calls.push(["create", repositoryId, options]);
+    if (createFails && options.branch === createFails) throw new TypeError("That branch already has a worktree");
+    return { created: true, worktree: { id: "w1", branch: options.branch, path: `/repo/sample-${options.branch.replace(/\W+/g, "-")}` } };
+  };
+  base.git = async (cwd, args) => {
+    base.calls.push(["git", args]);
+    if (args[0] === "symbolic-ref") return "origin/main\n";
+    if (args[0] === "fetch" && gitFails) throw Object.assign(new Error("fetch failed"), { stderr: "fatal: could not resolve host: github.com" });
+    return "";
+  };
+  return base;
+}
+
+async function readyDraft(planner) {
+  return planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+}
+
+test("creates one worktree and one session per task", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner, deps);
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.base, "origin/main");
+  assert.deepEqual(result.results.map((item) => item.status), ["launched"]);
+  const create = deps.calls.find((call) => call[0] === "create");
+  assert.deepEqual(create[2], { branch: "feature/billing", base: "origin/main" });
+  const workspace = deps.calls.find((call) => call[0] === "workspace");
+  assert.equal(workspace[1].agent, "claude");
+  assert.equal(workspace[1].title, "Billing");
+  assert.equal(workspace[1].cwd, "/repo/sample-feature-billing");
+  assert.equal(workspace[1].prompt, "Add billing.");
+});
+
+test("fetches the default branch before it creates anything", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner, deps);
+  await planner.launch(draft.planId);
+  const fetchAt = deps.calls.findIndex((call) => call[0] === "git" && call[1][0] === "fetch");
+  const createAt = deps.calls.findIndex((call) => call[0] === "create");
+  assert.ok(fetchAt !== -1, "it must fetch");
+  assert.ok(fetchAt < createAt, "the fetch must come first");
+  assert.deepEqual(deps.calls[fetchAt][1], ["fetch", "origin", "main"]);
+});
+
+test("a failed task does not stop the earlier task", async () => {
+  const deps = launchDeps({ createFails: "feature/boom" });
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner, deps);
+  await planner.update(draft.planId, { tasks: [
+    { id: "t1", title: "Good", branch: "feature/good", prompt: "Do it.", agent: "claude" },
+    { id: "t2", title: "Bad", branch: "feature/boom", prompt: "Do it.", agent: "codex" },
+    { id: "t3", title: "After", branch: "feature/after", prompt: "Do it.", agent: "claude" },
+  ] });
+  const result = await planner.launch(draft.planId);
+  assert.deepEqual(result.results.map((item) => item.status), ["launched", "failed", "launched"]);
+  assert.match(result.results[1].error, /already has a worktree/);
+  assert.equal(deps.calls.filter((call) => call[0] === "workspace").length, 2);
+});
+
+test("reports a failed session without losing the worktree", async () => {
+  const deps = launchDeps();
+  deps.cmux.workspaceCreate = async () => { throw new Error("cmux is not running"); };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner, deps);
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.results[0].status, "failed");
+  assert.match(result.results[0].error, /cmux is not running/);
+  assert.equal(result.results[0].path, "/repo/sample-feature-billing");
+});
+
+test("stops the launch when the fetch fails", async () => {
+  const deps = launchDeps({ gitFails: true });
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner, deps);
+  await assert.rejects(() => planner.launch(draft.planId), /could not fetch/i);
+  assert.equal(deps.calls.filter((call) => call[0] === "create").length, 0);
+});
+
+test("falls back to main when the default branch cannot be read", async () => {
+  const deps = launchDeps();
+  deps.git = async (cwd, args) => {
+    deps.calls.push(["git", args]);
+    if (args[0] === "symbolic-ref") throw new Error("no origin/HEAD");
+    return "";
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner, deps);
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.base, "origin/main");
+});
+
+test("rejects a launch while questions are still open", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await assert.rejects(() => planner.launch(draft.planId), /not ready/i);
+});
+
+test("forgets the plan after a launch so it cannot run twice", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner, deps);
+  await planner.launch(draft.planId);
+  await assert.rejects(() => planner.launch(draft.planId), /Unknown plan/);
+});

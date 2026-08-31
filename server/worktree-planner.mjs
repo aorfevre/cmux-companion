@@ -174,10 +174,12 @@ const MAX_TASKS = 8;
 const MAX_DRAFTS = 50;
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = execFileAsync, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = execFileAsync, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
+    // The dashboard owns the repo catalog, which owns the injected git runner.
+    this.git = git || ((cwd, args, options) => worktrees.repoCatalog.git(cwd, args, options));
     this.cmux = cmux;
     this.accountUsage = accountUsage;
     this.log = log;
@@ -243,6 +245,68 @@ export class WorktreePlanner {
     draft.tasks = next;
     draft.at = Date.now();
     return publicDraft(draft);
+  }
+
+  async launch(planId) {
+    const draft = this.#draft(planId);
+    if (draft.status !== "ready" || !draft.tasks.length) throw new TypeError("This plan is not ready to launch yet");
+    const base = await this.#baseRef(draft);
+    const results = [];
+    for (const task of draft.tasks) {
+      results.push(await this.#launchTask(draft, task, base));
+    }
+    this.drafts.delete(draft.planId);
+    return { planId: draft.planId, base, results };
+  }
+
+  // One task never rolls back another: a half-made plan the user can see and
+  // finish by hand beats a silent undo of work that already started.
+  async #launchTask(draft, task, base) {
+    const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent };
+    let path = null;
+    try {
+      const created = await this.worktrees.create(draft.repositoryId, { branch: task.branch, base });
+      path = created.worktree.path;
+      const workspace = await this.cmux.workspaceCreate({
+        cwd: path,
+        title: task.title,
+        agent: task.agent,
+        prompt: task.prompt,
+      });
+      return { ...summary, status: "launched", path, workspace };
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, branch: task.branch }, "planner task launch failed");
+      return { ...summary, status: "failed", path, error: cause?.message || "Could not launch this task" };
+    }
+  }
+
+  // Branch every task from the up-to-date default remote branch, so no task
+  // inherits another task's work or a stale local commit.
+  async #baseRef(draft) {
+    const repositoryPath = await this.#repositoryPath(draft);
+    let branch = "main";
+    try {
+      const output = await this.git(repositoryPath, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+      branch = String(output).trim().replace(/^origin\//, "") || "main";
+    } catch {
+      // No origin/HEAD ref locally. "main" is the safe default; the fetch below
+      // reports it plainly if that guess is wrong.
+      branch = "main";
+    }
+    try {
+      await this.git(repositoryPath, ["fetch", "origin", branch], { timeout: 120_000 });
+    } catch (cause) {
+      const detail = String(cause?.stderr || cause?.message || "").trim().split("\n").at(-1)?.slice(0, 160);
+      throw new TypeError(detail ? `Git could not fetch origin/${branch}: ${detail}` : `Git could not fetch origin/${branch}`);
+    }
+    return `origin/${branch}`;
+  }
+
+  async #repositoryPath(draft) {
+    const dashboard = await this.worktrees.snapshot({ refresh: false });
+    const repository = dashboard.repositories.find((item) => item.id === draft.repositoryId);
+    if (!repository) throw new TypeError("Unknown repository");
+    return repository.path;
   }
 
   async #round(draft, prompt) {
