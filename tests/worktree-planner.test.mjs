@@ -364,11 +364,43 @@ test("denies every tool that can write or execute", async () => {
   await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
   const args = deps.calls[0][1];
   const denied = args[args.indexOf("--disallowed-tools") + 1].split(",");
-  for (const tool of ["Bash", "Write", "Edit", "Task", "Skill"]) {
+  for (const tool of ["Bash", "Write", "Edit", "Task"]) {
     assert.ok(denied.includes(tool), `${tool} must be denied`);
   }
+  // Skill needs no entry: --disable-slash-commands loads no skill at all, so the
+  // tool is absent from the session rather than merely refused.
+  assert.ok(!denied.includes("Skill"));
   const allowed = args[args.indexOf("--allowed-tools") + 1].split(",");
   assert.deepEqual(allowed, ["Read", "Grep", "Glob"]);
+});
+
+test("runs the planner with no plugin, no skill and no MCP server", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const args = deps.calls[0][1];
+  assert.ok(args.includes("--strict-mcp-config"), "no MCP server may load");
+  assert.ok(args.includes("--disable-slash-commands"), "no skill may load");
+  assert.ok(args.includes("--setting-sources"), "no settings file may load");
+});
+
+test("passes an empty setting source rather than dropping the flag", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const args = deps.calls[0][1];
+  // A missing value would silently un-isolate the planner: the next flag would
+  // become the source list, and the user's plugins would load again.
+  assert.equal(args[args.indexOf("--setting-sources") + 1], "");
+});
+
+test("puts every isolation flag before the prompt terminator", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const args = deps.calls[0][1];
+  const terminator = args.indexOf("--");
+  assert.equal(args.at(-2), "--");
+  for (const flag of ["--setting-sources", "--strict-mcp-config", "--disable-slash-commands"]) {
+    assert.ok(args.indexOf(flag) < terminator, `${flag} must precede the terminator`);
+  }
 });
 
 test("rejects an answer whose question no longer exists", async () => {
