@@ -183,13 +183,14 @@ test("coalesces concurrent dashboard refreshes", async (t) => {
   assert.deepEqual([hostCalls, workspaceCalls, capabilityCalls], [1, 1, 1]);
 });
 
-test("serves the opt-in worktree dashboard and launches an agent in a registered worktree", async (t) => {
+test("serves the worktree dashboard and creates worktrees and sessions", async (t) => {
   const cmux = fakeCmux();
   const target = { id: "worktree123456789", repoId: "repo-safe", repoName: "safe", branch: "feature/mobile", path: "/approved/safe-feature" };
   const value = { generatedAt: "2026-08-31T00:00:00.000Z", summary: { repositories: 1, worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, repositories: [], orphanSessions: [] };
   const calls = [];
   const worktreeDashboard = {
     snapshot: async (input) => { calls.push(["snapshot", input]); return value; },
+    create: async (id, input) => { calls.push(["create-worktree", id, input]); return { created: true, branchCreated: true, worktree: target }; },
     resolve: async (id) => { calls.push(["resolve", id]); if (id !== target.id) throw new TypeError("Unknown worktree"); return target; },
     remove: async (id, input) => { calls.push(["remove", id, input]); return { removed: true, branchPreserved: true }; },
     setRepositoryArchived: async (id, archived, input) => { calls.push(["archive", id, archived, input]); return { repository: { id, archived } }; },
@@ -202,6 +203,9 @@ test("serves the opt-in worktree dashboard and launches an agent in a registered
   const dashboard = await app.inject({ url: "/api/worktree-dashboard?refresh=1", headers: { cookie } });
   assert.equal(dashboard.statusCode, 200);
   assert.equal(dashboard.json().summary.worktrees, 1);
+  const created = await app.inject({ method: "POST", url: "/api/worktree-dashboard/repositories/repository12345678/worktrees", headers, payload: { branch: "feature/mobile", base: "main" } });
+  assert.equal(created.statusCode, 201);
+  assert.equal(created.json().worktree.path, target.path);
   const launched = await app.inject({ method: "POST", url: `/api/worktree-dashboard/${target.id}/launch`, headers, payload: { agent: "claude", prompt: "Review mobile UX" } });
   assert.equal(launched.statusCode, 201);
   assert.deepEqual(cmux.calls.at(-1), ["create", { cwd: target.path, title: "safe: feature/mobile", agent: "claude", prompt: "Review mobile UX" }]);
@@ -211,7 +215,7 @@ test("serves the opt-in worktree dashboard and launches an agent in a registered
   const archived = await app.inject({ method: "PATCH", url: "/api/worktree-dashboard/repositories/repository12345678/archive", headers, payload: { archived: true } });
   assert.equal(archived.statusCode, 200);
   assert.equal(archived.json().repository.archived, true);
-  assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "resolve", "invalidate", "remove", "archive"]);
+  assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "create-worktree", "resolve", "invalidate", "remove", "archive"]);
 });
 
 test("falls back to an authenticated text screen when replay is unavailable", async (t) => {
@@ -343,6 +347,7 @@ test("every state-changing route requires pairing and same-origin requests", asy
   const mutations = [
     ["/api/auth/logout", {}],
     ["/api/workspaces", { repoId: "x" }],
+    ["/api/worktree-dashboard/repositories/repository12345678/worktrees", { branch: "feature/safe", base: "main" }],
     ["/api/worktree-dashboard/worktree123456789/launch", { agent: "codex" }],
     [`/api/workspaces/${WS_ID}/rename`, { title: "x" }],
     [`/api/workspaces/${WS_ID}/close`, {}],

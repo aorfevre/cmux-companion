@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { basename, relative, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { normalizePullRequest, parsePorcelainV2 } from "./repo-catalog.mjs";
 import { RepositoryArchive } from "./repository-archive.mjs";
 
@@ -198,6 +198,51 @@ export class WorktreeDashboard {
     return { removed: true, worktree: { id: worktree.id, branch: worktree.branch, path: worktree.path }, branchPreserved: true };
   }
 
+  async create(repositoryId, { branch, base } = {}) {
+    if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
+    const branchName = normalizedGitInput(branch, "Enter a branch name");
+    const dashboard = await this.snapshot({ refresh: true });
+    const repository = dashboard.repositories.find((item) => item.id === repositoryId);
+    if (!repository) throw new TypeError("Unknown repository");
+    if (repository.worktrees.some((item) => item.branch === branchName)) throw new TypeError("That branch already has a worktree");
+
+    try {
+      await this.repoCatalog.git(repository.path, ["check-ref-format", "--branch", branchName]);
+    } catch {
+      throw new TypeError("Choose a valid Git branch name");
+    }
+
+    const primary = repository.worktrees.find((item) => item.isPrimary) || repository.worktrees[0];
+    const baseRef = normalizedGitInput(base || primary?.branch || "HEAD", "Enter a base revision");
+    const branchExists = await this.repoCatalog.git(repository.path, ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`])
+      .then(() => true, () => false);
+    if (!branchExists) {
+      try {
+        await this.repoCatalog.git(repository.path, ["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`]);
+      } catch {
+        throw new TypeError("The base revision does not exist");
+      }
+    }
+
+    const targetPath = worktreePath(repository.path, branchName);
+    const args = branchExists
+      ? ["worktree", "add", targetPath, branchName]
+      : ["worktree", "add", "-b", branchName, targetPath, baseRef];
+    try {
+      await this.repoCatalog.git(repository.path, args, { timeout: 120_000 });
+    } catch (cause) {
+      const detail = gitErrorDetail(cause);
+      throw new TypeError(detail ? `Git could not create this worktree: ${detail}` : "Git could not create this worktree");
+    }
+
+    this.repoCatalog.cache = null;
+    this.invalidate();
+    const refreshed = await this.snapshot({ refresh: true });
+    const created = refreshed.repositories.flatMap((item) => item.worktrees).find((item) => item.path === targetPath);
+    if (!created) throw new TypeError("The worktree was created but could not be loaded");
+    return { created: true, worktree: created, branchCreated: !branchExists };
+  }
+
   async setRepositoryArchived(id, archived, { workspaces = [] } = {}) {
     if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid repository");
     if (typeof archived !== "boolean") throw new TypeError("Archived must be true or false");
@@ -235,6 +280,22 @@ export function parseWorktreeList(output) {
   }
   if (current?.path) records.push(current);
   return records;
+}
+
+function normalizedGitInput(value, missingMessage) {
+  if (typeof value !== "string") throw new TypeError(missingMessage);
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 200 || normalized.startsWith("-") || /[\0\r\n]/.test(normalized)) throw new TypeError(missingMessage);
+  return normalized;
+}
+
+export function worktreePath(repositoryPath, branch) {
+  const slug = String(branch).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 72) || "worktree";
+  return resolve(dirname(repositoryPath), `${basename(repositoryPath)}-${slug}`);
+}
+
+function gitErrorDetail(cause) {
+  return typeof cause?.stderr === "string" ? cause.stderr.trim().split("\n").at(-1)?.slice(0, 180) : "";
 }
 
 function worktreeId(repoId, path) {

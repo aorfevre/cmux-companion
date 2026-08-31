@@ -225,6 +225,11 @@ export async function buildApp({
     });
   });
 
+  app.post("/api/worktree-dashboard/repositories/:id/worktrees", async (request, reply) => {
+    const created = await worktrees.create(request.params.id, request.body || {});
+    return reply.code(201).send(created);
+  });
+
   app.post("/api/worktree-dashboard/:id/launch", async (request, reply) => {
     const target = await worktrees.resolve(request.params.id);
     const { agent = "codex", prompt = "", title } = request.body || {};

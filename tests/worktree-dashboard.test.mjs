@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { RepositoryArchive } from "../server/repository-archive.mjs";
-import { WorktreeDashboard, parseWorktreeList } from "../server/worktree-dashboard.mjs";
+import { WorktreeDashboard, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
 
 const REPO = { id: "repo-1234567890123", name: "sample", root: "karven", path: "/repo/sample", branch: "main" };
 
@@ -86,6 +86,43 @@ test("refreshes the registered inventory before resolving a launch target", asyn
   const id = first.repositories[0].worktrees[0].id;
   present = false;
   await assert.rejects(() => dashboard.resolve(id), /Unknown worktree/);
+});
+
+test("creates a sibling worktree from a validated branch and base revision", async () => {
+  const calls = [];
+  const targetPath = "/repo/sample-feature-safe-name";
+  let inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0";
+  const repoCatalog = {
+    cache: {},
+    list: async () => [REPO],
+    git: async (cwd, args, options) => {
+      calls.push([cwd, args, options]);
+      if (args[0] === "worktree" && args[1] === "add") {
+        inventory += `worktree ${targetPath}\0HEAD bbbbbbbb\0branch refs/heads/feature/safe-name\0\0`;
+        return "";
+      }
+      if (args[0] === "worktree") return inventory;
+      if (args[0] === "check-ref-format") return "feature/safe-name\n";
+      if (args[0] === "show-ref") throw new Error("missing branch");
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "aaaaaaaa\n";
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd === targetPath ? "feature/safe-name" : "main"}\n`;
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  const result = await dashboard.create(repositoryId, { branch: "feature/safe-name", base: "main" });
+  assert.equal(result.branchCreated, true);
+  assert.equal(result.worktree.path, targetPath);
+  assert.equal(result.worktree.branch, "feature/safe-name");
+  assert.equal(repoCatalog.cache, null);
+  const add = calls.find(([, args]) => args[0] === "worktree" && args[1] === "add");
+  assert.deepEqual(add, ["/repo/sample", ["worktree", "add", "-b", "feature/safe-name", targetPath, "main"], { timeout: 120_000 }]);
+  assert.equal(worktreePath("/repo/sample", "feature/safe-name"), targetPath);
 });
 
 test("coalesces catalog entries that belong to one linked-worktree repository", async () => {
