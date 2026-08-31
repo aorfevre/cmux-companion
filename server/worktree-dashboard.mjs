@@ -186,8 +186,9 @@ export class WorktreeDashboard {
       // --force is needed for ignored build output (node_modules, dist, etc.).
       // The fresh status check above still protects tracked and untracked work.
       await this.repoCatalog.git(target.repositoryPath, ["worktree", "remove", "--force", target.path], { timeout: 120_000 });
-    } catch {
-      throw new TypeError("Git could not remove this worktree");
+    } catch (cause) {
+      const detail = typeof cause?.stderr === "string" ? cause.stderr.trim().split("\n").at(-1)?.slice(0, 180) : "";
+      throw new TypeError(detail ? `Git could not remove this worktree: ${detail}` : "Git could not remove this worktree");
     }
     this.repoCatalog.cache = null;
     this.invalidate();

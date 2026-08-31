@@ -92,9 +92,12 @@ describe("contextual mobile features", () => {
         id: "worktree987654321", repoId: "repo-1", path: "/repo/companion-old", name: "companion-old", branch: "chore/old-work", isPrimary: false, detached: false, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, state: { label: "No session", tone: "ready" }, pullRequest: null, sessions: [],
       }] }] };
     const open = vi.fn(); const launched = vi.fn(async () => {}); const notice = vi.fn();
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST"
-      ? new Response(JSON.stringify({ workspace: { workspace_id: "workspace-new" } }), { status: 201 })
-      : new Response(JSON.stringify(dashboard), { status: 200 }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(_input);
+      if (url.endsWith("/api/attachments/images") && init?.method === "POST") return new Response(JSON.stringify({ image: { path: "/private/launch.png", name: "launch.png", mime: "image/png", size: 5 } }), { status: 201 });
+      if (init?.method === "POST") return new Response(JSON.stringify({ workspace: { workspace_id: "workspace-new" } }), { status: 201 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("confirm", vi.fn(() => true));
     render(<WorktreeDashboardView onOpenWorkspace={open} onLaunched={launched} onNotice={notice} />);
@@ -107,15 +110,22 @@ describe("contextual mobile features", () => {
     await userEvent.click(screen.getAllByRole("button", { name: "＋ Agent" })[0]);
     assert.ok(screen.getByRole("dialog", { name: "Launch worktree agent" }));
     await userEvent.click(screen.getByRole("button", { name: "Claude (xclaude)" }));
-    await userEvent.type(screen.getByRole("textbox", { name: "Initial task" }), "Review the mobile dashboard");
+    const initialTask = screen.getByRole("textbox", { name: "Initial task" });
+    await userEvent.type(initialTask, "Review the mobile dashboard");
+    const launchImage = new File(["image"], "launch.png", { type: "image/png" });
+    fireEvent.paste(initialTask, { clipboardData: { items: [{ type: "image/png", getAsFile: () => launchImage }] } });
+    assert.ok(await screen.findByRole("img", { name: "launch.png" }));
     await userEvent.click(screen.getByRole("button", { name: "Launch Claude" }));
     await waitFor(() => assert.deepEqual(launched.mock.calls[0], ["workspace-new"]));
     const launchCall = fetchMock.mock.calls.find(([url, init]) => String(url).includes("/worktree123456789/launch") && init?.method === "POST");
     assert.ok(launchCall);
     assert.match(String(launchCall?.[1]?.body), /Review the mobile dashboard/);
+    assert.match(String(launchCall?.[1]?.body), /Attached image:\\n- \/private\/launch.png/);
     const oldWorktree = screen.getByText("chore/old-work").closest("article");
     assert.ok(oldWorktree);
     await userEvent.click(within(oldWorktree).getByRole("button", { name: "Remove" }));
+    assert.ok(within(oldWorktree).getByText("Remove local worktree?"));
+    await userEvent.click(within(oldWorktree).getByRole("button", { name: "Confirm remove" }));
     const removeCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/api/worktree-dashboard/worktree987654321") && init?.method === "DELETE");
     assert.ok(removeCall);
     assert.equal(new Headers(removeCall[1]?.headers).has("Content-Type"), false);

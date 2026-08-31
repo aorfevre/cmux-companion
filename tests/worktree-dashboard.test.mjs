@@ -91,6 +91,7 @@ test("coalesces catalog entries that belong to one linked-worktree repository", 
 test("removes only clean, idle, non-primary worktrees while preserving their branch", async () => {
   const calls = [];
   let lateChange = false;
+  let removalError = false;
   let removalOptions = null;
   const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
   const repoCatalog = {
@@ -99,6 +100,7 @@ test("removes only clean, idle, non-primary worktrees while preserving their bra
     git: async (cwd, args, options) => {
       calls.push([cwd, ...args]);
       if (args[0] === "worktree" && args[1] === "remove") removalOptions = options;
+      if (args[0] === "worktree" && args[1] === "remove" && removalError) throw Object.assign(new Error("git failed"), { stderr: "warning: cleanup\nfatal: worktree metadata is locked\n" });
       if (args[0] === "worktree" && args[1] === "list") return inventory;
       if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
       if (args[0] === "rev-parse") return `${cwd}\n`;
@@ -116,6 +118,9 @@ test("removes only clean, idle, non-primary worktrees while preserving their bra
   lateChange = true;
   await assert.rejects(() => dashboard.remove(feature.id), /worktree changed/);
   lateChange = false;
+  removalError = true;
+  await assert.rejects(() => dashboard.remove(feature.id), /Git could not remove this worktree: fatal: worktree metadata is locked/);
+  removalError = false;
   const result = await dashboard.remove(feature.id);
   assert.equal(result.branchPreserved, true);
   assert.deepEqual(calls.at(-1), ["/repo/sample", "worktree", "remove", "--force", "/repo/sample-feature"]);
