@@ -44,13 +44,16 @@ export function safeEqual(left, right) {
 }
 
 export function isAuthorized(request, token) {
-  const expected = sessionValue(token);
-  const cookie = parseCookies(request.headers.cookie).cmux_session;
-  if (cookie && safeEqual(cookie, expected)) return true;
+  if (isSessionAuthorized(request, token)) return true;
 
   const authorization = String(request.headers.authorization || "");
   if (authorization.startsWith("Bearer ") && safeEqual(authorization.slice(7), token)) return true;
   return false;
+}
+
+export function isSessionAuthorized(request, token) {
+  const cookie = parseCookies(request.headers.cookie).cmux_session;
+  return Boolean(cookie && safeEqual(cookie, sessionValue(token)));
 }
 
 export function tailscaleIdentity(request) {

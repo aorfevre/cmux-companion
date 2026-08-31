@@ -6,8 +6,10 @@ import test from "node:test";
 import {
   ensureToken,
   isAuthorized,
+  isSessionAuthorized,
   isSafeOrigin,
   parseCookies,
+  sessionCookie,
   sessionValue,
 } from "../server/security.mjs";
 
@@ -25,8 +27,18 @@ test("authorizes only the pairing bearer or signed session cookie", () => {
   const token = "a-secure-pairing-token-that-is-long-enough";
   assert.equal(isAuthorized({ headers: { authorization: `Bearer ${token}` } }, token), true);
   assert.equal(isAuthorized({ headers: { cookie: `cmux_session=${sessionValue(token)}` } }, token), true);
+  assert.equal(isSessionAuthorized({ headers: { cookie: `cmux_session=${sessionValue(token)}` } }, token), true);
+  assert.equal(isSessionAuthorized({ headers: { authorization: `Bearer ${token}` } }, token), false);
   assert.equal(isAuthorized({ headers: { authorization: "Bearer wrong" } }, token), false);
   assert.equal(isAuthorized({ headers: { "tailscale-user-login": "owner@example.com" } }, token), false);
+});
+
+test("issues a secure one-year session cookie", () => {
+  const cookie = sessionCookie({ headers: { "x-forwarded-proto": "https" }, protocol: "http" }, "a-secure-pairing-token-that-is-long-enough");
+  assert.match(cookie, /Max-Age=31536000/);
+  assert.match(cookie, /HttpOnly/);
+  assert.match(cookie, /SameSite=Strict/);
+  assert.match(cookie, /Secure/);
 });
 
 test("parses cookies and validates same-origin mutations", () => {

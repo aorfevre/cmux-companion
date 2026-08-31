@@ -64,6 +64,21 @@ test("health is public while cmux data requires pairing", async (t) => {
   assert.equal((await app.inject({ method: "POST", url: "/api/auth/pair", payload: { token: "wrong" } })).statusCode, 401);
 });
 
+test("renews the one-year session cookie during authenticated use", async (t) => {
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const response = await app.inject({ url: "/api/bootstrap", headers: { cookie, host: "mac.tail.test", "x-forwarded-proto": "https" } });
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers["set-cookie"], /Max-Age=31536000/);
+  assert.match(response.headers["set-cookie"], /Secure/);
+  const bearer = await app.inject({ url: "/api/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
+  assert.equal(bearer.headers["set-cookie"], undefined);
+  const logout = await app.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" } });
+  assert.match(logout.headers["set-cookie"], /Max-Age=0/);
+  assert.doesNotMatch(logout.headers["set-cookie"], /Max-Age=31536000/);
+});
+
 test("serves authenticated CCS account usage and forwards explicit refresh", async (t) => {
   const calls = [];
   const value = { source: "CCS", providers: [], summary: {} };

@@ -11,6 +11,7 @@ import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import {
   isAuthorized,
+  isSessionAuthorized,
   isSafeOrigin,
   safeEqual,
   sessionCookie,
@@ -71,8 +72,12 @@ export async function buildApp({
     const path = request.url.split("?")[0];
     if (path.startsWith("/api/")) {
       reply.header("Cache-Control", "no-store");
-      if (!PUBLIC_API.has(path) && !isAuthorized(request, token)) {
+      const authorized = isAuthorized(request, token);
+      if (!PUBLIC_API.has(path) && !authorized) {
         return reply.code(401).send({ error: "Pair this device to continue", code: "UNAUTHORIZED" });
+      }
+      if (authorized && path !== "/api/auth/pair" && path !== "/api/auth/logout" && isSessionAuthorized(request, token)) {
+        reply.header("Set-Cookie", sessionCookie(request, token));
       }
       if (MUTATING.has(request.method) && !isSafeOrigin(request)) {
         return reply.code(403).send({ error: "Origin rejected", code: "BAD_ORIGIN" });

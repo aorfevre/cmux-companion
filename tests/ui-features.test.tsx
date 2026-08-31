@@ -115,8 +115,7 @@ describe("contextual mobile features", () => {
     assert.match(String(launchCall?.[1]?.body), /Review the mobile dashboard/);
     const oldWorktree = screen.getByText("chore/old-work").closest("article");
     assert.ok(oldWorktree);
-    await userEvent.click(within(oldWorktree).getByLabelText("Actions for chore/old-work"));
-    await userEvent.click(within(oldWorktree).getByRole("button", { name: "Remove worktree" }));
+    await userEvent.click(within(oldWorktree).getByRole("button", { name: "Remove" }));
     assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/worktree-dashboard/worktree987654321") && init?.method === "DELETE"), true);
   });
 
