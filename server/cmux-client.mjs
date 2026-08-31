@@ -11,7 +11,7 @@ const TARGET_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 const ALLOWED_KEYS = new Set([
   "enter", "escape", "tab", "up", "down", "left", "right",
   "backspace", "delete", "home", "end", "pageup", "pagedown",
-  "ctrl+c", "ctrl+d", "ctrl+z", "ctrl+l",
+  "ctrl+c", "ctrl+d", "ctrl+z", "ctrl+l", "ctrl+j",
 ]);
 const ALLOWED_TODO_ACTIONS = new Set(["check", "uncheck", "start"]);
 const ALLOWED_AGENTS = new Set(["shell", "codex", "claude"]);
@@ -436,11 +436,12 @@ export class CmuxClient {
   async sendPrompt(surfaceId, text) {
     assertTarget(surfaceId);
     assertInputText(text);
-    return this.rpc("mobile.terminal.paste", {
-      surface_id: surfaceId,
-      text,
-      submit_key: "return",
-    });
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index]) await this.sendText(surfaceId, lines[index]);
+      if (index < lines.length - 1) await this.sendKey(surfaceId, "ctrl+j");
+    }
+    await this.sendKey(surfaceId, "enter");
   }
 
   async selectWorkspace(workspaceId) {
