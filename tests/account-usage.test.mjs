@@ -66,6 +66,18 @@ test("returns a safe unavailable response when CCS cannot be loaded", async () =
   assert.doesNotMatch(JSON.stringify(value), /private\/path|token/);
 });
 
+test("treats authenticated accounts without reported windows as connected", async () => {
+  const empty = source();
+  empty.fetchAllClaudeQuotas = async () => [{ account: "one@example.test", quota: { success: true, lastUpdated: 1_788_000_000_000, windows: [] } }];
+  empty.getProviderAccounts = (provider) => provider === "claude" ? [{ id: "one@example.test", email: "one@example.test" }] : [];
+  empty.fetchAllCodexQuotas = async () => [];
+  const value = await new AccountUsage({ sourceLoader: async () => empty }).snapshot({ refresh: true });
+  const account = value.providers[0].accounts[0];
+  assert.equal(account.status, "ready");
+  assert.equal(account.message, "Connected. Provider reported no active usage window.");
+  assert.equal(value.summary.unavailable, 0);
+});
+
 test("discovers the installed CCS package without a hard-coded Node version", () => {
   const root = findCcsPackageRoot();
   assert.match(root, /@kaitranntt\/ccs$/);

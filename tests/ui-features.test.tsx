@@ -34,6 +34,33 @@ describe("contextual mobile features", () => {
     assert.equal(back.mock.calls.length, 1);
   });
 
+  test("offers a compact phone-safe reconnect flow only for expired accounts", async () => {
+    const usage = { generatedAt: new Date().toISOString(), source: "CCS", available: true, summary: { ready: 1, low: 0, exhausted: 0, reconnect: 1, unavailable: 0 }, providers: [
+      { id: "claude", label: "Claude Code", available: true, accounts: [{ id: "connected", label: "claude", email: "claude@example.test", plan: null, isDefault: true, paused: false, status: "ready", message: "Connected. Provider reported no active usage window.", updatedAt: null, windows: [] }] },
+      { id: "codex", label: "OpenAI Codex", available: true, accounts: [{ id: "0123456789abcdefabcd", label: "codex", email: "codex@example.test", plan: "pro", isDefault: false, paused: false, status: "reconnect", message: "Reconnect this account in CCS", updatedAt: null, windows: [] }] },
+    ] };
+    const waiting = { sessionId: "session-1", provider: "codex", status: "waiting", message: "Complete the provider login", authUrl: "https://auth.openai.test/authorize?state=safe", expiresAt: "2026-09-01T00:00:00.000Z" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/0123456789abcdefabcd/reconnect") && init?.method === "POST") return new Response(JSON.stringify(waiting), { status: 201 });
+      if (url.endsWith("/session-1/callback") && init?.method === "POST") return new Response(JSON.stringify({ ...waiting, status: "success", message: "Account reconnected", authUrl: null }), { status: 200 });
+      if (url.endsWith("/session-1")) return new Response(JSON.stringify(waiting), { status: 200 });
+      return new Response(JSON.stringify(usage), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AccountUsageView onBack={() => {}} />);
+    assert.ok(await screen.findByText("Connected. Provider reported no active usage window."));
+    assert.equal(screen.getAllByRole("button", { name: "Reconnect account" }).length, 1);
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect account" }));
+    assert.ok(await screen.findByRole("dialog", { name: "Reconnect OpenAI Codex" }));
+    assert.equal((await screen.findByRole("link", { name: /Open OpenAI login/ })).getAttribute("href"), waiting.authUrl);
+    fireEvent.change(screen.getByRole("textbox", { name: "Localhost callback URL" }), { target: { value: "http://localhost:1455/auth/callback?code=safe&state=safe" } });
+    await userEvent.click(screen.getByRole("button", { name: "Finish reconnect" }));
+    assert.ok(await screen.findByText("Account reconnected"));
+    assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/session-1/callback") && init?.method === "POST"), true);
+    assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("?refresh=1")), true);
+  });
+
   test("keeps classic sessions available while the worktree visualization is opt-in", async () => {
     const mode = vi.fn();
     render(<HomeModeSwitch mode="sessions" onMode={mode} />);

@@ -8,6 +8,7 @@ import { capturePreview } from "./preview-capture.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import { WorktreeDashboard } from "./worktree-dashboard.mjs";
 import { AccountUsage } from "./account-usage.mjs";
+import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import {
   isAuthorized,
   isSafeOrigin,
@@ -33,6 +34,7 @@ export async function buildApp({
   previewCapture = capturePreview,
   imageAttachments = new ImageAttachments(),
   accountUsage = new AccountUsage(),
+  ccsReconnect = null,
 } = {}) {
   if (!token) throw new Error("A companion pairing token is required");
 
@@ -41,6 +43,7 @@ export async function buildApp({
     trustProxy: ["127.0.0.1", "::1"],
     bodyLimit: 32 * 1024,
   });
+  const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog });
   const pairAttempts = new Map();
@@ -158,6 +161,18 @@ export async function buildApp({
   app.get("/api/account-usage", async (request) => accountUsage.snapshot({
     refresh: request.query?.refresh === "1",
   }));
+
+  app.post("/api/account-usage/:accountId/reconnect", async (request, reply) => (
+    reply.code(201).send(await reconnect.start(request.params.accountId))
+  ));
+
+  app.get("/api/account-usage/reconnect/:sessionId", async (request) => reconnect.status(request.params.sessionId));
+
+  app.post("/api/account-usage/reconnect/:sessionId/callback", async (request) => (
+    reconnect.submitCallback(request.params.sessionId, request.body?.callbackUrl)
+  ));
+
+  app.delete("/api/account-usage/reconnect/:sessionId", async (request) => reconnect.cancel(request.params.sessionId));
 
   app.get("/api/workspaces", async () => cmux.workspaceList());
 

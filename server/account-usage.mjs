@@ -31,6 +31,21 @@ export class AccountUsage {
     }
   }
 
+  invalidate() {
+    this.cache = null;
+  }
+
+  async resolveReconnectTarget(opaqueId) {
+    if (typeof opaqueId !== "string" || !/^[a-f0-9]{20}$/.test(opaqueId)) return null;
+    const snapshot = await this.snapshot({ refresh: true });
+    const provider = snapshot.providers.find((item) => item.accounts.some((account) => account.id === opaqueId && account.status === "reconnect"));
+    if (!provider) return null;
+    const source = await this.sourceLoader();
+    const account = safeAccounts(source.getProviderAccounts, provider.id)
+      .find((item) => item && typeof item.id === "string" && opaqueAccountId(provider.id, item.id) === opaqueId);
+    return account ? { provider: provider.id, accountId: account.id, nickname: cleanText(account.nickname) || undefined } : null;
+  }
+
   async #load() {
     try {
       const source = await this.sourceLoader();
@@ -98,10 +113,10 @@ function normalizeAccount(provider, account, quota = null, providerAvailable = t
   if (quota?.needsReauth) status = "reconnect";
   else if (quota?.success && remaining.some((value) => value <= 0)) status = "exhausted";
   else if (quota?.success && remaining.some((value) => value <= 20)) status = "low";
-  else if (quota?.success && remaining.length > 0) status = "ready";
+  else if (quota?.success) status = "ready";
 
   return {
-    id: createHash("sha256").update(`${provider}:${account.id}`).digest("hex").slice(0, 20),
+    id: opaqueAccountId(provider, account.id),
     label: cleanText(account.nickname) || cleanText(account.email) || cleanText(account.id) || "Account",
     email: cleanText(account.email) || cleanText(account.id) || null,
     plan: cleanPlan(quota?.planType || account.tier),
@@ -113,11 +128,15 @@ function normalizeAccount(provider, account, quota = null, providerAvailable = t
       : !providerAvailable || !quota?.success
         ? "Quota is currently unavailable"
         : remaining.length === 0
-          ? "No core usage window was reported"
+          ? "Connected. Provider reported no active usage window."
           : null,
     updatedAt: safeDate(quota?.lastUpdated),
     windows,
   };
+}
+
+function opaqueAccountId(provider, accountId) {
+  return createHash("sha256").update(`${provider}:${accountId}`).digest("hex").slice(0, 20);
 }
 
 function normalizeWindows(provider, value) {

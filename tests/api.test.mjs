@@ -77,6 +77,31 @@ test("serves authenticated CCS account usage and forwards explicit refresh", asy
   assert.deepEqual(calls, [{ refresh: true }]);
 });
 
+test("protects and serves the CCS reconnect lifecycle", async (t) => {
+  const calls = [];
+  const session = { sessionId: "reconnect-session", provider: "codex", status: "waiting", message: "Complete login", authUrl: "https://auth.test", expiresAt: "2026-09-01T00:00:00.000Z" };
+  const ccsReconnect = {
+    start: async (id) => { calls.push(["start", id]); return session; },
+    status: async (id) => { calls.push(["status", id]); return session; },
+    submitCallback: async (id, url) => { calls.push(["callback", id, url]); return { ...session, status: "success" }; },
+    cancel: (id) => { calls.push(["cancel", id]); return { ...session, status: "cancelled" }; },
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, ccsReconnect });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  assert.equal((await app.inject({ method: "POST", url: "/api/account-usage/0123456789abcdefabcd/reconnect" })).statusCode, 401);
+  assert.equal((await app.inject({ method: "POST", url: "/api/account-usage/0123456789abcdefabcd/reconnect", headers: { ...headers, origin: "https://evil.test" } })).statusCode, 403);
+  assert.equal((await app.inject({ method: "POST", url: "/api/account-usage/0123456789abcdefabcd/reconnect", headers })).statusCode, 201);
+  assert.equal((await app.inject({ url: "/api/account-usage/reconnect/reconnect-session", headers: { cookie } })).statusCode, 200);
+  assert.equal((await app.inject({ method: "POST", url: "/api/account-usage/reconnect/reconnect-session/callback", headers, payload: { callbackUrl: "http://localhost/callback" } })).json().status, "success");
+  assert.equal((await app.inject({ method: "DELETE", url: "/api/account-usage/reconnect/reconnect-session", headers })).json().status, "cancelled");
+  assert.deepEqual(calls, [
+    ["start", "0123456789abcdefabcd"], ["status", "reconnect-session"],
+    ["callback", "reconnect-session", "http://localhost/callback"], ["cancel", "reconnect-session"],
+  ]);
+});
+
 test("paired clients can read state and safely control a terminal", async (t) => {
   const cmux = fakeCmux();
   const savedImages = [];
