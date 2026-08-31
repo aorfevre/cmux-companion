@@ -129,6 +129,29 @@ test("coalesces concurrent dashboard refreshes", async (t) => {
   assert.deepEqual([hostCalls, workspaceCalls, capabilityCalls], [1, 1, 1]);
 });
 
+test("serves the opt-in worktree dashboard and launches an agent in a registered worktree", async (t) => {
+  const cmux = fakeCmux();
+  const target = { id: "worktree123456789", repoId: "repo-safe", repoName: "safe", branch: "feature/mobile", path: "/approved/safe-feature" };
+  const value = { generatedAt: "2026-08-31T00:00:00.000Z", summary: { repositories: 1, worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, repositories: [], orphanSessions: [] };
+  const calls = [];
+  const worktreeDashboard = {
+    snapshot: async (input) => { calls.push(["snapshot", input]); return value; },
+    resolve: async (id) => { calls.push(["resolve", id]); if (id !== target.id) throw new TypeError("Unknown worktree"); return target; },
+    invalidate: () => calls.push(["invalidate"]),
+  };
+  const app = await buildApp({ cmux, token: TOKEN, worktreeDashboard });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const dashboard = await app.inject({ url: "/api/worktree-dashboard?refresh=1", headers: { cookie } });
+  assert.equal(dashboard.statusCode, 200);
+  assert.equal(dashboard.json().summary.worktrees, 1);
+  const launched = await app.inject({ method: "POST", url: `/api/worktree-dashboard/${target.id}/launch`, headers, payload: { agent: "claude", prompt: "Review mobile UX" } });
+  assert.equal(launched.statusCode, 201);
+  assert.deepEqual(cmux.calls.at(-1), ["create", { cwd: target.path, title: "safe: feature/mobile", agent: "claude", prompt: "Review mobile UX" }]);
+  assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "resolve", "invalidate"]);
+});
+
 test("falls back to an authenticated text screen when replay is unavailable", async (t) => {
   const cmux = fakeCmux();
   cmux.terminalReplay = async () => { throw new CmuxCommandError("unsupported"); };
@@ -258,6 +281,7 @@ test("every state-changing route requires pairing and same-origin requests", asy
   const mutations = [
     ["/api/auth/logout", {}],
     ["/api/workspaces", { repoId: "x" }],
+    ["/api/worktree-dashboard/worktree123456789/launch", { agent: "codex" }],
     [`/api/workspaces/${WS_ID}/rename`, { title: "x" }],
     [`/api/workspaces/${WS_ID}/close`, {}],
     [`/api/workspaces/${WS_ID}/respawn`, { surfaceId: TERM_ID }],

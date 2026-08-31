@@ -44,7 +44,7 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
   const created = await exec(bin, [
     "new-workspace",
     "--name", title,
-    "--cwd", "/tmp",
+    "--cwd", process.cwd(),
     "--command", `${process.execPath} -e ${JSON.stringify(appScript)}`,
     "--focus", "false",
   ], { encoding: "utf8", timeout: 15_000 });
@@ -74,6 +74,12 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
     const repos = await companion("/api/repos", token);
     const companionRepo = repos.repos.find((repo) => repo.name === "cmux-companion");
     assert.ok(companionRepo);
+    const worktreeDashboard = await companion("/api/worktree-dashboard?refresh=1", token);
+    const companionWorktree = worktreeDashboard.repositories
+      .flatMap((repository) => repository.worktrees)
+      .find((worktree) => worktree.path === companionRepo.path);
+    assert.ok(companionWorktree, "installed repository appears in the worktree dashboard");
+    assert.equal(companionWorktree.sessions.some((session) => session.id === workspaceId), true, "isolated cmux workspace is grouped into its worktree");
     const pullRequest = await companion(`/api/repos/${companionRepo.id}/pull-request?refresh=1`, token);
     assert.equal(typeof pullRequest.available, "boolean");
     const markdown = await companion(`/api/repos/${companionRepo.id}/markdown?file=README.md`, token);
@@ -91,7 +97,7 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
     attachmentPath = uploaded.image.path;
     assert.equal(uploaded.image.mime, "image/png");
     assert.equal((await readFile(attachmentPath)).subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
-    t.diagnostic("repository, PR, Markdown, inbox, and image APIs verified");
+    t.diagnostic("repository, worktree dashboard, PR, Markdown, inbox, and image APIs verified");
 
     let screen;
     for (let attempt = 0; attempt < 40; attempt += 1) {

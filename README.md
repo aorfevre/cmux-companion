@@ -7,6 +7,7 @@ No cloud application server is involved. Terminal output and input travel direct
 ## What it does
 
 - Shows every cmux workspace and terminal
+- Adds an opt-in **Worktrees Beta** home view that groups parallel branches, agents, Git state, and open pull requests while keeping the existing Sessions view
 - Highlights real cmux status, structured tasks, CPU, memory, and process health
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
 - Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
@@ -83,6 +84,10 @@ The pairing code is stored with mode `0600` at `~/.config/cmux-companion/token`.
 ## Daily use
 
 There is nothing to launch. The lightweight companion starts at login and remains ready. If cmux is not open, the phone UI displays “Waiting for cmux” and reconnects automatically when cmux starts.
+
+The home screen starts in **Sessions**. Use the compact **Sessions / Worktrees Beta** switch below the header to test the worktree dashboard without removing the classic view. The selection persists on that phone; switch back to **Sessions** at any time.
+
+Worktrees Beta discovers Git's registered worktrees for the configured repository roots, then groups open cmux sessions by their current directory. Each worktree shows its branch, changed-file count, ahead/behind state, latest activity, agent state, and matching open GitHub pull request. **＋ Agent** opens a launcher scoped to that exact registered worktree and starts Codex through `xcodex` or Claude through `xclaude`. The server refreshes and revalidates the Git worktree before launch, so a stale or removed worktree cannot be used as a target.
 
 ```bash
 npm run status

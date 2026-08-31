@@ -9,6 +9,7 @@ import { slashShortcuts } from "./slash-shortcuts.mjs";
 import { isNearBottom, nextFollowState } from "./terminal-follow.mjs";
 import { TerminalGrid, type TerminalView } from "./terminal-grid.tsx";
 import { terminalViewSignature } from "./terminal-grid.mjs";
+import { WorktreeDashboardView } from "./worktree-dashboard";
 
 type Terminal = { id: string; title: string; current_directory?: string | null; is_focused?: boolean; is_ready?: boolean };
 type WorkspaceStatus = { effective?: string; inferred?: string; signals?: Record<string, boolean> };
@@ -26,6 +27,7 @@ type ImageAttachment = { path: string; name: string; mime: string; size: number;
 type PromptQueueItem = { id: string; workspaceId: string; surfaceId: string; text: string; createdAt: string; updatedAt: string; attempts: number; lastError?: string | null };
 type View = "sessions" | "inbox" | "launch" | "apps" | "settings";
 type DetailTab = "terminal" | "tasks" | "changes";
+type HomeMode = "sessions" | "worktrees";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
@@ -53,6 +55,7 @@ export default function Home() {
   const [notificationContext, setNotificationContext] = useState<{ kind: string; file?: string | null } | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); const kind = query.get("context"); return kind && query.has("workspace") ? { kind, file: query.get("file") } : null; });
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [queueItems, setQueueItems] = useState<PromptQueueItem[]>([]);
+  const [homeMode, setHomeMode] = useState<HomeMode>(() => { if (typeof window === "undefined") return "sessions"; const query = new URLSearchParams(location.search).get("mode"); if (query === "worktrees") return "worktrees"; return localStorage.getItem("cmux-companion-home-mode") === "worktrees" ? "worktrees" : "sessions"; });
   const [readOnly, setReadOnly] = useState(() => typeof window === "undefined" || localStorage.getItem("cmux-companion-read-only") !== "false");
   const [installPrompt, setInstallPrompt] = useState<(Event & { prompt?: () => Promise<void> }) | null>(null); const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const detectedUrls = useRef(new Set<string>());
@@ -116,6 +119,7 @@ export default function Home() {
   async function fixPreview(preview: Preview, prompt: string, queue: boolean) { const workspace = bootstrap?.workspaces.find((item) => item.id === preview.workspaceId); const terminal = workspace?.terminals.find((item) => item.is_focused) || workspace?.terminals[0]; if (!workspace || !terminal) throw new Error("That cmux session is no longer open"); if (queue) await api("/api/prompt-queue", { method: "POST", body: JSON.stringify({ workspaceId: workspace.id, surfaceId: terminal.id, text: prompt }) }); else await api(`/api/terminals/${terminal.id}/input`, { method: "POST", body: JSON.stringify({ text: prompt, enter: true }) }); if (selectedWorkspace?.id === workspace.id) await loadPromptQueue(); setNotice(queue ? "Visual fix queued for the agent" : "Visual fix sent to the agent"); }
   async function sendKey(key: string) { if (!selectedTerminal || readOnly) return; setSending(true); try { await api(`/api/terminals/${selectedTerminal.id}/key`, { method: "POST", body: JSON.stringify({ key }) }); setTimeout(loadTerminal, 150); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not send key"); } finally { setSending(false); } }
   function changeReadOnly(value: boolean) { setReadOnly(value); localStorage.setItem("cmux-companion-read-only", String(value)); }
+  function changeHomeMode(mode: HomeMode) { setHomeMode(mode); localStorage.setItem("cmux-companion-home-mode", mode); history.replaceState(null, "", `/?view=sessions${mode === "worktrees" ? "&mode=worktrees" : ""}`); }
   function changeView(next: View) { setSelectedWorkspaceId(null); setDocumentTarget(null); setActionId(null); setView(next); history.replaceState(null, "", `/?view=${next}`); }
   function openDocument(repoId: string, path: string) { setDocumentTarget({ repoId, path: path.replace(/^\.\//, "") }); history.replaceState(null, "", `/?repo=${encodeURIComponent(repoId)}&file=${encodeURIComponent(path.replace(/^\.\//, ""))}`); }
   function openRepoWorkspace(repoId: string) { const repo = repos.find((item) => item.id === repoId); const workspace = bootstrap?.workspaces.find((item) => repo && (item.current_directory === repo.path || item.current_directory?.startsWith(`${repo.path}/`))); if (workspace) openWorkspace(workspace); else setNotice("No open cmux session uses this repository"); }
@@ -126,7 +130,7 @@ export default function Home() {
   if (selectedWorkspace && selectedTerminal) return <WorkspaceDetail workspace={selectedWorkspace} terminal={selectedTerminal} repo={selectedRepo} tab={detailTab} context={notificationContext} terminalView={terminalView} screenError={screenError} draft={draft} attachments={attachments} queueItems={queueItems} sending={sending} readOnly={readOnly} onBack={closeWorkspaceView} onTab={setDetailTab} onTerminal={(id) => { setSelectedTerminalId(id); setTerminalView(null); clearAttachments(); }} onDraft={setDraft} onImage={addImage} onRemoveImage={removeImage} onSubmit={sendPrompt} onQueue={queuePrompt} onQueueUpdate={(id, text) => queueAction(id, "update", text)} onQueueMove={(id, direction) => queueAction(id, "move", direction)} onQueueSend={(id) => queueAction(id, "send")} onQueueRemove={(id) => queueAction(id, "remove")} onKey={sendKey} onReadOnly={() => changeReadOnly(!readOnly)} onRefresh={loadTerminal} onChanged={async () => { await loadBootstrap(); }} onNotice={setNotice} onDismissContext={() => setNotificationContext(null)} onMarkdown={(path) => selectedRepo ? openDocument(selectedRepo.id, path) : setNotice("That file is outside a catalogued repository")} onLocalUrl={(url) => discoverLocalUrl(url, true)} onApps={() => changeView("apps")} />;
 
   return <main className="app-shell"><AppHeader connected={Boolean(bootstrap?.connected)} live={live} device={bootstrap?.host?.mac_display_name || "Your Mac"} />{notice && <button className="toast" onClick={() => setNotice("")}>{notice}<span>×</span></button>}
-    {view === "sessions" && <SessionsView bootstrap={bootstrap} onOpen={openWorkspace} onLaunch={() => changeView("launch")} onRefresh={loadBootstrap} />}
+    {view === "sessions" && <><HomeModeSwitch mode={homeMode} onMode={changeHomeMode} />{homeMode === "sessions" ? <SessionsView bootstrap={bootstrap} onOpen={openWorkspace} onLaunch={() => changeView("launch")} onRefresh={loadBootstrap} /> : <WorktreeDashboardView onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onLaunched={async (id) => { for (let attempt = 0; attempt < 12; attempt += 1) { const data = await loadBootstrap(); const workspace = data?.workspaces.find((item) => item.id === id); if (workspace) { openWorkspace(workspace); return; } await new Promise((resolve) => setTimeout(resolve, 250)); } setNotice("Agent launched. Its session will appear shortly."); }} onNotice={setNotice} />}</>}
     {view === "inbox" && <InboxView inbox={inbox} workspaces={bootstrap?.workspaces || []} repos={repos} focusedId={actionId} onCloseFocus={() => { setActionId(null); history.replaceState(null, "", "/?view=inbox"); }} onDocument={openDocument} onReload={loadInbox} onOpen={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); }} onNotice={setNotice} />}
     {view === "launch" && <LaunchView repos={repos} onReload={loadRepos} onLaunched={async (id) => { const data = await loadBootstrap(); const workspace = data?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else { setView("sessions"); setNotice("Workspace launched. It will appear in a moment."); } }} />}
     {view === "apps" && <AppsView focusedId={focusedPreviewId} onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onNotice={setNotice} onFix={fixPreview} />}
@@ -135,6 +139,8 @@ export default function Home() {
 }
 
 function AppHeader({ connected, live, device }: { connected: boolean; live: boolean; device: string }) { return <header className="topbar"><div className="brand-mark">c</div><div className="brand-copy"><strong>cmux companion</strong><span><i className={`connection-dot ${connected ? "" : "offline"}`} />{connected ? device : "Waiting for cmux"}</span></div><span className={`live-badge ${live ? "" : "sync"}`}>{live ? "LIVE" : "SYNC"}</span></header>; }
+
+export function HomeModeSwitch({ mode, onMode }: { mode: HomeMode; onMode: (mode: HomeMode) => void }) { return <nav className="home-mode-switch" aria-label="Home visualization"><button className={mode === "sessions" ? "active" : ""} aria-pressed={mode === "sessions"} onClick={() => onMode("sessions")}>Sessions</button><button className={mode === "worktrees" ? "active" : ""} aria-pressed={mode === "worktrees"} onClick={() => onMode("worktrees")}>Worktrees <b>Beta</b></button></nav>; }
 
 function SessionsView({ bootstrap, onOpen, onLaunch, onRefresh }: { bootstrap: Bootstrap | null; onOpen: (workspace: Workspace) => void; onLaunch: () => void; onRefresh: () => void }) {
   const workspaces = bootstrap?.workspaces || []; const needsYou = workspaces.filter((item) => sessionState(item).tone === "attention").length; const working = workspaces.filter((item) => sessionState(item).tone === "working").length;

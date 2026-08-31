@@ -6,6 +6,7 @@ import { CmuxEventHub } from "./event-hub.mjs";
 import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
 import { capturePreview } from "./preview-capture.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
+import { WorktreeDashboard } from "./worktree-dashboard.mjs";
 import {
   isAuthorized,
   isSafeOrigin,
@@ -24,6 +25,7 @@ export async function buildApp({
   logger = false,
   eventHub = null,
   repoCatalog = new RepoCatalog(),
+  worktreeDashboard = null,
   pushService = null,
   previewManager = null,
   promptQueue = null,
@@ -38,6 +40,7 @@ export async function buildApp({
     bodyLimit: 32 * 1024,
   });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
+  const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog });
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
@@ -182,6 +185,31 @@ export async function buildApp({
   ));
 
   app.get("/api/repos", async (request) => ({ repos: await repoCatalog.list({ refresh: request.query?.refresh === "1" }) }));
+
+  app.get("/api/worktree-dashboard", async (request) => {
+    const bootstrap = await loadBootstrap();
+    return worktrees.snapshot({
+      workspaces: bootstrap.workspaces,
+      refresh: request.query?.refresh === "1",
+    });
+  });
+
+  app.post("/api/worktree-dashboard/:id/launch", async (request, reply) => {
+    const target = await worktrees.resolve(request.params.id);
+    const { agent = "codex", prompt = "", title } = request.body || {};
+    const created = await cmux.workspaceCreate({
+      cwd: target.path,
+      title: typeof title === "string" && title.trim() ? title : `${target.repoName}: ${target.branch}`,
+      agent,
+      prompt,
+    });
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return reply.code(201).send({
+      workspace: created,
+      worktree: { id: target.id, repoId: target.repoId, branch: target.branch, path: target.path },
+    });
+  });
 
   app.get("/api/repos/:id/changes", async (request) => repoCatalog.changes(request.params.id));
 

@@ -4,12 +4,49 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, test, vi } from "vitest";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
-import { InboxView, PullRequestBanner, TerminalPanel } from "../app/page";
+import { HomeModeSwitch, InboxView, PullRequestBanner, TerminalPanel } from "../app/page";
 import { TerminalGrid } from "../app/terminal-grid.tsx";
+import { WorktreeDashboardView } from "../app/worktree-dashboard";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("contextual mobile features", () => {
+  test("keeps classic sessions available while the worktree visualization is opt-in", async () => {
+    const mode = vi.fn();
+    render(<HomeModeSwitch mode="sessions" onMode={mode} />);
+    assert.equal(screen.getByRole("button", { name: "Sessions" }).getAttribute("aria-pressed"), "true");
+    await userEvent.click(screen.getByRole("button", { name: /Worktrees Beta/ }));
+    assert.deepEqual(mode.mock.calls[0], ["worktrees"]);
+  });
+
+  test("groups parallel sessions by worktree and launches an isolated agent", async () => {
+    const dashboard = { generatedAt: "2026-08-31", summary: { repositories: 1, worktrees: 2, sessions: 1, needsYou: 0, working: 1, dirty: 1, pullRequests: 1 }, orphanSessions: [], repositories: [{
+      id: "repo-1", name: "companion", root: "karven", path: "/repo/companion", pullRequestsAvailable: true, summary: { worktrees: 2, sessions: 1, needsYou: 0, working: 1, dirty: 1 }, worktrees: [{
+        id: "worktree123456789", repoId: "repo-1", path: "/repo/companion-feature", name: "companion-feature", branch: "feature/mobile", isPrimary: false, detached: false, ahead: 2, behind: 0, changedFiles: 3, dirty: true, lastActivity: Math.round(Date.now() / 1000), state: { label: "Working", tone: "working" },
+        pullRequest: { number: 12, title: "Mobile dashboard", url: "https://github.test/pr/12", isDraft: false, reviewDecision: "REVIEW_REQUIRED", mergeState: "CLEAN", checks: { passed: 2, failed: 0, pending: 1, total: 3 } },
+        sessions: [{ id: "workspace-1", title: "mobile agent", preview: "Editing app/page.tsx", terminalCount: 1, lastActivityAt: Math.round(Date.now() / 1000), provider: "Codex", state: { label: "Working", tone: "working" } }],
+      }] }] };
+    const open = vi.fn(); const launched = vi.fn(async () => {}); const notice = vi.fn();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST"
+      ? new Response(JSON.stringify({ workspace: { workspace_id: "workspace-new" } }), { status: 201 })
+      : new Response(JSON.stringify(dashboard), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={open} onLaunched={launched} onNotice={notice} />);
+    assert.ok(await screen.findByText("feature/mobile"));
+    assert.equal(screen.getByRole("link", { name: /PR #12.*Mobile dashboard/ }).getAttribute("href"), "https://github.test/pr/12");
+    await userEvent.click(screen.getByRole("button", { name: /mobile agent/ }));
+    assert.deepEqual(open.mock.calls[0], ["workspace-1"]);
+    await userEvent.click(screen.getByRole("button", { name: "＋ Agent" }));
+    assert.ok(screen.getByRole("dialog", { name: "Launch worktree agent" }));
+    await userEvent.click(screen.getByRole("button", { name: "Claude (xclaude)" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Initial task" }), "Review the mobile dashboard");
+    await userEvent.click(screen.getByRole("button", { name: "Launch Claude" }));
+    await waitFor(() => assert.deepEqual(launched.mock.calls[0], ["workspace-new"]));
+    const launchCall = fetchMock.mock.calls.find(([url, init]) => String(url).includes("/worktree123456789/launch") && init?.method === "POST");
+    assert.ok(launchCall);
+    assert.match(String(launchCall?.[1]?.body), /Review the mobile dashboard/);
+  });
+
   test("terminal Markdown and localhost references are interactive", async () => {
     const markdown = vi.fn(); const local = vi.fn();
     render(<TerminalGrid view={{ mode: "text", text: "Read docs/plan.md then http://localhost:3000" }} onMarkdownLink={markdown} onLocalUrl={local} />);
