@@ -424,6 +424,8 @@ test("the round cap forces a ready plan", async () => {
   const planner = new WorktreePlanner({ ...deps, maxRounds: 3 });
   let draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
   draft = await planner.answer(draft.planId, { answers: [{ id: "q1", text: "yes" }] });
+  draft = await planner.answer(draft.planId, { answers: [{ id: "q1", text: "yes" }] });
+  assert.equal(draft.round, 3);
   await assert.rejects(
     () => planner.answer(draft.planId, { answers: [{ id: "q1", text: "yes" }] }),
     /could not produce a plan/,
@@ -610,23 +612,6 @@ export class WorktreePlanner {
   }
 }
 
-function publicDraft(draft) {
-  return {
-    planId: draft.planId,
-    repositoryId: draft.repositoryId,
-    goal: draft.goal,
-    round: draft.round,
-    maxRounds: undefined,
-    status: draft.status,
-    questions: draft.questions,
-    tasks: draft.tasks,
-  };
-}
-```
-
-Remove the `maxRounds: undefined` line. It is a leftover; `publicDraft` must return exactly these six keys:
-
-```javascript
 function publicDraft(draft) {
   return {
     planId: draft.planId,

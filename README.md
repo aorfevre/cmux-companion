@@ -153,6 +153,8 @@ npm run test:preview-live
 
 `test:preview-live` starts a temporary loopback HTTP server, exposes it through an unused private Tailscale Serve port, verifies HTTPS access, and removes the Serve handler in cleanup.
 
+The proposed unattended, self-updating macOS deployment design is documented in the [Local Updater Specification](docs/local-updater-spec.md).
+
 ## Configuration
 
 | Variable | Default | Purpose |
