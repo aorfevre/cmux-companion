@@ -391,3 +391,98 @@ test("normalizes actionable requests separately from unread notifications", () =
   assert.equal(result.unreadCount, 1);
   assert.deepEqual(result.items.map((item) => item.type), ["request", "notification"]);
 });
+
+function fakePlanner() {
+  const calls = [];
+  const draft = {
+    planId: "plan-1",
+    repositoryId: "repository12345678",
+    goal: "Add billing",
+    round: 1,
+    status: "ready",
+    questions: [],
+    tasks: [{ id: "t1", title: "Billing", branch: "feature/billing", prompt: "Add billing.", agent: "claude", agentReason: "Claude · best account 90% left" }],
+  };
+  return {
+    calls,
+    start: async (options) => { calls.push(["start", options]); return draft; },
+    answer: async (planId, options) => { calls.push(["answer", planId, options]); return { ...draft, round: 2 }; },
+    update: async (planId, options) => { calls.push(["update", planId, options]); return { ...draft, tasks: options.tasks }; },
+    launch: async (planId) => { calls.push(["launch", planId]); return { planId, base: "origin/main", launched: 1, results: [{ id: "t1", title: "Billing", status: "launched" }] }; },
+  };
+}
+
+test("drives a worktree plan from goal to launch", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const started = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing" } });
+  assert.equal(started.statusCode, 201);
+  assert.equal(started.json().planId, "plan-1");
+  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing" });
+
+  const answered = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/answers", headers, payload: { answers: [{ id: "q1", text: "Postgres" }] } });
+  assert.equal(answered.statusCode, 200);
+  assert.equal(answered.json().round, 2);
+  assert.deepEqual(planner.calls[1][2], { answers: [{ id: "q1", text: "Postgres" }], skip: false });
+
+  const skipped = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/answers", headers, payload: { skip: true } });
+  assert.equal(skipped.statusCode, 200);
+  assert.equal(planner.calls[2][2].skip, true);
+
+  const patched = await app.inject({ method: "PATCH", url: "/api/worktree-plans/plan-1", headers, payload: { tasks: [{ id: "t1", title: "Billing", branch: "feature/billing", prompt: "Add billing.", agent: "codex" }] } });
+  assert.equal(patched.statusCode, 200);
+  assert.equal(patched.json().tasks[0].agent, "codex");
+
+  const launched = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/launch", headers, payload: {} });
+  assert.equal(launched.statusCode, 200);
+  assert.equal(launched.json().base, "origin/main");
+  assert.equal(launched.json().launched, 1);
+  assert.deepEqual(planner.calls.map((call) => call[0]), ["start", "answer", "answer", "update", "launch"]);
+});
+
+test("turns a planner rejection into a 400 with its own message", async (t) => {
+  const planner = fakePlanner();
+  planner.start = async () => { throw new TypeError("Describe the goal for this repository"); };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-plans",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { repositoryId: "repository12345678", goal: "" },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().error, "Describe the goal for this repository");
+});
+
+test("refuses an unauthenticated plan request", async (t) => {
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans", payload: { repositoryId: "repository12345678", goal: "Add billing" } });
+  assert.equal(response.statusCode, 401);
+});
+
+test("accepts a full eight task plan without hitting the body limit", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const tasks = Array.from({ length: 8 }, (unused, index) => ({
+    id: `t${index}`,
+    title: `Task number ${index}`,
+    branch: `feature/task-${index}`,
+    prompt: "x".repeat(4_000),
+    agent: "claude",
+    agentReason: "Claude · best account 90% left",
+  }));
+  const response = await app.inject({
+    method: "PATCH",
+    url: "/api/worktree-plans/plan-1",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { tasks },
+  });
+  assert.equal(response.statusCode, 200, `a full plan must not be rejected, got ${response.statusCode}`);
+  assert.equal(planner.calls.at(-1)[2].tasks.length, 8);
+});

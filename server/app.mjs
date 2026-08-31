@@ -8,6 +8,7 @@ import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
 import { capturePreview } from "./preview-capture.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import { WorktreeDashboard } from "./worktree-dashboard.mjs";
+import { WorktreePlanner } from "./worktree-planner.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import {
@@ -30,6 +31,7 @@ export async function buildApp({
   eventHub = null,
   repoCatalog = new RepoCatalog(),
   worktreeDashboard = null,
+  worktreePlanner = null,
   pushService = null,
   previewManager = null,
   promptQueue = null,
@@ -53,6 +55,7 @@ export async function buildApp({
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog });
+  const planner = worktreePlanner || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log });
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
@@ -283,6 +286,27 @@ export async function buildApp({
   app.patch("/api/worktree-dashboard/repositories/:id/archive", async (request) => {
     const bootstrap = await loadBootstrap();
     return worktrees.setRepositoryArchived(request.params.id, request.body?.archived, { workspaces: bootstrap.workspaces });
+  });
+
+  app.post("/api/worktree-plans", async (request, reply) => (
+    reply.code(201).send(await planner.start({ repositoryId: request.body?.repositoryId, goal: request.body?.goal }))
+  ));
+
+  app.post("/api/worktree-plans/:planId/answers", async (request) => (
+    planner.answer(request.params.planId, { answers: request.body?.answers, skip: request.body?.skip === true })
+  ));
+
+  // A full plan is 8 tasks with prompts of up to 4,000 characters each, which
+  // measures about 33KB and so exceeds the global 32KB limit.
+  app.patch("/api/worktree-plans/:planId", { bodyLimit: 64 * 1024 }, async (request) => (
+    planner.update(request.params.planId, { tasks: request.body?.tasks })
+  ));
+
+  app.post("/api/worktree-plans/:planId/launch", async (request) => {
+    const result = await planner.launch(request.params.planId);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
   });
 
   app.get("/api/repos/:id/changes", async (request) => repoCatalog.changes(request.params.id));
