@@ -1,8 +1,86 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
+import { createInterface } from "node:readline";
 
-const execFileAsync = promisify(execFile);
+// promisify(execFile) buffers to completion, so nothing can be reported while
+// the model is still thinking. spawn resolves the same shape and rejects with
+// the same fields, plus it calls onLine for each stdout line, so every injected
+// `execute` fake stays valid.
+export function streamExecFile(bin, args, { cwd, timeout = 0, maxBuffer = 4 * 1024 * 1024, env, onLine } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+    const timer = timeout ? setTimeout(() => { killed = true; child.kill("SIGTERM"); }, timeout) : null;
+    timer?.unref?.();
+    const lines = createInterface({ input: child.stdout });
+    lines.on("line", (line) => {
+      // Only the final result line is needed later, so an over-long run drops
+      // old lines instead of failing the round the way execFile does.
+      if (stdout.length + line.length + 1 <= maxBuffer) stdout += `${line}\n`;
+      // A progress consumer must never fail a planner round.
+      try { onLine?.(line); } catch { /* the round outlives its audience */ }
+    });
+    child.stderr.on("data", (chunk) => { if (stderr.length < 64 * 1024) stderr += chunk; });
+    child.once("error", (cause) => { clearTimeout(timer); lines.close(); reject(cause); });
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      lines.close();
+      if (killed || signal) return reject(Object.assign(new Error("Command failed"), { killed, signal: signal || "SIGTERM", stderr, code }));
+      if (code !== 0) return reject(Object.assign(new Error("Command failed"), { code, stderr, killed: false }));
+      return resolve({ stdout, stderr });
+    });
+  });
+}
+
+// The non-streaming envelope and the stream-json result line hold the same two
+// fields, so parsePlannerReply is reused as it is and only the line choice is
+// new. Falling back to raw stdout keeps every plain-envelope fixture working.
+export function finalEnvelope(stdout) {
+  const lines = String(stdout).split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index].trim();
+    if (!line.startsWith("{") || !line.includes('"result"')) continue;
+    try { if (JSON.parse(line)?.type === "result") return line; } catch { /* a partial or unrelated line */ }
+  }
+  return stdout;
+}
+
+const TOOL_DETAIL = {
+  Read: (input) => shortPath(input?.file_path),
+  Grep: (input) => quoted(input?.pattern),
+  Glob: (input) => quoted(input?.pattern),
+};
+
+// Only the model's own turn is legible progress. The system, hook and user lines
+// are transport noise. The input is never spread: one whitelisted key per tool
+// is read and truncated, so no path list or file body can leak into the UI.
+export function progressEvent(line) {
+  let value;
+  try { value = JSON.parse(line); } catch { return null; }
+  if (value?.type !== "assistant") return null;
+  for (const block of value.message?.content || []) {
+    if (block?.type === "tool_use") {
+      const detail = TOOL_DETAIL[block.name]?.(block.input) || "";
+      return { k: "tool", t: `${String(block.name || "Tool").slice(0, 20)}${detail ? ` ${detail}` : ""}` };
+    }
+    // Prose between tool calls is reasoning. It runs long and it quotes the
+    // repository, so only its presence is reported, never its content.
+    if (block?.type === "text" && String(block.text || "").trim()) return { k: "text", t: "Thinking…" };
+  }
+  return null;
+}
+
+function shortPath(value) {
+  const path = String(value || "");
+  return path ? path.split("/").slice(-2).join("/").slice(0, 60) : "";
+}
+
+function quoted(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim().slice(0, 40);
+  return text ? `"${text}"` : "";
+}
 
 // A subprocess failure, not an unusable reply. It is still a TypeError, so the
 // Fastify error handler answers 400 with its message, but #round never retries
@@ -199,7 +277,7 @@ export function describeRunFailure(stderr) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = execFileAsync, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
@@ -215,7 +293,7 @@ export class WorktreePlanner {
     this.drafts = new Map();
   }
 
-  async start({ repositoryId, goal, images }) {
+  async start({ repositoryId, goal, images, onEvent = null }) {
     const text = String(goal || "").trim();
     if (!text) throw new TypeError("Describe the goal for this repository");
     if (text.length > 4_000) throw new TypeError("That goal is too long");
@@ -241,15 +319,15 @@ export class WorktreePlanner {
       if (oldest) this.drafts.delete(oldest[0]);
     }
     this.drafts.set(draft.planId, draft);
-    return this.#round(draft, openingPrompt(draft));
+    return this.#round(draft, openingPrompt(draft), onEvent);
   }
 
-  async answer(planId, { answers = [], skip = false } = {}) {
+  async answer(planId, { answers = [], skip = false, onEvent = null } = {}) {
     const draft = this.#draft(planId);
     if (draft.round >= this.maxRounds) {
       throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
     }
-    return this.#round(draft, skip ? SKIP_PROMPT : answerPrompt(draft, answers));
+    return this.#round(draft, skip ? SKIP_PROMPT : answerPrompt(draft, answers), onEvent);
   }
 
   async update(planId, { tasks } = {}) {
@@ -310,8 +388,8 @@ export class WorktreePlanner {
         title: task.title,
         agent: task.agent,
         // Each worktree agent is isolated, so every task prompt carries the
-        // image paths itself.
-        prompt: withImages(task.prompt, draft.images),
+        // image paths and the closing pull request step itself.
+        prompt: taskPrompt(task.prompt, draft.images, base),
       });
       return { ...summary, status: "launched", path, workspace };
     } catch (cause) {
@@ -353,15 +431,17 @@ export class WorktreePlanner {
     return repository.path;
   }
 
-  async #round(draft, prompt) {
+  async #round(draft, prompt, onEvent = null) {
     let reply;
     try {
-      reply = parsePlannerReply(await this.#spawn(draft, prompt));
+      reply = parsePlannerReply(await this.#spawn(draft, prompt, onEvent));
     } catch (cause) {
       // Retry an unusable reply once: a second sample often parses. Never retry
       // a subprocess failure, because a second launch cannot fix it.
       if (cause instanceof PlannerRunError || !(cause instanceof TypeError)) throw cause;
-      reply = parsePlannerReply(await this.#spawn(draft, prompt));
+      // The retry repeats the same tool calls, so say why the list restarts.
+      emit(onEvent, { k: "text", t: "Retrying…" });
+      reply = parsePlannerReply(await this.#spawn(draft, prompt, onEvent));
     }
     draft.round += 1;
     draft.at = Date.now();
@@ -376,9 +456,11 @@ export class WorktreePlanner {
     return publicDraft(draft);
   }
 
-  async #spawn(draft, prompt) {
+  async #spawn(draft, prompt, onEvent = null) {
     const args = [
-      "claude", "--print", "--output-format", "json",
+      // stream-json is what makes live progress possible, and the CLI refuses
+      // it under --print without --verbose.
+      "claude", "--print", "--output-format", "stream-json", "--verbose",
       "--allowed-tools", ALLOWED_TOOLS,
       "--disallowed-tools", DENIED_TOOLS,
     ];
@@ -395,8 +477,9 @@ export class WorktreePlanner {
         timeout: draft.sessionId ? this.timeoutMs : this.timeoutMs * 2,
         maxBuffer: 4 * 1024 * 1024,
         env: process.env,
+        onLine: onEvent ? (line) => { const event = progressEvent(line); if (event) emit(onEvent, event); } : undefined,
       });
-      return stdout;
+      return finalEnvelope(stdout);
     } catch (cause) {
       if (cause?.code === "ENOENT") throw new PlannerRunError("The planner needs the ccs CLI. Install it, then try again");
       if (cause?.killed || cause?.signal === "SIGTERM") throw new PlannerRunError("The planner did not answer in time. Try again");
@@ -435,11 +518,17 @@ export class WorktreePlanner {
   }
 }
 
+// A listener that throws must not fail the round it is only watching.
+function emit(onEvent, event) {
+  try { onEvent?.(event); } catch { /* the round outlives its audience */ }
+}
+
 function publicDraft(draft) {
   return {
     planId: draft.planId,
     repositoryId: draft.repositoryId,
     goal: draft.goal,
+    images: draft.images || [],
     round: draft.round,
     status: draft.status,
     questions: draft.questions,
@@ -459,6 +548,7 @@ const CONTRACT = [
   "Each task prompt is self-contained: it states the outcome, the files or areas to touch, and how to verify the work.",
   "Return one task when the goal is a single unit of work. That is a valid answer.",
   "Do not include an agent field. The server assigns the agent.",
+  "Do not tell a task to commit, to push, or to open a pull request. The server appends that step to every prompt.",
 ].join("\n");
 
 const OVERRIDES = [
@@ -477,6 +567,24 @@ function imageBlock(images) {
 function withImages(prompt, images) {
   const block = imageBlock(images);
   return block ? `${prompt}\n\n${block}` : prompt;
+}
+
+// The plan ends at a pull request, not at a finished worktree. The agent opens
+// it, because the branch has no commit at launch time and gh would refuse an
+// empty one. Each agent is isolated, so every task prompt carries this itself.
+function pullRequestStep(base) {
+  const branch = String(base || "").replace(/^origin\//, "") || "main";
+  return [
+    "Finish with a pull request:",
+    "1. Commit your work.",
+    "2. Push the branch to origin.",
+    `3. Open a pull request against ${branch} with \`gh pr create\`. Do not mark it a draft.`,
+    "Open the pull request even when your own checks fail. State what failed at the top of its body, so the work stays visible instead of stopping on this machine.",
+  ].join("\n");
+}
+
+function taskPrompt(prompt, images, base) {
+  return [withImages(prompt, images), pullRequestStep(base)].join("\n\n");
 }
 
 function normalizeImages(images) {

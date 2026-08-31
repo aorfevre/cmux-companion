@@ -86,6 +86,17 @@ export function AttachmentStrip({ attachments, className = "", onRemove }: { att
   </div>)}</div>;
 }
 
+// The review panel shows what was sent, so it has no remove button. A draft
+// restored in a new sheet holds paths but no preview data URL, so it names the
+// file instead of rendering a broken image.
+export function AttachmentReview({ attachments }: { attachments: { path: string; name: string; preview?: string }[] }) {
+  if (!attachments.length) return null;
+  return <div className="attachment-strip worktree-attachments review">{attachments.map((image) => <div key={image.path}>
+    {image.preview ? <img src={image.preview} alt={image.name} /> : <em className="attachment-missing" aria-hidden="true">no preview</em>}
+    <span>{image.name}</span>
+  </div>)}</div>;
+}
+
 export function ImagePickerButton({ attachments, disabled, inputRef, label = "Choose images", onFiles }: { attachments: ImageAttachment[]; disabled: boolean; inputRef: React.RefObject<HTMLInputElement | null>; label?: string; onFiles: (files: File[]) => void }) {
   return <>
     <input ref={inputRef} className="image-input" aria-label={label} type="file" accept={ACCEPT} multiple onChange={(event) => { onFiles([...(event.currentTarget.files || [])]); event.currentTarget.value = ""; }} />

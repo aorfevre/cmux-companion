@@ -1,12 +1,13 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
+import { FormEvent, useEffect, useState } from "react";
+import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
 export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string };
-export type PlanDraft = { planId: string; repositoryId: string; goal: string; round: number; status: "questions" | "ready"; questions: PlanQuestion[]; tasks: PlanTask[] };
+export type PlanImage = { path: string; name: string };
+export type PlanDraft = { planId: string; repositoryId: string; goal: string; images?: PlanImage[]; round: number; status: "questions" | "ready"; questions: PlanQuestion[]; tasks: PlanTask[] };
 export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed"; path?: string | null; workspace?: unknown; error?: string };
 export type PlanLaunchResult = { planId: string; base: string; launched: number; results: PlanLaunchRow[] };
 type PlannerRepository = { id: string; name: string };
@@ -15,6 +16,46 @@ const LOST_SESSION = "The planner lost its session";
 const AGENTS: PlanAgent[] = ["codex", "claude"];
 
 function agentLabel(agent: string) { return agent === "claude" ? "Claude" : "Codex"; }
+
+// The sheet is a leaf with no socket in scope, so it opens its own stream. The
+// trace id exists before the request because round one, the slow one, has no
+// plan id until it finishes.
+function usePlannerProgress(traceId: string) {
+  const [steps, setSteps] = useState<string[]>([]);
+  useEffect(() => {
+    if (!traceId || typeof EventSource === "undefined") return;
+    const source = new EventSource(`/api/worktree-plans/progress/${traceId}`);
+    source.onmessage = (message) => {
+      try {
+        const event = JSON.parse(message.data);
+        if (event.k === "done" || event.k === "error") { source.close(); return; }
+        if (event.t) setSteps((current) => [...current, String(event.t)].slice(-8));
+      } catch { /* a malformed frame is not worth failing the sheet over */ }
+    };
+    // EventSource retries on its own, and the replay buffer refills the list.
+    source.onerror = () => {};
+    return () => source.close();
+  }, [traceId]);
+  return [steps, setSteps] as const;
+}
+
+// After the plan appears, the goal and its images leave the screen. This brings
+// them back on demand, so a user can check eight tasks against what they asked.
+function ContextReview({ goal, images }: { goal: string; images: { path: string; name: string; preview?: string }[] }) {
+  if (!goal.trim() && !images.length) return null;
+  return <details className="planner-prompt planner-context"><summary aria-label="Your goal and attachments">Your goal{images.length ? ` · ${images.length} image${images.length === 1 ? "" : "s"}` : ""}</summary>
+    <p>{goal}</p>
+    <AttachmentReview attachments={images} />
+  </details>;
+}
+
+function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string }) {
+  return <div className="planner-waiting"><span>{waiting}</span>{steps.length > 0 && <ul className="planner-progress">{steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ul>}</div>;
+}
+
+function newTraceId() {
+  return typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : "";
+}
 function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
 
 export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice }: { repository: PlannerRepository; onClose: () => void; onLaunched: () => Promise<void>; onNotice: (message: string) => void }) {
@@ -24,7 +65,9 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
   const [result, setResult] = useState<PlanLaunchResult | null>(null);
   const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch">("");
   const [error, setError] = useState("");
+  const [traceId, setTraceId] = useState("");
   const { attachments, uploading, inputRef, addImages, pasteImages, removeImage } = useImageAttachments(onNotice);
+  const [steps, setSteps] = usePlannerProgress(traceId);
 
   function receive(next: PlanDraft) { setDraft(next); setAnswers({}); setError(""); }
 
@@ -36,18 +79,20 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
 
   async function plan(event: FormEvent) {
     event.preventDefault();
-    setBusy("plan"); setError("");
-    try { receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments) }) })); }
+    const trace = newTraceId();
+    setBusy("plan"); setError(""); setSteps([]); setTraceId(trace);
+    try { receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), traceId: trace }) })); }
     catch (cause) { fail(cause, "Could not plan this goal"); }
-    finally { setBusy(""); }
+    finally { setBusy(""); setTraceId(""); }
   }
 
-  async function answer(body: unknown) {
+  async function answer(body: Record<string, unknown>) {
     if (!draft) return;
-    setBusy("answer"); setError("");
-    try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/answers`, { method: "POST", body: JSON.stringify(body) })); }
+    const trace = newTraceId();
+    setBusy("answer"); setError(""); setSteps([]); setTraceId(trace);
+    try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/answers`, { method: "POST", body: JSON.stringify({ ...body, traceId: trace }) })); }
     catch (cause) { fail(cause, "Could not send those answers"); }
-    finally { setBusy(""); }
+    finally { setBusy(""); setTraceId(""); }
   }
 
   async function editTasks(tasks: PlanTask[]) {
@@ -69,29 +114,40 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
     finally { setBusy(""); }
   }
 
+  // The local attachments still hold their preview data URLs, so prefer them
+  // over the draft's paths for as long as this sheet is open.
+  const reviewImages = attachments.length ? attachments : draft?.images || [];
+  const reviewGoal = draft?.goal || goal;
   const failed = result?.results.filter((row) => row.status === "failed") || [];
   const canRetry = Boolean(result) && result?.launched === 0;
   const heading = result ? "Launch result" : draft?.status === "ready" ? "Review the plan" : draft ? "A few questions" : "Plan a goal";
 
-  return <><button className="session-menu-backdrop" aria-label="Close goal planner" onClick={onClose} /><form className="worktree-launcher worktree-planner-sheet" role="dialog" aria-modal="true" aria-label="Plan a goal" onSubmit={(event) => event.preventDefault()}>
+  // A goal takes minutes to write and a round takes minutes to answer, so a
+  // mis-tap outside the sheet must not throw both away. The header button and
+  // the Done button are the ways out.
+  return <><div className="session-menu-backdrop" /><form className="worktree-launcher worktree-planner-sheet" role="dialog" aria-modal="true" aria-label="Plan a goal" onSubmit={(event) => event.preventDefault()}>
     <header><div><strong>{heading}</strong><span>{repository.name}</span></div><button type="button" aria-label="Close goal planner sheet" onClick={onClose}>×</button></header>
     {!draft && !result && <>
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       {error && <p className="worktree-action-error">{error}</p>}
+      {busy === "plan" && <ProgressSteps steps={steps} waiting="Reading the repository. The first round is the slowest, because it starts a fresh session." />}
       <div className="worktree-launch-actions"><ImagePickerButton attachments={attachments} disabled={busy === "plan" || uploading > 0} inputRef={inputRef} label="Choose goal images" onFiles={(files) => { void addImages(files); }} /><button type="button" className="primary-button" disabled={busy === "plan" || uploading > 0 || !goal.trim()} onClick={plan}>{busy === "plan" ? "Planning…" : uploading ? `Uploading ${uploading}…` : "Plan this goal"}</button></div>
     </>}
     {draft && !result && draft.status === "questions" && <>
       <p className="planner-round">Round {draft.round}</p>
+      <ContextReview goal={reviewGoal} images={reviewImages} />
       <div className="planner-questions">{draft.questions.map((question) => <div className="planner-question" key={question.id}>
         <label><span>{question.text}</span><textarea aria-label={question.text} value={answers[question.id] || ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} rows={2} maxLength={2_000} /></label>
         {question.options.length > 0 && <div className="planner-options">{question.options.map((option) => <button type="button" key={option} aria-label={`Answer ${question.text} with ${option}`} className={answers[question.id] === option ? "selected" : ""} onClick={() => setAnswers((current) => ({ ...current, [question.id]: option }))}>{option}</button>)}</div>}
       </div>)}</div>
+      {busy === "answer" && <ProgressSteps steps={steps} waiting="Thinking about your answers." />}
       {error && <p className="worktree-action-error">{error}</p>}
       <div className="planner-actions"><button type="button" disabled={busy === "answer"} onClick={() => answer({ skip: true })}>Skip questions</button><button type="button" className="primary-button" disabled={busy === "answer"} onClick={() => answer({ answers: draft.questions.map((question) => ({ id: question.id, text: answers[question.id] || "" })).filter((entry) => entry.text.trim()) })}>{busy === "answer" ? "Sending…" : "Answer"}</button></div>
     </>}
     {draft && !result && draft.status === "ready" && <>
       <p className="planner-round">Round {draft.round} · {draft.tasks.length} task{draft.tasks.length === 1 ? "" : "s"}</p>
+      <ContextReview goal={reviewGoal} images={reviewImages} />
       <div className="planner-tasks">{draft.tasks.map((task) => <article className="planner-task" key={task.id}>
         <header><strong>{task.title}</strong><button type="button" className="planner-remove-task" aria-label={`Remove ${task.title}`} disabled={busy === "edit" || draft.tasks.length < 2} onClick={() => editTasks(draft.tasks.filter((item) => item.id !== task.id))}>×</button></header>
         <code className="planner-branch">{task.branch}</code>
@@ -105,6 +161,7 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
     </>}
     {result && <>
       <p className="planner-round">Branched from <code>{result.base}</code> · {result.launched} of {result.results.length} started</p>
+      <ContextReview goal={reviewGoal} images={reviewImages} />
       <div className="planner-results">{result.results.map((row) => <div className={`planner-result ${row.status}`} key={row.id}>
         <header><strong>{row.title}</strong><em>{row.status === "launched" ? "Launched" : "Failed"}</em></header>
         <code className="planner-branch">{row.branch}</code><small>{agentLabel(row.agent)}</small>
