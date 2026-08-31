@@ -282,7 +282,15 @@ export async function buildApp({
 
   app.delete("/api/worktree-dashboard/:id", async (request) => {
     const bootstrap = await loadBootstrap();
-    return worktrees.remove(request.params.id, { workspaces: bootstrap.workspaces });
+    return worktrees.remove(request.params.id, {
+      workspaces: bootstrap.workspaces,
+      discardChanges: request.query?.discardChanges === "1",
+    });
+  });
+
+  app.post("/api/worktree-dashboard/repositories/:id/remove-clean", async (request) => {
+    const bootstrap = await loadBootstrap();
+    return worktrees.removeCleanWorktrees(request.params.id, { workspaces: bootstrap.workspaces });
   });
 
   app.patch("/api/worktree-dashboard/repositories/:id/archive", async (request) => {

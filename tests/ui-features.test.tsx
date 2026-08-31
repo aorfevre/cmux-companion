@@ -153,6 +153,56 @@ describe("contextual mobile features", () => {
     assert.ok(screen.getByText("No archived Karven projects"));
   });
 
+  test("offers bulk cleanup of clean worktrees and a named second confirmation for a detached release checkout", async () => {
+    const worktree = (over: Record<string, unknown>) => ({ repoId: "repo-1", head: "abc", locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, detached: false, isPrimary: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" }, ...over });
+    const emptyRepo = { id: "repo-2", name: "solo", root: "karven", path: "/repo/solo", pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [worktree({ id: "soloprimary1234567", path: "/repo/solo", name: "solo", branch: "main", isPrimary: true })] };
+    const repo = { id: "repo-1", name: "companion", root: "karven", path: "/repo/companion", pullRequestsAvailable: false, summary: { worktrees: 4, sessions: 0, needsYou: 0, working: 0, dirty: 1 }, worktrees: [
+      worktree({ id: "primaryworktree123", path: "/repo/companion", name: "companion", branch: "main", isPrimary: true }),
+      worktree({ id: "cleanworktree12345", path: "/repo/companion-clean", name: "companion-clean", branch: "chore/clean" }),
+      worktree({ id: "lockedworktree1234", path: "/repo/companion-locked", name: "companion-locked", branch: "chore/locked", locked: "pinned" }),
+      worktree({ id: "releaseworktree123", path: "/releases/abc123", name: "abc123", branch: "HEAD", detached: true, changedFiles: 2, dirty: true }),
+    ] };
+    const dashboard = { generatedAt: "2026-08-31", summary: { repositories: 2, worktrees: 5, sessions: 0, needsYou: 0, working: 0, dirty: 1, pullRequests: 0 }, orphanSessions: [], repositories: [repo, emptyRepo] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/repositories/repo-1/remove-clean")) return new Response(JSON.stringify({ repository: { id: "repo-1", name: "companion" }, requested: 1, removed: 0, failed: 1, branchPreserved: true, results: [{ id: "cleanworktree12345", branch: "chore/clean", path: "/repo/companion-clean", removed: false, error: "Git could not remove this worktree: fatal: locked" }] }), { status: 200 });
+      if (init?.method === "DELETE") return new Response(JSON.stringify({ removed: true, branchPreserved: true, discardedChanges: true }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const notice = vi.fn();
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={notice} />);
+    await userEvent.click(await screen.findByRole("tab", { name: /Inactive/ }));
+
+    // Only the clean, unlocked, session-free, non-primary worktree counts.
+    const bulk = screen.getByRole("button", { name: "Remove clean worktrees in companion" });
+    assert.equal(bulk.textContent, "Remove clean (1)");
+    assert.equal((bulk as HTMLButtonElement).disabled, false);
+    const soloBulk = screen.getByRole("button", { name: "Remove clean worktrees in solo" });
+    assert.equal(soloBulk.textContent, "Remove clean (0)");
+    assert.equal((soloBulk as HTMLButtonElement).disabled, true);
+
+    await userEvent.click(bulk);
+    const sheet = screen.getByRole("dialog", { name: "Remove clean worktrees" });
+    assert.ok(within(sheet).getByText("Remove 1 clean worktree?"));
+    assert.ok(within(sheet).getByText("chore/clean"));
+    assert.equal(within(sheet).queryByText("chore/locked"), null);
+    assert.equal(within(sheet).queryByText("main"), null);
+    await userEvent.click(within(sheet).getByRole("button", { name: "Remove 1 worktree" }));
+    await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/repositories/repo-1/remove-clean") && init?.method === "POST"), true));
+    await waitFor(() => assert.equal(notice.mock.calls.some(([message]) => String(message).includes("Removed 0 of 1 worktrees") && String(message).includes("chore/clean (Git could not remove this worktree: fatal: locked)")), true));
+
+    // The detached release checkout is dirty, so it needs a second confirmation
+    // that names what is destroyed before the client may pass discardChanges.
+    const release = screen.getByText("/releases/abc123").closest("article");
+    assert.ok(release);
+    await userEvent.click(within(release).getByRole("button", { name: "Remove…" }));
+    assert.ok(within(release).getByText("Discard 2 uncommitted changes?"));
+    assert.ok(within(release).getByText(/deletes \/releases\/abc123 and its 2 uncommitted files permanently/));
+    await userEvent.click(within(release).getByRole("button", { name: "Discard and remove" }));
+    await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/worktree-dashboard/releaseworktree123?discardChanges=1") && init?.method === "DELETE"), true));
+  });
+
   test("terminal Markdown and localhost references are interactive", async () => {
     const markdown = vi.fn(); const local = vi.fn();
     render(<TerminalGrid view={{ mode: "text", text: "Read docs/plan.md then http://localhost:3000" }} onMarkdownLink={markdown} onLocalUrl={local} />);

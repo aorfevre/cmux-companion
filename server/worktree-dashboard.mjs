@@ -6,6 +6,23 @@ import { RepositoryArchive } from "./repository-archive.mjs";
 
 const STATUS_PRIORITY = { ready: 0, done: 1, working: 2, attention: 3 };
 
+// The local updater writes these files into a finalized release checkout after
+// it checks the commit out. Git reports them as untracked, so every release
+// worktree looked permanently dirty and could never be removed. They are build
+// bookkeeping, not user work, so they do not count as changes. Only detached
+// checkouts get this treatment, and only for untracked entries, so a real edit
+// in a branch worktree still blocks removal.
+export const UPDATER_ARTIFACTS = new Set(["release-manifest.json", "transaction.json", "bootstrap.next"]);
+
+export function countUpdaterArtifacts(output, artifacts = UPDATER_ARTIFACTS) {
+  let count = 0;
+  for (const line of String(output).split("\n")) {
+    if (!line.startsWith("? ")) continue;
+    if (artifacts.has(line.slice(2).trim())) count += 1;
+  }
+  return count;
+}
+
 export class WorktreeDashboard {
   constructor({ repoCatalog, cacheMs = 5_000, pullRequestCacheMs = 30_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive() } = {}) {
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
@@ -116,6 +133,9 @@ export class WorktreeDashboard {
         this.repoCatalog.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0"),
       ]);
       const status = parsePorcelainV2(statusOutput);
+      const detached = record.detached || status.branch === "HEAD";
+      const updaterArtifacts = detached ? countUpdaterArtifacts(statusOutput) : 0;
+      const changedFiles = Math.max(0, status.changedFiles - updaterArtifacts);
       const id = worktreeId(repositoryId, path);
       const worktree = {
         id,
@@ -125,13 +145,14 @@ export class WorktreeDashboard {
         branch: status.branch !== "HEAD" ? status.branch : record.branch || "HEAD",
         head: record.head,
         isPrimary: path === primaryPath,
-        detached: record.detached || status.branch === "HEAD",
+        detached,
         locked: record.locked,
         prunable: record.prunable,
         ahead: status.ahead,
         behind: status.behind,
-        changedFiles: status.changedFiles,
-        dirty: status.changedFiles > 0,
+        changedFiles,
+        updaterArtifacts,
+        dirty: changedFiles > 0,
         lastActivity: Number(lastActivityOutput.trim()) || 0,
         pullRequest: null,
         sessions: [],
@@ -173,29 +194,79 @@ export class WorktreeDashboard {
     return { ...target };
   }
 
-  async remove(id, { workspaces = [] } = {}) {
+  async remove(id, { workspaces = [], discardChanges = false } = {}) {
     if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid worktree");
     const dashboard = await this.snapshot({ workspaces, refresh: true });
     const worktree = dashboard.repositories.flatMap((repository) => repository.worktrees).find((item) => item.id === id);
     const target = this.targets.get(id);
     if (!worktree || !target) throw new TypeError("Unknown worktree");
-    if (worktree.isPrimary) throw new TypeError("The primary worktree cannot be removed");
-    if (worktree.sessions.length) throw new TypeError("Close this worktree’s sessions before removing it");
-    if (worktree.dirty) throw new TypeError("Commit or stash this worktree’s changes before removing it");
-    if (worktree.locked) throw new TypeError("Unlock this Git worktree before removing it");
-    const latestStatus = parsePorcelainV2(await this.repoCatalog.git(target.path, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]));
-    if (latestStatus.changedFiles > 0) throw new TypeError("This worktree changed. Commit or stash its changes before removing it");
-    try {
-      // --force is needed for ignored build output (node_modules, dist, etc.).
-      // The fresh status check above still protects tracked and untracked work.
-      await this.repoCatalog.git(target.repositoryPath, ["worktree", "remove", "--force", target.path], { timeout: 120_000 });
-    } catch (cause) {
-      const detail = typeof cause?.stderr === "string" ? cause.stderr.trim().split("\n").at(-1)?.slice(0, 180) : "";
-      throw new TypeError(detail ? `Git could not remove this worktree: ${detail}` : "Git could not remove this worktree");
-    }
+    assertRemovable(worktree, { discardChanges: discardChanges === true });
+    if (discardChanges !== true) await this.assertStillClean(worktree, target);
+    await this.runWorktreeRemoval(target);
     this.repoCatalog.cache = null;
     this.invalidate();
-    return { removed: true, worktree: { id: worktree.id, branch: worktree.branch, path: worktree.path }, branchPreserved: true };
+    return {
+      removed: true,
+      worktree: { id: worktree.id, branch: worktree.branch, path: worktree.path },
+      branchPreserved: true,
+      discardedChanges: discardChanges === true && worktree.dirty,
+    };
+  }
+
+  // Bulk cleanup keeps the same guards as a single removal. It is deliberately
+  // tolerant: one worktree Git refuses must not stop the others.
+  async removeCleanWorktrees(repositoryId, { workspaces = [] } = {}) {
+    if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
+    const dashboard = await this.snapshot({ workspaces, refresh: true });
+    const repository = dashboard.repositories.find((item) => item.id === repositoryId);
+    if (!repository) throw new TypeError("Unknown repository");
+    const candidates = repository.worktrees.filter(isBulkRemovable);
+    const results = [];
+    for (const worktree of candidates) {
+      const target = this.targets.get(worktree.id);
+      const entry = { id: worktree.id, branch: worktree.branch, path: worktree.path, removed: false, error: "" };
+      try {
+        if (!target) throw new TypeError("Unknown worktree");
+        await this.assertStillClean(worktree, target);
+        await this.runWorktreeRemoval(target);
+        entry.removed = true;
+      } catch (cause) {
+        entry.error = cause instanceof Error ? cause.message : "Could not remove this worktree";
+      }
+      results.push(entry);
+    }
+    if (results.some((entry) => entry.removed)) {
+      this.repoCatalog.cache = null;
+      this.invalidate();
+    }
+    return {
+      repository: { id: repository.id, name: repository.name },
+      requested: results.length,
+      removed: results.filter((entry) => entry.removed).length,
+      failed: results.filter((entry) => !entry.removed).length,
+      results,
+      branchPreserved: true,
+    };
+  }
+
+  // A worktree can change between the snapshot and the removal, so re-read its
+  // status. Untracked files count here, minus the updater's own artifacts.
+  async assertStillClean(worktree, target) {
+    const output = await this.repoCatalog.git(target.path, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]);
+    const latest = parsePorcelainV2(output);
+    const artifacts = worktree.detached ? countUpdaterArtifacts(output) : 0;
+    if (latest.changedFiles - artifacts > 0) throw new TypeError("This worktree changed. Commit or stash its changes before removing it");
+  }
+
+  async runWorktreeRemoval(target) {
+    try {
+      // --force is needed for ignored build output (node_modules, dist, etc.)
+      // and for the explicitly confirmed detached removal.
+      await this.repoCatalog.git(target.repositoryPath, ["worktree", "remove", "--force", target.path], { timeout: 120_000 });
+    } catch (cause) {
+      const detail = gitErrorDetail(cause);
+      throw new TypeError(detail ? `Git could not remove this worktree: ${detail}` : "Git could not remove this worktree");
+    }
   }
 
   async create(repositoryId, { branch, base } = {}) {
@@ -280,6 +351,22 @@ export function parseWorktreeList(output) {
   }
   if (current?.path) records.push(current);
   return records;
+}
+
+// The primary worktree, an active session, and a Git lock block every removal
+// path. Only a dirty *detached* worktree can be forced, and only when the
+// client explicitly asked for it after its own second confirmation.
+export function assertRemovable(worktree, { discardChanges = false } = {}) {
+  if (worktree.isPrimary) throw new TypeError("The primary worktree cannot be removed");
+  if (worktree.sessions.length) throw new TypeError("Close this worktree\u2019s sessions before removing it");
+  if (worktree.locked) throw new TypeError("Unlock this Git worktree before removing it");
+  if (!worktree.dirty) return;
+  if (!discardChanges) throw new TypeError("Commit or stash this worktree\u2019s changes before removing it");
+  if (!worktree.detached) throw new TypeError("Only a detached worktree can be removed with its changes discarded");
+}
+
+export function isBulkRemovable(worktree) {
+  return !worktree.isPrimary && worktree.changedFiles === 0 && !worktree.locked && worktree.sessions.length === 0;
 }
 
 function normalizedGitInput(value, missingMessage) {
