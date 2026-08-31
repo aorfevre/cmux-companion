@@ -173,6 +173,30 @@ const DENIED_TOOLS = "Bash,Write,Edit,MultiEdit,NotebookEdit,Task,Skill,WebFetch
 const MAX_TASKS = 8;
 const MAX_DRAFTS = 50;
 
+// ccs draws its errors as a box: ANSI colour, border glyphs, a blank padded
+// line between every sentence, and a bare docs URL last. Taking the last stderr
+// line therefore reported only the URL. Strip the frame, then keep the words.
+const BOX_GLYPHS = /[\u2500-\u257f]/gu;
+// eslint-disable-next-line no-control-regex -- stripping ANSI needs the escape byte.
+const ANSI = /\u001b\[[0-9;]*m/gu;
+
+export function describeRunFailure(stderr) {
+  const lines = String(stderr || "")
+    .replace(ANSI, "")
+    .replace(BOX_GLYPHS, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const text = lines.join(" ");
+  // E301 is the one failure an operator can fix without reading the docs, and
+  // the launchd PATH omits ~/.local/bin, where the installer puts claude.
+  if (/E301|Claude CLI not found/i.test(text)) {
+    return "The planner could not run: ccs cannot find the claude CLI on PATH. Add its directory to the companion PATH, or set CCS_CLAUDE_PATH to the binary";
+  }
+  const detail = lines.filter((line) => !/^https?:\/\//.test(line) && line !== "ERROR").at(-1);
+  return detail ? `The planner could not run: ${detail.slice(0, 160)}` : "The planner could not run. Try again";
+}
+
 export class WorktreePlanner {
   constructor({ worktrees, cmux, accountUsage, log = null, execute = execFileAsync, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
@@ -371,8 +395,7 @@ export class WorktreePlanner {
     } catch (cause) {
       if (cause?.code === "ENOENT") throw new PlannerRunError("The planner needs the ccs CLI. Install it, then try again");
       if (cause?.killed || cause?.signal === "SIGTERM") throw new PlannerRunError("The planner did not answer in time. Try again");
-      const detail = String(cause?.stderr || "").trim().split("\n").at(-1)?.slice(0, 160);
-      throw new PlannerRunError(detail ? `The planner could not run: ${detail}` : "The planner could not run. Try again");
+      throw new PlannerRunError(describeRunFailure(cause?.stderr));
     }
   }
 
