@@ -180,7 +180,15 @@ export class WorktreeDashboard {
     if (worktree.sessions.length) throw new TypeError("Close this worktree’s sessions before removing it");
     if (worktree.dirty) throw new TypeError("Commit or stash this worktree’s changes before removing it");
     if (worktree.locked) throw new TypeError("Unlock this Git worktree before removing it");
-    await this.repoCatalog.git(target.repositoryPath, ["worktree", "remove", target.path]);
+    const latestStatus = parsePorcelainV2(await this.repoCatalog.git(target.path, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]));
+    if (latestStatus.changedFiles > 0) throw new TypeError("This worktree changed. Commit or stash its changes before removing it");
+    try {
+      // --force is needed for ignored build output (node_modules, dist, etc.).
+      // The fresh status check above still protects tracked and untracked work.
+      await this.repoCatalog.git(target.repositoryPath, ["worktree", "remove", "--force", target.path]);
+    } catch {
+      throw new TypeError("Git could not remove this worktree");
+    }
     this.repoCatalog.cache = null;
     this.invalidate();
     return { removed: true, worktree: { id: worktree.id, branch: worktree.branch, path: worktree.path }, branchPreserved: true };

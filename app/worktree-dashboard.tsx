@@ -39,7 +39,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice }:
   }
 
   async function removeWorktree(worktree: DashboardWorktree) {
-    if (!confirm(`Remove worktree “${worktree.branch}” from this Mac?\n\nIts Git branch and commits will be kept.`)) return;
+    if (!confirm(`Remove worktree “${worktree.branch}” from this Mac?\n\nGenerated files inside it will be deleted. Its Git branch and commits will be kept.`)) return;
     setBusy(`worktree:${worktree.id}`);
     try { await request(`/api/worktree-dashboard/${worktree.id}`, { method: "DELETE" }); await load(true); onNotice(`Removed worktree. Branch ${worktree.branch} was kept.`); }
     catch (cause) { onNotice(cause instanceof Error ? cause.message : "Could not remove worktree"); }

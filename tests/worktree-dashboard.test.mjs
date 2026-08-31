@@ -90,6 +90,7 @@ test("coalesces catalog entries that belong to one linked-worktree repository", 
 
 test("removes only clean, idle, non-primary worktrees while preserving their branch", async () => {
   const calls = [];
+  let lateChange = false;
   const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
   const repoCatalog = {
     cache: null,
@@ -99,7 +100,7 @@ test("removes only clean, idle, non-primary worktrees while preserving their bra
       if (args[0] === "worktree" && args[1] === "list") return inventory;
       if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
       if (args[0] === "rev-parse") return `${cwd}\n`;
-      if (args[0] === "status") return `# branch.head ${cwd.endsWith("feature") ? "feature/mobile" : "main"}\n`;
+      if (args[0] === "status") return `${`# branch.head ${cwd.endsWith("feature") ? "feature/mobile" : "main"}\n`}${lateChange && args.includes("--untracked-files=all") ? "? new-file.ts\n" : ""}`;
       if (args[0] === "log") return "1\n";
       return "";
     },
@@ -110,7 +111,10 @@ test("removes only clean, idle, non-primary worktrees while preserving their bra
   const primary = snapshot.repositories[0].worktrees.find((item) => item.isPrimary);
   const feature = snapshot.repositories[0].worktrees.find((item) => !item.isPrimary);
   await assert.rejects(() => dashboard.remove(primary.id), /primary worktree/);
+  lateChange = true;
+  await assert.rejects(() => dashboard.remove(feature.id), /worktree changed/);
+  lateChange = false;
   const result = await dashboard.remove(feature.id);
   assert.equal(result.branchPreserved, true);
-  assert.deepEqual(calls.at(-1), ["/repo/sample", "worktree", "remove", "/repo/sample-feature"]);
+  assert.deepEqual(calls.at(-1), ["/repo/sample", "worktree", "remove", "--force", "/repo/sample-feature"]);
 });
