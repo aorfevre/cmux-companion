@@ -119,3 +119,4 @@
 .worktree-planner-sheet .planner-actions>button{min-height:44px;flex:1;border:1px solid var(--line);border-radius:11px;background:#191e24;color:#b8c0c8;font-size:10px}
 .worktree-planner-sheet .planner-actions>.primary-button{flex:2;border-color:var(--lime);background:var(--lime);color:#10150b;font-weight:800}
 .worktree-planner-sheet>.primary-button{width:100%}
+.worktree-planner-sheet .worktree-launch-actions{margin-top:2px}

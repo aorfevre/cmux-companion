@@ -289,7 +289,7 @@ export async function buildApp({
   });
 
   app.post("/api/worktree-plans", async (request, reply) => (
-    reply.code(201).send(await planner.start({ repositoryId: request.body?.repositoryId, goal: request.body?.goal }))
+    reply.code(201).send(await planner.start({ repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images }))
   ));
 
   app.post("/api/worktree-plans/:planId/answers", async (request) => (

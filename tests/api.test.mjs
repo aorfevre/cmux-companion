@@ -421,7 +421,7 @@ test("drives a worktree plan from goal to launch", async (t) => {
   const started = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing" } });
   assert.equal(started.statusCode, 201);
   assert.equal(started.json().planId, "plan-1");
-  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing" });
+  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing", images: undefined });
 
   const answered = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/answers", headers, payload: { answers: [{ id: "q1", text: "Postgres" }] } });
   assert.equal(answered.statusCode, 200);
@@ -485,4 +485,34 @@ test("accepts a full eight task plan without hitting the body limit", async (t) 
   });
   assert.equal(response.statusCode, 200, `a full plan must not be rejected, got ${response.statusCode}`);
   assert.equal(planner.calls.at(-1)[2].tasks.length, 8);
+});
+
+test("passes attached images through to the planner", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const images = [{ path: "/attachments/one.png", name: "one.png" }];
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-plans",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { repositoryId: "repository12345678", goal: "Add billing", images },
+  });
+  assert.equal(response.statusCode, 201);
+  assert.deepEqual(planner.calls[0][1].images, images);
+});
+
+test("turns a bad images value into a 400", async (t) => {
+  const planner = fakePlanner();
+  planner.start = async () => { throw new TypeError("Attached images must be a list"); };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-plans",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { repositoryId: "repository12345678", goal: "Add billing", images: "one.png" },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().error, "Attached images must be a list");
 });

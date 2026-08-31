@@ -361,6 +361,44 @@ describe("worktree goal planner", () => {
     await waitFor(() => assert.equal(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/launch")).length, 2));
   });
 
+  test("attaches a pasted image to the goal and drops it again", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/attachments/images") && init?.method === "POST") return new Response(JSON.stringify({ image: { path: "/attachments/goal.png", name: "goal.png", mime: "image/png", size: 5 } }), { status: 201 });
+      return new Response(JSON.stringify(readyDraft), { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    const goal = screen.getByRole("textbox", { name: "Goal" });
+    await userEvent.type(goal, "Ship the planner");
+    const pasted = new File(["image"], "goal.png", { type: "image/png" });
+    fireEvent.paste(goal, { clipboardData: { items: [{ type: "image/png", getAsFile: () => pasted }] } });
+    assert.ok(await screen.findByRole("img", { name: "goal.png" }));
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    const planCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/worktree-plans");
+    assert.match(String(planCall?.[1]?.body), /"images":\[\{"path":"\/attachments\/goal.png","name":"goal.png"\}\]/);
+  });
+
+  test("the remove button drops an attached image", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/attachments/images") && init?.method === "POST") return new Response(JSON.stringify({ image: { path: "/attachments/goal.png", name: "goal.png", mime: "image/png", size: 5 } }), { status: 201 });
+      return new Response(JSON.stringify(readyDraft), { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    const goal = screen.getByRole("textbox", { name: "Goal" });
+    await userEvent.type(goal, "Ship the planner");
+    const pasted = new File(["image"], "goal.png", { type: "image/png" });
+    fireEvent.paste(goal, { clipboardData: { items: [{ type: "image/png", getAsFile: () => pasted }] } });
+    assert.ok(await screen.findByRole("img", { name: "goal.png" }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove goal.png" }));
+    assert.equal(screen.queryByRole("img", { name: "goal.png" }), null);
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    const planCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/worktree-plans");
+    assert.match(String(planCall?.[1]?.body), /"images":\[\]/);
+  });
+
   test("names the worktree a failed task left behind", async () => {
     await launchReadyPlan({ planId: "plan-1", base: "main", launched: 0, results: [
       { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "codex", status: "failed", path: "/Users/sample/repo/companion-planner-sheet", error: "The session did not start" },

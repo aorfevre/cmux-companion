@@ -1,7 +1,7 @@
 "use client";
-/* eslint-disable @next/next/no-img-element */
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
+import { AttachmentStrip, composedPrompt, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 import { WorktreePlannerSheet } from "./worktree-planner";
 
 type DeliveryState = { label: string; tone: "attention" | "working" | "done" | "ready" };
@@ -10,22 +10,8 @@ type PullRequest = { number: number; title: string; url: string; isDraft: boolea
 export type DashboardWorktree = { id: string; repoId: string; path: string; name: string; branch: string; head?: string | null; isPrimary: boolean; detached: boolean; locked?: string | null; prunable?: string | null; ahead: number; behind: number; changedFiles: number; dirty: boolean; lastActivity: number; pullRequest?: PullRequest | null; sessions: WorktreeSession[]; state: DeliveryState };
 type DashboardRepository = { id: string; name: string; root: string; path: string; archived?: boolean; pullRequestsAvailable: boolean; summary: { worktrees: number; sessions: number; needsYou: number; working: number; dirty: number }; worktrees: DashboardWorktree[] };
 type Dashboard = { generatedAt: string; summary: { repositories: number; worktrees: number; sessions: number; needsYou: number; working: number; dirty: number; pullRequests: number }; repositories: DashboardRepository[]; orphanSessions: WorktreeSession[] };
-type ImageAttachment = { path: string; name: string; mime: string; size: number; preview: string };
 type ProjectKey = "karven" | "rekord";
 type RepositoryFilter = "active" | "inactive" | "archived";
-
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-
-function imageDataUrl(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("Could not read that image")); reader.readAsDataURL(file); }); }
-function composedPrompt(draft: string, attachments: ImageAttachment[]) { const imageLines = attachments.map((image) => `- ${image.path}`); return [draft.trim(), imageLines.length ? `Attached image${imageLines.length > 1 ? "s" : ""}:\n${imageLines.join("\n")}` : ""].filter(Boolean).join("\n\n"); }
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, headers: { ...(init?.body != null ? { "Content-Type": "application/json" } : {}), ...init?.headers } });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body as T;
-}
 
 function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
 function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
@@ -145,38 +131,8 @@ function WorktreeCard({ worktree, busy, confirming, error, onOpenWorkspace, onCl
 }
 
 function LaunchWorktreeSheet({ target, onClose, onLaunched, onNotice }: { target: { repo: DashboardRepository; worktree: DashboardWorktree }; onClose: () => void; onLaunched: (id: string) => Promise<void>; onNotice: (message: string) => void }) {
-  const [agent, setAgent] = useState("codex"); const [prompt, setPrompt] = useState(""); const [busy, setBusy] = useState(false); const [uploading, setUploading] = useState(0); const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
-  const imageInputRef = useRef<HTMLInputElement>(null);
-
-  async function addImages(files: File[]) {
-    const available = 4 - attachments.length;
-    if (available <= 0) { onNotice("You can attach up to four images at a time"); return; }
-    if (files.length > available) onNotice("Only the first four images were added");
-    const selected = files.slice(0, available);
-    const valid = selected.filter((file) => {
-      if (!IMAGE_TYPES.has(file.type)) { onNotice(`${file.name || "That file"} is not a supported image`); return false; }
-      if (file.size > MAX_IMAGE_BYTES) { onNotice(`${file.name || "That image"} must be 8 MB or smaller`); return false; }
-      return true;
-    });
-    if (!valid.length) return;
-    setUploading((count) => count + valid.length);
-    const uploaded = await Promise.all(valid.map(async (file) => {
-      try {
-        const dataUrl = await imageDataUrl(file);
-        const result = await request<{ image: Omit<ImageAttachment, "preview"> }>("/api/attachments/images", { method: "POST", body: JSON.stringify({ dataUrl, name: file.name || "pasted image" }) });
-        return { ...result.image, preview: dataUrl };
-      } catch (cause) { onNotice(cause instanceof Error ? cause.message : "Could not attach image"); return null; }
-      finally { setUploading((count) => Math.max(0, count - 1)); }
-    }));
-    setAttachments((current) => [...current, ...uploaded.filter((image): image is ImageAttachment => image != null)].slice(0, 4));
-  }
-
-  function pastedImages(event: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const images = [...event.clipboardData.items].filter((item) => item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file));
-    if (!images.length) return;
-    event.preventDefault();
-    void addImages(images);
-  }
+  const [agent, setAgent] = useState("codex"); const [prompt, setPrompt] = useState(""); const [busy, setBusy] = useState(false);
+  const { attachments, uploading, inputRef, addImages, pasteImages, removeImage } = useImageAttachments(onNotice);
 
   async function launch(event: FormEvent) {
     event.preventDefault(); setBusy(true);
@@ -187,7 +143,7 @@ function LaunchWorktreeSheet({ target, onClose, onLaunched, onNotice }: { target
     } catch (cause) { onNotice(cause instanceof Error ? cause.message : "Could not launch worktree agent"); }
     finally { setBusy(false); }
   }
-  return <><button className="session-menu-backdrop" aria-label="Close worktree launcher" onClick={onClose} /><form className="worktree-launcher" role="dialog" aria-modal="true" aria-label="Launch worktree session" onSubmit={launch}><header><div><strong>Start session in worktree</strong><span>{target.repo.name} · {target.worktree.branch}</span></div><button type="button" onClick={onClose}>×</button></header><p>{compactPath(target.worktree.path)}</p><fieldset><legend>Agent</legend><button type="button" aria-label="Codex (xcodex)" className={agent === "codex" ? "selected" : ""} onClick={() => setAgent("codex")}>Codex<small>xcodex</small></button><button type="button" aria-label="Claude (xclaude)" className={agent === "claude" ? "selected" : ""} onClick={() => setAgent("claude")}>Claude<small>xclaude</small></button></fieldset><label className="worktree-task"><span>Initial task</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={pastedImages} rows={6} maxLength={8_000} placeholder="Describe the outcome for this workstream…" /></label>{attachments.length > 0 && <div className="attachment-strip worktree-attachments">{attachments.map((image) => <div key={image.path}><img src={image.preview} alt={image.name} /><span>{image.name}</span><button type="button" aria-label={`Remove ${image.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.path !== image.path))}>×</button></div>)}</div>}<div className="worktree-launch-actions"><input ref={imageInputRef} className="image-input" aria-label="Choose images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={(event) => { void addImages([...(event.currentTarget.files || [])]); event.currentTarget.value = ""; }} /><button type="button" className="worktree-add-images" disabled={busy || uploading > 0 || attachments.length >= 4} onClick={() => imageInputRef.current?.click()}>＋ Image{attachments.length ? ` · ${attachments.length}/4` : ""}</button><button className="primary-button" disabled={busy || uploading > 0}>{busy ? "Launching…" : uploading ? `Uploading ${uploading}…` : `Launch ${agent === "claude" ? "Claude" : "Codex"}`}</button></div></form></>;
+  return <><button className="session-menu-backdrop" aria-label="Close worktree launcher" onClick={onClose} /><form className="worktree-launcher" role="dialog" aria-modal="true" aria-label="Launch worktree session" onSubmit={launch}><header><div><strong>Start session in worktree</strong><span>{target.repo.name} · {target.worktree.branch}</span></div><button type="button" onClick={onClose}>×</button></header><p>{compactPath(target.worktree.path)}</p><fieldset><legend>Agent</legend><button type="button" aria-label="Codex (xcodex)" className={agent === "codex" ? "selected" : ""} onClick={() => setAgent("codex")}>Codex<small>xcodex</small></button><button type="button" aria-label="Claude (xclaude)" className={agent === "claude" ? "selected" : ""} onClick={() => setAgent("claude")}>Claude<small>xclaude</small></button></fieldset><label className="worktree-task"><span>Initial task</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={pasteImages} rows={6} maxLength={8_000} placeholder="Describe the outcome for this workstream…" /></label><AttachmentStrip attachments={attachments} onRemove={removeImage} /><div className="worktree-launch-actions"><ImagePickerButton attachments={attachments} disabled={busy || uploading > 0} inputRef={inputRef} onFiles={(files) => { void addImages(files); }} /><button className="primary-button" disabled={busy || uploading > 0}>{busy ? "Launching…" : uploading ? `Uploading ${uploading}…` : `Launch ${agent === "claude" ? "Claude" : "Codex"}`}</button></div></form></>;
 }
 
 function WorktreeSkeleton() { return <div className="worktree-skeleton"><i /><i /><i /></div>; }
