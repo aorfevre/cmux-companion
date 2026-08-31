@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
@@ -8,6 +8,7 @@ import { MarkdownViewer } from "../app/markdown-viewer";
 import { BottomNav, HomeModeSwitch, InboxView, PullRequestBanner, TerminalPanel } from "../app/page";
 import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { WorktreeDashboardView } from "../app/worktree-dashboard";
+import { WorktreePlannerSheet } from "../app/worktree-planner";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -91,7 +92,7 @@ describe("contextual mobile features", () => {
       }, {
         id: "worktree987654321", repoId: "repo-1", path: "/repo/companion-old", name: "companion-old", branch: "chore/old-work", isPrimary: false, detached: false, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, state: { label: "No session", tone: "ready" }, pullRequest: null, sessions: [],
       }] }] };
-    const open = vi.fn(); const launched = vi.fn(async () => {}); const notice = vi.fn();
+    const open = vi.fn(); const launched = vi.fn(async (workspaceId: string) => { void workspaceId; }); const notice = vi.fn();
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(_input);
       if (url.endsWith("/api/attachments/images") && init?.method === "POST") return new Response(JSON.stringify({ image: { path: "/private/launch.png", name: "launch.png", mime: "image/png", size: 5 } }), { status: 201 });
@@ -270,5 +271,102 @@ describe("contextual mobile features", () => {
     await userEvent.click(screen.getByRole("button", { name: "Approve once" }));
     await waitFor(() => assert.equal(close.mock.calls.length, 1));
     assert.equal(fetchMock.mock.calls[0][0], "/api/inbox/req-1/reply");
+  });
+});
+
+describe("worktree goal planner", () => {
+  const repository = { id: "repo-1", name: "companion" };
+  const tasks = [
+    { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", prompt: "Build the planner sheet.", agent: "codex", agentReason: "UI work suits Codex" },
+    { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", prompt: "Wire the planner routes.", agent: "claude", agentReason: "Server work suits Claude" },
+  ];
+  const readyDraft = { planId: "plan-1", repositoryId: "repo-1", goal: "Ship the planner", round: 2, status: "ready", questions: [], tasks };
+
+  async function launchReadyPlan(launchResult: unknown) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      void init;
+      if (url.endsWith("/launch")) return new Response(JSON.stringify(launchResult), { status: 200 });
+      return new Response(JSON.stringify(readyDraft), { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Launch 2 sessions" }));
+    return fetchMock;
+  }
+
+  test("walks a goal through questions into a plan and launches every task", async () => {
+    const questionDraft = { planId: "plan-1", repositoryId: "repo-1", goal: "Ship the planner", round: 1, status: "questions", questions: [{ id: "question-1", text: "Which surface comes first?", options: ["Mobile", "Desktop"] }], tasks: [] };
+    const toggled = { ...readyDraft, tasks: [{ ...tasks[0], agent: "claude", agentReason: "You picked Claude" }, tasks[1]] };
+    const launchResult = { planId: "plan-1", base: "main", launched: 2, results: [
+      { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "claude", status: "launched", path: "/repo/companion-planner-sheet" },
+      { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", agent: "claude", status: "launched", path: "/repo/companion-planner-routes" },
+    ] };
+    const launched = vi.fn(async () => {});
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(questionDraft), { status: 201 });
+      if (url === "/api/worktree-plans/plan-1/answers") return new Response(JSON.stringify(readyDraft), { status: 200 });
+      if (url === "/api/worktree-plans/plan-1" && init?.method === "PATCH") return new Response(JSON.stringify(toggled), { status: 200 });
+      if (url === "/api/worktree-plans/plan-1/launch") return new Response(JSON.stringify(launchResult), { status: 200 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={launched} onNotice={() => {}} />);
+    const goal = screen.getByRole("textbox", { name: "Goal" });
+    assert.equal(goal.getAttribute("maxlength"), "4000");
+    assert.equal((screen.getByRole("button", { name: "Plan this goal" }) as HTMLButtonElement).disabled, true);
+    await userEvent.type(goal, "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    assert.ok(await screen.findByText("Round 1"));
+    await userEvent.click(screen.getByRole("button", { name: "Answer Which surface comes first? with Mobile" }));
+    assert.equal((screen.getByRole("textbox", { name: "Which surface comes first?" }) as HTMLTextAreaElement).value, "Mobile");
+    assert.ok(screen.getByRole("button", { name: "Skip questions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Answer" }));
+    assert.ok(await screen.findByText("Build the sheet"));
+    assert.ok(screen.getByText("feature/planner-routes"));
+    assert.ok(screen.getByText("UI work suits Codex"));
+    await userEvent.click(screen.getByRole("button", { name: "Use Claude for Build the sheet" }));
+    assert.ok(await screen.findByText("You picked Claude"));
+    await userEvent.click(screen.getByRole("button", { name: "Launch 2 sessions" }));
+    assert.ok(await screen.findByText("main"));
+    assert.equal(screen.getAllByText("Launched").length, 2);
+    await waitFor(() => assert.equal(launched.mock.calls.length, 1));
+    const answerCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/answers"));
+    assert.match(String(answerCall?.[1]?.body), /"id":"question-1"/);
+    assert.match(String(answerCall?.[1]?.body), /"text":"Mobile"/);
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PATCH");
+    assert.match(String(patchCall?.[1]?.body), /"agent":"claude"/);
+    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([url]) => String(url));
+    assert.deepEqual(posts, ["/api/worktree-plans", "/api/worktree-plans/plan-1/answers", "/api/worktree-plans/plan-1/launch"]);
+  });
+
+  test("offers a retry only when nothing launched", async () => {
+    await launchReadyPlan({ planId: "plan-1", base: "main", launched: 1, results: [
+      { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "codex", status: "launched", path: "/repo/companion-planner-sheet" },
+      { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", agent: "claude", status: "failed", error: "Branch already exists" },
+    ] });
+    assert.ok(await screen.findByText("Branch already exists"));
+    assert.equal(screen.queryByRole("button", { name: "Try again" }), null);
+    assert.ok(screen.getByText(/finish the rest from the dashboard/i));
+    cleanup();
+    const fetchMock = await launchReadyPlan({ planId: "plan-1", base: "main", launched: 0, results: [
+      { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "codex", status: "failed", error: "Could not read the repository" },
+      { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", agent: "claude", status: "failed", error: "Could not read the repository" },
+    ] });
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    await userEvent.click(retry);
+    await waitFor(() => assert.equal(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/launch")).length, 2));
+  });
+
+  test("names the worktree a failed task left behind", async () => {
+    await launchReadyPlan({ planId: "plan-1", base: "main", launched: 0, results: [
+      { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "codex", status: "failed", path: "/Users/sample/repo/companion-planner-sheet", error: "The session did not start" },
+      { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", agent: "claude", status: "failed", error: "The session did not start" },
+    ] });
+    assert.ok(await screen.findByText(/~\/repo\/companion-planner-sheet/));
+    assert.equal(screen.getAllByText(/Remove it from the dashboard/).length, 1);
   });
 });

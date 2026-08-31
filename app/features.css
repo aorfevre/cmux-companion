@@ -83,3 +83,38 @@
 .new-worktree-sheet label>input:not([type="checkbox"]){width:100%;border:1px solid var(--line);border-radius:10px;background:#0d1013;color:var(--text);padding:11px;outline:0;font:13px ui-monospace,monospace}.new-worktree-sheet label>input:not([type="checkbox"]):focus{border-color:#62763b}.new-worktree-sheet label>small{color:#6f7882;font-size:7px;line-height:1.4}.new-worktree-sheet .worktree-start-session{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;gap:9px;border:1px solid #303840;border-radius:10px;background:#171c21;padding:10px;cursor:pointer}.new-worktree-sheet .worktree-start-session>input{width:17px;height:17px;accent-color:var(--lime)}.new-worktree-sheet .worktree-start-session>span{display:flex;flex-direction:column;gap:3px;color:var(--text);font-size:10px;font-weight:700}.new-worktree-sheet .worktree-start-session small{color:var(--muted);font-size:7px;font-weight:400}.new-worktree-sheet>.primary-button{width:100%;min-height:44px;margin:2px 0 0}
 
 @media (min-width:768px){.worktree-launcher{max-height:82dvh}}
+
+.repo-plan-goal{flex:none;border:1px solid #3d4a5a;border-radius:8px;background:#151c26;color:#9fc4ff;padding:6px 8px;font-size:7px}.repo-plan-goal:hover,.repo-plan-goal:focus-visible{border-color:#5679a8;color:#c6dcff}
+.worktree-planner-sheet .planner-round{margin:0 2px 11px;color:var(--muted);font-size:8px;white-space:normal}.worktree-planner-sheet .planner-round code{color:var(--lime);font:8px ui-monospace,monospace}
+.worktree-planner-sheet .planner-questions,.worktree-planner-sheet .planner-tasks,.worktree-planner-sheet .planner-results{display:flex;flex-direction:column;gap:9px;margin-bottom:12px}
+.worktree-planner-sheet .planner-question label{margin-bottom:7px;color:var(--text);font-size:10px;line-height:1.4}
+.worktree-planner-sheet .planner-question textarea{font-size:13px}
+.worktree-planner-sheet .planner-options{display:flex;flex-wrap:wrap;gap:6px}
+.worktree-planner-sheet .planner-options button{border:1px solid var(--line);border-radius:8px;background:#191e24;color:#b8c0c8;padding:7px 9px;font-size:9px}
+.worktree-planner-sheet .planner-options button.selected{border-color:#586d31;background:#18200f;color:var(--lime)}
+.worktree-planner-sheet .planner-task,.worktree-planner-sheet .planner-result{display:flex;flex-direction:column;gap:6px;border:1px solid #252d34;border-radius:13px;background:#171c21;padding:11px}
+.worktree-planner-sheet .planner-task>header,.worktree-planner-sheet .planner-result>header{display:flex;align-items:center;gap:8px}
+.worktree-planner-sheet .planner-task>header strong,.worktree-planner-sheet .planner-result>header strong{min-width:0;flex:1;font-size:11px;line-height:1.35}
+.worktree-planner-sheet .planner-remove-task{flex:none;width:26px;height:26px;border:1px solid rgba(255,109,120,.28);border-radius:8px;background:rgba(255,109,120,.06);color:#f08c95;font-size:13px}
+.worktree-planner-sheet .planner-remove-task:disabled{opacity:.35}
+.worktree-planner-sheet .planner-branch{color:var(--lime);word-break:break-all;font:8px ui-monospace,monospace}
+.worktree-planner-sheet .planner-agent{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.worktree-planner-sheet .planner-agent button{border:1px solid var(--line);border-radius:9px;background:#191e24;color:#b8c0c8;padding:8px;font-size:9px}
+.worktree-planner-sheet .planner-agent button.selected{border-color:#586d31;background:#18200f;color:var(--lime)}
+.worktree-planner-sheet .planner-agent button:disabled{opacity:.55}
+.worktree-planner-sheet .planner-agent-reason{color:var(--muted);font-size:8px;line-height:1.45}
+.worktree-planner-sheet .planner-prompt>summary{color:#9fc4ff;font-size:8px;cursor:pointer}
+.worktree-planner-sheet .planner-prompt>p{margin:7px 0 0;border-left:2px solid #2c343d;color:#9aa4ae;padding-left:8px;font:9px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.worktree-planner-sheet .planner-result.failed{border-color:rgba(255,109,120,.3)}
+.worktree-planner-sheet .planner-result>header em{flex:none;border-radius:8px;background:rgba(201,255,80,.1);color:var(--lime);padding:4px 7px;font-size:7px;font-style:normal}
+.worktree-planner-sheet .planner-result.failed>header em{background:rgba(255,109,120,.1);color:#ff9ca5}
+.worktree-planner-sheet .planner-result small{color:var(--muted);font-size:8px;line-height:1.45}
+.worktree-planner-sheet .planner-result-error{color:#ff9ca5!important}
+.worktree-planner-sheet .planner-result-leftover{overflow-wrap:anywhere}
+.worktree-planner-sheet .planner-result-leftover code{color:var(--lime);font:8px ui-monospace,monospace}
+.worktree-planner-sheet .planner-waiting{margin:0 2px 11px;border:1px solid #3d4a5a;border-radius:9px;background:#151c26;color:#9fc4ff;padding:9px;white-space:normal;font-size:9px;line-height:1.45}
+.worktree-planner-sheet .planner-no-retry{margin:0 0 11px;border:1px solid rgba(255,179,92,.3);border-radius:9px;background:rgba(255,179,92,.06);color:var(--orange);padding:9px;font-size:9px;line-height:1.45}
+.worktree-planner-sheet .planner-actions{display:flex;gap:7px}
+.worktree-planner-sheet .planner-actions>button{min-height:44px;flex:1;border:1px solid var(--line);border-radius:11px;background:#191e24;color:#b8c0c8;font-size:10px}
+.worktree-planner-sheet .planner-actions>.primary-button{flex:2;border-color:var(--lime);background:var(--lime);color:#10150b;font-weight:800}
+.worktree-planner-sheet>.primary-button{width:100%}
