@@ -4,6 +4,7 @@ import httpProxy from "@fastify/http-proxy";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
 import { CmuxEventHub } from "./event-hub.mjs";
 import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
+import { capturePreview } from "./preview-capture.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import {
   isAuthorized,
@@ -25,6 +26,8 @@ export async function buildApp({
   repoCatalog = new RepoCatalog(),
   pushService = null,
   previewManager = null,
+  promptQueue = null,
+  previewCapture = capturePreview,
   imageAttachments = new ImageAttachments(),
 } = {}) {
   if (!token) throw new Error("A companion pairing token is required");
@@ -42,6 +45,7 @@ export async function buildApp({
   let inboxSnapshot = null;
   let inboxPending = null;
   const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
+  const detachQueue = promptQueue?.attach({ hub, cmux }) || null;
 
   await app.register(websocket, {
     options: {
@@ -242,6 +246,20 @@ export async function buildApp({
     return previewManager.remove(request.params.id);
   });
 
+  app.post("/api/previews/:id/capture", async (request, reply) => {
+    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
+    const preview = previewManager.require(request.params.id);
+    const captured = await previewCapture({
+      sourceUrl: preview.sourceUrl,
+      targetPort: preview.targetPort,
+      width: request.body?.width,
+      height: request.body?.height,
+    });
+    if (captured.buffer.length > MAX_IMAGE_BYTES) throw new TypeError("The captured preview is too large to annotate");
+    const dataUrl = `data:image/png;base64,${captured.buffer.toString("base64")}`;
+    return reply.code(201).send({ dataUrl, viewport: captured.viewport, sourceUrl: captured.sourceUrl });
+  });
+
   const loadInbox = async () => {
     if (inboxSnapshot && Date.now() - inboxSnapshot.at < 1_500) return inboxSnapshot.value;
     if (inboxPending) return inboxPending;
@@ -349,6 +367,43 @@ export async function buildApp({
     return { ok: true };
   });
 
+  app.get("/api/prompt-queue", async (request) => {
+    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
+    return promptQueue.list({
+      workspaceId: typeof request.query?.workspaceId === "string" ? request.query.workspaceId : null,
+      surfaceId: typeof request.query?.surfaceId === "string" ? request.query.surfaceId : null,
+    });
+  });
+
+  app.post("/api/prompt-queue", async (request, reply) => {
+    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
+    const payload = await cmux.workspaceListDetailed?.() || await cmux.workspaceList();
+    const workspace = (payload.workspaces || []).find((item) => item.id === request.body?.workspaceId);
+    const terminal = workspace?.terminals?.find((item) => item.id === request.body?.surfaceId);
+    if (!workspace || !terminal) throw new TypeError("Unknown cmux terminal");
+    return reply.code(201).send(promptQueue.enqueue({ workspaceId: workspace.id, surfaceId: terminal.id, text: request.body?.text }));
+  });
+
+  app.patch("/api/prompt-queue/:id", async (request) => {
+    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
+    return promptQueue.update(request.params.id, request.body);
+  });
+
+  app.post("/api/prompt-queue/:id/move", async (request) => {
+    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
+    return promptQueue.move(request.params.id, request.body?.direction);
+  });
+
+  app.post("/api/prompt-queue/:id/send", async (request) => {
+    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
+    return promptQueue.sendNow(request.params.id, cmux);
+  });
+
+  app.delete("/api/prompt-queue/:id", async (request) => {
+    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
+    return promptQueue.remove(request.params.id);
+  });
+
   app.post("/api/terminals/:id/key", async (request) => {
     await cmux.sendKey(request.params.id, request.body?.key);
     return { ok: true };
@@ -365,8 +420,10 @@ export async function buildApp({
     };
     const onEvent = (payload) => send("cmux:event", payload);
     const onState = (payload) => send("cmux:state", payload);
+    const onQueue = (payload) => send("queue:changed", payload);
     hub.on("event", onEvent);
     hub.on("state", onState);
+    promptQueue?.on("changed", onQueue);
     hub.addConsumer();
     send("companion:ready", { at: new Date().toISOString() });
 
@@ -376,6 +433,7 @@ export async function buildApp({
       clearInterval(heartbeat);
       hub.off("event", onEvent);
       hub.off("state", onState);
+      promptQueue?.off("changed", onQueue);
       hub.removeConsumer();
     });
   });
@@ -388,6 +446,7 @@ export async function buildApp({
       return cmux.terminalViewport(lease.surfaceId, { clientId: lease.clientId, generation: lease.generation, clear: true });
     }));
     detachPush?.();
+    detachQueue?.();
     hub.stop();
   });
 

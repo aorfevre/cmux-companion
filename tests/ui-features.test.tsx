@@ -26,8 +26,9 @@ describe("contextual mobile features", () => {
       workspace={{ id: "workspace-1", title: "Sample", terminals: [{ id: "terminal-1", title: "shell" }] }}
       terminal={{ id: "terminal-1", title: "shell" }}
       terminalView={{ mode: "text", text: "result\n\n› Ask Codex to do anything\n\n  gpt-5.6-sol high · ~/repo" }}
-      screenError="" draft="/" attachments={[]} sending={false} readOnly={false} fontSize={14} fitToPhone shortcutsOpen={false}
+      screenError="" draft="/" attachments={[]} queueItems={[]} sending={false} readOnly={false} fontSize={14} fitToPhone shortcutsOpen={false}
       onTerminal={() => {}} onDraft={() => {}} onImage={onImage} onRemoveImage={() => {}} onSubmit={() => {}} onKey={() => {}}
+      onQueue={() => {}} onQueueUpdate={async () => {}} onQueueMove={async () => {}} onQueueSend={async () => {}} onQueueRemove={async () => {}}
       onReadOnly={() => {}} onRefresh={() => {}} onShortcuts={() => {}} onMarkdown={() => {}} onLocalUrl={() => {}}
     />);
     assert.equal(screen.getAllByRole("textbox").length, 1);
@@ -38,6 +39,22 @@ describe("contextual mobile features", () => {
     assert.equal(onImage.mock.calls[0][0], image);
     await userEvent.click(screen.getByRole("button", { name: "Open large writing area" }));
     assert.equal((screen.getByRole("textbox", { name: "Expanded terminal input" }) as HTMLTextAreaElement).value, "/");
+  });
+
+  test("queued prompts stay behind a compact composer control and remain editable", async () => {
+    const update = vi.fn(async () => {}); const send = vi.fn(async () => {});
+    render(<TerminalPanel
+      workspace={{ id: "workspace-1", title: "Sample", terminals: [{ id: "terminal-1", title: "shell" }] }}
+      terminal={{ id: "terminal-1", title: "shell" }} terminalView={{ mode: "text", text: "working" }} screenError="" draft="" attachments={[]}
+      queueItems={[{ id: "11111111-2222-4333-8444-555555555555", workspaceId: "workspace-1", surfaceId: "terminal-1", text: "Run the tests next", createdAt: "2026-01-01", updatedAt: "2026-01-01", attempts: 0 }]}
+      sending={false} readOnly={false} fontSize={14} fitToPhone shortcutsOpen={false} onTerminal={() => {}} onDraft={() => {}} onImage={() => {}} onRemoveImage={() => {}} onSubmit={() => {}} onQueue={() => {}} onQueueUpdate={update} onQueueMove={async () => {}} onQueueSend={send} onQueueRemove={async () => {}} onKey={() => {}} onReadOnly={() => {}} onRefresh={() => {}} onShortcuts={() => {}} onMarkdown={() => {}} onLocalUrl={() => {}}
+    />);
+    await userEvent.click(screen.getByRole("button", { name: "Prompt queue, 1 waiting" }));
+    const queued = screen.getByRole("textbox", { name: "Queued prompt 1" });
+    await userEvent.clear(queued); await userEvent.type(queued, "Run every test next"); fireEvent.blur(queued);
+    assert.deepEqual(update.mock.calls[0], ["11111111-2222-4333-8444-555555555555", "Run every test next"]);
+    await userEvent.click(screen.getAllByRole("button", { name: "Send now" }).at(-1)!);
+    assert.deepEqual(send.mock.calls[0], ["11111111-2222-4333-8444-555555555555"]);
   });
 
   test("an open pull request appears as a direct project link", async () => {
@@ -72,14 +89,18 @@ describe("contextual mobile features", () => {
   test("Apps screen explicitly enables and opens a detected private preview", async () => {
     let active = false;
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(_input).endsWith("/capture")) return new Response(JSON.stringify({ dataUrl: "data:image/png;base64,iVBORw0KGgo=", viewport: { width: 390, height: 844 }, sourceUrl: "http://localhost:3000/" }), { status: 201 });
       if (init?.method === "POST") { active = true; return new Response(JSON.stringify({ preview: {} }), { status: 200 }); }
       return new Response(JSON.stringify({ tailnetOnly: true, previews: [{ id: "preview-1", workspaceId: "workspace-1", name: "Web", targetPort: 3000, sourceUrl: "http://localhost:3000", status: active ? "active" : "detected", url: active ? "https://mac.tail.test:8500" : null, updatedAt: "2026-01-01" }] }), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<AppsView focusedId="preview-1" onOpenWorkspace={() => {}} onNotice={() => {}} />);
+    render(<AppsView focusedId="preview-1" onOpenWorkspace={() => {}} onNotice={() => {}} onFix={async () => {}} />);
     await userEvent.click(await screen.findByRole("button", { name: "Make private link" }));
     assert.ok(await screen.findByRole("link", { name: "Open" }));
     assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/previews/preview-1/enable") && init?.method === "POST"), true);
+    await userEvent.click(screen.getByRole("button", { name: "◎ Fix this" }));
+    assert.ok(await screen.findByRole("dialog", { name: "Annotate preview" }));
+    assert.ok(screen.getByRole("img", { name: "Web mobile preview" }));
   });
 
   test("notification deep link presents only the exact pending decision", async () => {

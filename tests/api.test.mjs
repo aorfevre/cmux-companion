@@ -193,7 +193,7 @@ test("launches only catalogued repositories and exposes overview/inbox state", a
   assert.equal((await app.inject({ url: `/api/repos/${repo.id}/pull-request`, headers: { cookie } })).json().pullRequest.number, 7);
 });
 
-test("serves repository Markdown and manages private preview actions", async (t) => {
+test("serves Markdown, manages private previews, captures feedback, and controls the prompt queue", async (t) => {
   const cmux = fakeCmux();
   const repo = { id: "repo-safe", name: "safe", path: "/approved/safe", scripts: [] };
   const repoCatalog = {
@@ -212,8 +212,20 @@ test("serves repository Markdown and manages private preview actions", async (t)
     stop: async (id) => { calls.push(["stop", id]); return { preview: { ...preview, status: "stopped" } }; },
     restart: async (id) => { calls.push(["restart", id]); return { preview: { ...preview, status: "active" } }; },
     remove: (id) => { calls.push(["remove", id]); return { removed: true }; },
+    require: (id) => { if (id !== preview.id) throw new TypeError("Unknown preview"); return preview; },
   };
-  const app = await buildApp({ cmux, token: TOKEN, repoCatalog, previewManager });
+  const queued = { id: "11111111-2222-4333-8444-555555555555", workspaceId: WS_ID, surfaceId: TERM_ID, text: "queued" };
+  const promptQueue = {
+    attach: () => () => {}, on: () => {}, off: () => {},
+    list: (query) => { calls.push(["queue-list", query]); return { items: [queued], count: 1 }; },
+    enqueue: (body) => { calls.push(["queue-add", body]); return { item: queued, count: 1 }; },
+    update: (id, body) => { calls.push(["queue-update", id, body]); return { item: { ...queued, text: body.text } }; },
+    move: (id, direction) => { calls.push(["queue-move", id, direction]); return { item: queued }; },
+    sendNow: async (id) => { calls.push(["queue-send", id]); return { sent: true, item: queued }; },
+    remove: (id) => { calls.push(["queue-remove", id]); return { removed: true }; },
+  };
+  const previewCapture = async (input) => { calls.push(["capture", input]); return { buffer: Buffer.from("captured-png"), viewport: { width: 390, height: 844 }, sourceUrl: "http://localhost:3000/" }; };
+  const app = await buildApp({ cmux, token: TOKEN, repoCatalog, previewManager, promptQueue, previewCapture });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
@@ -225,8 +237,18 @@ test("serves repository Markdown and manages private preview actions", async (t)
   const detected = await app.inject({ method: "POST", url: "/api/previews/discover", headers, payload: { workspaceId: WS_ID, repoId: repo.id, port: 3000, url: "http://localhost:3000" } });
   assert.equal(detected.statusCode, 201);
   for (const action of ["enable", "stop", "restart"]) assert.equal((await app.inject({ method: "POST", url: `/api/previews/${preview.id}/${action}`, headers, payload: {} })).statusCode, 200);
+  const capture = await app.inject({ method: "POST", url: `/api/previews/${preview.id}/capture`, headers, payload: { width: 390, height: 844 } });
+  assert.equal(capture.statusCode, 201);
+  assert.match(capture.json().dataUrl, /^data:image\/png;base64,/);
+  assert.equal((await app.inject({ url: `/api/prompt-queue?workspaceId=${WS_ID}&surfaceId=${TERM_ID}`, headers: { cookie } })).json().count, 1);
+  assert.equal((await app.inject({ method: "POST", url: "/api/prompt-queue", headers, payload: { workspaceId: WS_ID, surfaceId: TERM_ID, text: "queued" } })).statusCode, 201);
+  assert.equal((await app.inject({ method: "POST", url: "/api/prompt-queue", headers, payload: { workspaceId: WS_ID, surfaceId: "missing-terminal", text: "unsafe" } })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PATCH", url: `/api/prompt-queue/${queued.id}`, headers, payload: { text: "edited" } })).statusCode, 200);
+  assert.equal((await app.inject({ method: "POST", url: `/api/prompt-queue/${queued.id}/move`, headers, payload: { direction: -1 } })).statusCode, 200);
+  assert.equal((await app.inject({ method: "POST", url: `/api/prompt-queue/${queued.id}/send`, headers, payload: {} })).statusCode, 200);
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/prompt-queue/${queued.id}`, headers })).statusCode, 200);
   assert.equal((await app.inject({ method: "DELETE", url: `/api/previews/${preview.id}`, headers })).statusCode, 200);
-  assert.deepEqual(calls.map((call) => call[0]), ["discover", "enable", "stop", "restart", "remove"]);
+  assert.deepEqual(calls.map((call) => call[0]), ["discover", "enable", "stop", "restart", "capture", "queue-list", "queue-add", "queue-update", "queue-move", "queue-send", "queue-remove", "remove"]);
 });
 
 test("every state-changing route requires pairing and same-origin requests", async (t) => {
@@ -255,6 +277,10 @@ test("every state-changing route requires pairing and same-origin requests", asy
     ["/api/previews/preview-safe/enable", {}],
     ["/api/previews/preview-safe/stop", {}],
     ["/api/previews/preview-safe/restart", {}],
+    ["/api/previews/preview-safe/capture", {}],
+    ["/api/prompt-queue", { workspaceId: WS_ID, surfaceId: TERM_ID, text: "x" }],
+    ["/api/prompt-queue/11111111-2222-4333-8444-555555555555/move", { direction: 1 }],
+    ["/api/prompt-queue/11111111-2222-4333-8444-555555555555/send", {}],
   ];
   for (const [url, payload] of mutations) {
     assert.equal((await app.inject({ method: "POST", url, payload })).statusCode, 401, url);

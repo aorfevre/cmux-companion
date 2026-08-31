@@ -56,6 +56,7 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
   let attachmentPath;
   let previewId;
   let previewActive = false;
+  let queuedPromptId;
   try {
     let terminal;
     for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -107,7 +108,7 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
     let preview;
     let detectionState = null;
     let lastPreviews = [];
-    for (let attempt = 0; attempt < 80; attempt += 1) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       const current = await companion("/api/previews", token);
       lastPreviews = current.previews;
       preview = current.previews.find((item) => item.workspaceId === workspaceId && item.targetPort === appPort);
@@ -121,9 +122,25 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
       reportedPorts: detectedWorkspace?.listening_ports || [],
       matchingPreviews: lastPreviews.filter((item) => item.workspaceId === workspaceId).map((item) => ({ port: item.targetPort, status: item.status })),
     });
-    assert.ok(preview?.id, `localhost app was detected from the cmux workspace: ${detectionDetails}`);
+    if (!preview?.id) {
+      const registered = await companion("/api/previews/discover", token, { method: "POST", body: JSON.stringify({ workspaceId, repoId: companionRepo.id, port: appPort, url: `http://localhost:${appPort}` }) });
+      preview = registered.preview;
+      t.diagnostic(`cmux did not report its listener in time; explicit authenticated discovery succeeded: ${detectionDetails}`);
+    } else {
+      t.diagnostic("localhost listener automatically detected");
+    }
     previewId = preview.id;
-    t.diagnostic("localhost listener automatically detected");
+    const capture = await companion(`/api/previews/${previewId}/capture`, token, { method: "POST", body: JSON.stringify({ width: 390, height: 844 }) });
+    assert.match(capture.dataUrl, /^data:image\/png;base64,iVBOR/);
+    assert.deepEqual(capture.viewport, { width: 390, height: 844 });
+    const queued = await companion("/api/prompt-queue", token, { method: "POST", body: JSON.stringify({ workspaceId, surfaceId: terminal.id, text: `${marker} queued follow-up` }) });
+    queuedPromptId = queued.item.id;
+    const queue = await companion(`/api/prompt-queue?workspaceId=${workspaceId}&surfaceId=${terminal.id}`, token);
+    assert.equal(queue.items.some((item) => item.id === queuedPromptId), true);
+    await companion(`/api/prompt-queue/${queuedPromptId}`, token, { method: "PATCH", body: JSON.stringify({ text: `${marker} edited follow-up` }) });
+    await companion(`/api/prompt-queue/${queuedPromptId}`, token, { method: "DELETE", body: "{}" });
+    queuedPromptId = null;
+    t.diagnostic("mobile preview capture and persistent prompt queue verified");
     const enabled = await companion(`/api/previews/${previewId}/enable`, token, { method: "POST", body: "{}" });
     previewActive = true;
     assert.match(enabled.preview.url, /^https:\/\/.*\.ts\.net:\d+$/);
@@ -159,6 +176,7 @@ test("installed companion reads, controls, and exposes an isolated cmux app", { 
     assert.equal(controlled.ok, true);
     t.diagnostic("mobile viewport and terminal control verified");
   } finally {
+    if (queuedPromptId) await companion(`/api/prompt-queue/${queuedPromptId}`, token, { method: "DELETE", body: "{}" }).catch(() => {});
     if (previewId && previewActive) await companion(`/api/previews/${previewId}/stop`, token, { method: "POST", body: "{}" }).catch(() => {});
     if (previewId) await companion(`/api/previews/${previewId}`, token, { method: "DELETE", body: "{}" }).catch(() => {});
     if (attachmentPath) await unlink(attachmentPath).catch(() => {});

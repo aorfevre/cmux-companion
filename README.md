@@ -21,6 +21,8 @@ No cloud application server is involved. Terminal output and input travel direct
 - Opens terminals at the latest output, follows only near the bottom, and preserves scrollback while reading
 - Provides persistent terminal text-size controls, readable 16px input, and pinch zoom on mobile
 - Keeps one mobile composer visible and accepts pasted or photo-library images as private local agent attachments
+- Queues, edits, reorders, cancels, or manually sends follow-up prompts and releases one automatically after each agent stop
+- Captures localhost apps at a mobile viewport, accepts finger annotations, and sends or queues a private visual “Fix this” prompt
 - Keeps secondary navigation, PR details, display options, shortcuts, and special keys in one session menu
 - Auto-grows short messages and provides a focused full-screen editor for long prompts
 - Sends prompts and a small, safe allow-list of terminal keys
@@ -109,6 +111,8 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - Alert categories, quiet hours, persistent deduplication, and lock-screen privacy are configurable per phone.
 - Markdown reads are restricted to regular `.md`/`.markdown` files inside allow-listed repositories; canonical paths block traversal and out-of-repo symlinks, rendered HTML is not executed, and local images are type and size restricted.
 - Preview targets must be localhost TCP ports. Tailscale HTTPS ports are allocated from a bounded range, can be stopped from the Apps screen, and are never exposed with Funnel.
+- Preview capture runs in headless Chrome with every non-loopback request blocked; annotated screenshots use the same private attachment validation and retention policy.
+- Queued prompts are stored in a mode-`0600` file and can target only validated cmux workspace and terminal identifiers.
 - Pasted images are magic-byte validated, limited to 8 MB, stored with mode `0600`, and removed automatically after seven days.
 
 Treat a paired phone as privileged: unlocking terminal input gives it control of interactive processes running in cmux.
@@ -156,6 +160,8 @@ npm run test:preview-live
 | `CMUX_COMPANION_PUSH_FILE` | `~/.config/cmux-companion/push.json` | Private push keys and device subscriptions |
 | `CMUX_COMPANION_VAPID_SUBJECT` | Installed private Tailscale HTTPS URL | Web Push sender identity advertised to Apple and other push services |
 | `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
+| `CMUX_COMPANION_QUEUE_FILE` | `~/.config/cmux-companion/prompt-queue.json` | Persistent follow-up prompt queue |
+| `CMUX_COMPANION_CHROME_BIN` | Google Chrome, Chromium, or Edge in `/Applications` | Browser executable used for private preview capture |
 | `CMUX_COMPANION_PREVIEW_PORT_START` | `8500` | First Tailscale HTTPS preview port |
 | `CMUX_COMPANION_PREVIEW_PORT_END` | `8599` | Last Tailscale HTTPS preview port |
 

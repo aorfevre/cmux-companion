@@ -5,6 +5,7 @@ import { buildApp } from "./app.mjs";
 import { CmuxClient } from "./cmux-client.mjs";
 import { PushService } from "./push-service.mjs";
 import { PreviewManager } from "./preview-manager.mjs";
+import { PromptQueue } from "./prompt-queue.mjs";
 import { ensureToken } from "./security.mjs";
 
 const DEFAULT_TOKEN_PATH = join(homedir(), ".config", "cmux-companion", "token");
@@ -19,11 +20,13 @@ export async function startServer({
   const cmux = new CmuxClient();
   const pushService = new PushService();
   const previewManager = new PreviewManager();
+  const promptQueue = new PromptQueue();
   const app = await buildApp({
     cmux,
     token,
     pushService,
     previewManager,
+    promptQueue,
     frontendUpstream,
     logger: process.env.NODE_ENV !== "test",
   });
