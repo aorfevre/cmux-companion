@@ -1,3 +1,9 @@
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
 const UNUSABLE = "The planner returned an unusable answer. Try again";
 
 export function parsePlannerReply(stdout) {
@@ -149,4 +155,200 @@ function accountHeadroom(account) {
     .map((window) => window.remainingPercent)
     .filter((value) => Number.isFinite(value));
   return percents.length ? Math.min(...percents) : null;
+}
+
+const DRAFT_TTL_MS = 30 * 60_000;
+const ROUND_TIMEOUT_MS = 180_000;
+const ALLOWED_TOOLS = "Read,Grep,Glob,Skill";
+const MAX_TASKS = 8;
+
+export class WorktreePlanner {
+  constructor({ worktrees, cmux, accountUsage, execute = execFileAsync, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS } = {}) {
+    if (!worktrees) throw new TypeError("A worktree dashboard is required");
+    if (!cmux) throw new TypeError("A cmux client is required");
+    this.worktrees = worktrees;
+    this.cmux = cmux;
+    this.accountUsage = accountUsage;
+    this.execute = execute;
+    this.maxRounds = maxRounds;
+    this.timeoutMs = timeoutMs;
+    this.ttlMs = ttlMs;
+    this.drafts = new Map();
+  }
+
+  async start({ repositoryId, goal }) {
+    const text = String(goal || "").trim();
+    if (!text) throw new TypeError("Describe the goal for this repository");
+    if (text.length > 4_000) throw new TypeError("That goal is too long");
+    const repository = await this.#repository(repositoryId);
+    const draft = {
+      planId: randomUUID(),
+      repositoryId: repository.id,
+      repositoryName: repository.name,
+      cwd: repository.primaryPath,
+      goal: text,
+      sessionId: null,
+      round: 0,
+      at: Date.now(),
+      status: "questions",
+      questions: [],
+      tasks: [],
+    };
+    this.drafts.set(draft.planId, draft);
+    return this.#round(draft, openingPrompt(draft));
+  }
+
+  async answer(planId, { answers = [], skip = false } = {}) {
+    const draft = this.#draft(planId);
+    if (draft.round >= this.maxRounds) {
+      throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
+    }
+    return this.#round(draft, skip ? SKIP_PROMPT : answerPrompt(draft, answers));
+  }
+
+  async update(planId, { tasks } = {}) {
+    const draft = this.#draft(planId);
+    if (!Array.isArray(tasks) || !tasks.length) throw new TypeError("Keep at least one task");
+    if (tasks.length > MAX_TASKS) throw new TypeError(`A plan can hold at most ${MAX_TASKS} tasks`);
+    const next = tasks.map((task, index) => {
+      const branch = String(task?.branch || "").trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/.test(branch) || branch.includes("..")) {
+        throw new TypeError(`Task ${index + 1} needs a valid Git branch name`);
+      }
+      const title = String(task?.title || "").trim();
+      const prompt = String(task?.prompt || "").trim();
+      if (!title || !prompt) throw new TypeError(`Task ${index + 1} needs a title and a prompt`);
+      const agent = task?.agent === "codex" ? "codex" : "claude";
+      return { id: task?.id || `t${index + 1}`, title, branch, prompt, agent, agentReason: String(task?.agentReason || "") };
+    });
+    const branches = new Set(next.map((task) => task.branch));
+    if (branches.size !== next.length) throw new TypeError("Two tasks share a branch name");
+    draft.tasks = next;
+    draft.at = Date.now();
+    return publicDraft(draft);
+  }
+
+  // Retries a single time, and only when the reply itself was unreadable. Any
+  // other failure is already a plain message the caller can show as it is.
+  async #round(draft, prompt) {
+    let reply;
+    try {
+      reply = parsePlannerReply(await this.#spawn(draft, prompt));
+    } catch (cause) {
+      if (!(cause instanceof TypeError)) throw cause;
+      reply = parsePlannerReply(await this.#spawn(draft, prompt));
+    }
+    draft.round += 1;
+    draft.at = Date.now();
+    if (reply.sessionId) draft.sessionId = reply.sessionId;
+    draft.status = reply.status;
+    draft.questions = reply.questions;
+    draft.tasks = reply.status === "ready" ? assignAgents(reply.tasks, await this.#usage()) : [];
+    return publicDraft(draft);
+  }
+
+  async #spawn(draft, prompt) {
+    const args = ["claude", "--print", "--output-format", "json", "--allowed-tools", ALLOWED_TOOLS];
+    if (draft.sessionId) args.push("--resume", draft.sessionId);
+    args.push(prompt);
+    try {
+      const { stdout = "" } = await this.execute("ccs", args, {
+        cwd: draft.cwd,
+        encoding: "utf8",
+        timeout: this.timeoutMs,
+        maxBuffer: 4 * 1024 * 1024,
+        env: process.env,
+      });
+      return stdout;
+    } catch (cause) {
+      if (cause?.code === "ENOENT") throw new TypeError("The planner needs the ccs CLI. Install it, then try again");
+      if (cause?.killed || cause?.signal === "SIGTERM") throw new TypeError("The planner did not answer in time. Try again");
+      throw new TypeError("The planner could not run. Try again");
+    }
+  }
+
+  async #usage() {
+    try {
+      return await this.accountUsage?.snapshot();
+    } catch {
+      return null;
+    }
+  }
+
+  async #repository(repositoryId) {
+    if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
+    const dashboard = await this.worktrees.snapshot({ refresh: true });
+    const repository = dashboard.repositories.find((item) => item.id === repositoryId);
+    if (!repository) throw new TypeError("Unknown repository");
+    const primary = repository.worktrees.find((item) => item.isPrimary) || repository.worktrees[0];
+    return { id: repository.id, name: repository.name, path: repository.path, primaryPath: primary?.path || repository.path };
+  }
+
+  #draft(planId) {
+    this.#sweep();
+    const draft = this.drafts.get(String(planId || ""));
+    if (!draft) throw new TypeError("Unknown plan. Start a new goal");
+    return draft;
+  }
+
+  #sweep() {
+    const cutoff = Date.now() - this.ttlMs;
+    for (const [id, draft] of this.drafts) if (draft.at < cutoff) this.drafts.delete(id);
+  }
+}
+
+function publicDraft(draft) {
+  return {
+    planId: draft.planId,
+    repositoryId: draft.repositoryId,
+    goal: draft.goal,
+    round: draft.round,
+    status: draft.status,
+    questions: draft.questions,
+    tasks: draft.tasks,
+  };
+}
+
+const SKIP_PROMPT = "Stop asking questions. Decide the remaining details yourself and reply now with the tasks JSON object.";
+
+const CONTRACT = [
+  "Reply with exactly one JSON object and no other prose.",
+  'It holds either {"questions": [{"text": "...", "options": ["..."]}]} or {"tasks": [{"title": "...", "branch": "feature/...", "prompt": "..."}]}.',
+  "It never holds both keys.",
+  "Ask questions only while a real ambiguity would change the split. Otherwise return the tasks.",
+  "Each task must be independent of every other task, because the agents run in separate worktrees and never see each other.",
+  "Each task branch starts with feature/ and uses only letters, digits, dots, dashes and slashes.",
+  "Each task prompt is self-contained: it states the outcome, the files or areas to touch, and how to verify the work.",
+  "Return one task when the goal is a single unit of work. That is a valid answer.",
+  "Do not include an agent field. The server assigns the agent.",
+].join("\n");
+
+const OVERRIDES = [
+  "Overrides for this run, which take priority over any skill instruction:",
+  "Write no file. Create no design document. Create no plan document. Ask for no approval gate.",
+  "Your only output is the JSON object described above.",
+].join("\n");
+
+function openingPrompt(draft) {
+  return [
+    `Repository: ${draft.repositoryName} at ${draft.cwd}`,
+    `Goal: ${draft.goal}`,
+    "",
+    "Use /brainstorming for the question rounds. Use /dispatching-parallel-agents to decide whether this goal splits into independent tasks.",
+    "",
+    OVERRIDES,
+    "",
+    CONTRACT,
+  ].join("\n");
+}
+
+function answerPrompt(draft, answers) {
+  const lines = (Array.isArray(answers) ? answers : [])
+    .map((answer) => {
+      const question = draft.questions.find((item) => item.id === answer?.id);
+      const text = String(answer?.text || "").trim().slice(0, 2_000);
+      return question && text ? `Q: ${question.text}\nA: ${text}` : "";
+    })
+    .filter(Boolean);
+  return [lines.length ? lines.join("\n\n") : "No answers were given.", "", CONTRACT].join("\n");
 }
