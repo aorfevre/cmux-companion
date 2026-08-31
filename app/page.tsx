@@ -137,7 +137,7 @@ export default function Home() {
     {view === "apps" && <AppsView focusedId={focusedPreviewId} onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onNotice={setNotice} onFix={fixPreview} />}
     {view === "settings" && <SettingsView bootstrap={bootstrap} readOnly={readOnly} installable={Boolean(installPrompt)} onReadOnly={changeReadOnly} onInstall={() => installPrompt?.prompt?.()} onApps={() => changeView("apps")} onUsage={() => changeView("usage")} onNotice={setNotice} onLogout={async () => { await api("/api/auth/logout", { method: "POST", body: "{}" }); setAuth("unpaired"); }} />}
     {view === "usage" && <AccountUsageView onBack={() => changeView("settings")} />}
-    <BottomNav view={view} onView={changeView} attention={inbox.actionableCount + inbox.unreadCount} /></main>;
+    <BottomNav view={view} onView={changeView} /></main>;
 }
 
 function AppHeader({ connected, live, device }: { connected: boolean; live: boolean; device: string }) { return <header className="topbar"><div className="brand-mark">c</div><div className="brand-copy"><strong>cmux companion</strong><span><i className={`connection-dot ${connected ? "" : "offline"}`} />{connected ? device : "Waiting for cmux"}</span></div><span className={`live-badge ${live ? "" : "sync"}`}>{live ? "LIVE" : "SYNC"}</span></header>; }
@@ -313,7 +313,7 @@ function PushSettings({ onNotice }: { onNotice: (message: string) => void }) {
 }
 
 function urlBase64ToBytes(value: string) { const padding = "=".repeat((4 - value.length % 4) % 4); const raw = atob((value + padding).replaceAll("-", "+").replaceAll("_", "/")); return Uint8Array.from([...raw].map((char) => char.charCodeAt(0))); }
-function BottomNav({ view, onView, attention }: { view: View; onView: (view: View) => void; attention: number }) { return <nav className="bottom-nav">{[["sessions", "⌂", "Sessions"], ["inbox", "◫", "Inbox"], ["launch", "＋", "Launch"], ["settings", "⚙", "Settings"]].map(([id, icon, label]) => <button className={view === id || (view === "usage" && id === "settings") ? "active" : ""} onClick={() => onView(id as View)} key={id}><span>{icon}{id === "inbox" && attention > 0 && <i>{attention > 9 ? "9+" : attention}</i>}</span><small>{label}</small></button>)}</nav>; }
+export function BottomNav({ view, onView }: { view: View; onView: (view: View) => void }) { return <nav className="bottom-nav" aria-label="Main navigation">{[["sessions", "⌂", "Sessions"], ["usage", "◔", "Licence Usage"], ["apps", "▦", "Apps"], ["settings", "⚙", "Settings"]].map(([id, icon, label]) => <button aria-label={label} className={view === id ? "active" : ""} onClick={() => onView(id as View)} key={id}><span aria-hidden="true">{icon}</span><small>{label}</small></button>)}</nav>; }
 function Empty({ icon, title, body, action }: { icon: string; title: string; body: string; action?: React.ReactNode }) { return <div className="empty-card"><span>{icon}</span><strong>{title}</strong><p>{body}</p>{action}</div>; }
 function WorkspaceSkeleton() { return <div className="workspace-card skeleton"><i /><i /><i /></div>; }
 function LoadingScreen() { return <main className="center-screen"><div className="brand-mark large">c</div><p>Opening companion…</p></main>; }

@@ -5,13 +5,24 @@ import { afterEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
-import { HomeModeSwitch, InboxView, PullRequestBanner, TerminalPanel } from "../app/page";
+import { BottomNav, HomeModeSwitch, InboxView, PullRequestBanner, TerminalPanel } from "../app/page";
 import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { WorktreeDashboardView } from "../app/worktree-dashboard";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("contextual mobile features", () => {
+  test("keeps permanent navigation focused on frequent mobile destinations", async () => {
+    const navigate = vi.fn();
+    render(<BottomNav view="usage" onView={navigate} />);
+    assert.ok(screen.getByRole("button", { name: "Licence Usage" }).classList.contains("active"));
+    assert.ok(screen.getByRole("button", { name: "Apps" }));
+    assert.equal(screen.queryByRole("button", { name: "Inbox" }), null);
+    assert.equal(screen.queryByRole("button", { name: "Launch" }), null);
+    await userEvent.click(screen.getByRole("button", { name: "Apps" }));
+    assert.deepEqual(navigate.mock.calls[0], ["apps"]);
+  });
+
   test("shows CCS quota by account while treating absent windows as unreported", async () => {
     const usage = { generatedAt: new Date().toISOString(), source: "CCS", available: true, summary: { ready: 1, low: 0, exhausted: 0, reconnect: 1, unavailable: 0 }, providers: [
       { id: "claude", label: "Claude Code", available: true, accounts: [{ id: "one", label: "one", email: "one@example.test", plan: null, isDefault: true, paused: false, status: "ready", message: null, updatedAt: new Date().toISOString(), windows: [
