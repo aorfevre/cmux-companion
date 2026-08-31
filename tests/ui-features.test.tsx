@@ -5,7 +5,7 @@ import { afterEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
-import { BottomNav, HomeModeSwitch, InboxView, PullRequestBanner, TerminalPanel } from "../app/page";
+import { BottomNav, HomeModeSwitch, InboxView, LastUpdateStamp, PullRequestBanner, TerminalPanel } from "../app/page";
 import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { WorktreeDashboardView } from "../app/worktree-dashboard";
 import { WorktreePlannerSheet } from "../app/worktree-planner";
@@ -368,5 +368,38 @@ describe("worktree goal planner", () => {
     ] });
     assert.ok(await screen.findByText(/~\/repo\/companion-planner-sheet/));
     assert.equal(screen.getAllByText(/Remove it from the dashboard/).length, 1);
+  });
+});
+
+describe("last update stamp", () => {
+  const jsonRoutes = (routes: Record<string, unknown>) => vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    const match = Object.keys(routes).find((key) => path.endsWith(key));
+    if (!match) return new Response("not found", { status: 404 });
+    return new Response(JSON.stringify(routes[match]), { status: 200, headers: { "content-type": "application/json" } });
+  });
+
+  test("prefers the last successful update time", async () => {
+    const iso = new Date(Date.now() - 4 * 3_600_000).toISOString();
+    vi.stubGlobal("fetch", jsonRoutes({ "/api/updater/status": { available: true, lastSuccessAt: iso }, "/api/health": { version: { builtAt: new Date().toISOString() } } }));
+    render(<LastUpdateStamp />);
+    const stamp = await screen.findByText("Updated 4h ago");
+    assert.equal(stamp.tagName, "TIME");
+    assert.equal(stamp.getAttribute("datetime"), iso);
+    assert.equal(stamp.getAttribute("title"), iso);
+  });
+
+  test("falls back to the build time when the updater reports nothing", async () => {
+    const iso = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    vi.stubGlobal("fetch", jsonRoutes({ "/api/updater/status": { available: false }, "/api/health": { version: { builtAt: iso } } }));
+    render(<LastUpdateStamp />);
+    assert.ok(await screen.findByText("Updated 3d ago"));
+  });
+
+  test("renders nothing when neither timestamp exists", async () => {
+    vi.stubGlobal("fetch", jsonRoutes({ "/api/updater/status": { available: false }, "/api/health": { version: { builtAt: null } } }));
+    const { container } = render(<LastUpdateStamp />);
+    await waitFor(() => assert.equal(container.querySelector("time"), null));
+    assert.equal(screen.queryByText(/Updated/), null);
   });
 });

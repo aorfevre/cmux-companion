@@ -30,6 +30,7 @@
   body{background:radial-gradient(circle at 70% -20%,#17221b 0,transparent 36%),#050709}
   .app-shell{position:relative;width:min(100%,1500px);min-height:100dvh;margin:0 auto;padding:0 0 0 216px;border-inline:1px solid #1d2329;background:radial-gradient(circle at 48% -10%,#1a241e 0,transparent 32%),var(--bg)}
   .topbar{height:76px;padding:12px 34px}
+  .last-update{display:inline-block}
   .bottom-nav{top:0;bottom:0;left:max(0px,calc((100vw - 1500px)/2));transform:none;width:216px;height:100dvh;display:flex;align-items:stretch;justify-content:flex-start;flex-direction:column;gap:7px;padding:92px 14px 24px;border-top:0;border-right:1px solid var(--line);background:rgba(10,13,16,.97)}
   .bottom-nav button{flex:none;height:50px;justify-content:flex-start;flex-direction:row;gap:11px;border-radius:11px;padding:0 13px;text-align:left}
   .bottom-nav button:hover{background:#171c21;color:#c8ced4}
