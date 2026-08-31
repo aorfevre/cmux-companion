@@ -323,3 +323,56 @@ test("forgets a draft after its time to live", async () => {
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
   await assert.rejects(() => planner.update(draft.planId, { tasks: [] }), /Unknown plan/);
 });
+
+test("terminates the flags so the prompt is never parsed as one", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const args = deps.calls[0][1];
+  assert.equal(args.at(-2), "--", "the prompt must follow a -- terminator");
+  assert.ok(args.indexOf("--allowed-tools") < args.indexOf("--"));
+});
+
+test("denies every tool that can write or execute", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const args = deps.calls[0][1];
+  const denied = args[args.indexOf("--disallowed-tools") + 1].split(",");
+  for (const tool of ["Bash", "Write", "Edit", "Task", "Skill"]) {
+    assert.ok(denied.includes(tool), `${tool} must be denied`);
+  }
+  const allowed = args[args.indexOf("--allowed-tools") + 1].split(",");
+  assert.deepEqual(allowed, ["Read", "Grep", "Glob"]);
+});
+
+test("rejects an answer whose question no longer exists", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await assert.rejects(
+    () => planner.answer(draft.planId, { answers: [{ id: "q9", text: "Postgres" }] }),
+    /no longer matches the question/,
+  );
+});
+
+test("refuses to resume a session the planner stopped reporting", async () => {
+  const deps = fakeDeps({ replies: [
+    envelope('{"questions":[{"text":"Which database?"}]}', "sess-a"),
+    JSON.stringify({ result: '{"questions":[{"text":"And the cache?"}]}' }),
+  ] });
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await assert.rejects(
+    () => planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] }),
+    /lost its session/,
+  );
+});
+
+test("drops the oldest draft instead of growing without limit", async () => {
+  const reply = envelope('{"questions":[{"text":"Q?"}]}', "sess-a");
+  const deps = fakeDeps({ replies: Array.from({ length: 60 }, () => reply) });
+  const planner = new WorktreePlanner(deps);
+  for (let index = 0; index < 60; index += 1) {
+    await planner.start({ repositoryId: REPO_ID, goal: `Goal ${index}` });
+  }
+  assert.ok(planner.drafts.size <= 50, `held ${planner.drafts.size} drafts`);
+});

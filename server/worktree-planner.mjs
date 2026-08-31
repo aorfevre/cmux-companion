@@ -164,16 +164,23 @@ function accountHeadroom(account) {
 
 const DRAFT_TTL_MS = 30 * 60_000;
 const ROUND_TIMEOUT_MS = 180_000;
-const ALLOWED_TOOLS = "Read,Grep,Glob,Skill";
+// --allowed-tools only AUTO-APPROVES; it does not restrict. Verified against the
+// real CLI: with Bash absent from the allow list it still ran. Only
+// --disallowed-tools enforces, and the planner runs unsandboxed in the user's
+// own repository, so every writing and executing tool must be denied by name.
+const ALLOWED_TOOLS = "Read,Grep,Glob";
+const DENIED_TOOLS = "Bash,Write,Edit,MultiEdit,NotebookEdit,Task,Skill,WebFetch,WebSearch";
 const MAX_TASKS = 8;
+const MAX_DRAFTS = 50;
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, execute = execFileAsync, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = execFileAsync, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
     this.cmux = cmux;
     this.accountUsage = accountUsage;
+    this.log = log;
     this.execute = execute;
     this.maxRounds = maxRounds;
     this.timeoutMs = timeoutMs;
@@ -199,6 +206,11 @@ export class WorktreePlanner {
       questions: [],
       tasks: [],
     };
+    this.#sweep();
+    if (this.drafts.size >= MAX_DRAFTS) {
+      const oldest = [...this.drafts.entries()].sort((left, right) => left[1].at - right[1].at)[0];
+      if (oldest) this.drafts.delete(oldest[0]);
+    }
     this.drafts.set(draft.planId, draft);
     return this.#round(draft, openingPrompt(draft));
   }
@@ -246,6 +258,10 @@ export class WorktreePlanner {
     draft.round += 1;
     draft.at = Date.now();
     if (reply.sessionId) draft.sessionId = reply.sessionId;
+    else if (draft.sessionId) {
+      draft.sessionId = null;
+      throw new TypeError("The planner lost its session. Start again with this goal");
+    }
     draft.status = reply.status;
     draft.questions = reply.questions;
     draft.tasks = reply.status === "ready" ? assignAgents(reply.tasks, await this.#usage()) : [];
@@ -253,14 +269,22 @@ export class WorktreePlanner {
   }
 
   async #spawn(draft, prompt) {
-    const args = ["claude", "--print", "--output-format", "json", "--allowed-tools", ALLOWED_TOOLS];
+    const args = [
+      "claude", "--print", "--output-format", "json",
+      "--allowed-tools", ALLOWED_TOOLS,
+      "--disallowed-tools", DENIED_TOOLS,
+    ];
     if (draft.sessionId) args.push("--resume", draft.sessionId);
-    args.push(prompt);
+    // `--` is required, not cosmetic: --allowed-tools is variadic, so without a
+    // terminator the CLI swallows the prompt as another tool name.
+    args.push("--", prompt);
     try {
       const { stdout = "" } = await this.execute("ccs", args, {
         cwd: draft.cwd,
         encoding: "utf8",
-        timeout: this.timeoutMs,
+        // Round 1 starts a fresh session and reads the repository, so it is the
+        // slowest. Later rounds resume and only pay for the new turn.
+        timeout: draft.sessionId ? this.timeoutMs : this.timeoutMs * 2,
         maxBuffer: 4 * 1024 * 1024,
         env: process.env,
       });
@@ -268,14 +292,16 @@ export class WorktreePlanner {
     } catch (cause) {
       if (cause?.code === "ENOENT") throw new PlannerRunError("The planner needs the ccs CLI. Install it, then try again");
       if (cause?.killed || cause?.signal === "SIGTERM") throw new PlannerRunError("The planner did not answer in time. Try again");
-      throw new PlannerRunError("The planner could not run. Try again");
+      const detail = String(cause?.stderr || "").trim().split("\n").at(-1)?.slice(0, 160);
+      throw new PlannerRunError(detail ? `The planner could not run: ${detail}` : "The planner could not run. Try again");
     }
   }
 
   async #usage() {
     try {
       return await this.accountUsage?.snapshot();
-    } catch {
+    } catch (cause) {
+      this.log?.warn?.({ err: cause }, "planner usage snapshot failed");
       return null;
     }
   }
@@ -286,7 +312,7 @@ export class WorktreePlanner {
     const repository = dashboard.repositories.find((item) => item.id === repositoryId);
     if (!repository) throw new TypeError("Unknown repository");
     const primary = repository.worktrees.find((item) => item.isPrimary) || repository.worktrees[0];
-    return { id: repository.id, name: repository.name, path: repository.path, primaryPath: primary?.path || repository.path };
+    return { id: repository.id, name: repository.name, primaryPath: primary?.path || repository.path };
   }
 
   #draft(planId) {
@@ -339,7 +365,7 @@ function openingPrompt(draft) {
     `Repository: ${draft.repositoryName} at ${draft.cwd}`,
     `Goal: ${draft.goal}`,
     "",
-    "Use /brainstorming for the question rounds. Use /dispatching-parallel-agents to decide whether this goal splits into independent tasks.",
+    "Read the repository to understand the goal. Ask a question only when a real ambiguity would change how the work splits. Split the goal into tasks that share no files and depend on no other task's output.",
     "",
     OVERRIDES,
     "",
@@ -348,12 +374,13 @@ function openingPrompt(draft) {
 }
 
 function answerPrompt(draft, answers) {
-  const lines = (Array.isArray(answers) ? answers : [])
-    .map((answer) => {
-      const question = draft.questions.find((item) => item.id === answer?.id);
-      const text = String(answer?.text || "").trim().slice(0, 2_000);
-      return question && text ? `Q: ${question.text}\nA: ${text}` : "";
-    })
-    .filter(Boolean);
+  const list = Array.isArray(answers) ? answers : [];
+  const lines = list.map((answer) => {
+    const text = String(answer?.text || "").trim().slice(0, 2_000);
+    if (!text) return "";
+    const question = draft.questions.find((item) => item.id === answer?.id);
+    if (!question) throw new TypeError("That answer no longer matches the question. Reload the plan");
+    return `Q: ${question.text}\nA: ${text}`;
+  }).filter(Boolean);
   return [lines.length ? lines.join("\n\n") : "No answers were given.", "", CONTRACT].join("\n");
 }
