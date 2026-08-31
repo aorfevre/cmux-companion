@@ -265,16 +265,18 @@ test("gives up after a second unusable answer", async () => {
 
 test("reports a missing ccs binary in plain words", async () => {
   const missing = Object.assign(new Error("spawn ccs ENOENT"), { code: "ENOENT" });
-  const deps = fakeDeps({ replies: [missing, missing] });
+  const deps = fakeDeps({ replies: [missing] });
   const planner = new WorktreePlanner(deps);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }), /needs the ccs CLI/);
+  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 1);
 });
 
-test("reports a timeout in plain words", async () => {
+test("reports a timeout in plain words and does not run twice", async () => {
   const timedOut = Object.assign(new Error("timeout"), { killed: true, signal: "SIGTERM" });
-  const deps = fakeDeps({ replies: [timedOut, timedOut] });
+  const deps = fakeDeps({ replies: [timedOut] });
   const planner = new WorktreePlanner(deps);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }), /did not answer in time/);
+  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 1);
 });
 
 test("rejects an empty goal and an unknown repository", async () => {

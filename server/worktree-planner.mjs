@@ -4,6 +4,11 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+// A subprocess failure, not an unusable reply. It is still a TypeError, so the
+// Fastify error handler answers 400 with its message, but #round never retries
+// it: a second launch cannot fix a missing binary or a timeout.
+class PlannerRunError extends TypeError {}
+
 const UNUSABLE = "The planner returned an unusable answer. Try again";
 
 export function parsePlannerReply(stdout) {
@@ -228,14 +233,14 @@ export class WorktreePlanner {
     return publicDraft(draft);
   }
 
-  // Retries a single time, and only when the reply itself was unreadable. Any
-  // other failure is already a plain message the caller can show as it is.
   async #round(draft, prompt) {
     let reply;
     try {
       reply = parsePlannerReply(await this.#spawn(draft, prompt));
     } catch (cause) {
-      if (!(cause instanceof TypeError)) throw cause;
+      // Retry an unusable reply once: a second sample often parses. Never retry
+      // a subprocess failure, because a second launch cannot fix it.
+      if (cause instanceof PlannerRunError || !(cause instanceof TypeError)) throw cause;
       reply = parsePlannerReply(await this.#spawn(draft, prompt));
     }
     draft.round += 1;
@@ -261,9 +266,9 @@ export class WorktreePlanner {
       });
       return stdout;
     } catch (cause) {
-      if (cause?.code === "ENOENT") throw new TypeError("The planner needs the ccs CLI. Install it, then try again");
-      if (cause?.killed || cause?.signal === "SIGTERM") throw new TypeError("The planner did not answer in time. Try again");
-      throw new TypeError("The planner could not run. Try again");
+      if (cause?.code === "ENOENT") throw new PlannerRunError("The planner needs the ccs CLI. Install it, then try again");
+      if (cause?.killed || cause?.signal === "SIGTERM") throw new PlannerRunError("The planner did not answer in time. Try again");
+      throw new PlannerRunError("The planner could not run. Try again");
     }
   }
 
