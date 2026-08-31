@@ -4,7 +4,7 @@ export function parsePlannerReply(stdout) {
   const envelope = extractJson(String(stdout));
   if (!envelope) throw new TypeError(UNUSABLE);
   const sessionId = typeof envelope.session_id === "string" ? envelope.session_id : null;
-  const payload = extractJson(unfence(String(envelope.result || "")));
+  const payload = extractJson(String(envelope.result || ""));
   if (!payload) throw new TypeError(UNUSABLE);
 
   const hasQuestions = Array.isArray(payload.questions) && payload.questions.length > 0;
@@ -35,22 +35,60 @@ export function parsePlannerReply(stdout) {
   return { sessionId, status: "ready", questions: [], tasks };
 }
 
-function unfence(text) {
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  return fence ? fence[1] : text;
+const MAX_SCAN_BYTES = 256 * 1024;
+const MAX_CANDIDATES = 20;
+
+// Model text may hold prose, several fenced blocks, and stray braces. Try each
+// fenced block first, then the raw text, and take the first candidate that
+// parses into the shape we need.
+function jsonCandidates(text) {
+  const source = text.length > MAX_SCAN_BYTES ? text.slice(0, MAX_SCAN_BYTES) : text;
+  const fences = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((match) => match[1]);
+  return [...fences.reverse(), source];
 }
 
 function extractJson(text) {
-  const start = text.indexOf("{");
-  if (start === -1) return null;
-  for (let end = text.lastIndexOf("}"); end > start; end = text.lastIndexOf("}", end - 1)) {
+  for (const candidate of jsonCandidates(String(text))) {
+    const value = firstBalancedObject(candidate);
+    if (value) return value;
+  }
+  return null;
+}
+
+// Walks forward from each `{`, tracks depth, and respects strings and escapes,
+// so one pass finds the end of each object instead of guessing at every `}`.
+function firstBalancedObject(text) {
+  let attempts = 0;
+  for (let start = text.indexOf("{"); start !== -1 && attempts < MAX_CANDIDATES; start = text.indexOf("{", start + 1)) {
+    attempts += 1;
+    const end = balancedEnd(text, start);
+    if (end === -1) continue;
     try {
       return JSON.parse(text.slice(start, end + 1));
     } catch {
-      // Keep shrinking: trailing prose after the object is common.
+      // This brace opened prose, not an object. Try the next one.
     }
   }
   return null;
+}
+
+function balancedEnd(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (escaped) { escaped = false; continue; }
+    if (character === "\\" && inString) { escaped = true; continue; }
+    if (character === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
 }
 
 function cleanText(value) {

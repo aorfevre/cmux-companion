@@ -43,3 +43,33 @@ test("drops a task that is missing a branch", () => {
   assert.equal(reply.tasks.length, 1);
   assert.equal(reply.tasks[0].branch, "feature/good");
 });
+
+test("ignores a stray brace in the prose before the plan", () => {
+  const text = 'Use { key } style.\n{"tasks":[{"title":"A","branch":"feature/a","prompt":"Do it."}]}';
+  const reply = parsePlannerReply(envelope(text));
+  assert.equal(reply.tasks.length, 1);
+  assert.equal(reply.tasks[0].branch, "feature/a");
+});
+
+test("prefers the last fenced block when the model shows an example first", () => {
+  const text = 'Shape:\n```json\n{"tasks":[{"title":"Example","branch":"example","prompt":"Sample."}]}\n```\nReal plan:\n```json\n{"tasks":[{"title":"Real","branch":"feature/real","prompt":"Do the real work."}]}\n```';
+  const reply = parsePlannerReply(envelope(text));
+  assert.equal(reply.tasks.length, 1);
+  assert.equal(reply.tasks[0].branch, "feature/real");
+});
+
+test("ignores a brace that sits inside a JSON string value", () => {
+  const text = '{"tasks":[{"title":"A","branch":"feature/a","prompt":"Write a { brace } in the docs."}]}';
+  const reply = parsePlannerReply(envelope(text));
+  assert.equal(reply.tasks[0].prompt, "Write a { brace } in the docs.");
+});
+
+test("stays fast on a large reply that ends in brace-heavy prose", () => {
+  let deep = '{"a":1';
+  for (let index = 0; index < 4_000; index += 1) deep += `,"k${index}":"v${index}"`;
+  deep += "}";
+  const text = `${deep}\n${"prose } more } text } ".repeat(4_000)}`;
+  const started = Date.now();
+  assert.throws(() => parsePlannerReply(envelope(text)), /unusable answer/);
+  assert.ok(Date.now() - started < 1_000, `parse took ${Date.now() - started}ms`);
+});
