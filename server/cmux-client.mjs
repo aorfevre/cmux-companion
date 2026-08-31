@@ -16,6 +16,8 @@ const ALLOWED_KEYS = new Set([
 const ALLOWED_TODO_ACTIONS = new Set(["check", "uncheck", "start"]);
 const ALLOWED_AGENTS = new Set(["shell", "codex", "claude"]);
 const CLIENT_ID_PATTERN = /^[a-zA-Z0-9:_-]{8,128}$/;
+const BRACKETED_PASTE_START = "\u001b[200~";
+const BRACKETED_PASTE_END = "\u001b[201~";
 
 export class CmuxCommandError extends Error {
   constructor(message, { code, stderr } = {}) {
@@ -420,9 +422,7 @@ export class CmuxClient {
 
   async sendText(surfaceId, text) {
     assertTarget(surfaceId);
-    if (typeof text !== "string" || text.length === 0 || text.length > 16_000) {
-      throw new TypeError("Text must contain between 1 and 16,000 characters");
-    }
+    assertInputText(text);
     await this.run(["send", "--surface", surfaceId, "--", text]);
   }
 
@@ -436,7 +436,10 @@ export class CmuxClient {
   }
 
   async sendPrompt(surfaceId, text) {
-    await this.sendText(surfaceId, text);
+    assertTarget(surfaceId);
+    assertInputText(text);
+    if (text.includes(BRACKETED_PASTE_END)) throw new TypeError("Text contains an unsupported terminal control sequence");
+    await this.run(["send", "--surface", surfaceId, "--", `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`]);
     await this.sendKey(surfaceId, "enter");
   }
 
@@ -449,6 +452,12 @@ export class CmuxClient {
 export function assertTarget(value) {
   if (!TARGET_PATTERN.test(String(value || ""))) {
     throw new TypeError("Invalid cmux target");
+  }
+}
+
+function assertInputText(text) {
+  if (typeof text !== "string" || text.length === 0 || text.length > 16_000) {
+    throw new TypeError("Text must contain between 1 and 16,000 characters");
   }
 }
 

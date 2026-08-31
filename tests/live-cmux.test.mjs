@@ -54,6 +54,28 @@ test("creates, reads, controls, and closes an isolated live cmux workspace", { t
     const overview = await client.workspaceOverview(workspaceId);
     assert.equal(typeof overview.status.effective, "string");
     assert.equal(Array.isArray(overview.todos.items), true);
+
+    const pasteReady = `${marker}_PASTE_READY`;
+    const pasteText = "first line\nsecond line";
+    const pasteBytes = Buffer.from("\u001b[200~first line").toString("hex");
+    const pasteEndBytes = Buffer.from("second line\u001b[201~").toString("hex");
+    const capturePaste = `node -e 'process.stdout.write(String.fromCharCode(27)+"[?2004h${pasteReady}"+String.fromCharCode(10));process.stdin.setRawMode(true);let chunks=[],timer;process.stdin.on("data",chunk=>{chunks.push(chunk);clearTimeout(timer);timer=setTimeout(()=>{process.stdout.write(Buffer.concat(chunks).toString("hex")+String.fromCharCode(10));process.exit(0)},100)})'`;
+    await client.sendText(terminal.id, capturePaste);
+    await client.sendKey(terminal.id, "enter");
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      text = (await client.readScreen(terminal.id, 40)).text;
+      if (text.includes(pasteReady)) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.match(text, new RegExp(pasteReady));
+    await client.sendPrompt(terminal.id, pasteText);
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      text = (await client.readScreen(terminal.id, 40)).text;
+      if (text.includes(pasteBytes) && text.includes(pasteEndBytes)) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.match(text, new RegExp(`${pasteBytes}(?:0a|0d)${pasteEndBytes}`));
+
     const queuedMarker = `${marker}_QUEUED`;
     const queue = new PromptQueue({ path: join(queueDirectory, "queue.json") });
     const queued = queue.enqueue({ workspaceId, surfaceId: terminal.id, text: `printf '${queuedMarker}\\n'` });
