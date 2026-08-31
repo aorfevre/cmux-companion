@@ -296,7 +296,9 @@ export async function buildApp({
     planner.answer(request.params.planId, { answers: request.body?.answers, skip: request.body?.skip === true })
   ));
 
-  app.patch("/api/worktree-plans/:planId", async (request) => (
+  // A full plan is 8 tasks with prompts of up to 4,000 characters each, which
+  // measures about 33KB and so exceeds the global 32KB limit.
+  app.patch("/api/worktree-plans/:planId", { bodyLimit: 64 * 1024 }, async (request) => (
     planner.update(request.params.planId, { tasks: request.body?.tasks })
   ));
 

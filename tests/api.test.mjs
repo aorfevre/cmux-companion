@@ -464,3 +464,25 @@ test("refuses an unauthenticated plan request", async (t) => {
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans", payload: { repositoryId: "repository12345678", goal: "Add billing" } });
   assert.equal(response.statusCode, 401);
 });
+
+test("accepts a full eight task plan without hitting the body limit", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const tasks = Array.from({ length: 8 }, (unused, index) => ({
+    id: `t${index}`,
+    title: `Task number ${index}`,
+    branch: `feature/task-${index}`,
+    prompt: "x".repeat(4_000),
+    agent: "claude",
+    agentReason: "Claude · best account 90% left",
+  }));
+  const response = await app.inject({
+    method: "PATCH",
+    url: "/api/worktree-plans/plan-1",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { tasks },
+  });
+  assert.equal(response.statusCode, 200, `a full plan must not be rejected, got ${response.statusCode}`);
+  assert.equal(planner.calls.at(-1)[2].tasks.length, 8);
+});
