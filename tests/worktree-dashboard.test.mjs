@@ -1,8 +1,24 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { WorktreeDashboard, parseWorktreeList } from "../server/worktree-dashboard.mjs";
+import { RepositoryArchive } from "../server/repository-archive.mjs";
+import { WorktreeDashboard, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
 
 const REPO = { id: "repo-1234567890123", name: "sample", root: "karven", path: "/repo/sample", branch: "main" };
+
+test("persists archived repository ids across instances", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cmux-companion-archive-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "archive.json");
+  const id = "repository12345678";
+  const archive = new RepositoryArchive({ path });
+  assert.equal(archive.set(id, true), true);
+  assert.equal(new RepositoryArchive({ path }).has(id), true);
+  assert.equal(archive.set(id, false), false);
+  assert.equal(new RepositoryArchive({ path }).has(id), false);
+});
 
 test("parses Git's NUL-delimited worktree inventory", () => {
   const output = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0locked testing\0\0";
@@ -13,6 +29,8 @@ test("parses Git's NUL-delimited worktree inventory", () => {
 });
 
 test("groups cmux sessions by registered worktree and exposes delivery state", async () => {
+  const archived = new Set();
+  const repositoryArchive = { has: (id) => archived.has(id), set: (id, value) => { if (value) archived.add(id); else archived.delete(id); return value; } };
   const git = async (cwd, args) => {
     if (args[0] === "worktree") return "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
     if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
@@ -26,7 +44,7 @@ test("groups cmux sessions by registered worktree and exposes delivery state", a
     git,
     execute: async () => ({ stdout: JSON.stringify([{ number: 7, title: "Feature", url: "https://github.test/pr/7", state: "OPEN", headRefName: "feature/mobile", baseRefName: "main", statusCheckRollup: [] }]) }),
   };
-  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path, repositoryArchive });
   const value = await dashboard.snapshot({ workspaces: [{
     id: "11111111-2222-4333-8444-555555555555", title: "mobile agent", current_directory: "/repo/sample-feature/app", preview: "Editing app/page.tsx", last_activity_at: 300,
     status: { effective: "working", signals: { any_agent_running: true } }, terminals: [{ id: "terminal", title: "xcodex" }],
@@ -42,6 +60,11 @@ test("groups cmux sessions by registered worktree and exposes delivery state", a
   assert.equal(feature.pullRequest.number, 7);
   assert.match(feature.id, /^[A-Za-z0-9_-]{18}$/);
   assert.equal((await dashboard.resolve(feature.id)).path, "/repo/sample-feature");
+  const repositoryId = value.repositories[0].id;
+  assert.equal(value.repositories[0].archived, false);
+  assert.equal((await dashboard.setRepositoryArchived(repositoryId, true)).repository.archived, true);
+  assert.equal((await dashboard.snapshot()).repositories[0].archived, true);
+  assert.equal((await dashboard.setRepositoryArchived(repositoryId, false)).repository.archived, false);
 });
 
 test("refreshes the registered inventory before resolving a launch target", async () => {
@@ -63,6 +86,43 @@ test("refreshes the registered inventory before resolving a launch target", asyn
   const id = first.repositories[0].worktrees[0].id;
   present = false;
   await assert.rejects(() => dashboard.resolve(id), /Unknown worktree/);
+});
+
+test("creates a sibling worktree from a validated branch and base revision", async () => {
+  const calls = [];
+  const targetPath = "/repo/sample-feature-safe-name";
+  let inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0";
+  const repoCatalog = {
+    cache: {},
+    list: async () => [REPO],
+    git: async (cwd, args, options) => {
+      calls.push([cwd, args, options]);
+      if (args[0] === "worktree" && args[1] === "add") {
+        inventory += `worktree ${targetPath}\0HEAD bbbbbbbb\0branch refs/heads/feature/safe-name\0\0`;
+        return "";
+      }
+      if (args[0] === "worktree") return inventory;
+      if (args[0] === "check-ref-format") return "feature/safe-name\n";
+      if (args[0] === "show-ref") throw new Error("missing branch");
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "aaaaaaaa\n";
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd === targetPath ? "feature/safe-name" : "main"}\n`;
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  const result = await dashboard.create(repositoryId, { branch: "feature/safe-name", base: "main" });
+  assert.equal(result.branchCreated, true);
+  assert.equal(result.worktree.path, targetPath);
+  assert.equal(result.worktree.branch, "feature/safe-name");
+  assert.equal(repoCatalog.cache, null);
+  const add = calls.find(([, args]) => args[0] === "worktree" && args[1] === "add");
+  assert.deepEqual(add, ["/repo/sample", ["worktree", "add", "-b", "feature/safe-name", targetPath, "main"], { timeout: 120_000 }]);
+  assert.equal(worktreePath("/repo/sample", "feature/safe-name"), targetPath);
 });
 
 test("coalesces catalog entries that belong to one linked-worktree repository", async () => {

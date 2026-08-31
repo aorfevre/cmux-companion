@@ -225,6 +225,11 @@ export async function buildApp({
     });
   });
 
+  app.post("/api/worktree-dashboard/repositories/:id/worktrees", async (request, reply) => {
+    const created = await worktrees.create(request.params.id, request.body || {});
+    return reply.code(201).send(created);
+  });
+
   app.post("/api/worktree-dashboard/:id/launch", async (request, reply) => {
     const target = await worktrees.resolve(request.params.id);
     const { agent = "codex", prompt = "", title } = request.body || {};
@@ -245,6 +250,11 @@ export async function buildApp({
   app.delete("/api/worktree-dashboard/:id", async (request) => {
     const bootstrap = await loadBootstrap();
     return worktrees.remove(request.params.id, { workspaces: bootstrap.workspaces });
+  });
+
+  app.patch("/api/worktree-dashboard/repositories/:id/archive", async (request) => {
+    const bootstrap = await loadBootstrap();
+    return worktrees.setRepositoryArchived(request.params.id, request.body?.archived, { workspaces: bootstrap.workspaces });
   });
 
   app.get("/api/repos/:id/changes", async (request) => repoCatalog.changes(request.params.id));

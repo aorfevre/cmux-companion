@@ -95,6 +95,8 @@ describe("contextual mobile features", () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(_input);
       if (url.endsWith("/api/attachments/images") && init?.method === "POST") return new Response(JSON.stringify({ image: { path: "/private/launch.png", name: "launch.png", mime: "image/png", size: 5 } }), { status: 201 });
+      if (url.endsWith("/repositories/repo-1/worktrees") && init?.method === "POST") return new Response(JSON.stringify({ branchCreated: true, worktree: { id: "createdworktree123", branch: "feature/new-flow", path: "/repo/companion-feature-new-flow" } }), { status: 201 });
+      if (url.endsWith("/createdworktree123/launch") && init?.method === "POST") return new Response(JSON.stringify({ workspace: { workspace_id: "workspace-created" } }), { status: 201 });
       if (init?.method === "POST") return new Response(JSON.stringify({ workspace: { workspace_id: "workspace-new" } }), { status: 201 });
       return new Response(JSON.stringify(dashboard), { status: 200 });
     });
@@ -102,13 +104,25 @@ describe("contextual mobile features", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     render(<WorktreeDashboardView onOpenWorkspace={open} onLaunched={launched} onNotice={notice} />);
     assert.ok(await screen.findByText("feature/mobile"));
+    await userEvent.click(screen.getByRole("tab", { name: /Rekord/ }));
+    assert.ok(screen.getByText("No active Rekord projects"));
+    await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
     assert.equal(screen.getByRole("link", { name: /PR #12.*Mobile dashboard/ }).getAttribute("href"), "https://github.test/pr/12");
+    await userEvent.click(screen.getByRole("button", { name: "Create worktree for companion" }));
+    assert.ok(screen.getByRole("dialog", { name: "Create Git worktree" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Branch name" }), "feature/new-flow");
+    assert.equal((screen.getByRole("textbox", { name: "Base revision" }) as HTMLInputElement).value, "feature/mobile");
+    await userEvent.click(screen.getByRole("button", { name: "Create & start session" }));
+    await waitFor(() => assert.equal(launched.mock.calls.some(([id]) => id === "workspace-created"), true));
+    const createCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/repositories/repo-1/worktrees") && init?.method === "POST");
+    assert.match(String(createCall?.[1]?.body), /"branch":"feature\/new-flow"/);
+    assert.match(String(createCall?.[1]?.body), /"base":"feature\/mobile"/);
     await userEvent.click(screen.getByRole("button", { name: /^mobile agent/ }));
     assert.deepEqual(open.mock.calls[0], ["workspace-1"]);
     await userEvent.click(screen.getByRole("button", { name: "Close session mobile agent" }));
     assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/workspaces/workspace-1/close") && init?.method === "POST"), true);
-    await userEvent.click(screen.getAllByRole("button", { name: "＋ Agent" })[0]);
-    assert.ok(screen.getByRole("dialog", { name: "Launch worktree agent" }));
+    await userEvent.click(screen.getAllByRole("button", { name: "＋ Session" })[0]);
+    assert.ok(screen.getByRole("dialog", { name: "Launch worktree session" }));
     await userEvent.click(screen.getByRole("button", { name: "Claude (xclaude)" }));
     const initialTask = screen.getByRole("textbox", { name: "Initial task" });
     await userEvent.type(initialTask, "Review the mobile dashboard");
@@ -116,7 +130,7 @@ describe("contextual mobile features", () => {
     fireEvent.paste(initialTask, { clipboardData: { items: [{ type: "image/png", getAsFile: () => launchImage }] } });
     assert.ok(await screen.findByRole("img", { name: "launch.png" }));
     await userEvent.click(screen.getByRole("button", { name: "Launch Claude" }));
-    await waitFor(() => assert.deepEqual(launched.mock.calls[0], ["workspace-new"]));
+    await waitFor(() => assert.equal(launched.mock.calls.some(([id]) => id === "workspace-new"), true));
     const launchCall = fetchMock.mock.calls.find(([url, init]) => String(url).includes("/worktree123456789/launch") && init?.method === "POST");
     assert.ok(launchCall);
     assert.match(String(launchCall?.[1]?.body), /Review the mobile dashboard/);
@@ -129,6 +143,13 @@ describe("contextual mobile features", () => {
     const removeCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/api/worktree-dashboard/worktree987654321") && init?.method === "DELETE");
     assert.ok(removeCall);
     assert.equal(new Headers(removeCall[1]?.headers).has("Content-Type"), false);
+    await userEvent.click(screen.getByRole("button", { name: "Archive companion" }));
+    assert.ok(screen.getByText("No active Karven projects"));
+    assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/repositories/repo-1/archive") && init?.method === "PATCH"), true);
+    await userEvent.click(screen.getByRole("tab", { name: /Archived/ }));
+    assert.ok(screen.getByRole("button", { name: "Unarchive companion" }));
+    await userEvent.click(screen.getByRole("button", { name: "Unarchive companion" }));
+    assert.ok(screen.getByText("No archived Karven projects"));
   });
 
   test("terminal Markdown and localhost references are interactive", async () => {
