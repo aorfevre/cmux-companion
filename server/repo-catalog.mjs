@@ -225,7 +225,7 @@ export class RepoCatalog {
   async git(cwd, args, options = {}) {
     const { stdout = "" } = await this.execute("git", ["-C", cwd, ...args], {
       encoding: "utf8",
-      timeout: 8_000,
+      timeout: options.timeout || 8_000,
       maxBuffer: options.maxBuffer || 1024 * 1024,
       env: process.env,
     });

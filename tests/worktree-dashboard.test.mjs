@@ -91,12 +91,14 @@ test("coalesces catalog entries that belong to one linked-worktree repository", 
 test("removes only clean, idle, non-primary worktrees while preserving their branch", async () => {
   const calls = [];
   let lateChange = false;
+  let removalOptions = null;
   const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
   const repoCatalog = {
     cache: null,
     list: async () => [{ id: "repo-safe", name: "sample", root: "repo", path: "/repo/sample", branch: "main" }],
-    git: async (cwd, args) => {
+    git: async (cwd, args, options) => {
       calls.push([cwd, ...args]);
+      if (args[0] === "worktree" && args[1] === "remove") removalOptions = options;
       if (args[0] === "worktree" && args[1] === "list") return inventory;
       if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
       if (args[0] === "rev-parse") return `${cwd}\n`;
@@ -117,4 +119,5 @@ test("removes only clean, idle, non-primary worktrees while preserving their bra
   const result = await dashboard.remove(feature.id);
   assert.equal(result.branchPreserved, true);
   assert.deepEqual(calls.at(-1), ["/repo/sample", "worktree", "remove", "--force", "/repo/sample-feature"]);
+  assert.deepEqual(removalOptions, { timeout: 120_000 });
 });
