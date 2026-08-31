@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
@@ -16,13 +17,6 @@ const AGENTS: PlanAgent[] = ["codex", "claude"];
 function agentLabel(agent: string) { return agent === "claude" ? "Claude" : "Codex"; }
 function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, headers: { ...(init?.body != null ? { "Content-Type": "application/json" } : {}), ...init?.headers } });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body as T;
-}
-
 export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice }: { repository: PlannerRepository; onClose: () => void; onLaunched: () => Promise<void>; onNotice: (message: string) => void }) {
   const [goal, setGoal] = useState("");
   const [draft, setDraft] = useState<PlanDraft | null>(null);
@@ -30,6 +24,7 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
   const [result, setResult] = useState<PlanLaunchResult | null>(null);
   const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch">("");
   const [error, setError] = useState("");
+  const { attachments, uploading, inputRef, addImages, pasteImages, removeImage } = useImageAttachments(onNotice);
 
   function receive(next: PlanDraft) { setDraft(next); setAnswers({}); setError(""); }
 
@@ -42,7 +37,7 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
   async function plan(event: FormEvent) {
     event.preventDefault();
     setBusy("plan"); setError("");
-    try { receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim() }) })); }
+    try { receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments) }) })); }
     catch (cause) { fail(cause, "Could not plan this goal"); }
     finally { setBusy(""); }
   }
@@ -81,9 +76,10 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
   return <><button className="session-menu-backdrop" aria-label="Close goal planner" onClick={onClose} /><form className="worktree-launcher worktree-planner-sheet" role="dialog" aria-modal="true" aria-label="Plan a goal" onSubmit={(event) => event.preventDefault()}>
     <header><div><strong>{heading}</strong><span>{repository.name}</span></div><button type="button" aria-label="Close goal planner sheet" onClick={onClose}>×</button></header>
     {!draft && !result && <>
-      <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
+      <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
+      <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       {error && <p className="worktree-action-error">{error}</p>}
-      <button type="button" className="primary-button" disabled={busy === "plan" || !goal.trim()} onClick={plan}>{busy === "plan" ? "Planning…" : "Plan this goal"}</button>
+      <div className="worktree-launch-actions"><ImagePickerButton attachments={attachments} disabled={busy === "plan" || uploading > 0} inputRef={inputRef} label="Choose goal images" onFiles={(files) => { void addImages(files); }} /><button type="button" className="primary-button" disabled={busy === "plan" || uploading > 0 || !goal.trim()} onClick={plan}>{busy === "plan" ? "Planning…" : uploading ? `Uploading ${uploading}…` : "Plan this goal"}</button></div>
     </>}
     {draft && !result && draft.status === "questions" && <>
       <p className="planner-round">Round {draft.round}</p>

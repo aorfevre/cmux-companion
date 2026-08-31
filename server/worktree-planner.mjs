@@ -171,6 +171,7 @@ const ROUND_TIMEOUT_MS = 180_000;
 const ALLOWED_TOOLS = "Read,Grep,Glob";
 const DENIED_TOOLS = "Bash,Write,Edit,MultiEdit,NotebookEdit,Task,Skill,WebFetch,WebSearch";
 const MAX_TASKS = 8;
+const MAX_IMAGES = 4;
 const MAX_DRAFTS = 50;
 
 // ccs draws its errors as a box: ANSI colour, border glyphs, a blank padded
@@ -214,10 +215,11 @@ export class WorktreePlanner {
     this.drafts = new Map();
   }
 
-  async start({ repositoryId, goal }) {
+  async start({ repositoryId, goal, images }) {
     const text = String(goal || "").trim();
     if (!text) throw new TypeError("Describe the goal for this repository");
     if (text.length > 4_000) throw new TypeError("That goal is too long");
+    const attachments = normalizeImages(images);
     const repository = await this.#repository(repositoryId);
     const draft = {
       planId: randomUUID(),
@@ -225,6 +227,7 @@ export class WorktreePlanner {
       repositoryName: repository.name,
       cwd: repository.primaryPath,
       goal: text,
+      images: attachments,
       sessionId: null,
       round: 0,
       at: Date.now(),
@@ -306,7 +309,9 @@ export class WorktreePlanner {
         cwd: path,
         title: task.title,
         agent: task.agent,
-        prompt: task.prompt,
+        // Each worktree agent is isolated, so every task prompt carries the
+        // image paths itself.
+        prompt: withImages(task.prompt, draft.images),
       });
       return { ...summary, status: "launched", path, workspace };
     } catch (cause) {
@@ -462,10 +467,36 @@ const OVERRIDES = [
   "Your only output is the JSON object described above.",
 ].join("\n");
 
+// The planner runs with Read allowed, so it can open each file itself.
+function imageBlock(images) {
+  const list = Array.isArray(images) ? images : [];
+  if (!list.length) return "";
+  return [`Attached image${list.length > 1 ? "s" : ""}:`, ...list.map((image) => `- ${image.path}`)].join("\n");
+}
+
+function withImages(prompt, images) {
+  const block = imageBlock(images);
+  return block ? `${prompt}\n\n${block}` : prompt;
+}
+
+function normalizeImages(images) {
+  if (images === undefined || images === null) return [];
+  if (!Array.isArray(images)) throw new TypeError("Attached images must be a list");
+  if (images.length > MAX_IMAGES) throw new TypeError(`Attach at most ${MAX_IMAGES} images`);
+  return images.map((image) => {
+    const path = image?.path;
+    if (typeof path !== "string" || !path.trim()) throw new TypeError("Each attached image needs a file path");
+    const name = typeof image?.name === "string" && image.name.trim() ? image.name.trim().slice(0, 200) : "attached image";
+    return { path: path.trim().slice(0, 1_000), name };
+  });
+}
+
 function openingPrompt(draft) {
+  const images = imageBlock(draft.images);
   return [
     `Repository: ${draft.repositoryName} at ${draft.cwd}`,
     `Goal: ${draft.goal}`,
+    ...(images ? ["", images, "Read each image with the Read tool. It shows what the user means.", "Do not repeat these paths in the task prompts. The server adds them to every task."] : []),
     "",
     "Read the repository to understand the goal. Ask a question only when a real ambiguity would change how the work splits. Split the goal into tasks that share no files and depend on no other task's output.",
     "",

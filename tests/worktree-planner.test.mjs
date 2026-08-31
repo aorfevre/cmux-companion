@@ -583,3 +583,70 @@ test("asks the remote for the default branch when no local ref exists", async ()
   assert.equal(result.base, "origin/master");
   assert.deepEqual(deps.calls.find((call) => call[0] === "git" && call[1][0] === "fetch")[1], ["fetch", "origin", "master"]);
 });
+
+const IMAGES = [
+  { path: "/attachments/one.png", name: "one.png" },
+  { path: "/attachments/two.png", name: "two.png" },
+];
+
+test("rejects more than four attached images", async () => {
+  const planner = new WorktreePlanner(fakeDeps({ replies: [] }));
+  const images = Array.from({ length: 5 }, (_, index) => ({ path: `/attachments/${index}.png`, name: `${index}.png` }));
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", images }), /at most 4 images/);
+});
+
+test("rejects an images value that is not a list", async () => {
+  const planner = new WorktreePlanner(fakeDeps({ replies: [] }));
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", images: "one.png" }), /must be a list/);
+});
+
+test("rejects an image entry with no string path", async () => {
+  const planner = new WorktreePlanner(fakeDeps({ replies: [] }));
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", images: [{ name: "one.png" }] }), /needs a file path/);
+});
+
+test("puts the image paths into the planner prompt", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  const planner = new WorktreePlanner(deps);
+  await planner.start({ repositoryId: REPO_ID, goal: "Add billing", images: IMAGES });
+  const prompt = deps.calls.find((call) => call[0] === "ccs")[1].at(-1);
+  assert.match(prompt, /Attached images:/);
+  assert.match(prompt, /- \/attachments\/one\.png/);
+  assert.match(prompt, /- \/attachments\/two\.png/);
+  assert.match(prompt, /Read each image with the Read tool/);
+});
+
+test("a goal with no images produces the prompt that exists today", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  const planner = new WorktreePlanner(deps);
+  await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const prompt = deps.calls.find((call) => call[0] === "ccs")[1].at(-1);
+  assert.ok(!prompt.includes("Attached image"));
+  assert.match(prompt, /Repository: sample at \/repo\/sample\nGoal: Add billing\n\nRead the repository/);
+});
+
+test("appends the image paths to every launched task prompt", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", images: IMAGES });
+  await planner.update(draft.planId, { tasks: [
+    { id: "t1", title: "Good", branch: "feature/good", prompt: "Do it.", agent: "claude" },
+    { id: "t2", title: "Also", branch: "feature/also", prompt: "Do that.", agent: "codex" },
+  ] });
+  await planner.launch(draft.planId);
+  const prompts = deps.calls.filter((call) => call[0] === "workspace").map((call) => call[1].prompt);
+  assert.equal(prompts.length, 2);
+  for (const prompt of prompts) {
+    assert.match(prompt, /Attached images:\n- \/attachments\/one\.png\n- \/attachments\/two\.png$/);
+  }
+  assert.ok(prompts[0].startsWith("Do it.\n\n"));
+});
+
+test("a launched task keeps its own prompt when no image is attached", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  const workspace = deps.calls.find((call) => call[0] === "workspace");
+  assert.equal(workspace[1].prompt, "Add billing.");
+});
