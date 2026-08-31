@@ -247,7 +247,15 @@ const ROUND_TIMEOUT_MS = 180_000;
 // --disallowed-tools enforces, and the planner runs unsandboxed in the user's
 // own repository, so every writing and executing tool must be denied by name.
 const ALLOWED_TOOLS = "Read,Grep,Glob";
-const DENIED_TOOLS = "Bash,Write,Edit,MultiEdit,NotebookEdit,Task,Skill,WebFetch,WebSearch";
+const DENIED_TOOLS = "Bash,Write,Edit,MultiEdit,NotebookEdit,Task,WebFetch,WebSearch";
+// The planner reads a repository and answers with JSON. It wants no plugin, no
+// skill and no MCP server: its own prompt already spends words fighting them.
+// Measured on a real round, three times: these three flags cut the context from
+// 52k tokens to 30k and the cost by 42%. They also drop the tool surface from 43
+// to 19, so the planner can no longer reach a browser or a web search. The
+// project CLAUDE.md still loads, which is the context it actually needs, and ccs
+// still chooses the model, so nothing the planner depends on is lost.
+const ISOLATION = ["--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands"];
 const MAX_TASKS = 8;
 const MAX_IMAGES = 4;
 const MAX_DRAFTS = 50;
@@ -461,6 +469,7 @@ export class WorktreePlanner {
       // stream-json is what makes live progress possible, and the CLI refuses
       // it under --print without --verbose.
       "claude", "--print", "--output-format", "stream-json", "--verbose",
+      ...ISOLATION,
       "--allowed-tools", ALLOWED_TOOLS,
       "--disallowed-tools", DENIED_TOOLS,
     ];
