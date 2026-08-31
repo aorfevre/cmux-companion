@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { RepositoryArchive } from "../server/repository-archive.mjs";
-import { WorktreeDashboard, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
+import { WorktreeDashboard, countUpdaterArtifacts, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
 
 const REPO = { id: "repo-1234567890123", name: "sample", root: "karven", path: "/repo/sample", branch: "main" };
 
@@ -185,4 +185,152 @@ test("removes only clean, idle, non-primary worktrees while preserving their bra
   assert.equal(result.branchPreserved, true);
   assert.deepEqual(calls.at(-1), ["/repo/sample", "worktree", "remove", "--force", "/repo/sample-feature"]);
   assert.deepEqual(removalOptions, { timeout: 120_000 });
+});
+
+// A release checkout under ~/.local/share/cmux-companion/releases/<sha> is
+// detached, and the updater drops release-manifest.json into it after checkout.
+// Git reports that as untracked, so the card read "1 changed" forever.
+function releaseRepoCatalog({ status, sessions = [], locked = false } = {}) {
+  const calls = [];
+  const lockField = locked ? "locked release pinned\0" : "";
+  const inventory = `worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /releases/abc\0HEAD bbbbbbbb\0detached\0${lockField}\0`;
+  const repoCatalog = {
+    cache: {},
+    calls,
+    list: async () => [{ id: "repo-safe", name: "sample", root: "repo", path: "/repo/sample", branch: "main" }],
+    git: async (cwd, args) => {
+      calls.push([cwd, ...args]);
+      if (args[0] === "worktree" && args[1] === "list") return inventory;
+      if (args[0] === "worktree" && args[1] === "remove") return "";
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return cwd === "/releases/abc" ? status : "# branch.head main\n";
+      if (args[0] === "log") return "1\n";
+      return "";
+    },
+    execute: async () => { throw new Error("gh unavailable"); },
+  };
+  return { repoCatalog, sessions };
+}
+
+test("ignores the updater's own artifacts when counting changes in a detached release checkout", async () => {
+  assert.equal(countUpdaterArtifacts("# branch.head (detached)\n? release-manifest.json\n? notes.md\n"), 1);
+  assert.equal(countUpdaterArtifacts("1 .M N... release-manifest.json\n"), 0);
+  const { repoCatalog } = releaseRepoCatalog({ status: "# branch.head (detached)\n? release-manifest.json\n" });
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const release = (await dashboard.snapshot()).repositories[0].worktrees.find((item) => !item.isPrimary);
+  assert.equal(release.detached, true);
+  assert.equal(release.updaterArtifacts, 1);
+  assert.equal(release.changedFiles, 0);
+  assert.equal(release.dirty, false);
+  const result = await dashboard.remove(release.id);
+  assert.equal(result.removed, true);
+  assert.equal(result.branchPreserved, true);
+  assert.equal(result.discardedChanges, false);
+});
+
+test("removes a dirty detached worktree only when the client asks to discard its changes", async () => {
+  const status = "# branch.head (detached)\n? release-manifest.json\n1 .M N... server/index.mjs\n";
+  const { repoCatalog } = releaseRepoCatalog({ status });
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const release = (await dashboard.snapshot()).repositories[0].worktrees.find((item) => !item.isPrimary);
+  assert.equal(release.changedFiles, 1);
+  assert.equal(release.dirty, true);
+  await assert.rejects(() => dashboard.remove(release.id), /Commit or stash/);
+  const result = await dashboard.remove(release.id, { discardChanges: true });
+  assert.equal(result.discardedChanges, true);
+  assert.deepEqual(repoCatalog.calls.at(-1), ["/repo/sample", "worktree", "remove", "--force", "/releases/abc"]);
+});
+
+test("refuses a discard removal for a dirty worktree that still has a branch", async () => {
+  const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
+  const repoCatalog = {
+    cache: {},
+    list: async () => [{ id: "repo-safe", name: "sample", root: "repo", path: "/repo/sample", branch: "main" }],
+    git: async (cwd, args) => {
+      if (args[0] === "worktree" && args[1] === "list") return inventory;
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return cwd.endsWith("feature") ? "# branch.head feature/mobile\n1 .M N... file.ts\n" : "# branch.head main\n";
+      if (args[0] === "log") return "1\n";
+      return "";
+    },
+    execute: async () => { throw new Error("gh unavailable"); },
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const feature = (await dashboard.snapshot()).repositories[0].worktrees.find((item) => !item.isPrimary);
+  await assert.rejects(() => dashboard.remove(feature.id, { discardChanges: true }), /Only a detached worktree/);
+});
+
+test("never removes the primary worktree, a locked worktree, or one with an active session", async () => {
+  const clean = "# branch.head (detached)\n? release-manifest.json\n";
+  const locked = releaseRepoCatalog({ status: clean, locked: true });
+  const lockedDashboard = new WorktreeDashboard({ repoCatalog: locked.repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const lockedSnapshot = await lockedDashboard.snapshot();
+  const primary = lockedSnapshot.repositories[0].worktrees.find((item) => item.isPrimary);
+  const lockedRelease = lockedSnapshot.repositories[0].worktrees.find((item) => !item.isPrimary);
+  await assert.rejects(() => lockedDashboard.remove(primary.id), /primary worktree cannot be removed/);
+  await assert.rejects(() => lockedDashboard.remove(primary.id, { discardChanges: true }), /primary worktree cannot be removed/);
+  await assert.rejects(() => lockedDashboard.remove(lockedRelease.id), /Unlock this Git worktree/);
+  await assert.rejects(() => lockedDashboard.remove(lockedRelease.id, { discardChanges: true }), /Unlock this Git worktree/);
+
+  const busy = releaseRepoCatalog({ status: clean });
+  const busyDashboard = new WorktreeDashboard({ repoCatalog: busy.repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const workspaces = [{ id: "11111111-2222-4333-8444-555555555555", title: "release agent", current_directory: "/releases/abc", last_activity_at: 5, terminals: [] }];
+  const release = (await busyDashboard.snapshot({ workspaces })).repositories[0].worktrees.find((item) => !item.isPrimary);
+  await assert.rejects(() => busyDashboard.remove(release.id, { workspaces }), /sessions before removing it/);
+  await assert.rejects(() => busyDashboard.remove(release.id, { workspaces, discardChanges: true }), /sessions before removing it/);
+});
+
+test("bulk removal keeps only clean, unlocked, idle, non-primary worktrees and tolerates a per-worktree failure", async () => {
+  const removed = [];
+  const inventory = [
+    "worktree /repo/sample\0HEAD a1\0branch refs/heads/main\0\0",
+    "worktree /repo/sample-clean\0HEAD b1\0branch refs/heads/chore/clean\0\0",
+    "worktree /repo/sample-stubborn\0HEAD c1\0branch refs/heads/chore/stubborn\0\0",
+    "worktree /repo/sample-dirty\0HEAD d1\0branch refs/heads/feature/dirty\0\0",
+    "worktree /repo/sample-locked\0HEAD e1\0branch refs/heads/chore/locked\0locked pinned\0\0",
+    "worktree /repo/sample-busy\0HEAD f1\0branch refs/heads/chore/busy\0\0",
+  ].join("");
+  const branches = {
+    "/repo/sample": "main",
+    "/repo/sample-clean": "chore/clean",
+    "/repo/sample-stubborn": "chore/stubborn",
+    "/repo/sample-dirty": "feature/dirty",
+    "/repo/sample-locked": "chore/locked",
+    "/repo/sample-busy": "chore/busy",
+  };
+  const repoCatalog = {
+    cache: {},
+    list: async () => [{ id: "repo-safe", name: "sample", root: "repo", path: "/repo/sample", branch: "main" }],
+    git: async (cwd, args) => {
+      if (args[0] === "worktree" && args[1] === "list") return inventory;
+      if (args[0] === "worktree" && args[1] === "remove") {
+        if (args[3] === "/repo/sample-stubborn") throw Object.assign(new Error("git failed"), { stderr: "fatal: worktree is dirty\n" });
+        removed.push(args[3]);
+        return "";
+      }
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${branches[cwd]}\n${cwd === "/repo/sample-dirty" ? "1 .M N... file.ts\n" : ""}`;
+      if (args[0] === "log") return "1\n";
+      return "";
+    },
+    execute: async () => { throw new Error("gh unavailable"); },
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const workspaces = [{ id: "11111111-2222-4333-8444-555555555555", title: "busy agent", current_directory: "/repo/sample-busy", last_activity_at: 5, terminals: [] }];
+  const repositoryId = (await dashboard.snapshot({ workspaces })).repositories[0].id;
+  const result = await dashboard.removeCleanWorktrees(repositoryId, { workspaces });
+  assert.equal(result.requested, 2);
+  assert.equal(result.removed, 1);
+  assert.equal(result.failed, 1);
+  assert.equal(result.branchPreserved, true);
+  assert.deepEqual(removed, ["/repo/sample-clean"]);
+  assert.deepEqual(result.results.map((entry) => entry.branch).sort(), ["chore/clean", "chore/stubborn"]);
+  const failure = result.results.find((entry) => !entry.removed);
+  assert.equal(failure.branch, "chore/stubborn");
+  assert.match(failure.error, /Git could not remove this worktree: fatal: worktree is dirty/);
+  assert.equal(repoCatalog.cache, null);
+  await assert.rejects(() => dashboard.removeCleanWorktrees("not-a-valid-id"), /Invalid repository/);
 });
