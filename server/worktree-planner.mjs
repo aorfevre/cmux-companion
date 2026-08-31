@@ -271,6 +271,13 @@ export class WorktreePlanner {
     try {
       const created = await this.worktrees.create(draft.repositoryId, { branch: task.branch, base });
       path = created.worktree.path;
+      // create() checks out an existing branch and ignores `base`, so the task
+      // would start on old work instead of the fetched commit. Refuse it: an
+      // agent committing on top of someone's in-progress branch is worse than
+      // a failed row the user can act on.
+      if (created.branchCreated === false) {
+        throw new TypeError(`Branch ${task.branch} already exists, so this task would not start from ${base}. Rename it in the plan, or delete the branch first`);
+      }
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: task.title,
@@ -293,14 +300,18 @@ export class WorktreePlanner {
       const output = await this.git(repositoryPath, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
       branch = String(output).trim().replace(/^refs\/remotes\/origin\//, "").replace(/^origin\//, "") || "main";
     } catch {
-      // No origin/HEAD ref locally. "main" is the safe default; the fetch below
-      // reports it plainly if that guess is wrong.
-      branch = "main";
+      // No local origin/HEAD ref. Ask the remote rather than guessing "main",
+      // which aborts the whole launch on a healthy master-default repository.
+      const head = await this.git(repositoryPath, ["ls-remote", "--symref", "origin", "HEAD"]).catch(() => "");
+      branch = String(head).match(/^ref: refs\/heads\/(\S+)\s+HEAD/m)?.[1] || "main";
     }
     try {
       await this.git(repositoryPath, ["fetch", "origin", branch], { timeout: 120_000 });
     } catch (cause) {
-      const detail = String(cause?.stderr || cause?.message || "").trim().split("\n").at(-1)?.slice(0, 160);
+      const lines = String(cause?.stderr || cause?.message || "").trim().split("\n").map((line) => line.trim()).filter(Boolean);
+      // Git prints the diagnosis first and boilerplate advice last, so prefer
+      // the first fatal or error line over the tail.
+      const detail = (lines.find((line) => /^(fatal|error):/.test(line)) || lines.at(-1) || "").slice(0, 160);
       throw new TypeError(detail ? `Git could not fetch origin/${branch}: ${detail}` : `Git could not fetch origin/${branch}`);
     }
     return `origin/${branch}`;

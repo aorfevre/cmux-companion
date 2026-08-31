@@ -513,3 +513,46 @@ test("handles a full ref path from symbolic-ref", async () => {
   assert.equal(result.base, "origin/develop");
   assert.deepEqual(deps.calls.find((call) => call[0] === "git" && call[1][0] === "fetch")[1], ["fetch", "origin", "develop"]);
 });
+
+test("refuses a task whose branch already exists", async () => {
+  const deps = launchDeps();
+  deps.worktrees.create = async (repositoryId, options) => {
+    deps.calls.push(["create", repositoryId, options]);
+    return { created: true, branchCreated: false, worktree: { id: "w1", branch: options.branch, path: "/repo/sample-old" } };
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.results[0].status, "failed");
+  assert.match(result.results[0].error, /already exists/);
+  assert.equal(result.launched, 0);
+  assert.equal(deps.calls.filter((call) => call[0] === "workspace").length, 0);
+});
+
+test("shows the first git line when the fetch fails", async () => {
+  const deps = launchDeps();
+  deps.git = async (cwd, args) => {
+    if (args[0] === "symbolic-ref") return "origin/main\n";
+    throw Object.assign(new Error("fetch failed"), {
+      stderr: "fatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n",
+    });
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  await assert.rejects(() => planner.launch(draft.planId), /does not appear to be a git repository/);
+});
+
+test("asks the remote for the default branch when no local ref exists", async () => {
+  const deps = launchDeps();
+  deps.git = async (cwd, args) => {
+    deps.calls.push(["git", args]);
+    if (args[0] === "symbolic-ref") throw new Error("no origin/HEAD");
+    if (args[0] === "ls-remote") return "ref: refs/heads/master\tHEAD\nabc123\tHEAD\n";
+    return "";
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.base, "origin/master");
+  assert.deepEqual(deps.calls.find((call) => call[0] === "git" && call[1][0] === "fetch")[1], ["fetch", "origin", "master"]);
+});
