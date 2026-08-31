@@ -123,8 +123,10 @@ export function assignAgents(tasks, usage) {
   });
 }
 
+// The percentage is the provider's best usable account, not a promise about the
+// account that runs the task: assignAgents chooses a provider, never an account.
 function describe(agent, percent) {
-  return { agent, agentReason: `${LABELS[agent]} · ${Math.round(percent)}% left` };
+  return { agent, agentReason: `${LABELS[agent]} · best account ${Math.round(percent)}% left` };
 }
 
 // Returns the best headroom across a provider's usable accounts, or null when

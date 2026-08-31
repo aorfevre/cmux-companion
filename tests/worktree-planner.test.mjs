@@ -95,7 +95,7 @@ test("sends every task to the roomier provider when headroom is far apart", () =
   const tasks = assignAgents(THREE, usageFor(20, 90));
   assert.deepEqual(tasks.map((task) => task.agent), ["codex", "codex", "codex"]);
   assert.match(tasks[0].agentReason, /Codex/);
-  assert.match(tasks[0].agentReason, /90% left/);
+  assert.match(tasks[0].agentReason, /best account 90% left/);
 });
 
 test("alternates when the two providers are within ten points", () => {
@@ -133,4 +133,29 @@ test("keeps the original task fields and does not mutate the input", () => {
 test("survives a null usage snapshot", () => {
   const tasks = assignAgents(THREE, null);
   assert.deepEqual(tasks.map((task) => task.agent), ["claude", "claude", "claude"]);
+});
+
+test("takes the best usable account when a provider has several", () => {
+  const usage = usageFor(30, 20);
+  usage.providers[0].accounts.push({
+    status: "ready",
+    windows: [
+      { cadence: "5h", category: "usage", remainingPercent: 95 },
+      { cadence: "weekly", category: "usage", remainingPercent: 95 },
+    ],
+  });
+  usage.providers[0].accounts.unshift({ status: "exhausted", windows: [{ cadence: "5h", category: "usage", remainingPercent: 0 }] });
+  const tasks = assignAgents(THREE, usage);
+  assert.deepEqual(tasks.map((task) => task.agent), ["claude", "claude", "claude"]);
+  assert.match(tasks[0].agentReason, /best account 95% left/);
+});
+
+test("treats headroom of exactly five percent as unusable", () => {
+  const tasks = assignAgents(THREE, usageFor(60, 5));
+  assert.deepEqual(tasks.map((task) => task.agent), ["claude", "claude", "claude"]);
+});
+
+test("alternates when the gap is exactly ten points", () => {
+  const tasks = assignAgents(THREE, usageFor(60, 70));
+  assert.deepEqual(tasks.map((task) => task.agent), ["codex", "claude", "codex"]);
 });
