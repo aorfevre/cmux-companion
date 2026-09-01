@@ -13,6 +13,7 @@ const MAX_EVENT_BYTES = 64 * 1024;
 export const PLAN_EVENT_KINDS = new Set([
   "goal", "questions", "answers", "tasks", "edit", "launch",
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
+  "merge_launched", "merge_blocked",
 ]);
 // A round either asked questions or returned the split. Any other stage is a
 // caller mistake, and storing it would make a reloaded plan unreadable.
@@ -45,6 +46,9 @@ CREATE TABLE IF NOT EXISTS plans (
   final_pr_url TEXT,
   delivery_error TEXT,
   verified_at TEXT,
+  cmux_group_id TEXT,
+  merge_workspace_id TEXT,
+  merge_status TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   launched_at TEXT
@@ -246,6 +250,42 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  // The cmux group is presentation, so it is stored on its own and never joins
+  // a delivery transition. A lost group id only costs a fresh lookup by name.
+  recordGroup(planId, groupId) {
+    const at = this.#stamp();
+    this.db.prepare("UPDATE plans SET cmux_group_id = ?, updated_at = ? WHERE plan_id = ?")
+      .run(text(groupId), at, String(planId));
+    return this.get(planId);
+  }
+
+  recordMergeLaunched(planId, workspaceId) {
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET merge_workspace_id = ?, merge_status = 'running',
+          delivery_status = 'assembling', delivery_error = NULL, updated_at = ? WHERE plan_id = ?
+      `).run(text(workspaceId), at, String(planId));
+      this.#insertEvent(String(planId), null, "merge_launched", { workspaceId }, at);
+    });
+    return this.get(planId);
+  }
+
+  // The merge agent stopped without a pull request. The worktree and the live
+  // session are both kept, because a retry continues them rather than restarting.
+  recordMergeBlocked(planId, reason) {
+    const at = this.#stamp();
+    const message = String(reason || "The merge agent stopped without opening a pull request").slice(0, 2_000);
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET merge_status = 'blocked', delivery_status = 'blocked',
+          delivery_error = ?, updated_at = ? WHERE plan_id = ?
+      `).run(message, at, String(planId));
+      this.#insertEvent(String(planId), null, "merge_blocked", { error: message }, at);
+    });
+    return this.get(planId);
+  }
+
   recordTaskIntegrated(planId, taskId, commitSha) {
     const at = this.#stamp();
     this.#transaction(() => {
@@ -275,8 +315,8 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare(`
-        UPDATE plans SET delivery_status = 'pr_open', final_pr_number = ?, final_pr_url = ?,
-          delivery_error = NULL, verified_at = ?, updated_at = ? WHERE plan_id = ?
+        UPDATE plans SET delivery_status = 'pr_open', merge_status = 'done', final_pr_number = ?,
+          final_pr_url = ?, delivery_error = NULL, verified_at = ?, updated_at = ? WHERE plan_id = ?
       `).run(Number.isInteger(number) ? number : null, String(url), verifiedAt || at, at, String(planId));
       this.#insertEvent(String(planId), null, "final_pr", { number, url, verifiedAt: verifiedAt || at }, at);
     });
@@ -394,6 +434,9 @@ export class WorktreePlanStore {
     ensure("plans", "final_pr_url", "TEXT");
     ensure("plans", "delivery_error", "TEXT");
     ensure("plans", "verified_at", "TEXT");
+    ensure("plans", "cmux_group_id", "TEXT");
+    ensure("plans", "merge_workspace_id", "TEXT");
+    ensure("plans", "merge_status", "TEXT");
     ensure("plan_tasks", "head_sha", "TEXT");
     ensure("plan_tasks", "delivery_status", "TEXT NOT NULL DEFAULT 'pending'");
     ensure("plan_tasks", "integrated_commit_sha", "TEXT");
@@ -454,6 +497,9 @@ function readPlan(row) {
     finalPrUrl: row.final_pr_url,
     deliveryError: row.delivery_error,
     verifiedAt: row.verified_at,
+    cmuxGroupId: row.cmux_group_id,
+    mergeWorkspaceId: row.merge_workspace_id,
+    mergeStatus: row.merge_status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     launchedAt: row.launched_at,
