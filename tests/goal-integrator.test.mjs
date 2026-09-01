@@ -191,3 +191,40 @@ test("the merge prompt skips a task that failed to launch", () => {
   assert.ok(prompt.includes("feature/kept"));
   assert.equal(prompt.includes("feature/dropped"), false);
 });
+
+function manyTaskPlan(count) {
+  const tasks = [];
+  for (let index = 0; index < count; index += 1) {
+    tasks.push({
+      id: `t${index}`, title: `Task title number ${index}`, branch: `feature/task-${index}`,
+      headSha: String(index % 10).repeat(40), launchStatus: "launched",
+    });
+  }
+  return {
+    planId: "plan-12345678", goal: "Ship a very large combined goal with many tasks",
+    baseRef: "origin/main", integrationBranch: "goal/ship-it-plan1234", issueNumbers: [54, 55], tasks,
+  };
+}
+
+test("the merge prompt refuses a goal with too many tasks to fit the cmux prompt limit", () => {
+  assert.throws(() => mergePrompt(manyTaskPlan(40)), /too many tasks/);
+});
+
+test("the merge prompt keeps the finish section and the conflicts-resolved requirement near the size limit", () => {
+  const prompt = mergePrompt(manyTaskPlan(20));
+  assert.ok(prompt.length <= 8_000);
+  assert.match(prompt, /## Finish/);
+  assert.match(prompt, /## Conflicts resolved` section. This section is required/);
+});
+
+test("the merge prompt omits the linked issues section when there are no issue numbers", () => {
+  const plan = {
+    planId: "plan-12345678", goal: "Ship it", baseRef: "origin/main",
+    integrationBranch: "goal/ship-it-plan1234", issueNumbers: [],
+    tasks: [
+      { id: "t1", title: "Kept", branch: "feature/kept", headSha: "a".repeat(40), launchStatus: "launched" },
+    ],
+  };
+  const prompt = mergePrompt(plan);
+  assert.equal(prompt.includes("## Linked issues"), false);
+});
