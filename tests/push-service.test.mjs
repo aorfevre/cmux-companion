@@ -130,25 +130,29 @@ test("classifies failures, builds contextual links, and respects quiet hours", a
   t.after(() => import("node:fs/promises").then(({ rm }) => rm(directory, { recursive: true, force: true })));
 });
 
-test("polls active PRs and links changed checks to the repository review", async (t) => {
+test("uses manually refreshed PR snapshots and never polls GitHub in the background", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "cmux-push-pr-"));
   const sender = fakeSender();
   const service = new PushService({ path: join(directory, "push.json"), sender });
   service.subscribe(subscription(), { hideContent: false });
-  let failed = false; let previewSyncs = 0;
+  let failed = false; let previewSyncs = 0; let githubCalls = 0;
   service.cmux = { workspaceListDetailed: async () => ({ workspaces: [{ id: "ws-1", current_directory: "/repo", terminals: [] }] }) };
   service.repoCatalog = {
     list: async () => [{ id: "repo-1", path: "/repo" }],
-    pullRequest: async () => ({ pullRequest: { number: 12, reviewDecision: "REVIEW_REQUIRED", mergeState: "UNSTABLE", checks: { passed: 1, pending: failed ? 0 : 1, failed: failed ? 1 : 0, total: 2 } } }),
+    pullRequest: async () => { githubCalls += 1; throw new Error("background GitHub polling is forbidden"); },
   };
   service.previewManager = { syncWorkspaces: async () => { previewSyncs += 1; } };
   await service.inspectContext();
+  await service.inspectContext();
+  assert.equal(githubCalls, 0);
+  assert.equal(previewSyncs, 2);
+  const snapshot = () => ({ repositories: [{ id: "repo-1", worktrees: [{ branch: "feature/mobile", sessions: [{ id: "ws-1" }], pullRequest: { number: 12, reviewDecision: "REVIEW_REQUIRED", mergeState: "UNSTABLE", checks: { passed: 1, pending: failed ? 0 : 1, failed: failed ? 1 : 0, total: 2 } } }] }] });
+  await service.inspectPullRequests(snapshot());
   assert.equal(sender.sent.length, 0, "first inspection establishes a baseline");
   failed = true;
-  await service.inspectContext();
+  await service.inspectPullRequests(snapshot());
   assert.equal(sender.sent[0].payload.kind, "pullRequest");
   assert.match(sender.sent[0].payload.url, /workspace=ws-1/);
   assert.match(sender.sent[0].payload.url, /tab=changes/);
-  assert.equal(previewSyncs, 2);
   t.after(() => import("node:fs/promises").then(({ rm }) => rm(directory, { recursive: true, force: true })));
 });

@@ -349,9 +349,10 @@ test("serves the worktree dashboard and creates worktrees and sessions", async (
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
-  const dashboard = await app.inject({ url: "/api/worktree-dashboard?refresh=1", headers: { cookie } });
+  const dashboard = await app.inject({ url: "/api/worktree-dashboard?refresh=1&github=1", headers: { cookie } });
   assert.equal(dashboard.statusCode, 200);
   assert.equal(dashboard.json().summary.worktrees, 1);
+  assert.deepEqual(calls[0], ["snapshot", { workspaces: (await cmux.workspaceList()).workspaces, refresh: true, refreshGitHub: true }]);
   const created = await app.inject({ method: "POST", url: "/api/worktree-dashboard/repositories/repository12345678/worktrees", headers, payload: { branch: "feature/mobile", base: "main" } });
   assert.equal(created.statusCode, 201);
   assert.equal(created.json().worktree.path, target.path);

@@ -191,6 +191,10 @@ describe("contextual mobile features", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     render(<WorktreeDashboardView onOpenWorkspace={open} onLaunched={launched} onNotice={notice} />);
     assert.ok(await screen.findByText("feature/mobile"));
+    assert.ok(screen.getByText(/GitHub refresh is manual/));
+    assert.equal(fetchMock.mock.calls.some(([url]) => String(url).includes("github=1")), false);
+    await userEvent.click(screen.getByRole("button", { name: "Refresh GitHub" }));
+    await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("?refresh=1&github=1")), true));
     await userEvent.click(screen.getByRole("tab", { name: /Rekord/ }));
     assert.ok(screen.getByText("No active Rekord projects"));
     await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
