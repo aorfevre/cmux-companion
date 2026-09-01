@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AccountUsage, cadenceFromDuration, exactCodexWindows, findCcsPackageRoot } from "../server/account-usage.mjs";
+import { AccountUsage, cadenceFromDuration, exactClaudeWindows, exactCodexWindows, findCcsPackageRoot } from "../server/account-usage.mjs";
 
 function source({ delay = 0 } = {}) {
   const accounts = {
@@ -81,6 +81,36 @@ test("treats authenticated accounts without reported windows as connected", asyn
 test("discovers the installed CCS package without a hard-coded Node version", () => {
   const root = findCcsPackageRoot();
   assert.match(root, /@kaitranntt\/ccs$/);
+});
+
+test("keeps Claude core windows when the provider reports no reset time", () => {
+  const windows = exactClaudeWindows({
+    five_hour: { utilization: 0, resets_at: null },
+    seven_day: { utilization: 0, resets_at: null },
+    seven_day_opus: null,
+  });
+  assert.deepEqual(windows.map((window) => [window.cadence, window.category, window.remainingPercent, window.resetAt]), [
+    ["5h", "usage", 100, null],
+    ["weekly", "usage", 100, null],
+  ]);
+});
+
+test("promotes the most restrictive Claude weekly window and demotes the rest", () => {
+  const windows = exactClaudeWindows({
+    five_hour: { utilization: 20, resets_at: "2026-09-01T23:30:00.000Z" },
+    seven_day: { utilization: 4, resets_at: "2026-09-02T08:00:00.000Z" },
+    seven_day_opus: { utilization: 61, resets_at: "2026-09-02T08:00:00.000Z" },
+  });
+  assert.deepEqual(windows.map((window) => [window.label, window.cadence, window.category, window.remainingPercent]), [
+    ["Session limit", "5h", "usage", 80],
+    ["Weekly limit", "weekly", "additional", 96],
+    ["Opus weekly limit", "weekly", "usage", 39],
+  ]);
+});
+
+test("ignores Claude payloads that carry no usable window", () => {
+  assert.deepEqual(exactClaudeWindows(null), []);
+  assert.deepEqual(exactClaudeWindows({ five_hour: { utilization: "n/a" }, extra_usage: { utilization: 10 } }), []);
 });
 
 test("uses Codex provider window durations for accurate cadence labels", () => {

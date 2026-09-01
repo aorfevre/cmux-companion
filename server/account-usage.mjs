@@ -5,6 +5,8 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 
 const CACHE_MS = 60_000;
+const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_OAUTH_BETA = "oauth-2025-04-20";
 const PROVIDERS = [
   { id: "claude", label: "Claude Code" },
   { id: "codex", label: "OpenAI Codex" },
@@ -230,14 +232,138 @@ export async function loadCcsSource() {
   if (typeof accounts.getProviderAccounts !== "function" || typeof claude.fetchAllClaudeQuotas !== "function" || typeof codex.fetchAllCodexQuotas !== "function") {
     throw new Error("Installed CCS does not expose quota support");
   }
+  const authDirs = claudeAuthDirs(root, accounts);
   return {
     getProviderAccounts: accounts.getProviderAccounts,
-    fetchAllClaudeQuotas: claude.fetchAllClaudeQuotas,
+    fetchAllClaudeQuotas: async () => Promise.all(accounts.getProviderAccounts("claude").map(async (account) => ({
+      account: account.id,
+      quota: await fetchExactClaudeQuota(account.id, claude, authDirs),
+    }))),
     fetchAllCodexQuotas: async () => Promise.all(accounts.getProviderAccounts("codex").map(async (account) => ({
       account: account.id,
       quota: await fetchExactCodexQuota(account.id, codex),
     }))),
   };
+}
+
+function claudeAuthDirs(root, accounts) {
+  const dirs = [];
+  try {
+    const paths = createRequire(import.meta.url)(join(root, "dist", "cliproxy", "config", "config-generator.js"));
+    if (typeof paths.getAuthDir === "function") dirs.push(paths.getAuthDir());
+  } catch {
+    // Fall back to the paused directory only.
+  }
+  try {
+    if (typeof accounts.getPausedDir === "function") dirs.push(accounts.getPausedDir());
+  } catch {
+    // Fall back to whatever directory was already found.
+  }
+  return dirs.filter(Boolean);
+}
+
+function bearerToken(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function matchesAccount(file, email, accountId) {
+  if (cleanText(email) === accountId) return true;
+  const sanitized = accountId.replaceAll("@", "_").replaceAll(".", "_");
+  return file.includes(accountId) || file.includes(sanitized);
+}
+
+function readClaudeAccessToken(accountId, authDirs) {
+  for (const dir of authDirs) {
+    let files = [];
+    try {
+      files = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.endsWith(".json") || (!file.startsWith("claude-") && !file.startsWith("anthropic-"))) continue;
+      let parsed = null;
+      try {
+        parsed = JSON.parse(readFileSync(join(dir, file), "utf8"));
+      } catch {
+        continue;
+      }
+      const type = cleanText(parsed?.type);
+      if (type && type !== "claude" && type !== "anthropic") continue;
+      const token = bearerToken(parsed?.access_token) || bearerToken(parsed?.token?.access_token);
+      if (!token) continue;
+      if (!matchesAccount(file, parsed?.email, accountId)) continue;
+      const expiry = cleanText(parsed?.expired) || cleanText(parsed?.token?.expiry);
+      const expiresAt = expiry ? new Date(expiry).getTime() : Number.NaN;
+      if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) continue;
+      return token;
+    }
+  }
+  return null;
+}
+
+async function fetchExactClaudeQuota(accountId, claude, authDirs) {
+  const token = readClaudeAccessToken(accountId, authDirs);
+  if (!token) return claude.fetchClaudeQuota(accountId, false);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(CLAUDE_USAGE_URL, {
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "anthropic-beta": CLAUDE_OAUTH_BETA,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!response.ok) return claude.fetchClaudeQuota(accountId, false);
+    const payload = await response.json();
+    const windows = exactClaudeWindows(payload);
+    if (windows.length === 0) return claude.fetchClaudeQuota(accountId, false);
+    return { success: true, windows, lastUpdated: Date.now(), accountId };
+  } catch {
+    return claude.fetchClaudeQuota(accountId, false);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+const CLAUDE_WEEKLY_LABELS = {
+  seven_day: "Weekly limit",
+  seven_day_opus: "Opus weekly limit",
+  seven_day_sonnet: "Sonnet weekly limit",
+  seven_day_oauth_apps: "OAuth apps weekly limit",
+  seven_day_cowork: "Cowork weekly limit",
+};
+
+export function exactClaudeWindows(payload) {
+  if (!payload || typeof payload !== "object") return [];
+  const windows = [];
+  const session = claudeWindow(payload.five_hour, "5h", "usage", "Session limit");
+  if (session) windows.push(session);
+  const weekly = Object.entries(CLAUDE_WEEKLY_LABELS)
+    .map(([key, label]) => claudeWindow(payload[key], "weekly", "usage", label))
+    .filter(Boolean);
+  const core = mostRestrictive(weekly);
+  for (const window of weekly) {
+    windows.push(window === core ? window : { ...window, category: "additional" });
+  }
+  return windows;
+}
+
+function claudeWindow(raw, cadence, category, label) {
+  if (!raw || typeof raw !== "object") return null;
+  const remainingPercent = finitePercent(100 - Number(raw.utilization));
+  if (remainingPercent === null) return null;
+  return { label, featureLabel: label, category, cadence, remainingPercent, resetAt: safeDate(raw.resets_at) };
+}
+
+function mostRestrictive(windows) {
+  let best = null;
+  for (const window of windows) {
+    if (!best || window.remainingPercent < best.remainingPercent) best = window;
+  }
+  return best;
 }
 
 async function fetchExactCodexQuota(accountId, codex) {
