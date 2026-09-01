@@ -268,12 +268,18 @@ export class GoalIntegrator {
       // still carries the count it had when companion last lost its id.
       if (groupId) await this.groups?.rename(groupId, name);
 
-      const notice = milestone(plan);
-      if (!notice) return;
+      // #publish runs on every assemble, and every task Stop schedules one, so
+      // the milestone is a state and not an event. Only a change is worth a
+      // notification.
+      const key = milestoneKey(plan);
+      if (!key || key === plan.cmuxNoticeKey) return;
       const target = plan.mergeWorkspaceId || plan.tasks.find((task) => task.workspaceId)?.workspaceId;
       if (!target) return;
       surface = "notification";
-      await this.cmux?.notify(target, notice);
+      await this.cmux?.notify(target, milestone(plan));
+      // Recorded only once the notice is really out, so a dropped one is
+      // re-sent by the next publish, exactly as a dropped rename is.
+      this.store.recordNoticeKey(plan.planId, key);
     } catch (cause) {
       this.log?.warn?.({ err: cause, planId: plan.planId, surface }, "goal progress publish failed");
     }
@@ -431,7 +437,15 @@ function groupName(plan) {
 }
 
 // Three notifications only. A chatty agent stops many times, so a per-task
-// notice would be noise on a five-task goal.
+// notice would be noise on a five-task goal. The pull request key carries its
+// number, so a pull request re-opened under a new number still notifies.
+function milestoneKey(plan) {
+  if (plan.finalPrNumber) return `pr:${plan.finalPrNumber}`;
+  if (plan.mergeStatus === "blocked") return "blocked";
+  if (plan.mergeStatus === "running") return "merging";
+  return null;
+}
+
 function milestone(plan) {
   if (plan.finalPrNumber) {
     return { title: `Pull request #${plan.finalPrNumber} is open`, body: oneLine(plan.goal, 200) };

@@ -231,9 +231,14 @@ test("the merge prompt omits the linked issues section when there are no issue n
   assert.equal(prompt.includes("## Linked issues"), false);
 });
 
+// Every task Stop schedules another assemble, and assemble publishes on every
+// run. The extra assembles below are what a chatty five-task goal really does,
+// so they are what proves the notification is sent on a change and not on a
+// state.
 test("renames the goal group with the counter and notifies at the three milestones", async (t) => {
   const { integrator, calls } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
   await integrator.assemble("plan-12345678");
+  for (let index = 0; index < 4; index += 1) await integrator.assemble("plan-12345678");
   await integrator.settle("plan-12345678");
   const names = calls.filter((call) => call[0] === "rename").map((call) => call[2]);
   assert.ok(names.some((name) => name.includes("merging")));

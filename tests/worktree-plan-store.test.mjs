@@ -298,6 +298,9 @@ test("records the cmux group, the merge workspace and a merge block", (t) => {
   });
 
   assert.equal(store.recordGroup("plan-groups", "group-abc").cmuxGroupId, "group-abc");
+  assert.equal(store.get("plan-groups").cmuxNoticeKey, null);
+  assert.equal(store.recordNoticeKey("plan-groups", "merging").cmuxNoticeKey, "merging");
+  assert.equal(store.recordNoticeKey("plan-groups", "pr:42").cmuxNoticeKey, "pr:42");
 
   const launched = store.recordMergeLaunched("plan-groups", "workspace-merge");
   assert.equal(launched.mergeWorkspaceId, "workspace-merge");

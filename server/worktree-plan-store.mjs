@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS plans (
   delivery_error TEXT,
   verified_at TEXT,
   cmux_group_id TEXT,
+  cmux_notice_key TEXT,
   merge_workspace_id TEXT,
   merge_status TEXT,
   created_at TEXT NOT NULL,
@@ -268,6 +269,16 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  // The last notification actually delivered. Like the group id this is
+  // presentation only, so it never joins a delivery transition: losing it costs
+  // one repeated notice, never a lost merge.
+  recordNoticeKey(planId, noticeKey) {
+    const at = this.#stamp();
+    this.db.prepare("UPDATE plans SET cmux_notice_key = ?, updated_at = ? WHERE plan_id = ?")
+      .run(text(noticeKey), at, String(planId));
+    return this.get(planId);
+  }
+
   recordMergeLaunched(planId, workspaceId) {
     const at = this.#stamp();
     this.#transaction(() => {
@@ -449,6 +460,7 @@ export class WorktreePlanStore {
     ensure("plans", "delivery_error", "TEXT");
     ensure("plans", "verified_at", "TEXT");
     ensure("plans", "cmux_group_id", "TEXT");
+    ensure("plans", "cmux_notice_key", "TEXT");
     ensure("plans", "merge_workspace_id", "TEXT");
     ensure("plans", "merge_status", "TEXT");
     ensure("plan_tasks", "head_sha", "TEXT");
@@ -512,6 +524,7 @@ function readPlan(row) {
     deliveryError: row.delivery_error,
     verifiedAt: row.verified_at,
     cmuxGroupId: row.cmux_group_id,
+    cmuxNoticeKey: row.cmux_notice_key ?? null,
     mergeWorkspaceId: row.merge_workspace_id,
     mergeStatus: row.merge_status,
     createdAt: row.created_at,
