@@ -586,9 +586,38 @@ describe("worktree goal planner", () => {
     const rows = screen.getByRole("list", { name: "Task delivery" });
     assert.ok(within(rows).getByText("API"));
     assert.ok(within(rows).getByText("Metrics"));
+    assert.ok(within(rows).getByText("Ready"));
     assert.ok(within(rows).getByText("Waiting"));
     assert.ok(within(rows).getByText("Merged"));
     assert.ok(within(rows).getByText("Not launched"));
+  });
+
+  test("counts tasks with no recorded launch status as launched", async () => {
+    const now = new Date().toISOString();
+    const summary = { planId: "plan-nostatus", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship quietly", status: "launched", stage: "ready", deliveryMode: "combined", deliveryStatus: "assembling", round: 2, taskCount: 2, launchedCount: 2, createdAt: now, updatedAt: now, launchedAt: now };
+    const draft = {
+      ...readyDraft, planId: "plan-nostatus", repositoryName: "companion", goal: summary.goal,
+      planStatus: "launched", deliveryMode: "combined", deliveryStatus: "assembling",
+      createdAt: now, updatedAt: now, launchedAt: now,
+      tasks: [
+        { id: "t1", title: "API", branch: "feature/api", prompt: "Do", agent: "claude", agentReason: "", deliveryStatus: "ready" },
+        { id: "t2", title: "UI", branch: "feature/ui", prompt: "Do", agent: "claude", agentReason: "", deliveryStatus: "pending" },
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [summary] }), { status: 200 });
+      if (url.endsWith("/plan-nostatus")) return new Response(JSON.stringify(draft), { status: 200 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "View Ship quietly" }));
+    assert.ok(await screen.findByText("1 of 2 branches ready"));
+    const rows = screen.getByRole("list", { name: "Task delivery" });
+    assert.ok(within(rows).getByText("Ready"));
+    assert.ok(within(rows).getByText("Waiting"));
   });
 
   test("confirms saved-goal deletion and surfaces the server error verbatim", async () => {

@@ -55,6 +55,12 @@ function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string })
   return <div className="planner-waiting"><span>{waiting}</span>{steps.length > 0 && <ul className="planner-progress">{steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ul>}</div>;
 }
 
+function DeliveryTasks({ tasks }: { tasks: PlanTask[] }) {
+  if (tasks.length === 0) return null;
+  const { ready, total } = readyCount(tasks);
+  return <><p className="planner-delivery-count">{ready} of {total} branches ready</p><ul className="planner-delivery-tasks" aria-label="Task delivery">{tasks.map((task) => { const state = taskState(task); return <li key={task.id}><span>{task.title}</span><code>{task.branch}</code><em className={`delivery-${state.toLowerCase().replace(/\s+/g, "-")}`}>{state}</em></li>; })}</ul></>;
+}
+
 function newTraceId() {
   return typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : "";
 }
@@ -229,12 +235,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
       </article>)}</div>
       {busy === "launch" && <p className="planner-waiting">Creating worktrees and starting sessions. This can take a minute.</p>}
       {error && <p className="worktree-action-error">{error}</p>}
-      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong>{draft.tasks.length > 0 && <>
-        <p className="planner-delivery-count">{readyCount(draft.tasks).ready} of {readyCount(draft.tasks).total} branches ready</p>
-        <ul className="planner-delivery-tasks" aria-label="Task delivery">{draft.tasks.map((task) => <li key={task.id}>
-          <span>{task.title}</span><code>{task.branch}</code><em className={`delivery-${taskState(task).toLowerCase().replace(/\s+/g, "-")}`}>{taskState(task)}</em>
-        </li>)}</ul>
-      </>}{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
+      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
     </>}
     {result && <>
       <p className="planner-round">Branched from <code>{result.base}</code> · {result.launched} of {result.results.length} started</p>
@@ -262,7 +263,7 @@ function deliveryLabel(status?: string) {
 }
 
 function readyCount(tasks: PlanTask[]) {
-  const launched = tasks.filter((task) => task.launchStatus === "launched");
+  const launched = tasks.filter((task) => !task.launchStatus || task.launchStatus === "launched");
   const ready = launched.filter((task) => task.deliveryStatus === "ready" || task.deliveryStatus === "integrated");
   return { ready: ready.length, total: launched.length };
 }
