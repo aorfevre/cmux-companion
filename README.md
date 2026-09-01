@@ -97,6 +97,8 @@ Worktrees Beta discovers Git's registered worktrees for the configured repositor
 
 Every step is written to a local SQLite database at `~/.config/cmux-companion/goal-plans.db`, which the companion creates with mode 0600. It holds the goal, the Claude session id, each round of questions, each set of answers, each task list, each edit and the launch outcome of each task. A plan therefore survives a companion restart and an interrupted question round: reload it, and the next answer resumes the same Claude session instead of starting the goal again.
 
+The Worktrees view surfaces those saved plans beside the repository filters. **Draft Goals** collects resumable plans and **Launched Goals** keeps a read-only launch history for the selected Karven or Rekord project group. Each card opens the exact saved plan and can delete it after confirmation.
+
 | Route | Purpose |
 | --- | --- |
 | `GET /api/worktree-plans` | Saved plans, newest first. Filter with `repositoryId`, `status` (`draft`, `launched` or `all`) and `limit`. |

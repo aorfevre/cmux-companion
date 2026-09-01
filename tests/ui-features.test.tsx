@@ -156,6 +156,52 @@ describe("contextual mobile features", () => {
     assert.ok(screen.getByText("No archived Karven projects"));
   });
 
+  test("shows project-wide draft and launched goals and opens the selected saved plan", async () => {
+    const repository = (id: string, name: string, root: string) => ({ id, name, root, path: `/repo/${name}`, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [{ id: `${id}-primary-worktree`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }] });
+    const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 2, worktrees: 2, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repo-karven", "trust-layer", "karven"), repository("repo-rekord", "recorder", "rekord")] };
+    const updatedAt = new Date().toISOString();
+    const draft = { planId: "plan-draft", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Improve the LLM flow", status: "draft", stage: "ready", round: 2, taskCount: 1, createdAt: updatedAt, updatedAt, launchedAt: null };
+    const launched = { planId: "plan-launched", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Ship prompt analytics", status: "launched", stage: "ready", round: 1, taskCount: 2, createdAt: updatedAt, updatedAt, launchedAt: updatedAt };
+    const rekordDraft = { ...draft, planId: "plan-rekord", repositoryId: "repo-rekord", repositoryName: "recorder", goal: "Improve recording search" };
+    const detail = { ...draft, questions: [], tasks: [{ id: "task-1", title: "Polish the model output", branch: "feature/model-output", prompt: "Polish the model output.", agent: "codex", agentReason: "Codex has more headroom" }] };
+    const launchedDetail = { ...launched, questions: [], tasks: [{ id: "task-2", title: "Measure prompt quality", branch: "feature/prompt-quality", prompt: "Measure prompt quality.", agent: "claude", agentReason: "Claude has more headroom" }] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/worktree-plans?status=all&limit=200") return new Response(JSON.stringify({ plans: [draft, launched, rekordDraft] }), { status: 200 });
+      if (url === "/api/worktree-plans?repositoryId=repo-karven") return new Response(JSON.stringify({ plans: [draft, launched] }), { status: 200 });
+      if (url === "/api/worktree-plans/plan-draft") return new Response(JSON.stringify(detail), { status: 200 });
+      if (url === "/api/worktree-plans/plan-launched" && !init?.method) return new Response(JSON.stringify(launchedDetail), { status: 200 });
+      if (url === "/api/worktree-plans/plan-launched" && init?.method === "DELETE") return new Response(JSON.stringify({ planId: "plan-launched", deleted: true }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("tab", { name: /Draft Goals 1/ }));
+    const draftGoals = screen.getByRole("region", { name: "Draft goals" });
+    assert.ok(within(draftGoals).getByText("Improve the LLM flow"));
+    assert.equal(within(draftGoals).queryByText("Improve recording search"), null);
+    assert.ok(screen.getByText("1 goal ready to resume."));
+
+    await userEvent.click(within(draftGoals).getByRole("button", { name: "Resume Improve the LLM flow" }));
+    const planner = await screen.findByRole("dialog", { name: "Plan a goal" });
+    assert.ok(within(planner).getByText("Polish the model output"));
+    assert.ok(within(planner).getByText("Round 2 · 1 task"));
+    await userEvent.click(within(planner).getByRole("button", { name: "Close goal planner sheet" }));
+
+    await userEvent.click(screen.getByRole("tab", { name: /Launched Goals 1/ }));
+    const launchedGoals = screen.getByRole("region", { name: "Launched goals" });
+    assert.ok(within(launchedGoals).getByText("Ship prompt analytics"));
+    await userEvent.click(within(launchedGoals).getByRole("button", { name: "View Ship prompt analytics" }));
+    const launchedPlanner = await screen.findByRole("dialog", { name: "Plan a goal" });
+    assert.ok(within(launchedPlanner).getByText("Measure prompt quality"));
+    assert.ok(within(launchedPlanner).getByText("This goal was already launched. The saved plan is read-only."));
+    await userEvent.click(within(launchedPlanner).getByRole("button", { name: "Close goal planner sheet" }));
+    await userEvent.click(within(launchedGoals).getByRole("button", { name: "Delete Ship prompt analytics" }));
+    await userEvent.click(within(launchedGoals).getByRole("button", { name: "Confirm delete Ship prompt analytics" }));
+    await waitFor(() => assert.equal(screen.queryByText("Ship prompt analytics"), null));
+  });
+
   test("offers bulk cleanup of clean worktrees and a named second confirmation for a detached release checkout", async () => {
     const worktree = (over: Record<string, unknown>) => ({ repoId: "repo-1", head: "abc", locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, detached: false, isPrimary: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" }, ...over });
     const emptyRepo = { id: "repo-2", name: "solo", root: "karven", path: "/repo/solo", pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [worktree({ id: "soloprimary1234567", path: "/repo/solo", name: "solo", branch: "main", isPrimary: true })] };
