@@ -11,7 +11,7 @@ const TASK_ONE = "a".repeat(40);
 const TASK_TWO = "b".repeat(40);
 const BASE = "c".repeat(40);
 
-function fixture(t, { secondPushed = true, pullRequest = null, groupsFail = false } = {}) {
+function fixture(t, { secondPushed = true, pullRequest = null, groupsFail = false, thirdFailed = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "goal-integrator-"));
   const integrationPath = join(root, "sample-goal");
   mkdirSync(integrationPath);
@@ -22,6 +22,7 @@ function fixture(t, { secondPushed = true, pullRequest = null, groupsFail = fals
     tasks: [
       { id: "t1", title: "Billing API", branch: "feature/billing-api", prompt: "Build it", agent: "codex" },
       { id: "t2", title: "Billing UI", branch: "feature/billing-ui", prompt: "Build it", agent: "claude" },
+      ...(thirdFailed ? [{ id: "t3", title: "Billing docs", branch: "feature/billing-docs", prompt: "Build it", agent: "codex" }] : []),
     ],
   });
   store.recordLaunch("plan-12345678", {
@@ -29,6 +30,7 @@ function fixture(t, { secondPushed = true, pullRequest = null, groupsFail = fals
     results: [
       { id: "t1", status: "launched", path: join(root, "task-one"), workspace: { workspace_id: "workspace-one" } },
       { id: "t2", status: "launched", path: join(root, "task-two"), workspace: { workspace_id: "workspace-two" } },
+      ...(thirdFailed ? [{ id: "t3", status: "failed", error: "worktree already exists" }] : []),
     ],
   });
   const calls = [];
@@ -242,9 +244,13 @@ test("renames the goal group with the counter and notifies at the three mileston
   assert.ok(notices.some((title) => /pull request/i.test(title)));
 });
 
+// The third task never launched, so it can never produce a branch. Counting it
+// would name a total the user can never reach, which is why the denominator
+// below is 2 and not 3.
 test("names a counting group with the ready count over the launched count", async (t) => {
-  const { integrator, calls } = fixture(t, { secondPushed: false });
-  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for 1 task branch/);
+  const { store, integrator, calls } = fixture(t, { secondPushed: false, thirdFailed: true });
+  assert.equal(store.get("plan-12345678").tasks.length, 3);
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Every task must launch successfully/);
   assert.deepEqual(calls.filter((call) => call[0] === "rename").map((call) => call[2]), ["Ship combined billing — 1/2"]);
 });
 
