@@ -57,6 +57,7 @@
   section.subpage:has(> .settings-list){display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:24px;align-content:start}
   section.subpage:has(> .settings-list)>.eyebrow,section.subpage:has(> .settings-list)>h1{grid-column:1/-1}
   section.subpage:has(> .settings-list)>.settings-list{grid-column:1;grid-row:3}
+  section.subpage:has(> .settings-list)>.deployment-card{grid-column:1;grid-row:4}
   section.subpage:has(> .settings-list)>.push-card{grid-column:2;grid-row:3/7}
   section.subpage:has(> .settings-list)>.install-button,section.subpage:has(> .settings-list)>.privacy-note,section.subpage:has(> .settings-list)>.logout-button{grid-column:1}
   .account-usage-page{padding:42px 42px 64px}

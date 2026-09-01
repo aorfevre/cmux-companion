@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
@@ -15,6 +16,7 @@ import { GoalIntegrator } from "./goal-integrator.mjs";
 import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
+import { deploymentStatus, updaterLaunchAgentRunning } from "./deployment-health.mjs";
 import {
   isAuthorized,
   isSessionAuthorized,
@@ -52,6 +54,8 @@ export async function buildApp({
     builtAt: process.env.CMUX_COMPANION_BUILT_AT || null,
   },
   updaterStatePath = process.env.CMUX_COMPANION_UPDATER_STATE || null,
+  updaterConfigPath = process.env.CMUX_COMPANION_UPDATER_CONFIG || (updaterStatePath ? join(dirname(dirname(updaterStatePath)), "updater.json") : null),
+  updaterProcessCheck = updaterLaunchAgentRunning,
 } = {}) {
   if (!token) throw new Error("A companion pairing token is required");
 
@@ -139,8 +143,16 @@ export async function buildApp({
     if (!updaterStatePath) return { available: false };
     try {
       const state = JSON.parse(await readFile(updaterStatePath, "utf8"));
+      const config = updaterConfigPath
+        ? await readFile(updaterConfigPath, "utf8").then(JSON.parse).catch(() => null)
+        : null;
+      const health = deploymentStatus(state, releaseVersion, Date.now(), {
+        updaterProcessRunning: await updaterProcessCheck(),
+        updaterEnabled: config ? config.enabled !== false : true,
+      });
       return {
         available: true,
+        enabled: config ? config.enabled !== false : null,
         deployedSha: state.deployedSha || null,
         observedRemoteSha: state.observedRemoteSha || null,
         pendingSha: state.pendingSha || null,
@@ -150,6 +162,8 @@ export async function buildApp({
         lastFailureAt: state.lastFailureAt || null,
         lastError: state.lastError || null,
         restartExpected: state.restartExpected === true,
+        summary: health.summary,
+        services: health.services,
       };
     } catch {
       return { available: false };

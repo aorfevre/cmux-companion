@@ -10,6 +10,7 @@ import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { WorktreeDashboardView } from "../app/worktree-dashboard";
 import { WorktreePlannerSheet } from "../app/worktree-planner";
 import { GitHubIssuePlannerSheet } from "../app/github-issue-planner";
+import { DeploymentHealth } from "../app/deployment-health";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -799,5 +800,63 @@ describe("last update stamp", () => {
     const { container } = render(<LastUpdateStamp />);
     await waitFor(() => assert.equal(container.querySelector("time"), null));
     assert.equal(screen.queryByText(/Updated/), null);
+  });
+});
+
+describe("deployment health", () => {
+  const sha = (character: string) => character.repeat(40);
+  const service = (overrides: Record<string, unknown> = {}) => ({
+    deployedSha: sha("a"), observedRemoteSha: sha("a"), quarantinedSha: null,
+    alive: true, healthy: true, status: "current", ...overrides,
+  });
+  const response = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+
+  test("shows both current deployments and refreshes them on demand", async () => {
+    const fetchMock = vi.fn(async () => response({
+      available: true, summary: "healthy", phase: "idle", lastCheckAt: "2026-09-01T12:10:07.113Z", lastSuccessAt: "2026-09-01T12:08:30.471Z",
+      services: { companion: service({ runningSha: sha("a") }), updater: service({ deployedSha: sha("b"), observedRemoteSha: sha("b") }) },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<DeploymentHealth />);
+    assert.ok(await screen.findByText("Both services healthy"));
+    assert.ok(screen.getByText("cmux companion"));
+    assert.ok(screen.getByText("cmux companion updater"));
+    assert.equal(screen.getAllByText("Current").length, 2);
+    assert.equal(screen.getByRole("region", { name: "Deployment health" }).getAttribute("aria-busy"), "false");
+    assert.equal(screen.getByRole("status").textContent, "Both services healthy");
+    await userEvent.click(screen.getByRole("button", { name: "Refresh deployment health" }));
+    await waitFor(() => assert.equal(fetchMock.mock.calls.length, 2));
+  });
+
+  test("makes an in-progress Companion rollout explicit", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({
+      available: true, summary: "updating", phase: "fetching", lastCheckAt: new Date().toISOString(),
+      services: { companion: service({ healthy: false, status: "updating", pendingSha: sha("c") }), updater: service() },
+    })));
+    render(<DeploymentHealth />);
+    assert.ok(await screen.findByText("Update in progress"));
+    assert.ok(screen.getByText("Updating"));
+    assert.ok(screen.getByText("fetching"));
+  });
+
+  test("shows updater failures with the bounded recovery detail", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({
+      available: true, summary: "attention", phase: "failed", lastCheckAt: new Date().toISOString(), lastError: "Unsafe non-fast-forward history for updater",
+      services: { companion: service(), updater: service({ healthy: false, status: "problem", quarantinedSha: sha("c") }) },
+    })));
+    render(<DeploymentHealth />);
+    assert.ok(await screen.findByText("Attention needed"));
+    assert.ok(screen.getByText("Problem"));
+    assert.ok(screen.getByText("Unsafe non-fast-forward history for updater"));
+  });
+
+  test("shows intentionally paused automatic updates without claiming health", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({
+      available: true, enabled: false, summary: "paused", phase: "idle", lastCheckAt: new Date().toISOString(),
+      services: { companion: service(), updater: service({ enabled: false, healthy: false, status: "paused" }) },
+    })));
+    render(<DeploymentHealth />);
+    assert.ok(await screen.findByText("Automatic updates paused"));
+    assert.ok(screen.getByText("Paused"));
   });
 });

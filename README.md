@@ -188,6 +188,8 @@ npm run test:preview-live
 
 The proposed unattended, self-updating macOS deployment design is documented in the [Local Updater Specification](docs/local-updater-spec.md).
 
+Open **Settings → Deployments** to see the running Companion release and the deployed updater release together. The card compares both services with their latest observed `main` commit, verifies that the updater LaunchAgent has a live process, and shows active rollout phases, paused automatic updates, scheduled retry backoff, stale activity, and failures without reporting old state as healthy.
+
 ## Configuration
 
 | Variable | Default | Purpose |
