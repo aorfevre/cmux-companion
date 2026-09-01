@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GoalIntegrator, mergePrompt, readyCount } from "../server/goal-integrator.mjs";
@@ -55,6 +55,9 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
   const worktrees = {
     create: async (repositoryId, options) => {
       calls.push(["create", repositoryId, options]);
+      // Real git makes the directory. The fake must too, or a test cannot tell
+      // a rebuilt worktree apart from a path that was never created.
+      mkdirSync(integrationPath, { recursive: true });
       return { branchCreated: true, worktree: { path: integrationPath, branch: options.branch } };
     },
     snapshot: async () => ({ repositories: [] }),
@@ -364,4 +367,34 @@ test("marks each task integrated from the trailers on the merged branch", async 
   assert.equal(saved.tasks[0].deliveryStatus, "integrated");
   assert.equal(saved.tasks[0].integratedCommitSha, TASK_ONE);
   assert.equal(saved.tasks[1].deliveryStatus, "ready");
+});
+
+test("rebuilds the goal worktree when its recorded path no longer exists on disk", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t);
+  await integrator.assemble("plan-12345678");
+  await integrator.settle("plan-12345678");
+  // The user removed the goal worktree between the blocked merge and the
+  // retry. The branch survives; the directory does not.
+  rmSync(integrationPath, { recursive: true, force: true });
+  await integrator.assemble("plan-12345678");
+  const cwds = calls.filter((call) => call[0] === "workspaceCreate").map((call) => call[1].cwd);
+  const nudges = calls.filter((call) => call[0] === "rpc" && call[1] === "surface.send_text");
+  for (const cwd of cwds) assert.equal(existsSync(cwd), true, `merge agent was sent to a missing directory: ${cwd}`);
+  assert.equal(nudges.length === 0 || existsSync(store.get("plan-12345678").integrationWorktreePath), true);
+});
+
+test("reuses the goal worktree that git already has for the integration branch", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t);
+  await integrator.assemble("plan-12345678");
+  await integrator.settle("plan-12345678");
+  rmSync(integrationPath, { recursive: true, force: true });
+  const recoveredPath = mkdtempSync(join(tmpdir(), "goal-recovered-"));
+  t.after(() => rmSync(recoveredPath, { recursive: true, force: true }));
+  const branch = store.get("plan-12345678").integrationBranch;
+  integrator.worktrees.snapshot = async () => ({
+    repositories: [{ id: REPO_ID, worktrees: [{ branch, path: recoveredPath }] }],
+  });
+  await integrator.assemble("plan-12345678");
+  assert.equal(store.get("plan-12345678").integrationWorktreePath, recoveredPath);
+  assert.equal(calls.filter((call) => call[0] === "create").length, 1);
 });

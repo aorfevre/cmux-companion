@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 const TASK_SETTLE_MS = 1_000;
 
 class TasksNotReadyError extends TypeError {}
@@ -139,7 +141,13 @@ export class GoalIntegrator {
       // Without a cmux client there is no agent to merge with, and a half-made
       // worktree would be worse than a clear refusal.
       if (!this.cmux) throw new TypeError("Combined goal delivery needs a cmux connection");
+      const previousPath = plan.integrationWorktreePath;
       plan = await this.#integrationWorktree(plan);
+      // A rebuilt worktree is a different directory, and the blocked session is
+      // still sitting in the old one - which no longer exists. Nudging it would
+      // send the merge agent back to a dead path. Only a session whose worktree
+      // survived unchanged can be resumed.
+      const sameWorktree = previousPath === plan.integrationWorktreePath;
       // A blocked merge keeps its worktree and its live session, so a retry
       // continues the partial merge instead of throwing that work away. When
       // the nudge fails, this falls through to a fresh agent in the same call
@@ -148,7 +156,7 @@ export class GoalIntegrator {
       // "hiccup" on a workspace that is really gone strands the plan on a dead
       // id forever. A duplicate session is the recoverable failure of the two -
       // it is visible, and the trailer-skip rule makes a re-run idempotent.
-      const resumed = plan.mergeWorkspaceId && plan.mergeStatus === "blocked"
+      const resumed = sameWorktree && plan.mergeWorkspaceId && plan.mergeStatus === "blocked"
         ? await this.#resumeMerge(plan)
         : false;
       if (resumed) plan = this.store.recordMergeLaunched(plan.planId, plan.mergeWorkspaceId);
@@ -291,7 +299,12 @@ export class GoalIntegrator {
   }
 
   async #integrationWorktree(plan) {
-    if (plan.integrationWorktreePath && plan.integrationBranch) return plan;
+    // The recorded path is a claim about the disk, not proof. A goal worktree
+    // the user removed between a blocked merge and its retry leaves the record
+    // behind, and cmux accepts a missing cwd without complaint: the merge agent
+    // then starts in whatever directory cmux launched from, reads the wrong
+    // repository, and reports the goal as impossible. Verify the directory.
+    if (plan.integrationWorktreePath && plan.integrationBranch && existsSync(plan.integrationWorktreePath)) return plan;
     const baseBranch = String(plan.baseRef || "origin/main").replace(/^origin\//, "") || "main";
     await this.#git(plan.cwd, ["fetch", "origin", baseBranch], { timeout: 120_000 });
     const branch = integrationBranch(plan);
@@ -299,7 +312,12 @@ export class GoalIntegrator {
     const recovered = dashboard?.repositories?.find((repository) => repository.id === plan.repositoryId)?.worktrees?.find((worktree) => worktree.branch === branch);
     if (recovered?.path) return this.store.recordIntegrationStarted(plan.planId, { branch, path: recovered.path });
     const created = await this.worktrees.create(plan.repositoryId, { branch, base: `origin/${baseBranch}` });
-    if (created.branchCreated === false) throw new TypeError(`The integration branch ${branch} already exists`);
+    // A rebuild re-attaches the goal branch this plan already owns, so an
+    // existing branch is only an error the first time round. Rejecting it on a
+    // retry would strand a plan whose merge work is already on that branch.
+    if (created.branchCreated === false && !plan.integrationBranch) {
+      throw new TypeError(`The integration branch ${branch} already exists`);
+    }
     return this.store.recordIntegrationStarted(plan.planId, { branch, path: created.worktree.path });
   }
 
