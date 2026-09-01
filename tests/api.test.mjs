@@ -343,6 +343,7 @@ test("serves the worktree dashboard and creates worktrees and sessions", async (
     resolve: async (id) => { calls.push(["resolve", id]); if (id !== target.id) throw new TypeError("Unknown worktree"); return target; },
     remove: async (id, input) => { calls.push(["remove", id, input]); return { removed: true, branchPreserved: true }; },
     setRepositoryArchived: async (id, archived, input) => { calls.push(["archive", id, archived, input]); return { repository: { id, archived } }; },
+    setRepositoryFavorite: async (id, favorite, input) => { calls.push(["favorite", id, favorite, input]); return { repository: { id, favorite } }; },
     invalidate: () => calls.push(["invalidate"]),
   };
   const app = await buildApp({ cmux, token: TOKEN, worktreeDashboard });
@@ -365,7 +366,10 @@ test("serves the worktree dashboard and creates worktrees and sessions", async (
   const archived = await app.inject({ method: "PATCH", url: "/api/worktree-dashboard/repositories/repository12345678/archive", headers, payload: { archived: true } });
   assert.equal(archived.statusCode, 200);
   assert.equal(archived.json().repository.archived, true);
-  assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "create-worktree", "resolve", "invalidate", "remove", "archive"]);
+  const favorited = await app.inject({ method: "PATCH", url: "/api/worktree-dashboard/repositories/repository12345678/favorite", headers, payload: { favorite: true } });
+  assert.equal(favorited.statusCode, 200);
+  assert.equal(favorited.json().repository.favorite, true);
+  assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "create-worktree", "resolve", "invalidate", "remove", "archive", "favorite"]);
 });
 
 test("analyzes, prepares, and bulk-launches GitHub issue topics through authenticated routes", async (t) => {

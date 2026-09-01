@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { RepositoryArchive } from "../server/repository-archive.mjs";
+import { RepositoryFavorites } from "../server/repository-favorites.mjs";
 import { WorktreeDashboard, countUpdaterArtifacts, isManagedReleasePath, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
 
 const REPO = { id: "repo-1234567890123", name: "sample", root: "karven", path: "/repo/sample", branch: "main" };
@@ -20,6 +21,18 @@ test("persists archived repository ids across instances", async (t) => {
   assert.equal(new RepositoryArchive({ path }).has(id), false);
 });
 
+test("persists favorite repository ids across instances", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cmux-companion-favorite-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "favorites.json");
+  const id = "repository12345678";
+  const favorites = new RepositoryFavorites({ path });
+  assert.equal(favorites.set(id, true), true);
+  assert.equal(new RepositoryFavorites({ path }).has(id), true);
+  assert.equal(favorites.set(id, false), false);
+  assert.equal(new RepositoryFavorites({ path }).has(id), false);
+});
+
 test("parses Git's NUL-delimited worktree inventory", () => {
   const output = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0locked testing\0\0";
   assert.deepEqual(parseWorktreeList(output), [
@@ -32,6 +45,8 @@ test("groups cmux sessions by registered worktree and exposes delivery state", a
   const archived = new Set();
   let githubCalls = 0;
   const repositoryArchive = { has: (id) => archived.has(id), set: (id, value) => { if (value) archived.add(id); else archived.delete(id); return value; } };
+  const favorited = new Set();
+  const repositoryFavorites = { has: (id) => favorited.has(id), set: (id, value) => { if (value) favorited.add(id); else favorited.delete(id); return value; } };
   const git = async (cwd, args) => {
     if (args[0] === "worktree") return "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
     if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
@@ -45,7 +60,7 @@ test("groups cmux sessions by registered worktree and exposes delivery state", a
     git,
     execute: async () => { githubCalls += 1; return { stdout: JSON.stringify([{ number: 7, title: "Feature", url: "https://github.test/pr/7", state: "OPEN", headRefName: "feature/mobile", baseRefName: "main", statusCheckRollup: [] }]) }; },
   };
-  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path, repositoryArchive });
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path, repositoryArchive, repositoryFavorites });
   const workspaces = [{
     id: "11111111-2222-4333-8444-555555555555", title: "mobile agent", current_directory: "/repo/sample-feature/app", preview: "Editing app/page.tsx", last_activity_at: 300,
     status: { effective: "working", signals: { any_agent_running: true } }, terminals: [{ id: "terminal", title: "xcodex" }],
@@ -74,6 +89,11 @@ test("groups cmux sessions by registered worktree and exposes delivery state", a
   assert.equal((await dashboard.snapshot()).repositories[0].archived, true);
   assert.equal(githubCalls, 1, "local refreshes reuse the manual GitHub snapshot indefinitely");
   assert.equal((await dashboard.setRepositoryArchived(repositoryId, false)).repository.archived, false);
+  assert.equal(value.repositories[0].favorite, false);
+  assert.equal((await dashboard.setRepositoryFavorite(repositoryId, true)).repository.favorite, true);
+  assert.equal((await dashboard.snapshot()).repositories[0].favorite, true);
+  assert.equal((await dashboard.setRepositoryFavorite(repositoryId, false)).repository.favorite, false);
+  await assert.rejects(dashboard.setRepositoryFavorite(repositoryId, "yes"), /Favorite must be true or false/);
 });
 
 test("refreshes the registered inventory before resolving a launch target", async () => {
