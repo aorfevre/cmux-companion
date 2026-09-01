@@ -175,9 +175,12 @@ export class GoalIntegrator {
   // A failed cmux call therefore cannot roll back a delivery transition, and
   // the next change re-sends the correct current count.
   async #publish(plan, { workspaceId = null } = {}) {
-    // Every surface here is presentation, so nothing it does may reach the
-    // caller: a publish sits both inside and outside #assemble's own catch, and
-    // a thrown rename would otherwise abort a merge that is already committed.
+    // Every surface here is presentation, and this runs after the store has
+    // committed - one call site sitting outside #assemble's own catch. A
+    // collaborator that throws would therefore abort a delivery that already
+    // succeeded, so one boundary swallows all of them. `surface` is what tells
+    // an operator whether it was the group or the notification that broke.
+    let surface = "group";
     try {
       const name = groupName(plan);
       let groupId = plan.cmuxGroupId;
@@ -200,9 +203,11 @@ export class GoalIntegrator {
       const notice = milestone(plan);
       if (!notice) return;
       const target = plan.mergeWorkspaceId || plan.tasks.find((task) => task.workspaceId)?.workspaceId;
-      if (target) await this.cmux?.notify(target, notice);
+      if (!target) return;
+      surface = "notification";
+      await this.cmux?.notify(target, notice);
     } catch (cause) {
-      this.log?.warn?.({ err: cause, planId: plan.planId }, "goal progress publish failed");
+      this.log?.warn?.({ err: cause, planId: plan.planId, surface }, "goal progress publish failed");
     }
   }
 
