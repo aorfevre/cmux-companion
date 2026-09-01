@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildApp, normalizeInbox } from "../server/app.mjs";
 import { CmuxCommandError } from "../server/cmux-client.mjs";
+import { deploymentStatus, launchAgentIsRunning } from "../server/deployment-health.mjs";
 
 const TOKEN = "test-token-that-is-deliberately-long-and-private";
 const WS_ID = "11111111-2222-4333-8444-555555555555";
@@ -54,6 +58,17 @@ async function pairedCookie(app) {
   return response.headers["set-cookie"].split(";")[0];
 }
 
+async function appWithUpdaterState(t, state, releaseSha = "a".repeat(40), updaterEnabled = true) {
+  const directory = await mkdtemp(join(tmpdir(), "cmux-companion-health-"));
+  const updaterStatePath = join(directory, "state.json");
+  const updaterConfigPath = join(directory, "updater.json");
+  if (state !== undefined) await writeFile(updaterStatePath, JSON.stringify(state));
+  await writeFile(updaterConfigPath, JSON.stringify({ enabled: updaterEnabled }));
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, updaterStatePath, updaterConfigPath, updaterProcessCheck: async () => true, releaseVersion: { gitSha: releaseSha, builtAt: null } });
+  t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  return { app, cookie: await pairedCookie(app) };
+}
+
 test("health is public while cmux data requires pairing", async (t) => {
   const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, releaseVersion: { gitSha: "a".repeat(40), builtAt: "2026-08-31T00:00:00.000Z" } });
   t.after(() => app.close());
@@ -65,6 +80,137 @@ test("health is public while cmux data requires pairing", async (t) => {
   assert.equal((await app.inject({ url: "/api/account-usage" })).statusCode, 401);
   assert.equal((await app.inject({ url: `/api/terminals/${TERM_ID}/replay` })).statusCode, 401);
   assert.equal((await app.inject({ method: "POST", url: "/api/auth/pair", payload: { token: "wrong" } })).statusCode, 401);
+});
+
+test("requires launchctl to report a running updater process with a pid", () => {
+  assert.equal(launchAgentIsRunning("state = running\n\tpid = 74825\n"), true);
+  assert.equal(launchAgentIsRunning("state = exited\n\tlast exit code = 1\n"), false);
+  assert.equal(launchAgentIsRunning("state = running\n\tlast exit code = 0\n"), false);
+});
+
+test("reports both Companion and updater as healthy when deployed versions are current", async (t) => {
+  const companionSha = "a".repeat(40);
+  const updaterSha = "b".repeat(40);
+  const { app, cookie } = await appWithUpdaterState(t, {
+    deployedSha: companionSha, observedRemoteSha: companionSha, pendingSha: null, quarantinedSha: null,
+    updaterDeployedSha: updaterSha, updaterObservedRemoteSha: updaterSha, updaterQuarantinedSha: null,
+    phase: "idle", lastCheckAt: new Date().toISOString(), lastSuccessAt: "2026-09-01T12:08:30.471Z",
+  }, companionSha);
+  const response = await app.inject({ url: "/api/updater/status", headers: { cookie } });
+  assert.equal(response.statusCode, 200);
+  const body = response.json();
+  assert.equal(body.summary, "healthy");
+  assert.equal(body.services.companion.runningSha, companionSha);
+  assert.equal(body.services.companion.status, "current");
+  assert.equal(body.services.updater.status, "current");
+  assert.equal(body.services.updater.alive, true);
+  assert.equal(body.deployedSha, companionSha);
+});
+
+test("reports a pending Companion deployment as updating", async (t) => {
+  const deployedSha = "a".repeat(40);
+  const pendingSha = "c".repeat(40);
+  const updaterSha = "b".repeat(40);
+  const { app, cookie } = await appWithUpdaterState(t, {
+    deployedSha, observedRemoteSha: pendingSha, pendingSha,
+    updaterDeployedSha: updaterSha, updaterObservedRemoteSha: updaterSha,
+    phase: "fetching", lastCheckAt: new Date().toISOString(),
+  }, deployedSha);
+  const body = (await app.inject({ url: "/api/updater/status", headers: { cookie } })).json();
+  assert.equal(body.summary, "updating");
+  assert.equal(body.services.companion.status, "updating");
+  assert.equal(body.services.updater.status, "current");
+});
+
+test("surfaces updater failures and quarantined versions as a problem", async (t) => {
+  const companionSha = "a".repeat(40);
+  const deployedUpdaterSha = "b".repeat(40);
+  const remoteUpdaterSha = "c".repeat(40);
+  const { app, cookie } = await appWithUpdaterState(t, {
+    deployedSha: companionSha, observedRemoteSha: companionSha,
+    updaterDeployedSha: deployedUpdaterSha, updaterObservedRemoteSha: remoteUpdaterSha, updaterQuarantinedSha: remoteUpdaterSha,
+    phase: "failed", lastCheckAt: new Date().toISOString(), lastError: "Updater health check failed",
+  }, companionSha);
+  const body = (await app.inject({ url: "/api/updater/status", headers: { cookie } })).json();
+  assert.equal(body.summary, "attention");
+  assert.equal(body.services.companion.status, "current");
+  assert.equal(body.services.updater.status, "problem");
+  assert.equal(body.services.updater.healthy, false);
+  assert.equal(body.lastError, "Updater health check failed");
+});
+
+test("does not call a stale updater heartbeat alive", async (t) => {
+  const companionSha = "a".repeat(40);
+  const updaterSha = "b".repeat(40);
+  const { app, cookie } = await appWithUpdaterState(t, {
+    deployedSha: companionSha, observedRemoteSha: companionSha,
+    updaterDeployedSha: updaterSha, updaterObservedRemoteSha: updaterSha,
+    phase: "idle", lastCheckAt: "2026-08-31T00:00:00.000Z",
+  }, companionSha);
+  const body = (await app.inject({ url: "/api/updater/status", headers: { cookie } })).json();
+  assert.equal(body.summary, "attention");
+  assert.equal(body.services.companion.status, "current");
+  assert.equal(body.services.updater.alive, false);
+  assert.equal(body.services.updater.status, "unknown");
+});
+
+test("keeps a running updater alive during a long rollout", async (t) => {
+  const companionSha = "a".repeat(40);
+  const updaterSha = "b".repeat(40);
+  const remoteUpdaterSha = "c".repeat(40);
+  const lastCheckAt = new Date(Date.now() - 45 * 60_000).toISOString();
+  const { app, cookie } = await appWithUpdaterState(t, {
+    deployedSha: companionSha, observedRemoteSha: companionSha,
+    updaterDeployedSha: updaterSha, updaterObservedRemoteSha: remoteUpdaterSha,
+    phase: "building", lastCheckAt,
+  }, companionSha);
+  const body = (await app.inject({ url: "/api/updater/status", headers: { cookie } })).json();
+  assert.equal(body.services.updater.alive, true);
+  assert.equal(body.services.updater.status, "updating");
+});
+
+test("recognizes retry backoff but never lets an update mask another service needing attention", () => {
+  const now = Date.parse("2026-09-01T12:10:00.000Z");
+  const companionSha = "a".repeat(40);
+  const updaterSha = "b".repeat(40);
+  const backoff = deploymentStatus({
+    deployedSha: companionSha, observedRemoteSha: companionSha,
+    updaterDeployedSha: updaterSha, updaterObservedRemoteSha: updaterSha,
+    phase: "failed", lastCheckAt: "2026-09-01T12:05:00.000Z", nextEligibleCheckAt: "2026-09-01T12:12:00.000Z",
+  }, { gitSha: companionSha }, now, { updaterProcessRunning: true });
+  assert.equal(backoff.services.updater.alive, true);
+  assert.equal(backoff.summary, "attention");
+
+  const mixed = deploymentStatus({
+    deployedSha: companionSha, observedRemoteSha: "c".repeat(40), pendingSha: "c".repeat(40),
+    updaterDeployedSha: updaterSha, updaterObservedRemoteSha: updaterSha,
+    phase: "building", lastCheckAt: "2026-09-01T12:10:00.000Z",
+  }, { gitSha: companionSha }, now, { updaterProcessRunning: false });
+  assert.equal(mixed.services.companion.status, "updating");
+  assert.equal(mixed.services.updater.status, "unknown");
+  assert.equal(mixed.summary, "attention");
+});
+
+test("reports disabled automatic updates as paused", async (t) => {
+  const companionSha = "a".repeat(40);
+  const updaterSha = "b".repeat(40);
+  const { app, cookie } = await appWithUpdaterState(t, {
+    deployedSha: companionSha, observedRemoteSha: companionSha,
+    updaterDeployedSha: updaterSha, updaterObservedRemoteSha: updaterSha,
+    phase: "idle", lastCheckAt: new Date().toISOString(),
+  }, companionSha, false);
+  const body = (await app.inject({ url: "/api/updater/status", headers: { cookie } })).json();
+  assert.equal(body.enabled, false);
+  assert.equal(body.summary, "paused");
+  assert.equal(body.services.companion.status, "current");
+  assert.equal(body.services.updater.status, "paused");
+});
+
+test("reports updater status as unavailable when its state file cannot be read", async (t) => {
+  const { app, cookie } = await appWithUpdaterState(t, undefined);
+  const response = await app.inject({ url: "/api/updater/status", headers: { cookie } });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { available: false });
 });
 
 test("renews the one-year session cookie during authenticated use", async (t) => {
