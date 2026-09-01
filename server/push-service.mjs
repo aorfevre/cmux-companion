@@ -69,9 +69,9 @@ export class PushService {
     return { subscribed: false };
   }
 
-  async send({ title, body, kind = "attention", workspaceId = null, surfaceId = null, actionId = null, repoId = null, file = null, previewId = null, tab = null, tag = null, bypassQuiet = false, bypassPreferences = false, targetEndpoint = null }) {
+  async send({ title, body, kind = "attention", workspaceId = null, surfaceId = null, actionId = null, repoId = null, file = null, previewId = null, planId = null, tab = null, tag = null, bypassQuiet = false, bypassPreferences = false, targetEndpoint = null }) {
     if (!EVENT_KINDS.has(kind)) throw new TypeError("Unsupported notification kind");
-    const url = contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, tab, kind });
+    const url = contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, planId, tab, kind });
     const stale = [];
     const subscriptions = this.state.subscriptions;
     const targets = subscriptions
@@ -88,8 +88,8 @@ export class PushService {
         const payload = JSON.stringify({
           title: record.settings.hideContent ? "cmux companion" : title,
           body: record.settings.hideContent ? discreetBody(kind) : body,
-          kind, workspaceId, surfaceId, actionId, repoId, file, previewId,
-          tag: tag || `cmux-${kind}-${actionId || previewId || workspaceId || "general"}`, url,
+          kind, workspaceId, surfaceId, actionId, repoId, file, previewId, planId,
+          tag: tag || `cmux-${kind}-${actionId || previewId || planId || workspaceId || "general"}`, url,
         });
         try {
           await this.sender.sendNotification(
@@ -219,27 +219,26 @@ export class PushService {
     ]);
     const workspaces = workspacePayload.workspaces || [];
     await this.previewManager?.syncWorkspaces(workspaces, repos);
-    if (!this.repoCatalog) return;
-    const activeRepoIds = new Set(workspaces.map((workspace) => {
-      const directory = workspace.current_directory || workspace.terminals?.[0]?.current_directory;
-      return repos.find((repo) => directory && (directory === repo.path || directory.startsWith(`${repo.path}/`)))?.id;
-    }).filter(Boolean));
-    for (const repo of repos.filter((item) => activeRepoIds.has(item.id))) {
-      const value = await this.repoCatalog.pullRequest(repo.id, { refresh: true }).catch(() => null);
-      const pullRequest = value?.pullRequest;
-      const fingerprint = pullRequest ? JSON.stringify([pullRequest.number, pullRequest.reviewDecision, pullRequest.checks, pullRequest.mergeState]) : "none";
-      const previous = this.prFingerprints.get(repo.id);
-      this.prFingerprints.set(repo.id, fingerprint);
-      if (!previous || previous === fingerprint || !pullRequest) continue;
-      const workspace = workspaces.find((item) => {
-        const directory = item.current_directory || item.terminals?.[0]?.current_directory;
-        return directory && (directory === repo.path || directory.startsWith(`${repo.path}/`));
-      });
-      await this.send({
-        title: pullRequest.checks.failed ? `PR #${pullRequest.number} checks failed` : `PR #${pullRequest.number} updated`,
-        body: pullRequestSummary(pullRequest), kind: "pullRequest", workspaceId: workspace?.id || null,
-        repoId: repo.id, tab: "changes", tag: `cmux-pr-${repo.id}-${fingerprint}`,
-      });
+  }
+
+  // GitHub state arrives only from an explicit dashboard refresh. Reusing that
+  // snapshot preserves PR notifications without a second background request.
+  async inspectPullRequests(dashboard) {
+    for (const repository of dashboard?.repositories || []) {
+      for (const worktree of repository.worktrees || []) {
+        const pullRequest = worktree.pullRequest;
+        const key = `${repository.id}:${worktree.branch}`;
+        const fingerprint = pullRequest ? JSON.stringify([pullRequest.number, pullRequest.reviewDecision, pullRequest.checks, pullRequest.mergeState]) : "none";
+        const previous = this.prFingerprints.get(key);
+        this.prFingerprints.set(key, fingerprint);
+        if (!previous || previous === fingerprint || !pullRequest) continue;
+        const workspace = worktree.sessions?.[0];
+        await this.send({
+          title: pullRequest.checks.failed ? `PR #${pullRequest.number} checks failed` : `PR #${pullRequest.number} updated`,
+          body: pullRequestSummary(pullRequest), kind: "pullRequest", workspaceId: workspace?.id || null,
+          repoId: repository.id, tab: "changes", tag: `cmux-pr-${repository.id}-${fingerprint}`,
+        });
+      }
     }
   }
 
@@ -320,10 +319,13 @@ export function extractMarkdownPaths(text) {
   return values.slice(0, 12);
 }
 
-export function contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, tab, kind } = {}) {
+export function contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, planId, tab, kind } = {}) {
   const query = new URLSearchParams();
   if (actionId) { query.set("view", "inbox"); query.set("action", actionId); }
   else if (previewId) { query.set("view", "apps"); query.set("preview", previewId); }
+  // A goal lives on the worktree dashboard, which is a mode of the sessions
+  // view rather than a view of its own.
+  else if (planId) { query.set("view", "sessions"); query.set("mode", "worktrees"); query.set("plan", planId); }
   else if (workspaceId) query.set("workspace", workspaceId);
   else query.set("view", "inbox");
   if (surfaceId) query.set("surface", surfaceId);

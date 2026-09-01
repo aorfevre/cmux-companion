@@ -76,7 +76,7 @@ export async function buildApp({
   // that inject a whole planner do not open the production database implicitly.
   const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
   const planner = worktreePlanner
-    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore });
+    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService });
   const integrator = goalIntegrator
     || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
@@ -289,10 +289,17 @@ export async function buildApp({
 
   app.get("/api/worktree-dashboard", async (request) => {
     const bootstrap = await loadBootstrap();
-    return worktrees.snapshot({
+    const refreshGitHub = request.query?.github === "1";
+    const dashboard = await worktrees.snapshot({
       workspaces: bootstrap.workspaces,
       refresh: request.query?.refresh === "1",
+      refreshGitHub,
     });
+    if (refreshGitHub && pushService?.inspectPullRequests) {
+      try { await pushService.inspectPullRequests(dashboard); }
+      catch (cause) { app.log.warn({ err: cause }, "manual PR notification inspection failed"); }
+    }
+    return dashboard;
   });
 
   app.post("/api/worktree-dashboard/repositories/:id/worktrees", async (request, reply) => {
@@ -335,6 +342,11 @@ export async function buildApp({
     return worktrees.setRepositoryArchived(request.params.id, request.body?.archived, { workspaces: bootstrap.workspaces });
   });
 
+  app.patch("/api/worktree-dashboard/repositories/:id/favorite", async (request) => {
+    const bootstrap = await loadBootstrap();
+    return worktrees.setRepositoryFavorite(request.params.id, request.body?.favorite, { workspaces: bootstrap.workspaces });
+  });
+
   // A round says nothing for minutes. This carries its live steps to the sheet
   // that started it, keyed by a trace id the client made before it posted.
   const progressReporter = (traceId) => (
@@ -352,16 +364,38 @@ export async function buildApp({
     }
   }
 
-  app.post("/api/worktree-plans", async (request, reply) => (
-    reply.code(201).send(await reportRound(request.body?.traceId, (onEvent) => (
-      planner.start({ repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, onEvent })
-    )))
-  ));
+  // A background round answers as soon as the plan row exists, so the sheet is
+  // free to close and the next goal can start at once. The round then streams on
+  // its own plan id. The synchronous path stays for callers that want the round.
+  app.post("/api/worktree-plans", async (request, reply) => {
+    const goal = { repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, engine: request.body?.engine };
+    if (request.body?.background === true) return reply.code(202).send(await planner.startBackground(goal));
+    return reply.code(201).send(await reportRound(request.body?.traceId, (onEvent) => planner.start({ ...goal, onEvent })));
+  });
 
-  app.post("/api/worktree-plans/:planId/answers", async (request) => (
-    reportRound(request.body?.traceId, (onEvent) => (
-      planner.answer(request.params.planId, { answers: request.body?.answers, skip: request.body?.skip === true, onEvent })
-    ))
+  app.post("/api/worktree-plans/:planId/answers", async (request, reply) => {
+    const submitted = { answers: request.body?.answers, skip: request.body?.skip === true };
+    if (request.body?.background === true) return reply.code(202).send(await planner.answerBackground(request.params.planId, submitted));
+    return reportRound(request.body?.traceId, (onEvent) => planner.answer(request.params.planId, { ...submitted, onEvent }));
+  });
+
+  // The reviewer rejected the split. This is a fresh planner round on the same
+  // plan, so it takes the same body limit as a PATCH: the prompt it builds
+  // quotes every rejected task back to the model.
+  app.post("/api/worktree-plans/:planId/feedback", { bodyLimit: 64 * 1024 }, async (request, reply) => {
+    const submitted = { text: request.body?.text };
+    if (request.body?.background === true) return reply.code(202).send(await planner.feedbackBackground(request.params.planId, submitted));
+    return reportRound(request.body?.traceId, (onEvent) => planner.feedback(request.params.planId, { ...submitted, onEvent }));
+  });
+
+  // Every round this process owns, so the dashboard can badge a running goal
+  // without opening its sheet.
+  app.get("/api/worktree-plans/runs", async () => planner.activeRuns());
+
+  // A companion restart kills the ccs child mid-round and leaves the plan at
+  // round zero. This starts its opening round again.
+  app.post("/api/worktree-plans/:planId/run", async (request, reply) => (
+    reply.code(202).send(await planner.run(request.params.planId))
   ));
 
   // EventSource cannot set an Authorization header, but it does send cookies,

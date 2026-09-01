@@ -1,17 +1,22 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { PLANNER_ENGINES, reviewerEngine } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
-// The same counter names the cmux group. Two copies of this predicate had
-// already drifted, so the sheet read "1 of 2 ready" while the group read 1/1.
+// One shared predicate: two copies had already drifted, so the sheet read
+// "1 of 2 ready" while the group read 1/1.
 import { readyCount } from "../server/goal-integrator.mjs";
+import { PromptDisclosure } from "./prompt-markdown";
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
 export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; launchStatus?: string; deliveryStatus?: string };
 export type PlanImage = { path: string; name: string };
-export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; issueNumbers?: number[]; deliveryMode?: "single" | "combined"; deliveryStatus?: string; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; createdAt: string; updatedAt: string; launchedAt: string | null };
-export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
+export type PlanRun = { planId: string; kind: string; phase: "running" | "done" | "failed"; step: string; error: string; startedAt: number; finishedAt: number | null };
+export type PlannerProvider = "claude" | "codex";
+export type PlannerEngine = { provider: PlannerProvider; model: string; effort: string; reviewer: boolean };
+export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; issueNumbers?: number[]; deliveryMode?: "single" | "combined"; deliveryStatus?: string; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; createdAt: string; updatedAt: string; launchedAt: string | null };
+export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
 export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed"; path?: string | null; workspace?: unknown; error?: string };
 export type PlanLaunchResult = { planId: string; base: string; deliveryMode?: "single" | "combined"; launched: number; results: PlanLaunchRow[] };
 type DeliveryResult = { planId: string; deliveryMode: "combined"; deliveryStatus: string; integrationBranch?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null };
@@ -21,26 +26,34 @@ const LOST_SESSION = "The planner lost its session";
 const AGENTS: PlanAgent[] = ["codex", "claude"];
 
 function agentLabel(agent: string) { return agent === "claude" ? "Claude" : "Codex"; }
+function modelLabel(provider: PlannerProvider, model: string) { return PLANNER_ENGINES.providers[provider].models.find((option) => option.id === model)?.label || model; }
 
 // The sheet is a leaf with no socket in scope, so it opens its own stream. The
-// trace id exists before the request because round one, the slow one, has no
-// plan id until it finishes.
-function usePlannerProgress(traceId: string) {
+// round now runs in the background and streams on the plan id, which the server
+// writes before the round starts, so a reopened sheet rejoins the same stream.
+//
+// `onEnd` fires on the "done" and "error" frames, which is how the sheet learns
+// that a round it did not await has finished.
+function usePlannerProgress(planId: string, onEnd?: () => void) {
   const [steps, setSteps] = useState<string[]>([]);
+  // The callback closes over the draft, so it changes on every render. The ref
+  // keeps the stream from tearing down and losing its replayed steps.
+  const endRef = useRef(onEnd);
+  useEffect(() => { endRef.current = onEnd; }, [onEnd]);
   useEffect(() => {
-    if (!traceId || typeof EventSource === "undefined") return;
-    const source = new EventSource(`/api/worktree-plans/progress/${traceId}`);
+    if (!planId || typeof EventSource === "undefined") return;
+    const source = new EventSource(`/api/worktree-plans/progress/${planId}`);
     source.onmessage = (message) => {
       try {
         const event = JSON.parse(message.data);
-        if (event.k === "done" || event.k === "error") { source.close(); return; }
+        if (event.k === "done" || event.k === "error") { source.close(); endRef.current?.(); return; }
         if (event.t) setSteps((current) => [...current, String(event.t)].slice(-8));
       } catch { /* a malformed frame is not worth failing the sheet over */ }
     };
     // EventSource retries on its own, and the replay buffer refills the list.
     source.onerror = () => {};
     return () => source.close();
-  }, [traceId]);
+  }, [planId]);
   return [steps, setSteps] as const;
 }
 
@@ -48,10 +61,9 @@ function usePlannerProgress(traceId: string) {
 // them back on demand, so a user can check eight tasks against what they asked.
 function ContextReview({ goal, images }: { goal: string; images: { path: string; name: string; preview?: string }[] }) {
   if (!goal.trim() && !images.length) return null;
-  return <details className="planner-prompt planner-context"><summary aria-label="Your goal and attachments">Your goal{images.length ? ` · ${images.length} image${images.length === 1 ? "" : "s"}` : ""}</summary>
-    <p>{goal}</p>
+  return <div className="planner-context"><PromptDisclosure label="Your goal and attachments" summary={<>Your goal{images.length ? ` · ${images.length} image${images.length === 1 ? "" : "s"}` : ""}</>} text={goal}>
     <AttachmentReview attachments={images} />
-  </details>;
+  </PromptDisclosure></div>;
 }
 
 function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string }) {
@@ -64,9 +76,6 @@ function DeliveryTasks({ tasks }: { tasks: PlanTask[] }) {
   return <><p className="planner-delivery-count">{ready} of {total} branches ready</p><ul className="planner-delivery-tasks" aria-label="Task delivery">{tasks.map((task) => { const state = taskState(task); return <li key={task.id}><span>{task.title}</span><code>{task.branch}</code><em className={`delivery-${state.toLowerCase().replace(/\s+/g, "-")}`}>{state}</em></li>; })}</ul></>;
 }
 
-function newTraceId() {
-  return typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : "";
-}
 function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
 function relativeTime(timestamp?: string) { const value = timestamp ? Date.parse(timestamp) : NaN; if (!Number.isFinite(value)) return "now"; const seconds = Math.max(0, Math.round((Date.now() - value) / 1000)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
 
@@ -79,20 +88,46 @@ function normalizedDraft(draft: PlanDraft): PlanDraft {
 
 export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, onLaunched, onNotice }: { repository: PlannerRepository; initialPlanId?: string; onClose: () => void; onLaunched: () => Promise<void>; onNotice: (message: string) => void }) {
   const [goal, setGoal] = useState("");
+  const [provider, setProvider] = useState<PlannerProvider>(PLANNER_ENGINES.defaultProvider as PlannerProvider);
+  const [model, setModel] = useState<string>(PLANNER_ENGINES.defaultModel);
+  const [effort, setEffort] = useState<string>(PLANNER_ENGINES.defaultEffort);
+  const [reviewer, setReviewer] = useState(false);
   const [draft, setDraft] = useState<PlanDraft | null>(null);
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [result, setResult] = useState<PlanLaunchResult | null>(null);
-  const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch" | "assemble">("");
+  const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch" | "assemble" | "feedback">("");
   const [openingPlanId, setOpeningPlanId] = useState("");
   const [deletingPlanId, setDeletingPlanId] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState("");
   const [error, setError] = useState("");
-  const [traceId, setTraceId] = useState("");
+  // The reviewer's rejection. It is cleared by receive(), so a finished round
+  // never leaves the previous complaint in the box.
+  const [feedback, setFeedback] = useState("");
+  const [rejecting, setRejecting] = useState(false);
   const { attachments, uploading, inputRef, addImages, pasteImages, removeImage } = useImageAttachments(onNotice);
-  const [steps, setSteps] = usePlannerProgress(traceId);
 
-  const receive = useCallback((next: PlanDraft) => { setDraft(normalizedDraft(next)); setResult(null); setAnswers({}); setError(""); }, []);
+  const receive = useCallback((next: PlanDraft) => { setDraft(normalizedDraft(next)); setResult(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); }, []);
+
+  // The round is no longer awaited, so the sheet reloads the plan when its
+  // progress stream closes. That is what turns the live steps into a question
+  // list or a task list.
+  const reload = useCallback(async (planId: string) => {
+    try { receive(await request<PlanDraft>(`/api/worktree-plans/${encodeURIComponent(planId)}`)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not read the finished round"); }
+  }, [receive]);
+
+  const running = draft?.running === true;
+  const [steps, setSteps] = usePlannerProgress(running ? draft.planId : "", () => { if (draft) void reload(draft.planId); });
+
+  // The "done" frame is the fast path. This poll is the safety net for the
+  // reopened sheet whose round ended while no stream was attached.
+  useEffect(() => {
+    if (!running || !draft) return;
+    const planId = draft.planId;
+    const poll = setInterval(() => { void reload(planId); }, 7_000);
+    return () => clearInterval(poll);
+  }, [running, draft, reload]);
 
   const fail = useCallback((cause: unknown, fallback: string) => {
     const message = cause instanceof Error ? cause.message : fallback;
@@ -134,26 +169,46 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
 
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
-    setGoal(""); setDraft(null); setResult(null); setAnswers({}); setError(""); setConfirmDeleteId("");
+    setGoal(""); setDraft(null); setResult(null); setAnswers({}); setError(""); setConfirmDeleteId(""); setFeedback(""); setRejecting(false);
     void loadPlans();
   }
 
+  // The round runs in the background, so this answers as soon as the plan row
+  // exists. From that point the sheet may close, and the goal keeps planning.
   async function plan(event: FormEvent) {
     event.preventDefault();
-    const trace = newTraceId();
-    setBusy("plan"); setError(""); setSteps([]); setTraceId(trace);
-    try { receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), traceId: trace }) })); }
+    setBusy("plan"); setError(""); setSteps([]);
+    try { receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, background: true }) })); }
     catch (cause) { fail(cause, "Could not plan this goal"); }
-    finally { setBusy(""); setTraceId(""); }
+    finally { setBusy(""); }
   }
 
   async function answer(body: Record<string, unknown>) {
     if (!draft) return;
-    const trace = newTraceId();
-    setBusy("answer"); setError(""); setSteps([]); setTraceId(trace);
-    try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/answers`, { method: "POST", body: JSON.stringify({ ...body, traceId: trace }) })); }
+    setBusy("answer"); setError(""); setSteps([]);
+    try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/answers`, { method: "POST", body: JSON.stringify({ ...body, background: true }) })); }
     catch (cause) { fail(cause, "Could not send those answers"); }
-    finally { setBusy(""); setTraceId(""); }
+    finally { setBusy(""); }
+  }
+
+  // The reviewer rejected the split. This starts a fresh planner round on the
+  // same plan, so it behaves exactly like an answer: background, streamed, and
+  // reloaded when the round ends.
+  async function reject() {
+    if (!draft || !feedback.trim()) return;
+    setBusy("feedback"); setError(""); setSteps([]);
+    try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/feedback`, { method: "POST", body: JSON.stringify({ text: feedback.trim(), background: true }) })); }
+    catch (cause) { fail(cause, "Could not send that feedback"); }
+    finally { setBusy(""); }
+  }
+
+  // A companion restart leaves a plan at round zero with no round to watch.
+  async function rerun() {
+    if (!draft) return;
+    setBusy("plan"); setError(""); setSteps([]);
+    try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/run`, { method: "POST", body: "{}" })); }
+    catch (cause) { fail(cause, "Could not start this round again"); }
+    finally { setBusy(""); }
   }
 
   async function editTasks(tasks: PlanTask[]) {
@@ -195,7 +250,16 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   const failed = result?.results.filter((row) => row.status === "failed") || [];
   const canRetry = Boolean(result) && result?.launched === 0;
   const launchedPlan = draft?.planStatus === "launched";
-  const heading = result ? "Launch result" : launchedPlan ? "Launched goal" : draft?.status === "ready" ? "Review the plan" : draft ? "A few questions" : "Plan a goal";
+  // A round that never finished: the plan exists, no round is watching it, and
+  // it holds neither a question nor a task. A companion restart does this.
+  const stalled = Boolean(draft && !running && !launchedPlan && draft.round === 0 && !draft.questions.length && !draft.tasks.length);
+  const heading = result ? "Launch result" : running ? "Planning this goal" : stalled ? "Planning stopped" : launchedPlan ? "Launched goal" : draft?.status === "ready" ? "Review the plan" : draft ? "A few questions" : "Plan a goal";
+  // Every action on a plan needs its ccs session, and one round already owns it.
+  const locked = running || busy !== "";
+  const providerOptions = PLANNER_ENGINES.providers[provider];
+  const reviewerConfig = reviewerEngine(provider);
+  const reviewerProvider = reviewerConfig.provider as PlannerProvider;
+  const reviewerOptions = PLANNER_ENGINES.providers[reviewerProvider];
 
   // A goal takes minutes to write and a round takes minutes to answer, so a
   // mis-tap outside the sheet must not throw both away. The header button and
@@ -205,40 +269,68 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     {(draft || result) && <button type="button" className="planner-new-goal" disabled={busy !== ""} onClick={newGoal}>← New goal</button>}
     {!draft && !result && <>
       {plans.length > 0 && <section className="planner-saved" aria-label="Saved goals"><strong>Saved goals</strong><div>{plans.map((saved) => <article className="planner-saved-row" key={saved.planId}>
-        <div className="planner-saved-copy"><div><p>{saved.goal}</p><span className={`planner-status ${saved.status}`}>{saved.status === "draft" ? "Draft" : "Launched"}</span></div><small>round {saved.round} · {saved.taskCount} task{saved.taskCount === 1 ? "" : "s"} · {relativeTime(saved.updatedAt)}</small></div>
-        {confirmDeleteId === saved.planId ? <div className="planner-delete-confirm"><button type="button" disabled={deletingPlanId === saved.planId} aria-label={`Cancel deleting ${saved.goal}`} onClick={() => setConfirmDeleteId("")}>Cancel</button><button type="button" className="confirm-delete" disabled={deletingPlanId === saved.planId} aria-label={`Confirm delete ${saved.goal}`} onClick={() => { void deletePlan(saved.planId); }}>{deletingPlanId === saved.planId ? "Deleting…" : "Confirm delete"}</button></div> : <div className="planner-saved-actions"><button type="button" className="planner-open-plan" disabled={openingPlanId !== "" || deletingPlanId !== ""} aria-label={`${saved.status === "draft" ? "Resume" : "View"} ${saved.goal}`} onClick={() => { void openPlan(saved.planId); }}>{openingPlanId === saved.planId ? "Opening…" : saved.status === "draft" ? "Resume" : "View"}</button><button type="button" className="planner-delete-plan" disabled={openingPlanId !== "" || deletingPlanId !== ""} aria-label={`Delete ${saved.goal}`} onClick={() => setConfirmDeleteId(saved.planId)}>Delete</button></div>}
+        <div className="planner-saved-copy"><div><p>{saved.goal}</p><span className={`planner-status ${saved.running ? "running" : saved.status}`}>{saved.running ? "Planning…" : saved.status === "draft" ? "Draft" : "Launched"}</span></div><small>{saved.running && saved.runStep ? saved.runStep : `round ${saved.round} · ${saved.taskCount} task${saved.taskCount === 1 ? "" : "s"} · ${relativeTime(saved.updatedAt)}`}</small></div>
+        {confirmDeleteId === saved.planId ? <div className="planner-delete-confirm"><button type="button" disabled={deletingPlanId === saved.planId} aria-label={`Cancel deleting ${saved.goal}`} onClick={() => setConfirmDeleteId("")}>Cancel</button><button type="button" className="confirm-delete" disabled={deletingPlanId === saved.planId} aria-label={`Confirm delete ${saved.goal}`} onClick={() => { void deletePlan(saved.planId); }}>{deletingPlanId === saved.planId ? "Deleting…" : "Confirm delete"}</button></div> : <div className="planner-saved-actions"><button type="button" className="planner-open-plan" disabled={openingPlanId !== "" || deletingPlanId !== ""} aria-label={`${saved.status === "draft" ? "Resume" : "View"} ${saved.goal}`} onClick={() => { void openPlan(saved.planId); }}>{openingPlanId === saved.planId ? "Opening…" : saved.status === "draft" ? "Resume" : "View"}</button><button type="button" className="planner-delete-plan" disabled={openingPlanId !== "" || deletingPlanId !== "" || saved.running === true} aria-label={`Delete ${saved.goal}`} onClick={() => setConfirmDeleteId(saved.planId)}>Delete</button></div>}
       </article>)}</div></section>}
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
+      <section className="planner-engine-config" aria-label="Planner configuration">
+        <header><strong>Planner</strong><span>{providerOptions.label} ({providerOptions.family}) · {model === PLANNER_ENGINES.defaultModel ? "CCS default model" : modelLabel(provider, model)}</span></header>
+        <div className="planner-engine-controls">
+          <label><span>Engine</span><select aria-label="Planner engine" value={provider} onChange={(event) => { setProvider(event.target.value as PlannerProvider); setModel(PLANNER_ENGINES.defaultModel); }}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+          <label><span>Model</span><select aria-label="Planner model" value={model} onChange={(event) => setModel(event.target.value)}>{providerOptions.models.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+          <label><span>Effort</span><select aria-label="Planner effort" value={effort} onChange={(event) => setEffort(event.target.value)}>{PLANNER_ENGINES.efforts.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+        </div>
+        <label className="planner-reviewer-toggle"><input type="checkbox" aria-label="Add a reviewer pass" checked={reviewer} onChange={(event) => setReviewer(event.target.checked)} /><span>Add a reviewer pass</span></label>
+        {reviewer && <p className="planner-reviewer-identity">Reviewer: {reviewerOptions.label} ({reviewerOptions.family}) · {modelLabel(reviewerProvider, reviewerConfig.model)} · {reviewerConfig.effort} effort</p>}
+      </section>
       {error && <p className="worktree-action-error">{error}</p>}
-      {busy === "plan" && <ProgressSteps steps={steps} waiting="Reading the repository. The first round is the slowest, because it starts a fresh session." />}
+      {busy === "plan" && <p className="planner-waiting">Starting the round…</p>}
       <div className="worktree-launch-actions"><ImagePickerButton attachments={attachments} disabled={busy === "plan" || uploading > 0} inputRef={inputRef} label="Choose goal images" onFiles={(files) => { void addImages(files); }} /><button type="button" className="primary-button" disabled={busy === "plan" || uploading > 0 || !goal.trim()} onClick={plan}>{busy === "plan" ? "Planning…" : uploading ? `Uploading ${uploading}…` : "Plan this goal"}</button></div>
     </>}
-    {draft && !result && draft.status === "questions" && <>
+    {draft && !result && running && <section className="planner-running" aria-label="Planning in progress">
+      <ContextReview goal={reviewGoal} images={reviewImages} />
+      <ProgressSteps steps={steps} waiting={draft.round === 0 ? "Reading the repository. The first round is the slowest, because it starts a fresh session." : "Thinking about your answers."} />
+      <p className="planner-background-note">This round runs on the companion, not in this sheet. Close it and plan another goal. A notification arrives when this one is ready.</p>
+      <div className="planner-actions"><button type="button" onClick={onClose}>Close and keep planning</button></div>
+    </section>}
+    {draft && !result && stalled && <section className="planner-stalled" aria-label="Planning stopped">
+      <ContextReview goal={reviewGoal} images={reviewImages} />
+      <p className="planner-background-note">This round stopped before it produced anything. A companion restart does this. The goal is saved, so it can run again.</p>
+      {error && <p className="worktree-action-error">{error}</p>}
+      <div className="planner-actions"><button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void rerun(); }}>{busy === "plan" ? "Starting…" : "Plan this goal again"}</button></div>
+    </section>}
+    {draft && !result && !running && !stalled && draft.status === "questions" && <>
       <p className="planner-round">Round {draft.round}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <div className="planner-questions">{draft.questions.map((question) => <div className="planner-question" key={question.id}>
         <label><span>{question.text}</span><textarea aria-label={question.text} value={answers[question.id] || ""} readOnly={launchedPlan} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} rows={2} maxLength={2_000} /></label>
         {question.options.length > 0 && <div className="planner-options">{question.options.map((option) => <button type="button" key={option} aria-label={`Answer ${question.text} with ${option}`} className={answers[question.id] === option ? "selected" : ""} disabled={launchedPlan} onClick={() => setAnswers((current) => ({ ...current, [question.id]: option }))}>{option}</button>)}</div>}
       </div>)}</div>
-      {busy === "answer" && <ProgressSteps steps={steps} waiting="Thinking about your answers." />}
       {error && <p className="worktree-action-error">{error}</p>}
-      {launchedPlan ? <p className="planner-launched-note">This goal was already launched. Its questions and answers are read-only.</p> : <div className="planner-actions"><button type="button" disabled={busy === "answer"} onClick={() => answer({ skip: true })}>Skip questions</button><button type="button" className="primary-button" disabled={busy === "answer"} onClick={() => answer({ answers: draft.questions.map((question) => ({ id: question.id, text: answers[question.id] || "" })).filter((entry) => entry.text.trim()) })}>{busy === "answer" ? "Sending…" : "Answer"}</button></div>}
+      {launchedPlan ? <p className="planner-launched-note">This goal was already launched. Its questions and answers are read-only.</p> : <div className="planner-actions"><button type="button" disabled={locked} onClick={() => answer({ skip: true })}>Skip questions</button><button type="button" className="primary-button" disabled={locked} onClick={() => answer({ answers: draft.questions.map((question) => ({ id: question.id, text: answers[question.id] || "" })).filter((entry) => entry.text.trim()) })}>{busy === "answer" ? "Sending…" : "Answer"}</button></div>}
     </>}
-    {draft && !result && draft.status === "ready" && <>
+    {draft && !result && !running && !stalled && draft.status === "ready" && <>
       <p className="planner-round">Round {draft.round} · {draft.tasks.length} task{draft.tasks.length === 1 ? "" : "s"}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />
       {draft.tasks.length > 1 && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Task agents commit and push isolated branches. Companion pins their commits and starts a merge agent that resolves conflicts, verifies against a baseline, and opens one pull request.</p></section>}
       <div className="planner-tasks">{draft.tasks.map((task) => <article className="planner-task" key={task.id}>
-        <header><strong>{task.title}</strong>{!launchedPlan && <button type="button" className="planner-remove-task" aria-label={`Remove ${task.title}`} disabled={busy === "edit" || draft.tasks.length < 2} onClick={() => editTasks(draft.tasks.filter((item) => item.id !== task.id))}>×</button>}</header>
+        <header><strong>{task.title}</strong>{!launchedPlan && <button type="button" className="planner-remove-task" aria-label={`Remove ${task.title}`} disabled={locked || draft.tasks.length < 2} onClick={() => editTasks(draft.tasks.filter((item) => item.id !== task.id))}>×</button>}</header>
         <code className="planner-branch">{task.branch}</code>
-        <div className="planner-agent" role="group" aria-label={`Agent for ${task.title}`}>{AGENTS.map((option) => <button type="button" key={option} aria-label={`Use ${agentLabel(option)} for ${task.title}`} aria-pressed={task.agent === option} className={task.agent === option ? "selected" : ""} disabled={busy === "edit" || launchedPlan} onClick={() => editTasks(draft.tasks.map((item) => item.id === task.id ? { ...item, agent: option } : item))}>{agentLabel(option)}</button>)}</div>
+        <div className="planner-agent" role="group" aria-label={`Agent for ${task.title}`}>{AGENTS.map((option) => <button type="button" key={option} aria-label={`Use ${agentLabel(option)} for ${task.title}`} aria-pressed={task.agent === option} className={task.agent === option ? "selected" : ""} disabled={locked || launchedPlan} onClick={() => editTasks(draft.tasks.map((item) => item.id === task.id ? { ...item, agent: option } : item))}>{agentLabel(option)}</button>)}</div>
         <small className="planner-agent-reason">{task.agentReason}</small>
-        <details className="planner-prompt"><summary aria-label={`Prompt for ${task.title}`}>Prompt</summary><p>{task.prompt}</p></details>
+        <PromptDisclosure label={`Prompt for ${task.title}`} summary="Prompt" text={task.prompt} />
       </article>)}</div>
       {busy === "launch" && <p className="planner-waiting">Creating worktrees and starting sessions. This can take a minute.</p>}
+      {!launchedPlan && <section className="planner-reject" aria-label="Reject this plan">
+        {rejecting ? <>
+          <label><span>What is wrong with this split?</span><textarea aria-label="What is wrong with this split?" value={feedback} onChange={(event) => setFeedback(event.target.value)} rows={3} maxLength={2_000} placeholder="Tasks 2 and 3 touch the same file, so they cannot run in parallel…" /></label>
+          <p>This starts a new planner round. It replaces every task above with a fresh split.</p>
+          <div className="planner-actions"><button type="button" disabled={locked} onClick={() => { setRejecting(false); setFeedback(""); }}>Cancel</button><button type="button" className="primary-button" disabled={locked || !feedback.trim()} onClick={() => { void reject(); }}>{busy === "feedback" ? "Sending…" : "Analyse this goal again"}</button></div>
+        </> : <button type="button" className="planner-reject-open" disabled={locked} onClick={() => setRejecting(true)}>This plan is wrong</button>}
+      </section>}
       {error && <p className="worktree-action-error">{error}</p>}
-      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
+      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
     </>}
     {result && <>
       <p className="planner-round">Branched from <code>{result.base}</code> · {result.launched} of {result.results.length} started</p>

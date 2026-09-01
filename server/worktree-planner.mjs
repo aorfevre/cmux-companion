@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
+import { PlannerRuns } from "./planner-runs.mjs";
+import { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs";
+
+export { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs";
 
 // promisify(execFile) buffers to completion, so nothing can be reported while
 // the model is still thinking. spawn resolves the same shape and rejects with
@@ -88,6 +92,7 @@ function quoted(value) {
 class PlannerRunError extends TypeError {}
 
 const UNUSABLE = "The planner returned an unusable answer. Try again";
+const BUSY = "This goal is planning right now. Wait for the round to finish";
 
 export function parsePlannerReply(stdout) {
   const envelope = extractJson(String(stdout));
@@ -260,6 +265,35 @@ const MAX_TASKS = 8;
 const MAX_IMAGES = 4;
 const MAX_DRAFTS = 50;
 
+export function normalizePlannerEngine(engine) {
+  if (engine === undefined) return {
+    provider: PLANNER_ENGINES.defaultProvider,
+    model: PLANNER_ENGINES.defaultModel,
+    effort: PLANNER_ENGINES.defaultEffort,
+    reviewer: false,
+  };
+  if (!engine || typeof engine !== "object" || Array.isArray(engine)) {
+    throw new TypeError("Planner engine configuration must be an object");
+  }
+  const provider = engine.provider ?? PLANNER_ENGINES.defaultProvider;
+  if (typeof provider !== "string" || !Object.hasOwn(PLANNER_ENGINES.providers, provider)) {
+    throw new TypeError("Unknown planner provider. Choose Claude or Codex");
+  }
+  const providerOptions = PLANNER_ENGINES.providers[provider];
+  const model = engine.model ?? PLANNER_ENGINES.defaultModel;
+  if (!providerOptions.models.some((option) => option.id === model)) {
+    throw new TypeError(`Unknown ${providerOptions.label} planner model`);
+  }
+  const effort = engine.effort ?? PLANNER_ENGINES.defaultEffort;
+  if (!PLANNER_ENGINES.efforts.some((option) => option.id === effort)) {
+    throw new TypeError("Unknown planner effort. Choose Default, Low, Medium, High, or Xhigh");
+  }
+  if (engine.reviewer !== undefined && typeof engine.reviewer !== "boolean") {
+    throw new TypeError("The reviewer setting must be on or off");
+  }
+  return { provider, model, effort, reviewer: engine.reviewer === true };
+}
+
 // ccs draws its errors as a box: ANSI colour, border glyphs, a blank padded
 // line between every sentence, and a bare docs URL last. Taking the last stderr
 // line therefore reported only the URL. Strip the frame, then keep the words.
@@ -285,7 +319,7 @@ export function describeRunFailure(stderr) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null, runs = null, progress = null, pushService = null } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
@@ -301,10 +335,25 @@ export class WorktreePlanner {
     // The database owns every plan. The map is only a hot cache in front of it,
     // so a companion restart loses no goal, no session and no task list.
     this.store = store;
+    // A background round outlives its request, so the registry, not the request
+    // cycle, is what says whether a plan is busy.
+    this.runs = runs || new PlannerRuns();
+    // The same hub the synchronous rounds publish to. A background round keys
+    // its stream on the plan id, which exists before the round starts.
+    this.progress = progress;
+    this.pushService = pushService;
     this.drafts = new Map();
   }
 
-  async start({ repositoryId, goal, images, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
+  async start({ repositoryId, goal, images, engine, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
+    const draft = await this.#createDraft({ repositoryId, goal, images, engine, issueNumbers, issueUrls, deliveryPolicy });
+    return this.#round(draft, openingPrompt(draft), onEvent);
+  }
+
+  // The row is written before the round runs, so a plan id exists the moment a
+  // goal is submitted. That id is what the progress stream, the goal card and
+  // the notification all key on.
+  async #createDraft({ repositoryId, goal, images, engine, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
     const text = String(goal || "").trim();
     if (!text) throw new TypeError("Describe the goal for this repository");
     if (text.length > 4_000) throw new TypeError("That goal is too long");
@@ -312,6 +361,7 @@ export class WorktreePlanner {
     const linkedIssues = normalizeIssueNumbers(issueNumbers);
     const linkedIssueUrls = normalizeIssueUrls(issueUrls);
     const normalizedDeliveryPolicy = deliveryPolicy === "combined" ? "combined" : "auto";
+    const normalizedEngine = normalizePlannerEngine(engine);
     const repository = await this.#repository(repositoryId);
     const draft = {
       planId: randomUUID(),
@@ -324,6 +374,7 @@ export class WorktreePlanner {
       issueNumbers: linkedIssues,
       issueUrls: linkedIssueUrls,
       deliveryPolicy: normalizedDeliveryPolicy,
+      engine: normalizedEngine,
       sessionId: null,
       round: 0,
       at: Date.now(),
@@ -348,26 +399,155 @@ export class WorktreePlanner {
       issueNumbers: draft.issueNumbers,
       issueUrls: draft.issueUrls,
       deliveryPolicy: draft.deliveryPolicy,
+      engine: draft.engine,
     }), draft.planId, "create");
-    return this.#round(draft, openingPrompt(draft), onEvent);
+    return draft;
+  }
+
+  // The background entry point. It answers as soon as the row exists, and the
+  // round runs on after the request has ended. The caller gets a plan id it can
+  // watch, resume and delete, so the sheet is free to close.
+  async startBackground({ repositoryId, goal, images, engine, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
+    const draft = await this.#createDraft({ repositoryId, goal, images, engine, issueNumbers, issueUrls, deliveryPolicy });
+    this.#detach(draft, openingPrompt(draft), "plan");
+    return { ...publicDraft(draft), running: true };
+  }
+
+  // A background answer round. The plan already exists, so this only starts the
+  // round and returns the draft as it stands.
+  async answerBackground(planId, { answers = [], skip = false } = {}) {
+    const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
+    if (draft.round >= this.maxRounds) {
+      throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
+    }
+    const { prompt, pairs } = answerRound(draft, answers, skip);
+    this.#detach(draft, prompt, "answer", { answers: pairs, skipped: skip });
+    return { ...publicDraft(draft), running: true };
+  }
+
+  // The reviewer read the split and rejected it. This is a new round on the same
+  // plan, not an edit: the planner has to think again, so it goes through
+  // #round exactly like an answer round does.
+  async feedback(planId, { text, onEvent = null } = {}) {
+    const { draft, note } = await this.#rejection(planId, text);
+    return this.#round(draft, feedbackRound(draft, note), onEvent, { feedback: note });
+  }
+
+  // The background twin. It answers as soon as the round is registered, so the
+  // sheet can close while the planner reconsiders the split.
+  async feedbackBackground(planId, { text } = {}) {
+    const { draft, note } = await this.#rejection(planId, text);
+    this.#detach(draft, feedbackRound(draft, note), "feedback", { feedback: note });
+    return { ...publicDraft(draft), running: true };
+  }
+
+  // Both feedback paths refuse the same four things, and they must refuse them
+  // identically: the sheet shows whichever sentence comes back.
+  async #rejection(planId, text) {
+    const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
+    // A rejection costs a round, so it obeys the same cap as an answer round.
+    if (draft.round >= this.maxRounds) {
+      throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
+    }
+    return { draft, note: feedbackNote(draft, text) };
+  }
+
+  // A companion restart kills the ccs child, so a plan can be left at round 0
+  // with no questions and no tasks. This runs its opening prompt again.
+  async run(planId) {
+    const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
+    if (draft.round > 0) throw new TypeError("This goal already has a plan round. Answer it instead");
+    this.#detach(draft, openingPrompt(draft), "plan");
+    return { ...publicDraft(draft), running: true };
+  }
+
+  // Nothing awaits the round, so every outcome must be handled here: the
+  // registry records it, the progress stream closes, and one notification goes
+  // out. An unhandled rejection would take the whole companion down.
+  #detach(draft, prompt, kind, submitted = null) {
+    const planId = draft.planId;
+    this.runs.begin(planId, kind);
+    const onEvent = (event) => {
+      this.progress?.publish(planId, event);
+      if (event?.t) this.runs.step(planId, event.t);
+    };
+    Promise.resolve()
+      .then(() => this.#round(draft, prompt, onEvent, submitted))
+      .then((result) => {
+        this.progress?.publish(planId, { k: "done" });
+        this.runs.finish(planId, { phase: "done" });
+        this.#notifyRound(draft, result);
+      })
+      .catch((cause) => {
+        const message = cause?.message || "The planner round failed";
+        this.log?.warn?.({ err: cause, planId }, "background planner round failed");
+        this.progress?.publish(planId, { k: "error", t: message });
+        this.runs.finish(planId, { phase: "failed", error: message });
+        this.#notifyFailure(draft, message);
+      });
+  }
+
+  #notifyRound(draft, result) {
+    const questions = result?.status === "questions";
+    void this.#push({
+      title: questions ? "A goal needs your answers" : "A goal plan is ready",
+      body: questions
+        ? `Round ${result.round}: ${result.questions.length} question${result.questions.length === 1 ? "" : "s"} about “${shortGoal(draft.goal)}”`
+        : `${result.tasks.length} task${result.tasks.length === 1 ? "" : "s"} ready to launch for “${shortGoal(draft.goal)}”`,
+      kind: questions ? "attention" : "completion",
+      planId: draft.planId,
+    });
+  }
+
+  #notifyFailure(draft, message) {
+    void this.#push({
+      title: "A goal plan failed",
+      body: `“${shortGoal(draft.goal)}”: ${message}`,
+      kind: "failure",
+      planId: draft.planId,
+    });
+  }
+
+  // A notification is the least important part of a round. It must never turn a
+  // finished plan into a failed one.
+  async #push(payload) {
+    try {
+      await this.pushService?.send({ ...payload, tag: `cmux-plan-${payload.planId}` });
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, planId: payload.planId }, "planner notification failed");
+    }
+  }
+
+  // One ccs session id belongs to one plan, so two rounds at once on the same
+  // plan would corrupt it. Different plans are free to run together.
+  #assertIdle(planId) {
+    if (this.runs.isRunning(planId)) throw new TypeError(BUSY);
+  }
+
+  isRunning(planId) {
+    return this.runs.isRunning(planId);
+  }
+
+  activeRuns() {
+    return { runs: this.runs.list() };
   }
 
   async answer(planId, { answers = [], skip = false, onEvent = null } = {}) {
     const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
     if (draft.round >= this.maxRounds) {
       throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
     }
-    // Without a session the next spawn starts a fresh conversation, which has
-    // never seen the goal. An answer-only prompt then reads as a goal-less
-    // request, and the planner invents work from the working tree. Restate the
-    // whole opening context, so a resumed plan answers the real goal.
-    const pairs = skip ? [] : answeredPairs(draft, answers);
-    const prompt = draft.sessionId ? (skip ? SKIP_PROMPT : answerPrompt(draft, answers)) : restartPrompt(draft, pairs, skip);
+    const { prompt, pairs } = answerRound(draft, answers, skip);
     return this.#round(draft, prompt, onEvent, { answers: pairs, skipped: skip });
   }
 
   async update(planId, { tasks } = {}) {
     const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
     if (!Array.isArray(tasks) || !tasks.length) throw new TypeError("Keep at least one task");
     if (tasks.length > MAX_TASKS) throw new TypeError(`A plan can hold at most ${MAX_TASKS} tasks`);
     const next = tasks.map((task, index) => {
@@ -391,6 +571,7 @@ export class WorktreePlanner {
 
   async launch(planId) {
     const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
     if (draft.status !== "ready" || !draft.tasks.length) throw new TypeError("This plan is not ready to launch yet");
     const base = await this.#baseRef(draft);
     const repositoryPath = await this.#repositoryPath(draft);
@@ -473,17 +654,7 @@ export class WorktreePlanner {
   }
 
   async #round(draft, prompt, onEvent = null, submitted = null) {
-    let reply;
-    try {
-      reply = parsePlannerReply(await this.#spawn(draft, prompt, onEvent));
-    } catch (cause) {
-      // Retry an unusable reply once: a second sample often parses. Never retry
-      // a subprocess failure, because a second launch cannot fix it.
-      if (cause instanceof PlannerRunError || !(cause instanceof TypeError)) throw cause;
-      // The retry repeats the same tool calls, so say why the list restarts.
-      emit(onEvent, { k: "text", t: "Retrying…" });
-      reply = parsePlannerReply(await this.#spawn(draft, prompt, onEvent));
-    }
+    const reply = await this.#reply(draft, prompt, draft.engine, draft.sessionId, onEvent);
     draft.round += 1;
     draft.at = Date.now();
     if (reply.sessionId) draft.sessionId = reply.sessionId;
@@ -493,7 +664,14 @@ export class WorktreePlanner {
     }
     draft.status = reply.status;
     draft.questions = reply.questions;
-    draft.tasks = reply.status === "ready" ? assignAgents(reply.tasks, await this.#usage()) : [];
+    let tasks = reply.tasks;
+    if (reply.status === "ready" && draft.engine.reviewer) {
+      const reviewer = reviewerEngine(draft.engine.provider);
+      emit(onEvent, { k: "text", t: `Reviewing with ${PLANNER_ENGINES.providers[reviewer.provider].label}…` });
+      const reviewed = await this.#reply(draft, reviewerPrompt(draft, tasks), reviewer, null, onEvent, true);
+      tasks = reviewed.tasks;
+    }
+    draft.tasks = reply.status === "ready" ? assignAgents(tasks, await this.#usage()) : [];
     this.#persist(() => this.store?.recordRound(draft.planId, {
       round: draft.round,
       stage: draft.status,
@@ -502,20 +680,40 @@ export class WorktreePlanner {
       tasks: draft.tasks,
       answers: submitted?.answers ?? null,
       skipped: submitted?.skipped === true,
+      feedback: submitted?.feedback ?? null,
     }), draft.planId, "round");
     return publicDraft(draft);
   }
 
-  async #spawn(draft, prompt, onEvent = null) {
+  async #reply(draft, prompt, engine, sessionId, onEvent, tasksOnly = false) {
+    const read = async () => {
+      const reply = parsePlannerReply(await this.#spawn(draft, prompt, engine, sessionId, onEvent));
+      if (tasksOnly && reply.status !== "ready") throw new TypeError("The reviewer did not return an improved plan");
+      return reply;
+    };
+    try {
+      return await read();
+    } catch (cause) {
+      // Retry an unusable reply once: a second sample often parses. Never retry
+      // a subprocess failure, because a second launch cannot fix it.
+      if (cause instanceof PlannerRunError || !(cause instanceof TypeError)) throw cause;
+      emit(onEvent, { k: "text", t: "Retrying…" });
+      return read();
+    }
+  }
+
+  async #spawn(draft, prompt, engine, sessionId, onEvent = null) {
     const args = [
       // stream-json is what makes live progress possible, and the CLI refuses
       // it under --print without --verbose.
-      "claude", "--print", "--output-format", "stream-json", "--verbose",
+      engine.provider, "--print", "--output-format", "stream-json", "--verbose",
       ...ISOLATION,
       "--allowed-tools", ALLOWED_TOOLS,
       "--disallowed-tools", DENIED_TOOLS,
     ];
-    if (draft.sessionId) args.push("--resume", draft.sessionId);
+    if (engine.model !== PLANNER_ENGINES.defaultModel) args.push("--model", engine.model);
+    if (engine.effort !== PLANNER_ENGINES.defaultEffort) args.push("--effort", engine.effort);
+    if (sessionId) args.push("--resume", sessionId);
     // `--` is required, not cosmetic: --allowed-tools is variadic, so without a
     // terminator the CLI swallows the prompt as another tool name.
     args.push("--", prompt);
@@ -525,7 +723,7 @@ export class WorktreePlanner {
         encoding: "utf8",
         // Round 1 starts a fresh session and reads the repository, so it is the
         // slowest. Later rounds resume and only pay for the new turn.
-        timeout: draft.sessionId ? this.timeoutMs : this.timeoutMs * 2,
+        timeout: sessionId ? this.timeoutMs : this.timeoutMs * 2,
         maxBuffer: 4 * 1024 * 1024,
         env: process.env,
         onLine: onEvent ? (line) => { const event = progressEvent(line); if (event) emit(onEvent, event); } : undefined,
@@ -574,22 +772,40 @@ export class WorktreePlanner {
   // Reload a plan into memory and return it, so a reopened sheet continues the
   // same ccs session rather than starting a new one.
   async resume(planId) {
-    return publicDraft(await this.#draft(planId));
+    const draft = await this.#draft(planId);
+    return { ...publicDraft(draft), running: this.runs.isRunning(draft.planId) };
   }
 
   // The stored view of a plan, including a launched one, with its event log.
   async detail(planId) {
     const stored = this.#read(() => this.store?.get(String(planId || "")));
     if (!stored) throw new TypeError("Unknown plan. Start a new goal");
-    return { ...stored, events: this.#read(() => this.store?.events(stored.planId)) || [] };
+    const run = this.runs.get(stored.planId);
+    return {
+      ...stored,
+      events: this.#read(() => this.store?.events(stored.planId)) || [],
+      running: this.runs.isRunning(stored.planId),
+      runPhase: run?.phase || null,
+      runStep: run?.step || "",
+      runError: run?.error || "",
+    };
   }
 
+  // A card needs to know that a plan is planning right now, and the run state
+  // lives only in this process, so the list carries it rather than the store.
   async list(options = {}) {
-    return { plans: this.#read(() => this.store?.list(options)) || [] };
+    const plans = this.#read(() => this.store?.list(options)) || [];
+    return {
+      plans: plans.map((plan) => {
+        const run = this.runs.get(plan.planId);
+        return { ...plan, running: this.runs.isRunning(plan.planId), runPhase: run?.phase || null, runStep: run?.step || "", runError: run?.error || "" };
+      }),
+    };
   }
 
   async remove(planId) {
     const id = String(planId || "");
+    this.#assertIdle(id);
     this.drafts.delete(id);
     const deleted = this.#read(() => this.store?.delete(id)) === true;
     if (!deleted) throw new TypeError("Unknown plan. Start a new goal");
@@ -626,6 +842,12 @@ function emit(onEvent, event) {
   try { onEvent?.(event); } catch { /* the round outlives its audience */ }
 }
 
+// A notification body has room for a phrase, not a four-thousand-character goal.
+function shortGoal(goal) {
+  const text = String(goal || "").replace(/\s+/g, " ").trim();
+  return text.length > 70 ? `${text.slice(0, 69)}…` : text;
+}
+
 function publicDraft(draft) {
   return {
     planId: draft.planId,
@@ -636,6 +858,7 @@ function publicDraft(draft) {
     issueNumbers: draft.issueNumbers || [],
     issueUrls: draft.issueUrls || [],
     deliveryPolicy: draft.deliveryPolicy || "auto",
+    engine: draft.engine || normalizePlannerEngine(),
     round: draft.round,
     status: draft.status,
     questions: draft.questions,
@@ -658,6 +881,7 @@ function draftFromStore(stored) {
     issueNumbers: Array.isArray(stored.issueNumbers) ? stored.issueNumbers : [],
     issueUrls: Array.isArray(stored.issueUrls) ? stored.issueUrls : [],
     deliveryPolicy: stored.deliveryPolicy === "combined" ? "combined" : "auto",
+    engine: normalizePlannerEngine(stored.engine),
     sessionId: stored.sessionId || null,
     round: Number(stored.round) || 0,
     at: Date.now(),
@@ -792,6 +1016,24 @@ function openingPrompt(draft) {
   ].join("\n");
 }
 
+function reviewerPrompt(draft, tasks) {
+  return [
+    `Repository: ${draft.repositoryName} at ${draft.cwd}`,
+    `Goal: ${draft.goal}`,
+    "",
+    "Critique the proposed plan against the repository and the goal. Fix omissions, overlap, dependencies, unsafe branch names, and prompts that are not self-contained. Return the improved tasks, even when the proposal was already sound.",
+    "",
+    "Proposed tasks:",
+    JSON.stringify({ tasks }),
+    "",
+    OVERRIDES,
+    "",
+    CONTRACT,
+    "",
+    "Return tasks, not questions.",
+  ].join("\n");
+}
+
 // A plan whose session is gone must carry its own context again: the goal, the
 // images, the questions already asked and the answers given. answerPrompt sends
 // the answers alone, which only works while the session still holds the goal.
@@ -802,6 +1044,67 @@ function restartPrompt(draft, pairs, skip) {
     "",
     history.length ? ["Answers already given for this goal:", "", ...history].join("\n") : "No answers were given yet.",
     ...(skip ? ["", SKIP_PROMPT] : []),
+  ].join("\n");
+}
+
+// Both answer paths, the awaited one and the background one, choose the prompt
+// here. Without a session the next spawn starts a fresh conversation, which has
+// never seen the goal. An answer-only prompt then reads as a goal-less request,
+// and the planner invents work from the working tree. Restate the whole opening
+// context, so a resumed plan answers the real goal.
+function answerRound(draft, answers, skip) {
+  const pairs = skip ? [] : answeredPairs(draft, answers);
+  const prompt = draft.sessionId ? (skip ? SKIP_PROMPT : answerPrompt(draft, answers)) : restartPrompt(draft, pairs, skip);
+  return { prompt, pairs };
+}
+
+// The reviewer's own words. They are validated the way a goal and an answer
+// are, so an empty box or a pasted document is refused with a sentence the
+// sheet can show rather than with a wasted planner round.
+function feedbackNote(draft, text) {
+  if (draft.status !== "ready" || !draft.tasks.length) {
+    throw new TypeError("This goal has no task split to reject yet. Answer its questions first");
+  }
+  const note = String(text || "").trim();
+  if (!note) throw new TypeError("Say what is wrong with this plan");
+  if (note.length > 2_000) throw new TypeError("That feedback is too long");
+  return note;
+}
+
+// The rejected split has to travel with the feedback. Without it the planner
+// revises a plan it cannot see, and it returns the same tasks again.
+function rejectedTasks(draft) {
+  return draft.tasks.map((task, index) => [
+    `${index + 1}. ${task.title}`,
+    `   branch: ${task.branch}`,
+    `   prompt: ${task.prompt}`,
+  ].join("\n"));
+}
+
+const FEEDBACK_HEADER = "The reviewer read your task split and rejected it. Analyse the goal again and return a better split.";
+
+// With a live session the planner still holds the goal and the tasks, so the
+// feedback alone is enough. Without one the next spawn is a fresh conversation,
+// so restate the whole opening context and the split being rejected, the same
+// way restartPrompt does for an answer round.
+function feedbackRound(draft, note) {
+  const rejection = [
+    FEEDBACK_HEADER,
+    "",
+    "Reviewer feedback:",
+    note,
+    "",
+    "Do not defend the previous split. Change it to answer this feedback: merge, split, drop or reword tasks as the feedback requires.",
+  ].join("\n");
+  if (draft.sessionId) return [rejection, "", CONTRACT].join("\n");
+  return [
+    openingPrompt(draft),
+    "",
+    "The split you returned before, which the reviewer rejected:",
+    "",
+    ...rejectedTasks(draft),
+    "",
+    rejection,
   ].join("\n");
 }
 

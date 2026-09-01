@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { normalizePullRequest, parsePorcelainV2 } from "./repo-catalog.mjs";
 import { RepositoryArchive } from "./repository-archive.mjs";
+import { RepositoryFavorites } from "./repository-favorites.mjs";
 
 const STATUS_PRIORITY = { ready: 0, done: 1, working: 2, attention: 3 };
 
@@ -40,20 +41,22 @@ export function countUpdaterArtifacts(output, artifacts = UPDATER_ARTIFACTS) {
 }
 
 export class WorktreeDashboard {
-  constructor({ repoCatalog, cacheMs = 5_000, pullRequestCacheMs = 30_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), managedReleaseRoots = defaultManagedReleaseRoots() } = {}) {
+  constructor({ repoCatalog, cacheMs = 5_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), repositoryFavorites = new RepositoryFavorites(), managedReleaseRoots = defaultManagedReleaseRoots() } = {}) {
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
     this.repoCatalog = repoCatalog;
     this.cacheMs = cacheMs;
-    this.pullRequestCacheMs = pullRequestCacheMs;
     this.canonicalize = canonicalize;
     this.repositoryArchive = repositoryArchive;
+    this.repositoryFavorites = repositoryFavorites;
     this.managedReleaseRoots = managedReleaseRoots.map((path) => resolve(path));
     this.cache = null;
     this.pullRequestCache = new Map();
+    this.pullRequestPending = new Map();
+    this.githubCheckedAt = null;
     this.targets = new Map();
   }
 
-  async snapshot({ workspaces = [], refresh = false } = {}) {
+  async snapshot({ workspaces = [], refresh = false, refreshGitHub = false } = {}) {
     const workspaceSignature = (workspaces || []).map((workspace) => [
       workspace.id,
       workspace.current_directory,
@@ -63,15 +66,16 @@ export class WorktreeDashboard {
       workspace.status?.signals?.any_agent_needs_input,
       workspace.status?.signals?.any_agent_running,
     ].join(":")) .join("|");
-    if (!refresh && this.cache && Date.now() - this.cache.at < this.cacheMs && this.cache.workspaceSignature === workspaceSignature) {
+    if (!refresh && !refreshGitHub && this.cache && Date.now() - this.cache.at < this.cacheMs && this.cache.workspaceSignature === workspaceSignature) {
       return this.cache.value;
     }
 
     const repos = await this.repoCatalog.list({ refresh });
     const targets = new Map();
-    const inspected = await Promise.all(repos.map((repo) => this.inspectRepository(repo, { refresh, targets })));
+    const inspected = await Promise.all(repos.map((repo) => this.inspectRepository(repo, { refreshGitHub, targets })));
     const repositories = dedupeRepositories(inspected.filter(Boolean));
-    const worktreeIndex = repositories.flatMap((repo) => repo.worktrees)
+    if (refreshGitHub) this.githubCheckedAt = new Date().toISOString();
+    const worktreeIndex = repositories.flatMap((repo) => [...repo.worktrees, ...repo.releases])
       .sort((left, right) => right.path.length - left.path.length);
     const assigned = new Set();
 
@@ -85,18 +89,26 @@ export class WorktreeDashboard {
 
     for (const repository of repositories) {
       for (const worktree of repository.worktrees) finalizeWorktree(worktree);
-      repository.summary = summarizeWorktrees(repository.worktrees);
+      for (const release of repository.releases) finalizeWorktree(release);
+      repository.summary = { ...summarizeWorktrees(repository.worktrees), releases: repository.releases.length };
       repository.archived = this.repositoryArchive.has(repository.id);
+      repository.favorite = this.repositoryFavorites.has(repository.id);
     }
 
     const orphanSessions = (workspaces || []).filter((workspace) => !assigned.has(workspace.id)).map(normalizeSession);
     const allWorktrees = repositories.flatMap((repository) => repository.worktrees);
-    const allSessions = [...allWorktrees.flatMap((worktree) => worktree.sessions), ...orphanSessions];
+    const allReleases = repositories.flatMap((repository) => repository.releases);
+    const allSessions = [...allWorktrees.flatMap((worktree) => worktree.sessions), ...allReleases.flatMap((release) => release.sessions), ...orphanSessions];
     const value = {
       generatedAt: new Date().toISOString(),
+      github: {
+        checkedAt: this.githubCheckedAt,
+        status: !this.githubCheckedAt ? "not-loaded" : repositories.every((repository) => repository.pullRequestsAvailable) ? "ready" : "partial",
+      },
       summary: {
         repositories: repositories.length,
         worktrees: allWorktrees.length,
+        releases: allReleases.length,
         sessions: allSessions.length,
         needsYou: allSessions.filter((session) => session.state.tone === "attention").length,
         working: allSessions.filter((session) => session.state.tone === "working").length,
@@ -111,7 +123,7 @@ export class WorktreeDashboard {
     return value;
   }
 
-  async inspectRepository(repo, { refresh = false, targets = this.targets } = {}) {
+  async inspectRepository(repo, { refreshGitHub = false, targets = this.targets } = {}) {
     let records;
     try {
       records = parseWorktreeList(await this.repoCatalog.git(repo.path, ["worktree", "list", "--porcelain", "-z"]));
@@ -125,10 +137,14 @@ export class WorktreeDashboard {
     const repositoryId = repositoryKey(commonDir);
     const [worktrees, pullRequests] = await Promise.all([
       Promise.all(records.map((record) => this.inspectWorktree(repo, record, { primaryPath, repositoryId, targets }))),
-      this.loadPullRequests(repo, { refresh, cacheKey: repositoryId }),
+      this.loadPullRequests(repo, { refresh: refreshGitHub, cacheKey: repositoryId }),
     ]);
     const valid = worktrees.filter(Boolean);
     for (const worktree of valid) worktree.pullRequest = pullRequests.byBranch.get(worktree.branch) || null;
+    const releases = valid.filter((worktree) => worktree.managedRelease)
+      .sort((left, right) => right.lastActivity - left.lastActivity);
+    const developerWorktrees = valid.filter((worktree) => !worktree.managedRelease)
+      .sort((left, right) => Number(right.isPrimary) - Number(left.isPrimary) || right.lastActivity - left.lastActivity);
     return {
       id: repositoryId,
       name: basename(primaryPath),
@@ -136,7 +152,8 @@ export class WorktreeDashboard {
       path: primaryPath,
       commonDir,
       pullRequestsAvailable: pullRequests.available,
-      worktrees: valid.sort((left, right) => Number(right.isPrimary) - Number(left.isPrimary) || right.lastActivity - left.lastActivity),
+      worktrees: developerWorktrees,
+      releases,
     };
   }
 
@@ -171,6 +188,7 @@ export class WorktreeDashboard {
         behind: status.behind,
         changedFiles,
         updaterArtifacts,
+        shortSha: managedRelease ? basename(path).slice(0, 7) : undefined,
         dirty: changedFiles > 0,
         lastActivity: Number(lastActivityOutput.trim()) || 0,
         pullRequest: null,
@@ -186,23 +204,32 @@ export class WorktreeDashboard {
 
   async loadPullRequests(repo, { refresh = false, cacheKey = repo.id } = {}) {
     const cached = this.pullRequestCache.get(cacheKey);
-    if (!refresh && cached && Date.now() - cached.at < this.pullRequestCacheMs) return cached.value;
-    let value;
-    try {
-      const { stdout = "" } = await this.repoCatalog.execute("gh", [
-        "pr", "list", "--state", "open", "--limit", "100",
-        "--json", "number,title,url,state,isDraft,reviewDecision,statusCheckRollup,headRefName,baseRefName,mergeStateStatus,updatedAt,author",
-      ], { cwd: repo.path, encoding: "utf8", timeout: 2_500, maxBuffer: 2 * 1024 * 1024, env: process.env });
-      const pullRequests = JSON.parse(stdout);
-      value = { available: true, byBranch: new Map((Array.isArray(pullRequests) ? pullRequests : []).map((item) => {
-        const normalized = normalizePullRequest(item);
-        return [normalized.headBranch, normalized];
-      })) };
-    } catch {
-      value = { available: false, byBranch: new Map() };
-    }
-    this.pullRequestCache.set(cacheKey, { at: Date.now(), value });
-    return value;
+    // Local dashboard polling must never turn into hidden GitHub polling. An
+    // explicit refresh replaces this cache; every other snapshot reuses it
+    // indefinitely, including the first snapshot after a server restart.
+    if (!refresh) return cached?.value || { available: false, byBranch: new Map() };
+    if (this.pullRequestPending.has(cacheKey)) return this.pullRequestPending.get(cacheKey);
+    const pending = (async () => {
+      let value;
+      try {
+        const { stdout = "" } = await this.repoCatalog.execute("gh", [
+          "pr", "list", "--state", "open", "--limit", "100",
+          "--json", "number,title,url,state,isDraft,reviewDecision,statusCheckRollup,headRefName,baseRefName,mergeStateStatus,updatedAt,author",
+        ], { cwd: repo.path, encoding: "utf8", timeout: 2_500, maxBuffer: 2 * 1024 * 1024, env: process.env });
+        const pullRequests = JSON.parse(stdout);
+        value = { available: true, byBranch: new Map((Array.isArray(pullRequests) ? pullRequests : []).map((item) => {
+          const normalized = normalizePullRequest(item);
+          return [normalized.headBranch, normalized];
+        })) };
+      } catch {
+        value = { available: false, byBranch: new Map() };
+      }
+      this.pullRequestCache.set(cacheKey, { at: Date.now(), value });
+      return value;
+    })();
+    this.pullRequestPending.set(cacheKey, pending);
+    try { return await pending; }
+    finally { this.pullRequestPending.delete(cacheKey); }
   }
 
   async resolve(id) {
@@ -216,7 +243,7 @@ export class WorktreeDashboard {
   async remove(id, { workspaces = [], discardChanges = false } = {}) {
     if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid worktree");
     const dashboard = await this.snapshot({ workspaces, refresh: true });
-    const worktree = dashboard.repositories.flatMap((repository) => repository.worktrees).find((item) => item.id === id);
+    const worktree = dashboard.repositories.flatMap((repository) => [...repository.worktrees, ...repository.releases]).find((item) => item.id === id);
     const target = this.targets.get(id);
     if (!worktree || !target) throw new TypeError("Unknown worktree");
     assertRemovable(worktree, { discardChanges: discardChanges === true });
@@ -344,6 +371,17 @@ export class WorktreeDashboard {
     return { repository: { id: repository.id, name: repository.name, archived: saved } };
   }
 
+  async setRepositoryFavorite(id, favorite, { workspaces = [] } = {}) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid repository");
+    if (typeof favorite !== "boolean") throw new TypeError("Favorite must be true or false");
+    const dashboard = await this.snapshot({ workspaces, refresh: true });
+    const repository = dashboard.repositories.find((item) => item.id === id);
+    if (!repository) throw new TypeError("Unknown repository");
+    const saved = this.repositoryFavorites.set(id, favorite);
+    this.invalidate();
+    return { repository: { id: repository.id, name: repository.name, favorite: saved } };
+  }
+
   invalidate() {
     this.cache = null;
   }
@@ -465,14 +503,24 @@ function dedupeRepositories(repositories) {
   for (const repository of repositories) {
     const current = grouped.get(repository.id);
     if (!current) {
-      grouped.set(repository.id, { ...repository, worktrees: [...repository.worktrees] });
+      grouped.set(repository.id, { ...repository, worktrees: [...repository.worktrees], releases: [...repository.releases] });
       continue;
     }
-    const seen = new Set(current.worktrees.map((worktree) => worktree.path));
-    current.worktrees.push(...repository.worktrees.filter((worktree) => !seen.has(worktree.path)));
+    appendUniqueByPath(current.worktrees, repository.worktrees);
+    appendUniqueByPath(current.releases, repository.releases);
+    current.releases.sort((left, right) => right.lastActivity - left.lastActivity);
     current.pullRequestsAvailable ||= repository.pullRequestsAvailable;
   }
   return [...grouped.values()].filter((repository) => repository.worktrees.length > 0);
+}
+
+function appendUniqueByPath(target, entries) {
+  const seen = new Set(target.map((entry) => entry.path));
+  for (const entry of entries) {
+    if (seen.has(entry.path)) continue;
+    seen.add(entry.path);
+    target.push(entry);
+  }
 }
 
 function isInside(root, path) {

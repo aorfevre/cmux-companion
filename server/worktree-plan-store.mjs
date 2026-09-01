@@ -11,7 +11,7 @@ const MAX_PLANS = 200;
 const MAX_EVENT_BYTES = 64 * 1024;
 
 export const PLAN_EVENT_KINDS = new Set([
-  "goal", "questions", "answers", "tasks", "edit", "launch",
+  "goal", "questions", "answers", "tasks", "feedback", "edit", "launch",
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
   "merge_launched", "merge_blocked",
 ]);
@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS plans (
   issue_numbers TEXT NOT NULL DEFAULT '[]',
   issue_urls TEXT NOT NULL DEFAULT '[]',
   delivery_policy TEXT NOT NULL DEFAULT 'auto',
+  engine_provider TEXT NOT NULL DEFAULT 'claude',
+  engine_model TEXT NOT NULL DEFAULT 'default',
+  engine_effort TEXT NOT NULL DEFAULT 'default',
+  engine_reviewer INTEGER NOT NULL DEFAULT 0,
   session_id TEXT,
   round INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -108,14 +112,14 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {} }) {
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare(`
-        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), at, at);
-      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy) }, at);
+        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, at, at);
+      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true } }, at);
     });
     this.#prune();
     return this.get(planId);
@@ -123,7 +127,7 @@ export class WorktreePlanStore {
 
   // One round of the conversation: the plan row, its task rows and the event
   // that explains them all land together, or none of them land.
-  recordRound(planId, { round, stage, sessionId = null, questions = [], tasks = [], answers = null, skipped = false }) {
+  recordRound(planId, { round, stage, sessionId = null, questions = [], tasks = [], answers = null, skipped = false, feedback = null }) {
     if (!PLAN_STAGES.has(stage)) throw new TypeError(`Unknown plan stage ${stage}`);
     const at = this.#stamp();
     this.#transaction(() => {
@@ -136,6 +140,9 @@ export class WorktreePlanStore {
       // planner returns a fresh split rather than a patch.
       this.#replaceTasks(planId, tasks);
       if (answers !== null || skipped) this.#insertEvent(planId, round, "answers", { answers: answers || [], skipped }, at);
+      // The rejection that caused this round. It is stored beside the split it
+      // replaced, so the log reads as a reason followed by its consequence.
+      if (feedback) this.#insertEvent(planId, round, "feedback", { feedback }, at);
       if (stage === "questions") this.#insertEvent(planId, round, "questions", { questions }, at);
       else this.#insertEvent(planId, round, "tasks", { tasks }, at);
     });
@@ -396,6 +403,7 @@ export class WorktreePlanStore {
       finalPrUrl: row.final_pr_url,
       issueNumbers: parse(row.issue_numbers, []),
       deliveryPolicy: row.delivery_policy || "auto",
+      engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
       taskCount: row.task_count,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -451,6 +459,10 @@ export class WorktreePlanStore {
     ensure("plans", "issue_numbers", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plans", "issue_urls", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plans", "delivery_policy", "TEXT NOT NULL DEFAULT 'auto'");
+    ensure("plans", "engine_provider", "TEXT NOT NULL DEFAULT 'claude'");
+    ensure("plans", "engine_model", "TEXT NOT NULL DEFAULT 'default'");
+    ensure("plans", "engine_effort", "TEXT NOT NULL DEFAULT 'default'");
+    ensure("plans", "engine_reviewer", "INTEGER NOT NULL DEFAULT 0");
     ensure("plans", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'");
     ensure("plans", "delivery_status", "TEXT NOT NULL DEFAULT 'planning'");
     ensure("plans", "integration_branch", "TEXT");
@@ -508,6 +520,7 @@ function readPlan(row) {
     issueNumbers: parse(row.issue_numbers, []),
     issueUrls: parse(row.issue_urls, []),
     deliveryPolicy: row.delivery_policy || "auto",
+    engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
     sessionId: row.session_id,
     round: row.round,
     status: row.status,

@@ -43,6 +43,18 @@ test("stores the opening goal with its images and a goal event", (t) => {
   assert.equal(events[0].payload.goal, "Add billing");
 });
 
+test("persists the planner engine for a resumed round", (t) => {
+  const store = memoryStore(t);
+  const plan = store.createPlan({
+    planId: "configured-plan",
+    repositoryId: "repository12345678",
+    goal: "Add billing",
+    engine: { provider: "codex", model: "gpt-5.6-sol", effort: "xhigh", reviewer: true },
+  });
+  assert.deepEqual(plan.engine, { provider: "codex", model: "gpt-5.6-sol", effort: "xhigh", reviewer: true });
+  assert.deepEqual(store.events("configured-plan")[0].payload.engine, plan.engine);
+});
+
 test("stores GitHub issue provenance on detail, events, and summaries", (t) => {
   const store = memoryStore(t);
   const plan = store.createPlan({

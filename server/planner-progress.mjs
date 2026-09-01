@@ -6,7 +6,9 @@
 
 export const TRACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const MAX_TRACES = 20;
+// Every background round streams on its own plan id, and a user may have many
+// goals planning at once, so the cap is a whole dashboard rather than one sheet.
+const MAX_TRACES = 64;
 const MAX_EVENTS = 40;
 const TRACE_TTL_MS = 5 * 60_000;
 // A finished round keeps its buffer only long enough for a reconnect that lands

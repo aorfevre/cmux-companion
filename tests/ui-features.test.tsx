@@ -191,6 +191,10 @@ describe("contextual mobile features", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     render(<WorktreeDashboardView onOpenWorkspace={open} onLaunched={launched} onNotice={notice} />);
     assert.ok(await screen.findByText("feature/mobile"));
+    assert.ok(screen.getByText(/GitHub refresh is manual/));
+    assert.equal(fetchMock.mock.calls.some(([url]) => String(url).includes("github=1")), false);
+    await userEvent.click(screen.getByRole("button", { name: "Refresh GitHub" }));
+    await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("?refresh=1&github=1")), true));
     await userEvent.click(screen.getByRole("tab", { name: /Rekord/ }));
     assert.ok(screen.getByText("No active Rekord projects"));
     await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
@@ -239,6 +243,51 @@ describe("contextual mobile features", () => {
     assert.ok(screen.getByText("No archived Karven projects"));
   });
 
+  test("searches projects by name and keeps a favorited project in the Active tab", async () => {
+    const repository = (id: string, name: string, sessions: number, favorite: boolean) => ({
+      id, name, root: "karven", path: `/repo/${name}`, favorite, pullRequestsAvailable: false,
+      summary: { worktrees: 1, sessions, needsYou: 0, working: 0, dirty: 0 },
+      worktrees: [{ id: `${id}-primary-wt`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }],
+    });
+    const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 3, worktrees: 3, sessions: 1, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [
+      repository("repo-busy", "companion", 1, false),
+      repository("repo-star", "trust-layer", 0, true),
+      repository("repo-idle", "quiet-tools", 0, false),
+    ] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      if (String(input).startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    // The favorite has no session, yet Active lists it above the busy project.
+    assert.ok(await screen.findByText("trust-layer"));
+    assert.ok(screen.getByText("companion"));
+    assert.equal(screen.queryByText("quiet-tools"), null);
+    assert.equal(screen.getByRole("tab", { name: /^Active/ }).textContent?.includes("2"), true);
+    assert.deepEqual(screen.getAllByRole("group").map((item) => item.querySelector("strong")?.textContent), ["trust-layer", "companion"]);
+    assert.ok(screen.getByText(/2 shown · 3 total/));
+
+    const searchBox = screen.getByRole("searchbox", { name: "Search projects" });
+    await userEvent.type(searchBox, "trust");
+    assert.equal(screen.queryByText("companion"), null);
+    assert.ok(screen.getByText(/1 shown · 3 total/));
+    await userEvent.clear(searchBox);
+    await userEvent.type(searchBox, "nothing-here");
+    assert.ok(screen.getByText(/No project matches/));
+    await userEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    assert.ok(screen.getByText("companion"));
+
+    // Unfavoriting moves the project out of Active and into Inactive.
+    await userEvent.click(screen.getByRole("button", { name: "Unfavorite trust-layer" }));
+    await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/repositories/repo-star/favorite") && init?.method === "PATCH"), true));
+    await waitFor(() => assert.equal(screen.queryByText("trust-layer"), null));
+    await userEvent.click(screen.getByRole("tab", { name: /^Inactive/ }));
+    assert.ok(screen.getByRole("button", { name: "Favorite trust-layer" }));
+    assert.ok(screen.getByText("quiet-tools"));
+  });
+
   test("shows project-wide draft and launched goals and opens the selected saved plan", async () => {
     const repository = (id: string, name: string, root: string) => ({ id, name, root, path: `/repo/${name}`, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [{ id: `${id}-primary-worktree`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }] });
     const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 2, worktrees: 2, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repo-karven", "trust-layer", "karven"), repository("repo-rekord", "recorder", "rekord")] };
@@ -285,16 +334,53 @@ describe("contextual mobile features", () => {
     await waitFor(() => assert.equal(screen.queryByText("Ship prompt analytics"), null));
   });
 
-  test("offers bulk cleanup of clean worktrees and a named second confirmation for a detached release checkout", async () => {
+  test("badges a running round on the tab and the goal card, and opens it from a notification link", async () => {
+    const repository = (id: string, name: string, root: string) => ({ id, name, root, path: `/repo/${name}`, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [{ id: `${id}-primary-worktree`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }] });
+    const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 1, worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repo-karven", "trust-layer", "karven")] };
+    const updatedAt = new Date().toISOString();
+    const planning = { planId: "plan-running", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Improve the LLM flow", status: "draft", stage: "questions", round: 0, taskCount: 0, running: true, runPhase: "running", runStep: "Grep \"useMemo\"", createdAt: updatedAt, updatedAt, launchedAt: null };
+    const idle = { planId: "plan-idle", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Ship prompt analytics", status: "draft", stage: "ready", round: 2, taskCount: 1, running: false, createdAt: updatedAt, updatedAt, launchedAt: null };
+    const detail = { ...planning, planStatus: "draft", questions: [], tasks: [] };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/worktree-plans?")) return new Response(JSON.stringify({ plans: [planning, idle] }), { status: 200 });
+      if (url === "/api/worktree-plans/plan-running") return new Response(JSON.stringify(detail), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    }));
+    const opened = vi.fn();
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} initialPlanId="plan-running" onPlanOpened={opened} />);
+
+    // The deep link picks the tab and the project, then opens the goal.
+    const planner = await screen.findByRole("dialog", { name: "Plan a goal" });
+    assert.ok(await within(planner).findByRole("region", { name: "Planning in progress" }));
+    assert.equal(opened.mock.calls.length, 1);
+    await userEvent.click(within(planner).getByRole("button", { name: "Close goal planner sheet" }));
+
+    const tab = screen.getByRole("tab", { name: /Draft Goals/ });
+    assert.ok(within(tab).getByText("1 planning"), "the tab counts the running round");
+    const goals = screen.getByRole("region", { name: "Draft goals" });
+    assert.ok(within(goals).getByText("Planning…"));
+    assert.ok(within(goals).getByText('Grep "useMemo"'));
+    assert.equal((within(goals).getByRole("button", { name: "Delete Improve the LLM flow" }) as HTMLButtonElement).disabled, true);
+    assert.ok(within(goals).getByRole("button", { name: "Watch Improve the LLM flow" }));
+    // A goal with no round running keeps its ordinary controls.
+    assert.equal((within(goals).getByRole("button", { name: "Delete Ship prompt analytics" }) as HTMLButtonElement).disabled, false);
+    assert.ok(within(goals).getByRole("button", { name: "Resume Ship prompt analytics" }));
+  });
+
+  test("collapses managed releases while preserving bulk cleanup and non-managed detached discard", async () => {
     const worktree = (over: Record<string, unknown>) => ({ repoId: "repo-1", head: "abc", locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, detached: false, isPrimary: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" }, ...over });
     const emptyRepo = { id: "repo-2", name: "solo", root: "karven", path: "/repo/solo", pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [worktree({ id: "soloprimary1234567", path: "/repo/solo", name: "solo", branch: "main", isPrimary: true })] };
-    const repo = { id: "repo-1", name: "companion", root: "karven", path: "/repo/companion", pullRequestsAvailable: false, summary: { worktrees: 4, sessions: 0, needsYou: 0, working: 0, dirty: 1 }, worktrees: [
+    const repo = { id: "repo-1", name: "companion", root: "karven", path: "/repo/companion", pullRequestsAvailable: false, summary: { worktrees: 4, releases: 2, sessions: 0, needsYou: 0, working: 0, dirty: 1 }, worktrees: [
       worktree({ id: "primaryworktree123", path: "/repo/companion", name: "companion", branch: "main", isPrimary: true }),
       worktree({ id: "cleanworktree12345", path: "/repo/companion-clean", name: "companion-clean", branch: "chore/clean" }),
       worktree({ id: "lockedworktree1234", path: "/repo/companion-locked", name: "companion-locked", branch: "chore/locked", locked: "pinned" }),
       worktree({ id: "releaseworktree123", path: "/releases/abc123", name: "abc123", branch: "HEAD", detached: true, changedFiles: 2, dirty: true }),
+    ], releases: [
+      worktree({ id: "managedrelease1234", path: "/Users/test/.local/share/cmux-companion/releases/abcdef0123456789abcdef0123456789abcdef01", name: "abcdef0123456789abcdef0123456789abcdef01", branch: "HEAD", shortSha: "abcdef0", detached: true, managedRelease: true, locked: "release pinned", lastActivity: Math.round(Date.now() / 1000) - 60 }),
+      worktree({ id: "managedrelease5678", path: "/Users/test/.local/share/cmux-companion/releases/1234567890abcdef1234567890abcdef12345678", name: "1234567890abcdef1234567890abcdef12345678", branch: "HEAD", shortSha: "1234567", detached: true, managedRelease: true }),
     ] };
-    const dashboard = { generatedAt: "2026-08-31", summary: { repositories: 2, worktrees: 5, sessions: 0, needsYou: 0, working: 0, dirty: 1, pullRequests: 0 }, orphanSessions: [], repositories: [repo, emptyRepo] };
+    const dashboard = { generatedAt: "2026-08-31", summary: { repositories: 2, worktrees: 5, releases: 2, sessions: 0, needsYou: 0, working: 0, dirty: 1, pullRequests: 0 }, orphanSessions: [], repositories: [repo, emptyRepo] };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/repositories/repo-1/remove-clean")) return new Response(JSON.stringify({ repository: { id: "repo-1", name: "companion" }, requested: 1, removed: 0, failed: 1, branchPreserved: true, results: [{ id: "cleanworktree12345", branch: "chore/clean", path: "/repo/companion-clean", removed: false, error: "Git could not remove this worktree: fatal: locked" }] }), { status: 200 });
@@ -314,6 +400,19 @@ describe("contextual mobile features", () => {
     assert.equal(soloBulk.textContent, "Remove clean (0)");
     assert.equal((soloBulk as HTMLButtonElement).disabled, true);
 
+    assert.ok(screen.getByText("4 worktrees · 0 sessions · 2 releases"));
+    assert.ok(screen.getByText("2", { selector: ".worktree-hero strong" }));
+    const releases = screen.getByText("Deployment releases (2)").closest("details");
+    assert.ok(releases);
+    assert.equal((releases as HTMLDetailsElement).open, false);
+    await userEvent.click(within(releases).getByText("Deployment releases (2)"));
+    assert.ok(within(releases).getByText("The local updater owns these checkouts; Companion will not remove them."));
+    assert.ok(within(releases).getByText("abcdef0"));
+    assert.ok(within(releases).getByText("~/.local/share/cmux-companion/releases/abcdef0123456789abcdef0123456789abcdef01"));
+    assert.ok(within(releases).getByText("Locked"));
+    assert.equal(within(releases).queryByRole("button"), null);
+    assert.equal(within(releases).queryByText("(detached)"), null);
+
     await userEvent.click(bulk);
     const sheet = screen.getByRole("dialog", { name: "Remove clean worktrees" });
     assert.ok(within(sheet).getByText("Remove 1 clean worktree?"));
@@ -324,7 +423,7 @@ describe("contextual mobile features", () => {
     await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/repositories/repo-1/remove-clean") && init?.method === "POST"), true));
     await waitFor(() => assert.equal(notice.mock.calls.some(([message]) => String(message).includes("Removed 0 of 1 worktrees") && String(message).includes("chore/clean (Git could not remove this worktree: fatal: locked)")), true));
 
-    // The detached release checkout is dirty, so it needs a second confirmation
+    // A non-managed detached checkout is dirty, so it needs a second confirmation
     // that names what is destroyed before the client may pass discardChanges.
     const release = screen.getByText("/releases/abc123").closest("article");
     assert.ok(release);
@@ -479,6 +578,44 @@ describe("worktree goal planner", () => {
     return fetchMock;
   }
 
+  test("shows, changes, and submits the planner engine and derived reviewer", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      if (url === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    const engine = screen.getByRole("combobox", { name: "Planner engine" }) as HTMLSelectElement;
+    const model = screen.getByRole("combobox", { name: "Planner model" }) as HTMLSelectElement;
+    const effort = screen.getByRole("combobox", { name: "Planner effort" }) as HTMLSelectElement;
+    const reviewer = screen.getByRole("checkbox", { name: "Add a reviewer pass" }) as HTMLInputElement;
+    assert.equal(engine.value, "claude");
+    assert.equal(model.value, "default");
+    assert.equal(effort.value, "default");
+    assert.equal(reviewer.checked, false);
+    assert.ok(screen.getByText("Claude Code (xclaude) · CCS default model"));
+    assert.ok(within(model).getByRole("option", { name: "Opus 5" }));
+    assert.ok(within(model).getByRole("option", { name: "Fable 5.1" }));
+
+    await userEvent.selectOptions(engine, "codex");
+    assert.equal(model.value, "default");
+    assert.ok(within(model).getByRole("option", { name: "GPT-5.6 Sol" }));
+    assert.equal(within(model).queryByRole("option", { name: "Opus 5" }), null);
+    await userEvent.selectOptions(model, "gpt-5.6-terra");
+    await userEvent.selectOptions(effort, "high");
+    assert.ok(screen.getByText("Codex (xcodex) · GPT-5.6 Terra"));
+    await userEvent.click(reviewer);
+    assert.ok(screen.getByText("Reviewer: Claude Code (xclaude) · Fable 5.1 · xhigh effort"));
+
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
+    assert.deepEqual(body.engine, { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: true });
+  });
+
   test("lists saved goals and resumes each persisted stage", async () => {
     const updatedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
     const questionDraft = { planId: "plan-questions", repositoryId: "repo-1", repositoryName: "companion", goal: "Clarify the mobile flow", round: 3, status: "questions", planStatus: "draft", questions: [{ id: "question-1", text: "Which screen comes first?", options: ["Goals", "Tasks"] }], tasks: [], createdAt: updatedAt, updatedAt, launchedAt: null, base: "main", history: [] };
@@ -511,6 +648,62 @@ describe("worktree goal planner", () => {
     assert.ok(await screen.findByRole("region", { name: "Saved goals" }));
     assert.equal((screen.getByRole("textbox", { name: "Goal" }) as HTMLTextAreaElement).value, "");
     await waitFor(() => assert.equal(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/worktree-plans?repositoryId=repo-1").length, 2));
+  });
+
+  test("renders a Markdown prompt and still shows its exact text on demand", async () => {
+    const markdown = "## Step one\n\n- Touch `server/app.mjs`\n- See https://example.test/issue for the report\n- Do not touch [the store](../store.mjs)\n\nFinish with a pull request.";
+    const markdownDraft = { ...readyDraft, tasks: [{ ...tasks[0], prompt: markdown }] };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(markdownDraft), { status: 201 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    // The markers are structure, not literal text: a heading is a heading and a
+    // list is a list, so no "##" or "-" survives into the rendered output.
+    assert.ok(await screen.findByRole("heading", { name: "Step one" }));
+    assert.equal(screen.queryByText(/## Step one/), null);
+    assert.ok(screen.getAllByRole("listitem").length >= 3);
+
+    // An absolute web link opens in a new tab. A repository-relative link has
+    // no resolver in this sheet, so it renders as inert text.
+    const link = screen.getByRole("link", { name: "https://example.test/issue" });
+    assert.equal(link.getAttribute("target"), "_blank");
+    assert.equal(link.getAttribute("rel"), "noreferrer");
+    assert.equal(screen.queryByRole("link", { name: "the store" }), null);
+    assert.ok(screen.getByText("the store"));
+
+    // The agent receives the raw text, so the reviewer must be able to read it.
+    await userEvent.click(screen.getByRole("button", { name: "Show Prompt for Build the sheet as raw text" }));
+    assert.ok(screen.getByText(/## Step one/));
+    await userEvent.click(screen.getByRole("button", { name: "Show Prompt for Build the sheet as Markdown" }));
+    assert.ok(screen.getByRole("heading", { name: "Step one" }));
+  });
+
+  test("rejects a plan with written feedback and starts a fresh analysis", async () => {
+    const revised = { ...readyDraft, round: 3, running: true, tasks: [] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/feedback") && init?.method === "POST") return new Response(JSON.stringify(revised), { status: 202 });
+      return new Response(JSON.stringify(readyDraft), { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    // The rejection throws away every task, so it hides behind one button and
+    // stays disabled until the reviewer says what is wrong.
+    await userEvent.click(await screen.findByRole("button", { name: "This plan is wrong" }));
+    const send = screen.getByRole("button", { name: "Analyse this goal again" });
+    assert.equal((send as HTMLButtonElement).disabled, true);
+    await userEvent.type(screen.getByRole("textbox", { name: "What is wrong with this split?" }), "Tasks 1 and 2 share a file.");
+    await userEvent.click(send);
+
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/feedback"));
+    assert.ok(call);
+    assert.deepEqual(JSON.parse(String(call?.[1]?.body)), { text: "Tasks 1 and 2 share a file.", background: true });
+    // The new round is a background round, so the sheet shows it planning.
+    assert.ok(await screen.findByRole("region", { name: "Planning in progress" }));
   });
 
   test("views launched goals without offering edits or a second launch", async () => {
@@ -727,10 +920,10 @@ describe("worktree goal planner", () => {
 
   test("shows the live steps while a plan is being made", async () => {
     const streams = fakeEventSource();
-    let release: (value: Response) => void = () => {};
+    const runningDraft = { ...readyDraft, round: 0, status: "questions", questions: [], tasks: [], running: true };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       void init;
-      if (String(input) === "/api/worktree-plans") return new Promise<Response>((resolve) => { release = resolve; });
+      if (String(input) === "/api/worktree-plans") return new Response(JSON.stringify(runningDraft), { status: 202 });
       return new Response(JSON.stringify(readyDraft), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -738,42 +931,81 @@ describe("worktree goal planner", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
+    // The round runs on the companion, so the request carries the background
+    // flag and the stream keys on the plan id it answered with.
     const body = JSON.parse(String(fetchMock.mock.calls.find(([url]) => String(url) === "/api/worktree-plans")?.[1]?.body));
-    assert.match(body.traceId, /^[0-9a-f-]{36}$/);
-    assert.equal(streams.length, 1);
-    assert.ok(streams[0].url.endsWith(`/api/worktree-plans/progress/${body.traceId}`));
+    assert.equal(body.background, true);
+    await waitFor(() => assert.equal(streams.length, 1));
+    assert.ok(streams[0].url.endsWith("/api/worktree-plans/progress/plan-1"));
 
     streams[0].emit({ k: "tool", t: "Read server/app.mjs" });
     streams[0].emit({ k: "text", t: "Thinking…" });
     assert.ok(await screen.findByText("Read server/app.mjs"));
     assert.ok(screen.getByText("Thinking…"));
 
-    release(new Response(JSON.stringify(readyDraft), { status: 201 }));
+    // The "done" frame makes the sheet reload the plan, which now holds tasks.
+    streams[0].emit({ k: "done" });
     assert.ok(await screen.findByText("Build the sheet"));
     assert.equal(screen.queryByText("Read server/app.mjs"), null);
   });
 
-  test("closes the progress stream when the sheet closes", async () => {
+  test("lets the sheet close while its round keeps running", async () => {
     const streams = fakeEventSource();
-    vi.stubGlobal("fetch", vi.fn(async () => new Promise<Response>(() => {})));
-    const view = render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    const runningDraft = { ...readyDraft, round: 0, status: "questions", questions: [], tasks: [], running: true };
+    let closed = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/worktree-plans") return new Response(JSON.stringify(runningDraft), { status: 202 });
+      return new Response(JSON.stringify(runningDraft), { status: 200 });
+    }));
+    const view = render(<WorktreePlannerSheet repository={repository} onClose={() => { closed = true; }} onLaunched={async () => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const panel = await screen.findByRole("region", { name: "Planning in progress" });
+    assert.ok(within(panel).getByText(/A notification arrives when this one is ready/));
+    await userEvent.click(within(panel).getByRole("button", { name: "Close and keep planning" }));
+    assert.equal(closed, true);
+
+    // The stream belongs to the sheet, not to the round. Unmounting closes it
+    // and leaves the round to finish on the companion.
+    await waitFor(() => assert.equal(streams.length, 1));
     assert.equal(streams[0].closed, false);
     view.unmount();
     assert.equal(streams[0].closed, true);
   });
 
-  test("ends the stream when the planner reports it is done", async () => {
-    const streams = fakeEventSource();
-    vi.stubGlobal("fetch", vi.fn(async () => new Promise<Response>(() => {})));
+  test("offers to start the round again when it stopped without a result", async () => {
+    fakeEventSource();
+    const stalledSummary = { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), launchedAt: null };
+    const stalledDraft = { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", round: 0, status: "questions", planStatus: "draft", questions: [], tasks: [], running: false };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [stalledSummary] }), { status: 200 });
+      if (url.endsWith("/run")) return new Response(JSON.stringify({ ...stalledDraft, running: true }), { status: 202 });
+      return new Response(JSON.stringify(stalledDraft), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
     render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
-    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-    streams[0].emit({ k: "tool", t: "Read server/app.mjs" });
-    assert.ok(await screen.findByText("Read server/app.mjs"));
-    streams[0].emit({ k: "done" });
-    assert.equal(streams[0].closed, true);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Resume Ship the planner" }));
+    const panel = await screen.findByRole("region", { name: "Planning stopped" });
+    assert.ok(within(panel).getByText(/A companion restart does this/));
+    await userEvent.click(within(panel).getByRole("button", { name: "Plan this goal again" }));
+    await screen.findByRole("region", { name: "Planning in progress" });
+    assert.ok(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/worktree-plans/plan-1/run")));
+  });
+
+  test("marks a saved goal that is planning right now and blocks its delete", async () => {
+    fakeEventSource();
+    const now = new Date().toISOString();
+    const summary = { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, running: true, runStep: "Read server/app.mjs", createdAt: now, updatedAt: now, launchedAt: null };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ plans: [summary] }), { status: 200 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    const saved = await screen.findByRole("region", { name: "Saved goals" });
+    assert.ok(within(saved).getByText("Planning…"));
+    assert.ok(within(saved).getByText("Read server/app.mjs"));
+    assert.equal((within(saved).getByRole("button", { name: "Delete Ship the planner" }) as HTMLButtonElement).disabled, true);
   });
 
   test("attaches a pasted image to the goal and drops it again", async () => {
