@@ -158,3 +158,130 @@
 @media (prefers-reduced-motion:reduce){.worktree-filter-tabs .tab-planning,.worktree-goal-card.planning>header em{animation:none}}
 .worktree-goals{display:grid;gap:10px;margin-top:14px}.worktree-goal-card{display:flex;min-width:0;flex-direction:column;border:1px solid #2b3641;border-radius:15px;background:linear-gradient(145deg,#151b22,#11151a);padding:13px}.worktree-goal-card.draft{border-color:rgba(159,196,255,.28)}.worktree-goal-card.launched{border-color:rgba(201,255,80,.22)}.worktree-goal-card>header{display:flex;align-items:flex-start;gap:10px}.worktree-goal-card .repo-icon{display:grid;width:32px;height:32px;flex:none;place-items:center;border-radius:9px;background:#26311d;color:var(--lime);font-size:10px;font-weight:900}.worktree-goal-card>header>div{display:flex;min-width:0;flex:1;flex-direction:column;gap:4px}.worktree-goal-card>header strong{display:-webkit-box;color:#edf1f4;font-size:11px;line-height:1.45;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}.worktree-goal-card>header small{color:#8b96a1;font-size:8px;font-weight:750}.worktree-goal-card>header em{flex:none;border-radius:7px;background:rgba(159,196,255,.1);color:#9fc4ff;padding:4px 7px;font-size:7px;font-style:normal;font-weight:850}.worktree-goal-card.launched>header em{background:rgba(201,255,80,.1);color:var(--lime)}.worktree-goal-meta{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px;margin:12px 0;color:#7f8994;font-size:8px}.worktree-goal-card>footer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;margin-top:auto;border-top:1px solid #273039;padding-top:10px}.worktree-goal-card>footer button{min-height:36px;border:1px solid var(--line);border-radius:9px;background:#20252c;color:#b8c0c8;padding:8px 12px;font-size:9px}.worktree-goal-card>footer .worktree-goal-open{border-color:#52632f;background:#18200f;color:var(--lime);font-weight:800}.worktree-goal-card>footer .worktree-goal-delete-button,.worktree-goal-card>footer .confirm-delete{border-color:rgba(255,109,120,.3);background:rgba(255,109,120,.06);color:#f08c95}.worktree-goal-card>footer.worktree-goal-delete{grid-template-columns:minmax(0,1fr) auto auto;align-items:center}.worktree-goal-delete>span{color:#ffb2b9;font-size:8px}.worktree-goal-card>footer button:disabled{opacity:.5}
 @media(min-width:700px){.worktree-goals{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Planner sheets: a wide, readable modal. The rules come after the desktop
+   block on purpose, so they win without a rewrite of the minified shell.
+   Mobile keeps the full-bleed bottom sheet; only 640px and up grows. */
+.worktree-planner-sheet,.github-issue-planner{width:min(100%,640px)}
+.worktree-planner-sheet>header,.github-issue-planner>header{padding:2px 2px 13px}
+.worktree-planner-sheet>header strong,.github-issue-planner>header strong{font-size:18px;line-height:1.25}
+.worktree-planner-sheet>header span,.github-issue-planner>header span{color:var(--muted);font-size:12px}
+.worktree-planner-sheet>p,.github-issue-planner>p{margin:0 2px 14px;font:11px ui-monospace,monospace}
+@media(min-width:640px){.worktree-planner-sheet,.github-issue-planner{width:min(100% - 40px,780px)}}
+@media(min-width:1024px){.worktree-planner-sheet,.github-issue-planner{width:min(100% - 96px,1040px);max-height:min(88dvh,900px);padding:16px 18px 18px}}
+@media(min-width:1440px){.worktree-planner-sheet,.github-issue-planner{width:min(100% - 140px,1220px)}}
+
+/* Goal planner type scale. Body copy 13px, meta 12px, labels 11px. */
+.worktree-planner-sheet .planner-new-goal{margin:0 2px 13px;font-size:12px}
+.worktree-planner-sheet .planner-round{margin:0 2px 13px;font-size:12px}
+.worktree-planner-sheet .planner-round code{font:12px ui-monospace,monospace}
+.worktree-planner-sheet .planner-saved{margin:0 0 16px;padding:0 0 16px}
+.worktree-planner-sheet .planner-saved>strong{margin:0 2px 10px;font-size:11px}
+.worktree-planner-sheet .planner-saved>div{gap:9px}
+.worktree-planner-sheet .planner-saved-row{gap:10px;padding:12px}
+.worktree-planner-sheet .planner-saved-copy p{font-size:13px;line-height:1.45}
+.worktree-planner-sheet .planner-saved-copy small{margin-top:6px;font-size:11px}
+.worktree-planner-sheet .planner-status{border-radius:8px;padding:5px 8px;font-size:10px}
+.worktree-planner-sheet .planner-saved-actions,.worktree-planner-sheet .planner-delete-confirm{gap:8px}
+.worktree-planner-sheet .planner-saved-actions button,.worktree-planner-sheet .planner-delete-confirm button{min-height:40px;font-size:12px}
+.worktree-planner-sheet .planner-questions,.worktree-planner-sheet .planner-tasks,.worktree-planner-sheet .planner-results{gap:12px;margin-bottom:15px}
+.worktree-planner-sheet .planner-question label{margin-bottom:9px;font-size:13px;line-height:1.5}
+.worktree-planner-sheet .planner-question textarea{font-size:14px;line-height:1.5}
+.worktree-planner-sheet .planner-options{gap:8px}
+.worktree-planner-sheet .planner-options button{min-height:36px;border-radius:9px;padding:8px 12px;font-size:12px}
+.worktree-planner-sheet .planner-task,.worktree-planner-sheet .planner-result{gap:9px;border-radius:14px;padding:14px}
+.worktree-planner-sheet .planner-task>header,.worktree-planner-sheet .planner-result>header{gap:10px}
+.worktree-planner-sheet .planner-task>header strong,.worktree-planner-sheet .planner-result>header strong{font-size:15px;line-height:1.35}
+.worktree-planner-sheet .planner-remove-task{width:30px;height:30px;font-size:16px}
+.worktree-planner-sheet .planner-branch{font:12px ui-monospace,monospace;line-height:1.45}
+.worktree-planner-sheet .planner-agent{gap:8px}
+.worktree-planner-sheet .planner-agent button{min-height:40px;border-radius:10px;padding:9px;font-size:12px}
+.worktree-planner-sheet .planner-agent-reason{font-size:12px;line-height:1.55}
+.worktree-planner-sheet .planner-result>header em{border-radius:9px;padding:5px 9px;font-size:11px}
+.worktree-planner-sheet .planner-result small{font-size:12px;line-height:1.55}
+.worktree-planner-sheet .planner-result-leftover code{font:12px ui-monospace,monospace}
+.worktree-planner-sheet .planner-waiting{margin:0 2px 13px;border-radius:10px;padding:12px;font-size:13px;line-height:1.55}
+.worktree-planner-sheet .planner-no-retry{margin:0 0 13px;border-radius:10px;padding:12px;font-size:13px;line-height:1.55}
+.worktree-planner-sheet .planner-launched-note{border-radius:10px;padding:12px;font:13px/1.55 -apple-system,sans-serif}
+.worktree-planner-sheet .planner-background-note{margin:0 2px 13px;font-size:12px;line-height:1.6}
+.worktree-planner-sheet .planner-progress{gap:5px;margin:10px 0 0;padding:10px 0 0}
+.worktree-planner-sheet .planner-progress li{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+.worktree-planner-sheet .planner-context{margin:0 2px 13px;border-radius:12px;padding:12px}
+.worktree-planner-sheet .planner-context>summary{font-size:12px}
+.worktree-planner-sheet .planner-delivery-mode,.worktree-planner-sheet .planner-delivery-status{gap:8px;margin:0 0 15px;border-radius:12px;padding:14px}
+.worktree-planner-sheet .planner-delivery-mode strong,.worktree-planner-sheet .planner-delivery-status strong{font-size:14px}
+.worktree-planner-sheet .planner-delivery-mode p,.worktree-planner-sheet .planner-delivery-status p{font:12px/1.6 -apple-system,sans-serif}
+.worktree-planner-sheet .planner-delivery-status code{font-size:12px}
+.worktree-planner-sheet .planner-delivery-status a{min-height:44px;font-size:13px}
+.worktree-planner-sheet .planner-actions{gap:9px}
+.worktree-planner-sheet .planner-actions>button{min-height:46px;font-size:13px}
+.worktree-planner-sheet>.primary-button{min-height:48px;font-size:14px;font-weight:800}
+
+/* The generated prompt: monospace that a person can read, with its own scroll
+   so a long prompt never pushes the launch button off the sheet. */
+.worktree-planner-sheet .planner-prompt>summary{font-size:12px;padding:2px 0}
+.worktree-planner-sheet .planner-prompt>p{max-height:320px;margin:9px 0 0;border-left:2px solid #2c343d;border-radius:0 8px 8px 0;background:#12161b;padding:11px 12px;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;overflow-y:auto;overscroll-behavior:contain}
+
+/* GitHub issue planner type scale. */
+.github-issue-planner .issue-analyzing strong,.github-issue-planner .issue-empty strong{font-size:15px}
+.github-issue-planner .issue-analyzing p,.github-issue-planner .issue-empty p{max-width:520px;margin-top:8px;font:12px/1.6 -apple-system,sans-serif}
+.github-issue-planner .issue-analyzing>ul{width:min(100%,560px);gap:7px}
+.github-issue-planner .issue-analyzing>ul li{font:11px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+.github-issue-planner .issue-activity-track{width:min(100%,560px)}
+.github-issue-planner .issue-empty button{padding:11px 18px;font-size:12px}
+.github-issue-planner .issue-analysis-summary{gap:10px;margin-bottom:13px;border-radius:13px;padding:13px}
+.github-issue-planner .issue-analysis-summary strong{font-size:20px}
+.github-issue-planner .issue-analysis-summary span{font-size:11px}
+.github-issue-planner .issue-analysis-summary a{font-size:12px}
+.github-issue-planner .issue-selection-actions{gap:8px;margin:0 2px 11px}
+.github-issue-planner .issue-selection-actions button{padding:6px;font-size:12px}
+.github-issue-planner .issue-selection-actions span{font-size:12px}
+.github-issue-planner .issue-topics,.github-issue-planner .issue-prepared-plans{gap:12px}
+.github-issue-planner .issue-topic{border-radius:15px;padding:14px}
+.github-issue-planner .issue-topic-select input{width:19px;height:19px}
+.github-issue-planner .issue-topic-select strong{font-size:14px;line-height:1.4}
+.github-issue-planner .issue-topic-select small{font-size:11px}
+.github-issue-planner .issue-badges{gap:6px;margin:11px 0 9px}
+.github-issue-planner .issue-badges a{border-radius:7px;padding:5px 8px;font:11px ui-monospace,monospace}
+.github-issue-planner .issue-topic>p,.github-issue-planner .issue-topic details p{font:13px/1.6 -apple-system,sans-serif}
+.github-issue-planner .issue-topic details summary{font-size:12px;padding:2px 0}
+.github-issue-planner .issue-overlap{gap:5px;border-radius:10px;padding:10px}
+.github-issue-planner .issue-overlap strong{font-size:11px}
+.github-issue-planner .issue-overlap span{font-size:12px;line-height:1.55}
+.github-issue-planner .issue-topic-questions,.github-issue-planner .issue-followup{gap:12px;margin-top:13px;padding-top:13px}
+.github-issue-planner .issue-question{gap:8px}
+.github-issue-planner .issue-question>span{font-size:13px;line-height:1.5}
+.github-issue-planner .issue-question>div{gap:7px}
+.github-issue-planner .issue-question button{min-height:36px;border-radius:9px;padding:8px 12px;font-size:12px}
+.github-issue-planner .issue-topic-questions label>span,.github-issue-planner .issue-followup label>span{font-size:13px;line-height:1.5}
+.github-issue-planner .issue-topic-questions label button,.github-issue-planner .issue-followup label button{min-height:36px;border-radius:9px;padding:8px 12px;font-size:12px}
+.github-issue-planner .issue-topic-questions textarea,.github-issue-planner .issue-followup textarea{min-height:66px;font-size:13px!important;line-height:1.5}
+.github-issue-planner .issue-launch-preview{gap:5px 14px;margin-top:15px;border-radius:14px;padding:14px}
+.github-issue-planner .issue-launch-preview strong{font-size:14px}
+.github-issue-planner .issue-launch-preview span{font-size:12px;line-height:1.5}
+.github-issue-planner .issue-launch-preview .primary-button{min-width:180px;min-height:46px;font-size:13px}
+.github-issue-planner .issue-plan-intro{font:13px/1.6 -apple-system,sans-serif!important}
+.github-issue-planner .issue-prepared-plans>article{border-radius:14px;padding:14px}
+.github-issue-planner .issue-prepared-plans article>header strong{font-size:14px;line-height:1.4}
+.github-issue-planner .issue-prepared-plans article>header span{font-size:11px}
+.github-issue-planner .issue-prepared-plans article>header em{border-radius:8px;padding:5px 9px;font-size:11px}
+.github-issue-planner .issue-prepared-plans article>ul{gap:8px;margin-top:11px}
+.github-issue-planner .issue-prepared-plans article>ul li{padding-top:8px}
+.github-issue-planner .issue-prepared-plans article>ul span{font-size:13px;line-height:1.45}
+.github-issue-planner .issue-prepared-plans article>ul small{font:11px ui-monospace,monospace;line-height:1.5}
+.github-issue-planner .issue-plan-error{font-size:12px;line-height:1.55}
+.github-issue-planner .issue-followup>div{gap:8px}
+.github-issue-planner .issue-followup>div button{min-height:44px;font-size:12px}
+.github-issue-planner .issue-launched>strong{margin-top:16px;font-size:18px}
+.github-issue-planner .issue-launched>p{max-width:560px;font:13px/1.65 -apple-system,sans-serif!important}
+.github-issue-planner .issue-launched>ul{font-size:12px}
+.github-issue-planner .issue-launched>.primary-button{width:min(100%,340px);min-height:48px;font-size:14px}
+
+/* Desktop only: use the extra width for the cards. Mobile keeps one column. */
+@media(min-width:1024px){
+  .worktree-planner-sheet>header strong,.github-issue-planner>header strong{font-size:20px}
+  .worktree-planner-sheet .planner-tasks,.worktree-planner-sheet .planner-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));align-items:start;gap:14px}
+  .worktree-planner-sheet .planner-saved>div{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));align-items:start}
+  .worktree-planner-sheet .planner-prompt>p{max-height:400px}
+  .github-issue-planner .issue-topics,.github-issue-planner .issue-prepared-plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));align-items:start}
+}
