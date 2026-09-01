@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { basename, dirname, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { normalizePullRequest, parsePorcelainV2 } from "./repo-catalog.mjs";
 import { RepositoryArchive } from "./repository-archive.mjs";
 
@@ -14,6 +14,22 @@ const STATUS_PRIORITY = { ready: 0, done: 1, working: 2, attention: 3 };
 // in a branch worktree still blocks removal.
 export const UPDATER_ARTIFACTS = new Set(["release-manifest.json", "transaction.json", "bootstrap.next"]);
 
+export function defaultManagedReleaseRoots(homeDirectory = process.env.CMUX_COMPANION_HOME || process.env.HOME) {
+  if (!homeDirectory) return [];
+  return [
+    join(homeDirectory, ".local", "share", "cmux-companion", "releases"),
+    join(homeDirectory, ".local", "share", "cmux-companion-updater", "releases"),
+  ].map((path) => resolve(path));
+}
+
+export function isManagedReleasePath(path, roots = defaultManagedReleaseRoots()) {
+  const candidate = resolve(path);
+  return roots.some((root) => {
+    const managedRoot = resolve(root);
+    return candidate === managedRoot || candidate.startsWith(`${managedRoot}${sep}`);
+  });
+}
+
 export function countUpdaterArtifacts(output, artifacts = UPDATER_ARTIFACTS) {
   let count = 0;
   for (const line of String(output).split("\n")) {
@@ -24,13 +40,14 @@ export function countUpdaterArtifacts(output, artifacts = UPDATER_ARTIFACTS) {
 }
 
 export class WorktreeDashboard {
-  constructor({ repoCatalog, cacheMs = 5_000, pullRequestCacheMs = 30_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive() } = {}) {
+  constructor({ repoCatalog, cacheMs = 5_000, pullRequestCacheMs = 30_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), managedReleaseRoots = defaultManagedReleaseRoots() } = {}) {
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
     this.repoCatalog = repoCatalog;
     this.cacheMs = cacheMs;
     this.pullRequestCacheMs = pullRequestCacheMs;
     this.canonicalize = canonicalize;
     this.repositoryArchive = repositoryArchive;
+    this.managedReleaseRoots = managedReleaseRoots.map((path) => resolve(path));
     this.cache = null;
     this.pullRequestCache = new Map();
     this.targets = new Map();
@@ -137,6 +154,7 @@ export class WorktreeDashboard {
       const updaterArtifacts = detached ? countUpdaterArtifacts(statusOutput) : 0;
       const changedFiles = Math.max(0, status.changedFiles - updaterArtifacts);
       const id = worktreeId(repositoryId, path);
+      const managedRelease = isManagedReleasePath(path, this.managedReleaseRoots);
       const worktree = {
         id,
         repoId: repositoryId,
@@ -145,6 +163,7 @@ export class WorktreeDashboard {
         branch: status.branch !== "HEAD" ? status.branch : record.branch || "HEAD",
         head: record.head,
         isPrimary: path === primaryPath,
+        managedRelease,
         detached,
         locked: record.locked,
         prunable: record.prunable,
@@ -357,6 +376,7 @@ export function parseWorktreeList(output) {
 // path. Only a dirty *detached* worktree can be forced, and only when the
 // client explicitly asked for it after its own second confirmation.
 export function assertRemovable(worktree, { discardChanges = false } = {}) {
+  if (worktree.managedRelease) throw new TypeError("Managed deployment releases cannot be removed");
   if (worktree.isPrimary) throw new TypeError("The primary worktree cannot be removed");
   if (worktree.sessions.length) throw new TypeError("Close this worktree\u2019s sessions before removing it");
   if (worktree.locked) throw new TypeError("Unlock this Git worktree before removing it");
@@ -366,7 +386,7 @@ export function assertRemovable(worktree, { discardChanges = false } = {}) {
 }
 
 export function isBulkRemovable(worktree) {
-  return !worktree.isPrimary && worktree.changedFiles === 0 && !worktree.locked && worktree.sessions.length === 0;
+  return !worktree.managedRelease && !worktree.isPrimary && worktree.changedFiles === 0 && !worktree.locked && worktree.sessions.length === 0;
 }
 
 function normalizedGitInput(value, missingMessage) {
