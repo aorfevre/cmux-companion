@@ -357,8 +357,13 @@ export class WorktreePlanner {
     if (draft.round >= this.maxRounds) {
       throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
     }
-    const prompt = skip ? SKIP_PROMPT : answerPrompt(draft, answers);
-    return this.#round(draft, prompt, onEvent, { answers: skip ? [] : answeredPairs(draft, answers), skipped: skip });
+    // Without a session the next spawn starts a fresh conversation, which has
+    // never seen the goal. An answer-only prompt then reads as a goal-less
+    // request, and the planner invents work from the working tree. Restate the
+    // whole opening context, so a resumed plan answers the real goal.
+    const pairs = skip ? [] : answeredPairs(draft, answers);
+    const prompt = draft.sessionId ? (skip ? SKIP_PROMPT : answerPrompt(draft, answers)) : restartPrompt(draft, pairs, skip);
+    return this.#round(draft, prompt, onEvent, { answers: pairs, skipped: skip });
   }
 
   async update(planId, { tasks } = {}) {
@@ -784,6 +789,19 @@ function openingPrompt(draft) {
     OVERRIDES,
     "",
     CONTRACT,
+  ].join("\n");
+}
+
+// A plan whose session is gone must carry its own context again: the goal, the
+// images, the questions already asked and the answers given. answerPrompt sends
+// the answers alone, which only works while the session still holds the goal.
+function restartPrompt(draft, pairs, skip) {
+  const history = pairs.map((pair) => `Q: ${pair.question}\nA: ${pair.text}`).filter(Boolean);
+  return [
+    openingPrompt(draft),
+    "",
+    history.length ? ["Answers already given for this goal:", "", ...history].join("\n") : "No answers were given yet.",
+    ...(skip ? ["", SKIP_PROMPT] : []),
   ].join("\n");
 }
 

@@ -1008,6 +1008,27 @@ test("a new planner reloads a plan the previous process started", async (t) => {
   assert.equal(next.tasks[0].branch, "feature/billing");
 });
 
+test("a resumed plan with no session restates the goal instead of asking for one", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "plan-lost", repositoryId: REPO_ID, repositoryName: "sample", cwd: "/repo/sample", goal: "Add billing", images: [{ path: "/tmp/shot.png", name: "shot.png" }] });
+  // A round that never reached the model leaves the plan with questions and no
+  // session id, which is the state the failed resume produced.
+  store.recordRound("plan-lost", { round: 1, stage: "questions", sessionId: null, questions: [{ id: "q1", text: "Which database?", options: [] }] });
+
+  const deps = fakeDeps({ replies: [TASKS_REPLY] });
+  const planner = new WorktreePlanner({ ...deps, store });
+  const next = await planner.answer("plan-lost", { answers: [{ id: "q1", text: "Postgres" }] });
+
+  assert.equal(next.status, "ready");
+  const prompt = deps.calls[0][1].at(-1);
+  assert.ok(prompt.includes("Goal: Add billing"));
+  assert.ok(prompt.includes("/tmp/shot.png"));
+  assert.ok(prompt.includes("Q: Which database?"));
+  assert.ok(prompt.includes("A: Postgres"));
+  assert.ok(!deps.calls[0][1].includes("--resume"));
+});
+
 test("refuses to resume a plan that already launched", async (t) => {
   const store = new WorktreePlanStore({ path: ":memory:" });
   t.after(() => store.close());
