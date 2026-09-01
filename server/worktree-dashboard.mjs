@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { normalizePullRequest, parsePorcelainV2 } from "./repo-catalog.mjs";
 import { RepositoryArchive } from "./repository-archive.mjs";
+import { RepositoryFavorites } from "./repository-favorites.mjs";
 
 const STATUS_PRIORITY = { ready: 0, done: 1, working: 2, attention: 3 };
 
@@ -40,12 +41,13 @@ export function countUpdaterArtifacts(output, artifacts = UPDATER_ARTIFACTS) {
 }
 
 export class WorktreeDashboard {
-  constructor({ repoCatalog, cacheMs = 5_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), managedReleaseRoots = defaultManagedReleaseRoots() } = {}) {
+  constructor({ repoCatalog, cacheMs = 5_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), repositoryFavorites = new RepositoryFavorites(), managedReleaseRoots = defaultManagedReleaseRoots() } = {}) {
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
     this.repoCatalog = repoCatalog;
     this.cacheMs = cacheMs;
     this.canonicalize = canonicalize;
     this.repositoryArchive = repositoryArchive;
+    this.repositoryFavorites = repositoryFavorites;
     this.managedReleaseRoots = managedReleaseRoots.map((path) => resolve(path));
     this.cache = null;
     this.pullRequestCache = new Map();
@@ -90,6 +92,7 @@ export class WorktreeDashboard {
       for (const release of repository.releases) finalizeWorktree(release);
       repository.summary = { ...summarizeWorktrees(repository.worktrees), releases: repository.releases.length };
       repository.archived = this.repositoryArchive.has(repository.id);
+      repository.favorite = this.repositoryFavorites.has(repository.id);
     }
 
     const orphanSessions = (workspaces || []).filter((workspace) => !assigned.has(workspace.id)).map(normalizeSession);
@@ -366,6 +369,17 @@ export class WorktreeDashboard {
     const saved = this.repositoryArchive.set(id, archived);
     this.invalidate();
     return { repository: { id: repository.id, name: repository.name, archived: saved } };
+  }
+
+  async setRepositoryFavorite(id, favorite, { workspaces = [] } = {}) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid repository");
+    if (typeof favorite !== "boolean") throw new TypeError("Favorite must be true or false");
+    const dashboard = await this.snapshot({ workspaces, refresh: true });
+    const repository = dashboard.repositories.find((item) => item.id === id);
+    if (!repository) throw new TypeError("Unknown repository");
+    const saved = this.repositoryFavorites.set(id, favorite);
+    this.invalidate();
+    return { repository: { id: repository.id, name: repository.name, favorite: saved } };
   }
 
   invalidate() {

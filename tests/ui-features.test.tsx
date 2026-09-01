@@ -243,6 +243,51 @@ describe("contextual mobile features", () => {
     assert.ok(screen.getByText("No archived Karven projects"));
   });
 
+  test("searches projects by name and keeps a favorited project in the Active tab", async () => {
+    const repository = (id: string, name: string, sessions: number, favorite: boolean) => ({
+      id, name, root: "karven", path: `/repo/${name}`, favorite, pullRequestsAvailable: false,
+      summary: { worktrees: 1, sessions, needsYou: 0, working: 0, dirty: 0 },
+      worktrees: [{ id: `${id}-primary-wt`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }],
+    });
+    const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 3, worktrees: 3, sessions: 1, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [
+      repository("repo-busy", "companion", 1, false),
+      repository("repo-star", "trust-layer", 0, true),
+      repository("repo-idle", "quiet-tools", 0, false),
+    ] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      if (String(input).startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    // The favorite has no session, yet Active lists it above the busy project.
+    assert.ok(await screen.findByText("trust-layer"));
+    assert.ok(screen.getByText("companion"));
+    assert.equal(screen.queryByText("quiet-tools"), null);
+    assert.equal(screen.getByRole("tab", { name: /^Active/ }).textContent?.includes("2"), true);
+    assert.deepEqual(screen.getAllByRole("group").map((item) => item.querySelector("strong")?.textContent), ["trust-layer", "companion"]);
+    assert.ok(screen.getByText(/2 shown · 3 total/));
+
+    const searchBox = screen.getByRole("searchbox", { name: "Search projects" });
+    await userEvent.type(searchBox, "trust");
+    assert.equal(screen.queryByText("companion"), null);
+    assert.ok(screen.getByText(/1 shown · 3 total/));
+    await userEvent.clear(searchBox);
+    await userEvent.type(searchBox, "nothing-here");
+    assert.ok(screen.getByText(/No project matches/));
+    await userEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    assert.ok(screen.getByText("companion"));
+
+    // Unfavoriting moves the project out of Active and into Inactive.
+    await userEvent.click(screen.getByRole("button", { name: "Unfavorite trust-layer" }));
+    await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/repositories/repo-star/favorite") && init?.method === "PATCH"), true));
+    await waitFor(() => assert.equal(screen.queryByText("trust-layer"), null));
+    await userEvent.click(screen.getByRole("tab", { name: /^Inactive/ }));
+    assert.ok(screen.getByRole("button", { name: "Favorite trust-layer" }));
+    assert.ok(screen.getByText("quiet-tools"));
+  });
+
   test("shows project-wide draft and launched goals and opens the selected saved plan", async () => {
     const repository = (id: string, name: string, root: string) => ({ id, name, root, path: `/repo/${name}`, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [{ id: `${id}-primary-worktree`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }] });
     const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 2, worktrees: 2, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repo-karven", "trust-layer", "karven"), repository("repo-rekord", "recorder", "rekord")] };

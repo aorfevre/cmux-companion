@@ -337,6 +337,11 @@ export async function buildApp({
     return worktrees.setRepositoryArchived(request.params.id, request.body?.archived, { workspaces: bootstrap.workspaces });
   });
 
+  app.patch("/api/worktree-dashboard/repositories/:id/favorite", async (request) => {
+    const bootstrap = await loadBootstrap();
+    return worktrees.setRepositoryFavorite(request.params.id, request.body?.favorite, { workspaces: bootstrap.workspaces });
+  });
+
   // A round says nothing for minutes. This carries its live steps to the sheet
   // that started it, keyed by a trace id the client made before it posted.
   const progressReporter = (traceId) => (
