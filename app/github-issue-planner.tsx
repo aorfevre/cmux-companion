@@ -13,6 +13,48 @@ type PreparedRow = { topicId: string; title: string; issueNumbers: number[]; sta
 type PrepareResult = { analysisId: string; results: PreparedRow[] };
 type LaunchResult = { requested: number; launchedTopics: number; launchedWorktrees: number; results: { planId: string; status: "launched" | "failed"; error?: string; result?: { deliveryMode?: string; launched: number; results: unknown[] } }[] };
 
+function newTraceId() {
+  return typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : "";
+}
+
+function useIssueProgress(traceId: string) {
+  const [progress, setProgress] = useState<{ traceId: string; steps: string[]; elapsed: number }>({ traceId: "", steps: [], elapsed: 0 });
+  useEffect(() => {
+    if (!traceId) return;
+    const startedAt = Date.now();
+    const clock = setInterval(() => setProgress((current) => ({
+      traceId,
+      steps: current.traceId === traceId ? current.steps : [],
+      elapsed: Math.floor((Date.now() - startedAt) / 1_000),
+    })), 1_000);
+    if (typeof EventSource === "undefined") return () => clearInterval(clock);
+    const source = new EventSource(`/api/worktree-plans/progress/${traceId}`);
+    source.onmessage = (message) => {
+      try {
+        const event = JSON.parse(message.data);
+        if (event.k === "done" || event.k === "error") { source.close(); clearInterval(clock); return; }
+        if (event.t) setProgress((current) => {
+          const text = String(event.t);
+          const steps = current.traceId === traceId ? current.steps : [];
+          return { traceId, elapsed: current.traceId === traceId ? current.elapsed : 0, steps: steps.at(-1) === text ? steps : [...steps, text].slice(-8) };
+        });
+      } catch { /* ignore malformed progress frames */ }
+    };
+    source.onerror = () => {};
+    return () => { clearInterval(clock); source.close(); };
+  }, [traceId]);
+  return progress.traceId === traceId ? progress : { traceId, steps: [], elapsed: 0 };
+}
+
+function IssueProgress({ steps, elapsed, fallback, compact = false }: { steps: string[]; elapsed: number; fallback: string; compact?: boolean }) {
+  const current = steps.at(-1) || fallback;
+  return <div className={`issue-analyzing${compact ? " compact" : ""}`} role="status" aria-live="polite">
+    <div className="issue-progress-current"><i /><div><strong>{current}</strong><p>{elapsed ? `${elapsed}s elapsed` : "Starting…"} · You can keep this window open</p></div></div>
+    <div className="issue-activity-track" aria-hidden="true"><i /></div>
+    {steps.length > 1 && <ul>{steps.slice(0, -1).map((step, index) => <li key={`${index}-${step}`}><span>✓</span>{step}</li>)}</ul>}
+  </div>;
+}
+
 export function GitHubIssuePlannerSheet({ repository, onClose, onLaunched, onNotice }: { repository: Repository; onClose: () => void; onLaunched: () => Promise<void>; onNotice: (message: string) => void }) {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -22,15 +64,18 @@ export function GitHubIssuePlannerSheet({ repository, onClose, onLaunched, onNot
   const [launchResult, setLaunchResult] = useState<LaunchResult | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [traceId, setTraceId] = useState("");
+  const progress = useIssueProgress(traceId);
 
   const analyze = useCallback(async () => {
     setBusy("analyze"); setError(""); setAnalysis(null); setPrepared([]); setLaunchResult(null);
+    const nextTraceId = newTraceId(); setTraceId(nextTraceId);
     try {
-      const result = await request<Analysis>("/api/github-topic-plans/analyze", { method: "POST", body: JSON.stringify({ repositoryId: repository.id }) });
+      const result = await request<Analysis>("/api/github-topic-plans/analyze", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, traceId: nextTraceId }) });
       setAnalysis(result);
       setSelected(new Set(result.topics.map((topic) => topic.id)));
     } catch (cause) { setError(message(cause, "Could not analyze GitHub issues")); }
-    finally { setBusy(""); }
+    finally { setBusy(""); setTraceId(""); }
   }, [repository.id]);
 
   useEffect(() => {
@@ -50,16 +95,17 @@ export function GitHubIssuePlannerSheet({ repository, onClose, onLaunched, onNot
   async function prepare() {
     if (!analysis?.analysisId || !selectedTopics.length) return;
     setBusy("prepare"); setError("");
+    const nextTraceId = newTraceId(); setTraceId(nextTraceId);
     try {
       const topics = selectedTopics.map((topic) => ({
         id: topic.id,
         answers: Object.fromEntries(topic.questions.map((question) => [question.id, topicAnswers[`${topic.id}:${question.id}`] || ""]).filter(([, value]) => value)),
       }));
-      const result = await request<PrepareResult>("/api/github-topic-plans/prepare", { method: "POST", body: JSON.stringify({ analysisId: analysis.analysisId, topics }) });
+      const result = await request<PrepareResult>("/api/github-topic-plans/prepare", { method: "POST", body: JSON.stringify({ analysisId: analysis.analysisId, topics, traceId: nextTraceId }) });
       setPrepared(result.results);
       onNotice(`Created ${result.results.filter((row) => row.status === "planned").length} saved topic plan${result.results.length === 1 ? "" : "s"}`);
     } catch (cause) { setError(message(cause, "Could not create topic plans")); }
-    finally { setBusy(""); }
+    finally { setBusy(""); setTraceId(""); }
   }
 
   async function answerPlan(row: PreparedRow, skip = false) {
@@ -76,20 +122,23 @@ export function GitHubIssuePlannerSheet({ repository, onClose, onLaunched, onNot
   async function launchAll() {
     if (!readyPlans.length || waitingPlans.length) return;
     setBusy("launch"); setError("");
+    const nextTraceId = newTraceId(); setTraceId(nextTraceId);
     try {
-      const result = await request<LaunchResult>("/api/github-topic-plans/launch", { method: "POST", body: JSON.stringify({ planIds: readyPlans.map((row) => row.plan?.planId) }) });
+      const result = await request<LaunchResult>("/api/github-topic-plans/launch", { method: "POST", body: JSON.stringify({ planIds: readyPlans.map((row) => row.plan?.planId), traceId: nextTraceId }) });
       setLaunchResult(result);
       onNotice(`Launched ${result.launchedWorktrees} worktree session${result.launchedWorktrees === 1 ? "" : "s"} across ${result.launchedTopics} topic${result.launchedTopics === 1 ? "" : "s"}`);
       await onLaunched();
     } catch (cause) { setError(message(cause, "Could not launch topic plans")); }
-    finally { setBusy(""); }
+    finally { setBusy(""); setTraceId(""); }
   }
 
   const heading = launchResult ? "Topics launched" : prepared.length ? "Review topic plans" : analysis ? "Choose master topics" : "Plan GitHub issues";
   return <><button className="session-menu-backdrop" aria-label="Close GitHub issue planner" onClick={onClose} /><section className="worktree-launcher github-issue-planner" role="dialog" aria-modal="true" aria-label="Plan GitHub issues">
     <header><div><strong>{heading}</strong><span>{analysis?.repository.nameWithOwner || repository.name}</span></div><button type="button" aria-label="Close GitHub issue planner" onClick={onClose}>×</button></header>
 
-    {busy === "analyze" && <div className="issue-analyzing"><i /><strong>Reading open issues and repository structure…</strong><p>The analyzer is grouping work by outcome and likely file overlap.</p></div>}
+    {busy === "analyze" && <IssueProgress {...progress} fallback="Opening repository…" />}
+    {busy === "prepare" && <IssueProgress {...progress} compact fallback="Checking selected topics…" />}
+    {busy === "launch" && <IssueProgress {...progress} compact fallback="Preparing topic worktrees…" />}
     {error && <div className="apps-warning">{error}</div>}
 
     {analysis && !analysis.issues.length && <div className="issue-empty"><strong>No open issues</strong><p>{analysis.repository.nameWithOwner} has no open GitHub tickets.</p><button type="button" onClick={() => { void analyze(); }}>Refresh</button></div>}

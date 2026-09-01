@@ -15,6 +15,45 @@ import { DeploymentHealth } from "../app/deployment-health";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("GitHub issue topic planner", () => {
+  test("shows live GitHub analysis milestones while the request is running", async () => {
+    const streams: { url: string; closed: boolean; emit: (data: unknown) => void }[] = [];
+    class FakeEventSource {
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      index: number;
+      constructor(public url: string) {
+        this.index = streams.length;
+        streams.push({ url, closed: false, emit: (data) => this.onmessage?.({ data: JSON.stringify(data) }) });
+      }
+      close() { streams[this.index].closed = true; }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    let release: (value: Response) => void = () => {};
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input; void init;
+      return new Promise<Response>((resolve) => { release = resolve; });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<GitHubIssuePlannerSheet repository={{ id: "repository12345678", name: "app" }} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    const sheet = await screen.findByRole("dialog", { name: "Plan GitHub issues" });
+    await waitFor(() => assert.equal(streams.length, 1));
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    assert.match(body.traceId, /^[0-9a-f-]{36}$/);
+    assert.ok(streams[0].url.endsWith(`/api/worktree-plans/progress/${body.traceId}`));
+
+    streams[0].emit({ k: "phase", t: "Fetching repository details and open issues…" });
+    streams[0].emit({ k: "phase", t: "Found 3 open issues" });
+    streams[0].emit({ k: "phase", t: "Grouping 3 issues by outcome and implementation overlap…" });
+    assert.ok(await within(sheet).findByText("Grouping 3 issues by outcome and implementation overlap…"));
+    assert.ok(within(sheet).getByText("Found 3 open issues"));
+    assert.ok(within(sheet).getByRole("status"));
+
+    release(new Response(JSON.stringify({ analysisId: null, repository: { nameWithOwner: "acme/app", url: null, issuesUrl: null }, issues: [], topics: [], analyzedAt: new Date().toISOString() }), { status: 200 }));
+    assert.ok(await within(sheet).findByText("No open issues"));
+    assert.equal(streams[0].closed, true);
+  });
+
   test("groups tickets, captures clarification, creates goal plans, and launches every ready topic", async () => {
     const analysis = {
       analysisId: "analysis-1", repository: { nameWithOwner: "acme/app", url: "https://github.com/acme/app", issuesUrl: "https://github.com/acme/app/issues" }, analyzedAt: new Date().toISOString(),
