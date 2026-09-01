@@ -225,7 +225,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     {draft && !result && draft.status === "ready" && <>
       <p className="planner-round">Round {draft.round} · {draft.tasks.length} task{draft.tasks.length === 1 ? "" : "s"}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />
-      {draft.tasks.length > 1 && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Task agents commit and push isolated branches. Companion pins their commits, assembles them on a fresh goal branch, runs the repository verification gate, and opens one pull request.</p></section>}
+      {draft.tasks.length > 1 && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Task agents commit and push isolated branches. Companion pins their commits and starts a merge agent that resolves conflicts, verifies against a baseline, and opens one pull request.</p></section>}
       <div className="planner-tasks">{draft.tasks.map((task) => <article className="planner-task" key={task.id}>
         <header><strong>{task.title}</strong>{!launchedPlan && <button type="button" className="planner-remove-task" aria-label={`Remove ${task.title}`} disabled={busy === "edit" || draft.tasks.length < 2} onClick={() => editTasks(draft.tasks.filter((item) => item.id !== task.id))}>×</button>}</header>
         <code className="planner-branch">{task.branch}</code>
@@ -239,7 +239,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     </>}
     {result && <>
       <p className="planner-round">Branched from <code>{result.base}</code> · {result.launched} of {result.results.length} started</p>
-      {result.deliveryMode === "combined" && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Each agent will commit and push its task branch without opening a PR. When every branch is ready, Companion will assemble and verify the goal branch automatically.</p></section>}
+      {result.deliveryMode === "combined" && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Each agent will commit and push its task branch without opening a PR. When every branch is ready, a merge agent will resolve conflicts and open one pull request.</p></section>}
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <div className="planner-results">{result.results.map((row) => <div className={`planner-result ${row.status}`} key={row.id}>
         <header><strong>{row.title}</strong><em>{row.status === "launched" ? "Launched" : "Failed"}</em></header>
