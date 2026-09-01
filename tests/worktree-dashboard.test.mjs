@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { RepositoryArchive } from "../server/repository-archive.mjs";
-import { WorktreeDashboard, countUpdaterArtifacts, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
+import { WorktreeDashboard, countUpdaterArtifacts, isManagedReleasePath, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
 
 const REPO = { id: "repo-1234567890123", name: "sample", root: "karven", path: "/repo/sample", branch: "main" };
 
@@ -223,10 +223,22 @@ test("ignores the updater's own artifacts when counting changes in a detached re
   assert.equal(release.updaterArtifacts, 1);
   assert.equal(release.changedFiles, 0);
   assert.equal(release.dirty, false);
-  const result = await dashboard.remove(release.id);
-  assert.equal(result.removed, true);
-  assert.equal(result.branchPreserved, true);
-  assert.equal(result.discardedChanges, false);
+});
+
+test("protects managed deployment releases from individual and bulk removal", async () => {
+  const { repoCatalog } = releaseRepoCatalog({ status: "# branch.head (detached)\n? release-manifest.json\n" });
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path, managedReleaseRoots: ["/releases"] });
+  const snapshot = await dashboard.snapshot();
+  const repository = snapshot.repositories[0];
+  const release = repository.worktrees.find((item) => !item.isPrimary);
+  assert.equal(isManagedReleasePath("/releases/abc", ["/releases"]), true);
+  assert.equal(isManagedReleasePath("/releases-other/abc", ["/releases"]), false);
+  assert.equal(release.managedRelease, true);
+  await assert.rejects(() => dashboard.remove(release.id), /Managed deployment releases cannot be removed/);
+  await assert.rejects(() => dashboard.remove(release.id, { discardChanges: true }), /Managed deployment releases cannot be removed/);
+  const bulk = await dashboard.removeCleanWorktrees(repository.id);
+  assert.equal(bulk.requested, 0);
+  assert.equal(repoCatalog.calls.some((call) => call[1] === "worktree" && call[2] === "remove"), false);
 });
 
 test("removes a dirty detached worktree only when the client asks to discard its changes", async () => {
