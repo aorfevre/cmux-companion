@@ -409,8 +409,58 @@ function fakePlanner() {
     answer: async (planId, options) => { calls.push(["answer", planId, options]); return { ...draft, round: 2 }; },
     update: async (planId, options) => { calls.push(["update", planId, options]); return { ...draft, tasks: options.tasks }; },
     launch: async (planId) => { calls.push(["launch", planId]); return { planId, base: "origin/main", launched: 1, results: [{ id: "t1", title: "Billing", status: "launched" }] }; },
+    list: async (options) => { calls.push(["list", options]); return { plans: [{ planId: "plan-1", goal: "Add billing", status: "draft", taskCount: 1 }] }; },
+    detail: async (planId) => { calls.push(["detail", planId]); return { ...draft, events: [{ round: 0, kind: "goal", payload: { goal: "Add billing" }, createdAt: "2026-09-01T00:00:00.000Z" }] }; },
+    resume: async (planId) => { calls.push(["resume", planId]); return draft; },
+    remove: async (planId) => { calls.push(["remove", planId]); return { planId, deleted: true }; },
   };
 }
+
+test("lists, reloads, resumes and deletes saved plans", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const listed = await app.inject({ method: "GET", url: "/api/worktree-plans?repositoryId=repository12345678&status=draft&limit=10", headers });
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().plans[0].planId, "plan-1");
+  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", status: "draft", limit: "10" });
+
+  const detail = await app.inject({ method: "GET", url: "/api/worktree-plans/plan-1", headers });
+  assert.equal(detail.statusCode, 200);
+  assert.equal(detail.json().events[0].kind, "goal");
+
+  const resumed = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/resume", headers, payload: {} });
+  assert.equal(resumed.statusCode, 200);
+  assert.equal(resumed.json().planId, "plan-1");
+
+  const deleted = await app.inject({ method: "DELETE", url: "/api/worktree-plans/plan-1", headers });
+  assert.equal(deleted.statusCode, 200);
+  assert.deepEqual(deleted.json(), { planId: "plan-1", deleted: true });
+  assert.deepEqual(planner.calls.map((call) => call[0]), ["list", "detail", "resume", "remove"]);
+});
+
+test("lists every plan when no filter is given", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const listed = await app.inject({ method: "GET", url: "/api/worktree-plans", headers });
+  assert.equal(listed.statusCode, 200);
+  assert.deepEqual(planner.calls[0][1], { repositoryId: null, status: null, limit: undefined });
+});
+
+test("turns an unknown saved plan into a 400", async (t) => {
+  const planner = fakePlanner();
+  planner.detail = async () => { throw new TypeError("Unknown plan. Start a new goal"); };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "GET", url: "/api/worktree-plans/nope", headers });
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /Unknown plan/);
+});
 
 test("drives a worktree plan from goal to launch", async (t) => {
   const planner = fakePlanner();

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { WorktreePlanner, assignAgents, describeRunFailure, finalEnvelope, parsePlannerReply, progressEvent } from "../server/worktree-planner.mjs";
 
 function envelope(text, sessionId = "session-1") {
@@ -844,4 +845,216 @@ test("says it is retrying when the first sample was unusable", async () => {
   const seen = [];
   await planner.start({ repositoryId: REPO_ID, goal: "Add billing", onEvent: (event) => seen.push(event.t) });
   assert.deepEqual(seen, ["Retrying…"]);
+});
+
+// --- persistence ---------------------------------------------------------
+
+function storedPlanner(options = {}) {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const deps = fakeDeps({ replies: options.replies || [] });
+  const planner = new WorktreePlanner({ ...deps, ...options.planner, store });
+  return { store, deps, planner };
+}
+
+const TASKS_REPLY = envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a");
+const QUESTIONS_REPLY = envelope('{"questions":[{"text":"Which database?"}]}', "sess-a");
+
+test("saves the goal, the session id and the questions of a first round", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const saved = store.get(draft.planId);
+  assert.equal(saved.goal, "Add billing");
+  assert.equal(saved.repositoryId, REPO_ID);
+  assert.equal(saved.cwd, "/repo/sample");
+  assert.equal(saved.sessionId, "sess-a");
+  assert.equal(saved.round, 1);
+  assert.equal(saved.stage, "questions");
+  assert.equal(saved.questions[0].text, "Which database?");
+  assert.deepEqual(store.events(draft.planId).map((event) => event.kind), ["goal", "questions"]);
+});
+
+test("saves the submitted answers with their question text", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
+  const answers = store.events(draft.planId).find((event) => event.kind === "answers");
+  assert.equal(answers.payload.answers[0].question, "Which database?");
+  assert.equal(answers.payload.answers[0].text, "Postgres");
+  assert.equal(answers.payload.skipped, false);
+});
+
+test("saves a skipped round as skipped", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.answer(draft.planId, { skip: true });
+  const answers = store.events(draft.planId).find((event) => event.kind === "answers");
+  assert.equal(answers.payload.skipped, true);
+});
+
+test("saves the assigned tasks of a ready round", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [TASKS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const saved = store.get(draft.planId);
+  assert.equal(saved.stage, "ready");
+  assert.equal(saved.tasks.length, 1);
+  assert.equal(saved.tasks[0].branch, "feature/billing");
+  assert.equal(saved.tasks[0].agent, "claude");
+  assert.match(saved.tasks[0].agentReason, /Claude/);
+});
+
+test("saves a user edit as its own event", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [TASKS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.update(draft.planId, { tasks: [{ id: "t1", title: "Renamed", branch: "feature/renamed", prompt: "Add billing.", agent: "codex" }] });
+  const saved = store.get(draft.planId);
+  assert.equal(saved.tasks[0].title, "Renamed");
+  assert.equal(saved.tasks[0].agent, "codex");
+  assert.equal(store.events(draft.planId).at(-1).kind, "edit");
+});
+
+test("saves the launch outcome of each task", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const planner = new WorktreePlanner({ ...launchDeps(), store });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  const saved = store.get(draft.planId);
+  assert.equal(saved.status, "launched");
+  assert.equal(saved.baseRef, "origin/main");
+  assert.ok(saved.launchedAt);
+  assert.equal(saved.tasks[0].launchStatus, "launched");
+  assert.equal(saved.tasks[0].worktreePath, "/repo/sample-feature-billing");
+  assert.equal(saved.tasks[0].workspaceId, "ws-1");
+  assert.equal(store.events(draft.planId).at(-1).kind, "launch");
+});
+
+test("saves a failed launch with its reason and keeps the plan a draft", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const planner = new WorktreePlanner({ ...launchDeps({ createFails: "feature/billing" }), store });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  const saved = store.get(draft.planId);
+  assert.equal(saved.status, "draft");
+  assert.equal(saved.tasks[0].launchStatus, "failed");
+  assert.match(saved.tasks[0].launchError, /already has a worktree/);
+});
+
+test("answers a plan the memory cache has forgotten", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY], planner: { ttlMs: -1 } });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const next = await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
+  assert.equal(next.status, "ready");
+  assert.equal(next.round, 2);
+});
+
+test("resumes a forgotten plan on the same ccs session", async (t) => {
+  const { store, deps, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY], planner: { ttlMs: -1 } });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const resumed = await planner.resume(draft.planId);
+  assert.equal(resumed.planId, draft.planId);
+  assert.equal(resumed.goal, "Add billing");
+  assert.equal(resumed.round, 1);
+  assert.equal(resumed.questions[0].text, "Which database?");
+  await planner.answer(draft.planId, { skip: true });
+  const args = deps.calls.filter((call) => call[0] === "ccs").at(-1)[1];
+  assert.ok(args.includes("--resume"));
+  assert.equal(args[args.indexOf("--resume") + 1], "sess-a");
+});
+
+test("a new planner reloads a plan the previous process started", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const first = new WorktreePlanner({ ...fakeDeps({ replies: [QUESTIONS_REPLY] }), store });
+  const draft = await first.start({ repositoryId: REPO_ID, goal: "Add billing" });
+
+  const second = new WorktreePlanner({ ...fakeDeps({ replies: [TASKS_REPLY] }), store });
+  const resumed = await second.resume(draft.planId);
+  assert.equal(resumed.goal, "Add billing");
+  assert.equal(resumed.status, "questions");
+  const next = await second.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
+  assert.equal(next.status, "ready");
+  assert.equal(next.tasks[0].branch, "feature/billing");
+});
+
+test("refuses to resume a plan that already launched", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const planner = new WorktreePlanner({ ...launchDeps(), store });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  await assert.rejects(() => planner.resume(draft.planId), /already launched/);
+});
+
+test("lists saved plans newest first", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  let tick = 0;
+  store.now = () => new Date(1_700_000_000_000 + (tick += 1_000));
+  const planner = new WorktreePlanner({ ...fakeDeps({ replies: [QUESTIONS_REPLY, QUESTIONS_REPLY] }), store });
+  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const second = await planner.start({ repositoryId: REPO_ID, goal: "Add invoices" });
+  const { plans } = await planner.list();
+  assert.deepEqual(plans.map((plan) => plan.planId), [second.planId, first.planId]);
+  assert.equal(plans[0].goal, "Add invoices");
+  assert.equal(plans[0].taskCount, 0);
+});
+
+test("returns a saved plan with its whole event log", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
+  const detail = await planner.detail(draft.planId);
+  assert.equal(detail.goal, "Add billing");
+  assert.equal(detail.tasks[0].branch, "feature/billing");
+  assert.deepEqual(detail.events.map((event) => event.kind), ["goal", "questions", "answers", "tasks"]);
+});
+
+test("deletes a plan and forgets it", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  assert.deepEqual(await planner.remove(draft.planId), { planId: draft.planId, deleted: true });
+  assert.equal(store.get(draft.planId), null);
+  await assert.rejects(() => planner.remove(draft.planId), /Unknown plan/);
+  await assert.rejects(() => planner.resume(draft.planId), /Unknown plan/);
+});
+
+test("rejects an unknown plan id", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [] });
+  t.after(() => store.close());
+  await assert.rejects(() => planner.detail("nope"), /Unknown plan/);
+  await assert.rejects(() => planner.resume("nope"), /Unknown plan/);
+});
+
+test("still answers the round when the store write fails", async (t) => {
+  const warnings = [];
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.recordRound = () => { throw new Error("disk is full"); };
+  const planner = new WorktreePlanner({
+    ...fakeDeps({ replies: [QUESTIONS_REPLY] }),
+    store,
+    log: { warn: (...args) => warnings.push(args) },
+  });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  assert.equal(draft.status, "questions");
+  assert.equal(warnings.length, 1);
+  assert.match(String(warnings[0][1]), /plan store write failed/);
+});
+
+test("runs without a store at all", async () => {
+  const planner = new WorktreePlanner(fakeDeps({ replies: [QUESTIONS_REPLY] }));
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  assert.equal(draft.status, "questions");
+  assert.deepEqual((await planner.list()).plans, []);
+  await assert.rejects(() => planner.detail(draft.planId), /Unknown plan/);
 });
