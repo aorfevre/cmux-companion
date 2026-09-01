@@ -10,7 +10,10 @@ const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db
 const MAX_PLANS = 200;
 const MAX_EVENT_BYTES = 64 * 1024;
 
-export const PLAN_EVENT_KINDS = new Set(["goal", "questions", "answers", "tasks", "edit", "launch"]);
+export const PLAN_EVENT_KINDS = new Set([
+  "goal", "questions", "answers", "tasks", "edit", "launch",
+  "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
+]);
 // A round either asked questions or returned the split. Any other stage is a
 // caller mistake, and storing it would make a reloaded plan unreadable.
 const PLAN_STAGES = new Set(["questions", "ready"]);
@@ -29,6 +32,15 @@ CREATE TABLE IF NOT EXISTS plans (
   stage TEXT NOT NULL DEFAULT 'questions',
   questions TEXT NOT NULL DEFAULT '[]',
   base_ref TEXT,
+  base_sha TEXT,
+  delivery_mode TEXT NOT NULL DEFAULT 'single',
+  delivery_status TEXT NOT NULL DEFAULT 'planning',
+  integration_branch TEXT,
+  integration_worktree_path TEXT,
+  final_pr_number INTEGER,
+  final_pr_url TEXT,
+  delivery_error TEXT,
+  verified_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   launched_at TEXT
@@ -46,6 +58,9 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
   launch_error TEXT,
   worktree_path TEXT,
   workspace_id TEXT,
+  head_sha TEXT,
+  delivery_status TEXT NOT NULL DEFAULT 'pending',
+  integrated_commit_sha TEXT,
   PRIMARY KEY (plan_id, task_id)
 );
 CREATE TABLE IF NOT EXISTS plan_events (
@@ -75,6 +90,7 @@ export class WorktreePlanStore {
     if (path !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec(SCHEMA);
+    this.#migrate();
     if (path !== ":memory:") {
       // The goal text and the task prompts describe private work, so the file
       // stays readable by its owner only, like every other companion file.
@@ -103,8 +119,8 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare(`
-        UPDATE plans SET round = ?, stage = ?, session_id = ?, questions = ?, updated_at = ? WHERE plan_id = ?
-      `).run(round, stage, sessionId, json(questions), at, planId);
+        UPDATE plans SET round = ?, stage = ?, session_id = ?, questions = ?, delivery_mode = ?, updated_at = ? WHERE plan_id = ?
+      `).run(round, stage, sessionId, json(questions), deliveryMode(tasks), at, planId);
       // An answered round replaces the previous task list wholesale, because the
       // planner returns a fresh split rather than a patch.
       this.#replaceTasks(planId, tasks);
@@ -119,7 +135,7 @@ export class WorktreePlanStore {
   recordEdit(planId, tasks) {
     const at = this.#stamp();
     this.#transaction(() => {
-      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, planId);
+      this.db.prepare("UPDATE plans SET delivery_mode = ?, updated_at = ? WHERE plan_id = ?").run(deliveryMode(tasks), at, planId);
       this.#replaceTasks(planId, tasks);
       this.#insertEvent(planId, null, "edit", { tasks }, at);
     });
@@ -127,13 +143,21 @@ export class WorktreePlanStore {
   }
 
   // The launch outcome, one row per task plus one event for the whole run.
-  recordLaunch(planId, { base = null, results = [] } = {}) {
+  recordLaunch(planId, { base = null, baseSha = null, results = [] } = {}) {
     const at = this.#stamp();
     const launched = results.filter((item) => item?.status === "launched").length;
     this.#transaction(() => {
       this.db.prepare(`
-        UPDATE plans SET status = ?, base_ref = ?, launched_at = ?, updated_at = ? WHERE plan_id = ?
-      `).run(launched > 0 ? "launched" : "draft", base, launched > 0 ? at : null, at, planId);
+        UPDATE plans SET status = ?, base_ref = ?, base_sha = ?, delivery_status = ?, launched_at = ?, updated_at = ? WHERE plan_id = ?
+      `).run(
+        launched > 0 ? "launched" : "draft",
+        base,
+        text(baseSha),
+        launched > 0 ? "implementing" : "planning",
+        launched > 0 ? at : null,
+        at,
+        planId,
+      );
       const update = this.db.prepare(`
         UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, workspace_id = ?
         WHERE plan_id = ? AND task_id = ?
@@ -148,7 +172,104 @@ export class WorktreePlanStore {
           String(result?.id || ""),
         );
       }
-      this.#insertEvent(planId, null, "launch", { base, launched, results }, at);
+      this.#insertEvent(planId, null, "launch", { base, baseSha, launched, results }, at);
+    });
+    return this.get(planId);
+  }
+
+  findTaskByWorkspace(workspaceIdValue) {
+    const id = text(workspaceIdValue);
+    if (!id) return null;
+    const row = this.db.prepare(`
+      SELECT t.plan_id, t.task_id FROM plan_tasks t
+      JOIN plans p ON p.plan_id = t.plan_id
+      WHERE t.workspace_id = ? AND p.status = 'launched' AND p.delivery_mode = 'combined'
+      LIMIT 1
+    `).get(id);
+    if (!row) return null;
+    const plan = this.get(row.plan_id);
+    return plan ? { plan, task: plan.tasks.find((task) => task.id === row.task_id) || null } : null;
+  }
+
+  activeCombinedPlans() {
+    return this.db.prepare(`
+      SELECT plan_id FROM plans
+      WHERE status = 'launched' AND delivery_mode = 'combined' AND final_pr_url IS NULL
+      ORDER BY updated_at
+    `).all().map((row) => this.get(row.plan_id)).filter(Boolean);
+  }
+
+  recordTaskReady(planId, taskId, headSha) {
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plan_tasks SET head_sha = ?, delivery_status = 'ready'
+        WHERE plan_id = ? AND task_id = ?
+      `).run(String(headSha), String(planId), String(taskId));
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, String(planId));
+      this.#insertEvent(String(planId), null, "task_ready", { taskId, headSha }, at);
+    });
+    return this.get(planId);
+  }
+
+  recordTaskPending(planId, taskId) {
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plan_tasks SET head_sha = NULL, delivery_status = 'pending'
+        WHERE plan_id = ? AND task_id = ?
+      `).run(String(planId), String(taskId));
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, String(planId));
+      this.#insertEvent(String(planId), null, "task_pending", { taskId }, at);
+    });
+    return this.get(planId);
+  }
+
+  recordIntegrationStarted(planId, { branch, path }) {
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET delivery_status = 'assembling', integration_branch = ?,
+          integration_worktree_path = ?, delivery_error = NULL, updated_at = ? WHERE plan_id = ?
+      `).run(String(branch), String(path), at, String(planId));
+      this.#insertEvent(String(planId), null, "integration_started", { branch, path }, at);
+    });
+    return this.get(planId);
+  }
+
+  recordTaskIntegrated(planId, taskId, commitSha) {
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plan_tasks SET integrated_commit_sha = ?, delivery_status = 'integrated'
+        WHERE plan_id = ? AND task_id = ?
+      `).run(String(commitSha), String(planId), String(taskId));
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, String(planId));
+      this.#insertEvent(String(planId), null, "task_integrated", { taskId, commitSha }, at);
+    });
+    return this.get(planId);
+  }
+
+  recordDeliveryFailure(planId, error) {
+    const at = this.#stamp();
+    const message = String(error || "Combined delivery failed").slice(0, 2_000);
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET delivery_status = 'blocked', delivery_error = ?, updated_at = ? WHERE plan_id = ?
+      `).run(message, at, String(planId));
+      this.#insertEvent(String(planId), null, "delivery_failed", { error: message }, at);
+    });
+    return this.get(planId);
+  }
+
+  recordFinalPr(planId, { number = null, url, verifiedAt = null }) {
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET delivery_status = 'pr_open', final_pr_number = ?, final_pr_url = ?,
+          delivery_error = NULL, verified_at = ?, updated_at = ? WHERE plan_id = ?
+      `).run(Number.isInteger(number) ? number : null, String(url), verifiedAt || at, at, String(planId));
+      this.#insertEvent(String(planId), null, "final_pr", { number, url, verifiedAt: verifiedAt || at }, at);
     });
     return this.get(planId);
   }
@@ -195,6 +316,10 @@ export class WorktreePlanStore {
       round: row.round,
       status: row.status,
       stage: row.stage,
+      deliveryMode: row.delivery_mode,
+      deliveryStatus: row.delivery_status,
+      finalPrNumber: row.final_pr_number,
+      finalPrUrl: row.final_pr_url,
       taskCount: row.task_count,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -240,6 +365,25 @@ export class WorktreePlanStore {
     `).run(planId, round === null || round === undefined ? null : Number(round), kind, body.slice(0, MAX_EVENT_BYTES), at);
   }
 
+  #migrate() {
+    const ensure = (table, column, declaration) => {
+      const columns = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+      if (!columns.has(column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
+    };
+    ensure("plans", "base_sha", "TEXT");
+    ensure("plans", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'");
+    ensure("plans", "delivery_status", "TEXT NOT NULL DEFAULT 'planning'");
+    ensure("plans", "integration_branch", "TEXT");
+    ensure("plans", "integration_worktree_path", "TEXT");
+    ensure("plans", "final_pr_number", "INTEGER");
+    ensure("plans", "final_pr_url", "TEXT");
+    ensure("plans", "delivery_error", "TEXT");
+    ensure("plans", "verified_at", "TEXT");
+    ensure("plan_tasks", "head_sha", "TEXT");
+    ensure("plan_tasks", "delivery_status", "TEXT NOT NULL DEFAULT 'pending'");
+    ensure("plan_tasks", "integrated_commit_sha", "TEXT");
+  }
+
   // node:sqlite has no transaction helper, so BEGIN/COMMIT is written out. A
   // throw inside the body rolls the whole round back.
   #transaction(run) {
@@ -282,6 +426,15 @@ function readPlan(row) {
     stage: row.stage,
     questions: parse(row.questions, []),
     baseRef: row.base_ref,
+    baseSha: row.base_sha,
+    deliveryMode: row.delivery_mode || "single",
+    deliveryStatus: row.delivery_status || "planning",
+    integrationBranch: row.integration_branch,
+    integrationWorktreePath: row.integration_worktree_path,
+    finalPrNumber: row.final_pr_number,
+    finalPrUrl: row.final_pr_url,
+    deliveryError: row.delivery_error,
+    verifiedAt: row.verified_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     launchedAt: row.launched_at,
@@ -300,7 +453,14 @@ function readTask(row) {
     launchError: row.launch_error,
     worktreePath: row.worktree_path,
     workspaceId: row.workspace_id,
+    headSha: row.head_sha,
+    deliveryStatus: row.delivery_status || "pending",
+    integratedCommitSha: row.integrated_commit_sha,
   };
+}
+
+function deliveryMode(tasks) {
+  return Array.isArray(tasks) && tasks.length > 1 ? "combined" : "single";
 }
 
 // cmux answers with one of several id fields depending on its version, so read

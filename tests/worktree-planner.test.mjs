@@ -670,7 +670,8 @@ test("appends the image paths to every launched task prompt", async () => {
   const prompts = deps.calls.filter((call) => call[0] === "workspace").map((call) => call[1].prompt);
   assert.equal(prompts.length, 2);
   for (const prompt of prompts) {
-    assert.match(prompt, /Attached images:\n- \/attachments\/one\.png\n- \/attachments\/two\.png\n\nFinish with a pull request:/);
+    assert.match(prompt, /Attached images:\n- \/attachments\/one\.png\n- \/attachments\/two\.png\n\nFinish your task branch for combined delivery:/);
+    assert.match(prompt, /Do not open a pull request/);
   }
   assert.ok(prompts[0].startsWith("Do it.\n\n"));
 });
@@ -685,7 +686,7 @@ test("a launched task keeps its own prompt when no image is attached", async () 
   assert.ok(!workspace[1].prompt.includes("Attached image"));
 });
 
-test("appends the pull request step to every task prompt, naming the real base branch", async () => {
+test("multi-task goals push task branches without opening individual pull requests", async () => {
   const deps = launchDeps();
   const planner = new WorktreePlanner(deps);
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
@@ -697,14 +698,24 @@ test("appends the pull request step to every task prompt, naming the real base b
   const prompts = deps.calls.filter((call) => call[0] === "workspace").map((call) => call[1].prompt);
   assert.equal(prompts.length, 2);
   for (const prompt of prompts) {
-    assert.match(prompt, /Finish with a pull request:/);
-    assert.match(prompt, /gh pr create/);
-    // The base is origin/main, so the PR must target main, not origin/main.
-    assert.match(prompt, /pull request against main\b/);
-    assert.ok(!prompt.includes("against origin/main"));
-    assert.match(prompt, /even when your own checks fail/);
-    assert.ok(!/draft/i.test(prompt.replace("Do not mark it a draft.", "")));
+    assert.match(prompt, /Finish your task branch for combined delivery:/);
+    assert.match(prompt, /Push this task branch to origin/);
+    assert.match(prompt, /Do not open a pull request/);
+    assert.match(prompt, /Cmux-Goal-Ready: .+\/t[12]/);
+    assert.ok(!prompt.includes("gh pr create"));
   }
+});
+
+test("single-task goals keep the direct pull request workflow", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const result = await planner.launch(draft.planId);
+  const prompt = deps.calls.find((call) => call[0] === "workspace")[1].prompt;
+  assert.equal(result.deliveryMode, "single");
+  assert.match(prompt, /Finish with a pull request:/);
+  assert.match(prompt, /gh pr create/);
+  assert.match(prompt, /pull request against main\b/);
 });
 
 test("names a master default branch rather than assuming main", async () => {
@@ -726,7 +737,7 @@ test("tells the planner not to write its own pull request instructions", async (
   const planner = new WorktreePlanner(deps);
   await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
   const prompt = deps.calls.find((call) => call[0] === "ccs")[1].at(-1);
-  assert.match(prompt, /Do not tell a task to commit, to push, or to open a pull request/);
+  assert.match(prompt, /Do not tell a task to commit, push, or open a pull request/);
 });
 
 function streamLine(value) { return JSON.stringify(value); }

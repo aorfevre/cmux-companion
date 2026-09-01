@@ -352,6 +352,7 @@ test("every state-changing route requires pairing and same-origin requests", asy
     ["/api/workspaces", { repoId: "x" }],
     ["/api/worktree-dashboard/repositories/repository12345678/worktrees", { branch: "feature/safe", base: "main" }],
     ["/api/worktree-dashboard/worktree123456789/launch", { agent: "codex" }],
+    ["/api/worktree-plans/plan-1/assemble", {}],
     [`/api/workspaces/${WS_ID}/rename`, { title: "x" }],
     [`/api/workspaces/${WS_ID}/close`, {}],
     [`/api/workspaces/${WS_ID}/respawn`, { surfaceId: TERM_ID }],
@@ -491,6 +492,23 @@ test("drives a worktree plan from goal to launch", async (t) => {
   assert.equal(launched.json().base, "origin/main");
   assert.equal(launched.json().launched, 1);
   assert.deepEqual(planner.calls.map((call) => call[0]), ["start", "answer", "answer", "update", "launch"]);
+});
+
+test("builds the single combined pull request through the goal integrator", async (t) => {
+  const calls = [];
+  const goalIntegrator = {
+    assemble: async (planId) => {
+      calls.push(planId);
+      return { planId, deliveryMode: "combined", deliveryStatus: "pr_open", finalPrNumber: 42, finalPrUrl: "https://github.test/pr/42" };
+    },
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalIntegrator });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/assemble", headers, payload: {} });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().finalPrNumber, 42);
+  assert.deepEqual(calls, ["plan-1"]);
 });
 
 test("turns a planner rejection into a 400 with its own message", async (t) => {

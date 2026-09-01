@@ -7,10 +7,11 @@ export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
 export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string };
 export type PlanImage = { path: string; name: string };
-export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; round: number; taskCount: number; launchedCount: number; createdAt: string; updatedAt: string; launchedAt: string | null };
-export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; images?: PlanImage[]; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
+export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; deliveryMode?: "single" | "combined"; deliveryStatus?: string; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; createdAt: string; updatedAt: string; launchedAt: string | null };
+export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; images?: PlanImage[]; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
 export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed"; path?: string | null; workspace?: unknown; error?: string };
-export type PlanLaunchResult = { planId: string; base: string; launched: number; results: PlanLaunchRow[] };
+export type PlanLaunchResult = { planId: string; base: string; deliveryMode?: "single" | "combined"; launched: number; results: PlanLaunchRow[] };
+type DeliveryResult = { planId: string; deliveryMode: "combined"; deliveryStatus: string; integrationBranch?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null };
 type PlannerRepository = { id: string; name: string };
 
 const LOST_SESSION = "The planner lost its session";
@@ -73,7 +74,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [result, setResult] = useState<PlanLaunchResult | null>(null);
-  const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch">("");
+  const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch" | "assemble">("");
   const [openingPlanId, setOpeningPlanId] = useState("");
   const [deletingPlanId, setDeletingPlanId] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState("");
@@ -166,6 +167,18 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     finally { setBusy(""); }
   }
 
+  async function assemble() {
+    if (!draft || busy) return;
+    setBusy("assemble"); setError("");
+    try {
+      const delivery = await request<DeliveryResult>(`/api/worktree-plans/${draft.planId}/assemble`, { method: "POST", body: "{}" });
+      const refreshed = await request<PlanDraft>(`/api/worktree-plans/${draft.planId}`);
+      receive(refreshed);
+      if (delivery.finalPrUrl) onNotice(`Combined PR #${delivery.finalPrNumber || ""} is ready`.trim());
+    } catch (cause) { fail(cause, "Could not build the combined pull request"); }
+    finally { setBusy(""); }
+  }
+
   // The local attachments still hold their preview data URLs, so prefer them
   // over the draft's paths for as long as this sheet is open.
   const reviewImages = attachments.length ? attachments : draft?.images || [];
@@ -206,6 +219,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     {draft && !result && draft.status === "ready" && <>
       <p className="planner-round">Round {draft.round} · {draft.tasks.length} task{draft.tasks.length === 1 ? "" : "s"}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />
+      {draft.tasks.length > 1 && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Task agents commit and push isolated branches. Companion pins their commits, assembles them on a fresh goal branch, runs the repository verification gate, and opens one pull request.</p></section>}
       <div className="planner-tasks">{draft.tasks.map((task) => <article className="planner-task" key={task.id}>
         <header><strong>{task.title}</strong>{!launchedPlan && <button type="button" className="planner-remove-task" aria-label={`Remove ${task.title}`} disabled={busy === "edit" || draft.tasks.length < 2} onClick={() => editTasks(draft.tasks.filter((item) => item.id !== task.id))}>×</button>}</header>
         <code className="planner-branch">{task.branch}</code>
@@ -215,10 +229,11 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
       </article>)}</div>
       {busy === "launch" && <p className="planner-waiting">Creating worktrees and starting sessions. This can take a minute.</p>}
       {error && <p className="worktree-action-error">{error}</p>}
-      {launchedPlan ? <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
+      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong>{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
     </>}
     {result && <>
       <p className="planner-round">Branched from <code>{result.base}</code> · {result.launched} of {result.results.length} started</p>
+      {result.deliveryMode === "combined" && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Each agent will commit and push its task branch without opening a PR. When every branch is ready, Companion will assemble and verify the goal branch automatically.</p></section>}
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <div className="planner-results">{result.results.map((row) => <div className={`planner-result ${row.status}`} key={row.id}>
         <header><strong>{row.title}</strong><em>{row.status === "launched" ? "Launched" : "Failed"}</em></header>
@@ -232,4 +247,11 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
       <div className="planner-actions">{canRetry && <button type="button" className="primary-button" disabled={busy === "launch"} onClick={launch}>{busy === "launch" ? "Launching…" : "Try again"}</button>}<button type="button" onClick={onClose}>Done</button></div>
     </>}
   </form></>;
+}
+
+function deliveryLabel(status?: string) {
+  if (status === "assembling") return "Assembling task branches";
+  if (status === "blocked") return "Combined delivery needs attention";
+  if (status === "pr_open") return "Combined PR ready";
+  return "Waiting for task branches";
 }

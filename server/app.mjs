@@ -11,6 +11,7 @@ import { RepoCatalog } from "./repo-catalog.mjs";
 import { WorktreeDashboard } from "./worktree-dashboard.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
+import { GoalIntegrator } from "./goal-integrator.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import {
@@ -35,6 +36,7 @@ export async function buildApp({
   worktreeDashboard = null,
   worktreePlanner = null,
   worktreePlanStore = null,
+  goalIntegrator = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
   previewManager = null,
@@ -59,10 +61,13 @@ export async function buildApp({
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog });
-  // The store opens the SQLite file on construction, so build it only when the
-  // caller did not inject a whole planner of its own.
+  // The planner and delivery controller share one durable goal record. Tests
+  // that inject a whole planner do not open the production database implicitly.
+  const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
   const planner = worktreePlanner
-    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: worktreePlanStore || new WorktreePlanStore() });
+    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore });
+  const integrator = goalIntegrator
+    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, log: app.log }) : null);
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
@@ -71,6 +76,10 @@ export async function buildApp({
   let inboxPending = null;
   const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
   const detachQueue = promptQueue?.attach({ hub, cmux }) || null;
+  // Production already keeps the event stream alive for push/queue handling.
+  // A bare buildApp test should not spawn the real cmux CLI just because the
+  // durable delivery controller exists.
+  const detachIntegrator = integrator && (eventHub || pushService || promptQueue) ? integrator.attach({ hub }) : null;
 
   await app.register(websocket, {
     options: {
@@ -382,6 +391,14 @@ export async function buildApp({
     return result;
   });
 
+  app.post("/api/worktree-plans/:planId/assemble", async (request) => {
+    if (!integrator) throw serviceUnavailable("Combined goal delivery is unavailable");
+    const result = await integrator.assemble(request.params.planId);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
+  });
+
   app.get("/api/repos/:id/changes", async (request) => repoCatalog.changes(request.params.id));
 
   app.get("/api/repos/:id/diff", async (request) => {
@@ -646,7 +663,9 @@ export async function buildApp({
     }));
     detachPush?.();
     detachQueue?.();
+    detachIntegrator?.();
     hub.stop();
+    if (!worktreePlanStore && planStore) planStore.close();
   });
 
   if (frontendUpstream) {
