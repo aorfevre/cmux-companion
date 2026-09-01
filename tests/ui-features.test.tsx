@@ -569,6 +569,7 @@ describe("worktree goal planner", () => {
         { id: "t1", title: "API", branch: "feature/api", prompt: "Do", agent: "claude", agentReason: "", launchStatus: "launched", deliveryStatus: "ready" },
         { id: "t2", title: "UI", branch: "feature/ui", prompt: "Do", agent: "claude", agentReason: "", launchStatus: "launched", deliveryStatus: "pending" },
         { id: "t3", title: "Docs", branch: "feature/docs", prompt: "Do", agent: "claude", agentReason: "", launchStatus: "launched", deliveryStatus: "integrated" },
+        { id: "t4", title: "Metrics", branch: "feature/metrics", prompt: "Do", agent: "claude", agentReason: "", launchStatus: "failed", deliveryStatus: "pending" },
       ],
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -584,8 +585,10 @@ describe("worktree goal planner", () => {
     assert.ok(await screen.findByText("2 of 3 branches ready"));
     const rows = screen.getByRole("list", { name: "Task delivery" });
     assert.ok(within(rows).getByText("API"));
+    assert.ok(within(rows).getByText("Metrics"));
     assert.ok(within(rows).getByText("Waiting"));
     assert.ok(within(rows).getByText("Merged"));
+    assert.ok(within(rows).getByText("Not launched"));
   });
 
   test("confirms saved-goal deletion and surfaces the server error verbatim", async () => {
