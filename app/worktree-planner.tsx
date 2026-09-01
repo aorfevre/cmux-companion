@@ -8,7 +8,7 @@ export type PlanQuestion = { id: string; text: string; options: string[] };
 export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string };
 export type PlanImage = { path: string; name: string };
 export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; round: number; taskCount: number; launchedCount: number; createdAt: string; updatedAt: string; launchedAt: string | null };
-export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; images?: PlanImage[]; round: number; status: "questions" | "ready"; planStatus?: "draft" | "launched"; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
+export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; images?: PlanImage[]; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
 export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed"; path?: string | null; workspace?: unknown; error?: string };
 export type PlanLaunchResult = { planId: string; base: string; launched: number; results: PlanLaunchRow[] };
 type PlannerRepository = { id: string; name: string };
@@ -61,10 +61,13 @@ function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~")
 function relativeTime(timestamp?: string) { const value = timestamp ? Date.parse(timestamp) : NaN; if (!Number.isFinite(value)) return "now"; const seconds = Math.max(0, Math.round((Date.now() - value) / 1000)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
 
 function normalizedDraft(draft: PlanDraft): PlanDraft {
-  return { ...draft, planStatus: draft.planStatus || "draft", questions: draft.questions || [], tasks: draft.tasks || [] };
+  const storedStatus = String(draft.status || "");
+  const stage = draft.stage === "ready" || draft.stage === "questions" ? draft.stage : storedStatus === "ready" ? "ready" : "questions";
+  const planStatus = storedStatus === "launched" ? "launched" : draft.planStatus || "draft";
+  return { ...draft, status: stage, planStatus, questions: draft.questions || [], tasks: draft.tasks || [] };
 }
 
-export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice }: { repository: PlannerRepository; onClose: () => void; onLaunched: () => Promise<void>; onNotice: (message: string) => void }) {
+export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, onLaunched, onNotice }: { repository: PlannerRepository; initialPlanId?: string; onClose: () => void; onLaunched: () => Promise<void>; onNotice: (message: string) => void }) {
   const [goal, setGoal] = useState("");
   const [draft, setDraft] = useState<PlanDraft | null>(null);
   const [plans, setPlans] = useState<PlanSummary[]>([]);
@@ -79,13 +82,13 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
   const { attachments, uploading, inputRef, addImages, pasteImages, removeImage } = useImageAttachments(onNotice);
   const [steps, setSteps] = usePlannerProgress(traceId);
 
-  function receive(next: PlanDraft) { setDraft(normalizedDraft(next)); setResult(null); setAnswers({}); setError(""); }
+  const receive = useCallback((next: PlanDraft) => { setDraft(normalizedDraft(next)); setResult(null); setAnswers({}); setError(""); }, []);
 
-  function fail(cause: unknown, fallback: string) {
+  const fail = useCallback((cause: unknown, fallback: string) => {
     const message = cause instanceof Error ? cause.message : fallback;
     if (message.startsWith(LOST_SESSION)) { setDraft(null); setAnswers({}); setResult(null); }
     setError(message);
-  }
+  }, []);
 
   const loadPlans = useCallback(async () => {
     try {
@@ -94,14 +97,20 @@ export function WorktreePlannerSheet({ repository, onClose, onLaunched, onNotice
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load saved goals"); }
   }, [repository.id]);
 
-  useEffect(() => { const kickoff = setTimeout(loadPlans, 0); return () => clearTimeout(kickoff); }, [loadPlans]);
-
-  async function openPlan(planId: string) {
+  const openPlan = useCallback(async (planId: string) => {
     setOpeningPlanId(planId); setError("");
     try { receive(await request<PlanDraft>(`/api/worktree-plans/${encodeURIComponent(planId)}`)); }
     catch (cause) { fail(cause, "Could not open this goal"); }
     finally { setOpeningPlanId(""); }
-  }
+  }, [fail, receive]);
+
+  useEffect(() => {
+    const kickoff = setTimeout(() => {
+      void loadPlans();
+      if (initialPlanId) void openPlan(initialPlanId);
+    }, 0);
+    return () => clearTimeout(kickoff);
+  }, [initialPlanId, loadPlans, openPlan]);
 
   async function deletePlan(planId: string) {
     setDeletingPlanId(planId); setError("");
