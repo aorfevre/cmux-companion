@@ -11,7 +11,7 @@ const MAX_PLANS = 200;
 const MAX_EVENT_BYTES = 64 * 1024;
 
 export const PLAN_EVENT_KINDS = new Set([
-  "goal", "questions", "answers", "tasks", "edit", "launch",
+  "goal", "questions", "answers", "tasks", "feedback", "edit", "launch",
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
 ]);
 // A round either asked questions or returned the split. Any other stage is a
@@ -122,7 +122,7 @@ export class WorktreePlanStore {
 
   // One round of the conversation: the plan row, its task rows and the event
   // that explains them all land together, or none of them land.
-  recordRound(planId, { round, stage, sessionId = null, questions = [], tasks = [], answers = null, skipped = false }) {
+  recordRound(planId, { round, stage, sessionId = null, questions = [], tasks = [], answers = null, skipped = false, feedback = null }) {
     if (!PLAN_STAGES.has(stage)) throw new TypeError(`Unknown plan stage ${stage}`);
     const at = this.#stamp();
     this.#transaction(() => {
@@ -135,6 +135,9 @@ export class WorktreePlanStore {
       // planner returns a fresh split rather than a patch.
       this.#replaceTasks(planId, tasks);
       if (answers !== null || skipped) this.#insertEvent(planId, round, "answers", { answers: answers || [], skipped }, at);
+      // The rejection that caused this round. It is stored beside the split it
+      // replaced, so the log reads as a reason followed by its consequence.
+      if (feedback) this.#insertEvent(planId, round, "feedback", { feedback }, at);
       if (stage === "questions") this.#insertEvent(planId, round, "questions", { questions }, at);
       else this.#insertEvent(planId, round, "tasks", { tasks }, at);
     });

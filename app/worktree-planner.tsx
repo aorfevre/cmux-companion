@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { PLANNER_ENGINES, reviewerEngine } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
+import { PromptDisclosure } from "./prompt-markdown";
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
@@ -57,10 +58,9 @@ function usePlannerProgress(planId: string, onEnd?: () => void) {
 // them back on demand, so a user can check eight tasks against what they asked.
 function ContextReview({ goal, images }: { goal: string; images: { path: string; name: string; preview?: string }[] }) {
   if (!goal.trim() && !images.length) return null;
-  return <details className="planner-prompt planner-context"><summary aria-label="Your goal and attachments">Your goal{images.length ? ` · ${images.length} image${images.length === 1 ? "" : "s"}` : ""}</summary>
-    <p>{goal}</p>
+  return <div className="planner-context"><PromptDisclosure label="Your goal and attachments" summary={<>Your goal{images.length ? ` · ${images.length} image${images.length === 1 ? "" : "s"}` : ""}</>} text={goal}>
     <AttachmentReview attachments={images} />
-  </details>;
+  </PromptDisclosure></div>;
 }
 
 function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string }) {
@@ -87,14 +87,18 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [result, setResult] = useState<PlanLaunchResult | null>(null);
-  const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch" | "assemble">("");
+  const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch" | "assemble" | "feedback">("");
   const [openingPlanId, setOpeningPlanId] = useState("");
   const [deletingPlanId, setDeletingPlanId] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState("");
   const [error, setError] = useState("");
+  // The reviewer's rejection. It is cleared by receive(), so a finished round
+  // never leaves the previous complaint in the box.
+  const [feedback, setFeedback] = useState("");
+  const [rejecting, setRejecting] = useState(false);
   const { attachments, uploading, inputRef, addImages, pasteImages, removeImage } = useImageAttachments(onNotice);
 
-  const receive = useCallback((next: PlanDraft) => { setDraft(normalizedDraft(next)); setResult(null); setAnswers({}); setError(""); }, []);
+  const receive = useCallback((next: PlanDraft) => { setDraft(normalizedDraft(next)); setResult(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); }, []);
 
   // The round is no longer awaited, so the sheet reloads the plan when its
   // progress stream closes. That is what turns the live steps into a question
@@ -156,7 +160,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
 
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
-    setGoal(""); setDraft(null); setResult(null); setAnswers({}); setError(""); setConfirmDeleteId("");
+    setGoal(""); setDraft(null); setResult(null); setAnswers({}); setError(""); setConfirmDeleteId(""); setFeedback(""); setRejecting(false);
     void loadPlans();
   }
 
@@ -175,6 +179,17 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     setBusy("answer"); setError(""); setSteps([]);
     try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/answers`, { method: "POST", body: JSON.stringify({ ...body, background: true }) })); }
     catch (cause) { fail(cause, "Could not send those answers"); }
+    finally { setBusy(""); }
+  }
+
+  // The reviewer rejected the split. This starts a fresh planner round on the
+  // same plan, so it behaves exactly like an answer: background, streamed, and
+  // reloaded when the round ends.
+  async function reject() {
+    if (!draft || !feedback.trim()) return;
+    setBusy("feedback"); setError(""); setSteps([]);
+    try { receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}/feedback`, { method: "POST", body: JSON.stringify({ text: feedback.trim(), background: true }) })); }
+    catch (cause) { fail(cause, "Could not send that feedback"); }
     finally { setBusy(""); }
   }
 
@@ -295,9 +310,16 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
         <code className="planner-branch">{task.branch}</code>
         <div className="planner-agent" role="group" aria-label={`Agent for ${task.title}`}>{AGENTS.map((option) => <button type="button" key={option} aria-label={`Use ${agentLabel(option)} for ${task.title}`} aria-pressed={task.agent === option} className={task.agent === option ? "selected" : ""} disabled={locked || launchedPlan} onClick={() => editTasks(draft.tasks.map((item) => item.id === task.id ? { ...item, agent: option } : item))}>{agentLabel(option)}</button>)}</div>
         <small className="planner-agent-reason">{task.agentReason}</small>
-        <details className="planner-prompt"><summary aria-label={`Prompt for ${task.title}`}>Prompt</summary><p>{task.prompt}</p></details>
+        <PromptDisclosure label={`Prompt for ${task.title}`} summary="Prompt" text={task.prompt} />
       </article>)}</div>
       {busy === "launch" && <p className="planner-waiting">Creating worktrees and starting sessions. This can take a minute.</p>}
+      {!launchedPlan && <section className="planner-reject" aria-label="Reject this plan">
+        {rejecting ? <>
+          <label><span>What is wrong with this split?</span><textarea aria-label="What is wrong with this split?" value={feedback} onChange={(event) => setFeedback(event.target.value)} rows={3} maxLength={2_000} placeholder="Tasks 2 and 3 touch the same file, so they cannot run in parallel…" /></label>
+          <p>This starts a new planner round. It replaces every task above with a fresh split.</p>
+          <div className="planner-actions"><button type="button" disabled={locked} onClick={() => { setRejecting(false); setFeedback(""); }}>Cancel</button><button type="button" className="primary-button" disabled={locked || !feedback.trim()} onClick={() => { void reject(); }}>{busy === "feedback" ? "Sending…" : "Analyse this goal again"}</button></div>
+        </> : <button type="button" className="planner-reject-open" disabled={locked} onClick={() => setRejecting(true)}>This plan is wrong</button>}
+      </section>}
       {error && <p className="worktree-action-error">{error}</p>}
       {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong>{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
     </>}

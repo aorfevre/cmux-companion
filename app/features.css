@@ -119,7 +119,38 @@
 .worktree-planner-sheet .planner-agent button:disabled{opacity:.55}
 .worktree-planner-sheet .planner-agent-reason{color:var(--muted);font-size:8px;line-height:1.45}
 .worktree-planner-sheet .planner-prompt>summary{color:#9fc4ff;font-size:8px;cursor:pointer}
-.worktree-planner-sheet .planner-prompt>p{margin:7px 0 0;border-left:2px solid #2c343d;color:#9aa4ae;padding-left:8px;font:9px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+/* The prompt body. It is rendered Markdown, not a monospace blob, so it needs
+   its own small type scale. .markdown-body is left alone: the document viewer
+   depends on it, and its 14px page scale does not fit a task card. */
+.worktree-planner-sheet .planner-prompt-body{position:relative;margin:7px 0 0;border-left:2px solid #2c343d;padding-left:8px}
+.worktree-planner-sheet .planner-raw-toggle{position:absolute;top:0;right:0;border:1px solid var(--line);border-radius:7px;background:#191e24;color:#9fc4ff;padding:3px 7px;font-size:8px}
+.worktree-planner-sheet .planner-prompt-raw{margin:0;padding-right:52px;color:#9aa4ae;white-space:pre-wrap;overflow-wrap:anywhere;font:9px/1.5 ui-monospace,monospace}
+.worktree-planner-sheet .planner-markdown{color:#9aa4ae;overflow-wrap:anywhere;word-break:break-word;font:9px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.worktree-planner-sheet .planner-markdown>:first-child{margin-top:0;padding-right:52px}
+.worktree-planner-sheet .planner-markdown>:last-child{margin-bottom:0}
+.worktree-planner-sheet .planner-markdown p{margin:0 0 7px}
+.worktree-planner-sheet .planner-markdown h1,.worktree-planner-sheet .planner-markdown h2,.worktree-planner-sheet .planner-markdown h3,.worktree-planner-sheet .planner-markdown h4,.worktree-planner-sheet .planner-markdown h5,.worktree-planner-sheet .planner-markdown h6{margin:11px 0 5px;color:#dfe4ea;font-size:10px;font-weight:700;line-height:1.35}
+.worktree-planner-sheet .planner-markdown ul,.worktree-planner-sheet .planner-markdown ol{margin:0 0 7px;padding-left:16px}
+.worktree-planner-sheet .planner-markdown li{margin:0 0 3px}
+.worktree-planner-sheet .planner-markdown li::marker{color:#6d7883}
+.worktree-planner-sheet .planner-markdown code{border-radius:4px;background:#181d22;color:#d8efaa;padding:1px 3px;overflow-wrap:anywhere;font:8px ui-monospace,SFMono-Regular,Menlo,monospace}
+.worktree-planner-sheet .planner-markdown pre{max-width:100%;overflow-x:auto;margin:0 0 7px;border:1px solid #222a31;border-radius:8px;background:#06080a;padding:8px;font:8px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+.worktree-planner-sheet .planner-markdown pre code{background:transparent;color:#d5d9dd;padding:0;white-space:pre;overflow-wrap:normal}
+.worktree-planner-sheet .planner-markdown a{color:#8bc9ff;text-decoration:underline}
+.worktree-planner-sheet .planner-markdown blockquote{margin:0 0 7px;border-left:2px solid #3a4652;padding-left:8px;color:#7f8993}
+.worktree-planner-sheet .planner-markdown strong{color:#cfd5db}
+.worktree-planner-sheet .planner-markdown hr{margin:9px 0;border:0;border-top:1px solid #252d34}
+.worktree-planner-sheet .planner-markdown table{display:block;max-width:100%;overflow-x:auto;margin:0 0 7px;border-collapse:collapse}
+.worktree-planner-sheet .planner-markdown th,.worktree-planner-sheet .planner-markdown td{border:1px solid #2c3239;padding:4px 6px;font-size:8px}
+/* Rejecting a plan is a destructive act: it throws away every task above.
+   So it hides behind one button and asks for the reason before it runs. */
+.worktree-planner-sheet .planner-reject{display:flex;flex-direction:column;gap:8px;margin:0 0 11px}
+.worktree-planner-sheet .planner-reject-open{border:1px solid rgba(255,109,120,.28);border-radius:10px;background:rgba(255,109,120,.06);color:#f08c95;padding:10px;font-size:9px}
+.worktree-planner-sheet .planner-reject-open:disabled{opacity:.45}
+.worktree-planner-sheet .planner-reject label{display:flex;flex-direction:column;gap:5px}
+.worktree-planner-sheet .planner-reject label>span{color:#cfd5db;font-size:9px}
+.worktree-planner-sheet .planner-reject textarea{border:1px solid #2c343d;border-radius:10px;background:#12161b;color:#d5dade;padding:9px;resize:vertical;font:9px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.worktree-planner-sheet .planner-reject>p{margin:0;color:var(--muted);font-size:8px;line-height:1.45}
 .worktree-planner-sheet .planner-result.failed{border-color:rgba(255,109,120,.3)}
 .worktree-planner-sheet .planner-result>header em{flex:none;border-radius:8px;background:rgba(201,255,80,.1);color:var(--lime);padding:4px 7px;font-size:7px;font-style:normal}
 .worktree-planner-sheet .planner-result.failed>header em{background:rgba(255,109,120,.1);color:#ff9ca5}
@@ -145,7 +176,7 @@
 .worktree-planner-sheet .planner-status.running{background:rgba(159,196,255,.14);color:#9fc4ff}
 .worktree-planner-sheet .planner-stalled .planner-background-note{color:#ffb27a}
 .worktree-planner-sheet .planner-context{margin:0 2px 11px;border:1px solid #252d34;border-radius:11px;background:#171c21;padding:9px}
-.worktree-planner-sheet .planner-context>summary{font-size:9px}
+.worktree-planner-sheet .planner-context .planner-prompt>summary{font-size:9px}
 .worktree-planner-sheet .planner-context .worktree-attachments{margin:8px 0 0}
 .attachment-strip.review>div{width:64px}
 .attachment-strip.review img{width:64px;height:46px}
@@ -209,7 +240,7 @@
 .worktree-planner-sheet .planner-progress{gap:5px;margin:10px 0 0;padding:10px 0 0}
 .worktree-planner-sheet .planner-progress li{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 .worktree-planner-sheet .planner-context{margin:0 2px 13px;border-radius:12px;padding:12px}
-.worktree-planner-sheet .planner-context>summary{font-size:12px}
+.worktree-planner-sheet .planner-context .planner-prompt>summary{font-size:12px}
 .worktree-planner-sheet .planner-delivery-mode,.worktree-planner-sheet .planner-delivery-status{gap:8px;margin:0 0 15px;border-radius:12px;padding:14px}
 .worktree-planner-sheet .planner-delivery-mode strong,.worktree-planner-sheet .planner-delivery-status strong{font-size:14px}
 .worktree-planner-sheet .planner-delivery-mode p,.worktree-planner-sheet .planner-delivery-status p{font:12px/1.6 -apple-system,sans-serif}
@@ -219,11 +250,26 @@
 .worktree-planner-sheet .planner-actions>button{min-height:46px;font-size:13px}
 .worktree-planner-sheet>.primary-button{min-height:48px;font-size:14px;font-weight:800}
 .worktree-planner-sheet .planner-engine-config{gap:11px;margin-bottom:14px;border-radius:12px;padding:13px}.worktree-planner-sheet .planner-engine-config>header strong{font-size:14px}.worktree-planner-sheet .planner-engine-config>header span{font-size:12px}.worktree-planner-sheet .planner-engine-controls{grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.worktree-planner-sheet .planner-engine-controls label:last-child{grid-column:auto}.worktree-planner-sheet .planner-engine-controls label>span{font-size:11px}.worktree-planner-sheet .planner-engine-controls select{min-height:42px;border-radius:9px;padding-left:10px;font-size:12px}.worktree-planner-sheet .planner-reviewer-toggle{gap:9px;padding-top:11px;font-size:12px}.worktree-planner-sheet .planner-reviewer-toggle input{width:18px;height:18px}.worktree-planner-sheet .planner-reviewer-identity{margin-left:27px;font-size:11px;line-height:1.55}
+.worktree-planner-sheet .planner-reject{gap:10px;margin:0 0 15px}
+.worktree-planner-sheet .planner-reject-open{min-height:46px;font-size:13px}
+.worktree-planner-sheet .planner-reject label>span{font-size:13px}
+.worktree-planner-sheet .planner-reject textarea{padding:11px;font-size:13px;line-height:1.6}
+.worktree-planner-sheet .planner-reject>p{font-size:12px;line-height:1.6}
 
-/* The generated prompt: monospace that a person can read, with its own scroll
-   so a long prompt never pushes the launch button off the sheet. */
+/* The generated prompt at the sheet type scale, with its own scroll so a long
+   prompt never pushes the launch button off the sheet. */
 .worktree-planner-sheet .planner-prompt>summary{font-size:12px;padding:2px 0}
-.worktree-planner-sheet .planner-prompt>p{max-height:320px;margin:9px 0 0;border-left:2px solid #2c343d;border-radius:0 8px 8px 0;background:#12161b;padding:11px 12px;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;overflow-y:auto;overscroll-behavior:contain}
+.worktree-planner-sheet .planner-prompt-body{max-height:320px;margin:9px 0 0;border-radius:0 8px 8px 0;background:#12161b;padding:11px 12px;overflow-y:auto;overscroll-behavior:contain}
+.worktree-planner-sheet .planner-raw-toggle{top:9px;right:9px;font-size:10px;padding:4px 9px}
+.worktree-planner-sheet .planner-prompt-raw{padding-right:64px;font-size:12px;line-height:1.7}
+.worktree-planner-sheet .planner-markdown{font-size:12px;line-height:1.65}
+.worktree-planner-sheet .planner-markdown>:first-child{padding-right:64px}
+.worktree-planner-sheet .planner-markdown p,.worktree-planner-sheet .planner-markdown ul,.worktree-planner-sheet .planner-markdown ol,.worktree-planner-sheet .planner-markdown pre,.worktree-planner-sheet .planner-markdown blockquote,.worktree-planner-sheet .planner-markdown table{margin-bottom:10px}
+.worktree-planner-sheet .planner-markdown h1,.worktree-planner-sheet .planner-markdown h2,.worktree-planner-sheet .planner-markdown h3,.worktree-planner-sheet .planner-markdown h4,.worktree-planner-sheet .planner-markdown h5,.worktree-planner-sheet .planner-markdown h6{margin:15px 0 7px;font-size:13px}
+.worktree-planner-sheet .planner-markdown ul,.worktree-planner-sheet .planner-markdown ol{padding-left:20px}
+.worktree-planner-sheet .planner-markdown code{font-size:11px}
+.worktree-planner-sheet .planner-markdown pre,.worktree-planner-sheet .planner-markdown pre code{font-size:11px}
+.worktree-planner-sheet .planner-markdown th,.worktree-planner-sheet .planner-markdown td{font-size:11px}
 
 /* GitHub issue planner type scale. */
 .github-issue-planner .issue-analyzing strong,.github-issue-planner .issue-empty strong{font-size:15px}
@@ -285,6 +331,6 @@
   .worktree-planner-sheet>header strong,.github-issue-planner>header strong{font-size:20px}
   .worktree-planner-sheet .planner-tasks,.worktree-planner-sheet .planner-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));align-items:start;gap:14px}
   .worktree-planner-sheet .planner-saved>div{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));align-items:start}
-  .worktree-planner-sheet .planner-prompt>p{max-height:400px}
+  .worktree-planner-sheet .planner-prompt-body{max-height:400px}
   .github-issue-planner .issue-topics,.github-issue-planner .issue-prepared-plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));align-items:start}
 }

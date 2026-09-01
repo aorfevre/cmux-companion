@@ -650,6 +650,62 @@ describe("worktree goal planner", () => {
     await waitFor(() => assert.equal(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/worktree-plans?repositoryId=repo-1").length, 2));
   });
 
+  test("renders a Markdown prompt and still shows its exact text on demand", async () => {
+    const markdown = "## Step one\n\n- Touch `server/app.mjs`\n- See https://example.test/issue for the report\n- Do not touch [the store](../store.mjs)\n\nFinish with a pull request.";
+    const markdownDraft = { ...readyDraft, tasks: [{ ...tasks[0], prompt: markdown }] };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(markdownDraft), { status: 201 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    // The markers are structure, not literal text: a heading is a heading and a
+    // list is a list, so no "##" or "-" survives into the rendered output.
+    assert.ok(await screen.findByRole("heading", { name: "Step one" }));
+    assert.equal(screen.queryByText(/## Step one/), null);
+    assert.ok(screen.getAllByRole("listitem").length >= 3);
+
+    // An absolute web link opens in a new tab. A repository-relative link has
+    // no resolver in this sheet, so it renders as inert text.
+    const link = screen.getByRole("link", { name: "https://example.test/issue" });
+    assert.equal(link.getAttribute("target"), "_blank");
+    assert.equal(link.getAttribute("rel"), "noreferrer");
+    assert.equal(screen.queryByRole("link", { name: "the store" }), null);
+    assert.ok(screen.getByText("the store"));
+
+    // The agent receives the raw text, so the reviewer must be able to read it.
+    await userEvent.click(screen.getByRole("button", { name: "Show Prompt for Build the sheet as raw text" }));
+    assert.ok(screen.getByText(/## Step one/));
+    await userEvent.click(screen.getByRole("button", { name: "Show Prompt for Build the sheet as Markdown" }));
+    assert.ok(screen.getByRole("heading", { name: "Step one" }));
+  });
+
+  test("rejects a plan with written feedback and starts a fresh analysis", async () => {
+    const revised = { ...readyDraft, round: 3, running: true, tasks: [] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/feedback") && init?.method === "POST") return new Response(JSON.stringify(revised), { status: 202 });
+      return new Response(JSON.stringify(readyDraft), { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    // The rejection throws away every task, so it hides behind one button and
+    // stays disabled until the reviewer says what is wrong.
+    await userEvent.click(await screen.findByRole("button", { name: "This plan is wrong" }));
+    const send = screen.getByRole("button", { name: "Analyse this goal again" });
+    assert.equal((send as HTMLButtonElement).disabled, true);
+    await userEvent.type(screen.getByRole("textbox", { name: "What is wrong with this split?" }), "Tasks 1 and 2 share a file.");
+    await userEvent.click(send);
+
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/feedback"));
+    assert.ok(call);
+    assert.deepEqual(JSON.parse(String(call?.[1]?.body)), { text: "Tasks 1 and 2 share a file.", background: true });
+    // The new round is a background round, so the sheet shows it planning.
+    assert.ok(await screen.findByRole("region", { name: "Planning in progress" }));
+  });
+
   test("views launched goals without offering edits or a second launch", async () => {
     const now = new Date().toISOString();
     const summary = { planId: "plan-launched", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the finished flow", status: "launched", stage: "ready", round: 2, taskCount: 2, launchedCount: 2, createdAt: now, updatedAt: now, launchedAt: now };
