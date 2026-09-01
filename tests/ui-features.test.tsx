@@ -289,6 +289,40 @@ describe("contextual mobile features", () => {
     await waitFor(() => assert.equal(screen.queryByText("Ship prompt analytics"), null));
   });
 
+  test("badges a running round on the tab and the goal card, and opens it from a notification link", async () => {
+    const repository = (id: string, name: string, root: string) => ({ id, name, root, path: `/repo/${name}`, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [{ id: `${id}-primary-worktree`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }] });
+    const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 1, worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repo-karven", "trust-layer", "karven")] };
+    const updatedAt = new Date().toISOString();
+    const planning = { planId: "plan-running", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Improve the LLM flow", status: "draft", stage: "questions", round: 0, taskCount: 0, running: true, runPhase: "running", runStep: "Grep \"useMemo\"", createdAt: updatedAt, updatedAt, launchedAt: null };
+    const idle = { planId: "plan-idle", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Ship prompt analytics", status: "draft", stage: "ready", round: 2, taskCount: 1, running: false, createdAt: updatedAt, updatedAt, launchedAt: null };
+    const detail = { ...planning, planStatus: "draft", questions: [], tasks: [] };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/worktree-plans?")) return new Response(JSON.stringify({ plans: [planning, idle] }), { status: 200 });
+      if (url === "/api/worktree-plans/plan-running") return new Response(JSON.stringify(detail), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    }));
+    const opened = vi.fn();
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} initialPlanId="plan-running" onPlanOpened={opened} />);
+
+    // The deep link picks the tab and the project, then opens the goal.
+    const planner = await screen.findByRole("dialog", { name: "Plan a goal" });
+    assert.ok(await within(planner).findByRole("region", { name: "Planning in progress" }));
+    assert.equal(opened.mock.calls.length, 1);
+    await userEvent.click(within(planner).getByRole("button", { name: "Close goal planner sheet" }));
+
+    const tab = screen.getByRole("tab", { name: /Draft Goals/ });
+    assert.ok(within(tab).getByText("1 planning"), "the tab counts the running round");
+    const goals = screen.getByRole("region", { name: "Draft goals" });
+    assert.ok(within(goals).getByText("Planning…"));
+    assert.ok(within(goals).getByText('Grep "useMemo"'));
+    assert.equal((within(goals).getByRole("button", { name: "Delete Improve the LLM flow" }) as HTMLButtonElement).disabled, true);
+    assert.ok(within(goals).getByRole("button", { name: "Watch Improve the LLM flow" }));
+    // A goal with no round running keeps its ordinary controls.
+    assert.equal((within(goals).getByRole("button", { name: "Delete Ship prompt analytics" }) as HTMLButtonElement).disabled, false);
+    assert.ok(within(goals).getByRole("button", { name: "Resume Ship prompt analytics" }));
+  });
+
   test("offers bulk cleanup of clean worktrees and a named second confirmation for a detached release checkout", async () => {
     const worktree = (over: Record<string, unknown>) => ({ repoId: "repo-1", head: "abc", locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, detached: false, isPrimary: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" }, ...over });
     const emptyRepo = { id: "repo-2", name: "solo", root: "karven", path: "/repo/solo", pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [worktree({ id: "soloprimary1234567", path: "/repo/solo", name: "solo", branch: "main", isPrimary: true })] };
