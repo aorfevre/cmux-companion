@@ -578,6 +578,44 @@ describe("worktree goal planner", () => {
     return fetchMock;
   }
 
+  test("shows, changes, and submits the planner engine and derived reviewer", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      if (url === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    const engine = screen.getByRole("combobox", { name: "Planner engine" }) as HTMLSelectElement;
+    const model = screen.getByRole("combobox", { name: "Planner model" }) as HTMLSelectElement;
+    const effort = screen.getByRole("combobox", { name: "Planner effort" }) as HTMLSelectElement;
+    const reviewer = screen.getByRole("checkbox", { name: "Add a reviewer pass" }) as HTMLInputElement;
+    assert.equal(engine.value, "claude");
+    assert.equal(model.value, "default");
+    assert.equal(effort.value, "default");
+    assert.equal(reviewer.checked, false);
+    assert.ok(screen.getByText("Claude Code (xclaude) · CCS default model"));
+    assert.ok(within(model).getByRole("option", { name: "Opus 5" }));
+    assert.ok(within(model).getByRole("option", { name: "Fable 5.1" }));
+
+    await userEvent.selectOptions(engine, "codex");
+    assert.equal(model.value, "default");
+    assert.ok(within(model).getByRole("option", { name: "GPT-5.6 Sol" }));
+    assert.equal(within(model).queryByRole("option", { name: "Opus 5" }), null);
+    await userEvent.selectOptions(model, "gpt-5.6-terra");
+    await userEvent.selectOptions(effort, "high");
+    assert.ok(screen.getByText("Codex (xcodex) · GPT-5.6 Terra"));
+    await userEvent.click(reviewer);
+    assert.ok(screen.getByText("Reviewer: Claude Code (xclaude) · Fable 5.1 · xhigh effort"));
+
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
+    assert.deepEqual(body.engine, { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: true });
+  });
+
   test("lists saved goals and resumes each persisted stage", async () => {
     const updatedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
     const questionDraft = { planId: "plan-questions", repositoryId: "repo-1", repositoryName: "companion", goal: "Clarify the mobile flow", round: 3, status: "questions", planStatus: "draft", questions: [{ id: "question-1", text: "Which screen comes first?", options: ["Goals", "Tasks"] }], tasks: [], createdAt: updatedAt, updatedAt, launchedAt: null, base: "main", history: [] };
