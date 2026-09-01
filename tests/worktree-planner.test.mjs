@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
-import { WorktreePlanner, assignAgents, describeRunFailure, finalEnvelope, parsePlannerReply, progressEvent } from "../server/worktree-planner.mjs";
+import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, finalEnvelope, normalizePlannerEngine, parsePlannerReply, progressEvent, reviewerEngine } from "../server/worktree-planner.mjs";
 
 function envelope(text, sessionId = "session-1") {
   return `[i] Preparing CLIProxy...\n[OK] CLIProxy binary ready\n${JSON.stringify({ session_id: sessionId, result: text })}\n`;
@@ -201,6 +201,68 @@ test("a first round returns questions and records the session id", async () => {
   assert.equal(deps.calls[0][0], "ccs");
   assert.ok(!deps.calls[0][1].includes("--resume"));
   assert.ok(deps.calls[0][1].includes("--print"));
+});
+
+test("defaults to Claude and lets ccs choose its model and effort", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  const draft = await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const args = deps.calls[0][1];
+  assert.equal(args[0], "claude");
+  assert.equal(args.includes("--model"), false);
+  assert.equal(args.includes("--effort"), false);
+  assert.deepEqual(draft.engine, { provider: "claude", model: "default", effort: "default", reviewer: false });
+});
+
+test("runs Codex with the selected model and effort before the prompt", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(deps).start({
+    repositoryId: REPO_ID,
+    goal: "Add billing",
+    engine: { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: false },
+  });
+  const args = deps.calls[0][1];
+  const terminator = args.indexOf("--");
+  assert.equal(args[0], "codex");
+  assert.equal(args[args.indexOf("--model") + 1], "gpt-5.6-terra");
+  assert.equal(args[args.indexOf("--effort") + 1], "high");
+  assert.ok(args.indexOf("--model") < terminator);
+  assert.ok(args.indexOf("--effort") < terminator);
+  assert.equal(args.at(-1).includes("Add billing"), true);
+});
+
+test("strictly rejects unknown engine values before ccs sees them", async () => {
+  const deps = fakeDeps({ replies: [] });
+  const planner = new WorktreePlanner(deps);
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "gemini" } }), /Unknown planner provider/);
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "claude", model: "gpt-5.6-sol" } }), /Unknown Claude Code planner model/);
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { effort: "maximum" } }), /Unknown planner effort/);
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: "yes" } }), /must be on or off/);
+  assert.equal(deps.calls.length, 0);
+});
+
+test("the other provider reviews and replaces a ready plan at its largest model and highest effort", async () => {
+  const proposed = envelope('{"tasks":[{"title":"Rough billing","branch":"feature/rough-billing","prompt":"Add it."}]}', "planner-session");
+  const improved = envelope('{"tasks":[{"title":"Reviewed billing","branch":"feature/billing","prompt":"Add billing and verify it."}]}', "review-session");
+  const deps = fakeDeps({ replies: [proposed, improved] });
+  const draft = await new WorktreePlanner(deps).start({
+    repositoryId: REPO_ID,
+    goal: "Add billing",
+    engine: { provider: "claude", model: "claude-opus-5", effort: "medium", reviewer: true },
+  });
+  assert.equal(deps.calls.length, 2);
+  assert.equal(draft.tasks[0].title, "Reviewed billing");
+  const reviewerArgs = deps.calls[1][1];
+  assert.equal(reviewerArgs[0], "codex");
+  assert.equal(reviewerArgs[reviewerArgs.indexOf("--model") + 1], PLANNER_ENGINES.providers.codex.largestModel);
+  assert.equal(reviewerArgs[reviewerArgs.indexOf("--effort") + 1], PLANNER_ENGINES.reviewerEffort);
+  assert.equal(reviewerArgs.includes("--resume"), false);
+  assert.match(reviewerArgs.at(-1), /Critique the proposed plan/);
+  assert.deepEqual(reviewerEngine("codex"), { provider: "claude", model: PLANNER_ENGINES.providers.claude.largestModel, effort: "xhigh", reviewer: false });
+});
+
+test("normalizes omitted engine fields without coercing invalid input", () => {
+  assert.deepEqual(normalizePlannerEngine({ provider: "codex" }), { provider: "codex", model: "default", effort: "default", reviewer: false });
+  assert.throws(() => normalizePlannerEngine(null), /must be an object/);
 });
 
 test("an answer round resumes the recorded session", async () => {
