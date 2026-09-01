@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
+import { PlannerRuns } from "./planner-runs.mjs";
 
 // promisify(execFile) buffers to completion, so nothing can be reported while
 // the model is still thinking. spawn resolves the same shape and rejects with
@@ -88,6 +89,7 @@ function quoted(value) {
 class PlannerRunError extends TypeError {}
 
 const UNUSABLE = "The planner returned an unusable answer. Try again";
+const BUSY = "This goal is planning right now. Wait for the round to finish";
 
 export function parsePlannerReply(stdout) {
   const envelope = extractJson(String(stdout));
@@ -285,7 +287,7 @@ export function describeRunFailure(stderr) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null, runs = null, progress = null, pushService = null } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
@@ -301,10 +303,25 @@ export class WorktreePlanner {
     // The database owns every plan. The map is only a hot cache in front of it,
     // so a companion restart loses no goal, no session and no task list.
     this.store = store;
+    // A background round outlives its request, so the registry, not the request
+    // cycle, is what says whether a plan is busy.
+    this.runs = runs || new PlannerRuns();
+    // The same hub the synchronous rounds publish to. A background round keys
+    // its stream on the plan id, which exists before the round starts.
+    this.progress = progress;
+    this.pushService = pushService;
     this.drafts = new Map();
   }
 
   async start({ repositoryId, goal, images, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
+    const draft = await this.#createDraft({ repositoryId, goal, images, issueNumbers, issueUrls, deliveryPolicy });
+    return this.#round(draft, openingPrompt(draft), onEvent);
+  }
+
+  // The row is written before the round runs, so a plan id exists the moment a
+  // goal is submitted. That id is what the progress stream, the goal card and
+  // the notification all key on.
+  async #createDraft({ repositoryId, goal, images, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
     const text = String(goal || "").trim();
     if (!text) throw new TypeError("Describe the goal for this repository");
     if (text.length > 4_000) throw new TypeError("That goal is too long");
@@ -349,11 +366,115 @@ export class WorktreePlanner {
       issueUrls: draft.issueUrls,
       deliveryPolicy: draft.deliveryPolicy,
     }), draft.planId, "create");
-    return this.#round(draft, openingPrompt(draft), onEvent);
+    return draft;
+  }
+
+  // The background entry point. It answers as soon as the row exists, and the
+  // round runs on after the request has ended. The caller gets a plan id it can
+  // watch, resume and delete, so the sheet is free to close.
+  async startBackground({ repositoryId, goal, images, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
+    const draft = await this.#createDraft({ repositoryId, goal, images, issueNumbers, issueUrls, deliveryPolicy });
+    this.#detach(draft, openingPrompt(draft), "plan");
+    return { ...publicDraft(draft), running: true };
+  }
+
+  // A background answer round. The plan already exists, so this only starts the
+  // round and returns the draft as it stands.
+  async answerBackground(planId, { answers = [], skip = false } = {}) {
+    const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
+    if (draft.round >= this.maxRounds) {
+      throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
+    }
+    const prompt = skip ? SKIP_PROMPT : answerPrompt(draft, answers);
+    this.#detach(draft, prompt, "answer", { answers: skip ? [] : answeredPairs(draft, answers), skipped: skip });
+    return { ...publicDraft(draft), running: true };
+  }
+
+  // A companion restart kills the ccs child, so a plan can be left at round 0
+  // with no questions and no tasks. This runs its opening prompt again.
+  async run(planId) {
+    const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
+    if (draft.round > 0) throw new TypeError("This goal already has a plan round. Answer it instead");
+    this.#detach(draft, openingPrompt(draft), "plan");
+    return { ...publicDraft(draft), running: true };
+  }
+
+  // Nothing awaits the round, so every outcome must be handled here: the
+  // registry records it, the progress stream closes, and one notification goes
+  // out. An unhandled rejection would take the whole companion down.
+  #detach(draft, prompt, kind, submitted = null) {
+    const planId = draft.planId;
+    this.runs.begin(planId, kind);
+    const onEvent = (event) => {
+      this.progress?.publish(planId, event);
+      if (event?.t) this.runs.step(planId, event.t);
+    };
+    Promise.resolve()
+      .then(() => this.#round(draft, prompt, onEvent, submitted))
+      .then((result) => {
+        this.progress?.publish(planId, { k: "done" });
+        this.runs.finish(planId, { phase: "done" });
+        this.#notifyRound(draft, result);
+      })
+      .catch((cause) => {
+        const message = cause?.message || "The planner round failed";
+        this.log?.warn?.({ err: cause, planId }, "background planner round failed");
+        this.progress?.publish(planId, { k: "error", t: message });
+        this.runs.finish(planId, { phase: "failed", error: message });
+        this.#notifyFailure(draft, message);
+      });
+  }
+
+  #notifyRound(draft, result) {
+    const questions = result?.status === "questions";
+    void this.#push({
+      title: questions ? "A goal needs your answers" : "A goal plan is ready",
+      body: questions
+        ? `Round ${result.round}: ${result.questions.length} question${result.questions.length === 1 ? "" : "s"} about “${shortGoal(draft.goal)}”`
+        : `${result.tasks.length} task${result.tasks.length === 1 ? "" : "s"} ready to launch for “${shortGoal(draft.goal)}”`,
+      kind: questions ? "attention" : "completion",
+      planId: draft.planId,
+    });
+  }
+
+  #notifyFailure(draft, message) {
+    void this.#push({
+      title: "A goal plan failed",
+      body: `“${shortGoal(draft.goal)}”: ${message}`,
+      kind: "failure",
+      planId: draft.planId,
+    });
+  }
+
+  // A notification is the least important part of a round. It must never turn a
+  // finished plan into a failed one.
+  async #push(payload) {
+    try {
+      await this.pushService?.send({ ...payload, tag: `cmux-plan-${payload.planId}` });
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, planId: payload.planId }, "planner notification failed");
+    }
+  }
+
+  // One ccs session id belongs to one plan, so two rounds at once on the same
+  // plan would corrupt it. Different plans are free to run together.
+  #assertIdle(planId) {
+    if (this.runs.isRunning(planId)) throw new TypeError(BUSY);
+  }
+
+  isRunning(planId) {
+    return this.runs.isRunning(planId);
+  }
+
+  activeRuns() {
+    return { runs: this.runs.list() };
   }
 
   async answer(planId, { answers = [], skip = false, onEvent = null } = {}) {
     const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
     if (draft.round >= this.maxRounds) {
       throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
     }
@@ -368,6 +489,7 @@ export class WorktreePlanner {
 
   async update(planId, { tasks } = {}) {
     const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
     if (!Array.isArray(tasks) || !tasks.length) throw new TypeError("Keep at least one task");
     if (tasks.length > MAX_TASKS) throw new TypeError(`A plan can hold at most ${MAX_TASKS} tasks`);
     const next = tasks.map((task, index) => {
@@ -391,6 +513,7 @@ export class WorktreePlanner {
 
   async launch(planId) {
     const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
     if (draft.status !== "ready" || !draft.tasks.length) throw new TypeError("This plan is not ready to launch yet");
     const base = await this.#baseRef(draft);
     const repositoryPath = await this.#repositoryPath(draft);
@@ -574,22 +697,40 @@ export class WorktreePlanner {
   // Reload a plan into memory and return it, so a reopened sheet continues the
   // same ccs session rather than starting a new one.
   async resume(planId) {
-    return publicDraft(await this.#draft(planId));
+    const draft = await this.#draft(planId);
+    return { ...publicDraft(draft), running: this.runs.isRunning(draft.planId) };
   }
 
   // The stored view of a plan, including a launched one, with its event log.
   async detail(planId) {
     const stored = this.#read(() => this.store?.get(String(planId || "")));
     if (!stored) throw new TypeError("Unknown plan. Start a new goal");
-    return { ...stored, events: this.#read(() => this.store?.events(stored.planId)) || [] };
+    const run = this.runs.get(stored.planId);
+    return {
+      ...stored,
+      events: this.#read(() => this.store?.events(stored.planId)) || [],
+      running: this.runs.isRunning(stored.planId),
+      runPhase: run?.phase || null,
+      runStep: run?.step || "",
+      runError: run?.error || "",
+    };
   }
 
+  // A card needs to know that a plan is planning right now, and the run state
+  // lives only in this process, so the list carries it rather than the store.
   async list(options = {}) {
-    return { plans: this.#read(() => this.store?.list(options)) || [] };
+    const plans = this.#read(() => this.store?.list(options)) || [];
+    return {
+      plans: plans.map((plan) => {
+        const run = this.runs.get(plan.planId);
+        return { ...plan, running: this.runs.isRunning(plan.planId), runPhase: run?.phase || null, runStep: run?.step || "", runError: run?.error || "" };
+      }),
+    };
   }
 
   async remove(planId) {
     const id = String(planId || "");
+    this.#assertIdle(id);
     this.drafts.delete(id);
     const deleted = this.#read(() => this.store?.delete(id)) === true;
     if (!deleted) throw new TypeError("Unknown plan. Start a new goal");
@@ -624,6 +765,12 @@ export class WorktreePlanner {
 // A listener that throws must not fail the round it is only watching.
 function emit(onEvent, event) {
   try { onEvent?.(event); } catch { /* the round outlives its audience */ }
+}
+
+// A notification body has room for a phrase, not a four-thousand-character goal.
+function shortGoal(goal) {
+  const text = String(goal || "").replace(/\s+/g, " ").trim();
+  return text.length > 70 ? `${text.slice(0, 69)}…` : text;
 }
 
 function publicDraft(draft) {
