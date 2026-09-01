@@ -335,3 +335,28 @@
   .worktree-planner-sheet .planner-prompt-body{max-height:400px}
   .github-issue-planner .issue-topics,.github-issue-planner .issue-prepared-plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));align-items:start}
 }
+
+/* Licence usage quotas */
+.core-window-grid{grid-template-columns:minmax(0,1fr);gap:9px;margin-top:12px}
+.core-window{border-radius:11px;padding:12px}
+.core-window>div:first-child{gap:8px}
+.core-window span{color:#aab2ba;font-size:10px;font-weight:700}
+.core-window strong{font-size:21px}
+.core-window small{margin-top:8px;color:#858e98;font-size:9px;line-height:1.35}
+.quota-track{height:6px;margin-top:9px}
+.core-window small time,.extra-window small time{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-variant-numeric:tabular-nums}
+.extra-windows{min-width:0;margin-top:12px;padding-top:9px}
+.extra-windows>p{margin-bottom:6px;color:#77818b;font-size:7px}
+.extra-window{min-width:0;grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;padding:7px 0}
+.extra-window strong{font-size:9px}
+.extra-window span,.extra-window small{font-size:7px}
+.extra-window small{grid-column:1/-1;min-width:0}
+.extra-window b{font-size:11px}
+
+@media(min-width:1024px){
+  .core-window{padding:14px}
+  .core-window span{font-size:11px}
+  .core-window strong{font-size:23px}
+  .core-window small{font-size:10px}
+  .quota-track{height:7px}
+}
