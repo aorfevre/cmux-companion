@@ -5,7 +5,7 @@ import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, 
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
-export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string };
+export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; launchStatus?: string; deliveryStatus?: string };
 export type PlanImage = { path: string; name: string };
 export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; issueNumbers?: number[]; deliveryMode?: "single" | "combined"; deliveryStatus?: string; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; createdAt: string; updatedAt: string; launchedAt: string | null };
 export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
@@ -229,7 +229,12 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
       </article>)}</div>
       {busy === "launch" && <p className="planner-waiting">Creating worktrees and starting sessions. This can take a minute.</p>}
       {error && <p className="worktree-action-error">{error}</p>}
-      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong>{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
+      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong>{draft.tasks.length > 0 && <>
+        <p className="planner-delivery-count">{readyCount(draft.tasks).ready} of {readyCount(draft.tasks).total} branches ready</p>
+        <ul className="planner-delivery-tasks" aria-label="Task delivery">{draft.tasks.map((task) => <li key={task.id}>
+          <span>{task.title}</span><code>{task.branch}</code><em className={`delivery-${taskState(task).toLowerCase().replace(/\s+/g, "-")}`}>{taskState(task)}</em>
+        </li>)}</ul>
+      </>}{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={busy !== ""} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
     </>}
     {result && <>
       <p className="planner-round">Branched from <code>{result.base}</code> · {result.launched} of {result.results.length} started</p>
@@ -250,8 +255,21 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
 }
 
 function deliveryLabel(status?: string) {
-  if (status === "assembling") return "Assembling task branches";
+  if (status === "assembling") return "A merge agent is assembling this goal";
   if (status === "blocked") return "Combined delivery needs attention";
   if (status === "pr_open") return "Combined PR ready";
   return "Waiting for task branches";
+}
+
+function readyCount(tasks: PlanTask[]) {
+  const launched = tasks.filter((task) => task.launchStatus === "launched");
+  const ready = launched.filter((task) => task.deliveryStatus === "ready" || task.deliveryStatus === "integrated");
+  return { ready: ready.length, total: launched.length };
+}
+
+function taskState(task: PlanTask) {
+  if (task.launchStatus && task.launchStatus !== "launched") return "Not launched";
+  if (task.deliveryStatus === "integrated") return "Merged";
+  if (task.deliveryStatus === "ready") return "Ready";
+  return "Waiting";
 }
