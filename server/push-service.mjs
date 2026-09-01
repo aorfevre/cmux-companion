@@ -69,9 +69,9 @@ export class PushService {
     return { subscribed: false };
   }
 
-  async send({ title, body, kind = "attention", workspaceId = null, surfaceId = null, actionId = null, repoId = null, file = null, previewId = null, tab = null, tag = null, bypassQuiet = false, bypassPreferences = false, targetEndpoint = null }) {
+  async send({ title, body, kind = "attention", workspaceId = null, surfaceId = null, actionId = null, repoId = null, file = null, previewId = null, planId = null, tab = null, tag = null, bypassQuiet = false, bypassPreferences = false, targetEndpoint = null }) {
     if (!EVENT_KINDS.has(kind)) throw new TypeError("Unsupported notification kind");
-    const url = contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, tab, kind });
+    const url = contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, planId, tab, kind });
     const stale = [];
     const subscriptions = this.state.subscriptions;
     const targets = subscriptions
@@ -88,8 +88,8 @@ export class PushService {
         const payload = JSON.stringify({
           title: record.settings.hideContent ? "cmux companion" : title,
           body: record.settings.hideContent ? discreetBody(kind) : body,
-          kind, workspaceId, surfaceId, actionId, repoId, file, previewId,
-          tag: tag || `cmux-${kind}-${actionId || previewId || workspaceId || "general"}`, url,
+          kind, workspaceId, surfaceId, actionId, repoId, file, previewId, planId,
+          tag: tag || `cmux-${kind}-${actionId || previewId || planId || workspaceId || "general"}`, url,
         });
         try {
           await this.sender.sendNotification(
@@ -319,10 +319,13 @@ export function extractMarkdownPaths(text) {
   return values.slice(0, 12);
 }
 
-export function contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, tab, kind } = {}) {
+export function contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, planId, tab, kind } = {}) {
   const query = new URLSearchParams();
   if (actionId) { query.set("view", "inbox"); query.set("action", actionId); }
   else if (previewId) { query.set("view", "apps"); query.set("preview", previewId); }
+  // A goal lives on the worktree dashboard, which is a mode of the sessions
+  // view rather than a view of its own.
+  else if (planId) { query.set("view", "sessions"); query.set("mode", "worktrees"); query.set("plan", planId); }
   else if (workspaceId) query.set("workspace", workspaceId);
   else query.set("view", "inbox");
   if (surfaceId) query.set("surface", surfaceId);

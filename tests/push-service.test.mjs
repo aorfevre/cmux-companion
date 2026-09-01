@@ -115,6 +115,8 @@ test("classifies failures, builds contextual links, and respects quiet hours", a
   assert.equal(classifyEventText("0 tests failed"), "attention");
   assert.deepEqual(extractMarkdownPaths("Review docs/plan.md and `README.md`"), ["docs/plan.md", "README.md"]);
   assert.equal(contextUrl({ workspaceId: "ws-1", repoId: "repo-1", file: "docs/plan.md", tab: "changes", kind: "completion" }), "/?workspace=ws-1&repo=repo-1&file=docs%2Fplan.md&tab=changes&context=completion");
+  // A goal opens the worktree dashboard, which is a mode of the sessions view.
+  assert.equal(contextUrl({ planId: "plan-1", kind: "attention" }), "/?view=sessions&mode=worktrees&plan=plan-1&context=attention");
   assert.equal(isQuiet({ quietEnabled: true, quietStart: "22:00", quietEnd: "08:00" }, new Date(2026, 1, 1, 23, 0)), true);
   assert.equal(isQuiet({ quietEnabled: true, quietStart: "22:00", quietEnd: "08:00" }, new Date(2026, 1, 1, 12, 0)), false);
   const directory = await mkdtemp(join(tmpdir(), "cmux-push-quiet-"));

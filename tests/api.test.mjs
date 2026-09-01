@@ -588,6 +588,10 @@ function fakePlanner() {
     detail: async (planId) => { calls.push(["detail", planId]); return { ...draft, events: [{ round: 0, kind: "goal", payload: { goal: "Add billing" }, createdAt: "2026-09-01T00:00:00.000Z" }] }; },
     resume: async (planId) => { calls.push(["resume", planId]); return draft; },
     remove: async (planId) => { calls.push(["remove", planId]); return { planId, deleted: true }; },
+    startBackground: async (options) => { calls.push(["startBackground", options]); return { ...draft, round: 0, status: "questions", tasks: [], running: true }; },
+    answerBackground: async (planId, options) => { calls.push(["answerBackground", planId, options]); return { ...draft, running: true }; },
+    run: async (planId) => { calls.push(["run", planId]); return { ...draft, round: 0, running: true }; },
+    activeRuns: () => { calls.push(["activeRuns"]); return { runs: [{ planId: "plan-1", kind: "plan", phase: "running", step: "Read app/page.tsx", startedAt: 1, finishedAt: null }] }; },
   };
 }
 
@@ -635,6 +639,44 @@ test("turns an unknown saved plan into a 400", async (t) => {
   const response = await app.inject({ method: "GET", url: "/api/worktree-plans/nope", headers });
   assert.equal(response.statusCode, 400);
   assert.match(response.json().error, /Unknown plan/);
+});
+
+test("starts a background plan round and reports it as running", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const started = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", background: true } });
+  assert.equal(started.statusCode, 202);
+  assert.equal(started.json().running, true);
+  assert.equal(started.json().planId, "plan-1");
+  assert.equal(planner.calls[0][0], "startBackground");
+
+  const answered = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/answers", headers, payload: { skip: true, background: true } });
+  assert.equal(answered.statusCode, 202);
+  assert.equal(planner.calls[1][0], "answerBackground");
+  assert.equal(planner.calls[1][2].skip, true);
+
+  const runs = await app.inject({ method: "GET", url: "/api/worktree-plans/runs", headers });
+  assert.equal(runs.statusCode, 200);
+  assert.equal(runs.json().runs[0].planId, "plan-1");
+  assert.equal(runs.json().runs[0].phase, "running");
+
+  const rerun = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/run", headers, payload: {} });
+  assert.equal(rerun.statusCode, 202);
+  assert.equal(planner.calls.at(-1)[0], "run");
+});
+
+test("refuses a request against a plan whose round is still running", async (t) => {
+  const planner = fakePlanner();
+  planner.launch = async () => { throw new TypeError("This goal is planning right now. Wait for the round to finish"); };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/launch", headers, payload: {} });
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /planning right now/);
 });
 
 test("drives a worktree plan from goal to launch", async (t) => {
