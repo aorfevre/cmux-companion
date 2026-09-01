@@ -1,5 +1,3 @@
-import { goalGroupName, goalGroupPrefix } from "./cmux-groups.mjs";
-
 const TASK_SETTLE_MS = 1_000;
 
 class TasksNotReadyError extends TypeError {}
@@ -8,7 +6,7 @@ class TasksNotReadyError extends TypeError {}
 // branch is ready by reading git, then hands the merge itself to one cmux agent:
 // a conflict needs judgement, which no subprocess can supply.
 export class GoalIntegrator {
-  constructor({ store, worktrees, repoCatalog, cmux = null, groups = null, execute = null, log = null, settleMs = TASK_SETTLE_MS } = {}) {
+  constructor({ store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
@@ -16,7 +14,6 @@ export class GoalIntegrator {
     this.worktrees = worktrees;
     this.repoCatalog = repoCatalog;
     this.cmux = cmux;
-    this.groups = groups;
     this.execute = execute || ((bin, args, options) => repoCatalog.execute(bin, args, options));
     this.log = log;
     this.settleMs = settleMs;
@@ -166,7 +163,7 @@ export class GoalIntegrator {
         if (!workspaceId) throw new TypeError("cmux created the merge session but did not return its id");
         plan = this.store.recordMergeLaunched(plan.planId, workspaceId);
       }
-      await this.#publish(plan, { workspaceId: plan.mergeWorkspaceId });
+      await this.#publish(plan);
       return deliveryResult(plan);
     });
   }
@@ -244,32 +241,12 @@ export class GoalIntegrator {
   // One function drives every surface, and it runs after the store commits.
   // A failed cmux call therefore cannot roll back a delivery transition, and
   // the next change re-sends the correct current count.
-  async #publish(plan, { workspaceId = null } = {}) {
-    // Every surface here is presentation, and this runs after the store has
+  async #publish(plan) {
+    // The notification is presentation, and this runs after the store has
     // committed - one call site sitting outside #assemble's own catch. A
     // collaborator that throws would therefore abort a delivery that already
-    // succeeded, so one boundary swallows all of them. `surface` is what tells
-    // an operator whether it was the group or the notification that broke.
-    let surface = "group";
+    // succeeded, so this boundary swallows it.
     try {
-      const name = groupName(plan);
-      let groupId = plan.cmuxGroupId;
-      if (!groupId && this.groups) {
-        // The first workspace of the goal anchors the group, so the counter is
-        // visible long before there is a merge session to hang it on.
-        const anchor = workspaceId || plan.mergeWorkspaceId || plan.tasks.find((task) => task.workspaceId)?.workspaceId;
-        if (anchor) {
-          // The name carries the counter, so only the goal prefix identifies
-          // the group we already own. An exact-name lookup would make a fresh
-          // group on every count change.
-          groupId = await this.groups.ensure(name, anchor, { groupId, prefix: goalGroupPrefix(plan) });
-          if (groupId) this.store.recordGroup(plan.planId, groupId);
-        }
-      }
-      // Renamed even when it was just ensured: a group recovered by prefix
-      // still carries the count it had when companion last lost its id.
-      if (groupId) await this.groups?.rename(groupId, name);
-
       // #publish runs on every assemble, and every task Stop schedules one, so
       // the milestone is a state and not an event. Only a change is worth a
       // notification.
@@ -277,13 +254,12 @@ export class GoalIntegrator {
       if (!key || key === plan.cmuxNoticeKey) return;
       const target = plan.mergeWorkspaceId || plan.tasks.find((task) => task.workspaceId)?.workspaceId;
       if (!target) return;
-      surface = "notification";
       await this.cmux?.notify(target, milestone(plan));
       // Recorded only once the notice is really out, so a dropped one is
-      // re-sent by the next publish, exactly as a dropped rename is.
+      // re-sent by the next publish.
       this.store.recordNoticeKey(plan.planId, key);
     } catch (cause) {
-      this.log?.warn?.({ err: cause, planId: plan.planId, surface }, "goal progress publish failed");
+      this.log?.warn?.({ err: cause, planId: plan.planId }, "goal progress publish failed");
     }
   }
 
@@ -425,22 +401,6 @@ export function readyCount(tasks) {
   const launched = (tasks || []).filter((task) => !task.launchStatus || task.launchStatus === "launched");
   const ready = launched.filter((task) => task.deliveryStatus === "ready" || task.deliveryStatus === "integrated");
   return { ready: ready.length, total: launched.length };
-}
-
-// goalGroupName builds on goalGroupPrefix, so the name this renames to can
-// never stop matching the prefix the group is looked up by - the invariant that
-// keeps one group per goal instead of a fresh one on every count change.
-function groupName(plan) {
-  return goalGroupName(plan, groupSuffix(plan));
-}
-
-function groupSuffix(plan) {
-  if (plan.finalPrNumber) return `PR #${plan.finalPrNumber}`;
-  if (plan.mergeStatus === "blocked") return "blocked";
-  if (plan.mergeStatus === "running") return "merging";
-  const { ready, total } = readyCount(plan.tasks);
-  // Nothing has launched yet. "0/0" would read as done with nothing to do.
-  return total === 0 ? "waiting" : `${ready}/${total}`;
 }
 
 // Three notifications only. A chatty agent stops many times, so a per-task

@@ -2,8 +2,6 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 
-import { goalGroupName, goalGroupPrefix } from "./cmux-groups.mjs";
-
 // promisify(execFile) buffers to completion, so nothing can be reported while
 // the model is still thinking. spawn resolves the same shape and rejects with
 // the same fields, plus it calls onLine for each stdout line, so every injected
@@ -287,14 +285,13 @@ export function describeRunFailure(stderr) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null, groups = null } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
     // The dashboard owns the repo catalog, which owns the injected git runner.
     this.git = git || ((cwd, args, options) => worktrees.repoCatalog.git(cwd, args, options));
     this.cmux = cmux;
-    this.groups = groups;
     this.accountUsage = accountUsage;
     this.log = log;
     this.execute = execute;
@@ -435,42 +432,10 @@ export class WorktreePlanner {
         // images and the delivery contract selected for the whole goal.
         prompt: taskPrompt(task.prompt, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers),
       });
-      // Grouping is presentation. It runs after the workspace exists and it
-      // never fails the launch, so a cmux without groups still delivers.
-      await this.#group(draft, workspace, deliveryMode);
       return { ...summary, status: "launched", path, workspace };
     } catch (cause) {
       this.log?.warn?.({ err: cause, branch: task.branch }, "planner task launch failed");
       return { ...summary, status: "failed", path, error: cause?.message || "Could not launch this task" };
-    }
-  }
-
-  // A goal delivered as one pull request owns its own group. Every other
-  // workspace joins the shared group for its repository, so a dashboard session
-  // lands there too. The predicate is the delivery mode, not the task count:
-  // deliveryPolicy alone makes a one-task issue plan combined, and grouping
-  // that by repository would leave the integrator to open a second group.
-  async #group(draft, workspace, deliveryMode) {
-    if (!this.groups) return;
-    const id = workspace?.workspace_id || workspace?.workspaceId || workspace?.id;
-    if (!id) return;
-    const combined = deliveryMode === "combined";
-    // Both sides of a goal group name come from cmux-groups, so the name the
-    // integrator renames to can never stop matching the prefix set here.
-    const name = combined ? goalGroupName(draft, "0/0") : draft.repositoryName || "";
-    if (!name) return;
-    // A goal group's name carries a live counter, so only the delimited goal
-    // prefix is a stable lookup key. Matching on the counted name would open a
-    // second group the moment the count moved.
-    const stored = combined ? this.#read(() => this.store?.get(draft.planId))?.cmuxGroupId : null;
-    try {
-      // CmuxGroups swallows its own failures, but this call sits inside the
-      // launch try, so an injected service that does throw would turn a
-      // delivered workspace into a failed task row. Grouping never costs that.
-      const groupId = await this.groups.ensure(name, id, { groupId: stored || null, prefix: combined ? goalGroupPrefix(draft) : "" });
-      if (combined && groupId) this.#persist(() => this.store?.recordGroup(draft.planId, groupId), draft.planId, "group");
-    } catch (cause) {
-      this.log?.warn?.({ err: cause, planId: draft.planId }, "planner group assignment failed");
     }
   }
 

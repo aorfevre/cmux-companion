@@ -1,3 +1,16 @@
+// NOT WIRED. Nothing constructs this service, and that is deliberate.
+//
+// Probed against real cmux: `workspace.group.create` honours no workspace
+// parameter at all - `workspace_ids`, `workspace_id` and `{}` alike each seized
+// two workspaces adjacent in the sidebar, not the one asked for. And
+// `workspace.group.remove` dissolves the whole group instead of shrinking it,
+// so a wrongly captured workspace cannot be evicted afterwards. Every goal
+// launch would therefore drag two unrelated sessions into the goal's group and
+// rename them with its counter, with no repair path.
+//
+// It is kept, with its tests, so grouping can be restored the day cmux offers a
+// create that honours explicit membership. Until then, do not wire it back up.
+
 export const MAX_NAME = 80;
 
 // A workspace group is how cmux shows that several sessions belong to one goal.

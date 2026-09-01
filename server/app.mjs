@@ -4,7 +4,6 @@ import { dirname, join } from "node:path";
 import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
-import { CmuxGroups } from "./cmux-groups.mjs";
 import { CmuxEventHub } from "./event-hub.mjs";
 import { PlannerProgress, TRACE_ID } from "./planner-progress.mjs";
 import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
@@ -41,6 +40,10 @@ export async function buildApp({
   worktreePlanner = null,
   worktreePlanStore = null,
   goalIntegrator = null,
+  // Accepted but deliberately unused: see the header of cmux-groups.mjs for why
+  // cmux workspace grouping is inert. The option stays in the signature so
+  // grouping can be restored, and injected, without another API change here.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   cmuxGroups = null,
   githubIssuePlanner = null,
   plannerProgress = new PlannerProgress(),
@@ -69,19 +72,13 @@ export async function buildApp({
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog });
-  const groups = cmuxGroups || new CmuxGroups({ cmux, log: app.log });
-  const groupQuietly = async (name, workspaceId) => {
-    try { await groups.ensure(name, workspaceId); } catch (cause) {
-      app.log?.warn?.({ err: cause, name }, "workspace group assignment failed");
-    }
-  };
   // The planner and delivery controller share one durable goal record. Tests
   // that inject a whole planner do not open the production database implicitly.
   const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
   const planner = worktreePlanner
-    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, groups });
+    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore });
   const integrator = goalIntegrator
-    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, groups, log: app.log }) : null);
+    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
     || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   const pairAttempts = new Map();
@@ -265,11 +262,6 @@ export async function buildApp({
       prompt,
       script,
     });
-    // CmuxGroups swallows its own failures, but `cmuxGroups` is injectable, and
-    // an injected service that throws would turn this into a 500 after the
-    // workspace already exists - an orphan session whose id never reaches the
-    // client. Grouping is presentation and never costs that.
-    await groupQuietly(repo.name, created.workspace_id);
     repoCatalog.cache = null;
     return reply.code(201).send({ workspace: created, repo: { id: repo.id, name: repo.name } });
   });
@@ -317,7 +309,6 @@ export async function buildApp({
       agent,
       prompt,
     });
-    await groupQuietly(target.repoName, created.workspace_id);
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return reply.code(201).send({
