@@ -202,12 +202,12 @@ export class CmuxClient {
     return this.rpc("notification.mark_read", { id });
   }
 
-  // A notification is a courtesy, not a delivery step, so its input is clamped
-  // rather than rejected. A long agent message must never fail a merge.
+  // A notification is a courtesy, so its text is clamped and defaulted rather
+  // than rejected: a blank title is a caller bug, and failing here would abort
+  // the delivery this call only meant to report on.
   async notify(workspaceId, { title, body = "" }) {
     assertTarget(workspaceId);
-    const heading = String(title || "").trim().slice(0, 100);
-    if (!heading) throw new TypeError("A notification needs a title");
+    const heading = String(title || "").trim().slice(0, 100) || "cmux companion";
     return this.rpc("notification.create_for_target", {
       workspace_id: workspaceId,
       title: heading,

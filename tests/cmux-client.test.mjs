@@ -236,10 +236,11 @@ test("sends a workspace notification through the rpc surface", async () => {
   await client.notify(ID, { title: "Goal ready", body: "3 of 3 branches ready" });
   assert.equal(calls[0][1], "rpc");
   assert.equal(calls[0][2], "notification.create_for_target");
-  const params = JSON.parse(calls[0][3]);
-  assert.equal(params.workspace_id, ID);
-  assert.equal(params.title, "Goal ready");
-  assert.equal(params.body, "3 of 3 branches ready");
+  assert.deepEqual(JSON.parse(calls[0][3]), {
+    workspace_id: ID,
+    title: "Goal ready",
+    body: "3 of 3 branches ready",
+  });
 });
 
 test("refuses a notification for an invalid workspace target", async () => {
@@ -248,4 +249,32 @@ test("refuses a notification for an invalid workspace target", async () => {
     execute: async () => ({ stdout: "{}", stderr: "" }),
   });
   await assert.rejects(() => client.notify("workspace-one", { title: "Goal ready" }), /Invalid cmux target/);
+});
+
+test("clamps an oversized notification title and body before sending", async () => {
+  const calls = [];
+  const client = new CmuxClient({
+    bin: "/bin/true",
+    execute: async (bin, args) => { calls.push(args); return { stdout: "{}", stderr: "" }; },
+  });
+  await client.notify(ID, { title: "x".repeat(150), body: "y".repeat(600) });
+  assert.deepEqual(JSON.parse(calls[0][3]), {
+    workspace_id: ID,
+    title: "x".repeat(100),
+    body: "y".repeat(500),
+  });
+});
+
+test("falls back to a default title instead of failing on a blank one", async () => {
+  const calls = [];
+  const client = new CmuxClient({
+    bin: "/bin/true",
+    execute: async (bin, args) => { calls.push(args); return { stdout: "{}", stderr: "" }; },
+  });
+  await client.notify(ID, { title: "   ", body: "still delivered" });
+  assert.deepEqual(JSON.parse(calls[0][3]), {
+    workspace_id: ID,
+    title: "cmux companion",
+    body: "still delivered",
+  });
 });
