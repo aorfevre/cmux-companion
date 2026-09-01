@@ -286,8 +286,8 @@ test("survives a reopen of the same file and keeps mode 0600", (t) => {
   assert.deepEqual(plan.tasks.map((task) => task.branch), ["feature/billing", "feature/invoices"]);
 });
 
-test("records the cmux group, the merge workspace and a merge block", () => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
+test("records the cmux group, the merge workspace and a merge block", (t) => {
+  const store = memoryStore(t);
   store.createPlan({ planId: "plan-groups", repositoryId: "repo-1", goal: "Ship it" });
   store.recordRound("plan-groups", {
     round: 1, stage: "ready", sessionId: "session",
@@ -313,5 +313,4 @@ test("records the cmux group, the merge workspace and a merge block", () => {
   const kinds = store.events("plan-groups").map((event) => event.kind);
   assert.ok(kinds.includes("merge_launched"));
   assert.ok(kinds.includes("merge_blocked"));
-  store.close();
 });
