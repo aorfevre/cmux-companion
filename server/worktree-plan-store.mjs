@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS plans (
   cwd TEXT,
   goal TEXT NOT NULL,
   images TEXT NOT NULL DEFAULT '[]',
+  source_type TEXT,
+  issue_numbers TEXT NOT NULL DEFAULT '[]',
+  issue_urls TEXT NOT NULL DEFAULT '[]',
+  delivery_policy TEXT NOT NULL DEFAULT 'auto',
   session_id TEXT,
   round INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -99,14 +103,14 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [] }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare(`
-        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), at, at);
-      this.#insertEvent(planId, 0, "goal", { goal, images }, at);
+        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), at, at);
+      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy) }, at);
     });
     this.#prune();
     return this.get(planId);
@@ -119,7 +123,9 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare(`
-        UPDATE plans SET round = ?, stage = ?, session_id = ?, questions = ?, delivery_mode = ?, updated_at = ? WHERE plan_id = ?
+        UPDATE plans SET round = ?, stage = ?, session_id = ?, questions = ?,
+          delivery_mode = CASE WHEN delivery_policy = 'combined' THEN 'combined' ELSE ? END,
+          updated_at = ? WHERE plan_id = ?
       `).run(round, stage, sessionId, json(questions), deliveryMode(tasks), at, planId);
       // An answered round replaces the previous task list wholesale, because the
       // planner returns a fresh split rather than a patch.
@@ -135,7 +141,10 @@ export class WorktreePlanStore {
   recordEdit(planId, tasks) {
     const at = this.#stamp();
     this.#transaction(() => {
-      this.db.prepare("UPDATE plans SET delivery_mode = ?, updated_at = ? WHERE plan_id = ?").run(deliveryMode(tasks), at, planId);
+      this.db.prepare(`
+        UPDATE plans SET delivery_mode = CASE WHEN delivery_policy = 'combined' THEN 'combined' ELSE ? END,
+          updated_at = ? WHERE plan_id = ?
+      `).run(deliveryMode(tasks), at, planId);
       this.#replaceTasks(planId, tasks);
       this.#insertEvent(planId, null, "edit", { tasks }, at);
     });
@@ -320,6 +329,8 @@ export class WorktreePlanStore {
       deliveryStatus: row.delivery_status,
       finalPrNumber: row.final_pr_number,
       finalPrUrl: row.final_pr_url,
+      issueNumbers: parse(row.issue_numbers, []),
+      deliveryPolicy: row.delivery_policy || "auto",
       taskCount: row.task_count,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -371,6 +382,10 @@ export class WorktreePlanStore {
       if (!columns.has(column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
     };
     ensure("plans", "base_sha", "TEXT");
+    ensure("plans", "source_type", "TEXT");
+    ensure("plans", "issue_numbers", "TEXT NOT NULL DEFAULT '[]'");
+    ensure("plans", "issue_urls", "TEXT NOT NULL DEFAULT '[]'");
+    ensure("plans", "delivery_policy", "TEXT NOT NULL DEFAULT 'auto'");
     ensure("plans", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'");
     ensure("plans", "delivery_status", "TEXT NOT NULL DEFAULT 'planning'");
     ensure("plans", "integration_branch", "TEXT");
@@ -420,6 +435,10 @@ function readPlan(row) {
     cwd: row.cwd,
     goal: row.goal,
     images: parse(row.images, []),
+    sourceType: row.source_type,
+    issueNumbers: parse(row.issue_numbers, []),
+    issueUrls: parse(row.issue_urls, []),
+    deliveryPolicy: row.delivery_policy || "auto",
     sessionId: row.session_id,
     round: row.round,
     status: row.status,
@@ -461,6 +480,10 @@ function readTask(row) {
 
 function deliveryMode(tasks) {
   return Array.isArray(tasks) && tasks.length > 1 ? "combined" : "single";
+}
+
+function policy(value) {
+  return value === "combined" ? "combined" : "auto";
 }
 
 // cmux answers with one of several id fields depending on its version, so read

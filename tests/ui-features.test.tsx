@@ -9,8 +9,51 @@ import { BottomNav, HomeModeSwitch, InboxView, LastUpdateStamp, PullRequestBanne
 import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { WorktreeDashboardView } from "../app/worktree-dashboard";
 import { WorktreePlannerSheet } from "../app/worktree-planner";
+import { GitHubIssuePlannerSheet } from "../app/github-issue-planner";
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("GitHub issue topic planner", () => {
+  test("groups tickets, captures clarification, creates goal plans, and launches every ready topic", async () => {
+    const analysis = {
+      analysisId: "analysis-1", repository: { nameWithOwner: "acme/app", url: "https://github.com/acme/app", issuesUrl: "https://github.com/acme/app/issues" }, analyzedAt: new Date().toISOString(),
+      issues: [
+        { number: 54, title: "Restore focus", labels: ["editor"], url: "https://github.com/acme/app/issues/54", updatedAt: "2026-09-01" },
+        { number: 55, title: "Caret visibility", labels: ["editor"], url: "https://github.com/acme/app/issues/55", updatedAt: "2026-09-01" },
+        { number: 57, title: "Diagnostics", labels: ["backend"], url: "https://github.com/acme/app/issues/57", updatedAt: "2026-09-01" },
+      ],
+      topics: [
+        { id: "topic-1", title: "Editor reliability", goal: "Make editing reliable", rationale: "Shared editor files", issueNumbers: [54, 55], questions: [{ id: "question-1", text: "Which browsers?", options: ["All", "Safari"] }], acceptanceCriteria: [], overlapRisk: "Both touch the editor", dependencies: [] },
+        { id: "topic-2", title: "Correction observability", goal: "Add diagnostics", rationale: "Independent backend work", issueNumbers: [57], questions: [], acceptanceCriteria: [], overlapRisk: "low", dependencies: [] },
+      ],
+    };
+    const plan = (id: string, title: string, branch: string) => ({ planId: id, repositoryId: "repository12345678", goal: title, round: 1, status: "ready", deliveryMode: "combined", questions: [], tasks: [{ id: "t1", title, branch, prompt: "Do it", agent: "codex", agentReason: "Codex has headroom" }] });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/analyze")) return new Response(JSON.stringify(analysis), { status: 200 });
+      if (url.endsWith("/prepare")) return new Response(JSON.stringify({ analysisId: "analysis-1", results: [
+        { topicId: "topic-1", title: "Editor reliability", issueNumbers: [54, 55], status: "planned", plan: plan("plan-1", "Editor task", "feature/editor") },
+        { topicId: "topic-2", title: "Correction observability", issueNumbers: [57], status: "planned", plan: plan("plan-2", "Diagnostics task", "feature/diagnostics") },
+      ] }), { status: 200 });
+      if (url.endsWith("/launch")) return new Response(JSON.stringify({ requested: 2, launchedTopics: 2, launchedWorktrees: 2, results: [{ planId: "plan-1", status: "launched" }, { planId: "plan-2", status: "launched" }] }), { status: 200 });
+      throw new Error(`Unexpected ${url} ${init?.method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const launched = vi.fn(async () => {});
+    render(<GitHubIssuePlannerSheet repository={{ id: "repository12345678", name: "app" }} onClose={() => {}} onLaunched={launched} onNotice={() => {}} />);
+    const sheet = await screen.findByRole("dialog", { name: "Plan GitHub issues" });
+    assert.ok(await within(sheet).findByText("Editor reliability"));
+    await userEvent.click(within(sheet).getByRole("button", { name: "All" }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Create 2 goal plans" }));
+    assert.ok(await within(sheet).findByText("Editor task"));
+    assert.ok(within(sheet).getByText("Diagnostics task"));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Launch 2 topics" }));
+    assert.ok(await within(sheet).findByText("2 topics in flight"));
+    assert.equal(launched.mock.calls.length, 1);
+    const prepareCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/prepare"));
+    assert.match(String(prepareCall?.[1]?.body), /"question-1":"All"/);
+  });
+});
 
 describe("contextual mobile features", () => {
   test("keeps permanent navigation focused on frequent mobile destinations", async () => {

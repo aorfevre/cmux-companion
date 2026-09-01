@@ -304,11 +304,14 @@ export class WorktreePlanner {
     this.drafts = new Map();
   }
 
-  async start({ repositoryId, goal, images, onEvent = null }) {
+  async start({ repositoryId, goal, images, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
     const text = String(goal || "").trim();
     if (!text) throw new TypeError("Describe the goal for this repository");
     if (text.length > 4_000) throw new TypeError("That goal is too long");
     const attachments = normalizeImages(images);
+    const linkedIssues = normalizeIssueNumbers(issueNumbers);
+    const linkedIssueUrls = normalizeIssueUrls(issueUrls);
+    const normalizedDeliveryPolicy = deliveryPolicy === "combined" ? "combined" : "auto";
     const repository = await this.#repository(repositoryId);
     const draft = {
       planId: randomUUID(),
@@ -317,6 +320,10 @@ export class WorktreePlanner {
       cwd: repository.primaryPath,
       goal: text,
       images: attachments,
+      sourceType: linkedIssues.length ? "github_issues" : null,
+      issueNumbers: linkedIssues,
+      issueUrls: linkedIssueUrls,
+      deliveryPolicy: normalizedDeliveryPolicy,
       sessionId: null,
       round: 0,
       at: Date.now(),
@@ -337,6 +344,10 @@ export class WorktreePlanner {
       cwd: draft.cwd,
       goal: draft.goal,
       images: draft.images,
+      sourceType: draft.sourceType,
+      issueNumbers: draft.issueNumbers,
+      issueUrls: draft.issueUrls,
+      deliveryPolicy: draft.deliveryPolicy,
     }), draft.planId, "create");
     return this.#round(draft, openingPrompt(draft), onEvent);
   }
@@ -379,7 +390,7 @@ export class WorktreePlanner {
     const base = await this.#baseRef(draft);
     const repositoryPath = await this.#repositoryPath(draft);
     const baseSha = String(await this.git(repositoryPath, ["rev-parse", `${base}^{commit}`]).catch(() => "")).trim() || null;
-    const deliveryMode = draft.tasks.length > 1 ? "combined" : "single";
+    const deliveryMode = planDeliveryMode(draft);
     const results = [];
     for (const task of draft.tasks) {
       results.push(await this.#launchTask(draft, task, base, deliveryMode));
@@ -414,7 +425,7 @@ export class WorktreePlanner {
         agent: task.agent,
         // Each worktree agent is isolated, so every task prompt carries its
         // images and the delivery contract selected for the whole goal.
-        prompt: taskPrompt(task.prompt, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`),
+        prompt: taskPrompt(task.prompt, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers),
       });
       return { ...summary, status: "launched", path, workspace };
     } catch (cause) {
@@ -616,11 +627,15 @@ function publicDraft(draft) {
     repositoryId: draft.repositoryId,
     goal: draft.goal,
     images: draft.images || [],
+    sourceType: draft.sourceType || null,
+    issueNumbers: draft.issueNumbers || [],
+    issueUrls: draft.issueUrls || [],
+    deliveryPolicy: draft.deliveryPolicy || "auto",
     round: draft.round,
     status: draft.status,
     questions: draft.questions,
     tasks: draft.tasks,
-    deliveryMode: draft.tasks.length > 1 ? "combined" : "single",
+    deliveryMode: planDeliveryMode(draft),
   };
 }
 
@@ -634,6 +649,10 @@ function draftFromStore(stored) {
     cwd: stored.cwd || "",
     goal: stored.goal,
     images: Array.isArray(stored.images) ? stored.images : [],
+    sourceType: stored.sourceType || null,
+    issueNumbers: Array.isArray(stored.issueNumbers) ? stored.issueNumbers : [],
+    issueUrls: Array.isArray(stored.issueUrls) ? stored.issueUrls : [],
+    deliveryPolicy: stored.deliveryPolicy === "combined" ? "combined" : "auto",
     sessionId: stored.sessionId || null,
     round: Number(stored.round) || 0,
     at: Date.now(),
@@ -648,6 +667,10 @@ function draftFromStore(stored) {
       agentReason: task.agentReason || "",
     })),
   };
+}
+
+function planDeliveryMode(draft) {
+  return draft.deliveryPolicy === "combined" || draft.tasks.length > 1 ? "combined" : "single";
 }
 
 // The event log stores the question next to its answer, because a later round
@@ -696,13 +719,14 @@ function withImages(prompt, images) {
 // The plan ends at a pull request, not at a finished worktree. The agent opens
 // it, because the branch has no commit at launch time and gh would refuse an
 // empty one. Each agent is isolated, so every task prompt carries this itself.
-function pullRequestStep(base) {
+function pullRequestStep(base, issueNumbers = []) {
   const branch = String(base || "").replace(/^origin\//, "") || "main";
   return [
     "Finish with a pull request:",
     "1. Commit your work.",
     "2. Push the branch to origin.",
     `3. Open a pull request against ${branch} with \`gh pr create\`. Do not mark it a draft.`,
+    ...(issueNumbers.length ? [`4. Put these closing references in the pull request body, one per line: ${issueNumbers.map((number) => `Closes #${number}`).join("; ")}. These exact keywords ensure GitHub closes the linked issues only when this final PR merges.`] : []),
     "Open the pull request even when your own checks fail. State what failed at the top of its body, so the work stays visible instead of stopping on this machine.",
   ].join("\n");
 }
@@ -717,8 +741,8 @@ function combinedBranchStep(readyToken) {
   ].join("\n");
 }
 
-function taskPrompt(prompt, images, base, deliveryMode = "single", readyToken = "") {
-  const finish = deliveryMode === "combined" ? combinedBranchStep(readyToken) : pullRequestStep(base);
+function taskPrompt(prompt, images, base, deliveryMode = "single", readyToken = "", issueNumbers = []) {
+  const finish = deliveryMode === "combined" ? combinedBranchStep(readyToken) : pullRequestStep(base, issueNumbers);
   return [withImages(prompt, images), finish].join("\n\n");
 }
 
@@ -732,6 +756,20 @@ function normalizeImages(images) {
     const name = typeof image?.name === "string" && image.name.trim() ? image.name.trim().slice(0, 200) : "attached image";
     return { path: path.trim().slice(0, 1_000), name };
   });
+}
+
+function normalizeIssueNumbers(values) {
+  if (values === undefined || values === null) return [];
+  if (!Array.isArray(values)) throw new TypeError("GitHub issue numbers must be a list");
+  const numbers = [...new Set(values.map(Number))];
+  if (numbers.length > 100 || numbers.some((number) => !Number.isInteger(number) || number < 1)) throw new TypeError("GitHub issue numbers are invalid");
+  return numbers;
+}
+
+function normalizeIssueUrls(values) {
+  if (values === undefined || values === null) return [];
+  if (!Array.isArray(values)) throw new TypeError("GitHub issue links must be a list");
+  return values.map((value) => String(value || "").trim()).filter((value) => /^https:\/\/github\.com\//.test(value)).slice(0, 100);
 }
 
 function openingPrompt(draft) {

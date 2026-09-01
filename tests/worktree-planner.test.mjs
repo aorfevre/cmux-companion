@@ -718,6 +718,19 @@ test("single-task goals keep the direct pull request workflow", async () => {
   assert.match(prompt, /pull request against main\b/);
 });
 
+test("a one-task issue topic is forced through Companion's combined delivery branch", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Fix linked issues", issueNumbers: [54, 55], issueUrls: ["https://github.com/acme/app/issues/54"], deliveryPolicy: "combined" });
+  assert.deepEqual(draft.issueNumbers, [54, 55]);
+  assert.equal(draft.deliveryMode, "combined");
+  const result = await planner.launch(draft.planId);
+  const prompt = deps.calls.find((call) => call[0] === "workspace")[1].prompt;
+  assert.equal(result.deliveryMode, "combined");
+  assert.match(prompt, /Finish your task branch for combined delivery/);
+  assert.doesNotMatch(prompt, /Closes #54|gh pr create/);
+});
+
 test("names a master default branch rather than assuming main", async () => {
   const deps = launchDeps();
   deps.git = async (cwd, args) => {

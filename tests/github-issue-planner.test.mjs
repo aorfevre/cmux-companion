@@ -1,0 +1,89 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { GitHubIssuePlanner, normalizeTopics, parseGroupingReply } from "../server/github-issue-planner.mjs";
+
+const REPOSITORY_ID = "repositoryABCDEFGH";
+const issues = [
+  { number: 54, title: "Restore editor focus", body: "Focus the editor after playback", labels: [{ name: "editor" }], url: "https://github.com/acme/app/issues/54", updatedAt: "2026-09-01T08:00:00Z" },
+  { number: 55, title: "Keep caret visible", body: "Scroll the caret into view", labels: [{ name: "editor" }], url: "https://github.com/acme/app/issues/55", updatedAt: "2026-09-01T08:10:00Z" },
+  { number: 57, title: "Correction diagnostics", body: "Add observability", labels: [{ name: "backend" }], url: "https://github.com/acme/app/issues/57", updatedAt: "2026-09-01T08:20:00Z" },
+];
+
+function harness({ refreshedIssues = issues, existingPlans = [] } = {}) {
+  const starts = [];
+  const launches = [];
+  const calls = [];
+  let issueLoads = 0;
+  const planner = {
+    list: async () => ({ plans: existingPlans }),
+    start: async (input) => {
+      starts.push(input);
+      return { planId: `plan-${starts.length}`, status: "ready", questions: [], tasks: [{ id: "t1", title: "Task", branch: `feature/task-${starts.length}`, prompt: "Do it", agent: "codex", agentReason: "" }] };
+    },
+    launch: async (planId) => { launches.push(planId); return { planId, launched: 2, deliveryMode: "combined", results: [{}, {}] }; },
+  };
+  const execute = async (bin, args) => {
+    calls.push([bin, args]);
+    if (bin === "gh" && args[0] === "repo") return { stdout: JSON.stringify({ nameWithOwner: "acme/app", url: "https://github.com/acme/app" }) };
+    if (bin === "gh" && args[0] === "issue") {
+      issueLoads += 1;
+      return { stdout: JSON.stringify(issueLoads === 1 ? issues : refreshedIssues) };
+    }
+    if (bin === "ccs") return { stdout: JSON.stringify({ result: JSON.stringify({ topics: [
+      { title: "Editor reliability", goal: "Make editing reliable", rationale: "Shared editor surface", issueNumbers: [54, 55], questions: [{ text: "Which browser?", options: ["All", "Safari"] }], acceptanceCriteria: ["Caret stays visible"], overlapRisk: "Both issues touch the editor", dependencies: [] },
+      { title: "Correction observability", goal: "Add correction diagnostics", rationale: "Separate backend delivery", issueNumbers: [57], questions: [], acceptanceCriteria: ["Failures are diagnosable"], overlapRisk: "low", dependencies: [] },
+    ] }) }) };
+    throw new Error(`Unexpected ${bin} ${args.join(" ")}`);
+  };
+  const worktrees = { snapshot: async () => ({ repositories: [{ id: REPOSITORY_ID, name: "app", path: "/repo/app" }] }) };
+  return { service: new GitHubIssuePlanner({ worktrees, planner, execute }), starts, launches, calls };
+}
+
+test("parses a CCS envelope and preserves issues omitted by the model", () => {
+  const reply = parseGroupingReply(JSON.stringify({ result: JSON.stringify({ topics: [{ title: "Editor", issueNumbers: [54, 55] }] }) }));
+  const topics = normalizeTopics(reply.topics, issues.map((issue) => ({ ...issue, labels: issue.labels.map((label) => label.name) })));
+  assert.deepEqual(topics[0].issueNumbers, [54, 55]);
+  assert.equal(topics[1].title, "Correction diagnostics");
+  assert.deepEqual(topics[1].issueNumbers, [57]);
+});
+
+test("analyzes, clarifies, and creates one durable goal plan per selected topic", async () => {
+  const { service, starts, calls } = harness();
+  const analysis = await service.analyze({ repositoryId: REPOSITORY_ID });
+  assert.equal(analysis.repository.nameWithOwner, "acme/app");
+  assert.equal(analysis.topics.length, 2);
+  assert.equal(analysis.issues[0].body, undefined);
+
+  const prepared = await service.prepare({
+    analysisId: analysis.analysisId,
+    topics: [{ id: "topic-1", answers: { "question-1": "Safari and Chrome" } }],
+  });
+  assert.equal(prepared.results[0].status, "planned");
+  assert.deepEqual(starts[0].issueNumbers, [54, 55]);
+  assert.deepEqual(starts[0].issueUrls, ["https://github.com/acme/app/issues/54", "https://github.com/acme/app/issues/55"]);
+  assert.match(starts[0].goal, /Which browser\?: Safari and Chrome/);
+  const issueCall = calls.find(([bin, args]) => bin === "gh" && args[0] === "issue");
+  assert.deepEqual(issueCall[1], ["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,body,labels,url,updatedAt"]);
+  const modelCall = calls.find(([bin]) => bin === "ccs");
+  assert.equal(modelCall[1].includes("--allowed-tools"), false);
+  assert.match(modelCall[1][modelCall[1].indexOf("--disallowed-tools") + 1], /Read.*Bash.*Skill.*WebSearch/);
+  assert.equal(modelCall[1].at(-2), "--");
+});
+
+test("refuses stale issues and issues already claimed by a saved goal", async () => {
+  const stale = harness({ refreshedIssues: issues.map((issue) => issue.number === 54 ? { ...issue, updatedAt: "2026-09-01T10:00:00Z" } : issue) });
+  const analysis = await stale.service.analyze({ repositoryId: REPOSITORY_ID });
+  await assert.rejects(() => stale.service.prepare({ analysisId: analysis.analysisId, topics: [{ id: "topic-1" }] }), /#54 changed or closed/);
+
+  const claimed = harness({ existingPlans: [{ planId: "existing", issueNumbers: [55] }] });
+  const claimedAnalysis = await claimed.service.analyze({ repositoryId: REPOSITORY_ID });
+  await assert.rejects(() => claimed.service.prepare({ analysisId: claimedAnalysis.analysisId, topics: [{ id: "topic-1" }] }), /#55 already belongs/);
+});
+
+test("launches prepared topic plans in order and reports parallel worktree count", async () => {
+  const { service, launches } = harness();
+  const result = await service.launch({ planIds: ["plan-a", "plan-b", "plan-a"] });
+  assert.deepEqual(launches, ["plan-a", "plan-b"]);
+  assert.equal(result.launchedTopics, 2);
+  assert.equal(result.launchedWorktrees, 4);
+});

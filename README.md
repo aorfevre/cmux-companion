@@ -13,6 +13,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
 - Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
 - Splits one goal into independent tasks with a headless Claude planner, then creates a worktree and starts an agent for each, balancing the work across Claude and Codex by remaining quota
+- Groups a repository's open GitHub issues into selectable master topics, plans and launches the topics in parallel, and links every final PR back to the issues it closes
 - Delivers a multi-task goal as one verified pull request: task agents push isolated branches, Companion pins their finished commits, assembles them on a fresh goal branch, runs declared repository checks, and opens the combined PR
 - Reviews staged, unstaged, and untracked Git changes and per-file diffs
 - Shows the current branch's open pull request, review decision, and check status directly inside its session
@@ -96,6 +97,12 @@ Worktrees Beta discovers Git's registered worktrees for the configured repositor
 
 **Plan a goal** on a repository sends one goal to a headless Claude session, which decides whether the work splits into independent tasks. The planner may ask clarifying questions first; answer them, or skip to let it decide. It reuses the same Claude session for every round, so only the new turn costs tokens. The proposed plan is shown before anything is created: edit a task, switch its agent, or drop it, then confirm. Each task then branches from the same freshly fetched default remote branch into its own worktree, with one agent session started in each.
 
+**GitHub Issues** loads up to 100 open tickets from the repository selected by the local checkout's `origin`, then asks an isolated Claude analyzer to group every ticket exactly once into delivery-sized master topics. Select the topics to deliver, answer topic-level clarifications, and create the saved goal plans. Any repository-planner follow-up questions stay in the same sheet. Once every selected plan is ready, one action launches all topic worktrees; their agents then run in parallel.
+
+Each selected topic is an independent delivery unit. Tickets likely to touch the same files are grouped into the same topic, where Plan a Goal can sequence or split the implementation. Even a one-task issue topic uses Companion's generated delivery branch and verification gate. Its final PR contains one `Closes #N` line per linked ticket, so GitHub closes those issues only when the PR merges. Companion never closes an issue directly. The sheet refreshes selected tickets before planning and refuses tickets that changed, closed, or already belong to another saved goal.
+
+This workflow requires the GitHub CLI to be authenticated for the repository (`gh auth status`). Issue bodies are treated as untrusted text, and the grouping model runs with local reads, writes, shell commands, tasks, and web tools disabled.
+
 Every step is written to a local SQLite database at `~/.config/cmux-companion/goal-plans.db`, which the companion creates with mode 0600. It holds the goal, the Claude session id, each round of questions, each set of answers, each task list, each edit and the launch outcome of each task. A plan therefore survives a companion restart and an interrupted question round: reload it, and the next answer resumes the same Claude session instead of starting the goal again.
 
 The Worktrees view surfaces those saved plans beside the repository filters. **Draft Goals** collects resumable plans and **Launched Goals** keeps a read-only launch history for the selected Karven or Rekord project group. Each card opens the exact saved plan and can delete it after confirmation.
@@ -106,6 +113,9 @@ The Worktrees view surfaces those saved plans beside the repository filters. **D
 | `GET /api/worktree-plans/:planId` | One saved plan with its tasks and its whole event log. |
 | `POST /api/worktree-plans/:planId/resume` | Reload a plan into the running planner and return the draft. |
 | `DELETE /api/worktree-plans/:planId` | Delete a plan with its tasks and events. |
+| `POST /api/github-topic-plans/analyze` | Load open issues for a repository and propose bounded master topics. |
+| `POST /api/github-topic-plans/prepare` | Refresh selected tickets and compile each selected topic into a saved goal plan. |
+| `POST /api/github-topic-plans/launch` | Launch every ready selected topic; agents run in parallel after deterministic worktree creation. |
 
 The server chooses Codex or Claude per task from live CCS quota, not the model. It takes the lower of each provider's 5-hour and weekly remaining percent, sends the work to the provider with more headroom, and alternates when the two are within ten points. Every task keeps a toggle, so you can override the choice.
 
@@ -134,6 +144,7 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
 - The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
+- The GitHub topic analyzer treats ticket content as untrusted data and denies every local repository, shell, write, task, and web tool; it accepts only a complete grouping of the server-fetched issue numbers.
 - Git diff requests are restricted to files currently reported as changed, and untracked symlink content is hidden.
 - The CLI is spawned with argv arrays and never through a shell.
 - Read-only protection is enabled by default on each phone.
