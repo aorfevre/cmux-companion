@@ -228,3 +228,49 @@ test("the merge prompt omits the linked issues section when there are no issue n
   const prompt = mergePrompt(plan);
   assert.equal(prompt.includes("## Linked issues"), false);
 });
+
+test("renames the goal group with the counter and notifies at the three milestones", async (t) => {
+  const { integrator, calls } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  await integrator.assemble("plan-12345678");
+  await integrator.settle("plan-12345678");
+  const names = calls.filter((call) => call[0] === "rename").map((call) => call[2]);
+  assert.ok(names.some((name) => name.includes("merging")));
+  assert.ok(names.some((name) => name.includes("PR #42")));
+  const notices = calls.filter((call) => call[0] === "notify").map((call) => call[2].title);
+  assert.equal(notices.length, 2);
+  assert.ok(notices.some((title) => /merg/i.test(title)));
+  assert.ok(notices.some((title) => /pull request/i.test(title)));
+});
+
+test("names a counting group with the ready count over the launched count", async (t) => {
+  const { integrator, calls } = fixture(t, { secondPushed: false });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for 1 task branch/);
+  assert.deepEqual(calls.filter((call) => call[0] === "rename").map((call) => call[2]), ["Ship combined billing — 1/2"]);
+});
+
+test("a notification failure never blocks the merge", async (t) => {
+  const { store, integrator } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  integrator.cmux.notify = async () => { throw new Error("cmux is down"); };
+  await integrator.assemble("plan-12345678");
+  await integrator.settle("plan-12345678");
+  assert.equal(store.get("plan-12345678").finalPrNumber, 42);
+});
+
+// The group name carries a live counter, so a lookup by exact name would make a
+// new group on every count change. The goal prefix is what keeps it one group.
+test("reuses one goal group as the counter advances", async (t) => {
+  const { store, integrator, calls } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  await integrator.assemble("plan-12345678");
+  await integrator.settle("plan-12345678");
+  const ensured = calls.filter((call) => call[0] === "ensure");
+  assert.equal(ensured.length, 1);
+  assert.equal(ensured[0][1], "Ship combined billing — 2/2");
+  assert.equal(ensured[0][2], "workspace-one");
+  assert.equal(ensured[0][3].prefix, "Ship combined billing —");
+  const renamed = calls.filter((call) => call[0] === "rename");
+  assert.deepEqual([...new Set(renamed.map((call) => call[1]))], ["group-1"]);
+  assert.deepEqual(renamed.map((call) => call[2]), [
+    "Ship combined billing — 2/2", "Ship combined billing — merging", "Ship combined billing — PR #42",
+  ]);
+  assert.equal(store.get("plan-12345678").cmuxGroupId, "group-1");
+});

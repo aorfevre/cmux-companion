@@ -95,6 +95,7 @@ export class GoalIntegrator {
     if (plan.finalPrUrl) return deliveryResult(plan);
 
     plan = await this.#refreshTaskHeads(plan);
+    await this.#publish(plan);
     const pending = plan.tasks.filter((task) => task.launchStatus === "launched" && task.deliveryStatus !== "ready" && task.deliveryStatus !== "integrated");
     const failed = plan.tasks.filter((task) => task.launchStatus !== "launched");
     if (failed.length) throw new TypeError("Every task must launch successfully before Companion can build the combined pull request");
@@ -170,7 +171,40 @@ export class GoalIntegrator {
     }).then(({ stdout }) => parsePullRequest(stdout), () => null);
   }
 
-  async #publish() { /* Task 6 fills this in */ }
+  // One function drives every surface, and it runs after the store commits.
+  // A failed cmux call therefore cannot roll back a delivery transition, and
+  // the next change re-sends the correct current count.
+  async #publish(plan, { workspaceId = null } = {}) {
+    // Every surface here is presentation, so nothing it does may reach the
+    // caller: a publish sits both inside and outside #assemble's own catch, and
+    // a thrown rename would otherwise abort a merge that is already committed.
+    try {
+      const name = groupName(plan);
+      let groupId = plan.cmuxGroupId;
+      if (!groupId && this.groups) {
+        // The first workspace of the goal anchors the group, so the counter is
+        // visible long before there is a merge session to hang it on.
+        const anchor = workspaceId || plan.mergeWorkspaceId || plan.tasks.find((task) => task.workspaceId)?.workspaceId;
+        if (anchor) {
+          // The name carries the counter, so only the goal prefix identifies
+          // the group we already own. An exact-name lookup would make a fresh
+          // group on every count change.
+          groupId = await this.groups.ensure(name, anchor, { groupId, prefix: groupPrefix(plan) });
+          if (groupId) this.store.recordGroup(plan.planId, groupId);
+        }
+      }
+      // Renamed even when it was just ensured: a group recovered by prefix
+      // still carries the count it had when companion last lost its id.
+      if (groupId) await this.groups?.rename(groupId, name);
+
+      const notice = milestone(plan);
+      if (!notice) return;
+      const target = plan.mergeWorkspaceId || plan.tasks.find((task) => task.workspaceId)?.workspaceId;
+      if (target) await this.cmux?.notify(target, notice);
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, planId: plan.planId }, "goal progress publish failed");
+    }
+  }
 
   async #refreshTaskHeads(plan) {
     let current = plan;
@@ -302,6 +336,41 @@ export function mergePrompt(plan) {
   }
 
   return [head, list, tail].join("\n");
+}
+
+export function readyCount(plan) {
+  const launched = plan.tasks.filter((task) => task.launchStatus === "launched");
+  const ready = launched.filter((task) => task.deliveryStatus === "ready" || task.deliveryStatus === "integrated");
+  return { ready: ready.length, total: launched.length };
+}
+
+function groupPrefix(plan) {
+  return `${oneLine(plan.goal, 48)} \u2014`;
+}
+
+function groupName(plan) {
+  const prefix = groupPrefix(plan);
+  if (plan.finalPrNumber) return `${prefix} PR #${plan.finalPrNumber}`;
+  if (plan.mergeStatus === "blocked") return `${prefix} blocked`;
+  if (plan.mergeStatus === "running") return `${prefix} merging`;
+  const { ready, total } = readyCount(plan);
+  return `${prefix} ${ready}/${total}`;
+}
+
+// Three notifications only. A chatty agent stops many times, so a per-task
+// notice would be noise on a five-task goal.
+function milestone(plan) {
+  if (plan.finalPrNumber) {
+    return { title: `Pull request #${plan.finalPrNumber} is open`, body: oneLine(plan.goal, 200) };
+  }
+  if (plan.mergeStatus === "blocked") {
+    return { title: "The goal merge is blocked", body: oneLine(plan.deliveryError || plan.goal, 200) };
+  }
+  if (plan.mergeStatus === "running") {
+    const { total } = readyCount(plan);
+    return { title: `Merging ${total} task branch${total === 1 ? "" : "es"}`, body: oneLine(plan.goal, 200) };
+  }
+  return null;
 }
 
 function baseBranch(plan) {
