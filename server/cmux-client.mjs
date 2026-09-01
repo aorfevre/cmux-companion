@@ -202,6 +202,19 @@ export class CmuxClient {
     return this.rpc("notification.mark_read", { id });
   }
 
+  // A notification is a courtesy, not a delivery step, so its input is clamped
+  // rather than rejected. A long agent message must never fail a merge.
+  async notify(workspaceId, { title, body = "" }) {
+    assertTarget(workspaceId);
+    const heading = String(title || "").trim().slice(0, 100);
+    if (!heading) throw new TypeError("A notification needs a title");
+    return this.rpc("notification.create_for_target", {
+      workspace_id: workspaceId,
+      title: heading,
+      body: String(body || "").trim().slice(0, 500),
+    });
+  }
+
   feedReply(requestId, kind, body = {}) {
     assertTarget(requestId);
     if (kind === "permissionRequest") {
