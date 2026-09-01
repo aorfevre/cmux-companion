@@ -1103,3 +1103,101 @@ test("runs without a store at all", async () => {
   assert.deepEqual((await planner.list()).plans, []);
   await assert.rejects(() => planner.detail(draft.planId), /Unknown plan/);
 });
+
+// --- Reviewer feedback: a rejected split starts a new round -------------------
+
+const REVISED_REPLY = envelope('{"tasks":[{"title":"One unit","branch":"feature/one-unit","prompt":"Do it all together."}]}', "sess-a");
+
+test("feedback runs a new round that quotes the rejection and restates the contract", async () => {
+  const deps = fakeDeps({ replies: [TASKS_REPLY, REVISED_REPLY] });
+  const planner = new WorktreePlanner(deps);
+  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  assert.equal(first.status, "ready");
+
+  const revised = await planner.feedback(first.planId, { text: "These two tasks touch the same file." });
+  assert.equal(revised.status, "ready");
+  assert.equal(revised.round, 2);
+  assert.equal(revised.tasks[0].branch, "feature/one-unit");
+
+  const prompt = deps.calls.at(-1)[1].at(-1);
+  assert.match(prompt, /rejected it/);
+  assert.ok(prompt.includes("These two tasks touch the same file."));
+  assert.match(prompt, /Reply with exactly one JSON object/);
+  // A live session still holds the goal, so the round resumes rather than
+  // restating the whole opening context.
+  const args = deps.calls.at(-1)[1];
+  assert.ok(args.includes("--resume"));
+  assert.ok(!prompt.includes("Goal: Add billing"));
+});
+
+test("feedback on a plan with no session restates the goal and the rejected split", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "plan-lost", repositoryId: REPO_ID, repositoryName: "sample", cwd: "/repo/sample", goal: "Add billing" });
+  store.recordRound("plan-lost", { round: 1, stage: "ready", sessionId: null, tasks: [
+    { id: "t1", title: "Billing API", branch: "feature/billing-api", prompt: "Add the billing API.", agent: "claude" },
+    { id: "t2", title: "Billing UI", branch: "feature/billing-ui", prompt: "Add the billing screen.", agent: "claude" },
+  ] });
+
+  const deps = fakeDeps({ replies: [REVISED_REPLY] });
+  const planner = new WorktreePlanner({ ...deps, store });
+  const revised = await planner.feedback("plan-lost", { text: "The UI cannot land without the API." });
+
+  assert.equal(revised.status, "ready");
+  const prompt = deps.calls[0][1].at(-1);
+  assert.ok(prompt.includes("Goal: Add billing"));
+  assert.ok(prompt.includes("feature/billing-api"));
+  assert.ok(prompt.includes("Add the billing screen."));
+  assert.ok(prompt.includes("The UI cannot land without the API."));
+  assert.ok(!deps.calls[0][1].includes("--resume"));
+});
+
+test("feedback refuses an empty note, an over-long note and a plan with no split", async () => {
+  const deps = fakeDeps({ replies: [TASKS_REPLY] });
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await assert.rejects(() => planner.feedback(draft.planId, { text: "   " }), /Say what is wrong/);
+  await assert.rejects(() => planner.feedback(draft.planId, { text: "x".repeat(2_001) }), /too long/);
+
+  const asking = fakeDeps({ replies: [QUESTIONS_REPLY] });
+  const second = new WorktreePlanner(asking);
+  const questioned = await second.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await assert.rejects(() => second.feedback(questioned.planId, { text: "wrong" }), /no task split to reject/);
+});
+
+test("feedback obeys the round cap", async () => {
+  const deps = fakeDeps({ replies: [TASKS_REPLY, REVISED_REPLY] });
+  const planner = new WorktreePlanner({ ...deps, maxRounds: 2 });
+  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.feedback(first.planId, { text: "Split it differently." });
+  await assert.rejects(() => planner.feedback(first.planId, { text: "Again." }), /could not produce a plan/);
+});
+
+test("feedback saves the rejection beside the split that replaced it", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const deps = fakeDeps({ replies: [TASKS_REPLY, REVISED_REPLY] });
+  const planner = new WorktreePlanner({ ...deps, store });
+  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.feedback(first.planId, { text: "Merge these into one unit." });
+
+  const events = store.events(first.planId);
+  assert.deepEqual(events.map((event) => event.kind), ["goal", "tasks", "feedback", "tasks"]);
+  const rejection = events.find((event) => event.kind === "feedback");
+  assert.equal(rejection.payload.feedback, "Merge these into one unit.");
+  assert.equal(rejection.round, 2);
+});
+
+test("a background feedback round answers before it runs", async () => {
+  const deps = fakeDeps({ replies: [TASKS_REPLY, REVISED_REPLY] });
+  const planner = new WorktreePlanner(deps);
+  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const started = await planner.feedbackBackground(first.planId, { text: "Wrong split." });
+  assert.equal(started.running, true);
+  for (let index = 0; index < 500 && planner.isRunning(first.planId); index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const revised = await planner.resume(first.planId);
+  assert.equal(revised.round, 2);
+  assert.equal(revised.tasks[0].branch, "feature/one-unit");
+});

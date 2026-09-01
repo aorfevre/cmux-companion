@@ -391,6 +391,34 @@ export class WorktreePlanner {
     return { ...publicDraft(draft), running: true };
   }
 
+  // The reviewer read the split and rejected it. This is a new round on the same
+  // plan, not an edit: the planner has to think again, so it goes through
+  // #round exactly like an answer round does.
+  async feedback(planId, { text, onEvent = null } = {}) {
+    const { draft, note } = await this.#rejection(planId, text);
+    return this.#round(draft, feedbackRound(draft, note), onEvent, { feedback: note });
+  }
+
+  // The background twin. It answers as soon as the round is registered, so the
+  // sheet can close while the planner reconsiders the split.
+  async feedbackBackground(planId, { text } = {}) {
+    const { draft, note } = await this.#rejection(planId, text);
+    this.#detach(draft, feedbackRound(draft, note), "feedback", { feedback: note });
+    return { ...publicDraft(draft), running: true };
+  }
+
+  // Both feedback paths refuse the same four things, and they must refuse them
+  // identically: the sheet shows whichever sentence comes back.
+  async #rejection(planId, text) {
+    const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
+    // A rejection costs a round, so it obeys the same cap as an answer round.
+    if (draft.round >= this.maxRounds) {
+      throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
+    }
+    return { draft, note: feedbackNote(draft, text) };
+  }
+
   // A companion restart kills the ccs child, so a plan can be left at round 0
   // with no questions and no tasks. This runs its opening prompt again.
   async run(planId) {
@@ -620,6 +648,7 @@ export class WorktreePlanner {
       tasks: draft.tasks,
       answers: submitted?.answers ?? null,
       skipped: submitted?.skipped === true,
+      feedback: submitted?.feedback ?? null,
     }), draft.planId, "round");
     return publicDraft(draft);
   }
@@ -956,6 +985,56 @@ function answerRound(draft, answers, skip) {
   const pairs = skip ? [] : answeredPairs(draft, answers);
   const prompt = draft.sessionId ? (skip ? SKIP_PROMPT : answerPrompt(draft, answers)) : restartPrompt(draft, pairs, skip);
   return { prompt, pairs };
+}
+
+// The reviewer's own words. They are validated the way a goal and an answer
+// are, so an empty box or a pasted document is refused with a sentence the
+// sheet can show rather than with a wasted planner round.
+function feedbackNote(draft, text) {
+  if (draft.status !== "ready" || !draft.tasks.length) {
+    throw new TypeError("This goal has no task split to reject yet. Answer its questions first");
+  }
+  const note = String(text || "").trim();
+  if (!note) throw new TypeError("Say what is wrong with this plan");
+  if (note.length > 2_000) throw new TypeError("That feedback is too long");
+  return note;
+}
+
+// The rejected split has to travel with the feedback. Without it the planner
+// revises a plan it cannot see, and it returns the same tasks again.
+function rejectedTasks(draft) {
+  return draft.tasks.map((task, index) => [
+    `${index + 1}. ${task.title}`,
+    `   branch: ${task.branch}`,
+    `   prompt: ${task.prompt}`,
+  ].join("\n"));
+}
+
+const FEEDBACK_HEADER = "The reviewer read your task split and rejected it. Analyse the goal again and return a better split.";
+
+// With a live session the planner still holds the goal and the tasks, so the
+// feedback alone is enough. Without one the next spawn is a fresh conversation,
+// so restate the whole opening context and the split being rejected, the same
+// way restartPrompt does for an answer round.
+function feedbackRound(draft, note) {
+  const rejection = [
+    FEEDBACK_HEADER,
+    "",
+    "Reviewer feedback:",
+    note,
+    "",
+    "Do not defend the previous split. Change it to answer this feedback: merge, split, drop or reword tasks as the feedback requires.",
+  ].join("\n");
+  if (draft.sessionId) return [rejection, "", CONTRACT].join("\n");
+  return [
+    openingPrompt(draft),
+    "",
+    "The split you returned before, which the reviewer rejected:",
+    "",
+    ...rejectedTasks(draft),
+    "",
+    rejection,
+  ].join("\n");
 }
 
 function answerPrompt(draft, answers) {

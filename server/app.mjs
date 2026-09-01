@@ -374,6 +374,15 @@ export async function buildApp({
     return reportRound(request.body?.traceId, (onEvent) => planner.answer(request.params.planId, { ...submitted, onEvent }));
   });
 
+  // The reviewer rejected the split. This is a fresh planner round on the same
+  // plan, so it takes the same body limit as a PATCH: the prompt it builds
+  // quotes every rejected task back to the model.
+  app.post("/api/worktree-plans/:planId/feedback", { bodyLimit: 64 * 1024 }, async (request, reply) => {
+    const submitted = { text: request.body?.text };
+    if (request.body?.background === true) return reply.code(202).send(await planner.feedbackBackground(request.params.planId, submitted));
+    return reportRound(request.body?.traceId, (onEvent) => planner.feedback(request.params.planId, { ...submitted, onEvent }));
+  });
+
   // Every round this process owns, so the dashboard can badge a running goal
   // without opening its sheet.
   app.get("/api/worktree-plans/runs", async () => planner.activeRuns());
