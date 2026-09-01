@@ -1,4 +1,4 @@
-const MAX_NAME = 80;
+export const MAX_NAME = 80;
 
 // A workspace group is how cmux shows that several sessions belong to one goal.
 // Every method here is best-effort on purpose: a companion that cannot group a
@@ -74,4 +74,38 @@ export class CmuxGroups {
 
 function clamp(value) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, MAX_NAME);
+}
+
+// One goal, one group name, derived in one place. The planner names the group
+// at launch and the integrator renames it on every count change; when the two
+// derived it themselves they drifted, and a prefix lookup that drifts binds to
+// the wrong group.
+//
+// The trailing delimiter is load-bearing: `ensure` matches with startsWith, so
+// an undelimited prefix would capture any group whose name merely begins with
+// the goal text - the shared repository group included. The plan id fragment is
+// what keeps two goals sharing their opening words apart, exactly as it does in
+// the integration branch name. Both halves are budgeted to stay inside
+// MAX_NAME, because `clamp` truncating a prefix WIDENS its match instead of
+// narrowing it.
+const GROUP_SUFFIX_MAX = 20;
+const GOAL_MAX = MAX_NAME - GROUP_SUFFIX_MAX - " \u2014".length - " 000000000".length;
+
+export function goalGroupPrefix(plan) {
+  const id = String(plan?.planId || "").replace(/[^a-z0-9]/gi, "").slice(0, 8).toLowerCase() || "combined";
+  // A goal with no readable text still needs a display half a user can read;
+  // the id half already tells the two apart.
+  const goal = oneLine(plan?.goal, GOAL_MAX) || "Goal";
+  return `${goal} ${id} \u2014`;
+}
+
+// Always built on goalGroupPrefix, so the name a group is renamed to can never
+// stop matching the prefix it is looked up by. That is what keeps one group per
+// goal instead of a fresh one on every count change.
+export function goalGroupName(plan, suffix) {
+  return `${goalGroupPrefix(plan)} ${String(suffix || "").trim()}`.trim();
+}
+
+function oneLine(value, max) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
 }

@@ -1,3 +1,5 @@
+import { goalGroupName, goalGroupPrefix } from "./cmux-groups.mjs";
+
 const TASK_SETTLE_MS = 1_000;
 
 class TasksNotReadyError extends TypeError {}
@@ -260,7 +262,7 @@ export class GoalIntegrator {
           // The name carries the counter, so only the goal prefix identifies
           // the group we already own. An exact-name lookup would make a fresh
           // group on every count change.
-          groupId = await this.groups.ensure(name, anchor, { groupId, prefix: groupPrefix(plan) });
+          groupId = await this.groups.ensure(name, anchor, { groupId, prefix: goalGroupPrefix(plan) });
           if (groupId) this.store.recordGroup(plan.planId, groupId);
         }
       }
@@ -417,23 +419,28 @@ export function mergePrompt(plan) {
   return [head, list, tail].join("\n");
 }
 
-export function readyCount(plan) {
-  const launched = plan.tasks.filter((task) => task.launchStatus === "launched");
+// A task with no recorded launch status has simply not been launched yet, and
+// still owes a branch. Only an explicitly failed launch never will.
+export function readyCount(tasks) {
+  const launched = (tasks || []).filter((task) => !task.launchStatus || task.launchStatus === "launched");
   const ready = launched.filter((task) => task.deliveryStatus === "ready" || task.deliveryStatus === "integrated");
   return { ready: ready.length, total: launched.length };
 }
 
-function groupPrefix(plan) {
-  return `${oneLine(plan.goal, 48)} \u2014`;
+// goalGroupName builds on goalGroupPrefix, so the name this renames to can
+// never stop matching the prefix the group is looked up by - the invariant that
+// keeps one group per goal instead of a fresh one on every count change.
+function groupName(plan) {
+  return goalGroupName(plan, groupSuffix(plan));
 }
 
-function groupName(plan) {
-  const prefix = groupPrefix(plan);
-  if (plan.finalPrNumber) return `${prefix} PR #${plan.finalPrNumber}`;
-  if (plan.mergeStatus === "blocked") return `${prefix} blocked`;
-  if (plan.mergeStatus === "running") return `${prefix} merging`;
-  const { ready, total } = readyCount(plan);
-  return `${prefix} ${ready}/${total}`;
+function groupSuffix(plan) {
+  if (plan.finalPrNumber) return `PR #${plan.finalPrNumber}`;
+  if (plan.mergeStatus === "blocked") return "blocked";
+  if (plan.mergeStatus === "running") return "merging";
+  const { ready, total } = readyCount(plan.tasks);
+  // Nothing has launched yet. "0/0" would read as done with nothing to do.
+  return total === 0 ? "waiting" : `${ready}/${total}`;
 }
 
 // Three notifications only. A chatty agent stops many times, so a per-task
@@ -454,7 +461,7 @@ function milestone(plan) {
     return { title: "The goal merge is blocked", body: oneLine(plan.deliveryError || plan.goal, 200) };
   }
   if (plan.mergeStatus === "running") {
-    const { total } = readyCount(plan);
+    const { total } = readyCount(plan.tasks);
     return { title: `Merging ${total} task branch${total === 1 ? "" : "es"}`, body: oneLine(plan.goal, 200) };
   }
   return null;

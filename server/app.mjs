@@ -70,6 +70,11 @@ export async function buildApp({
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog });
   const groups = cmuxGroups || new CmuxGroups({ cmux, log: app.log });
+  const groupQuietly = async (name, workspaceId) => {
+    try { await groups.ensure(name, workspaceId); } catch (cause) {
+      app.log?.warn?.({ err: cause, name }, "workspace group assignment failed");
+    }
+  };
   // The planner and delivery controller share one durable goal record. Tests
   // that inject a whole planner do not open the production database implicitly.
   const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
@@ -260,9 +265,11 @@ export async function buildApp({
       prompt,
       script,
     });
-    // ensure swallows its own failures, so a cmux without groups still returns
-    // the session the user asked for.
-    await groups.ensure(repo.name, created.workspace_id);
+    // CmuxGroups swallows its own failures, but `cmuxGroups` is injectable, and
+    // an injected service that throws would turn this into a 500 after the
+    // workspace already exists - an orphan session whose id never reaches the
+    // client. Grouping is presentation and never costs that.
+    await groupQuietly(repo.name, created.workspace_id);
     repoCatalog.cache = null;
     return reply.code(201).send({ workspace: created, repo: { id: repo.id, name: repo.name } });
   });
@@ -310,7 +317,7 @@ export async function buildApp({
       agent,
       prompt,
     });
-    await groups.ensure(target.repoName, created.workspace_id);
+    await groupQuietly(target.repoName, created.workspace_id);
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return reply.code(201).send({

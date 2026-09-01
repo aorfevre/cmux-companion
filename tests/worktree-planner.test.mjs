@@ -1106,7 +1106,7 @@ test("runs without a store at all", async () => {
 
 // A ready plan with a chosen task count, so the grouping tests state only the
 // count they care about. The store is real: #group reads the group id back.
-async function plannerFixture(t, { groups = null, tasks = 1 } = {}) {
+async function plannerFixture(t, { groups = null, tasks = 1, goal = "Ship it", deliveryPolicy = "auto" } = {}) {
   const plan = Array.from({ length: tasks }, (_, index) => ({
     title: `Task ${index + 1}`,
     branch: `feature/task-${index + 1}`,
@@ -1120,10 +1120,35 @@ async function plannerFixture(t, { groups = null, tasks = 1 } = {}) {
   const store = new WorktreePlanStore({ path: ":memory:" });
   t.after(() => store.close());
   const planner = new WorktreePlanner({ ...deps, groups, store });
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Ship it" });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal, deliveryPolicy });
   planner.planId = draft.planId;
   return planner;
 }
+
+// cmux matches a group by prefix, so a goal prefix with no delimiter of its own
+// captures any group whose name it prefixes - including the shared repository
+// group every dashboard session lives in.
+test("never lets a goal whose text prefixes the repository name capture the repository group", async (t) => {
+  const seen = [];
+  const groups = { ensure: async (name, workspaceId, options) => { seen.push(options.prefix); return "group-1"; }, rename: async () => true };
+  const planner = await plannerFixture(t, { groups, tasks: 2, goal: "sample" });
+  await planner.launch(planner.planId);
+  assert.ok(seen.length > 0);
+  assert.ok(seen.every((prefix) => !"sample".startsWith(prefix)));
+});
+
+// deliveryPolicy alone makes a plan combined, so a one-task issue plan is a
+// goal plan. Grouping it by repository here would let the integrator find no
+// stored id and open a second, goal-named group on the same workspace.
+test("gives a single-task combined goal exactly one group, the goal's own", async (t) => {
+  const seen = [];
+  const groups = { ensure: async (name, workspaceId, options) => { seen.push([name, options.prefix]); return "group-1"; }, rename: async () => true };
+  const planner = await plannerFixture(t, { groups, tasks: 1, goal: "Ship it", deliveryPolicy: "combined" });
+  await planner.launch(planner.planId);
+  assert.equal(seen.length, 1);
+  assert.ok(seen[0][0].startsWith("Ship it"), seen[0][0]);
+  assert.ok(seen[0][1], "a goal group must be looked up by its goal prefix");
+});
 
 test("puts a multi-task goal's workspaces in a goal group and a single task in the project group", async (t) => {
   const grouped = [];
@@ -1144,7 +1169,8 @@ test("looks a goal group up by its unchanging goal text, never by its counted na
   const groups = { ensure: async (name, workspaceId, options) => { seen.push(options); return "group-1"; }, rename: async () => true };
   const planner = await plannerFixture(t, { groups, tasks: 2 });
   await planner.launch(planner.planId);
-  assert.deepEqual(seen.map((options) => options.prefix), ["Ship it", "Ship it"]);
+  assert.equal(seen.length, 2);
+  assert.ok(seen.every((options) => /^Ship it \w+ \u2014$/.test(options.prefix)), JSON.stringify(seen[0]));
   // The first launch stores the id, so the second workspace joins that group
   // rather than opening a second one under the same name.
   assert.deepEqual(seen.map((options) => options.groupId), [null, "group-1"]);

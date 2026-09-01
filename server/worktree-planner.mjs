@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 
+import { goalGroupName, goalGroupPrefix } from "./cmux-groups.mjs";
+
 // promisify(execFile) buffers to completion, so nothing can be reported while
 // the model is still thinking. spawn resolves the same shape and rejects with
 // the same fields, plus it calls onLine for each stdout line, so every injected
@@ -435,7 +437,7 @@ export class WorktreePlanner {
       });
       // Grouping is presentation. It runs after the workspace exists and it
       // never fails the launch, so a cmux without groups still delivers.
-      await this.#group(draft, workspace);
+      await this.#group(draft, workspace, deliveryMode);
       return { ...summary, status: "launched", path, workspace };
     } catch (cause) {
       this.log?.warn?.({ err: cause, branch: task.branch }, "planner task launch failed");
@@ -443,25 +445,30 @@ export class WorktreePlanner {
     }
   }
 
-  // A multi-task goal owns its own group. Every other workspace joins the
-  // shared group for its repository, so a dashboard session lands there too.
-  async #group(draft, workspace) {
+  // A goal delivered as one pull request owns its own group. Every other
+  // workspace joins the shared group for its repository, so a dashboard session
+  // lands there too. The predicate is the delivery mode, not the task count:
+  // deliveryPolicy alone makes a one-task issue plan combined, and grouping
+  // that by repository would leave the integrator to open a second group.
+  async #group(draft, workspace, deliveryMode) {
     if (!this.groups) return;
     const id = workspace?.workspace_id || workspace?.workspaceId || workspace?.id;
     if (!id) return;
-    const multi = draft.tasks.length > 1;
-    const name = multi ? oneLine(draft.goal, 48) : draft.repositoryName || "";
+    const combined = deliveryMode === "combined";
+    // Both sides of a goal group name come from cmux-groups, so the name the
+    // integrator renames to can never stop matching the prefix set here.
+    const name = combined ? goalGroupName(draft, "0/0") : draft.repositoryName || "";
     if (!name) return;
-    // A goal group's name carries a live counter, so only the goal text is a
-    // stable lookup key. Matching on the counted name would open a second
-    // group the moment the count moved.
-    const stored = multi ? this.#read(() => this.store?.get(draft.planId))?.cmuxGroupId : null;
+    // A goal group's name carries a live counter, so only the delimited goal
+    // prefix is a stable lookup key. Matching on the counted name would open a
+    // second group the moment the count moved.
+    const stored = combined ? this.#read(() => this.store?.get(draft.planId))?.cmuxGroupId : null;
     try {
       // CmuxGroups swallows its own failures, but this call sits inside the
       // launch try, so an injected service that does throw would turn a
       // delivered workspace into a failed task row. Grouping never costs that.
-      const groupId = await this.groups.ensure(name, id, { groupId: stored || null, prefix: multi ? name : "" });
-      if (multi && groupId) this.#persist(() => this.store?.recordGroup(draft.planId, groupId), draft.planId, "group");
+      const groupId = await this.groups.ensure(name, id, { groupId: stored || null, prefix: combined ? goalGroupPrefix(draft) : "" });
+      if (combined && groupId) this.#persist(() => this.store?.recordGroup(draft.planId, groupId), draft.planId, "group");
     } catch (cause) {
       this.log?.warn?.({ err: cause, planId: draft.planId }, "planner group assignment failed");
     }
@@ -700,10 +707,6 @@ function draftFromStore(stored) {
       agentReason: task.agentReason || "",
     })),
   };
-}
-
-function oneLine(value, max) {
-  return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
 function planDeliveryMode(draft) {

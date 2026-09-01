@@ -3,7 +3,8 @@ import test from "node:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GoalIntegrator, mergePrompt } from "../server/goal-integrator.mjs";
+import { GoalIntegrator, mergePrompt, readyCount } from "../server/goal-integrator.mjs";
+import { goalGroupPrefix, MAX_NAME } from "../server/cmux-groups.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 
 const REPO_ID = "repository12345678";
@@ -256,7 +257,7 @@ test("names a counting group with the ready count over the launched count", asyn
   const { store, integrator, calls } = fixture(t, { secondPushed: false, thirdFailed: true });
   assert.equal(store.get("plan-12345678").tasks.length, 3);
   await assert.rejects(() => integrator.assemble("plan-12345678"), /Every task must launch successfully/);
-  assert.deepEqual(calls.filter((call) => call[0] === "rename").map((call) => call[2]), ["Ship combined billing — 1/2"]);
+  assert.deepEqual(calls.filter((call) => call[0] === "rename").map((call) => call[2]), ["Ship combined billing plan1234 — 1/2"]);
 });
 
 test("a notification failure never blocks the merge", async (t) => {
@@ -275,15 +276,61 @@ test("reuses one goal group as the counter advances", async (t) => {
   await integrator.settle("plan-12345678");
   const ensured = calls.filter((call) => call[0] === "ensure");
   assert.equal(ensured.length, 1);
-  assert.equal(ensured[0][1], "Ship combined billing — 2/2");
+  assert.equal(ensured[0][1], "Ship combined billing plan1234 — 2/2");
   assert.equal(ensured[0][2], "workspace-one");
-  assert.equal(ensured[0][3].prefix, "Ship combined billing —");
+  assert.equal(ensured[0][3].prefix, "Ship combined billing plan1234 —");
   const renamed = calls.filter((call) => call[0] === "rename");
   assert.deepEqual([...new Set(renamed.map((call) => call[1]))], ["group-1"]);
   assert.deepEqual(renamed.map((call) => call[2]), [
-    "Ship combined billing — 2/2", "Ship combined billing — merging", "Ship combined billing — PR #42",
+    "Ship combined billing plan1234 — 2/2", "Ship combined billing plan1234 — merging", "Ship combined billing plan1234 — PR #42",
   ]);
   assert.equal(store.get("plan-12345678").cmuxGroupId, "group-1");
+});
+
+// cmux matches a group by prefix, so two goals sharing their opening characters
+// would recover each other's group and then fight over one name.
+test("keeps two goals with the same opening text in separate groups", async (t) => {
+  const goal = "Migrate billing to the new payments API";
+  const first = fixture(t);
+  first.store.db.prepare("UPDATE plans SET goal = ? WHERE plan_id = ?").run(`${goal} (phase one)`, "plan-12345678");
+  await first.integrator.assemble("plan-12345678");
+  const mine = first.calls.find((call) => call[0] === "ensure")[3].prefix;
+  // A second goal is a second plan, so only its id can tell the two apart.
+  const other = goalGroupPrefix({ goal: `${goal} (phase two)`, planId: "plan-87654321" });
+  assert.notEqual(mine, other);
+  assert.equal(other.startsWith(mine), false);
+  assert.equal(mine.startsWith(other), false);
+});
+
+// clamp truncates at MAX_NAME, and a truncated prefix matches more names, not
+// fewer - the exact collision this prefix exists to prevent.
+test("keeps the goal group prefix inside the cmux name limit", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  store.db.prepare("UPDATE plans SET goal = ? WHERE plan_id = ?").run("y".repeat(300), "plan-12345678");
+  await integrator.assemble("plan-12345678");
+  const ensured = calls.find((call) => call[0] === "ensure");
+  assert.ok(ensured[3].prefix.length <= MAX_NAME, `prefix was ${ensured[3].prefix.length}`);
+  assert.ok(ensured[1].length <= MAX_NAME, `name was ${ensured[1].length}`);
+});
+
+// launch_status is nullable and only recordLaunch sets it, so a missing value
+// is reachable. app/worktree-planner.tsx imports this very function, so the
+// sheet and the cmux group name can never disagree about the same goal again.
+test("counts a task with no recorded launch status as launched", () => {
+  const tasks = [
+    { id: "t1", deliveryStatus: "ready" },
+    { id: "t2", deliveryStatus: "pending" },
+    { id: "t3", launchStatus: "failed", deliveryStatus: "pending" },
+  ];
+  assert.deepEqual(readyCount(tasks), { ready: 1, total: 2 });
+});
+
+test("names a goal group readably when the goal is only whitespace", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  store.db.prepare("UPDATE plans SET goal = ? WHERE plan_id = ?").run("   ", "plan-12345678");
+  await integrator.assemble("plan-12345678");
+  const name = calls.find((call) => call[0] === "ensure")[1];
+  assert.ok(/^Goal /.test(name), name);
 });
 
 const tick = (ms = 20) => new Promise((resolve) => { setTimeout(resolve, ms); });

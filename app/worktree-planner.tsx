@@ -2,6 +2,9 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
+// The same counter names the cmux group. Two copies of this predicate had
+// already drifted, so the sheet read "1 of 2 ready" while the group read 1/1.
+import { readyCount } from "../server/goal-integrator.mjs";
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
@@ -260,12 +263,6 @@ function deliveryLabel(status?: string) {
   if (status === "blocked") return "Combined delivery needs attention";
   if (status === "pr_open") return "Combined PR ready";
   return "Waiting for task branches";
-}
-
-function readyCount(tasks: PlanTask[]) {
-  const launched = tasks.filter((task) => !task.launchStatus || task.launchStatus === "launched");
-  const ready = launched.filter((task) => task.deliveryStatus === "ready" || task.deliveryStatus === "integrated");
-  return { ready: ready.length, total: launched.length };
 }
 
 function taskState(task: PlanTask) {
