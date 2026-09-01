@@ -204,6 +204,15 @@ export class WorktreePlanStore {
     return plan ? { plan, task: plan.tasks.find((task) => task.id === row.task_id) || null } : null;
   }
 
+  findPlanByMergeWorkspace(workspaceIdValue) {
+    const id = text(workspaceIdValue);
+    if (!id) return null;
+    const row = this.db.prepare(
+      "SELECT plan_id FROM plans WHERE merge_workspace_id = ? AND merge_status = 'running' LIMIT 1",
+    ).get(id);
+    return row ? this.get(row.plan_id) : null;
+  }
+
   activeCombinedPlans() {
     return this.db.prepare(`
       SELECT plan_id FROM plans

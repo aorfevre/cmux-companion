@@ -1,22 +1,20 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-
 const TASK_SETTLE_MS = 1_000;
-const COMMAND_TIMEOUT_MS = 15 * 60_000;
 
 class TasksNotReadyError extends TypeError {}
 
-// A multi-task goal owns one delivery branch. Task worktrees are implementation
-// details: their pushed, immutable heads are squash-merged here and only this
-// generated branch becomes a pull request against the repository default.
+// A multi-task goal owns one delivery branch. Companion decides when each task
+// branch is ready by reading git, then hands the merge itself to one cmux agent:
+// a conflict needs judgement, which no subprocess can supply.
 export class GoalIntegrator {
-  constructor({ store, worktrees, repoCatalog, execute = null, log = null, settleMs = TASK_SETTLE_MS } = {}) {
+  constructor({ store, worktrees, repoCatalog, cmux = null, groups = null, execute = null, log = null, settleMs = TASK_SETTLE_MS } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
     this.store = store;
     this.worktrees = worktrees;
     this.repoCatalog = repoCatalog;
+    this.cmux = cmux;
+    this.groups = groups;
     this.execute = execute || ((bin, args, options) => repoCatalog.execute(bin, args, options));
     this.log = log;
     this.settleMs = settleMs;
@@ -34,7 +32,12 @@ export class GoalIntegrator {
     hub.on("event", onEvent);
     hub.addConsumer();
     const startup = setTimeout(() => {
-      for (const plan of this.store.activeCombinedPlans()) this.schedulePlan(plan.planId);
+      for (const plan of this.store.activeCombinedPlans()) {
+        // A merge left running across a restart lost its Stop event, so check
+        // for its pull request rather than waiting for an event that is gone.
+        if (plan.mergeStatus === "running") this.scheduleSettle(plan.planId);
+        else this.schedulePlan(plan.planId);
+      }
     }, this.settleMs);
     startup.unref?.();
     return () => {
@@ -47,8 +50,20 @@ export class GoalIntegrator {
   }
 
   scheduleWorkspace(workspaceId) {
+    const merging = this.store.findPlanByMergeWorkspace?.(workspaceId);
+    if (merging) return this.scheduleSettle(merging.planId);
     const found = this.store.findTaskByWorkspace(workspaceId);
     if (found?.plan) this.schedulePlan(found.plan.planId);
+  }
+
+  scheduleSettle(planId) {
+    clearTimeout(this.timers.get(planId));
+    const timer = setTimeout(() => {
+      this.timers.delete(planId);
+      this.settle(planId).catch((cause) => this.log?.warn?.({ err: cause, planId }, "merge settle failed"));
+    }, this.settleMs);
+    timer.unref?.();
+    this.timers.set(planId, timer);
   }
 
   schedulePlan(planId) {
@@ -90,30 +105,30 @@ export class GoalIntegrator {
     }
 
     try {
+      // A merge already in flight owns this plan. Its own Stop hook settles it.
+      if (plan.mergeStatus === "running") return deliveryResult(plan);
+      // Without a cmux client there is no agent to merge with, and a half-made
+      // worktree would be worse than a clear refusal.
+      if (!this.cmux) throw new TypeError("Combined goal delivery needs a cmux connection");
       plan = await this.#integrationWorktree(plan);
-      for (const task of plan.tasks) {
-        if (task.integratedCommitSha) continue;
-        const recovered = await this.#integratedCommit(plan, task);
-        if (recovered) {
-          plan = this.store.recordTaskIntegrated(plan.planId, task.id, recovered);
-          continue;
-        }
-        await this.#git(plan.integrationWorktreePath, ["merge", "--squash", "--no-commit", task.headSha], { timeout: 120_000 });
-        await this.#git(plan.integrationWorktreePath, ["commit", "-m", taskCommitMessage(plan, task)], { timeout: 120_000 });
-        const commitSha = (await this.#git(plan.integrationWorktreePath, ["rev-parse", "HEAD"])).trim();
-        plan = this.store.recordTaskIntegrated(plan.planId, task.id, commitSha);
+      // A blocked merge keeps its worktree and its live session, so a retry
+      // continues the partial merge instead of throwing that work away.
+      if (plan.mergeWorkspaceId && plan.mergeStatus === "blocked") {
+        const nudge = `Continue the merge. ${remaining(plan)}`;
+        await this.cmux?.rpc("surface.send_text", { workspace_id: plan.mergeWorkspaceId, text: `${nudge}\n` });
+        plan = this.store.recordMergeLaunched(plan.planId, plan.mergeWorkspaceId);
+      } else {
+        const created = await this.cmux.workspaceCreate({
+          cwd: plan.integrationWorktreePath,
+          title: oneLine(`Merge: ${plan.goal}`, 100),
+          agent: "claude",
+          prompt: mergePrompt(plan),
+        });
+        const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
+        if (!workspaceId) throw new TypeError("cmux created the merge session but did not return its id");
+        plan = this.store.recordMergeLaunched(plan.planId, workspaceId);
       }
-
-      const commands = await qualityCommands(plan.integrationWorktreePath);
-      if (!commands.some((command) => command.bin === "npm" && command.args[0] === "run")) {
-        throw new TypeError("This repository has no supported declared verification script. Add verify, test, lint, typecheck, or build before combined delivery");
-      }
-      for (const command of commands) await this.#run(command.bin, command.args, { cwd: plan.integrationWorktreePath, timeout: COMMAND_TIMEOUT_MS });
-      const verifiedAt = new Date().toISOString();
-
-      await this.#git(plan.integrationWorktreePath, ["push", "-u", "origin", plan.integrationBranch], { timeout: 120_000 });
-      const pullRequest = await this.#pullRequest(plan);
-      plan = this.store.recordFinalPr(plan.planId, { ...pullRequest, verifiedAt });
+      await this.#publish(plan, { workspaceId: plan.mergeWorkspaceId });
       return deliveryResult(plan);
     } catch (cause) {
       const message = conciseError(cause);
@@ -121,6 +136,41 @@ export class GoalIntegrator {
       throw new TypeError(message);
     }
   }
+
+  // The merge agent stopped. A pull request on the goal branch is the only
+  // proof of success, so it is read rather than reported.
+  async settle(planId) {
+    const id = String(planId || "");
+    if (this.locks.has(id)) return this.locks.get(id);
+    const running = this.#settle(id).finally(() => this.locks.delete(id));
+    this.locks.set(id, running);
+    return running;
+  }
+
+  async #settle(planId) {
+    const plan = this.store.get(planId);
+    if (!plan || plan.mergeStatus !== "running") return plan ? deliveryResult(plan) : null;
+    const found = await this.#openPullRequest(plan);
+    if (found) {
+      const settled = this.store.recordFinalPr(plan.planId, { ...found, verifiedAt: new Date().toISOString() });
+      await this.#publish(settled);
+      return deliveryResult(settled);
+    }
+    const blocked = this.store.recordMergeBlocked(
+      plan.planId,
+      "The merge agent stopped without opening a pull request. Open its cmux workspace to read what blocked it, then retry.",
+    );
+    await this.#publish(blocked);
+    return deliveryResult(blocked);
+  }
+
+  async #openPullRequest(plan) {
+    return this.#run("gh", ["pr", "view", plan.integrationBranch, "--json", "number,url"], {
+      cwd: plan.integrationWorktreePath, timeout: 20_000,
+    }).then(({ stdout }) => parsePullRequest(stdout), () => null);
+  }
+
+  async #publish() { /* Task 6 fills this in */ }
 
   async #refreshTaskHeads(plan) {
     let current = plan;
@@ -162,36 +212,6 @@ export class GoalIntegrator {
     return this.store.recordIntegrationStarted(plan.planId, { branch, path: created.worktree.path });
   }
 
-  async #integratedCommit(plan, task) {
-    const token = `Cmux-Goal-Task: ${plan.planId}/${task.id}/${task.headSha}`;
-    const output = await this.#git(plan.integrationWorktreePath, ["log", "-100", "--format=%H%x00%B%x00"]);
-    const parts = output.split("\0");
-    for (let index = 0; index + 1 < parts.length; index += 2) {
-      const sha = parts[index].trim().split("\n").at(-1) || "";
-      if (/^[0-9a-f]{40}$/i.test(sha) && parts[index + 1].includes(token)) return sha;
-    }
-    return null;
-  }
-
-  async #pullRequest(plan) {
-    const existing = await this.#run("gh", ["pr", "view", plan.integrationBranch, "--json", "number,url"], {
-      cwd: plan.integrationWorktreePath, timeout: 20_000,
-    }).then(({ stdout }) => parsePullRequest(stdout), () => null);
-    if (existing) return existing;
-    const baseBranch = String(plan.baseRef || "origin/main").replace(/^origin\//, "") || "main";
-    const body = pullRequestBody(plan);
-    await this.#run("gh", [
-      "pr", "create", "--base", baseBranch, "--head", plan.integrationBranch,
-      "--title", oneLine(plan.goal, 120), "--body", body,
-    ], { cwd: plan.integrationWorktreePath, timeout: 60_000 });
-    const { stdout } = await this.#run("gh", ["pr", "view", plan.integrationBranch, "--json", "number,url"], {
-      cwd: plan.integrationWorktreePath, timeout: 20_000,
-    });
-    const created = parsePullRequest(stdout);
-    if (!created) throw new TypeError("GitHub created the combined pull request but did not return its URL");
-    return created;
-  }
-
   #git(cwd, args, options = {}) {
     return this.repoCatalog.git(cwd, args, options);
   }
@@ -201,20 +221,6 @@ export class GoalIntegrator {
       cwd, encoding: "utf8", timeout, maxBuffer: 4 * 1024 * 1024, env: process.env,
     });
   }
-}
-
-export async function qualityCommands(cwd) {
-  let pkg;
-  try { pkg = JSON.parse(await readFile(join(cwd, "package.json"), "utf8")); } catch { return []; }
-  const scripts = pkg?.scripts || {};
-  const commands = [];
-  try {
-    await readFile(join(cwd, "package-lock.json"));
-    commands.push({ bin: "npm", args: ["ci"] });
-  } catch { /* a repository without an npm lockfile skips installation */ }
-  if (scripts.verify) commands.push({ bin: "npm", args: ["run", "verify"] });
-  else for (const name of ["test", "lint", "typecheck", "build"]) if (scripts[name]) commands.push({ bin: "npm", args: ["run", name] });
-  return commands;
 }
 
 const MAX_PROMPT = 8_000;
@@ -282,20 +288,16 @@ function integrationBranch(plan) {
   return `goal/${slug}-${suffix}`;
 }
 
-function taskCommitMessage(plan, task) {
-  const subject = oneLine(`Task ${String(task.id).replace(/^t/i, "")}: ${task.title}`, 100);
-  return `${subject}\n\nCmux-Goal-Task: ${plan.planId}/${task.id}/${task.headSha}`;
-}
-
-function pullRequestBody(plan) {
-  const tasks = plan.tasks.map((task) => `- [x] ${task.title} (\`${task.branch}\` at \`${task.headSha.slice(0, 8)}\`)`).join("\n");
-  const closingReferences = [...new Set(plan.issueNumbers || [])].map((number) => `Closes #${number}`).join("\n");
-  return [
-    "## Goal", plan.goal, "", "## Integrated tasks", tasks, "",
-    "## Verification", "- Combined repository verification passed in the generated goal worktree.", "",
-    ...(closingReferences ? ["## Linked issues", closingReferences, ""] : []),
-    "_Assembled automatically by cmux companion._",
-  ].join("\n");
+// A retry prompt is a nudge, not the contract again. The agent still has the
+// full brief in its own session.
+function remaining(plan) {
+  const unmerged = plan.tasks
+    .filter((task) => task.launchStatus === "launched" && task.headSha)
+    .map((task) => `${task.branch} at ${task.headSha.slice(0, 8)}`)
+    .join(", ");
+  return unmerged
+    ? `Check this branch's log for the Cmux-Goal-Task trailers, merge whatever is still missing from: ${unmerged}, then verify and open the pull request.`
+    : "Verify this branch and open the pull request.";
 }
 
 function parsePullRequest(value) {
@@ -316,6 +318,9 @@ function deliveryResult(plan) {
     finalPrNumber: plan.finalPrNumber,
     finalPrUrl: plan.finalPrUrl,
     verifiedAt: plan.verifiedAt,
+    mergeStatus: plan.mergeStatus,
+    mergeWorkspaceId: plan.mergeWorkspaceId,
+    deliveryError: plan.deliveryError,
     tasks: plan.tasks.map((task) => ({
       id: task.id, title: task.title, branch: task.branch, headSha: task.headSha,
       deliveryStatus: task.deliveryStatus, integratedCommitSha: task.integratedCommitSha,
