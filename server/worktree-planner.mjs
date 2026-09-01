@@ -386,8 +386,8 @@ export class WorktreePlanner {
     if (draft.round >= this.maxRounds) {
       throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
     }
-    const prompt = skip ? SKIP_PROMPT : answerPrompt(draft, answers);
-    this.#detach(draft, prompt, "answer", { answers: skip ? [] : answeredPairs(draft, answers), skipped: skip });
+    const { prompt, pairs } = answerRound(draft, answers, skip);
+    this.#detach(draft, prompt, "answer", { answers: pairs, skipped: skip });
     return { ...publicDraft(draft), running: true };
   }
 
@@ -478,12 +478,7 @@ export class WorktreePlanner {
     if (draft.round >= this.maxRounds) {
       throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
     }
-    // Without a session the next spawn starts a fresh conversation, which has
-    // never seen the goal. An answer-only prompt then reads as a goal-less
-    // request, and the planner invents work from the working tree. Restate the
-    // whole opening context, so a resumed plan answers the real goal.
-    const pairs = skip ? [] : answeredPairs(draft, answers);
-    const prompt = draft.sessionId ? (skip ? SKIP_PROMPT : answerPrompt(draft, answers)) : restartPrompt(draft, pairs, skip);
+    const { prompt, pairs } = answerRound(draft, answers, skip);
     return this.#round(draft, prompt, onEvent, { answers: pairs, skipped: skip });
   }
 
@@ -950,6 +945,17 @@ function restartPrompt(draft, pairs, skip) {
     history.length ? ["Answers already given for this goal:", "", ...history].join("\n") : "No answers were given yet.",
     ...(skip ? ["", SKIP_PROMPT] : []),
   ].join("\n");
+}
+
+// Both answer paths, the awaited one and the background one, choose the prompt
+// here. Without a session the next spawn starts a fresh conversation, which has
+// never seen the goal. An answer-only prompt then reads as a goal-less request,
+// and the planner invents work from the working tree. Restate the whole opening
+// context, so a resumed plan answers the real goal.
+function answerRound(draft, answers, skip) {
+  const pairs = skip ? [] : answeredPairs(draft, answers);
+  const prompt = draft.sessionId ? (skip ? SKIP_PROMPT : answerPrompt(draft, answers)) : restartPrompt(draft, pairs, skip);
+  return { prompt, pairs };
 }
 
 function answerPrompt(draft, answers) {

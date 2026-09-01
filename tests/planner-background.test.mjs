@@ -236,3 +236,25 @@ test("a background answer round resumes the same session", async () => {
   assert.equal(ready.round, 2);
   assert.ok(deps.calls[1][1].includes("--resume"));
 });
+
+test("a background answer round also restates the goal when the session is gone", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "plan-lost", repositoryId: REPO_ID, repositoryName: "sample", cwd: "/repo/sample", goal: "Add billing", images: [{ path: "/tmp/shot.png", name: "shot.png" }] });
+  store.recordRound("plan-lost", { round: 1, stage: "questions", sessionId: null, questions: [{ id: "q1", text: "Which database?", options: [] }] });
+
+  const deps = fakeDeps({ replies: [envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-new")] });
+  const planner = new WorktreePlanner({ ...deps, store });
+  await planner.answerBackground("plan-lost", { answers: [{ id: "q1", text: "Postgres" }] });
+  await settled(planner, "plan-lost");
+
+  // The background path must choose the same prompt as the awaited one, or a
+  // resumed plan would go back to inventing work from the working tree.
+  const prompt = deps.calls[0][1].at(-1);
+  assert.ok(prompt.includes("Goal: Add billing"));
+  assert.ok(prompt.includes("/tmp/shot.png"));
+  assert.ok(prompt.includes("Q: Which database?"));
+  assert.ok(prompt.includes("A: Postgres"));
+  assert.ok(!deps.calls[0][1].includes("--resume"));
+  assert.equal((await planner.resume("plan-lost")).status, "ready");
+});
