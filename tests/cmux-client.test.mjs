@@ -235,7 +235,7 @@ test("sends a workspace notification through the rpc surface", async () => {
   });
   await client.notify(ID, { title: "Goal ready", body: "3 of 3 branches ready" });
   assert.equal(calls[0][1], "rpc");
-  assert.equal(calls[0][2], "notification.create_for_target");
+  assert.equal(calls[0][2], "notification.create");
   assert.deepEqual(JSON.parse(calls[0][3]), {
     workspace_id: ID,
     title: "Goal ready",

@@ -205,10 +205,16 @@ export class CmuxClient {
   // A notification is a courtesy, so its text is clamped and defaulted rather
   // than rejected: a blank title is a caller bug, and failing here would abort
   // the delivery this call only meant to report on.
+  //
+  // notification.create is the only method that takes a workspace alone.
+  // notification.create_for_target rejects that shape with "Missing or invalid
+  // surface_id" - it wants BOTH a surface_id and a workspace_id - and because
+  // every caller sits inside a publish catch, switching back would silently
+  // swallow every notification instead of failing loudly.
   async notify(workspaceId, { title, body = "" }) {
     assertTarget(workspaceId);
     const heading = String(title || "").trim().slice(0, 100) || "cmux companion";
-    return this.rpc("notification.create_for_target", {
+    return this.rpc("notification.create", {
       workspace_id: workspaceId,
       title: heading,
       body: String(body || "").trim().slice(0, 500),
