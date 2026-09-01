@@ -230,9 +230,11 @@ function taskCommitMessage(plan, task) {
 
 function pullRequestBody(plan) {
   const tasks = plan.tasks.map((task) => `- [x] ${task.title} (\`${task.branch}\` at \`${task.headSha.slice(0, 8)}\`)`).join("\n");
+  const closingReferences = [...new Set(plan.issueNumbers || [])].map((number) => `Closes #${number}`).join("\n");
   return [
     "## Goal", plan.goal, "", "## Integrated tasks", tasks, "",
     "## Verification", "- Combined repository verification passed in the generated goal worktree.", "",
+    ...(closingReferences ? ["## Linked issues", closingReferences, ""] : []),
     "_Assembled automatically by cmux companion._",
   ].join("\n");
 }

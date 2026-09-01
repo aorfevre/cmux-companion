@@ -12,6 +12,7 @@ import { WorktreeDashboard } from "./worktree-dashboard.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
+import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import {
@@ -37,6 +38,7 @@ export async function buildApp({
   worktreePlanner = null,
   worktreePlanStore = null,
   goalIntegrator = null,
+  githubIssuePlanner = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
   previewManager = null,
@@ -68,6 +70,8 @@ export async function buildApp({
     || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore });
   const integrator = goalIntegrator
     || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, log: app.log }) : null);
+  const issuePlanner = githubIssuePlanner
+    || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
@@ -394,6 +398,21 @@ export async function buildApp({
   app.post("/api/worktree-plans/:planId/assemble", async (request) => {
     if (!integrator) throw serviceUnavailable("Combined goal delivery is unavailable");
     const result = await integrator.assemble(request.params.planId);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
+  });
+
+  app.post("/api/github-topic-plans/analyze", async (request) => (
+    issuePlanner.analyze({ repositoryId: request.body?.repositoryId })
+  ));
+
+  app.post("/api/github-topic-plans/prepare", { bodyLimit: 64 * 1024 }, async (request) => (
+    issuePlanner.prepare({ analysisId: request.body?.analysisId, topics: request.body?.topics })
+  ));
+
+  app.post("/api/github-topic-plans/launch", async (request) => {
+    const result = await issuePlanner.launch({ planIds: request.body?.planIds });
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return result;

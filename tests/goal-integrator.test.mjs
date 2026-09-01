@@ -18,7 +18,7 @@ function fixture(t, { secondPushed = true } = {}) {
   writeFileSync(join(integrationPath, "package.json"), JSON.stringify({ scripts: { verify: "node verify.mjs" } }));
   writeFileSync(join(integrationPath, "package-lock.json"), "{}\n");
   const store = new WorktreePlanStore({ path: ":memory:" });
-  store.createPlan({ planId: "plan-12345678", repositoryId: REPO_ID, repositoryName: "sample", cwd: root, goal: "Ship combined billing" });
+  store.createPlan({ planId: "plan-12345678", repositoryId: REPO_ID, repositoryName: "sample", cwd: root, goal: "Ship combined billing", sourceType: "github_issues", issueNumbers: [54, 55], issueUrls: ["https://github.test/issues/54", "https://github.test/issues/55"] });
   store.recordRound("plan-12345678", {
     round: 1, stage: "ready", sessionId: "session",
     tasks: [
@@ -91,6 +91,7 @@ test("assembles pushed task heads, verifies them together and opens one pull req
   assert.equal(createPr[1][createPr[1].indexOf("--base") + 1], "main");
   assert.match(createPr[1][createPr[1].indexOf("--body") + 1], /Billing API/);
   assert.match(createPr[1][createPr[1].indexOf("--body") + 1], /Billing UI/);
+  assert.match(createPr[1][createPr[1].indexOf("--body") + 1], /Closes #54\nCloses #55/);
   const saved = store.get("plan-12345678");
   assert.deepEqual(saved.tasks.map((task) => task.deliveryStatus), ["integrated", "integrated"]);
   assert.equal(saved.finalPrUrl, "https://github.test/pr/42");

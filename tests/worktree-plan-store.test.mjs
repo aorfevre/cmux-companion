@@ -43,6 +43,23 @@ test("stores the opening goal with its images and a goal event", (t) => {
   assert.equal(events[0].payload.goal, "Add billing");
 });
 
+test("stores GitHub issue provenance on detail, events, and summaries", (t) => {
+  const store = memoryStore(t);
+  const plan = store.createPlan({
+    planId: "issue-plan", repositoryId: "repository12345678", goal: "Fix editor",
+    sourceType: "github_issues", issueNumbers: [54, 55], issueUrls: ["https://github.test/issues/54", "https://github.test/issues/55"], deliveryPolicy: "combined",
+  });
+  assert.equal(plan.sourceType, "github_issues");
+  assert.deepEqual(plan.issueNumbers, [54, 55]);
+  assert.deepEqual(plan.issueUrls, ["https://github.test/issues/54", "https://github.test/issues/55"]);
+  assert.equal(plan.deliveryPolicy, "combined");
+  const ready = store.recordRound("issue-plan", { round: 1, stage: "ready", tasks: [{ id: "t1", title: "Only", branch: "feature/only", prompt: "Fix it", agent: "codex" }] });
+  assert.equal(ready.deliveryMode, "combined");
+  assert.equal(store.recordEdit("issue-plan", ready.tasks).deliveryMode, "combined");
+  assert.deepEqual(store.list()[0].issueNumbers, [54, 55]);
+  assert.deepEqual(store.events("issue-plan")[0].payload.issueNumbers, [54, 55]);
+});
+
 test("records a questions round with its session id", (t) => {
   const store = memoryStore(t);
   seed(store);
