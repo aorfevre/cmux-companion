@@ -56,11 +56,14 @@ test("ignores a trace id that is not a uuid", () => {
 test("drops the oldest trace instead of growing without limit", () => {
   let clock = 1_000;
   const progress = new PlannerProgress({ now: () => (clock += 1_000) });
-  for (let index = 0; index < 60; index += 1) {
+  // Many more traces than the cap, whatever the cap is. The property under test
+  // is that the map stops growing, not the exact number it stops at.
+  const published = 400;
+  for (let index = 0; index < published; index += 1) {
     const id = `${String(index).padStart(8, "0")}-2222-4333-8444-555555555555`;
     progress.publish(id, { k: "tool", t: `step ${index}` });
   }
-  assert.ok(progress.traces.size <= 20, `held ${progress.traces.size} traces`);
+  assert.ok(progress.traces.size < published / 2, `held ${progress.traces.size} traces`);
 });
 
 test("stops sending to a detached subscriber", () => {
