@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
+import { CmuxGroups } from "./cmux-groups.mjs";
 import { CmuxEventHub } from "./event-hub.mjs";
 import { PlannerProgress, TRACE_ID } from "./planner-progress.mjs";
 import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
@@ -40,6 +41,7 @@ export async function buildApp({
   worktreePlanner = null,
   worktreePlanStore = null,
   goalIntegrator = null,
+  cmuxGroups = null,
   githubIssuePlanner = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
@@ -67,13 +69,14 @@ export async function buildApp({
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog });
+  const groups = cmuxGroups || new CmuxGroups({ cmux, log: app.log });
   // The planner and delivery controller share one durable goal record. Tests
   // that inject a whole planner do not open the production database implicitly.
   const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
   const planner = worktreePlanner
-    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore });
+    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, groups });
   const integrator = goalIntegrator
-    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, log: app.log }) : null);
+    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, groups, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
     || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   const pairAttempts = new Map();
@@ -257,6 +260,9 @@ export async function buildApp({
       prompt,
       script,
     });
+    // ensure swallows its own failures, so a cmux without groups still returns
+    // the session the user asked for.
+    await groups.ensure(repo.name, created.workspace_id);
     repoCatalog.cache = null;
     return reply.code(201).send({ workspace: created, repo: { id: repo.id, name: repo.name } });
   });
@@ -304,6 +310,7 @@ export async function buildApp({
       agent,
       prompt,
     });
+    await groups.ensure(target.repoName, created.workspace_id);
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return reply.code(201).send({

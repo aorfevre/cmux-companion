@@ -1103,3 +1103,56 @@ test("runs without a store at all", async () => {
   assert.deepEqual((await planner.list()).plans, []);
   await assert.rejects(() => planner.detail(draft.planId), /Unknown plan/);
 });
+
+// A ready plan with a chosen task count, so the grouping tests state only the
+// count they care about. The store is real: #group reads the group id back.
+async function plannerFixture(t, { groups = null, tasks = 1 } = {}) {
+  const plan = Array.from({ length: tasks }, (_, index) => ({
+    title: `Task ${index + 1}`,
+    branch: `feature/task-${index + 1}`,
+    prompt: "Do it.",
+  }));
+  const deps = launchDeps();
+  deps.execute = async (bin, args, options) => {
+    deps.calls.push([bin, args, options]);
+    return { stdout: envelope(JSON.stringify({ tasks: plan }), "sess-a") };
+  };
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const planner = new WorktreePlanner({ ...deps, groups, store });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Ship it" });
+  planner.planId = draft.planId;
+  return planner;
+}
+
+test("puts a multi-task goal's workspaces in a goal group and a single task in the project group", async (t) => {
+  const grouped = [];
+  const groups = { ensure: async (name, workspaceId) => { grouped.push([name, workspaceId]); return "group-1"; }, rename: async () => true };
+  const planner = await plannerFixture(t, { groups, tasks: 2 });
+  await planner.launch(planner.planId);
+  assert.equal(grouped.length, 2);
+  assert.ok(grouped.every(([name]) => name.startsWith("Ship it")));
+
+  const solo = await plannerFixture(t, { groups, tasks: 1 });
+  grouped.length = 0;
+  await solo.launch(solo.planId);
+  assert.deepEqual(grouped.map(([name]) => name), ["sample"]);
+});
+
+test("looks a goal group up by its unchanging goal text, never by its counted name", async (t) => {
+  const seen = [];
+  const groups = { ensure: async (name, workspaceId, options) => { seen.push(options); return "group-1"; }, rename: async () => true };
+  const planner = await plannerFixture(t, { groups, tasks: 2 });
+  await planner.launch(planner.planId);
+  assert.deepEqual(seen.map((options) => options.prefix), ["Ship it", "Ship it"]);
+  // The first launch stores the id, so the second workspace joins that group
+  // rather than opening a second one under the same name.
+  assert.deepEqual(seen.map((options) => options.groupId), [null, "group-1"]);
+});
+
+test("a group failure never fails a task launch", async (t) => {
+  const groups = { ensure: async () => { throw new Error("cmux is down"); }, rename: async () => true };
+  const planner = await plannerFixture(t, { groups, tasks: 2 });
+  const result = await planner.launch(planner.planId);
+  assert.equal(result.launched, 2);
+});
