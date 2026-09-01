@@ -217,6 +217,65 @@ export async function qualityCommands(cwd) {
   return commands;
 }
 
+const MAX_PROMPT = 8_000;
+
+// The whole merge contract lives here. The agent gets pinned commits, not
+// branch names to resolve itself: a task agent that pushes again mid-merge must
+// not silently change what is delivered.
+export function mergePrompt(plan) {
+  const base = baseBranch(plan);
+  const tasks = plan.tasks.filter((task) => task.launchStatus === "launched" && task.headSha);
+  const list = tasks.map((task, index) => [
+    `${index + 1}. ${oneLine(task.title, 100)}`,
+    `   branch: ${task.branch}`,
+    `   commit: ${task.headSha}`,
+    `   trailer: Cmux-Goal-Task: ${plan.planId}/${task.id}/${task.headSha}`,
+  ].join("\n")).join("\n");
+  const closing = [...new Set(plan.issueNumbers || [])].map((number) => `Closes #${number}`).join("\n");
+
+  return [
+    `You are assembling one pull request for this goal: ${oneLine(plan.goal, 400)}`,
+    "",
+    `You are already in a fresh worktree on branch \`${plan.integrationBranch}\`, cut from \`origin/${base}\`.`,
+    `Each task below was built by its own agent in its own worktree. Merge them here.`,
+    "",
+    "## Tasks to merge, in this order",
+    list,
+    "",
+    "## How to merge",
+    "Merge the exact commit listed above for each task, never the branch tip. A task agent may push again while you work, and the listed commit is the one that was reviewed as ready.",
+    "For each task, in order:",
+    "1. Check `git log` on this branch for that task's trailer. Skip the task when its trailer is already there. This makes a retry safe.",
+    "2. Run `git merge --squash --no-commit <commit>`.",
+    "3. Resolve whatever it reports (see the conflict rule below).",
+    "4. Commit. The commit message must be a one-line subject, a blank line, then exactly that task's trailer line.",
+    "",
+    "## The conflict rule",
+    "Resolve a mechanical conflict yourself. Imports, adjacent edits, formatting, a lockfile, and two tasks appending to the same list are all mechanical.",
+    "Resolve a semantic conflict when the goal above makes the intent clear. Record every such choice.",
+    "Stop when two tasks genuinely disagree about behaviour and the goal does not settle it. Do not guess. Leave the worktree exactly as it is, do not open a pull request, and state plainly which decision you cannot make and what the two options are.",
+    "",
+    "## Verification",
+    "When every task is merged, run this repository's own verification. Use `npm run verify` when package.json declares it. Otherwise run whichever of `test`, `lint`, `typecheck` and `build` it declares. Install dependencies first when a lockfile is present.",
+    "Fix what your merge broke. Do not fix a failure that is already present on the base branch: report it in the pull request body instead.",
+    "",
+    "## Finish",
+    `Push this branch, then open one pull request against \`${base}\` with \`gh pr create --base ${base}\`. Do not mark it a draft.`,
+    "The body must contain, in this order:",
+    "- A `## Goal` section with the goal text.",
+    "- An `## Integrated tasks` section listing each task title, its branch and its short commit.",
+    "- A `## Conflicts resolved` section. This section is required. Write `None` when you resolved nothing. Otherwise describe every choice you made that the task authors did not make for you.",
+    "- A `## Verification` section with what you ran and what it reported.",
+    ...(closing ? ["- A `## Linked issues` section containing exactly these lines:", closing] : []),
+    "",
+    "Open exactly one pull request. Do not open a pull request for any individual task branch.",
+  ].join("\n").slice(0, MAX_PROMPT);
+}
+
+function baseBranch(plan) {
+  return String(plan.baseRef || "origin/main").replace(/^origin\//, "") || "main";
+}
+
 function integrationBranch(plan) {
   const slug = oneLine(plan.goal, 48).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "goal";
   const suffix = String(plan.planId).replace(/[^a-z0-9]/gi, "").slice(0, 8).toLowerCase() || "combined";

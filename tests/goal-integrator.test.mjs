@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GoalIntegrator, qualityCommands } from "../server/goal-integrator.mjs";
+import { GoalIntegrator, mergePrompt, qualityCommands } from "../server/goal-integrator.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 
 const REPO_ID = "repository12345678";
@@ -111,4 +111,43 @@ test("selects one declared verify script instead of guessing model-generated com
   writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { verify: "all", test: "unit", build: "build" } }));
   const commands = await qualityCommands(root);
   assert.deepEqual(commands, [{ bin: "npm", args: ["run", "verify"] }]);
+});
+
+test("the merge prompt pins every task commit and states the conflict rule", () => {
+  const plan = {
+    planId: "plan-12345678",
+    goal: "Ship combined billing",
+    baseRef: "origin/main",
+    integrationBranch: "goal/ship-combined-billing-plan1234",
+    issueNumbers: [54, 55],
+    tasks: [
+      { id: "t1", title: "Billing API", branch: "feature/billing-api", headSha: "a".repeat(40), launchStatus: "launched" },
+      { id: "t2", title: "Billing UI", branch: "feature/billing-ui", headSha: "b".repeat(40), launchStatus: "launched" },
+    ],
+  };
+  const prompt = mergePrompt(plan);
+  assert.ok(prompt.includes("a".repeat(40)));
+  assert.ok(prompt.includes("b".repeat(40)));
+  assert.ok(prompt.includes("feature/billing-api"));
+  assert.ok(prompt.includes("Cmux-Goal-Task: plan-12345678/t1/" + "a".repeat(40)));
+  assert.match(prompt, /Closes #54/);
+  assert.match(prompt, /Conflicts resolved/);
+  assert.match(prompt, /Do not guess/);
+  assert.match(prompt, /gh pr create/);
+  assert.match(prompt, /--base main/);
+  assert.ok(prompt.length <= 8_000);
+});
+
+test("the merge prompt skips a task that failed to launch", () => {
+  const plan = {
+    planId: "plan-12345678", goal: "Ship it", baseRef: "origin/main",
+    integrationBranch: "goal/ship-it-plan1234", issueNumbers: [],
+    tasks: [
+      { id: "t1", title: "Kept", branch: "feature/kept", headSha: "a".repeat(40), launchStatus: "launched" },
+      { id: "t2", title: "Dropped", branch: "feature/dropped", headSha: null, launchStatus: "failed" },
+    ],
+  };
+  const prompt = mergePrompt(plan);
+  assert.ok(prompt.includes("feature/kept"));
+  assert.equal(prompt.includes("feature/dropped"), false);
 });
