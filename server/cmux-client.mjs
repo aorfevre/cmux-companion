@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -247,6 +247,11 @@ export class CmuxClient {
 
   async workspaceCreate({ cwd, title, agent = "shell", prompt = "", script = null }) {
     if (typeof cwd !== "string" || !cwd.startsWith("/")) throw new TypeError("Invalid repository path");
+    // cmux accepts a cwd that does not exist and creates the workspace anyway.
+    // Its shell then cannot enter the directory and silently keeps the one cmux
+    // started from, so the agent runs against the wrong repository and its work
+    // is lost. A refusal the caller can read beats that every time.
+    if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new TypeError(`This directory does not exist: ${cwd}`);
     if (!ALLOWED_AGENTS.has(agent)) throw new TypeError("Unsupported agent");
     if (typeof title !== "string" || !title.trim() || title.trim().length > 100) throw new TypeError("Invalid workspace title");
     if (typeof prompt !== "string" || prompt.length > 8_000) throw new TypeError("Prompt is too long");

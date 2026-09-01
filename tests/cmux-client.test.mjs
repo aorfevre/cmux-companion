@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CmuxClient, parseWorkspaceMetrics } from "../server/cmux-client.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
@@ -147,23 +150,37 @@ test("passes the private socket credential only to cmux child processes", async 
   assert.equal(childEnvironment.CMUX_SOCKET_PASSWORD, "private-socket-credential");
 });
 
-test("uses structured RPC for safe workspace launch and shell-quotes prompts", async () => {
+test("uses structured RPC for safe workspace launch and shell-quotes prompts", async (t) => {
+  const repo = mkdtempSync(join(tmpdir(), "cmux-workspace-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
   const calls = [];
   const client = new CmuxClient({ execute: async (_bin, args) => {
     calls.push(args);
     if (args.includes("workspace.create")) return { stdout: JSON.stringify({ workspace_id: ID }), stderr: "" };
     return { stdout: "{}", stderr: "" };
   } });
-  const created = await client.workspaceCreate({ cwd: "/approved/repo", title: "Test", agent: "codex", prompt: "fix 'quotes'; touch /tmp/nope" });
+  const created = await client.workspaceCreate({ cwd: repo, title: "Test", agent: "codex", prompt: "fix 'quotes'; touch /tmp/nope" });
   assert.equal(created.workspace_id, ID);
-  assert.deepEqual(JSON.parse(calls[0][3]), { cwd: "/approved/repo", title: "Test", focus: false });
+  assert.deepEqual(JSON.parse(calls[0][3]), { cwd: repo, title: "Test", focus: false });
   const send = JSON.parse(calls[1][3]);
   assert.equal(send.workspace_id, ID);
   assert.equal(send.text, "xcodex 'fix '\\''quotes'\\''; touch /tmp/nope'\n");
   calls.length = 0;
-  await client.workspaceCreate({ cwd: "/approved/repo", title: "Claude", agent: "claude" });
+  await client.workspaceCreate({ cwd: repo, title: "Claude", agent: "claude" });
   assert.equal(JSON.parse(calls[1][3]).text, "xclaude\n");
   await assert.rejects(() => client.workspaceCreate({ cwd: "/tmp", title: "x", agent: "evil" }), /Unsupported agent/);
+  // cmux creates a workspace on a missing cwd and silently leaves the shell in
+  // the directory it launched from, so the agent reads the wrong repository.
+  await assert.rejects(
+    () => client.workspaceCreate({ cwd: `${repo}-gone`, title: "x", agent: "claude" }),
+    /This directory does not exist/,
+  );
+  // A file is not a working directory either.
+  writeFileSync(join(repo, "file.txt"), "x");
+  await assert.rejects(
+    () => client.workspaceCreate({ cwd: join(repo, "file.txt"), title: "x", agent: "claude" }),
+    /This directory does not exist/,
+  );
 });
 
 test("validates structured inbox replies", async () => {
