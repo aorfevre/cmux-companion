@@ -10,6 +10,7 @@ import { capturePreview } from "./preview-capture.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import { WorktreeDashboard } from "./worktree-dashboard.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
+import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import {
@@ -33,6 +34,7 @@ export async function buildApp({
   repoCatalog = new RepoCatalog(),
   worktreeDashboard = null,
   worktreePlanner = null,
+  worktreePlanStore = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
   previewManager = null,
@@ -57,7 +59,10 @@ export async function buildApp({
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog });
-  const planner = worktreePlanner || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log });
+  // The store opens the SQLite file on construction, so build it only when the
+  // caller did not inject a whole planner of its own.
+  const planner = worktreePlanner
+    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: worktreePlanStore || new WorktreePlanStore() });
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
@@ -347,6 +352,22 @@ export async function buildApp({
     beat.unref?.();
     reply.raw.on("close", () => { clearInterval(beat); detach(); });
   });
+
+  // Every saved plan, newest first. The list carries no prompt, so the sheet
+  // can show a history without loading each task body.
+  app.get("/api/worktree-plans", async (request) => planner.list({
+    repositoryId: request.query?.repositoryId || null,
+    status: request.query?.status || null,
+    limit: request.query?.limit,
+  }));
+
+  app.get("/api/worktree-plans/:planId", async (request) => planner.detail(request.params.planId));
+
+  // Reload a plan into the live planner, so the next answer resumes the same
+  // ccs session instead of starting the goal again.
+  app.post("/api/worktree-plans/:planId/resume", async (request) => planner.resume(request.params.planId));
+
+  app.delete("/api/worktree-plans/:planId", async (request) => planner.remove(request.params.planId));
 
   // A full plan is 8 tasks with prompts of up to 4,000 characters each, which
   // measures about 33KB and so exceeds the global 32KB limit.

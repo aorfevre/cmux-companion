@@ -285,7 +285,7 @@ export function describeRunFailure(stderr) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
@@ -298,6 +298,9 @@ export class WorktreePlanner {
     this.maxRounds = maxRounds;
     this.timeoutMs = timeoutMs;
     this.ttlMs = ttlMs;
+    // The database owns every plan. The map is only a hot cache in front of it,
+    // so a companion restart loses no goal, no session and no task list.
+    this.store = store;
     this.drafts = new Map();
   }
 
@@ -327,19 +330,28 @@ export class WorktreePlanner {
       if (oldest) this.drafts.delete(oldest[0]);
     }
     this.drafts.set(draft.planId, draft);
+    this.#persist(() => this.store?.createPlan({
+      planId: draft.planId,
+      repositoryId: draft.repositoryId,
+      repositoryName: draft.repositoryName,
+      cwd: draft.cwd,
+      goal: draft.goal,
+      images: draft.images,
+    }), draft.planId, "create");
     return this.#round(draft, openingPrompt(draft), onEvent);
   }
 
   async answer(planId, { answers = [], skip = false, onEvent = null } = {}) {
-    const draft = this.#draft(planId);
+    const draft = await this.#draft(planId);
     if (draft.round >= this.maxRounds) {
       throw new TypeError("The planner could not produce a plan. Start again with a narrower goal");
     }
-    return this.#round(draft, skip ? SKIP_PROMPT : answerPrompt(draft, answers), onEvent);
+    const prompt = skip ? SKIP_PROMPT : answerPrompt(draft, answers);
+    return this.#round(draft, prompt, onEvent, { answers: skip ? [] : answeredPairs(draft, answers), skipped: skip });
   }
 
   async update(planId, { tasks } = {}) {
-    const draft = this.#draft(planId);
+    const draft = await this.#draft(planId);
     if (!Array.isArray(tasks) || !tasks.length) throw new TypeError("Keep at least one task");
     if (tasks.length > MAX_TASKS) throw new TypeError(`A plan can hold at most ${MAX_TASKS} tasks`);
     const next = tasks.map((task, index) => {
@@ -357,11 +369,12 @@ export class WorktreePlanner {
     if (branches.size !== next.length) throw new TypeError("Two tasks share a branch name");
     draft.tasks = next;
     draft.at = Date.now();
+    this.#persist(() => this.store?.recordEdit(draft.planId, next), draft.planId, "edit");
     return publicDraft(draft);
   }
 
   async launch(planId) {
-    const draft = this.#draft(planId);
+    const draft = await this.#draft(planId);
     if (draft.status !== "ready" || !draft.tasks.length) throw new TypeError("This plan is not ready to launch yet");
     const base = await this.#baseRef(draft);
     const results = [];
@@ -369,6 +382,7 @@ export class WorktreePlanner {
       results.push(await this.#launchTask(draft, task, base));
     }
     const launched = results.filter((item) => item.status === "launched").length;
+    this.#persist(() => this.store?.recordLaunch(draft.planId, { base, results }), draft.planId, "launch");
     // Deleting stops a plan running twice. That risk does not exist when nothing
     // was created, and keeping the draft saves the user a fresh planner round
     // after a transient failure such as cmux being down.
@@ -439,7 +453,7 @@ export class WorktreePlanner {
     return repository.path;
   }
 
-  async #round(draft, prompt, onEvent = null) {
+  async #round(draft, prompt, onEvent = null, submitted = null) {
     let reply;
     try {
       reply = parsePlannerReply(await this.#spawn(draft, prompt, onEvent));
@@ -461,6 +475,15 @@ export class WorktreePlanner {
     draft.status = reply.status;
     draft.questions = reply.questions;
     draft.tasks = reply.status === "ready" ? assignAgents(reply.tasks, await this.#usage()) : [];
+    this.#persist(() => this.store?.recordRound(draft.planId, {
+      round: draft.round,
+      stage: draft.status,
+      sessionId: draft.sessionId,
+      questions: draft.questions,
+      tasks: draft.tasks,
+      answers: submitted?.answers ?? null,
+      skipped: submitted?.skipped === true,
+    }), draft.planId, "round");
     return publicDraft(draft);
   }
 
@@ -514,11 +537,63 @@ export class WorktreePlanner {
     return { id: repository.id, name: repository.name, primaryPath: primary?.path || repository.path };
   }
 
-  #draft(planId) {
+  // A plan the cache dropped — through the TTL sweep, the size cap, or a
+  // companion restart — is rebuilt from the database instead of being refused.
+  async #draft(planId) {
     this.#sweep();
-    const draft = this.drafts.get(String(planId || ""));
-    if (!draft) throw new TypeError("Unknown plan. Start a new goal");
+    const id = String(planId || "");
+    const cached = this.drafts.get(id);
+    if (cached) return cached;
+    const stored = this.#read(() => this.store?.get(id));
+    if (!stored) throw new TypeError("Unknown plan. Start a new goal");
+    if (stored.status === "launched") throw new TypeError("This plan is already launched. Start a new goal");
+    const draft = draftFromStore(stored);
+    this.drafts.set(draft.planId, draft);
     return draft;
+  }
+
+  // Reload a plan into memory and return it, so a reopened sheet continues the
+  // same ccs session rather than starting a new one.
+  async resume(planId) {
+    return publicDraft(await this.#draft(planId));
+  }
+
+  // The stored view of a plan, including a launched one, with its event log.
+  async detail(planId) {
+    const stored = this.#read(() => this.store?.get(String(planId || "")));
+    if (!stored) throw new TypeError("Unknown plan. Start a new goal");
+    return { ...stored, events: this.#read(() => this.store?.events(stored.planId)) || [] };
+  }
+
+  async list(options = {}) {
+    return { plans: this.#read(() => this.store?.list(options)) || [] };
+  }
+
+  async remove(planId) {
+    const id = String(planId || "");
+    this.drafts.delete(id);
+    const deleted = this.#read(() => this.store?.delete(id)) === true;
+    if (!deleted) throw new TypeError("Unknown plan. Start a new goal");
+    return { planId: id, deleted: true };
+  }
+
+  // A storage failure must never lose a round the planner already paid for, so
+  // a write that throws is logged and the answer still reaches the user.
+  #persist(write, planId, step) {
+    try {
+      write();
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, planId, step }, "planner plan store write failed");
+    }
+  }
+
+  #read(read) {
+    try {
+      return read();
+    } catch (cause) {
+      this.log?.warn?.({ err: cause }, "planner plan store read failed");
+      return null;
+    }
   }
 
   #sweep() {
@@ -543,6 +618,42 @@ function publicDraft(draft) {
     questions: draft.questions,
     tasks: draft.tasks,
   };
+}
+
+// The stored row holds every field a round needs, so a rebuilt draft resumes
+// the same ccs session with the same goal, questions and tasks.
+function draftFromStore(stored) {
+  return {
+    planId: stored.planId,
+    repositoryId: stored.repositoryId,
+    repositoryName: stored.repositoryName || "",
+    cwd: stored.cwd || "",
+    goal: stored.goal,
+    images: Array.isArray(stored.images) ? stored.images : [],
+    sessionId: stored.sessionId || null,
+    round: Number(stored.round) || 0,
+    at: Date.now(),
+    status: stored.stage === "ready" ? "ready" : "questions",
+    questions: Array.isArray(stored.questions) ? stored.questions : [],
+    tasks: (Array.isArray(stored.tasks) ? stored.tasks : []).map((task) => ({
+      id: task.id,
+      title: task.title,
+      branch: task.branch,
+      prompt: task.prompt,
+      agent: task.agent || "claude",
+      agentReason: task.agentReason || "",
+    })),
+  };
+}
+
+// The event log stores the question next to its answer, because a later round
+// replaces the question list and the answer alone would then read as orphaned.
+function answeredPairs(draft, answers) {
+  return (Array.isArray(answers) ? answers : []).map((answer) => ({
+    id: String(answer?.id || ""),
+    question: draft.questions.find((item) => item.id === answer?.id)?.text || "",
+    text: String(answer?.text || "").trim().slice(0, 2_000),
+  })).filter((item) => item.text);
 }
 
 const SKIP_PROMPT = "Stop asking questions. Decide the remaining details yourself and reply now with the tasks JSON object.";

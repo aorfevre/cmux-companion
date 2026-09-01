@@ -95,6 +95,15 @@ Worktrees Beta discovers Git's registered worktrees for the configured repositor
 
 **Plan a goal** on a repository sends one goal to a headless Claude session, which decides whether the work splits into independent tasks. The planner may ask clarifying questions first; answer them, or skip to let it decide. It reuses the same Claude session for every round, so only the new turn costs tokens. The proposed plan is shown before anything is created: edit a task, switch its agent, or drop it, then confirm. Each task then branches from the same freshly fetched default remote branch into its own worktree, with one agent session started in each.
 
+Every step is written to a local SQLite database at `~/.config/cmux-companion/goal-plans.db`, which the companion creates with mode 0600. It holds the goal, the Claude session id, each round of questions, each set of answers, each task list, each edit and the launch outcome of each task. A plan therefore survives a companion restart and an interrupted question round: reload it, and the next answer resumes the same Claude session instead of starting the goal again.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/worktree-plans` | Saved plans, newest first. Filter with `repositoryId`, `status` (`draft`, `launched` or `all`) and `limit`. |
+| `GET /api/worktree-plans/:planId` | One saved plan with its tasks and its whole event log. |
+| `POST /api/worktree-plans/:planId/resume` | Reload a plan into the running planner and return the draft. |
+| `DELETE /api/worktree-plans/:planId` | Delete a plan with its tasks and events. |
+
 The server chooses Codex or Claude per task from live CCS quota, not the model. It takes the lower of each provider's 5-hour and weekly remaining percent, sends the work to the provider with more headroom, and alternates when the two are within ten points. Every task keeps a toggle, so you can override the choice.
 
 A launch of several tasks takes up to a minute, because each worktree is created and inspected in turn. The sheet reports each task as launched or failed. A failed task does not roll back the tasks before it, and a task whose branch already exists is refused rather than started on old work.
@@ -179,6 +188,7 @@ The proposed unattended, self-updating macOS deployment design is documented in 
 | `CMUX_COMPANION_VAPID_SUBJECT` | Installed private Tailscale HTTPS URL | Web Push sender identity advertised to Apple and other push services |
 | `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
 | `CMUX_COMPANION_QUEUE_FILE` | `~/.config/cmux-companion/prompt-queue.json` | Persistent follow-up prompt queue |
+| `CMUX_COMPANION_PLANS_DB` | `~/.config/cmux-companion/goal-plans.db` | SQLite database of saved goal plans |
 | `CMUX_COMPANION_CHROME_BIN` | Google Chrome, Chromium, or Edge in `/Applications` | Browser executable used for private preview capture |
 | `CCS_BIN` | First `ccs` executable in `PATH`, then installed NVM versions | Optional explicit CCS executable used to discover structured account quota support |
 | `CMUX_COMPANION_PREVIEW_PORT_START` | `8500` | First Tailscale HTTPS preview port |

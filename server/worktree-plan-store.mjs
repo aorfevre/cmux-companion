@@ -1,0 +1,334 @@
+import { DatabaseSync } from "node:sqlite";
+import { chmodSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
+const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db");
+
+// A plan row is small, but its event log grows one row per round. Cap what a
+// single repository can accumulate so an abandoned plan never becomes a leak.
+const MAX_PLANS = 200;
+const MAX_EVENT_BYTES = 64 * 1024;
+
+export const PLAN_EVENT_KINDS = new Set(["goal", "questions", "answers", "tasks", "edit", "launch"]);
+// A round either asked questions or returned the split. Any other stage is a
+// caller mistake, and storing it would make a reloaded plan unreadable.
+const PLAN_STAGES = new Set(["questions", "ready"]);
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS plans (
+  plan_id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL,
+  repository_name TEXT,
+  cwd TEXT,
+  goal TEXT NOT NULL,
+  images TEXT NOT NULL DEFAULT '[]',
+  session_id TEXT,
+  round INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft',
+  stage TEXT NOT NULL DEFAULT 'questions',
+  questions TEXT NOT NULL DEFAULT '[]',
+  base_ref TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  launched_at TEXT
+);
+CREATE TABLE IF NOT EXISTS plan_tasks (
+  plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  branch TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  agent TEXT,
+  agent_reason TEXT,
+  launch_status TEXT,
+  launch_error TEXT,
+  worktree_path TEXT,
+  workspace_id TEXT,
+  PRIMARY KEY (plan_id, task_id)
+);
+CREATE TABLE IF NOT EXISTS plan_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
+  round INTEGER,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS plans_repository_updated ON plans (repository_id, updated_at);
+CREATE INDEX IF NOT EXISTS plan_events_plan_id ON plan_events (plan_id, id);
+`;
+
+// Every write goes through this class, so the planner never holds SQL and the
+// tests can point the whole flow at a temporary file.
+export class WorktreePlanStore {
+  constructor({ path = process.env.CMUX_COMPANION_PLANS_DB || DEFAULT_PATH, now = () => new Date() } = {}) {
+    this.path = path;
+    this.now = now;
+    if (path !== ":memory:") {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    }
+    this.db = new DatabaseSync(path);
+    // WAL keeps a reader from blocking the round that is writing. It is a no-op
+    // on an in-memory database, which is what the fast tests use.
+    if (path !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA foreign_keys = ON");
+    this.db.exec(SCHEMA);
+    if (path !== ":memory:") {
+      // The goal text and the task prompts describe private work, so the file
+      // stays readable by its owner only, like every other companion file.
+      try { chmodSync(path, 0o600); } catch { /* a database on a filesystem without modes */ }
+    }
+  }
+
+  // The opening goal. It is the only row that creates a plan.
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [] }) {
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), at, at);
+      this.#insertEvent(planId, 0, "goal", { goal, images }, at);
+    });
+    this.#prune();
+    return this.get(planId);
+  }
+
+  // One round of the conversation: the plan row, its task rows and the event
+  // that explains them all land together, or none of them land.
+  recordRound(planId, { round, stage, sessionId = null, questions = [], tasks = [], answers = null, skipped = false }) {
+    if (!PLAN_STAGES.has(stage)) throw new TypeError(`Unknown plan stage ${stage}`);
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET round = ?, stage = ?, session_id = ?, questions = ?, updated_at = ? WHERE plan_id = ?
+      `).run(round, stage, sessionId, json(questions), at, planId);
+      // An answered round replaces the previous task list wholesale, because the
+      // planner returns a fresh split rather than a patch.
+      this.#replaceTasks(planId, tasks);
+      if (answers !== null || skipped) this.#insertEvent(planId, round, "answers", { answers: answers || [], skipped }, at);
+      if (stage === "questions") this.#insertEvent(planId, round, "questions", { questions }, at);
+      else this.#insertEvent(planId, round, "tasks", { tasks }, at);
+    });
+    return this.get(planId);
+  }
+
+  // A user edit through PATCH. It never changes the round or the stage.
+  recordEdit(planId, tasks) {
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, planId);
+      this.#replaceTasks(planId, tasks);
+      this.#insertEvent(planId, null, "edit", { tasks }, at);
+    });
+    return this.get(planId);
+  }
+
+  // The launch outcome, one row per task plus one event for the whole run.
+  recordLaunch(planId, { base = null, results = [] } = {}) {
+    const at = this.#stamp();
+    const launched = results.filter((item) => item?.status === "launched").length;
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET status = ?, base_ref = ?, launched_at = ?, updated_at = ? WHERE plan_id = ?
+      `).run(launched > 0 ? "launched" : "draft", base, launched > 0 ? at : null, at, planId);
+      const update = this.db.prepare(`
+        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, workspace_id = ?
+        WHERE plan_id = ? AND task_id = ?
+      `);
+      for (const result of results) {
+        update.run(
+          text(result?.status),
+          text(result?.error),
+          text(result?.path),
+          workspaceId(result?.workspace),
+          planId,
+          String(result?.id || ""),
+        );
+      }
+      this.#insertEvent(planId, null, "launch", { base, launched, results }, at);
+    });
+    return this.get(planId);
+  }
+
+  get(planId) {
+    const row = this.db.prepare("SELECT * FROM plans WHERE plan_id = ?").get(String(planId || ""));
+    if (!row) return null;
+    const tasks = this.db
+      .prepare("SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY position")
+      .all(row.plan_id)
+      .map(readTask);
+    return { ...readPlan(row), tasks };
+  }
+
+  events(planId, { limit = 200 } = {}) {
+    return this.db
+      .prepare("SELECT round, kind, payload, created_at FROM plan_events WHERE plan_id = ? ORDER BY id LIMIT ?")
+      .all(String(planId || ""), clampLimit(limit, 500))
+      .map((row) => ({
+        round: row.round,
+        kind: row.kind,
+        payload: parse(row.payload, {}),
+        createdAt: row.created_at,
+      }));
+  }
+
+  // The list view never needs the prompts, so it reads a summary row and one
+  // counted join instead of every task body.
+  list({ repositoryId = null, status = null, limit = 50 } = {}) {
+    const clauses = [];
+    const values = [];
+    if (repositoryId) { clauses.push("p.repository_id = ?"); values.push(String(repositoryId)); }
+    if (status && status !== "all") { clauses.push("p.status = ?"); values.push(String(status)); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    values.push(clampLimit(limit, 200));
+    return this.db.prepare(`
+      SELECT p.*, (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id) AS task_count
+      FROM plans p ${where} ORDER BY p.updated_at DESC, p.plan_id DESC LIMIT ?
+    `).all(...values).map((row) => ({
+      planId: row.plan_id,
+      repositoryId: row.repository_id,
+      repositoryName: row.repository_name,
+      goal: row.goal,
+      round: row.round,
+      status: row.status,
+      stage: row.stage,
+      taskCount: row.task_count,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      launchedAt: row.launched_at,
+    }));
+  }
+
+  delete(planId) {
+    // The two child tables cascade, so one statement removes the whole plan.
+    const result = this.db.prepare("DELETE FROM plans WHERE plan_id = ?").run(String(planId || ""));
+    return Number(result.changes) > 0;
+  }
+
+  close() {
+    try { this.db.close(); } catch { /* already closed */ }
+  }
+
+  #replaceTasks(planId, tasks) {
+    this.db.prepare("DELETE FROM plan_tasks WHERE plan_id = ?").run(planId);
+    const insert = this.db.prepare(`
+      INSERT INTO plan_tasks (plan_id, task_id, position, title, branch, prompt, agent, agent_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    (Array.isArray(tasks) ? tasks : []).forEach((task, index) => {
+      insert.run(
+        planId,
+        String(task?.id || `t${index + 1}`),
+        index,
+        String(task?.title || ""),
+        String(task?.branch || ""),
+        String(task?.prompt || ""),
+        text(task?.agent),
+        text(task?.agentReason),
+      );
+    });
+  }
+
+  #insertEvent(planId, round, kind, payload, at) {
+    if (!PLAN_EVENT_KINDS.has(kind)) throw new TypeError(`Unknown plan event ${kind}`);
+    const body = json(payload);
+    this.db.prepare(`
+      INSERT INTO plan_events (plan_id, round, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)
+    `).run(planId, round === null || round === undefined ? null : Number(round), kind, body.slice(0, MAX_EVENT_BYTES), at);
+  }
+
+  // node:sqlite has no transaction helper, so BEGIN/COMMIT is written out. A
+  // throw inside the body rolls the whole round back.
+  #transaction(run) {
+    this.db.exec("BEGIN");
+    try {
+      run();
+      this.db.exec("COMMIT");
+    } catch (cause) {
+      try { this.db.exec("ROLLBACK"); } catch { /* the transaction already ended */ }
+      throw cause;
+    }
+  }
+
+  #prune() {
+    const total = this.db.prepare("SELECT COUNT(*) AS total FROM plans").get()?.total ?? 0;
+    if (Number(total) <= MAX_PLANS) return;
+    this.db.prepare(`
+      DELETE FROM plans WHERE plan_id IN (
+        SELECT plan_id FROM plans ORDER BY updated_at DESC, plan_id DESC LIMIT -1 OFFSET ?
+      )
+    `).run(MAX_PLANS);
+  }
+
+  #stamp() {
+    return this.now().toISOString();
+  }
+}
+
+function readPlan(row) {
+  return {
+    planId: row.plan_id,
+    repositoryId: row.repository_id,
+    repositoryName: row.repository_name,
+    cwd: row.cwd,
+    goal: row.goal,
+    images: parse(row.images, []),
+    sessionId: row.session_id,
+    round: row.round,
+    status: row.status,
+    stage: row.stage,
+    questions: parse(row.questions, []),
+    baseRef: row.base_ref,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    launchedAt: row.launched_at,
+  };
+}
+
+function readTask(row) {
+  return {
+    id: row.task_id,
+    title: row.title,
+    branch: row.branch,
+    prompt: row.prompt,
+    agent: row.agent,
+    agentReason: row.agent_reason,
+    launchStatus: row.launch_status,
+    launchError: row.launch_error,
+    worktreePath: row.worktree_path,
+    workspaceId: row.workspace_id,
+  };
+}
+
+// cmux answers with one of several id fields depending on its version, so read
+// each of them rather than losing the link to the workspace that was created.
+function workspaceId(workspace) {
+  if (!workspace || typeof workspace !== "object") return null;
+  return text(workspace.workspace_id ?? workspace.workspaceId ?? workspace.id);
+}
+
+function text(value) {
+  return typeof value === "string" && value ? value : null;
+}
+
+function json(value) {
+  try { return JSON.stringify(value ?? null); } catch { return "null"; }
+}
+
+function parse(value, fallback) {
+  try {
+    const parsed = JSON.parse(String(value ?? ""));
+    return parsed === null || parsed === undefined ? fallback : parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+function clampLimit(value, max) {
+  const limit = Number(value);
+  if (!Number.isFinite(limit) || limit <= 0) return max;
+  return Math.min(Math.floor(limit), max);
+}
