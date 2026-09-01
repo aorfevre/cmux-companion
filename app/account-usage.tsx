@@ -12,13 +12,13 @@ type ReconnectSession = { sessionId: string; provider: UsageProvider["id"]; stat
 const CORE_WINDOWS: Array<{ cadence: Exclude<Cadence, "other">; label: string }> = [
   { cadence: "5h", label: "5 hours" },
   { cadence: "weekly", label: "Weekly" },
-  { cadence: "monthly", label: "Monthly" },
 ];
 
 export function AccountUsageView({ onBack }: { onBack: () => void }) {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
   const [reconnecting, setReconnecting] = useState<{ provider: UsageProvider; account: UsageAccount } | null>(null);
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -35,6 +35,7 @@ export function AccountUsageView({ onBack }: { onBack: () => void }) {
     }
   }, []);
   useEffect(() => { const timer = setTimeout(load, 0); return () => clearTimeout(timer); }, [load]);
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   const total = useMemo(() => usage?.providers.reduce((sum, provider) => sum + provider.accounts.length, 0) || 0, [usage]);
   const attention = (usage?.summary.low || 0) + (usage?.summary.exhausted || 0) + (usage?.summary.reconnect || 0);
   const reconnectSuccess = useCallback(() => load(true), [load]);
@@ -46,26 +47,26 @@ export function AccountUsageView({ onBack }: { onBack: () => void }) {
     {loading && !usage && <div className="usage-loading"><i /><i /><i /></div>}
     {error && <div className="usage-error"><strong>Usage unavailable</strong><span>{error}</span><button onClick={() => load(true)}>Try again</button></div>}
     {usage && !usage.available && !error && <div className="usage-error"><strong>CCS usage is unavailable</strong><span>Check that CCS is installed on this Mac, then refresh.</span></div>}
-    <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection provider={provider} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
+    <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection provider={provider} now={now} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
     {usage?.available && <p className="usage-privacy">Quota comes directly from CCS. OAuth credentials never leave your Mac or appear in this view.</p>}
     {reconnecting && <ReconnectSheet provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
   </section>;
 }
 
-function ProviderSection({ provider, onReconnect }: { provider: UsageProvider; onReconnect: (account: UsageAccount) => void }) {
+function ProviderSection({ provider, now, onReconnect }: { provider: UsageProvider; now: number; onReconnect: (account: UsageAccount) => void }) {
   return <section className="usage-provider"><header><div className={`provider-mark ${provider.id}`}>{provider.id === "claude" ? "C" : "O"}</div><div><h2>{provider.label}</h2><span>{provider.accounts.length} connected account{provider.accounts.length === 1 ? "" : "s"}</span></div></header>
     {!provider.available && <p className="provider-warning">This provider did not return usage.</p>}
     {provider.available && provider.accounts.length === 0 && <p className="provider-empty">No CCS account connected.</p>}
-    <div className="usage-account-list">{provider.accounts.map((account) => <AccountCard account={account} onReconnect={() => onReconnect(account)} key={account.id} />)}</div>
+    <div className="usage-account-list">{provider.accounts.map((account) => <AccountCard account={account} now={now} onReconnect={() => onReconnect(account)} key={account.id} />)}</div>
   </section>;
 }
 
-function AccountCard({ account, onReconnect }: { account: UsageAccount; onReconnect: () => void }) {
+function AccountCard({ account, now, onReconnect }: { account: UsageAccount; now: number; onReconnect: () => void }) {
   const extras = account.windows.filter((window) => window.category !== "usage" || window.cadence === "other");
   return <article className={`usage-account ${account.status}`}><header><div><strong>{account.email || account.label}</strong><span>{[account.plan, account.isDefault ? "default" : null, account.paused ? "paused" : null].filter(Boolean).join(" · ") || "CCS account"}</span></div><span className={`usage-status ${account.status}`}>{statusLabel(account.status, account.windows.length)}</span></header>
     {account.message && <p className={`account-message ${account.status}`}>{account.message}</p>}
-    <div className="core-window-grid">{CORE_WINDOWS.map(({ cadence, label }) => <CoreWindow label={label} window={account.windows.find((item) => item.category === "usage" && item.cadence === cadence)} key={cadence} />)}</div>
-    {extras.length > 0 && <div className="extra-windows"><p>Additional limits</p>{extras.map((window) => <ExtraWindow window={window} key={window.id} />)}</div>}
+    <div className="core-window-grid">{CORE_WINDOWS.map(({ cadence, label }) => <CoreWindow label={label} window={account.windows.find((item) => item.category === "usage" && item.cadence === cadence)} now={now} key={cadence} />)}</div>
+    {extras.length > 0 && <div className="extra-windows"><p>Additional limits</p>{extras.map((window) => <ExtraWindow window={window} now={now} key={window.id} />)}</div>}
     {account.status === "reconnect" && <button className="account-reconnect" onClick={onReconnect}>Reconnect account</button>}
   </article>;
 }
@@ -144,32 +145,33 @@ function ReconnectSheet({ provider, account, onClose, onSuccess }: { provider: U
   </section></>;
 }
 
-function CoreWindow({ label, window }: { label: string; window?: UsageWindow }) {
+function CoreWindow({ label, window, now }: { label: string; window?: UsageWindow; now: number }) {
   const tone = window ? percentTone(window.remainingPercent) : "missing";
-  return <div className={`core-window ${tone}`}><div><span>{label}</span>{window ? <strong>{window.remainingPercent}%</strong> : <strong>—</strong>}</div>{window ? <><div className="quota-track"><i style={{ width: `${window.remainingPercent}%` }} /></div><small>{resetText(window.resetAt, window.cadence)}</small></> : <small>Not reported</small>}</div>;
+  return <div className={`core-window ${tone}`}><div><span>{label}</span>{window ? <strong>{window.remainingPercent}%</strong> : <strong>—</strong>}</div>{window ? <><div className="quota-track"><i style={{ width: `${window.remainingPercent}%` }} /></div><ResetTime value={window.resetAt} now={now} /></> : <small>Not reported</small>}</div>;
 }
 
-function ExtraWindow({ window }: { window: UsageWindow }) {
-  return <div className={`extra-window ${percentTone(window.remainingPercent)}`}><div><strong>{displayLabel(window.label)}</strong><span>{window.cadence}</span></div><b>{window.remainingPercent}%</b><small>{resetText(window.resetAt)}</small></div>;
+function ExtraWindow({ window, now }: { window: UsageWindow; now: number }) {
+  return <div className={`extra-window ${percentTone(window.remainingPercent)}`}><div><strong>{displayLabel(window.label)}</strong><span>{window.cadence}</span></div><b>{window.remainingPercent}%</b><ResetTime value={window.resetAt} now={now} /></div>;
+}
+
+function ResetTime({ value, now }: { value: string | null; now: number }) {
+  const reset = value ? new Date(value) : null;
+  if (!reset || !Number.isFinite(reset.getTime())) return <small>Reset unknown</small>;
+  return <small><time dateTime={reset.toISOString()} title={reset.toLocaleString()}>{resetText(value, now)}</time></small>;
 }
 
 function percentTone(percent: number) { return percent <= 0 ? "exhausted" : percent <= 20 ? "low" : "ready"; }
 function statusLabel(status: UsageAccount["status"], windowCount = 1) { return status === "ready" && windowCount === 0 ? "Connected" : ({ ready: "Available", low: "Low", exhausted: "Exhausted", reconnect: "Reconnect", unavailable: "Unavailable" })[status]; }
 function displayLabel(label: string) { return label.replaceAll("-", " ").replace(/\bGpt\b/i, "GPT"); }
 function relativeUpdated(value: string) { const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000)); return seconds < 15 ? "Updated now" : seconds < 60 ? `Updated ${seconds}s ago` : `Updated ${Math.floor(seconds / 60)}m ago`; }
-function resetText(value: string | null, cadence?: Cadence) {
+function resetText(value: string | null, now: number) {
   if (!value) return "Reset unknown";
   const reset = new Date(value);
-  const milliseconds = reset.getTime() - Date.now();
+  const milliseconds = reset.getTime() - now;
   if (!Number.isFinite(milliseconds)) return "Reset unknown";
   if (milliseconds <= 0) return "Reset due";
-  if (cadence === "weekly") {
-    const dayAndTime = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" }).format(reset);
-    return `Resets ${dayAndTime}`;
-  }
   const minutes = Math.ceil(milliseconds / 60_000);
-  if (minutes < 60) return `Resets in ${minutes}m`;
-  const hours = Math.ceil(minutes / 60);
-  if (hours < 48) return `Resets in ${hours}h`;
-  return `Resets in ${Math.ceil(hours / 24)}d`;
+  const days = Math.floor(minutes / 1_440);
+  const hours = Math.floor((minutes % 1_440) / 60);
+  return `Resets in ${String(days).padStart(2, "0")}:${String(hours).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 }
