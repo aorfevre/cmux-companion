@@ -284,10 +284,17 @@ export async function buildApp({
 
   app.get("/api/worktree-dashboard", async (request) => {
     const bootstrap = await loadBootstrap();
-    return worktrees.snapshot({
+    const refreshGitHub = request.query?.github === "1";
+    const dashboard = await worktrees.snapshot({
       workspaces: bootstrap.workspaces,
       refresh: request.query?.refresh === "1",
+      refreshGitHub,
     });
+    if (refreshGitHub && pushService?.inspectPullRequests) {
+      try { await pushService.inspectPullRequests(dashboard); }
+      catch (cause) { app.log.warn({ err: cause }, "manual PR notification inspection failed"); }
+    }
+    return dashboard;
   });
 
   app.post("/api/worktree-dashboard/repositories/:id/worktrees", async (request, reply) => {

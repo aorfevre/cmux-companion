@@ -30,6 +30,7 @@ test("parses Git's NUL-delimited worktree inventory", () => {
 
 test("groups cmux sessions by registered worktree and exposes delivery state", async () => {
   const archived = new Set();
+  let githubCalls = 0;
   const repositoryArchive = { has: (id) => archived.has(id), set: (id, value) => { if (value) archived.add(id); else archived.delete(id); return value; } };
   const git = async (cwd, args) => {
     if (args[0] === "worktree") return "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
@@ -42,13 +43,20 @@ test("groups cmux sessions by registered worktree and exposes delivery state", a
   const repoCatalog = {
     list: async () => [REPO],
     git,
-    execute: async () => ({ stdout: JSON.stringify([{ number: 7, title: "Feature", url: "https://github.test/pr/7", state: "OPEN", headRefName: "feature/mobile", baseRefName: "main", statusCheckRollup: [] }]) }),
+    execute: async () => { githubCalls += 1; return { stdout: JSON.stringify([{ number: 7, title: "Feature", url: "https://github.test/pr/7", state: "OPEN", headRefName: "feature/mobile", baseRefName: "main", statusCheckRollup: [] }]) }; },
   };
   const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path, repositoryArchive });
-  const value = await dashboard.snapshot({ workspaces: [{
+  const workspaces = [{
     id: "11111111-2222-4333-8444-555555555555", title: "mobile agent", current_directory: "/repo/sample-feature/app", preview: "Editing app/page.tsx", last_activity_at: 300,
     status: { effective: "working", signals: { any_agent_running: true } }, terminals: [{ id: "terminal", title: "xcodex" }],
-  }] });
+  }];
+  const localOnly = await dashboard.snapshot({ workspaces });
+  assert.equal(githubCalls, 0, "automatic local refresh must not call GitHub");
+  assert.equal(localOnly.github.status, "not-loaded");
+  assert.equal(localOnly.repositories[0].worktrees.every((item) => item.pullRequest === null), true);
+  const value = await dashboard.snapshot({ workspaces, refreshGitHub: true });
+  assert.equal(githubCalls, 1);
+  assert.equal(value.github.status, "ready");
   assert.equal(value.summary.repositories, 1);
   assert.equal(value.summary.worktrees, 2);
   assert.equal(value.summary.working, 1);
@@ -64,6 +72,7 @@ test("groups cmux sessions by registered worktree and exposes delivery state", a
   assert.equal(value.repositories[0].archived, false);
   assert.equal((await dashboard.setRepositoryArchived(repositoryId, true)).repository.archived, true);
   assert.equal((await dashboard.snapshot()).repositories[0].archived, true);
+  assert.equal(githubCalls, 1, "local refreshes reuse the manual GitHub snapshot indefinitely");
   assert.equal((await dashboard.setRepositoryArchived(repositoryId, false)).repository.archived, false);
 });
 
@@ -128,6 +137,7 @@ test("creates a sibling worktree from a validated branch and base revision", asy
 test("coalesces catalog entries that belong to one linked-worktree repository", async () => {
   const linked = { ...REPO, id: "linked-repo-id", name: "sample-feature", path: "/repo/sample-feature", branch: "feature/mobile" };
   const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
+  let githubCalls = 0;
   const repoCatalog = {
     list: async () => [REPO, linked],
     git: async (cwd, args) => {
@@ -138,14 +148,15 @@ test("coalesces catalog entries that belong to one linked-worktree repository", 
       if (args[0] === "log") return "100\n";
       throw new Error("unexpected git call");
     },
-    execute: async () => ({ stdout: "[]" }),
+    execute: async () => { githubCalls += 1; return { stdout: "[]" }; },
   };
   const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
-  const value = await dashboard.snapshot();
+  const value = await dashboard.snapshot({ refreshGitHub: true });
   assert.equal(value.repositories.length, 1);
   assert.equal(value.repositories[0].name, "sample");
   assert.equal(value.repositories[0].worktrees.length, 2);
   assert.equal(value.repositories[0].worktrees.filter((item) => item.isPrimary).length, 1);
+  assert.equal(githubCalls, 1, "linked worktrees share one GitHub request");
 });
 
 test("removes only clean, idle, non-primary worktrees while preserving their branch", async () => {

@@ -10,7 +10,7 @@ type WorktreeSession = { id: string; title: string; preview: string; directory?:
 type PullRequest = { number: number; title: string; url: string; isDraft: boolean; reviewDecision: string; mergeState: string; checks: { passed: number; failed: number; pending: number; total: number } };
 export type DashboardWorktree = { id: string; repoId: string; path: string; name: string; branch: string; head?: string | null; isPrimary: boolean; managedRelease?: boolean; detached: boolean; locked?: string | null; prunable?: string | null; ahead: number; behind: number; changedFiles: number; updaterArtifacts?: number; dirty: boolean; lastActivity: number; pullRequest?: PullRequest | null; sessions: WorktreeSession[]; state: DeliveryState };
 type DashboardRepository = { id: string; name: string; root: string; path: string; archived?: boolean; pullRequestsAvailable: boolean; summary: { worktrees: number; sessions: number; needsYou: number; working: number; dirty: number }; worktrees: DashboardWorktree[] };
-type Dashboard = { generatedAt: string; summary: { repositories: number; worktrees: number; sessions: number; needsYou: number; working: number; dirty: number; pullRequests: number }; repositories: DashboardRepository[]; orphanSessions: WorktreeSession[] };
+type Dashboard = { generatedAt: string; github?: { checkedAt: string | null; status: "not-loaded" | "ready" | "partial" }; summary: { repositories: number; worktrees: number; sessions: number; needsYou: number; working: number; dirty: number; pullRequests: number }; repositories: DashboardRepository[]; orphanSessions: WorktreeSession[] };
 type BulkRemovalEntry = { id: string; branch: string; path: string; removed: boolean; error: string };
 type BulkRemoval = { requested: number; removed: number; failed: number; results: BulkRemovalEntry[] };
 type ProjectKey = "karven" | "rekord";
@@ -18,6 +18,7 @@ type DashboardFilter = "active" | "inactive" | "archived" | "draft-goals" | "lau
 
 function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
 function relativePlanTime(timestamp?: string) { const value = timestamp ? Date.parse(timestamp) : NaN; return relativeTime(Number.isFinite(value) ? Math.round(value / 1000) : undefined); }
+function githubCheckedTime(timestamp: string) { const value = relativePlanTime(timestamp); return value === "now" ? "just now" : `${value} ago`; }
 function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
 function projectFor(rootOrPath: string): ProjectKey | null { const value = rootOrPath.toLowerCase(); if (value === "karven" || /\/karven(?:\/|$)/.test(value)) return "karven"; if (value === "rekord" || /\/rekord(?:\/|$)/.test(value)) return "rekord"; return null; }
 
@@ -42,8 +43,9 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice }:
   const [createTarget, setCreateTarget] = useState<DashboardRepository | null>(null);
   const [planTarget, setPlanTarget] = useState<{ repository: DashboardRepository; planId?: string } | null>(null);
   const [issuePlanTarget, setIssuePlanTarget] = useState<DashboardRepository | null>(null);
-  const load = useCallback(async (refresh = false) => {
-    try { setDashboard(await request<Dashboard>(`/api/worktree-dashboard${refresh ? "?refresh=1" : ""}`)); setError(""); }
+  const load = useCallback(async (refresh = false, refreshGitHub = false) => {
+    const query = [refresh && "refresh=1", refreshGitHub && "github=1"].filter(Boolean).join("&");
+    try { setDashboard(await request<Dashboard>(`/api/worktree-dashboard${query ? `?${query}` : ""}`)); setError(""); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Worktree dashboard unavailable"); }
   }, []);
   const loadGoalPlans = useCallback(async () => {
@@ -64,6 +66,12 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice }:
     setBusy(`session:${session.id}`);
     try { await request(`/api/workspaces/${session.id}/close`, { method: "POST", body: "{}" }); await load(true); onNotice(`Closed ${session.title}`); }
     catch (cause) { onNotice(cause instanceof Error ? cause.message : "Could not close session"); }
+    finally { setBusy(""); }
+  }
+
+  async function refreshGitHub() {
+    setBusy("github");
+    try { await Promise.all([load(true, true), loadGoalPlans()]); }
     finally { setBusy(""); }
   }
 
@@ -154,7 +162,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice }:
     <section className="content-section worktree-content">
       <div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={project === "karven"} className={project === "karven" ? "active" : ""} onClick={() => setProject("karven")}><span>K</span>Karven</button><button role="tab" aria-selected={project === "rekord"} className={project === "rekord" ? "active" : ""} onClick={() => setProject("rekord")}><span>R</span>Rekord</button></div>
       <div className="worktree-filter-tabs" role="tablist" aria-label="Project status">{filterTabs.map((filter) => <button role="tab" aria-selected={dashboardFilter === filter.id} className={dashboardFilter === filter.id ? "active" : ""} onClick={() => setDashboardFilter(filter.id)} key={filter.id}>{filter.label} <b>{filter.count}</b></button>)}</div>
-      <div className="section-heading"><div><h2>{project === "karven" ? "Karven" : "Rekord"} {isGoalView ? dashboardFilter === "draft-goals" ? "draft goals" : "launched goals" : "projects"}</h2>{dashboard && <p>{isGoalView ? `${visiblePlans.length} shown · ${projectPlans.length} total goals` : `${visibleRepositories.length} shown · ${projectRepositories.length} total`}</p>}</div><button className="text-button" onClick={() => { void load(true); void loadGoalPlans(); }}>Refresh</button></div>
+      <div className="section-heading"><div><h2>{project === "karven" ? "Karven" : "Rekord"} {isGoalView ? dashboardFilter === "draft-goals" ? "draft goals" : "launched goals" : "projects"}</h2>{dashboard && <p>{isGoalView ? `${visiblePlans.length} shown · ${projectPlans.length} total goals` : `${visibleRepositories.length} shown · ${projectRepositories.length} total`} · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</p>}</div><button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>
       {error && <div className="apps-warning">{error}<button onClick={() => load(true)}>Retry</button></div>}
       {isGoalView && goalError && <div className="apps-warning">{goalError}<button onClick={loadGoalPlans}>Retry</button></div>}
       {!dashboard && !error && <WorktreeSkeleton />}

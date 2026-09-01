@@ -219,27 +219,26 @@ export class PushService {
     ]);
     const workspaces = workspacePayload.workspaces || [];
     await this.previewManager?.syncWorkspaces(workspaces, repos);
-    if (!this.repoCatalog) return;
-    const activeRepoIds = new Set(workspaces.map((workspace) => {
-      const directory = workspace.current_directory || workspace.terminals?.[0]?.current_directory;
-      return repos.find((repo) => directory && (directory === repo.path || directory.startsWith(`${repo.path}/`)))?.id;
-    }).filter(Boolean));
-    for (const repo of repos.filter((item) => activeRepoIds.has(item.id))) {
-      const value = await this.repoCatalog.pullRequest(repo.id, { refresh: true }).catch(() => null);
-      const pullRequest = value?.pullRequest;
-      const fingerprint = pullRequest ? JSON.stringify([pullRequest.number, pullRequest.reviewDecision, pullRequest.checks, pullRequest.mergeState]) : "none";
-      const previous = this.prFingerprints.get(repo.id);
-      this.prFingerprints.set(repo.id, fingerprint);
-      if (!previous || previous === fingerprint || !pullRequest) continue;
-      const workspace = workspaces.find((item) => {
-        const directory = item.current_directory || item.terminals?.[0]?.current_directory;
-        return directory && (directory === repo.path || directory.startsWith(`${repo.path}/`));
-      });
-      await this.send({
-        title: pullRequest.checks.failed ? `PR #${pullRequest.number} checks failed` : `PR #${pullRequest.number} updated`,
-        body: pullRequestSummary(pullRequest), kind: "pullRequest", workspaceId: workspace?.id || null,
-        repoId: repo.id, tab: "changes", tag: `cmux-pr-${repo.id}-${fingerprint}`,
-      });
+  }
+
+  // GitHub state arrives only from an explicit dashboard refresh. Reusing that
+  // snapshot preserves PR notifications without a second background request.
+  async inspectPullRequests(dashboard) {
+    for (const repository of dashboard?.repositories || []) {
+      for (const worktree of repository.worktrees || []) {
+        const pullRequest = worktree.pullRequest;
+        const key = `${repository.id}:${worktree.branch}`;
+        const fingerprint = pullRequest ? JSON.stringify([pullRequest.number, pullRequest.reviewDecision, pullRequest.checks, pullRequest.mergeState]) : "none";
+        const previous = this.prFingerprints.get(key);
+        this.prFingerprints.set(key, fingerprint);
+        if (!previous || previous === fingerprint || !pullRequest) continue;
+        const workspace = worktree.sessions?.[0];
+        await this.send({
+          title: pullRequest.checks.failed ? `PR #${pullRequest.number} checks failed` : `PR #${pullRequest.number} updated`,
+          body: pullRequestSummary(pullRequest), kind: "pullRequest", workspaceId: workspace?.id || null,
+          repoId: repository.id, tab: "changes", tag: `cmux-pr-${repository.id}-${fingerprint}`,
+        });
+      }
     }
   }
 
