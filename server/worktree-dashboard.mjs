@@ -73,7 +73,7 @@ export class WorktreeDashboard {
     const inspected = await Promise.all(repos.map((repo) => this.inspectRepository(repo, { refreshGitHub, targets })));
     const repositories = dedupeRepositories(inspected.filter(Boolean));
     if (refreshGitHub) this.githubCheckedAt = new Date().toISOString();
-    const worktreeIndex = repositories.flatMap((repo) => repo.worktrees)
+    const worktreeIndex = repositories.flatMap((repo) => [...repo.worktrees, ...repo.releases])
       .sort((left, right) => right.path.length - left.path.length);
     const assigned = new Set();
 
@@ -87,13 +87,15 @@ export class WorktreeDashboard {
 
     for (const repository of repositories) {
       for (const worktree of repository.worktrees) finalizeWorktree(worktree);
-      repository.summary = summarizeWorktrees(repository.worktrees);
+      for (const release of repository.releases) finalizeWorktree(release);
+      repository.summary = { ...summarizeWorktrees(repository.worktrees), releases: repository.releases.length };
       repository.archived = this.repositoryArchive.has(repository.id);
     }
 
     const orphanSessions = (workspaces || []).filter((workspace) => !assigned.has(workspace.id)).map(normalizeSession);
     const allWorktrees = repositories.flatMap((repository) => repository.worktrees);
-    const allSessions = [...allWorktrees.flatMap((worktree) => worktree.sessions), ...orphanSessions];
+    const allReleases = repositories.flatMap((repository) => repository.releases);
+    const allSessions = [...allWorktrees.flatMap((worktree) => worktree.sessions), ...allReleases.flatMap((release) => release.sessions), ...orphanSessions];
     const value = {
       generatedAt: new Date().toISOString(),
       github: {
@@ -103,6 +105,7 @@ export class WorktreeDashboard {
       summary: {
         repositories: repositories.length,
         worktrees: allWorktrees.length,
+        releases: allReleases.length,
         sessions: allSessions.length,
         needsYou: allSessions.filter((session) => session.state.tone === "attention").length,
         working: allSessions.filter((session) => session.state.tone === "working").length,
@@ -135,6 +138,10 @@ export class WorktreeDashboard {
     ]);
     const valid = worktrees.filter(Boolean);
     for (const worktree of valid) worktree.pullRequest = pullRequests.byBranch.get(worktree.branch) || null;
+    const releases = valid.filter((worktree) => worktree.managedRelease)
+      .sort((left, right) => right.lastActivity - left.lastActivity);
+    const developerWorktrees = valid.filter((worktree) => !worktree.managedRelease)
+      .sort((left, right) => Number(right.isPrimary) - Number(left.isPrimary) || right.lastActivity - left.lastActivity);
     return {
       id: repositoryId,
       name: basename(primaryPath),
@@ -142,7 +149,8 @@ export class WorktreeDashboard {
       path: primaryPath,
       commonDir,
       pullRequestsAvailable: pullRequests.available,
-      worktrees: valid.sort((left, right) => Number(right.isPrimary) - Number(left.isPrimary) || right.lastActivity - left.lastActivity),
+      worktrees: developerWorktrees,
+      releases,
     };
   }
 
@@ -177,6 +185,7 @@ export class WorktreeDashboard {
         behind: status.behind,
         changedFiles,
         updaterArtifacts,
+        shortSha: managedRelease ? basename(path).slice(0, 7) : undefined,
         dirty: changedFiles > 0,
         lastActivity: Number(lastActivityOutput.trim()) || 0,
         pullRequest: null,
@@ -231,7 +240,7 @@ export class WorktreeDashboard {
   async remove(id, { workspaces = [], discardChanges = false } = {}) {
     if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid worktree");
     const dashboard = await this.snapshot({ workspaces, refresh: true });
-    const worktree = dashboard.repositories.flatMap((repository) => repository.worktrees).find((item) => item.id === id);
+    const worktree = dashboard.repositories.flatMap((repository) => [...repository.worktrees, ...repository.releases]).find((item) => item.id === id);
     const target = this.targets.get(id);
     if (!worktree || !target) throw new TypeError("Unknown worktree");
     assertRemovable(worktree, { discardChanges: discardChanges === true });
@@ -480,14 +489,24 @@ function dedupeRepositories(repositories) {
   for (const repository of repositories) {
     const current = grouped.get(repository.id);
     if (!current) {
-      grouped.set(repository.id, { ...repository, worktrees: [...repository.worktrees] });
+      grouped.set(repository.id, { ...repository, worktrees: [...repository.worktrees], releases: [...repository.releases] });
       continue;
     }
-    const seen = new Set(current.worktrees.map((worktree) => worktree.path));
-    current.worktrees.push(...repository.worktrees.filter((worktree) => !seen.has(worktree.path)));
+    appendUniqueByPath(current.worktrees, repository.worktrees);
+    appendUniqueByPath(current.releases, repository.releases);
+    current.releases.sort((left, right) => right.lastActivity - left.lastActivity);
     current.pullRequestsAvailable ||= repository.pullRequestsAvailable;
   }
   return [...grouped.values()].filter((repository) => repository.worktrees.length > 0);
+}
+
+function appendUniqueByPath(target, entries) {
+  const seen = new Set(target.map((entry) => entry.path));
+  for (const entry of entries) {
+    if (seen.has(entry.path)) continue;
+    seen.add(entry.path);
+    target.push(entry);
+  }
 }
 
 function isInside(root, path) {

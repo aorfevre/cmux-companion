@@ -323,16 +323,19 @@ describe("contextual mobile features", () => {
     assert.ok(within(goals).getByRole("button", { name: "Resume Ship prompt analytics" }));
   });
 
-  test("offers bulk cleanup of clean worktrees and a named second confirmation for a detached release checkout", async () => {
+  test("collapses managed releases while preserving bulk cleanup and non-managed detached discard", async () => {
     const worktree = (over: Record<string, unknown>) => ({ repoId: "repo-1", head: "abc", locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, detached: false, isPrimary: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" }, ...over });
     const emptyRepo = { id: "repo-2", name: "solo", root: "karven", path: "/repo/solo", pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [worktree({ id: "soloprimary1234567", path: "/repo/solo", name: "solo", branch: "main", isPrimary: true })] };
-    const repo = { id: "repo-1", name: "companion", root: "karven", path: "/repo/companion", pullRequestsAvailable: false, summary: { worktrees: 4, sessions: 0, needsYou: 0, working: 0, dirty: 1 }, worktrees: [
+    const repo = { id: "repo-1", name: "companion", root: "karven", path: "/repo/companion", pullRequestsAvailable: false, summary: { worktrees: 4, releases: 2, sessions: 0, needsYou: 0, working: 0, dirty: 1 }, worktrees: [
       worktree({ id: "primaryworktree123", path: "/repo/companion", name: "companion", branch: "main", isPrimary: true }),
       worktree({ id: "cleanworktree12345", path: "/repo/companion-clean", name: "companion-clean", branch: "chore/clean" }),
       worktree({ id: "lockedworktree1234", path: "/repo/companion-locked", name: "companion-locked", branch: "chore/locked", locked: "pinned" }),
       worktree({ id: "releaseworktree123", path: "/releases/abc123", name: "abc123", branch: "HEAD", detached: true, changedFiles: 2, dirty: true }),
+    ], releases: [
+      worktree({ id: "managedrelease1234", path: "/Users/test/.local/share/cmux-companion/releases/abcdef0123456789abcdef0123456789abcdef01", name: "abcdef0123456789abcdef0123456789abcdef01", branch: "HEAD", shortSha: "abcdef0", detached: true, managedRelease: true, locked: "release pinned", lastActivity: Math.round(Date.now() / 1000) - 60 }),
+      worktree({ id: "managedrelease5678", path: "/Users/test/.local/share/cmux-companion/releases/1234567890abcdef1234567890abcdef12345678", name: "1234567890abcdef1234567890abcdef12345678", branch: "HEAD", shortSha: "1234567", detached: true, managedRelease: true }),
     ] };
-    const dashboard = { generatedAt: "2026-08-31", summary: { repositories: 2, worktrees: 5, sessions: 0, needsYou: 0, working: 0, dirty: 1, pullRequests: 0 }, orphanSessions: [], repositories: [repo, emptyRepo] };
+    const dashboard = { generatedAt: "2026-08-31", summary: { repositories: 2, worktrees: 5, releases: 2, sessions: 0, needsYou: 0, working: 0, dirty: 1, pullRequests: 0 }, orphanSessions: [], repositories: [repo, emptyRepo] };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/repositories/repo-1/remove-clean")) return new Response(JSON.stringify({ repository: { id: "repo-1", name: "companion" }, requested: 1, removed: 0, failed: 1, branchPreserved: true, results: [{ id: "cleanworktree12345", branch: "chore/clean", path: "/repo/companion-clean", removed: false, error: "Git could not remove this worktree: fatal: locked" }] }), { status: 200 });
@@ -352,6 +355,19 @@ describe("contextual mobile features", () => {
     assert.equal(soloBulk.textContent, "Remove clean (0)");
     assert.equal((soloBulk as HTMLButtonElement).disabled, true);
 
+    assert.ok(screen.getByText("4 worktrees · 0 sessions · 2 releases"));
+    assert.ok(screen.getByText("2", { selector: ".worktree-hero strong" }));
+    const releases = screen.getByText("Deployment releases (2)").closest("details");
+    assert.ok(releases);
+    assert.equal((releases as HTMLDetailsElement).open, false);
+    await userEvent.click(within(releases).getByText("Deployment releases (2)"));
+    assert.ok(within(releases).getByText("The local updater owns these checkouts; Companion will not remove them."));
+    assert.ok(within(releases).getByText("abcdef0"));
+    assert.ok(within(releases).getByText("~/.local/share/cmux-companion/releases/abcdef0123456789abcdef0123456789abcdef01"));
+    assert.ok(within(releases).getByText("Locked"));
+    assert.equal(within(releases).queryByRole("button"), null);
+    assert.equal(within(releases).queryByText("(detached)"), null);
+
     await userEvent.click(bulk);
     const sheet = screen.getByRole("dialog", { name: "Remove clean worktrees" });
     assert.ok(within(sheet).getByText("Remove 1 clean worktree?"));
@@ -362,7 +378,7 @@ describe("contextual mobile features", () => {
     await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/repositories/repo-1/remove-clean") && init?.method === "POST"), true));
     await waitFor(() => assert.equal(notice.mock.calls.some(([message]) => String(message).includes("Removed 0 of 1 worktrees") && String(message).includes("chore/clean (Git could not remove this worktree: fatal: locked)")), true));
 
-    // The detached release checkout is dirty, so it needs a second confirmation
+    // A non-managed detached checkout is dirty, so it needs a second confirmation
     // that names what is destroyed before the client may pass discardChanges.
     const release = screen.getByText("/releases/abc123").closest("article");
     assert.ok(release);
