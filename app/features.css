@@ -138,6 +138,9 @@
 .worktree-planner-sheet .planner-progress{display:flex;flex-direction:column;gap:3px;margin:8px 0 0;border-top:1px solid #2a3540;padding:8px 0 0;list-style:none}
 .worktree-planner-sheet .planner-progress li{color:#8d97a2;font:8px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .worktree-planner-sheet .planner-progress li:last-child{color:#cbd8e6}
+.worktree-planner-sheet .planner-background-note{margin:0 2px 11px;color:var(--muted);font-size:8px;line-height:1.5;white-space:normal}
+.worktree-planner-sheet .planner-status.running{background:rgba(159,196,255,.14);color:#9fc4ff}
+.worktree-planner-sheet .planner-stalled .planner-background-note{color:#ffb27a}
 .worktree-planner-sheet .planner-context{margin:0 2px 11px;border:1px solid #252d34;border-radius:11px;background:#171c21;padding:9px}
 .worktree-planner-sheet .planner-context>summary{font-size:9px}
 .worktree-planner-sheet .planner-context .worktree-attachments{margin:8px 0 0}
