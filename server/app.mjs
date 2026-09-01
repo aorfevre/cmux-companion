@@ -418,15 +418,25 @@ export async function buildApp({
   });
 
   app.post("/api/github-topic-plans/analyze", async (request) => (
-    issuePlanner.analyze({ repositoryId: request.body?.repositoryId })
+    reportRound(request.body?.traceId, (onEvent) => issuePlanner.analyze({
+      repositoryId: request.body?.repositoryId,
+      ...(onEvent ? { onEvent } : {}),
+    }))
   ));
 
   app.post("/api/github-topic-plans/prepare", { bodyLimit: 64 * 1024 }, async (request) => (
-    issuePlanner.prepare({ analysisId: request.body?.analysisId, topics: request.body?.topics })
+    reportRound(request.body?.traceId, (onEvent) => issuePlanner.prepare({
+      analysisId: request.body?.analysisId,
+      topics: request.body?.topics,
+      ...(onEvent ? { onEvent } : {}),
+    }))
   ));
 
   app.post("/api/github-topic-plans/launch", async (request) => {
-    const result = await issuePlanner.launch({ planIds: request.body?.planIds });
+    const result = await reportRound(request.body?.traceId, (onEvent) => issuePlanner.launch({
+      planIds: request.body?.planIds,
+      ...(onEvent ? { onEvent } : {}),
+    }));
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return result;

@@ -24,13 +24,18 @@ export class GitHubIssuePlanner {
     this.analyses = new Map();
   }
 
-  async analyze({ repositoryId }) {
+  async analyze({ repositoryId, onEvent = null }) {
+    emit(onEvent, { k: "phase", t: "Opening repository…" });
     const repository = await this.#repository(repositoryId);
+    emit(onEvent, { k: "phase", t: "Fetching repository details and open issues…" });
     const snapshot = await this.#load(repository);
+    emit(onEvent, { k: "phase", t: `Found ${snapshot.issues.length} open issue${snapshot.issues.length === 1 ? "" : "s"}` });
     if (!snapshot.issues.length) {
       return { analysisId: null, repository: snapshot.repository, issues: [], topics: [], analyzedAt: new Date(this.now()).toISOString() };
     }
-    const reply = await this.#model(repository, snapshot);
+    emit(onEvent, { k: "phase", t: `Grouping ${snapshot.issues.length} issues by outcome and implementation overlap…` });
+    const reply = await this.#model(repository, snapshot, onEvent);
+    emit(onEvent, { k: "phase", t: "Finalizing delivery topics…" });
     const topics = normalizeTopics(reply?.topics, snapshot.issues);
     const analysis = {
       analysisId: randomUUID(),
@@ -50,16 +55,19 @@ export class GitHubIssuePlanner {
     return publicAnalysis(analysis);
   }
 
-  async prepare({ analysisId, topics }) {
+  async prepare({ analysisId, topics, onEvent = null }) {
     const analysis = this.#analysis(analysisId);
     const selections = normalizeSelections(topics, analysis.topics);
+    emit(onEvent, { k: "phase", t: `Checking ${selections.length} selected topic${selections.length === 1 ? "" : "s"}…` });
     const repository = await this.#repository(analysis.repositoryId);
     const refreshed = await this.#load(repository);
     assertFresh(analysis.issues, refreshed.issues, selections);
     await this.#assertUnclaimed(analysis.repositoryId, selections);
 
-    const results = await Promise.all(selections.map(async (selection) => {
+    let completed = 0;
+    const results = await Promise.all(selections.map(async (selection, index) => {
       const topic = analysis.topics.find((item) => item.id === selection.id);
+      emit(onEvent, { k: "phase", t: `Planning topic ${index + 1} of ${selections.length}: ${topic.title}` });
       try {
         const plan = await this.planner.start({
           repositoryId: analysis.repositoryId,
@@ -67,17 +75,21 @@ export class GitHubIssuePlanner {
           issueNumbers: topic.issueNumbers,
           issueUrls: topic.issueNumbers.map((number) => analysis.issues.find((issue) => issue.number === number)?.url).filter(Boolean),
           deliveryPolicy: "combined",
+          ...(onEvent ? { onEvent: (event) => emit(onEvent, { ...event, t: `${topic.title} · ${event?.t || "Working…"}` }) } : {}),
         });
         return { topicId: topic.id, title: topic.title, issueNumbers: topic.issueNumbers, status: "planned", plan };
       } catch (cause) {
         this.log?.warn?.({ err: cause, topicId: topic.id }, "GitHub topic plan failed");
         return { topicId: topic.id, title: topic.title, issueNumbers: topic.issueNumbers, status: "failed", error: cause?.message || "Could not plan this topic" };
+      } finally {
+        completed += 1;
+        emit(onEvent, { k: "phase", t: `Finished ${completed} of ${selections.length} topic plan${selections.length === 1 ? "" : "s"}` });
       }
     }));
     return { analysisId: analysis.analysisId, results };
   }
 
-  async launch({ planIds }) {
+  async launch({ planIds, onEvent = null }) {
     const ids = [...new Set((Array.isArray(planIds) ? planIds : []).map((value) => String(value || "")).filter(Boolean))];
     if (!ids.length) throw new TypeError("Select at least one topic plan to launch");
     if (ids.length > MAX_TOPICS) throw new TypeError(`Launch at most ${MAX_TOPICS} topic plans at once`);
@@ -85,7 +97,8 @@ export class GitHubIssuePlanner {
     // Git worktree creation touches shared repository metadata. Start topics in
     // a deterministic order; once their sessions exist, the agents run in
     // parallel as intended.
-    for (const planId of ids) {
+    for (const [index, planId] of ids.entries()) {
+      emit(onEvent, { k: "phase", t: `Creating worktrees for topic ${index + 1} of ${ids.length}…` });
       try {
         results.push({ planId, status: "launched", result: await this.planner.launch(planId) });
       } catch (cause) {
@@ -130,7 +143,7 @@ export class GitHubIssuePlanner {
     }
   }
 
-  async #model(repository, snapshot) {
+  async #model(repository, snapshot, onEvent = null) {
     const args = [
       "claude", "--print", "--output-format", "json",
       ...ISOLATION,
@@ -146,7 +159,10 @@ export class GitHubIssuePlanner {
         return reply;
       } catch (cause) {
         const unusable = cause instanceof TypeError && cause.message === "The issue analyzer returned an unusable answer. Try again";
-        if (unusable && attempt === 0) continue;
+        if (unusable && attempt === 0) {
+          emit(onEvent, { k: "phase", t: "The first grouping was incomplete; analyzing the issues again…" });
+          continue;
+        }
         if (unusable) throw cause;
         const detail = concise(cause);
         throw new TypeError(detail ? `The issue analyzer could not run: ${detail}` : "The issue analyzer could not run. Try again");
@@ -350,6 +366,12 @@ function concise(cause) {
 
 function clean(value, max) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+// Progress is observational: a browser disconnect or a broken listener must
+// never interrupt issue analysis, planning, or worktree creation.
+function emit(onEvent, event) {
+  try { onEvent?.(event); } catch { /* the operation outlives its audience */ }
 }
 
 function publicAnalysis(analysis) {

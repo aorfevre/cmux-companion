@@ -18,6 +18,7 @@ function harness({ refreshedIssues = issues, existingPlans = [] } = {}) {
     list: async () => ({ plans: existingPlans }),
     start: async (input) => {
       starts.push(input);
+      input.onEvent?.({ k: "tool", t: "Read app/editor.tsx" });
       return { planId: `plan-${starts.length}`, status: "ready", questions: [], tasks: [{ id: "t1", title: "Task", branch: `feature/task-${starts.length}`, prompt: "Do it", agent: "codex", agentReason: "" }] };
     },
     launch: async (planId) => { launches.push(planId); return { planId, launched: 2, deliveryMode: "combined", results: [{}, {}] }; },
@@ -68,6 +69,30 @@ test("analyzes, clarifies, and creates one durable goal plan per selected topic"
   assert.equal(modelCall[1].includes("--allowed-tools"), false);
   assert.match(modelCall[1][modelCall[1].indexOf("--disallowed-tools") + 1], /Read.*Bash.*Skill.*WebSearch/);
   assert.equal(modelCall[1].at(-2), "--");
+});
+
+test("reports real analysis and topic-planning milestones without exposing issue bodies", async () => {
+  const { service } = harness();
+  const analysisEvents = [];
+  const analysis = await service.analyze({ repositoryId: REPOSITORY_ID, onEvent: (event) => analysisEvents.push(event) });
+  assert.deepEqual(analysisEvents.map((event) => event.t), [
+    "Opening repository…",
+    "Fetching repository details and open issues…",
+    "Found 3 open issues",
+    "Grouping 3 issues by outcome and implementation overlap…",
+    "Finalizing delivery topics…",
+  ]);
+  assert.equal(analysisEvents.some((event) => event.t.includes("Focus the editor after playback")), false);
+
+  const prepareEvents = [];
+  await service.prepare({
+    analysisId: analysis.analysisId,
+    topics: [{ id: "topic-1" }],
+    onEvent: (event) => prepareEvents.push(event),
+  });
+  assert.ok(prepareEvents.some((event) => event.t === "Planning topic 1 of 1: Editor reliability"));
+  assert.ok(prepareEvents.some((event) => event.t === "Editor reliability · Read app/editor.tsx"));
+  assert.equal(prepareEvents.at(-1).t, "Finished 1 of 1 topic plan");
 });
 
 test("refuses stale issues and issues already claimed by a saved goal", async () => {
