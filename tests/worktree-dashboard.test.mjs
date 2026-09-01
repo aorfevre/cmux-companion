@@ -136,7 +136,7 @@ test("creates a sibling worktree from a validated branch and base revision", asy
 
 test("coalesces catalog entries that belong to one linked-worktree repository", async () => {
   const linked = { ...REPO, id: "linked-repo-id", name: "sample-feature", path: "/repo/sample-feature", branch: "feature/mobile" };
-  const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
+  const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0worktree /releases/1111111old\0HEAD cccccccc\0detached\0\0worktree /releases/2222222new\0HEAD dddddddd\0detached\0\0";
   let githubCalls = 0;
   const repoCatalog = {
     list: async () => [REPO, linked],
@@ -144,17 +144,22 @@ test("coalesces catalog entries that belong to one linked-worktree repository", 
       if (args[0] === "worktree") return inventory;
       if (args[1] === "--git-common-dir") return "/repo/sample/.git\n";
       if (args[1] === "--show-toplevel") return `${cwd}\n`;
-      if (args[0] === "status") return `# branch.head ${cwd.endsWith("feature") ? "feature/mobile" : "main"}\n`;
-      if (args[0] === "log") return "100\n";
+      if (args[0] === "status") return `# branch.head ${cwd.startsWith("/releases/") ? "(detached)" : cwd.endsWith("feature") ? "feature/mobile" : "main"}\n`;
+      if (args[0] === "log") return cwd.endsWith("2222222new") ? "300\n" : cwd.endsWith("1111111old") ? "200\n" : "100\n";
       throw new Error("unexpected git call");
     },
     execute: async () => { githubCalls += 1; return { stdout: "[]" }; },
   };
-  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path, managedReleaseRoots: ["/releases"] });
   const value = await dashboard.snapshot({ refreshGitHub: true });
   assert.equal(value.repositories.length, 1);
   assert.equal(value.repositories[0].name, "sample");
   assert.equal(value.repositories[0].worktrees.length, 2);
+  assert.equal(value.repositories[0].releases.length, 2, "release paths are deduplicated alongside developer worktrees");
+  assert.deepEqual(value.repositories[0].releases.map((item) => item.shortSha), ["2222222", "1111111"], "releases are newest first and carry compact identities");
+  assert.equal(value.repositories[0].summary.releases, 2);
+  assert.equal(value.summary.releases, 2);
+  assert.equal(value.summary.worktrees, 2);
   assert.equal(value.repositories[0].worktrees.filter((item) => item.isPrimary).length, 1);
   assert.equal(githubCalls, 1, "linked worktrees share one GitHub request");
 });
@@ -237,14 +242,29 @@ test("ignores the updater's own artifacts when counting changes in a detached re
 });
 
 test("protects managed deployment releases from individual and bulk removal", async () => {
-  const { repoCatalog } = releaseRepoCatalog({ status: "# branch.head (detached)\n? release-manifest.json\n" });
+  const { repoCatalog } = releaseRepoCatalog({ status: "# branch.head (detached)\n? release-manifest.json\n1 .M N... server/index.mjs\n" });
   const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path, managedReleaseRoots: ["/releases"] });
-  const snapshot = await dashboard.snapshot();
+  const workspaces = [{ id: "11111111-2222-4333-8444-555555555555", title: "release process", current_directory: "/releases/abc/bin", last_activity_at: 5, terminals: [] }];
+  const snapshot = await dashboard.snapshot({ workspaces });
   const repository = snapshot.repositories[0];
-  const release = repository.worktrees.find((item) => !item.isPrimary);
+  const release = repository.releases[0];
   assert.equal(isManagedReleasePath("/releases/abc", ["/releases"]), true);
   assert.equal(isManagedReleasePath("/releases-other/abc", ["/releases"]), false);
   assert.equal(release.managedRelease, true);
+  assert.equal(release.shortSha, "abc");
+  assert.equal(release.changedFiles, 1);
+  assert.equal(release.updaterArtifacts, 1);
+  assert.equal(release.sessions.length, 1, "release sessions are attached instead of orphaned");
+  assert.equal(release.lastActivity, 5, "release finalization includes session activity");
+  assert.equal(repository.worktrees.length, 1);
+  assert.deepEqual(repository.summary, { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0, releases: 1 });
+  assert.equal(snapshot.summary.worktrees, 1);
+  assert.equal(snapshot.summary.releases, 1);
+  assert.equal(snapshot.summary.dirty, 0);
+  assert.equal(snapshot.summary.pullRequests, 0);
+  assert.equal(snapshot.summary.sessions, 1);
+  assert.equal(snapshot.orphanSessions.length, 0);
+  assert.equal((await dashboard.resolve(release.id)).path, "/releases/abc");
   await assert.rejects(() => dashboard.remove(release.id), /Managed deployment releases cannot be removed/);
   await assert.rejects(() => dashboard.remove(release.id, { discardChanges: true }), /Managed deployment releases cannot be removed/);
   const bulk = await dashboard.removeCleanWorktrees(repository.id);
