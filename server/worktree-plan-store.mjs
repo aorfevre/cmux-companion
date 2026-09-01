@@ -312,8 +312,13 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     const message = String(error || "Combined delivery failed").slice(0, 2_000);
     this.#transaction(() => {
+      // A running merge is demoted with the plan: leaving it running would
+      // route the merge agent's Stop to a settle that refuses it, while the
+      // user reads the plan as blocked.
       this.db.prepare(`
-        UPDATE plans SET delivery_status = 'blocked', delivery_error = ?, updated_at = ? WHERE plan_id = ?
+        UPDATE plans SET delivery_status = 'blocked', delivery_error = ?,
+          merge_status = CASE merge_status WHEN 'running' THEN 'blocked' ELSE merge_status END,
+          updated_at = ? WHERE plan_id = ?
       `).run(message, at, String(planId));
       this.#insertEvent(String(planId), null, "delivery_failed", { error: message }, at);
     });

@@ -280,3 +280,90 @@ test("reuses one goal group as the counter advances", async (t) => {
   ]);
   assert.equal(store.get("plan-12345678").cmuxGroupId, "group-1");
 });
+
+const tick = (ms = 20) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+// The lock is per operation, not per plan. A shared lock would hand the settle
+// caller the assemble promise, so the pull request would never be read.
+test("a settle during an in-flight assemble still checks for the pull request", async (t) => {
+  const { integrator, calls } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  await integrator.assemble("plan-12345678");
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const git = integrator.repoCatalog.git;
+  integrator.repoCatalog.git = async (cwd, args) => { await held; return git(cwd, args); };
+  const assembling = integrator.assemble("plan-12345678");
+  await tick(1);
+  const settling = integrator.settle("plan-12345678");
+  release();
+  await assembling;
+  const result = await settling;
+  assert.equal(result.deliveryStatus, "pr_open");
+  assert.equal(calls.some((call) => call[0] === "gh" && call[1][1] === "view"), true);
+});
+
+// The merge agent's Stop is the only settle trigger there is, so a task Stop
+// arriving inside its debounce window must not take its place.
+test("a task stop does not cancel a pending merge settle", async (t) => {
+  const { integrator, calls } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  await integrator.assemble("plan-12345678");
+  integrator.scheduleWorkspace("workspace-merge");
+  integrator.scheduleWorkspace("workspace-one");
+  await tick();
+  assert.equal(calls.filter((call) => call[0] === "gh" && call[1][1] === "view").length, 1);
+});
+
+test("a blocked retry whose merge workspace is gone opens a fresh one", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  await integrator.assemble("plan-12345678");
+  await integrator.settle("plan-12345678");
+  integrator.cmux.rpc = async () => { throw new Error("workspace not found"); };
+  integrator.cmux.workspaceCreate = async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge-2" }; };
+  const result = await integrator.assemble("plan-12345678");
+  assert.equal(result.mergeStatus, "running");
+  assert.equal(store.get("plan-12345678").mergeWorkspaceId, "workspace-merge-2");
+  assert.equal(calls.filter((call) => call[0] === "workspaceCreate").length, 2);
+});
+
+test("a task that pushes again mid-merge leaves the running merge alone", async (t) => {
+  const { store, integrator } = fixture(t);
+  await integrator.assemble("plan-12345678");
+  const git = integrator.repoCatalog.git;
+  integrator.repoCatalog.git = async (cwd, args) => (args[0] === "ls-remote" && cwd.endsWith("task-two") ? "" : git(cwd, args));
+  const result = await integrator.assemble("plan-12345678");
+  assert.equal(result.mergeStatus, "running");
+  assert.equal(store.get("plan-12345678").deliveryStatus, "assembling");
+});
+
+test("a git failure while reading task branches records a delivery failure", async (t) => {
+  const { store, integrator } = fixture(t);
+  integrator.repoCatalog.git = async () => { throw new Error("fatal: not a git repository"); };
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /not a git repository/);
+  const saved = store.get("plan-12345678");
+  assert.equal(saved.deliveryStatus, "blocked");
+  assert.match(saved.deliveryError, /not a git repository/);
+});
+
+test("a delivery failure while the merge runs demotes the merge with it", async (t) => {
+  const { store, integrator } = fixture(t);
+  await integrator.assemble("plan-12345678");
+  integrator.repoCatalog.git = async () => { throw new Error("fatal: not a git repository"); };
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /not a git repository/);
+  const saved = store.get("plan-12345678");
+  assert.equal(saved.deliveryStatus, "blocked");
+  assert.equal(saved.mergeStatus, "blocked");
+});
+
+test("marks each task integrated from the trailers the merge agent wrote", async (t) => {
+  const { store, integrator, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  await integrator.assemble("plan-12345678");
+  const git = integrator.repoCatalog.git;
+  integrator.repoCatalog.git = async (cwd, args) => (cwd === integrationPath && args[0] === "log"
+    ? `Task 1: Billing API\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`
+    : git(cwd, args));
+  await integrator.settle("plan-12345678");
+  const saved = store.get("plan-12345678");
+  assert.equal(saved.tasks[0].deliveryStatus, "integrated");
+  assert.equal(saved.tasks[0].integratedCommitSha, TASK_ONE);
+  assert.equal(saved.tasks[1].deliveryStatus, "ready");
+});

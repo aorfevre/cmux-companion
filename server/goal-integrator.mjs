@@ -19,7 +19,9 @@ export class GoalIntegrator {
     this.log = log;
     this.settleMs = settleMs;
     this.locks = new Map();
+    this.chains = new Map();
     this.timers = new Map();
+    this.settleTimers = new Map();
   }
 
   attach({ hub }) {
@@ -42,8 +44,10 @@ export class GoalIntegrator {
     startup.unref?.();
     return () => {
       clearTimeout(startup);
-      for (const timer of this.timers.values()) clearTimeout(timer);
-      this.timers.clear();
+      for (const timers of [this.timers, this.settleTimers]) {
+        for (const timer of timers.values()) clearTimeout(timer);
+        timers.clear();
+      }
       hub.off("event", onEvent);
       hub.removeConsumer();
     };
@@ -56,33 +60,56 @@ export class GoalIntegrator {
     if (found?.plan) this.schedulePlan(found.plan.planId);
   }
 
+  // Assembly and settling keep separate timers: a task Stop landing inside the
+  // merge agent's debounce window would otherwise replace the settle with an
+  // assemble, and the merge agent's Stop is the only settle trigger there is.
   scheduleSettle(planId) {
-    clearTimeout(this.timers.get(planId));
-    const timer = setTimeout(() => {
-      this.timers.delete(planId);
+    this.#debounce(this.settleTimers, planId, () => {
       this.settle(planId).catch((cause) => this.log?.warn?.({ err: cause, planId }, "merge settle failed"));
-    }, this.settleMs);
-    timer.unref?.();
-    this.timers.set(planId, timer);
+    });
   }
 
   schedulePlan(planId) {
-    clearTimeout(this.timers.get(planId));
-    const timer = setTimeout(() => {
-      this.timers.delete(planId);
+    this.#debounce(this.timers, planId, () => {
       this.assemble(planId, { automatic: true }).catch((cause) => {
         if (!(cause instanceof TasksNotReadyError)) this.log?.warn?.({ err: cause, planId }, "combined goal assembly failed");
       });
+    });
+  }
+
+  #debounce(timers, planId, run) {
+    clearTimeout(timers.get(planId));
+    const timer = setTimeout(() => {
+      timers.delete(planId);
+      run();
     }, this.settleMs);
     timer.unref?.();
-    this.timers.set(planId, timer);
+    timers.set(planId, timer);
   }
 
   async assemble(planId, { automatic = false } = {}) {
     const id = String(planId || "");
-    if (this.locks.has(id)) return this.locks.get(id);
-    const running = this.#assemble(id, { automatic }).finally(() => this.locks.delete(id));
-    this.locks.set(id, running);
+    return this.#queue("assemble", id, () => this.#assemble(id, { automatic }));
+  }
+
+  // Each operation dedupes under its own key, because one key per plan would
+  // hand a settle caller the in-flight assemble promise and its result: the
+  // pull request would never be read at all. The two are still run one at a
+  // time per plan, since a settle landing mid-relaunch would block a merge
+  // that had just been started.
+  #queue(operation, planId, work) {
+    const key = `${operation}:${planId}`;
+    const inflight = this.locks.get(key);
+    if (inflight) return inflight;
+    const previous = this.chains.get(planId) || Promise.resolve();
+    const running = previous.then(work, work);
+    this.locks.set(key, running);
+    const chain = running.then(() => {}, () => {});
+    this.chains.set(planId, chain);
+    chain.then(() => {
+      if (this.locks.get(key) === running) this.locks.delete(key);
+      if (this.chains.get(planId) === chain) this.chains.delete(planId);
+    });
     return running;
   }
 
@@ -94,8 +121,12 @@ export class GoalIntegrator {
     }
     if (plan.finalPrUrl) return deliveryResult(plan);
 
-    plan = await this.#refreshTaskHeads(plan);
+    plan = await this.#guard(plan, () => this.#refreshTaskHeads(plan));
     await this.#publish(plan);
+    // A merge already in flight owns this plan, and its own Stop hook settles
+    // it. Task state must not second-guess it: a task agent that pushes again
+    // mid-merge would otherwise flip back to pending and strand the plan.
+    if (plan.mergeStatus === "running") return deliveryResult(plan);
     const pending = plan.tasks.filter((task) => task.launchStatus === "launched" && task.deliveryStatus !== "ready" && task.deliveryStatus !== "integrated");
     const failed = plan.tasks.filter((task) => task.launchStatus !== "launched");
     if (failed.length) throw new TypeError("Every task must launch successfully before Companion can build the combined pull request");
@@ -105,20 +136,20 @@ export class GoalIntegrator {
       throw new TypeError(message);
     }
 
-    try {
-      // A merge already in flight owns this plan. Its own Stop hook settles it.
-      if (plan.mergeStatus === "running") return deliveryResult(plan);
+    return this.#guard(plan, async () => {
       // Without a cmux client there is no agent to merge with, and a half-made
       // worktree would be worse than a clear refusal.
       if (!this.cmux) throw new TypeError("Combined goal delivery needs a cmux connection");
       plan = await this.#integrationWorktree(plan);
       // A blocked merge keeps its worktree and its live session, so a retry
-      // continues the partial merge instead of throwing that work away.
-      if (plan.mergeWorkspaceId && plan.mergeStatus === "blocked") {
-        const nudge = `Continue the merge. ${remaining(plan)}`;
-        await this.cmux?.rpc("surface.send_text", { workspace_id: plan.mergeWorkspaceId, text: `${nudge}\n` });
-        plan = this.store.recordMergeLaunched(plan.planId, plan.mergeWorkspaceId);
-      } else {
+      // continues the partial merge instead of throwing that work away. When
+      // that session is gone the worktree still holds the partial merge, so a
+      // fresh agent inherits it rather than the plan blocking on a dead id.
+      const resumed = plan.mergeWorkspaceId && plan.mergeStatus === "blocked"
+        ? await this.#resumeMerge(plan)
+        : false;
+      if (resumed) plan = this.store.recordMergeLaunched(plan.planId, plan.mergeWorkspaceId);
+      else {
         const created = await this.cmux.workspaceCreate({
           cwd: plan.integrationWorktreePath,
           title: oneLine(`Merge: ${plan.goal}`, 100),
@@ -131,6 +162,23 @@ export class GoalIntegrator {
       }
       await this.#publish(plan, { workspaceId: plan.mergeWorkspaceId });
       return deliveryResult(plan);
+    });
+  }
+
+  async #resumeMerge(plan) {
+    const nudge = `Continue the merge. ${remaining(plan)}`;
+    return this.cmux.rpc("surface.send_text", { workspace_id: plan.mergeWorkspaceId, text: `${nudge}\n` })
+      .then(() => true, (cause) => {
+        this.log?.warn?.({ err: cause, planId: plan.planId }, "merge session gone, starting a fresh one");
+        return false;
+      });
+  }
+
+  // Every failure the user needs to see is recorded before it is rethrown.
+  // Waiting for a task branch is not one of them, and never reaches here.
+  async #guard(plan, work) {
+    try {
+      return await work();
     } catch (cause) {
       const message = conciseError(cause);
       this.store.recordDeliveryFailure(plan.planId, message);
@@ -142,15 +190,13 @@ export class GoalIntegrator {
   // proof of success, so it is read rather than reported.
   async settle(planId) {
     const id = String(planId || "");
-    if (this.locks.has(id)) return this.locks.get(id);
-    const running = this.#settle(id).finally(() => this.locks.delete(id));
-    this.locks.set(id, running);
-    return running;
+    return this.#queue("settle", id, () => this.#settle(id));
   }
 
   async #settle(planId) {
-    const plan = this.store.get(planId);
+    let plan = this.store.get(planId);
     if (!plan || plan.mergeStatus !== "running") return plan ? deliveryResult(plan) : null;
+    plan = await this.#recordIntegrated(plan);
     const found = await this.#openPullRequest(plan);
     if (found) {
       const settled = this.store.recordFinalPr(plan.planId, { ...found, verifiedAt: new Date().toISOString() });
@@ -163,6 +209,21 @@ export class GoalIntegrator {
     );
     await this.#publish(blocked);
     return deliveryResult(blocked);
+  }
+
+  // The merge agent stamps each squashed task with its trailer, so the branch
+  // log is the only honest record of what actually landed. Reading it gives
+  // the user per-task merge confirmation even when the merge later blocks.
+  async #recordIntegrated(plan) {
+    const log = await this.#git(plan.integrationWorktreePath, ["log", "--format=%B", plan.integrationBranch])
+      .catch(() => "");
+    let current = plan;
+    for (const task of plan.tasks) {
+      if (task.deliveryStatus === "integrated" || !task.headSha) continue;
+      if (!log.includes(`Cmux-Goal-Task: ${plan.planId}/${task.id}/${task.headSha}`)) continue;
+      current = this.store.recordTaskIntegrated(plan.planId, task.id, task.headSha);
+    }
+    return current;
   }
 
   async #openPullRequest(plan) {
