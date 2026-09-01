@@ -68,3 +68,46 @@ test("renames a group to carry the counter", async () => {
   const rename = calls.find((call) => call[0] === "workspace.group.rename");
   assert.deepEqual([rename[1].group_id, rename[1].name], ["group-old", "Ship it — 2/5"]);
 });
+
+test("returns null instead of throwing when cmux cannot add a workspace to a group", async () => {
+  const { service } = fake({
+    groups: [{ id: "group-old", name: "companion", member_workspace_ids: ["workspace-zero"] }],
+    fail: "workspace.group.add",
+  });
+  assert.equal(await service.ensure("companion", "workspace-one"), null);
+});
+
+test("never throws when the group list answer is not an array", async () => {
+  const { service, calls } = fake({ groups: "not-an-array" });
+  const id = await service.ensure("companion", "workspace-one");
+  assert.equal(id, "group-new");
+  assert.equal(calls.some((call) => call[0] === "workspace.group.create"), true);
+});
+
+test("never throws when the group list holds a primitive entry", async () => {
+  const { service, calls } = fake({
+    groups: [{ id: "group-old", name: "companion", member_workspace_ids: [] }, 42],
+  });
+  const id = await service.ensure("companion", "workspace-one");
+  assert.equal(id, "group-old");
+  assert.equal(calls.some((call) => call[0] === "workspace.group.create"), false);
+});
+
+test("a prefix matches a group whose counter has advanced since it was named", async () => {
+  const { service, calls } = fake({ groups: [{ id: "group-old", name: "Ship billing — 2/3", member_workspace_ids: [] }] });
+  const id = await service.ensure("Ship billing — 3/3", "workspace-one", { prefix: "Ship billing" });
+  assert.equal(id, "group-old");
+  assert.equal(calls.some((call) => call[0] === "workspace.group.create"), false);
+});
+
+test("without a prefix, only the exact name matches even when another group shares a prefix", async () => {
+  const { service, calls } = fake({
+    groups: [
+      { id: "group-shared", name: "companion", member_workspace_ids: [] },
+      { id: "group-longer", name: "companion-extra", member_workspace_ids: [] },
+    ],
+  });
+  const id = await service.ensure("companion", "workspace-one");
+  assert.equal(id, "group-shared");
+  assert.equal(calls.some((call) => call[0] === "workspace.group.create"), false);
+});

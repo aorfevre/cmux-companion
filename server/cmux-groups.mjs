@@ -11,16 +11,22 @@ export class CmuxGroups {
     this.log = log;
   }
 
-  // Returns the group id, or null when cmux could not be reached. `groupId` is
-  // a hint from a stored plan: it saves a list call, and a stale one falls back
-  // to the name lookup rather than failing.
-  async ensure(name, workspaceId, { groupId = null } = {}) {
+  // Returns the group id, or null when cmux could not be reached. The display
+  // name carries a live counter and is rewritten on every count change, so it
+  // is never a stable key for a group we already own — only the stored
+  // `groupId` is. A name lookup (exact, or by `prefix` when the name embeds a
+  // counter) is purely the recovery path for when no id has been stored yet.
+  async ensure(name, workspaceId, { groupId = null, prefix = "" } = {}) {
     const label = clamp(name);
     if (!label || !workspaceId) return null;
     try {
       const groups = await this.#list();
+      const key = clamp(prefix);
+      const byName = key
+        ? (group) => String(group.name || "").startsWith(key)
+        : (group) => String(group.name || "") === label;
       const found = (groupId && groups.find((group) => group.id === groupId))
-        || groups.find((group) => String(group.name || "") === label);
+        || groups.find(byName);
       // return await, not return: a bare return hands the promise to the
       // caller and escapes this catch.
       if (!found) return await this.#create(label, workspaceId);
@@ -49,7 +55,10 @@ export class CmuxGroups {
 
   async #list() {
     const answer = await this.cmux.rpc("workspace.group.list", {});
-    return Array.isArray(answer?.groups) ? answer.groups : [];
+    const groups = Array.isArray(answer?.groups) ? answer.groups : [];
+    // A primitive entry has no usable id, and would otherwise reach
+    // workspace.group.add as group_id: undefined.
+    return groups.filter((group) => group && typeof group === "object" && typeof group.id === "string");
   }
 
   // create anchors the group on the workspaces it is given, so the first
