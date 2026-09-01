@@ -297,3 +297,35 @@ test("survives a reopen of the same file and keeps mode 0600", (t) => {
   assert.equal(plan.round, 1);
   assert.deepEqual(plan.tasks.map((task) => task.branch), ["feature/billing", "feature/invoices"]);
 });
+
+test("records the cmux group, the merge workspace and a merge block", (t) => {
+  const store = memoryStore(t);
+  store.createPlan({ planId: "plan-groups", repositoryId: "repo-1", goal: "Ship it" });
+  store.recordRound("plan-groups", {
+    round: 1, stage: "ready", sessionId: "session",
+    tasks: [
+      { id: "t1", title: "One", branch: "feature/one", prompt: "Do", agent: "claude" },
+      { id: "t2", title: "Two", branch: "feature/two", prompt: "Do", agent: "claude" },
+    ],
+  });
+
+  assert.equal(store.recordGroup("plan-groups", "group-abc").cmuxGroupId, "group-abc");
+  assert.equal(store.get("plan-groups").cmuxNoticeKey, null);
+  assert.equal(store.recordNoticeKey("plan-groups", "merging").cmuxNoticeKey, "merging");
+  assert.equal(store.recordNoticeKey("plan-groups", "pr:42").cmuxNoticeKey, "pr:42");
+
+  const launched = store.recordMergeLaunched("plan-groups", "workspace-merge");
+  assert.equal(launched.mergeWorkspaceId, "workspace-merge");
+  assert.equal(launched.mergeStatus, "running");
+  assert.equal(launched.deliveryStatus, "assembling");
+
+  const blocked = store.recordMergeBlocked("plan-groups", "Two tasks disagree about the retry policy");
+  assert.equal(blocked.mergeStatus, "blocked");
+  assert.equal(blocked.deliveryStatus, "blocked");
+  assert.equal(blocked.deliveryError, "Two tasks disagree about the retry policy");
+  assert.equal(blocked.mergeWorkspaceId, "workspace-merge");
+
+  const kinds = store.events("plan-groups").map((event) => event.kind);
+  assert.ok(kinds.includes("merge_launched"));
+  assert.ok(kinds.includes("merge_blocked"));
+});

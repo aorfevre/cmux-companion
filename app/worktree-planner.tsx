@@ -3,11 +3,14 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { PLANNER_ENGINES, reviewerEngine } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
+// One shared predicate: two copies had already drifted, so the sheet read
+// "1 of 2 ready" while the group read 1/1.
+import { readyCount } from "../server/goal-integrator.mjs";
 import { PromptDisclosure } from "./prompt-markdown";
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
-export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string };
+export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; launchStatus?: string; deliveryStatus?: string };
 export type PlanImage = { path: string; name: string };
 export type PlanRun = { planId: string; kind: string; phase: "running" | "done" | "failed"; step: string; error: string; startedAt: number; finishedAt: number | null };
 export type PlannerProvider = "claude" | "codex";
@@ -65,6 +68,12 @@ function ContextReview({ goal, images }: { goal: string; images: { path: string;
 
 function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string }) {
   return <div className="planner-waiting"><span>{waiting}</span>{steps.length > 0 && <ul className="planner-progress">{steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ul>}</div>;
+}
+
+function DeliveryTasks({ tasks }: { tasks: PlanTask[] }) {
+  if (tasks.length === 0) return null;
+  const { ready, total } = readyCount(tasks);
+  return <><p className="planner-delivery-count">{ready} of {total} branches ready</p><ul className="planner-delivery-tasks" aria-label="Task delivery">{tasks.map((task) => { const state = taskState(task); return <li key={task.id}><span>{task.title}</span><code>{task.branch}</code><em className={`delivery-${state.toLowerCase().replace(/\s+/g, "-")}`}>{state}</em></li>; })}</ul></>;
 }
 
 function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
@@ -304,7 +313,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     {draft && !result && !running && !stalled && draft.status === "ready" && <>
       <p className="planner-round">Round {draft.round} · {draft.tasks.length} task{draft.tasks.length === 1 ? "" : "s"}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />
-      {draft.tasks.length > 1 && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Task agents commit and push isolated branches. Companion pins their commits, assembles them on a fresh goal branch, runs the repository verification gate, and opens one pull request.</p></section>}
+      {draft.tasks.length > 1 && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Task agents commit and push isolated branches. Companion pins their commits and starts a merge agent that resolves conflicts, verifies against a baseline, and opens one pull request.</p></section>}
       <div className="planner-tasks">{draft.tasks.map((task) => <article className="planner-task" key={task.id}>
         <header><strong>{task.title}</strong>{!launchedPlan && <button type="button" className="planner-remove-task" aria-label={`Remove ${task.title}`} disabled={locked || draft.tasks.length < 2} onClick={() => editTasks(draft.tasks.filter((item) => item.id !== task.id))}>×</button>}</header>
         <code className="planner-branch">{task.branch}</code>
@@ -321,11 +330,11 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
         </> : <button type="button" className="planner-reject-open" disabled={locked} onClick={() => setRejecting(true)}>This plan is wrong</button>}
       </section>}
       {error && <p className="worktree-action-error">{error}</p>}
-      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong>{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
+      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
     </>}
     {result && <>
       <p className="planner-round">Branched from <code>{result.base}</code> · {result.launched} of {result.results.length} started</p>
-      {result.deliveryMode === "combined" && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Each agent will commit and push its task branch without opening a PR. When every branch is ready, Companion will assemble and verify the goal branch automatically.</p></section>}
+      {result.deliveryMode === "combined" && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Each agent will commit and push its task branch without opening a PR. When every branch is ready, a merge agent will resolve conflicts and open one pull request.</p></section>}
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <div className="planner-results">{result.results.map((row) => <div className={`planner-result ${row.status}`} key={row.id}>
         <header><strong>{row.title}</strong><em>{row.status === "launched" ? "Launched" : "Failed"}</em></header>
@@ -342,8 +351,15 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
 }
 
 function deliveryLabel(status?: string) {
-  if (status === "assembling") return "Assembling task branches";
+  if (status === "assembling") return "A merge agent is assembling this goal";
   if (status === "blocked") return "Combined delivery needs attention";
   if (status === "pr_open") return "Combined PR ready";
   return "Waiting for task branches";
+}
+
+function taskState(task: PlanTask) {
+  if (task.launchStatus && task.launchStatus !== "launched") return "Not launched";
+  if (task.deliveryStatus === "integrated") return "Merged";
+  if (task.deliveryStatus === "ready") return "Ready";
+  return "Waiting";
 }

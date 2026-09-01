@@ -40,6 +40,11 @@ export async function buildApp({
   worktreePlanner = null,
   worktreePlanStore = null,
   goalIntegrator = null,
+  // Accepted but deliberately unused: see the header of cmux-groups.mjs for why
+  // cmux workspace grouping is inert. The option stays in the signature so
+  // grouping can be restored, and injected, without another API change here.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  cmuxGroups = null,
   githubIssuePlanner = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
@@ -73,7 +78,7 @@ export async function buildApp({
   const planner = worktreePlanner
     || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService });
   const integrator = goalIntegrator
-    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, log: app.log }) : null);
+    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
     || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   const pairAttempts = new Map();
