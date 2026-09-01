@@ -313,6 +313,10 @@ test("a task stop does not cancel a pending merge settle", async (t) => {
   assert.equal(calls.filter((call) => call[0] === "gh" && call[1][1] === "view").length, 1);
 });
 
+// A closed workspace and a cmux hiccup reject identically, so the nudge falling
+// through to a fresh agent is what keeps a dead workspace id from stranding the
+// plan forever. The fall-through must happen inside this one call: a retry that
+// only reports the failure would take the identical branch again next time.
 test("a blocked retry whose merge workspace is gone opens a fresh one", async (t) => {
   const { store, integrator, calls } = fixture(t);
   await integrator.assemble("plan-12345678");
@@ -321,7 +325,11 @@ test("a blocked retry whose merge workspace is gone opens a fresh one", async (t
   integrator.cmux.workspaceCreate = async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge-2" }; };
   const result = await integrator.assemble("plan-12345678");
   assert.equal(result.mergeStatus, "running");
-  assert.equal(store.get("plan-12345678").mergeWorkspaceId, "workspace-merge-2");
+  assert.equal(result.mergeWorkspaceId, "workspace-merge-2");
+  const saved = store.get("plan-12345678");
+  assert.equal(saved.mergeWorkspaceId, "workspace-merge-2");
+  assert.equal(saved.deliveryStatus, "assembling");
+  assert.equal(saved.deliveryError, null);
   assert.equal(calls.filter((call) => call[0] === "workspaceCreate").length, 2);
 });
 
@@ -354,13 +362,21 @@ test("a delivery failure while the merge runs demotes the merge with it", async 
   assert.equal(saved.mergeStatus, "blocked");
 });
 
-test("marks each task integrated from the trailers the merge agent wrote", async (t) => {
+// Only what HEAD carries counts as merged. The worktree was created for this
+// branch and has it checked out, so HEAD is where the merge agent committed;
+// asking for the branch by name could resolve some other ref of that name and
+// silently read a history the merge never touched. The stub answers that name
+// with base history to prove which one is read.
+test("marks each task integrated from the trailers on the merged branch", async (t) => {
   const { store, integrator, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
   await integrator.assemble("plan-12345678");
   const git = integrator.repoCatalog.git;
-  integrator.repoCatalog.git = async (cwd, args) => (cwd === integrationPath && args[0] === "log"
-    ? `Task 1: Billing API\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`
-    : git(cwd, args));
+  integrator.repoCatalog.git = async (cwd, args) => {
+    if (cwd !== integrationPath || args[0] !== "log") return git(cwd, args);
+    return args.includes("HEAD")
+      ? `Task 1: Billing API\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`
+      : "Some earlier commit on the base branch\n";
+  };
   await integrator.settle("plan-12345678");
   const saved = store.get("plan-12345678");
   assert.equal(saved.tasks[0].deliveryStatus, "integrated");

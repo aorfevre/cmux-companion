@@ -143,8 +143,12 @@ export class GoalIntegrator {
       plan = await this.#integrationWorktree(plan);
       // A blocked merge keeps its worktree and its live session, so a retry
       // continues the partial merge instead of throwing that work away. When
-      // that session is gone the worktree still holds the partial merge, so a
-      // fresh agent inherits it rather than the plan blocking on a dead id.
+      // the nudge fails, this falls through to a fresh agent in the same call
+      // rather than failing: a closed workspace and a cmux hiccup reject
+      // identically, so telling them apart would be a guess, and guessing
+      // "hiccup" on a workspace that is really gone strands the plan on a dead
+      // id forever. A duplicate session is the recoverable failure of the two -
+      // it is visible, and the trailer-skip rule makes a re-run idempotent.
       const resumed = plan.mergeWorkspaceId && plan.mergeStatus === "blocked"
         ? await this.#resumeMerge(plan)
         : false;
@@ -169,7 +173,7 @@ export class GoalIntegrator {
     const nudge = `Continue the merge. ${remaining(plan)}`;
     return this.cmux.rpc("surface.send_text", { workspace_id: plan.mergeWorkspaceId, text: `${nudge}\n` })
       .then(() => true, (cause) => {
-        this.log?.warn?.({ err: cause, planId: plan.planId }, "merge session gone, starting a fresh one");
+        this.log?.warn?.({ err: cause, planId: plan.planId }, "the merge nudge failed, starting a fresh merge session");
         return false;
       });
   }
@@ -214,8 +218,11 @@ export class GoalIntegrator {
   // The merge agent stamps each squashed task with its trailer, so the branch
   // log is the only honest record of what actually landed. Reading it gives
   // the user per-task merge confirmation even when the merge later blocks.
+  // HEAD, not the branch name: this worktree exists for that branch and has it
+  // checked out, so HEAD is what the merge agent actually committed onto, and
+  // no tag or remote ref of the same name can resolve ahead of it.
   async #recordIntegrated(plan) {
-    const log = await this.#git(plan.integrationWorktreePath, ["log", "--format=%B", plan.integrationBranch])
+    const log = await this.#git(plan.integrationWorktreePath, ["log", "--format=%B", "HEAD"])
       .catch(() => "");
     let current = plan;
     for (const task of plan.tasks) {
