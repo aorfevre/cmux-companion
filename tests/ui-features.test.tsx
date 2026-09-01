@@ -450,6 +450,31 @@ describe("worktree goal planner", () => {
     assert.ok(screen.getByRole("button", { name: "← New goal" }));
   });
 
+  test("shows and retries one combined delivery until its final pull request is ready", async () => {
+    const now = new Date().toISOString();
+    const summary = { planId: "plan-combined", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship together", status: "launched", stage: "ready", deliveryMode: "combined", deliveryStatus: "blocked", round: 2, taskCount: 2, launchedCount: 2, createdAt: now, updatedAt: now, launchedAt: now };
+    const launchedDraft = { ...readyDraft, planId: "plan-combined", repositoryName: "companion", goal: summary.goal, planStatus: "launched", deliveryMode: "combined", deliveryStatus: "blocked", deliveryError: "Waiting for one pushed branch", integrationBranch: "goal/ship-together", createdAt: now, updatedAt: now, launchedAt: now };
+    const finishedDraft = { ...launchedDraft, deliveryStatus: "pr_open", deliveryError: null, finalPrNumber: 42, finalPrUrl: "https://github.test/pr/42" };
+    let detailReads = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [summary] }), { status: 200 });
+      if (url.endsWith("/assemble") && init?.method === "POST") return new Response(JSON.stringify({ planId: "plan-combined", deliveryMode: "combined", deliveryStatus: "pr_open", finalPrNumber: 42, finalPrUrl: finishedDraft.finalPrUrl }), { status: 200 });
+      if (url.endsWith("/plan-combined")) return new Response(JSON.stringify(detailReads++ ? finishedDraft : launchedDraft), { status: 200 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "View Ship together" }));
+    assert.ok(await screen.findByRole("region", { name: "Combined delivery status" }));
+    assert.ok(screen.getByText("Combined delivery needs attention"));
+    assert.ok(screen.getByText("Waiting for one pushed branch"));
+    await userEvent.click(screen.getByRole("button", { name: "Check & build combined PR" }));
+    assert.ok(await screen.findByRole("link", { name: "Open PR #42" }));
+    assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/assemble")), true);
+  });
+
   test("confirms saved-goal deletion and surfaces the server error verbatim", async () => {
     const now = new Date().toISOString();
     const saved = (planId: string, goal: string) => ({ planId, repositoryId: "repo-1", repositoryName: "companion", goal, status: "draft", stage: "ready", round: 1, taskCount: 2, launchedCount: 0, createdAt: now, updatedAt: now, launchedAt: null });

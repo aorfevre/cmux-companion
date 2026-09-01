@@ -377,22 +377,25 @@ export class WorktreePlanner {
     const draft = await this.#draft(planId);
     if (draft.status !== "ready" || !draft.tasks.length) throw new TypeError("This plan is not ready to launch yet");
     const base = await this.#baseRef(draft);
+    const repositoryPath = await this.#repositoryPath(draft);
+    const baseSha = String(await this.git(repositoryPath, ["rev-parse", `${base}^{commit}`]).catch(() => "")).trim() || null;
+    const deliveryMode = draft.tasks.length > 1 ? "combined" : "single";
     const results = [];
     for (const task of draft.tasks) {
-      results.push(await this.#launchTask(draft, task, base));
+      results.push(await this.#launchTask(draft, task, base, deliveryMode));
     }
     const launched = results.filter((item) => item.status === "launched").length;
-    this.#persist(() => this.store?.recordLaunch(draft.planId, { base, results }), draft.planId, "launch");
+    this.#persist(() => this.store?.recordLaunch(draft.planId, { base, baseSha, results }), draft.planId, "launch");
     // Deleting stops a plan running twice. That risk does not exist when nothing
     // was created, and keeping the draft saves the user a fresh planner round
     // after a transient failure such as cmux being down.
     if (launched > 0) this.drafts.delete(draft.planId);
-    return { planId: draft.planId, base, launched, results };
+    return { planId: draft.planId, base, baseSha, deliveryMode, launched, results };
   }
 
   // One task never rolls back another: a half-made plan the user can see and
   // finish by hand beats a silent undo of work that already started.
-  async #launchTask(draft, task, base) {
+  async #launchTask(draft, task, base, deliveryMode) {
     const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent };
     let path = null;
     try {
@@ -409,9 +412,9 @@ export class WorktreePlanner {
         cwd: path,
         title: task.title,
         agent: task.agent,
-        // Each worktree agent is isolated, so every task prompt carries the
-        // image paths and the closing pull request step itself.
-        prompt: taskPrompt(task.prompt, draft.images, base),
+        // Each worktree agent is isolated, so every task prompt carries its
+        // images and the delivery contract selected for the whole goal.
+        prompt: taskPrompt(task.prompt, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`),
       });
       return { ...summary, status: "launched", path, workspace };
     } catch (cause) {
@@ -617,6 +620,7 @@ function publicDraft(draft) {
     status: draft.status,
     questions: draft.questions,
     tasks: draft.tasks,
+    deliveryMode: draft.tasks.length > 1 ? "combined" : "single",
   };
 }
 
@@ -668,7 +672,7 @@ const CONTRACT = [
   "Each task prompt is self-contained: it states the outcome, the files or areas to touch, and how to verify the work.",
   "Return one task when the goal is a single unit of work. That is a valid answer.",
   "Do not include an agent field. The server assigns the agent.",
-  "Do not tell a task to commit, to push, or to open a pull request. The server appends that step to every prompt.",
+  "Do not tell a task to commit, push, or open a pull request. The server appends the correct single-task or combined-delivery finish step.",
 ].join("\n");
 
 const OVERRIDES = [
@@ -703,8 +707,19 @@ function pullRequestStep(base) {
   ].join("\n");
 }
 
-function taskPrompt(prompt, images, base) {
-  return [withImages(prompt, images), pullRequestStep(base)].join("\n\n");
+function combinedBranchStep(readyToken) {
+  return [
+    "Finish your task branch for combined delivery:",
+    "1. Run the verification appropriate for this task.",
+    `2. Commit all of your work. The final commit message must end with the trailer \`Cmux-Goal-Ready: ${readyToken}\`.`,
+    "3. Push this task branch to origin.",
+    "4. Do not open a pull request. Companion will pin this commit and assemble every task into one goal pull request.",
+  ].join("\n");
+}
+
+function taskPrompt(prompt, images, base, deliveryMode = "single", readyToken = "") {
+  const finish = deliveryMode === "combined" ? combinedBranchStep(readyToken) : pullRequestStep(base);
+  return [withImages(prompt, images), finish].join("\n\n");
 }
 
 function normalizeImages(images) {

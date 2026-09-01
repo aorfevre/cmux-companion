@@ -13,6 +13,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
 - Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
 - Splits one goal into independent tasks with a headless Claude planner, then creates a worktree and starts an agent for each, balancing the work across Claude and Codex by remaining quota
+- Delivers a multi-task goal as one verified pull request: task agents push isolated branches, Companion pins their finished commits, assembles them on a fresh goal branch, runs declared repository checks, and opens the combined PR
 - Reviews staged, unstaged, and untracked Git changes and per-file diffs
 - Shows the current branch's open pull request, review decision, and check status directly inside its session
 - Sends contextual Web Push alerts for decisions, failures, completion, PR changes, and detected local apps
@@ -109,6 +110,8 @@ The Worktrees view surfaces those saved plans beside the repository filters. **D
 The server chooses Codex or Claude per task from live CCS quota, not the model. It takes the lower of each provider's 5-hour and weekly remaining percent, sends the work to the provider with more headroom, and alternates when the two are within ten points. Every task keeps a toggle, so you can override the choice.
 
 A launch of several tasks takes up to a minute, because each worktree is created and inspected in turn. The sheet reports each task as launched or failed. A failed task does not roll back the tasks before it, and a task whose branch already exists is refused rather than started on old work.
+
+Single-task goals keep the direct pull-request workflow. Multi-task goals use combined delivery: each agent commits and pushes its own task branch without opening a PR. Its final commit carries a plan-specific readiness trailer, so an intermediate push cannot be mistaken for completed work. After every task head is clean, explicitly marked, and present on `origin`, Companion creates a `goal/…` worktree from the latest default remote branch, squash-merges each pinned task SHA in plan order, runs `npm run verify` when declared (or the available `test`, `lint`, `typecheck`, and `build` scripts), and opens one pull request against the default branch. Agent-stop events trigger the check automatically; **Check & build combined PR** retries it from the saved goal view.
 
 ```bash
 npm run status

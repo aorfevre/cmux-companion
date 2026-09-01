@@ -94,6 +94,7 @@ test("stores a task list in order and reads it back whole", (t) => {
   assert.deepEqual(plan.tasks.map((task) => task.id), ["t1", "t2"]);
   assert.equal(plan.tasks[1].agent, "codex");
   assert.equal(plan.tasks[0].prompt, "Add billing.");
+  assert.equal(plan.deliveryMode, "combined");
 });
 
 test("a later round replaces the previous task list", (t) => {
@@ -142,6 +143,29 @@ test("records the launch outcome for each task", (t) => {
   assert.equal(plan.tasks[1].launchStatus, "failed");
   assert.match(plan.tasks[1].launchError, /already exists/);
   assert.equal(store.events("plan-1").at(-1).payload.launched, 1);
+});
+
+test("tracks immutable task heads through one combined pull request", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.recordLaunch("plan-1", {
+    base: "origin/main", baseSha: "a".repeat(40),
+    results: TASKS.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/task-${index}`, workspace: { workspace_id: `workspace-${index}` } })),
+  });
+  assert.equal(store.findTaskByWorkspace("workspace-1").task.id, "t2");
+  store.recordTaskReady("plan-1", "t1", "b".repeat(40));
+  store.recordTaskReady("plan-1", "t2", "c".repeat(40));
+  store.recordIntegrationStarted("plan-1", { branch: "goal/billing-plan1", path: "/repo/goal" });
+  store.recordTaskIntegrated("plan-1", "t1", "d".repeat(40));
+  store.recordTaskIntegrated("plan-1", "t2", "e".repeat(40));
+  const plan = store.recordFinalPr("plan-1", { number: 42, url: "https://github.test/pr/42", verifiedAt: "2026-09-01T12:00:00.000Z" });
+  assert.equal(plan.deliveryMode, "combined");
+  assert.equal(plan.deliveryStatus, "pr_open");
+  assert.equal(plan.finalPrNumber, 42);
+  assert.equal(plan.finalPrUrl, "https://github.test/pr/42");
+  assert.deepEqual(plan.tasks.map((task) => task.deliveryStatus), ["integrated", "integrated"]);
+  assert.deepEqual(store.events("plan-1").slice(-6).map((event) => event.kind), ["task_ready", "task_ready", "integration_started", "task_integrated", "task_integrated", "final_pr"]);
 });
 
 test("keeps a plan in draft when every task failed to launch", (t) => {
