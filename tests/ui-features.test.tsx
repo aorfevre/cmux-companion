@@ -347,6 +347,84 @@ describe("worktree goal planner", () => {
     return fetchMock;
   }
 
+  test("lists saved goals and resumes each persisted stage", async () => {
+    const updatedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const questionDraft = { planId: "plan-questions", repositoryId: "repo-1", repositoryName: "companion", goal: "Clarify the mobile flow", round: 3, status: "questions", planStatus: "draft", questions: [{ id: "question-1", text: "Which screen comes first?", options: ["Goals", "Tasks"] }], tasks: [], createdAt: updatedAt, updatedAt, launchedAt: null, base: "main", history: [] };
+    const summaries = { plans: [
+      { planId: "plan-questions", repositoryId: "repo-1", repositoryName: "companion", goal: "Clarify the mobile flow", status: "draft", stage: "questions", round: 3, taskCount: 0, launchedCount: 0, createdAt: updatedAt, updatedAt, launchedAt: null },
+      { planId: "plan-launched", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the finished flow", status: "launched", stage: "ready", round: 2, taskCount: 2, launchedCount: 2, createdAt: updatedAt, updatedAt, launchedAt: updatedAt },
+    ] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/worktree-plans?repositoryId=repo-1") return new Response(JSON.stringify(summaries), { status: 200 });
+      if (url === "/api/worktree-plans/plan-questions") return new Response(JSON.stringify(questionDraft), { status: 200 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    const saved = await screen.findByRole("region", { name: "Saved goals" });
+    assert.ok(within(saved).getByText("Clarify the mobile flow"));
+    assert.ok(within(saved).getByText("Ship the finished flow"));
+    assert.equal(within(saved).getAllByText("Draft").length, 1);
+    assert.equal(within(saved).getAllByText("Launched").length, 1);
+    assert.ok(within(saved).getByText(/round 3 · 0 tasks · 2h/));
+    assert.ok(screen.getByRole("textbox", { name: "Goal" }), "the new-goal form stays below saved goals");
+
+    await userEvent.click(within(saved).getByRole("button", { name: "Resume Clarify the mobile flow" }));
+    assert.ok(await screen.findByText("Round 3"));
+    assert.ok(screen.getByRole("textbox", { name: "Which screen comes first?" }));
+    assert.ok(screen.getByRole("button", { name: "Answer" }));
+    await userEvent.click(screen.getByRole("button", { name: "← New goal" }));
+    assert.ok(await screen.findByRole("region", { name: "Saved goals" }));
+    assert.equal((screen.getByRole("textbox", { name: "Goal" }) as HTMLTextAreaElement).value, "");
+    await waitFor(() => assert.equal(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/worktree-plans?repositoryId=repo-1").length, 2));
+  });
+
+  test("views launched goals without offering edits or a second launch", async () => {
+    const now = new Date().toISOString();
+    const summary = { planId: "plan-launched", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the finished flow", status: "launched", stage: "ready", round: 2, taskCount: 2, launchedCount: 2, createdAt: now, updatedAt: now, launchedAt: now };
+    const launchedDraft = { ...readyDraft, planId: "plan-launched", repositoryName: "companion", goal: summary.goal, planStatus: "launched", createdAt: now, updatedAt: now, launchedAt: now, base: "main", history: [] };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [summary] }), { status: 200 });
+      if (url.endsWith("/plan-launched")) return new Response(JSON.stringify(launchedDraft), { status: 200 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    }));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "View Ship the finished flow" }));
+    assert.ok(await screen.findByText("This goal was already launched. The saved plan is read-only."));
+    assert.equal(screen.queryByRole("button", { name: "Launch 2 sessions" }), null);
+    assert.equal(screen.queryByRole("button", { name: "Remove Build the sheet" }), null);
+    assert.equal((screen.getByRole("button", { name: "Use Codex for Build the sheet" }) as HTMLButtonElement).disabled, true);
+    assert.ok(screen.getByRole("button", { name: "← New goal" }));
+  });
+
+  test("confirms saved-goal deletion and surfaces the server error verbatim", async () => {
+    const now = new Date().toISOString();
+    const saved = (planId: string, goal: string) => ({ planId, repositoryId: "repo-1", repositoryName: "companion", goal, status: "draft", stage: "ready", round: 1, taskCount: 2, launchedCount: 0, createdAt: now, updatedAt: now, launchedAt: null });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [saved("plan-delete", "Delete this goal"), saved("plan-fail", "Keep this goal")] }), { status: 200 });
+      if (url.endsWith("/plan-delete") && init?.method === "DELETE") return new Response(JSON.stringify({ deleted: true }), { status: 200 });
+      if (url.endsWith("/plan-fail") && init?.method === "DELETE") return new Response(JSON.stringify({ error: "SQLite is busy" }), { status: 503 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Delete this goal" }));
+    assert.equal(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE"), false);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm delete Delete this goal" }));
+    await waitFor(() => assert.equal(screen.queryByText("Delete this goal"), null));
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete Keep this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm delete Keep this goal" }));
+    assert.ok(await screen.findByText("SQLite is busy"));
+    assert.ok(screen.getByText("Keep this goal"));
+  });
+
   test("walks a goal through questions into a plan and launches every task", async () => {
     const questionDraft = { planId: "plan-1", repositoryId: "repo-1", goal: "Ship the planner", round: 1, status: "questions", questions: [{ id: "question-1", text: "Which surface comes first?", options: ["Mobile", "Desktop"] }], tasks: [] };
     const toggled = { ...readyDraft, tasks: [{ ...tasks[0], agent: "claude", agentReason: "You picked Claude" }, tasks[1]] };
