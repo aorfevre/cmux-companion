@@ -25,10 +25,11 @@ describe("contextual mobile features", () => {
   });
 
   test("shows CCS quota by account while treating absent windows as unreported", async () => {
+    const weeklyReset = new Date(Date.now() + 3 * 24 * 60 * 60_000);
     const usage = { generatedAt: new Date().toISOString(), source: "CCS", available: true, summary: { ready: 1, low: 0, exhausted: 0, reconnect: 1, unavailable: 0 }, providers: [
       { id: "claude", label: "Claude Code", available: true, accounts: [{ id: "one", label: "one", email: "one@example.test", plan: null, isDefault: true, paused: false, status: "ready", message: null, updatedAt: new Date().toISOString(), windows: [
         { id: "usage-5h-0", cadence: "5h", label: "Session limit", category: "usage", remainingPercent: 82, resetAt: new Date(Date.now() + 3_600_000).toISOString(), reported: true },
-        { id: "usage-weekly-1", cadence: "weekly", label: "Weekly limit", category: "usage", remainingPercent: 55, resetAt: null, reported: true },
+        { id: "usage-weekly-1", cadence: "weekly", label: "Weekly limit", category: "usage", remainingPercent: 55, resetAt: weeklyReset.toISOString(), reported: true },
       ] }] },
       { id: "codex", label: "OpenAI Codex", available: true, accounts: [{ id: "two", label: "two", email: "two@example.test", plan: "pro", isDefault: false, paused: false, status: "reconnect", message: "Reconnect this account in CCS", updatedAt: null, windows: [] }] },
     ] };
@@ -38,9 +39,11 @@ describe("contextual mobile features", () => {
     render(<AccountUsageView onBack={back} />);
     assert.ok(await screen.findByText("one@example.test"));
     assert.ok(screen.getByText("82%"));
-    assert.equal(screen.getAllByText("Not reported").length, 3);
+    assert.ok(screen.getByText("55%"));
+    assert.ok(screen.getByText(`Resets ${new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" }).format(weeklyReset)}`));
+    assert.equal(screen.getAllByText("Not reported").length, 4);
     assert.equal(screen.queryByText("Daily"), null);
-    assert.equal(screen.queryByText("Weekly"), null);
+    assert.equal(screen.getAllByText("Weekly").length, 2);
     assert.ok(screen.getByText("Reconnect this account in CCS"));
     await userEvent.click(screen.getByRole("button", { name: "Refresh account usage" }));
     await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("?refresh=1")), true));

@@ -11,6 +11,7 @@ type ReconnectSession = { sessionId: string; provider: UsageProvider["id"]; stat
 
 const CORE_WINDOWS: Array<{ cadence: Exclude<Cadence, "other">; label: string }> = [
   { cadence: "5h", label: "5 hours" },
+  { cadence: "weekly", label: "Weekly" },
   { cadence: "monthly", label: "Monthly" },
 ];
 
@@ -145,7 +146,7 @@ function ReconnectSheet({ provider, account, onClose, onSuccess }: { provider: U
 
 function CoreWindow({ label, window }: { label: string; window?: UsageWindow }) {
   const tone = window ? percentTone(window.remainingPercent) : "missing";
-  return <div className={`core-window ${tone}`}><div><span>{label}</span>{window ? <strong>{window.remainingPercent}%</strong> : <strong>—</strong>}</div>{window ? <><div className="quota-track"><i style={{ width: `${window.remainingPercent}%` }} /></div><small>{resetText(window.resetAt)}</small></> : <small>Not reported</small>}</div>;
+  return <div className={`core-window ${tone}`}><div><span>{label}</span>{window ? <strong>{window.remainingPercent}%</strong> : <strong>—</strong>}</div>{window ? <><div className="quota-track"><i style={{ width: `${window.remainingPercent}%` }} /></div><small>{resetText(window.resetAt, window.cadence)}</small></> : <small>Not reported</small>}</div>;
 }
 
 function ExtraWindow({ window }: { window: UsageWindow }) {
@@ -156,11 +157,16 @@ function percentTone(percent: number) { return percent <= 0 ? "exhausted" : perc
 function statusLabel(status: UsageAccount["status"], windowCount = 1) { return status === "ready" && windowCount === 0 ? "Connected" : ({ ready: "Available", low: "Low", exhausted: "Exhausted", reconnect: "Reconnect", unavailable: "Unavailable" })[status]; }
 function displayLabel(label: string) { return label.replaceAll("-", " ").replace(/\bGpt\b/i, "GPT"); }
 function relativeUpdated(value: string) { const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000)); return seconds < 15 ? "Updated now" : seconds < 60 ? `Updated ${seconds}s ago` : `Updated ${Math.floor(seconds / 60)}m ago`; }
-function resetText(value: string | null) {
+function resetText(value: string | null, cadence?: Cadence) {
   if (!value) return "Reset unknown";
-  const milliseconds = new Date(value).getTime() - Date.now();
+  const reset = new Date(value);
+  const milliseconds = reset.getTime() - Date.now();
   if (!Number.isFinite(milliseconds)) return "Reset unknown";
   if (milliseconds <= 0) return "Reset due";
+  if (cadence === "weekly") {
+    const dayAndTime = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" }).format(reset);
+    return `Resets ${dayAndTime}`;
+  }
   const minutes = Math.ceil(milliseconds / 60_000);
   if (minutes < 60) return `Resets in ${minutes}m`;
   const hours = Math.ceil(minutes / 60);
