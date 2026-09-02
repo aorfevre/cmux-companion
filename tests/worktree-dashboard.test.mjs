@@ -401,23 +401,37 @@ test("bulk removal keeps only clean, unlocked, idle, non-primary worktrees and t
 // A launch makes the worktree first and opens the cmux session second. When the
 // second step fails the worktree stays behind, so a retry has to tell that
 // leftover apart from a worktree that holds real work.
-function reuseCatalog({ status = "# branch.head feature/safe-name\n", head = "aaaaaaaa", locked = null } = {}) {
+function reuseCatalog({ status = "# branch.head feature/safe-name\n", head = "aaaaaaaa", locked = null, contained = false } = {}) {
   const targetPath = "/repo/sample-feature-safe-name";
   const lockField = locked ? `locked ${locked}\0` : "";
-  const inventory = `worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree ${targetPath}\0HEAD ${head}\0branch refs/heads/feature/safe-name\0${lockField}\0`;
+  let inventory = `worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree ${targetPath}\0HEAD ${head}\0branch refs/heads/feature/safe-name\0${lockField}\0`;
   const calls = [];
   const repoCatalog = {
     cache: {},
     list: async () => [REPO],
     git: async (cwd, args, options) => {
       calls.push([cwd, args, options]);
-      if (args[0] === "worktree" && args[1] === "add") throw new Error("must not create a second worktree");
+      if (args[0] === "worktree" && args[1] === "add") {
+        inventory = `worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree ${targetPath}\0HEAD aaaaaaaa\0branch refs/heads/feature/safe-name\0\0`;
+        return "";
+      }
+      if (args[0] === "worktree" && args[1] === "remove") {
+        inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0";
+        return "";
+      }
       if (args[0] === "worktree") return inventory;
+      if (args[0] === "branch" && args[1] === "-D") return "";
       if (args[0] === "check-ref-format") return "feature/safe-name\n";
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        if (!contained) throw new Error("not an ancestor");
+        return "";
+      }
+      if (args[0] === "show-ref") throw new Error("missing branch");
       if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
       if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return `${cwd}\n`;
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "aaaaaaaa\n";
       if (args[0] === "rev-parse" && args[1] === "main^{commit}") return "aaaaaaaa\n";
-      if (args[0] === "rev-parse" && args[1] === "HEAD") return `${head}\n`;
+      if (args[0] === "rev-parse" && args[1] === "HEAD") return `${cwd === targetPath && inventory.includes(`HEAD ${head}`) ? head : "aaaaaaaa"}\n`;
       if (args[0] === "status") return cwd === targetPath ? status : "# branch.head main\n";
       if (args[0] === "log") return "100\n";
       throw new Error(`unexpected git call ${args.join(" ")}`);
@@ -459,12 +473,30 @@ test("refuses to reuse a worktree that holds uncommitted work", async () => {
   );
 });
 
-test("refuses to reuse a worktree that sits on another commit", async () => {
-  const { dashboard, repositoryId } = await reuseDashboard({ head: "bbbbbbbb" });
+// The common case after a merge: the leftover carries nothing of its own, but
+// the base moved past it. Rebuild it rather than strand the plan.
+test("rebuilds a worktree that fell behind a base which already contains it", async () => {
+  const { dashboard, repositoryId, calls, targetPath } = await reuseDashboard({ head: "bbbbbbbb", contained: true });
+  const result = await dashboard.create(repositoryId, { branch: "feature/safe-name", base: "main", reuseIfAtBase: true });
+  assert.equal(result.created, true);
+  assert.equal(result.branchCreated, true);
+  assert.equal(result.worktree.path, targetPath);
+  assert.ok(calls.some(([, args]) => args[0] === "worktree" && args[1] === "remove"), "the stale worktree must be removed");
+  // A surviving branch would be checked out at its old commit, so the task
+  // would start behind the base a second time.
+  assert.ok(calls.some(([, args]) => args[0] === "branch" && args[1] === "-D"), "the stale branch must be deleted");
+  const add = calls.find(([, args]) => args[0] === "worktree" && args[1] === "add");
+  assert.deepEqual(add[1], ["worktree", "add", "-b", "feature/safe-name", targetPath, "main"]);
+});
+
+test("refuses to rebuild a worktree holding commits the base does not contain", async () => {
+  const { dashboard, repositoryId, calls } = await reuseDashboard({ head: "bbbbbbbb" });
   await assert.rejects(
     () => dashboard.create(repositoryId, { branch: "feature/safe-name", base: "main", reuseIfAtBase: true }),
-    /already has a worktree on a different commit than main/,
+    /already has a worktree holding commits that main does not contain/,
   );
+  assert.equal(calls.some(([, args]) => args[0] === "worktree" && args[1] === "remove"), false);
+  assert.equal(calls.some(([, args]) => args[0] === "branch" && args[1] === "-D"), false);
 });
 
 test("refuses to reuse a worktree that a cmux session already owns", async () => {
