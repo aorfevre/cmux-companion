@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentBriefs } from "../server/agent-brief.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
-import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, finalEnvelope, normalizePlannerEngine, parsePlannerReply, progressEvent, reviewerEngine } from "../server/worktree-planner.mjs";
+import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, describeTimeout, finalEnvelope, normalizePlannerEngine, parsePlannerReply, progressEvent, reviewerEngine, streamExecFile } from "../server/worktree-planner.mjs";
 
 function envelope(text, sessionId = "session-1") {
   return `[i] Preparing CLIProxy...\n[OK] CLIProxy binary ready\n${JSON.stringify({ session_id: sessionId, result: text })}\n`;
@@ -375,6 +375,67 @@ test("reports a timeout in plain words and does not run twice", async () => {
   const planner = new WorktreePlanner(deps);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }), /did not answer in time/);
   assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 1);
+});
+
+// The two kills need different words, because the user acts on them
+// differently: silence means try again, the ceiling means the goal is too big.
+test("names which limit killed the round", async () => {
+  const idle = Object.assign(new Error("timeout"), { killed: true, signal: "SIGTERM", reason: "idle" });
+  await assert.rejects(
+    () => new WorktreePlanner({ ...fakeDeps({ replies: [idle] }), idleTimeoutMs: 240_000 }).start({ repositoryId: REPO_ID, goal: "Add billing" }),
+    /stopped answering: no output for 4 minutes/,
+  );
+  const ceiling = Object.assign(new Error("timeout"), { killed: true, signal: "SIGTERM", reason: "ceiling" });
+  await assert.rejects(
+    () => new WorktreePlanner({ ...fakeDeps({ replies: [ceiling] }), ceilingMs: 1_800_000 }).start({ repositoryId: REPO_ID, goal: "Add billing" }),
+    /ran for 30 minutes without finishing/,
+  );
+});
+
+test("describeTimeout falls back when no limit is named", () => {
+  assert.match(describeTimeout("", 60_000, 60_000), /did not answer in time/);
+  assert.match(describeTimeout("idle", 60_000, 900_000), /no output for 1 minute\b/);
+});
+
+// Round 1 is the slow one and no longer gets a doubled budget: both rounds take
+// the same idle limit, because length is not what makes a round stuck.
+test("gives every round the idle limit and the ceiling", async () => {
+  const deps = fakeDeps({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
+  const planner = new WorktreePlanner({ ...deps, idleTimeoutMs: 1_000, ceilingMs: 9_000 });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.answer(draft.planId, { skip: true });
+  const options = deps.calls.filter((call) => call[0] === "ccs").map((call) => call[2]);
+  assert.equal(options.length, 2);
+  for (const option of options) {
+    assert.equal(option.idleTimeout, 1_000);
+    assert.equal(option.timeout, 9_000);
+  }
+});
+
+// The regression itself. A child that keeps printing must outlive an idle limit
+// shorter than its total run, which the old single wall-clock timer could not do.
+test("streamExecFile does not kill a child that keeps printing", async () => {
+  const script = "let n = 0; const t = setInterval(() => { console.log(`line ${n += 1}`); if (n === 8) { clearInterval(t); } }, 50);";
+  const seen = [];
+  const result = await streamExecFile(process.execPath, ["-e", script], { idleTimeout: 200, timeout: 5_000, onLine: (line) => seen.push(line) });
+  assert.equal(seen.length, 8);
+  assert.match(result.stdout, /line 8/);
+});
+
+test("streamExecFile kills a silent child and says the idle limit did it", async () => {
+  const script = "console.log('hello'); setTimeout(() => {}, 5_000);";
+  await assert.rejects(
+    () => streamExecFile(process.execPath, ["-e", script], { idleTimeout: 150, timeout: 5_000 }),
+    (cause) => cause.killed === true && cause.reason === "idle",
+  );
+});
+
+test("streamExecFile kills a chatty child at the ceiling", async () => {
+  const script = "setInterval(() => console.log('tick'), 20);";
+  await assert.rejects(
+    () => streamExecFile(process.execPath, ["-e", script], { idleTimeout: 5_000, timeout: 250 }),
+    (cause) => cause.killed === true && cause.reason === "ceiling",
+  );
 });
 
 test("rejects an empty goal and an unknown repository", async () => {

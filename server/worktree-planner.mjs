@@ -18,28 +18,51 @@ export { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs"
 // the model is still thinking. spawn resolves the same shape and rejects with
 // the same fields, plus it calls onLine for each stdout line, so every injected
 // `execute` fake stays valid.
-export function streamExecFile(bin, args, { cwd, timeout = 0, maxBuffer = 4 * 1024 * 1024, env, onLine } = {}) {
+//
+// Two limits, not one. `timeout` is an absolute ceiling on the run, and
+// `idleTimeout` measures silence: every stdout line restarts it. A round that
+// reads a large repository works steadily and is legitimately slow, so only the
+// silence says it is stuck. A single wall-clock limit killed those rounds every
+// time and could never be raised high enough. `reason` says which limit fired,
+// so the caller can name the real cause instead of guessing.
+export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, maxBuffer = 4 * 1024 * 1024, env, onLine } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let killed = false;
-    const timer = timeout ? setTimeout(() => { killed = true; child.kill("SIGTERM"); }, timeout) : null;
-    timer?.unref?.();
+    let reason = "";
+    const stop = (why) => { killed = true; reason = why; child.kill("SIGTERM"); };
+    const ceiling = timeout ? setTimeout(() => stop("ceiling"), timeout) : null;
+    ceiling?.unref?.();
+    let idle = null;
+    // The idle timer is armed once and rearmed on every line, so a silent
+    // startup is bounded by the same limit as a mid-round stall.
+    const restartIdle = () => {
+      if (!idleTimeout || killed) return;
+      clearTimeout(idle);
+      idle = setTimeout(() => stop("idle"), idleTimeout);
+      idle.unref?.();
+    };
+    const clearTimers = () => { clearTimeout(ceiling); clearTimeout(idle); };
+    restartIdle();
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {
+      restartIdle();
       // Only the final result line is needed later, so an over-long run drops
       // old lines instead of failing the round the way execFile does.
       if (stdout.length + line.length + 1 <= maxBuffer) stdout += `${line}\n`;
       // A progress consumer must never fail a planner round.
       try { onLine?.(line); } catch { /* the round outlives its audience */ }
     });
-    child.stderr.on("data", (chunk) => { if (stderr.length < 64 * 1024) stderr += chunk; });
-    child.once("error", (cause) => { clearTimeout(timer); lines.close(); reject(cause); });
+    // stderr is progress too. ccs writes its startup and its warnings there, so
+    // a round that only complains is still alive and must not be called idle.
+    child.stderr.on("data", (chunk) => { restartIdle(); if (stderr.length < 64 * 1024) stderr += chunk; });
+    child.once("error", (cause) => { clearTimers(); lines.close(); reject(cause); });
     child.once("close", (code, signal) => {
-      clearTimeout(timer);
+      clearTimers();
       lines.close();
-      if (killed || signal) return reject(Object.assign(new Error("Command failed"), { killed, signal: signal || "SIGTERM", stderr, code }));
+      if (killed || signal) return reject(Object.assign(new Error("Command failed"), { killed, reason, signal: signal || "SIGTERM", stderr, code }));
       if (code !== 0) return reject(Object.assign(new Error("Command failed"), { code, stderr, killed: false }));
       return resolve({ stdout, stderr });
     });
@@ -265,7 +288,13 @@ function accountHeadroom(account) {
 }
 
 const DRAFT_TTL_MS = 30 * 60_000;
-const ROUND_TIMEOUT_MS = 180_000;
+// A planner round is not slow because it is stuck. It reads the repository, and
+// a long goal against a large repository legitimately takes many minutes, while
+// printing a tool line every few seconds. Measured: three rounds on one goal all
+// died at 361s under the old wall-clock limit and could never have finished.
+// So silence is the failure signal, and the ceiling only bounds a true hang.
+const ROUND_IDLE_TIMEOUT_MS = Number(process.env.CMUX_PLANNER_IDLE_TIMEOUT_MS) || 240_000;
+const ROUND_CEILING_MS = Number(process.env.CMUX_PLANNER_CEILING_MS) || 1_800_000;
 // --allowed-tools only AUTO-APPROVES; it does not restrict. Verified against the
 // real CLI: with Bash absent from the allow list it still ran. Only
 // --disallowed-tools enforces, and the planner runs unsandboxed in the user's
@@ -337,8 +366,23 @@ export function describeRunFailure(stderr) {
   return detail ? `The planner could not run: ${detail.slice(0, 160)}` : "The planner could not run. Try again";
 }
 
+// A killed round has two very different causes, and the user acts on each one
+// differently: silence means try again, while the ceiling means the goal is too
+// large for one round. An unlabelled kill keeps the old wording, because a fake
+// `execute` in a test rejects without a reason.
+export function describeTimeout(reason, idleTimeoutMs, ceilingMs) {
+  if (reason === "idle") return `The planner stopped answering: no output for ${minutes(idleTimeoutMs)}. Try again`;
+  if (reason === "ceiling") return `The planner ran for ${minutes(ceilingMs)} without finishing. Start again with a narrower goal`;
+  return "The planner did not answer in time. Try again";
+}
+
+function minutes(ms) {
+  const value = Math.max(1, Math.round(Number(ms) / 60_000));
+  return `${value} minute${value === 1 ? "" : "s"}`;
+}
+
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null, runs = null, progress = null, pushService = null, briefs = new AgentBriefs() } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, idleTimeoutMs = ROUND_IDLE_TIMEOUT_MS, ceilingMs = ROUND_CEILING_MS, ttlMs = DRAFT_TTL_MS, store = null, runs = null, progress = null, pushService = null, briefs = new AgentBriefs() } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
@@ -352,7 +396,8 @@ export class WorktreePlanner {
     this.log = log;
     this.execute = execute;
     this.maxRounds = maxRounds;
-    this.timeoutMs = timeoutMs;
+    this.idleTimeoutMs = idleTimeoutMs;
+    this.ceilingMs = ceilingMs;
     this.ttlMs = ttlMs;
     // The database owns every plan. The map is only a hot cache in front of it,
     // so a companion restart loses no goal, no session and no task list.
@@ -799,9 +844,12 @@ export class WorktreePlanner {
       const { stdout = "" } = await this.execute("ccs", args, {
         cwd: draft.cwd,
         encoding: "utf8",
-        // Round 1 starts a fresh session and reads the repository, so it is the
-        // slowest. Later rounds resume and only pay for the new turn.
-        timeout: sessionId ? this.timeoutMs : this.timeoutMs * 2,
+        // Round 1 starts a fresh session and reads the whole repository, so it
+        // is the slowest — but so is any round on a long goal. Its length is not
+        // the problem, so both rounds get the same pair of limits: silence ends
+        // a stuck round, and the ceiling bounds one that never returns at all.
+        timeout: this.ceilingMs,
+        idleTimeout: this.idleTimeoutMs,
         maxBuffer: 4 * 1024 * 1024,
         env: process.env,
         onLine: onEvent ? (line) => { const event = progressEvent(line); if (event) emit(onEvent, event); } : undefined,
@@ -809,7 +857,7 @@ export class WorktreePlanner {
       return finalEnvelope(stdout);
     } catch (cause) {
       if (cause?.code === "ENOENT") throw new PlannerRunError("The planner needs the ccs CLI. Install it, then try again");
-      if (cause?.killed || cause?.signal === "SIGTERM") throw new PlannerRunError("The planner did not answer in time. Try again");
+      if (cause?.killed || cause?.signal === "SIGTERM") throw new PlannerRunError(describeTimeout(cause?.reason, this.idleTimeoutMs, this.ceilingMs));
       throw new PlannerRunError(describeRunFailure(cause?.stderr));
     }
   }
