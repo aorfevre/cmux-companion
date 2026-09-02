@@ -10,6 +10,7 @@ import {
 } from "./delivery-contract.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
+import { goalBoardState } from "./goal-board.mjs";
 import { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs";
 
 export { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs";
@@ -25,7 +26,7 @@ export { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs"
 // silence says it is stuck. A single wall-clock limit killed those rounds every
 // time and could never be raised high enough. `reason` says which limit fired,
 // so the caller can name the real cause instead of guessing.
-export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, maxBuffer = 4 * 1024 * 1024, env, onLine } = {}) {
+export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, maxBuffer = 4 * 1024 * 1024, env, onLine, signal = null } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -36,6 +37,10 @@ export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, m
     const ceiling = timeout ? setTimeout(() => stop("ceiling"), timeout) : null;
     ceiling?.unref?.();
     let idle = null;
+    // Abort is a third way this round can end, next to the ceiling and the
+    // idle limit. It kills the same child through the same path, so the close
+    // handler reports it exactly like a timeout does, with its own reason.
+    const onAbort = () => stop("aborted");
     // The idle timer is armed once and rearmed on every line, so a silent
     // startup is bounded by the same limit as a mid-round stall.
     const restartIdle = () => {
@@ -44,7 +49,16 @@ export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, m
       idle = setTimeout(() => stop("idle"), idleTimeout);
       idle.unref?.();
     };
-    const clearTimers = () => { clearTimeout(ceiling); clearTimeout(idle); };
+    // Every exit path runs this once: no timer is left armed, and the abort
+    // listener is removed, so an AbortController that outlives the round holds
+    // no reference to it.
+    const cleanup = () => {
+      clearTimeout(ceiling);
+      clearTimeout(idle);
+      signal?.removeEventListener?.("abort", onAbort);
+    };
+    if (signal?.aborted) stop("aborted");
+    else signal?.addEventListener?.("abort", onAbort, { once: true });
     restartIdle();
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {
@@ -58,11 +72,11 @@ export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, m
     // stderr is progress too. ccs writes its startup and its warnings there, so
     // a round that only complains is still alive and must not be called idle.
     child.stderr.on("data", (chunk) => { restartIdle(); if (stderr.length < 64 * 1024) stderr += chunk; });
-    child.once("error", (cause) => { clearTimers(); lines.close(); reject(cause); });
-    child.once("close", (code, signal) => {
-      clearTimers();
+    child.once("error", (cause) => { cleanup(); lines.close(); reject(cause); });
+    child.once("close", (code, closeSignal) => {
+      cleanup();
       lines.close();
-      if (killed || signal) return reject(Object.assign(new Error("Command failed"), { killed, reason, signal: signal || "SIGTERM", stderr, code }));
+      if (killed || closeSignal) return reject(Object.assign(new Error("Command failed"), { killed, reason, signal: closeSignal || "SIGTERM", stderr, code }));
       if (code !== 0) return reject(Object.assign(new Error("Command failed"), { code, stderr, killed: false }));
       return resolve({ stdout, stderr });
     });
@@ -124,6 +138,11 @@ class PlannerRunError extends TypeError {}
 
 const UNUSABLE = "The planner returned an unusable answer. Try again";
 const BUSY = "This goal is planning right now. Wait for the round to finish";
+const ABORTED_ROUND = "This goal was aborted, so its planner round stopped";
+// A terminal goal is finished. Every mutation says so in the sentence the sheet
+// shows, rather than failing with a generic message the user cannot act on.
+const ABORTED_PLAN = "This goal was aborted. Start a new goal";
+const MERGED_PLAN = "This goal is already merged. Start a new goal";
 
 export function parsePlannerReply(stdout) {
   const envelope = extractJson(String(stdout));
@@ -371,6 +390,7 @@ export function describeRunFailure(stderr) {
 // large for one round. An unlabelled kill keeps the old wording, because a fake
 // `execute` in a test rejects without a reason.
 export function describeTimeout(reason, idleTimeoutMs, ceilingMs) {
+  if (reason === "aborted") return ABORTED_ROUND;
   if (reason === "idle") return `The planner stopped answering: no output for ${minutes(idleTimeoutMs)}. Try again`;
   if (reason === "ceiling") return `The planner ran for ${minutes(ceilingMs)} without finishing. Start again with a narrower goal`;
   return "The planner did not answer in time. Try again";
@@ -410,6 +430,10 @@ export class WorktreePlanner {
     this.progress = progress;
     this.pushService = pushService;
     this.drafts = new Map();
+    // One controller per active round, keyed by plan id. Abort reaches the ccs
+    // child through it, and every exit path deletes its own entry, so a
+    // finished round leaves nothing behind for a later abort to kill.
+    this.controllers = new Map();
   }
 
   async start({ repositoryId, goal, images, engine, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
@@ -605,6 +629,55 @@ export class WorktreePlanner {
     if (this.runs.isRunning(planId)) throw new TypeError(BUSY);
   }
 
+  // A terminal goal takes no more work. It stays readable and deletable, so
+  // only the mutating paths call this.
+  #assertNotTerminal(planId) {
+    const status = this.#read(() => this.store?.get(String(planId || ""))?.boardStatus) || null;
+    if (status === "aborted") throw new TypeError(ABORTED_PLAN);
+    if (status === "merged") throw new TypeError(MERGED_PLAN);
+  }
+
+  // Stop a goal for good. It closes every cmux session the goal is known to
+  // own, and it deliberately leaves the worktrees, the branches and the plan
+  // row alone: the work stays on disk for the user to read or reuse.
+  //
+  // The whole call is idempotent. A second abort records no second event and
+  // retries only the closures that failed the first time.
+  async abort(planId) {
+    const id = String(planId || "");
+    const plan = this.#read(() => this.store?.get(id));
+    if (!plan) throw new TypeError("Unknown plan. Start a new goal");
+    if (plan.boardStatus === "merged") throw new TypeError("This goal is already merged, so it cannot be aborted");
+    const alreadyAborted = plan.boardStatus === "aborted";
+
+    // Cancel the live specification round first. Its child dies, its run and
+    // its progress stream finish as aborted, and no later round can start.
+    const controller = this.controllers.get(id);
+    if (controller) {
+      controller.abort();
+      this.controllers.delete(id);
+    }
+    if (this.runs.isRunning(id)) {
+      this.progress?.publish(id, { k: "error", t: ABORTED_ROUND });
+      this.runs.finish(id, { phase: "aborted", error: ABORTED_ROUND });
+    }
+    this.drafts.delete(id);
+    if (!alreadyAborted) this.#persist(() => this.store?.recordGoalAborted(id), id, "abort");
+
+    const closedSessionIds = [];
+    const failedSessionIds = [];
+    for (const workspaceId of goalWorkspaceIds(plan)) {
+      try {
+        await this.cmux?.workspaceClose?.(workspaceId);
+        closedSessionIds.push(workspaceId);
+      } catch (cause) {
+        this.log?.warn?.({ err: cause, planId: id, workspaceId }, "closing an aborted goal session failed");
+        failedSessionIds.push(workspaceId);
+      }
+    }
+    return { planId: id, aborted: true, alreadyAborted, closedSessionIds, failedSessionIds };
+  }
+
   isRunning(planId) {
     return this.runs.isRunning(planId);
   }
@@ -775,7 +848,19 @@ export class WorktreePlanner {
   }
 
   async #round(draft, prompt, onEvent = null, submitted = null) {
-    const reply = await this.#reply(draft, prompt, draft.engine, draft.sessionId, onEvent);
+    const controller = new AbortController();
+    this.controllers.set(draft.planId, controller);
+    try {
+      return await this.#roundWork(draft, prompt, onEvent, submitted, controller.signal);
+    } finally {
+      // Success, failure, timeout and cancellation all land here, so the map
+      // never holds a controller for a round that is over.
+      if (this.controllers.get(draft.planId) === controller) this.controllers.delete(draft.planId);
+    }
+  }
+
+  async #roundWork(draft, prompt, onEvent, submitted, signal) {
+    const reply = await this.#reply(draft, prompt, draft.engine, draft.sessionId, onEvent, false, signal);
     draft.round += 1;
     draft.at = Date.now();
     if (reply.sessionId) draft.sessionId = reply.sessionId;
@@ -789,8 +874,11 @@ export class WorktreePlanner {
     let tasks = reply.tasks;
     if (reply.status === "ready" && draft.engine.reviewer) {
       const reviewer = reviewerEngine(draft.engine.provider);
+      // The structured stage is what the board reads. The line below it is
+      // display text only, and no lifecycle rule may parse it.
+      this.runs.setStage(draft.planId, "review_spec");
       emit(onEvent, { k: "text", t: `Reviewing with ${PLANNER_ENGINES.providers[reviewer.provider].label}…` });
-      const reviewed = await this.#reply(draft, reviewerPrompt(draft, spec, tasks), reviewer, null, onEvent, true);
+      const reviewed = await this.#reply(draft, reviewerPrompt(draft, spec, tasks), reviewer, null, onEvent, true, signal);
       spec = reviewed.legacy ? spec : reviewed.spec;
       tasks = reviewed.tasks;
       if (reviewed.legacy && spec?.acceptanceCriteria?.length === tasks.length) {
@@ -817,9 +905,9 @@ export class WorktreePlanner {
     return publicDraft(draft);
   }
 
-  async #reply(draft, prompt, engine, sessionId, onEvent, tasksOnly = false) {
+  async #reply(draft, prompt, engine, sessionId, onEvent, tasksOnly = false, signal = null) {
     const read = async () => {
-      const reply = parsePlannerReply(await this.#spawn(draft, prompt, engine, sessionId, onEvent));
+      const reply = parsePlannerReply(await this.#spawn(draft, prompt, engine, sessionId, onEvent, signal));
       if (tasksOnly && reply.status !== "ready") throw new TypeError("The reviewer did not return an improved plan");
       return reply;
     };
@@ -834,7 +922,7 @@ export class WorktreePlanner {
     }
   }
 
-  async #spawn(draft, prompt, engine, sessionId, onEvent = null) {
+  async #spawn(draft, prompt, engine, sessionId, onEvent = null, signal = null) {
     const args = [
       // stream-json is what makes live progress possible, and the CLI refuses
       // it under --print without --verbose.
@@ -861,6 +949,7 @@ export class WorktreePlanner {
         idleTimeout: this.idleTimeoutMs,
         maxBuffer: 4 * 1024 * 1024,
         env: process.env,
+        signal,
         onLine: onEvent ? (line) => { const event = progressEvent(line); if (event) emit(onEvent, event); } : undefined,
       });
       return finalEnvelope(stdout);
@@ -894,6 +983,10 @@ export class WorktreePlanner {
   async #draft(planId) {
     this.#sweep();
     const id = String(planId || "");
+    // The durable row is the authority on a terminal outcome, so the guard runs
+    // before the cache: an aborted goal whose draft is still hot must refuse
+    // exactly like one that was reloaded from the database.
+    this.#assertNotTerminal(id);
     const cached = this.drafts.get(id);
     if (cached) return cached;
     const stored = this.#read(() => this.store?.get(id));
@@ -916,14 +1009,19 @@ export class WorktreePlanner {
     const stored = this.#read(() => this.store?.get(String(planId || "")));
     if (!stored) throw new TypeError("Unknown plan. Start a new goal");
     const run = this.runs.get(stored.planId);
-    return {
+    // The live run fields are attached first, and only then is the board state
+    // derived. Computing it on the stored row alone would put a plan that is
+    // planning right now into the wrong column.
+    const detail = {
       ...stored,
       events: this.#read(() => this.store?.events(stored.planId)) || [],
       running: this.runs.isRunning(stored.planId),
       runPhase: run?.phase || null,
+      runStage: run?.stage || null,
       runStep: run?.step || "",
       runError: run?.error || "",
     };
+    return { ...detail, boardState: goalBoardState(detail) };
   }
 
   // A card needs to know that a plan is planning right now, and the run state
@@ -933,7 +1031,15 @@ export class WorktreePlanner {
     return {
       plans: plans.map((plan) => {
         const run = this.runs.get(plan.planId);
-        return { ...plan, running: this.runs.isRunning(plan.planId), runPhase: run?.phase || null, runStep: run?.step || "", runError: run?.error || "" };
+        const summary = {
+          ...plan,
+          running: this.runs.isRunning(plan.planId),
+          runPhase: run?.phase || null,
+          runStage: run?.stage || null,
+          runStep: run?.step || "",
+          runError: run?.error || "",
+        };
+        return { ...summary, boardState: goalBoardState(summary) };
       }),
     };
   }
@@ -970,6 +1076,19 @@ export class WorktreePlanner {
     const cutoff = Date.now() - this.ttlMs;
     for (const [id, draft] of this.drafts) if (draft.at < cutoff) this.drafts.delete(id);
   }
+}
+
+// Every cmux session one goal is known to own: one per launched task, the live
+// merge session, and every merge session a retry superseded. The ids are
+// deduplicated, because a merge session that was later superseded appears in
+// both lists and must not be closed twice.
+function goalWorkspaceIds(plan) {
+  const ids = (Array.isArray(plan?.tasks) ? plan.tasks : []).map((task) => task?.workspaceId);
+  ids.push(plan?.mergeWorkspaceId);
+  for (const entry of Array.isArray(plan?.supersededMergeWorkspaces) ? plan.supersededMergeWorkspaces : []) {
+    ids.push(typeof entry === "string" ? entry : entry?.workspaceId);
+  }
+  return [...new Set(ids.map((value) => (typeof value === "string" ? value.trim() : "")).filter(Boolean))];
 }
 
 // A listener that throws must not fail the round it is only watching.

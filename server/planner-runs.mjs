@@ -9,6 +9,10 @@
 const RUN_TTL_MS = 60_000;
 const MAX_RUNS = 200;
 
+// The specification phases a live round can be in. The board reads this value,
+// never the display text in `step`, so a wording change cannot move a card.
+export const RUN_STAGES = Object.freeze(["writing_spec", "review_spec"]);
+
 export class PlannerRuns {
   constructor({ ttlMs = RUN_TTL_MS, now = Date.now } = {}) {
     this.runs = new Map();
@@ -26,7 +30,17 @@ export class PlannerRuns {
       const oldest = [...this.runs.entries()].filter(([, run]) => run.finishedAt !== null).sort((left, right) => left[1].at - right[1].at)[0];
       if (oldest) this.runs.delete(oldest[0]);
     }
-    this.runs.set(id, { planId: id, kind, phase: "running", step: "", error: "", startedAt: this.now(), finishedAt: null, at: this.now() });
+    this.runs.set(id, { planId: id, kind, phase: "running", stage: "writing_spec", step: "", error: "", startedAt: this.now(), finishedAt: null, at: this.now() });
+  }
+
+  // The one structured lifecycle move a live round makes. It is validated here
+  // rather than at the call site, so no caller can invent a third phase.
+  setStage(planId, stage) {
+    if (!RUN_STAGES.includes(stage)) throw new TypeError(`Unknown planner run stage ${stage}`);
+    const run = this.runs.get(String(planId || ""));
+    if (!run || run.finishedAt !== null) return;
+    run.stage = stage;
+    run.at = this.now();
   }
 
   // The newest legible progress line, which is all a card has room for.

@@ -202,27 +202,28 @@ export class WorktreeDashboard {
     }
   }
 
+  // One bounded `gh` process per refreshed repository, and one only. It asks
+  // for every state, because the goal board needs CLOSED and MERGED as much as
+  // the worktree badges need OPEN. Splitting that into a second goal-specific
+  // command would double the GitHub work each Refresh costs.
   async loadPullRequests(repo, { refresh = false, cacheKey = repo.id } = {}) {
     const cached = this.pullRequestCache.get(cacheKey);
     // Local dashboard polling must never turn into hidden GitHub polling. An
     // explicit refresh replaces this cache; every other snapshot reuses it
     // indefinitely, including the first snapshot after a server restart.
-    if (!refresh) return cached?.value || { available: false, byBranch: new Map() };
+    if (!refresh) return cached?.value || emptyPullRequests();
     if (this.pullRequestPending.has(cacheKey)) return this.pullRequestPending.get(cacheKey);
     const pending = (async () => {
       let value;
       try {
         const { stdout = "" } = await this.repoCatalog.execute("gh", [
-          "pr", "list", "--state", "open", "--limit", "100",
-          "--json", "number,title,url,state,isDraft,reviewDecision,statusCheckRollup,headRefName,baseRefName,mergeStateStatus,updatedAt,author",
+          "pr", "list", "--state", "all", "--limit", "100",
+          "--json", "number,title,url,state,isDraft,reviewDecision,statusCheckRollup,headRefName,baseRefName,mergeStateStatus,updatedAt,author,createdAt,closedAt,mergedAt",
         ], { cwd: repo.path, encoding: "utf8", timeout: 2_500, maxBuffer: 2 * 1024 * 1024, env: process.env });
         const pullRequests = JSON.parse(stdout);
-        value = { available: true, byBranch: new Map((Array.isArray(pullRequests) ? pullRequests : []).map((item) => {
-          const normalized = normalizePullRequest(item);
-          return [normalized.headBranch, normalized];
-        })) };
+        value = buildPullRequests(Array.isArray(pullRequests) ? pullRequests : []);
       } catch {
-        value = { available: false, byBranch: new Map() };
+        value = emptyPullRequests();
       }
       this.pullRequestCache.set(cacheKey, { at: Date.now(), value });
       return value;
@@ -230,6 +231,15 @@ export class WorktreeDashboard {
     this.pullRequestPending.set(cacheKey, pending);
     try { return await pending; }
     finally { this.pullRequestPending.delete(cacheKey); }
+  }
+
+  // What the last successful refresh saw for one repository, with no GitHub
+  // call of its own. The goal merge watcher reads observations through this,
+  // so reconciliation can never add a process to a Refresh.
+  pullRequestObservations(repositoryId) {
+    const cached = this.pullRequestCache.get(String(repositoryId || ""));
+    if (!cached?.value) return { available: false, observations: [] };
+    return { available: cached.value.available === true, observations: cached.value.observations || [] };
   }
 
   async resolve(id) {
@@ -451,6 +461,35 @@ export class WorktreeDashboard {
   invalidate() {
     this.cache = null;
   }
+}
+
+function emptyPullRequests() {
+  return { available: false, byBranch: new Map(), observations: [] };
+}
+
+// Two shapes from one command. `byBranch` keeps only OPEN pull requests, which
+// is what a worktree badge and the dashboard counts have always meant, and it
+// keeps the newest per branch. `observations` keeps every state, because one
+// branch can carry a closed pull request and a merged one, and the goal watcher
+// has to tell them apart.
+function buildPullRequests(items) {
+  const byBranch = new Map();
+  const observations = [];
+  for (const item of items) {
+    const normalized = normalizePullRequest(item);
+    const observation = {
+      ...normalized,
+      state: String(item?.state || normalized.state || "").toUpperCase(),
+      createdAt: item?.createdAt || null,
+      closedAt: item?.closedAt || null,
+      mergedAt: item?.mergedAt || null,
+    };
+    observations.push(observation);
+    if (observation.state !== "OPEN") continue;
+    const current = byBranch.get(normalized.headBranch);
+    if (!current || String(observation.updatedAt || "") > String(current.updatedAt || "")) byBranch.set(normalized.headBranch, normalized);
+  }
+  return { available: true, byBranch, observations };
 }
 
 export function parseWorktreeList(output) {
