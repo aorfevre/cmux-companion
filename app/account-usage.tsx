@@ -164,7 +164,9 @@ function percentTone(percent: number) { return percent <= 0 ? "exhausted" : perc
 function statusLabel(status: UsageAccount["status"], windowCount = 1) { return status === "ready" && windowCount === 0 ? "Connected" : ({ ready: "Available", low: "Low", exhausted: "Exhausted", reconnect: "Reconnect", unavailable: "Unavailable" })[status]; }
 function displayLabel(label: string) { return label.replaceAll("-", " ").replace(/\bGpt\b/i, "GPT"); }
 function relativeUpdated(value: string) { const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000)); return seconds < 15 ? "Updated now" : seconds < 60 ? `Updated ${seconds}s ago` : `Updated ${Math.floor(seconds / 60)}m ago`; }
-function resetText(value: string | null, now: number) {
+// The one countdown in the app. The goals board reuses it so a quota reset
+// never reads two different ways on two screens.
+export function resetText(value: string | null, now: number) {
   if (!value) return "Reset unknown";
   const reset = new Date(value);
   const milliseconds = reset.getTime() - now;

@@ -1096,6 +1096,69 @@ test("skips one task and carries its reason", async (t) => {
   assert.equal(planner.calls[0][3].reason, "Superseded by t3");
 });
 
+// The user saw goals sitting in "Waiting for merge" that GitHub had already
+// merged. The board reconciles on a timer and on a manual GitHub refresh, which
+// leaves a gap they can see; this answers the question for one goal on demand.
+test("checks one goal against GitHub and reports what changed", async (t) => {
+  let boardPrState = null;
+  const store = {
+    get: (planId) => (planId === "plan-1" ? { planId, boardPrState, boardStatus: boardPrState === "MERGED" ? "merged" : null, boardPrNumber: 34, boardPrUrl: "https://github.test/pr/34" } : null),
+  };
+  const mergeWatch = { reconcile: async () => { boardPrState = "MERGED"; return { recorded: [{ planId: "plan-1", state: "MERGED", number: 34, url: "https://github.test/pr/34" }] }; } };
+  const refreshes = [];
+  const worktreeDashboard = {
+    snapshot: async (options) => { refreshes.push(options); return { repositories: [], orphanSessions: [], summary: {} }; },
+    invalidate: () => {},
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalMergeWatch: mergeWatch, worktreeDashboard });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const checked = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/check-merge", headers, payload: {} });
+  assert.equal(checked.statusCode, 200);
+  assert.deepEqual(checked.json(), {
+    planId: "plan-1", changed: true, state: "MERGED", boardStatus: "merged",
+    pullRequest: { number: 34, url: "https://github.test/pr/34" }, checked: true,
+  });
+  // GitHub is refreshed first, or the check would report the state of the last
+  // refresh rather than the state now.
+  assert.deepEqual(refreshes, [{ refresh: true, refreshGitHub: true }]);
+});
+
+test("a goal GitHub knows nothing about reports no change rather than an error", async (t) => {
+  const store = { get: () => ({ planId: "plan-1", boardPrState: null, boardStatus: null, boardPrUrl: null }) };
+  const mergeWatch = { reconcile: async () => ({ recorded: [] }) };
+  const worktreeDashboard = { snapshot: async () => ({ repositories: [], orphanSessions: [], summary: {} }), invalidate: () => {} };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalMergeWatch: mergeWatch, worktreeDashboard });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const checked = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/check-merge", headers, payload: {} });
+  assert.equal(checked.statusCode, 200);
+  assert.equal(checked.json().changed, false);
+  assert.equal(checked.json().pullRequest, null);
+});
+
+test("reports which provider takes the next task and why", async (t) => {
+  const accountUsage = {
+    snapshot: async () => ({
+      providers: [
+        { id: "claude", label: "Claude", available: true, accounts: [{ id: "a", label: "work", status: "ready", windows: [{ cadence: "5h", category: "usage", remainingPercent: 90, resetAt: null }, { cadence: "weekly", category: "usage", remainingPercent: 90, resetAt: null }] }] },
+        { id: "codex", label: "Codex", available: true, accounts: [{ id: "b", label: "work", status: "ready", windows: [{ cadence: "5h", category: "usage", remainingPercent: 20, resetAt: null }, { cadence: "weekly", category: "usage", remainingPercent: 20, resetAt: null }] }] },
+      ],
+    }),
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, accountUsage, worktreePlanner: fakePlanner() });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const capacity = await app.inject({ method: "GET", url: "/api/goals/capacity", headers });
+  assert.equal(capacity.statusCode, 200);
+  assert.equal(capacity.json().next, "claude");
+  assert.equal(capacity.json().available, true);
+  assert.equal(capacity.json().providers[0].headroom, 90);
+});
+
 test("every supervision route requires pairing", async (t) => {
   const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: fakeHealth() });
   t.after(() => app.close());
@@ -1105,6 +1168,8 @@ test("every supervision route requires pairing", async (t) => {
     ["GET", "/api/worktree-plans/plan-1/health"],
     ["POST", "/api/worktree-plans/plan-1/tasks/t1/relaunch"],
     ["POST", "/api/worktree-plans/plan-1/tasks/t1/skip"],
+    ["POST", "/api/worktree-plans/plan-1/check-merge"],
+    ["GET", "/api/goals/capacity"],
   ]) {
     const response = await app.inject({ method, url, payload: method === "POST" ? {} : undefined });
     assert.equal(response.statusCode, 401, `${method} ${url}`);
