@@ -93,6 +93,7 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
     workspaceCreate: async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge" }; },
     rpc: async (method, params) => { calls.push(["rpc", method, params]); return {}; },
     notify: async (workspaceId, body) => { calls.push(["notify", workspaceId, body]); return {}; },
+    workspaceClose: async (workspaceId) => { calls.push(["workspaceClose", workspaceId]); return { ok: true }; },
   };
   const briefs = new AgentBriefs({ directory: join(root, "briefs") });
   const integrator = new GoalIntegrator({ store, worktrees, repoCatalog, cmux, execute, settleMs: 1, briefs });
@@ -560,4 +561,119 @@ test("a wave retry launches a task whose worktree a failed launch left behind", 
   const waveCreate = calls.filter((call) => call[0] === "create" && call[2].branch === "feature/billing-ui").at(-1);
   assert.equal(waveCreate[2].reuseIfAtBase, true);
   assert.deepEqual(waveCreate[2].workspaces, []);
+});
+
+
+// A finished goal used to leave every session it opened in the cmux sidebar:
+// one per task, plus one per merge attempt. Each is closed the moment its work
+// is integrated, so only the session that opened the pull request stays.
+function integrateBoth(integrator, integrationPath) {
+  const git = integrator.repoCatalog.git;
+  integrator.repoCatalog.git = async (cwd, args) => {
+    if (cwd === integrationPath && args[0] === "log") {
+      return `Task 1\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\nCmux-Goal-Task: plan-12345678/t2/${TASK_TWO}\n`;
+    }
+    return git(cwd, args);
+  };
+}
+
+const closedWorkspaces = (calls) => calls.filter((call) => call[0] === "workspaceClose").map((call) => call[1]);
+
+test("closes each task session once its branch is integrated", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  await integrator.assemble("plan-12345678");
+  integrateBoth(integrator, integrationPath);
+  await integrator.settle("plan-12345678");
+  assert.deepEqual(closedWorkspaces(calls).sort(), ["workspace-one", "workspace-two"]);
+  const saved = store.get("plan-12345678");
+  assert.ok(saved.tasks.every((task) => task.sessionClosedAt));
+});
+
+test("closes a merge session that a fresh merge agent superseded", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  await integrator.assemble("plan-12345678");
+  await integrator.settle("plan-12345678");
+  integrator.cmux.rpc = async () => { throw new Error("workspace not found"); };
+  integrator.cmux.workspaceCreate = async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge-2" }; };
+  const result = await integrator.assemble("plan-12345678");
+  assert.equal(result.mergeWorkspaceId, "workspace-merge-2");
+  assert.deepEqual(closedWorkspaces(calls), ["workspace-merge"]);
+  assert.deepEqual(store.get("plan-12345678").supersededMergeWorkspaces.map((entry) => entry.workspaceId), ["workspace-merge"]);
+});
+
+test("closes a wave merge session once its wave is integrated", async (t) => {
+  const { integrator, calls, integrationPath } = fixture(t, { contract: true, workflow: true });
+  await integrator.assemble("plan-12345678");
+  const git = integrator.repoCatalog.git;
+  integrator.repoCatalog.git = async (cwd, args) => {
+    if (cwd === integrationPath && args[0] === "log") return `Task 1: Billing API\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`;
+    if (cwd === integrationPath && args[0] === "rev-parse") return `${"d".repeat(40)}\n`;
+    return git(cwd, args);
+  };
+  await integrator.settle("plan-12345678");
+  assert.deepEqual(closedWorkspaces(calls).sort(), ["workspace-merge", "workspace-one"]);
+});
+
+test("keeps the session that opened the pull request and closes the rest", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  await integrator.assemble("plan-12345678");
+  integrateBoth(integrator, integrationPath);
+  const result = await integrator.settle("plan-12345678");
+  assert.equal(result.deliveryStatus, "pr_open");
+  const closed = closedWorkspaces(calls);
+  assert.deepEqual(closed.sort(), ["workspace-one", "workspace-two"]);
+  assert.equal(closed.includes(store.get("plan-12345678").mergeWorkspaceId), false);
+});
+
+test("a cmux client with no workspaceClose still delivers the pull request", async (t) => {
+  const { store, integrator, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  delete integrator.cmux.workspaceClose;
+  await integrator.assemble("plan-12345678");
+  integrateBoth(integrator, integrationPath);
+  const result = await integrator.settle("plan-12345678");
+  assert.equal(result.deliveryStatus, "pr_open");
+  assert.equal(store.get("plan-12345678").finalPrNumber, 42);
+});
+
+test("a rejecting workspaceClose never changes the delivery result", async (t) => {
+  const { store, integrator, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  integrator.cmux.workspaceClose = async () => { throw new Error("cmux is down"); };
+  await integrator.assemble("plan-12345678");
+  integrateBoth(integrator, integrationPath);
+  const result = await integrator.settle("plan-12345678");
+  assert.equal(result.deliveryStatus, "pr_open");
+  assert.equal(store.get("plan-12345678").finalPrNumber, 42);
+  // A session cmux merely could not reach stays open and stays retryable.
+  assert.equal(store.get("plan-12345678").tasks.some((task) => task.sessionClosedAt), false);
+});
+
+// Retirement is durable, so neither a repeated settle nor a restart with a
+// fresh integrator over the same store may close a session twice.
+test("no session is closed twice across a second settle or a restart", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
+  await integrator.assemble("plan-12345678");
+  integrateBoth(integrator, integrationPath);
+  await integrator.settle("plan-12345678");
+  assert.equal(closedWorkspaces(calls).length, 2);
+  await integrator.settle("plan-12345678");
+  const restarted = new GoalIntegrator({
+    store, worktrees: integrator.worktrees, repoCatalog: integrator.repoCatalog,
+    cmux: integrator.cmux, execute: integrator.execute, settleMs: 1, briefs: integrator.briefs,
+  });
+  await restarted.settle("plan-12345678");
+  assert.equal(closedWorkspaces(calls).length, 2);
+});
+
+test("closes nothing while a task branch is still unpushed", async (t) => {
+  const { integrator, calls } = fixture(t, { secondPushed: false });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for 1 task branch/);
+  assert.equal(closedWorkspaces(calls).length, 0);
+});
+
+test("closes nothing new when the merge agent stops without a pull request", async (t) => {
+  const { integrator, calls } = fixture(t);
+  await integrator.assemble("plan-12345678");
+  const result = await integrator.settle("plan-12345678");
+  assert.equal(result.mergeStatus, "blocked");
+  assert.equal(closedWorkspaces(calls).length, 0);
 });

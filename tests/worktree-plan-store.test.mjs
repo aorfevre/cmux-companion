@@ -390,3 +390,63 @@ test("records the cmux group, the merge workspace and a merge block", (t) => {
   assert.ok(kinds.includes("merge_launched"));
   assert.ok(kinds.includes("merge_blocked"));
 });
+
+
+// A closed session must stay closed across a restart. Without a durable
+// record, a reopened companion would ask cmux to close ids that are gone and
+// would never know which sessions it had already retired.
+test("persists retired goal sessions across a reopen", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "retired-plan-store-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "goal-plans.db");
+  const first = new WorktreePlanStore({ path });
+  seed(first);
+  first.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  first.recordLaunch("plan-1", {
+    base: "origin/main", baseSha: "a".repeat(40),
+    results: TASKS.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/task-${index}`, workspace: { workspace_id: `workspace-${index}` } })),
+  });
+  first.recordMergeLaunched("plan-1", "workspace-merge");
+  // A second merge agent supersedes the first, and a wave integration retires
+  // the one that is running. Both ids must survive the columns being cleared.
+  first.recordMergeLaunched("plan-1", "workspace-merge-2");
+  first.recordWaveIntegrated("plan-1", 0);
+  first.recordTaskIntegrated("plan-1", "t1", "d".repeat(40));
+  assert.deepEqual(first.pendingSessionClosures("plan-1"), [
+    { workspaceId: "workspace-0", taskId: "t1" },
+    { workspaceId: "workspace-merge", taskId: null },
+    { workspaceId: "workspace-merge-2", taskId: null },
+  ]);
+  first.recordSessionsRetired("plan-1", [
+    { workspaceId: "workspace-0", taskId: "t1" },
+    { workspaceId: "workspace-merge", taskId: null },
+  ]);
+  first.close();
+
+  const second = new WorktreePlanStore({ path });
+  t.after(() => second.close());
+  assert.deepEqual(second.pendingSessionClosures("plan-1"), [{ workspaceId: "workspace-merge-2", taskId: null }]);
+  const plan = second.get("plan-1");
+  assert.ok(plan.tasks[0].sessionClosedAt);
+  assert.equal(plan.tasks[1].sessionClosedAt, null);
+  assert.deepEqual(plan.supersededMergeWorkspaces.map((entry) => entry.workspaceId), ["workspace-merge", "workspace-merge-2"]);
+  assert.ok(second.events("plan-1").some((event) => event.kind === "session_retired"));
+});
+
+// An unintegrated task is still working, and the live merge session is the one
+// the user is watching. Neither may be offered for closure.
+test("offers no session for a task that is not integrated or for the live merge", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.recordLaunch("plan-1", {
+    base: "origin/main",
+    results: TASKS.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/task-${index}`, workspace: { workspace_id: `workspace-${index}` } })),
+  });
+  store.recordMergeLaunched("plan-1", "workspace-merge");
+  assert.deepEqual(store.pendingSessionClosures("plan-1"), []);
+  // A resumed merge records the same id again, which continues the session
+  // rather than replacing it.
+  store.recordMergeLaunched("plan-1", "workspace-merge");
+  assert.deepEqual(store.pendingSessionClosures("plan-1"), []);
+});
