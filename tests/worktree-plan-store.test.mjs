@@ -340,7 +340,7 @@ test("migrates a pre-contract database without losing legacy plans", (t) => {
   first.close();
 
   const legacy = new DatabaseSync(path);
-  for (const column of ["contract_version", "spec", "readiness"]) legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
+  for (const column of ["contract_version", "spec", "readiness", "last_error", "last_error_at"]) legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
   for (const column of ["task_type", "criterion_ids", "depends_on", "owned_areas", "verification", "wave", "start_sha", "completion_report", "evidence_status", "evidence_error", "changed_files", "scope_warnings"]) {
     legacy.exec(`ALTER TABLE plan_tasks DROP COLUMN ${column}`);
   }
@@ -357,6 +357,37 @@ test("migrates a pre-contract database without losing legacy plans", (t) => {
   assert.equal(plan.tasks[0].type, "feature");
   assert.deepEqual(plan.tasks[0].criterionIds, []);
   assert.deepEqual(plan.tasks[0].changedFiles, []);
+  assert.equal(plan.lastError, null);
+  assert.equal(plan.lastErrorAt, null);
+});
+
+// A failed round is plan state, not a turn of the conversation, so it survives
+// a reopen and is answered by the next round rather than accumulating.
+test("stores a failed round and clears it on the next one", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  assert.equal(store.get("plan-1").lastError, null);
+
+  const failed = store.recordRoundFailure("plan-1", "The planner stopped answering: no output for 4 minutes. Try again");
+  assert.match(failed.lastError, /no output for 4 minutes/);
+  assert.ok(Date.parse(failed.lastErrorAt) > 0);
+  assert.equal(store.list({ status: "all" })[0].lastError, failed.lastError);
+  // A failure is not a round: it changes neither the round number nor the stage.
+  assert.equal(failed.round, 0);
+  assert.equal(failed.stage, "questions");
+  // And it writes no event, because PLAN_EVENT_KINDS is a closed set.
+  assert.equal(store.events("plan-1").length, 1);
+
+  const cleared = store.recordRound("plan-1", { round: 1, stage: "questions", sessionId: "sess-a", questions: [{ id: "q1", text: "Which database?", options: [] }] });
+  assert.equal(cleared.lastError, null);
+  assert.equal(cleared.lastErrorAt, null);
+});
+
+test("truncates an over-long failure instead of storing it whole", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  assert.equal(store.recordRoundFailure("plan-1", "x".repeat(5_000)).lastError.length, 2_000);
+  assert.match(store.recordRoundFailure("plan-1", "").lastError, /planner round failed/);
 });
 
 test("records the cmux group, the merge workspace and a merge block", (t) => {

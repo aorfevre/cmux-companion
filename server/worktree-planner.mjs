@@ -538,6 +538,10 @@ export class WorktreePlanner {
   // out. An unhandled rejection would take the whole companion down.
   #detach(draft, prompt, kind, submitted = null) {
     const planId = draft.planId;
+    // The previous failure is answered by this attempt, so it stops being the
+    // plan's state the moment the new round starts.
+    draft.lastError = null;
+    draft.lastErrorAt = null;
     this.runs.begin(planId, kind);
     const onEvent = (event) => {
       this.progress?.publish(planId, event);
@@ -555,6 +559,11 @@ export class WorktreePlanner {
         this.log?.warn?.({ err: cause, planId }, "background planner round failed");
         this.progress?.publish(planId, { k: "error", t: message });
         this.runs.finish(planId, { phase: "failed", error: message });
+        // The stream is closed and the run registry expires within a minute, so
+        // a sheet reopened later has no other way to learn what went wrong.
+        draft.lastError = message;
+        draft.lastErrorAt = new Date().toISOString();
+        this.#persist(() => this.store?.recordRoundFailure(planId, message), planId, "round-failed");
         this.#notifyFailure(draft, message);
       });
   }
@@ -991,6 +1000,8 @@ function publicDraft(draft) {
     spec: draft.spec,
     readiness: draft.readiness,
     tasks: draft.tasks,
+    lastError: draft.lastError || null,
+    lastErrorAt: draft.lastErrorAt || null,
     deliveryMode: planDeliveryMode(draft),
   };
 }
@@ -1016,6 +1027,8 @@ function draftFromStore(stored) {
     at: Date.now(),
     status: stored.stage === "ready" ? "ready" : "questions",
     questions: Array.isArray(stored.questions) ? stored.questions : [],
+    lastError: stored.lastError || null,
+    lastErrorAt: stored.lastErrorAt || null,
     spec: contract.spec,
     readiness: contract.readiness,
     tasks: contract.tasks.map((task) => ({

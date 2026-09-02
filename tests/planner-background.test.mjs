@@ -258,3 +258,43 @@ test("a background answer round also restates the goal when the session is gone"
   assert.ok(!deps.calls[0][1].includes("--resume"));
   assert.equal((await planner.resume("plan-lost")).status, "ready");
 });
+
+// The failure has to outlive the round. The progress stream is closed and the
+// run registry expires within a minute, so without the stored copy a sheet
+// reopened later blamed a companion restart for a timeout.
+test("a failed background round stores its reason on the plan", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const timedOut = Object.assign(new Error("timeout"), { killed: true, signal: "SIGTERM", reason: "idle" });
+  const deps = fakeDeps({ replies: [timedOut] });
+  const planner = new WorktreePlanner({ ...deps, store, idleTimeoutMs: 240_000 });
+  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
+  await settled(planner, draft.planId);
+
+  const stored = store.get(draft.planId);
+  assert.match(stored.lastError, /no output for 4 minutes/);
+  assert.ok(Date.parse(stored.lastErrorAt) > 0);
+  // A reopened sheet reads the same reason, not the generic restart sentence.
+  const reopened = await planner.detail(draft.planId);
+  assert.match(reopened.lastError, /no output for 4 minutes/);
+  assert.equal((await planner.list({ status: "all" })).plans[0].lastError, stored.lastError);
+});
+
+test("a plan that plans again drops the previous failure", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const timedOut = Object.assign(new Error("timeout"), { killed: true, signal: "SIGTERM", reason: "idle" });
+  const deps = fakeDeps({ replies: [timedOut, envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  const planner = new WorktreePlanner({ ...deps, store });
+  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
+  await settled(planner, draft.planId);
+  assert.ok(store.get(draft.planId).lastError);
+
+  await planner.run(draft.planId);
+  await settled(planner, draft.planId);
+  const stored = store.get(draft.planId);
+  assert.equal(stored.lastError, null);
+  assert.equal(stored.lastErrorAt, null);
+  assert.equal(stored.round, 1);
+  assert.equal((await planner.resume(draft.planId)).lastError, null);
+});
