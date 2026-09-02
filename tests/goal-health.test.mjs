@@ -112,6 +112,35 @@ test("an agent that asked a question needs you rather than a relaunch", async ()
   assert.equal(result.summary.stuck, 0);
 });
 
+// cmux sets `has_unread` whenever a turn ends with nobody watching, so an agent
+// that crashed to a shell prompt carries it too. Reading it as a question would
+// label every silent crash as "waiting for an answer" and, worse, keep it out
+// of the idle clock for ever.
+test("unread output alone is not a question, and still reaches the idle clock", async () => {
+  const crashed = workspace({
+    has_unread: true,
+    last_activity_at: NOW - DEFAULT_IDLE_MS - 60_000,
+    status: { effective: "done", signals: { any_agent_running: false } },
+  });
+  const result = await new GoalHealthSweep({ store: store(plan({ tasks: [task()] })), cmux: cmux([crashed]), now }).sweep();
+
+  assert.equal(result.goals[0].tasks[0].health, "idle");
+  assert.match(result.goals[0].tasks[0].reason, /output nobody has read/);
+  assert.equal(result.summary.needsYou, 0);
+  assert.equal(result.summary.idleTasks, 1);
+});
+
+// A skipped task was dropped on purpose. Reporting it as queued for a wave
+// would tell the user to wait for work that will never run.
+test("a skipped task says it was skipped, not that it is queued", async () => {
+  const skipped = task({ launchStatus: "skipped", launchError: "Superseded by task T3", workspaceId: null });
+  const result = await new GoalHealthSweep({ store: store(plan({ tasks: [skipped] })), cmux: cmux([]), now }).sweep();
+
+  assert.equal(result.goals[0].tasks[0].health, "skipped");
+  assert.equal(result.goals[0].tasks[0].reason, "Superseded by task T3");
+  assert.equal(result.goals[0].stuckCount, 0);
+});
+
 test("an unreachable cmux reports unknown instead of declaring live agents dead", async () => {
   const broken = { workspaceListDetailed: async () => { throw new Error("cmux is closed"); } };
   const warnings = [];
@@ -158,6 +187,23 @@ test("finished work needs no live agent", async () => {
   assert.equal(result.goals[0].tasks[1].health, "integrated");
   assert.equal(result.goals[0].readyCount, 2);
   assert.equal(result.goals[0].stuckCount, 0);
+});
+
+// The worst false alarm there is: the goal succeeded, its agent finished and
+// closed, and the sweep reported it as dead twenty minutes later.
+test("a goal with an open pull request has finished, whatever its session did", async () => {
+  const delivered = plan({ deliveryMode: "single", boardPrState: "OPEN", tasks: [task()] });
+  const result = await new GoalHealthSweep({ store: store(delivered), cmux: cmux([]), now }).sweep();
+
+  assert.equal(result.goals[0].tasks[0].health, "ready");
+  assert.equal(result.goals[0].tasks[0].reason, "This task opened its pull request");
+  assert.equal(result.goals[0].health, "ready");
+  assert.equal(result.summary.stuck, 0);
+
+  // A recorded final pull request counts as the same evidence.
+  const finished = plan({ deliveryMode: "single", finalPrUrl: "https://github.test/pr/9", tasks: [task()] });
+  const after = await new GoalHealthSweep({ store: store(finished), cmux: cmux([]), now }).sweep();
+  assert.equal(after.goals[0].health, "ready");
 });
 
 test("checks a single-task goal, which no other watcher covers", async () => {

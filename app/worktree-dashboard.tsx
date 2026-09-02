@@ -307,7 +307,12 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   async function relaunchTask(goal: HealthGoal, task: HealthTask, mode: "continue" | "restart") {
     await runBoardAction(`relaunch:${goal.planId}:${task.id}`, async () => {
       try {
-        await request(`/api/worktree-plans/${encodeURIComponent(goal.planId)}/tasks/${encodeURIComponent(task.id)}/relaunch`, { method: "POST", body: JSON.stringify({ mode }) });
+        // A crashed agent usually leaves its workspace open at a shell prompt.
+        // Closing it here saves the trip to cmux and back, but only for a task
+        // the sweep has already judged stuck: a session that is still working
+        // must never be killed by a button labelled Continue.
+        const closeLive = Boolean(task.session) && task.health !== "working" && task.health !== "needs_you";
+        await request(`/api/worktree-plans/${encodeURIComponent(goal.planId)}/tasks/${encodeURIComponent(task.id)}/relaunch`, { method: "POST", body: JSON.stringify({ mode, closeLive }) });
         setConfirmTaskAction("");
         await loadHealth(); await loadGoalPlans();
         onNotice(mode === "restart" ? `Restarted ${task.title} from its base branch` : `Continued ${task.title} in its existing worktree`);

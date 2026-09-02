@@ -691,16 +691,28 @@ export class WorktreePlanner {
   //   - `continue` keeps the worktree and whatever the agent already wrote,
   //     and opens a fresh session on it. This is the common case.
   //   - `restart` throws the working tree away and rebuilds from the base.
-  async relaunchTask(planId, taskId, { mode = "continue" } = {}) {
+  async relaunchTask(planId, taskId, { mode = "continue", closeLive = false } = {}) {
     if (mode !== "continue" && mode !== "restart") throw new TypeError("Relaunch mode must be continue or restart");
     const { plan, task } = this.#launchedTask(planId, taskId);
     if (task.deliveryStatus === "integrated") throw new TypeError("This task is already merged into the goal branch");
     if (!this.cmux) throw new TypeError("Relaunching a task needs a cmux connection");
 
-    // A live session is the one case where relaunching is the wrong answer:
-    // a second agent in one worktree would fight the first over the same files.
+    // Two agents in one worktree would fight over the same files, so a live
+    // session must go before a new one starts.
+    //
+    // A crashed agent usually leaves its workspace open at a shell prompt, and
+    // that is the commonest way a task dies. Refusing outright sent the user to
+    // cmux to close it by hand and come back, which is the round trip this
+    // whole path exists to remove. `closeLive` closes it here instead — but
+    // only when asked, because a session that is genuinely working must never
+    // be killed by a button labelled Continue.
     const live = await this.#liveSession(task.workspaceId);
-    if (live) throw new TypeError("This task's cmux session is still open. Close it first, or answer it, before relaunching");
+    if (live && !closeLive) throw new TypeError("This task's cmux session is still open. Close it first, or answer it, before relaunching");
+    if (live) {
+      await this.cmux.workspaceClose(task.workspaceId).catch((cause) => {
+        this.log?.warn?.({ err: cause, planId: plan.planId, taskId: task.id }, "closing a relaunched task session failed");
+      });
+    }
 
     const base = plan.deliveryMode === "combined" && plan.integrationBranch ? plan.integrationBranch : plan.baseRef || "origin/main";
     const result = mode === "restart"
@@ -751,6 +763,7 @@ export class WorktreePlanner {
         cwd: path,
         title: sessionTitle(plan, task),
         agent: task.agent,
+        env: sessionEnv(plan, task),
         prompt: this.briefs.pointerPrompt({
           title: task.title,
           outcome: plan.spec?.outcome || plan.goal,
@@ -785,6 +798,7 @@ export class WorktreePlanner {
         cwd: path,
         title: sessionTitle(plan, task),
         agent: task.agent,
+        env: sessionEnv(plan, task),
         prompt: this.briefs.pointerPrompt({ title: task.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
       });
       return { ...summary, status: "launched", path, workspace, startSha };

@@ -18,18 +18,27 @@ const DEFAULT_START_DELAY_MS = 60 * 1_000;
 // Only these verdicts are worth waking someone for. `working`, `ready`,
 // `integrated` and `queued` are the healthy path, and `unknown` means the check
 // itself could not run, which is not the goal's fault.
-const ALERTING = new Map([
+// The kind must be one PushService accepts (see EVENT_KINDS in
+// push-service.mjs). An unknown word throws inside `send`, and this class
+// swallows push failures, so a wrong kind here would be a permanently silent
+// alert rather than a visible error.
+export const ALERTING = new Map([
   ["dead", { kind: "failure", label: "stopped" }],
   ["failed", { kind: "failure", label: "could not launch" }],
   ["idle", { kind: "attention", label: "went quiet" }],
-  ["needs_you", { kind: "decision", label: "is waiting for you" }],
+  ["needs_you", { kind: "attention", label: "is waiting for you" }],
 ]);
 
 export class GoalWatchdog {
-  constructor({ health, pushService = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
+  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
     if (!health) throw new TypeError("A goal health sweep is required");
     this.health = health;
     this.pushService = pushService;
+    // Reconciling before the sweep is what stops a finished goal being reported
+    // as broken: without it, a goal whose agent opened its pull request and
+    // stopped keeps a stale board state, and the sweep calls it idle.
+    this.mergeWatch = mergeWatch;
+    this.worktrees = worktrees;
     this.log = log;
     this.intervalMs = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : DEFAULT_INTERVAL_MS;
     this.startDelayMs = Number.isFinite(startDelayMs) && startDelayMs >= 0 ? startDelayMs : DEFAULT_START_DELAY_MS;
@@ -64,6 +73,7 @@ export class GoalWatchdog {
   // One pass. Exported so a test drives it directly and the manual sweep route
   // can share the dedupe.
   async check() {
+    await this.#reconcile();
     const swept = await this.health.sweep();
     // An unreachable cmux reports every session as `unknown`. Alerting on that
     // would tell the user their agents died every time they closed cmux, so the
@@ -82,10 +92,13 @@ export class GoalWatchdog {
         continue;
       }
       if (this.alerted.get(goal.planId) === goal.health) continue;
-      this.alerted.set(goal.planId, goal.health);
-      const alert = { planId: goal.planId, health: goal.health, goal: goal.goal, stuckCount: goal.stuckCount };
-      alerts.push(alert);
-      await this.#push(goal, rule);
+      const delivered = await this.#push(goal, rule);
+      // Remembered only once an alert really reached a device. `send` returns
+      // `sent: 0` during quiet hours and when no phone is registered, so
+      // marking it sent regardless would silence a 2am death for good: the
+      // state never changes again, so the next tick would skip it forever.
+      if (delivered) this.alerted.set(goal.planId, goal.health);
+      alerts.push({ planId: goal.planId, health: goal.health, goal: goal.goal, stuckCount: goal.stuckCount, delivered });
     }
     // A goal that left the sweep is terminal or deleted. Dropping it keeps the
     // map bounded by the number of live goals rather than by uptime.
@@ -93,11 +106,29 @@ export class GoalWatchdog {
     return { checked: true, checkedAt: swept.checkedAt, alerts, summary: swept.summary };
   }
 
+  // Returns true only when a device actually received the alert. With no push
+  // service at all it returns true: there is nothing to retry, and retrying
+  // every tick forever would be worse than reporting once.
+  // Best-effort, and deliberately before the sweep rather than instead of it.
+  // A GitHub read that fails must still leave the liveness check to run, so a
+  // dead agent is reported even when `gh` is unauthenticated or offline.
+  async #reconcile() {
+    if (!this.mergeWatch?.reconcile) return;
+    try {
+      // The watcher reads what the dashboard cached, so the cache is refreshed
+      // first or it would reconcile against the last manual refresh.
+      if (this.worktrees?.snapshot) await this.worktrees.snapshot({ refresh: true, refreshGitHub: true });
+      await this.mergeWatch.reconcile();
+    } catch (cause) {
+      this.log?.warn?.({ err: cause }, "goal watchdog could not reconcile pull requests");
+    }
+  }
+
   async #push(goal, rule) {
-    if (!this.pushService?.send) return;
+    if (!this.pushService?.send) return true;
     try {
       const reason = firstReason(goal);
-      await this.pushService.send({
+      const result = await this.pushService.send({
         title: `A goal ${rule.label}`,
         body: [oneLine(goal.goal, 120), reason ? oneLine(reason, 140) : ""].filter(Boolean).join(" — "),
         kind: rule.kind,
@@ -106,8 +137,10 @@ export class GoalWatchdog {
         // than a stack of its history.
         tag: `goal-health:${goal.planId}`,
       });
+      return Number(result?.sent) > 0;
     } catch (cause) {
       this.log?.warn?.({ err: cause, planId: goal.planId }, "goal health alert failed");
+      return false;
     }
   }
 }

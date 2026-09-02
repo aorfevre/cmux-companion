@@ -156,6 +156,39 @@ test("refuses to relaunch while the task's cmux session is still live", async (t
   assert.deepEqual(deps.calls.filter((call) => call[0] === "workspace"), [], "no session may be opened");
 });
 
+// A crashed agent usually leaves its workspace open at a shell prompt, so
+// refusing outright sent the user to cmux to close it by hand and come back —
+// the round trip this whole path exists to remove.
+test("closeLive closes the open session and then relaunches", async (t) => {
+  const path = await realWorktree();
+  const deps = recoveryDeps();
+  deps.cmux.workspaceListDetailed = async () => ({ workspaces: [{ id: "ws-old", current_directory: path }] });
+  const { planner } = launched(t, { deps, worktreePath: path });
+
+  const result = await planner.relaunchTask("plan-1", "t1", { closeLive: true });
+
+  assert.equal(result.status, "launched");
+  assert.deepEqual(deps.calls.filter((call) => call[0] === "close").map((call) => call[1]), ["ws-old"]);
+  assert.equal(deps.calls.filter((call) => call[0] === "workspace").length, 1, "exactly one new session");
+  // The close must happen before the new session opens, or two agents share the
+  // worktree for as long as the create call takes.
+  const order = deps.calls.map((call) => call[0]).filter((name) => name === "close" || name === "workspace");
+  assert.deepEqual(order, ["close", "workspace"]);
+});
+
+// A close that fails must not abandon the recovery: cmux may have dropped the
+// session already, which is the state the close was asking for.
+test("a failed close still relaunches the task", async (t) => {
+  const path = await realWorktree();
+  const deps = recoveryDeps();
+  deps.cmux.workspaceListDetailed = async () => ({ workspaces: [{ id: "ws-old", current_directory: path }] });
+  deps.cmux.workspaceClose = async () => { throw new Error("no such workspace"); };
+  const { planner } = launched(t, { deps, worktreePath: path });
+
+  const result = await planner.relaunchTask("plan-1", "t1", { closeLive: true });
+  assert.equal(result.status, "launched");
+});
+
 // A live session that belongs to another task must not block this one.
 test("another task's live session does not block a relaunch", async (t) => {
   const path = await realWorktree();

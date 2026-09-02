@@ -109,7 +109,7 @@ export async function buildApp({
   // The sweep answers when asked. This asks, on a timer, and pushes once when a
   // goal's health gets worse — so a dead agent reaches the user instead of
   // waiting to be noticed. It moves no goal: every recovery stays explicit.
-  const watchdog = goalWatchdog || (health ? new GoalWatchdog({ health, pushService, log: app.log }) : null);
+  const watchdog = goalWatchdog || (health ? new GoalWatchdog({ health, pushService, mergeWatch, worktrees, log: app.log }) : null);
   const detachWatchdog = watchdog?.start() || null;
   const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
   const detachQueue = promptQueue?.attach({ hub, cmux }) || null;
@@ -516,7 +516,10 @@ export async function buildApp({
   // Start one task again on a plan that is already launched. `continue` keeps
   // the worktree and its work; `restart` discards both and rebuilds from base.
   app.post("/api/worktree-plans/:planId/tasks/:taskId/relaunch", async (request) => {
-    const result = await planner.relaunchTask(request.params.planId, request.params.taskId, { mode: request.body?.mode || "continue" });
+    const result = await planner.relaunchTask(request.params.planId, request.params.taskId, {
+      mode: request.body?.mode || "continue",
+      closeLive: request.body?.closeLive === true,
+    });
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return result;

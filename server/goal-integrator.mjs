@@ -247,6 +247,7 @@ export class GoalIntegrator {
         const created = await this.cmux.workspaceCreate({
           cwd: plan.integrationWorktreePath,
           title: mergeSessionTitle(plan),
+          env: sessionEnv(plan, null),
           agent: "claude",
           prompt: this.briefs.pointerPrompt({ title: `Merge: ${plan.goal}`, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });

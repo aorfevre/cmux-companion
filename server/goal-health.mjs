@@ -20,7 +20,7 @@ export const DEFAULT_IDLE_MS = 20 * 60 * 1_000;
 
 // Every verdict this module can return, worst first. The order is the ranking:
 // a goal reports the worst verdict any of its tasks carries.
-export const TASK_HEALTH = Object.freeze(["failed", "dead", "idle", "needs_you", "working", "ready", "integrated", "queued", "unknown"]);
+export const TASK_HEALTH = Object.freeze(["failed", "dead", "idle", "needs_you", "working", "ready", "integrated", "skipped", "queued", "unknown"]);
 
 const RANK = new Map(TASK_HEALTH.map((value, index) => [value, TASK_HEALTH.length - index]));
 
@@ -82,7 +82,12 @@ export class GoalHealthSweep {
   }
 
   #inspect(plan, live) {
-    const tasks = (Array.isArray(plan.tasks) ? plan.tasks : []).map((task) => this.#task(task, live));
+    // A goal that already has an open pull request has finished the work this
+    // module watches. Without this, a single-task goal whose agent opened its
+    // PR and stopped is reported as idle twenty minutes later, and the alert
+    // lands at the exact moment the goal succeeded.
+    const delivered = text(plan.boardPrState) === "OPEN" || text(plan.finalPrUrl) !== "";
+    const tasks = (Array.isArray(plan.tasks) ? plan.tasks : []).map((task) => this.#task(task, live, delivered));
     // The merge session is a task in every way that matters here: it can die
     // the same way, and a dead merge agent strands the goal just as hard.
     const merge = plan.mergeStatus === "running"
@@ -112,7 +117,7 @@ export class GoalHealthSweep {
     };
   }
 
-  #task(task, live) {
+  #task(task, live, delivered = false) {
     const launchStatus = text(task?.launchStatus);
     const deliveryStatus = text(task?.deliveryStatus) || "pending";
     const base = {
@@ -134,12 +139,18 @@ export class GoalHealthSweep {
     // A task the launch never started, and a task queued for a later wave, are
     // both correct states with no session to find. They are not stuck.
     if (launchStatus === "failed") return { ...base, health: "failed", reason: task?.launchError || "This task never launched", session: null };
+    if (launchStatus === "skipped") return { ...base, health: "skipped", reason: task?.launchError || "This task was skipped", session: null };
     if (launchStatus !== "launched") return { ...base, health: "queued", reason: waveReason(base.wave), session: null };
 
     // Work that is done needs no live agent. Companion closes those sessions
     // itself, so a missing workspace here is expected, not a failure.
     if (deliveryStatus === "integrated") return { ...base, health: "integrated", reason: "This task is merged into the goal branch", session: null };
     if (deliveryStatus === "ready") return { ...base, health: "ready", reason: "This task pushed its evidence and waits for the merge", session: null };
+    // A single-task goal is delivered by its own task's pull request, and
+    // `recordTaskReady` is written by the integrator, which only runs for a
+    // combined goal. So the pull request is the only evidence this task has
+    // that it finished.
+    if (delivered) return { ...base, health: "ready", reason: "This task opened its pull request", session: null };
 
     const session = this.#session(task?.workspaceId, live, { label: "task" });
     return { ...base, health: session.health, reason: session.reason, session: session.session };
@@ -163,7 +174,12 @@ export class GoalHealthSweep {
       effective: workspace.status?.effective || null,
     };
     const signals = workspace.status?.signals || {};
-    if (workspace.has_unread === true || signals.any_agent_needs_input === true) {
+    // Only an explicit input signal means the agent asked something. cmux also
+    // sets `has_unread` whenever a turn ends with nobody watching, so an agent
+    // that crashed to a shell prompt in a still-open workspace carries it too.
+    // Treating that as "waiting for an answer" would label every silent crash
+    // as a question, and would keep it out of the idle clock for ever.
+    if (signals.any_agent_needs_input === true) {
       return { health: "needs_you", reason: `This ${label} agent is waiting for an answer`, session };
     }
     if (signals.any_agent_running === true || workspace.status?.effective === "working") {
@@ -171,7 +187,8 @@ export class GoalHealthSweep {
     }
     const quietFor = session.lastActivityAt ? this.now() - session.lastActivityAt : 0;
     if (quietFor > this.idleMs) {
-      return { health: "idle", reason: `This ${label} session has been quiet for ${minutes(quietFor)} with no result`, session };
+      const unread = workspace.has_unread === true ? " and has output nobody has read" : "";
+      return { health: "idle", reason: `This ${label} session has been quiet for ${minutes(quietFor)}${unread} with no result`, session };
     }
     // Open, not running, not waiting, recently active. The agent most likely
     // finished its turn and the evidence check has not caught up yet.

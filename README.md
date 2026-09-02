@@ -140,7 +140,20 @@ rather than listing live agents as dead.
 A watchdog runs that sweep every five minutes and sends one Web Push alert when
 a goal's health gets worse. A goal in the same state is not alerted twice, a
 goal that recovers is forgotten so a relapse alerts again, and an unreachable
-cmux skips the pass entirely.
+cmux skips the pass entirely. An alert that reached no device, because quiet
+hours are on or no phone is registered, is offered again on the next pass rather
+than remembered as sent.
+
+Each pass refreshes GitHub and reconciles pull requests before it judges
+liveness. Without that, a goal whose agent opened its pull request and stopped
+would keep a stale board state and be reported as quiet twenty minutes after it
+succeeded. A goal that already has an open pull request has finished the work
+the sweep watches, so its task reads as ready whatever became of its session.
+
+A crashed agent usually leaves its cmux workspace open at a shell prompt, so
+**Continue** closes that session first when the sweep has already judged the
+task stuck. A session that is still working, or one that is waiting for an
+answer, is never closed by Continue.
 
 Each cmux session Companion opens is named `KRV-T2-api · <task title>`: the
 project code, the task code within its goal, and the part of the work, before

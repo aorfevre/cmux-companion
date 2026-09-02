@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GoalWatchdog } from "../server/goal-watchdog.mjs";
+import { ALERTING, GoalWatchdog } from "../server/goal-watchdog.mjs";
 
 function sweep(goals, { sessionsAvailable = true } = {}) {
   return {
@@ -26,9 +26,12 @@ function goal(overrides = {}) {
   };
 }
 
-function push() {
+// The real PushService returns `{sent, failed, skipped}`. A fake that returned
+// nothing was more forgiving than the real one, which is how a wrong event kind
+// and a quiet-hours no-op both passed their tests.
+function push({ sent: delivered = 1 } = {}) {
   const sent = [];
-  return { sent, send: async (payload) => { sent.push(payload); } };
+  return { sent, send: async (payload) => { sent.push(payload); return { sent: delivered, failed: 0, skipped: 0 }; } };
 }
 
 test("pushes one alert for a dead goal and carries the plan id for the deep link", async () => {
@@ -133,18 +136,68 @@ test("a push that throws never stops the sweep", async () => {
   assert.equal(warnings.length, 2);
 });
 
-test("runs with no push service at all", async () => {
-  const result = await new GoalWatchdog({ health: sweep([goal()]) }).check();
+test("runs with no push service at all, and does not retry for ever", async () => {
+  const watchdog = new GoalWatchdog({ health: sweep([goal()]) });
+  const result = await watchdog.check();
   assert.equal(result.alerts.length, 1);
+  // There is nothing to deliver to, so retrying every tick would be worse than
+  // reporting the change once.
+  assert.equal(watchdog.alerted.get("plan-1"), "dead");
+  assert.deepEqual((await watchdog.check()).alerts, []);
 });
 
-test("needs_you is a decision, not a failure", async () => {
+test("a goal waiting for an answer alerts as attention", async () => {
   const pushService = push();
   const waiting = goal({ health: "needs_you", tasks: [{ id: "T1", health: "needs_you", reason: "This task agent is waiting for an answer" }] });
   await new GoalWatchdog({ health: sweep([waiting]), pushService }).check();
 
-  assert.equal(pushService.sent[0].kind, "decision");
+  assert.equal(pushService.sent[0].kind, "attention");
   assert.equal(pushService.sent[0].title, "A goal is waiting for you");
+});
+
+// The guard that would have caught the silent-drop bug: PushService throws on
+// an unknown kind, and this class swallows push failures, so every kind the
+// watchdog can send is checked against the real service's own allow-list.
+test("every alerting kind is one the real push service accepts", async () => {
+  const { PushService } = await import("../server/push-service.mjs");
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const sender = {
+    generateVAPIDKeys: () => ({ publicKey: "vapid-public", privateKey: "vapid-private" }),
+    setVapidDetails: () => {},
+    sendNotification: async () => {},
+  };
+  const path = join(await mkdtemp(join(tmpdir(), "cmux-watchdog-")), "push.json");
+  const service = new PushService({ path, sender });
+  for (const [health, rule] of ALERTING) {
+    const result = await service.send({ title: "t", body: "b", kind: rule.kind });
+    // No device is registered, so nothing is sent. What matters is that the
+    // call was accepted rather than rejected for an unknown kind.
+    assert.equal(result.sent, 0, `${health} was rejected`);
+  }
+});
+
+// A 2am death lands inside quiet hours, where `send` reports `sent: 0`. If the
+// goal were remembered anyway its state would never change again, so the alert
+// would be lost for good rather than delayed.
+test("an undelivered alert is retried on the next pass", async () => {
+  const quiet = push({ sent: 0 });
+  const watchdog = new GoalWatchdog({ health: sweep([goal()]), pushService: quiet });
+
+  const first = await watchdog.check();
+  assert.equal(first.alerts[0].delivered, false);
+  assert.equal(watchdog.alerted.has("plan-1"), false);
+
+  await watchdog.check();
+  assert.equal(quiet.sent.length, 2, "the same death is offered again while nothing has received it");
+});
+
+test("a push that throws is not remembered either", async () => {
+  const broken = { send: async () => { throw new Error("no subscriptions"); } };
+  const watchdog = new GoalWatchdog({ health: sweep([goal()]), pushService: broken, log: { warn: () => {} } });
+  await watchdog.check();
+  assert.equal(watchdog.alerted.has("plan-1"), false);
 });
 
 test("start schedules a first pass and stop cancels it", async () => {
@@ -158,6 +211,43 @@ test("start schedules a first pass and stop cancels it", async () => {
 
   assert.equal(watchdog.timer, null);
   assert.equal(pushService.sent.length, 1, "the repeated pass dedupes, so only the first alert is sent");
+});
+
+// Without this, a goal whose agent opened its pull request and stopped keeps a
+// stale board state, and the sweep alerts "went quiet" about a goal that
+// actually succeeded.
+test("refreshes GitHub and reconciles pull requests before it judges liveness", async () => {
+  const order = [];
+  const watchdog = new GoalWatchdog({
+    health: { sweep: async () => { order.push("sweep"); return { sessionsAvailable: true, goals: [], summary: {} }; } },
+    mergeWatch: { reconcile: async () => { order.push("reconcile"); } },
+    worktrees: { snapshot: async (options) => { order.push(`snapshot:${options.refreshGitHub}`); return {}; } },
+  });
+  await watchdog.check();
+
+  assert.deepEqual(order, ["snapshot:true", "reconcile", "sweep"]);
+});
+
+test("a GitHub failure never stops the liveness check", async () => {
+  const warnings = [];
+  const pushService = push();
+  const watchdog = new GoalWatchdog({
+    health: sweep([goal()]),
+    pushService,
+    mergeWatch: { reconcile: async () => { throw new Error("gh is not authenticated"); } },
+    worktrees: { snapshot: async () => { throw new Error("no network"); } },
+    log: { warn: (_details, message) => warnings.push(message) },
+  });
+  const result = await watchdog.check();
+
+  assert.equal(result.checked, true);
+  assert.equal(result.alerts.length, 1, "the dead agent is still reported");
+  assert.equal(warnings.length, 1);
+});
+
+test("runs with no merge watcher at all", async () => {
+  const result = await new GoalWatchdog({ health: sweep([goal()]) }).check();
+  assert.equal(result.checked, true);
 });
 
 test("requires a health sweep", () => {
