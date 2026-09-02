@@ -1166,11 +1166,18 @@ export class WorktreePlanner {
 
   // A card needs to know that a plan is planning right now, and the run state
   // lives only in this process, so the list carries it rather than the store.
-  async list(options = {}) {
+  //
+  // `health` is optional and read-only. With it, a goal whose agents all died
+  // lands in Blocked instead of reporting "Dev in progress"; without it the
+  // list behaves exactly as it always did, so a cmux that cannot answer never
+  // costs the board its goals.
+  async list(options = {}, { health = null } = {}) {
     const plans = this.#read(() => this.store?.list(options)) || [];
+    const verdicts = await this.#healthVerdicts(health, plans);
     return {
       plans: plans.map((plan) => {
         const run = this.runs.get(plan.planId);
+        const verdict = verdicts.get(plan.planId) || null;
         const summary = {
           ...plan,
           running: this.runs.isRunning(plan.planId),
@@ -1178,10 +1185,34 @@ export class WorktreePlanner {
           runStage: run?.stage || null,
           runStep: run?.step || "",
           runError: run?.error || "",
+          health: verdict?.health || null,
+          healthReason: verdict?.reason || null,
+          stuckCount: verdict?.stuckCount ?? null,
         };
         return { ...summary, boardState: goalBoardState(summary) };
       }),
     };
+  }
+
+  // The sweep is best-effort. A failure returns no verdicts, so every goal
+  // keeps its derived column: a supervision tool that hides the work when it
+  // cannot reach cmux is worse than one that says nothing.
+  async #healthVerdicts(health, plans) {
+    const verdicts = new Map();
+    if (!health?.sweep || !plans.some((plan) => plan.status === "launched")) return verdicts;
+    try {
+      const swept = await health.sweep();
+      for (const goal of swept?.goals || []) {
+        verdicts.set(goal.planId, {
+          health: goal.health,
+          stuckCount: goal.stuckCount,
+          reason: firstStuckReason(goal),
+        });
+      }
+    } catch (cause) {
+      this.log?.warn?.({ err: cause }, "goal list could not read agent health");
+    }
+    return verdicts;
   }
 
   async remove(planId) {
@@ -1404,6 +1435,13 @@ function combinedBranchStep(readyToken) {
     "3. Push this task branch to origin.",
     "4. Do not open a pull request. Companion will pin this commit and assemble every task into one goal pull request.",
   ].join("\n");
+}
+
+// The card shows one line, so it shows the reason for the worst task rather
+// than every reason. A healthy goal has nothing to say.
+function firstStuckReason(goal) {
+  const tasks = [...(goal?.tasks || []), ...(goal?.merge ? [goal.merge] : [])];
+  return tasks.find((task) => task.health === goal?.health)?.reason || null;
 }
 
 export function taskPrompt(task, spec, images, base, deliveryMode = "single", readyToken = "", issueNumbers = []) {

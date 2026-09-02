@@ -6,12 +6,12 @@ import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../s
 const SUMMARY = { planId: "plan-1", repositoryId: "repo-1", goal: "Ship the board", status: "draft", stage: "questions", round: 1 };
 const LAUNCHED = { ...SUMMARY, planId: "plan-2", status: "launched", stage: "ready", deliveryStatus: "implementing" };
 
-test("exports the seven ordered columns with labels and descriptions", () => {
+test("exports the eight ordered columns with labels and descriptions", () => {
   assert.deepEqual(GOAL_BOARD_COLUMNS.map((column) => column.id), [
-    "writing_spec", "review_spec", "waiting_for_dev", "dev_in_progress", "waiting_for_merge", "merged", "aborted",
+    "writing_spec", "review_spec", "waiting_for_dev", "dev_in_progress", "waiting_for_merge", "blocked", "merged", "aborted",
   ]);
   assert.deepEqual(GOAL_BOARD_COLUMNS.map((column) => column.label), [
-    "Writing Spec", "Review Spec", "Waiting for dev", "Dev in progress", "Waiting for merge", "Merged", "Aborted",
+    "Writing Spec", "Review Spec", "Waiting for dev", "Dev in progress", "Waiting for merge", "Blocked", "Merged", "Aborted",
   ]);
   assert.equal(GOAL_BOARD_COLUMNS.every((column) => typeof column.description === "string" && column.description.length > 0), true);
   assert.equal(Object.isFrozen(GOAL_BOARD_COLUMNS), true);
@@ -46,12 +46,32 @@ test("maps launched plans without a pull request to dev in progress", () => {
   assert.equal(goalBoardState({ planId: "plan-5", planStatus: "launched", status: "ready", round: 1 }), "dev_in_progress");
 });
 
-test("maps assembling, blocked and open pull requests to waiting for merge", () => {
+test("maps assembling and open pull requests to waiting for merge", () => {
   assert.equal(goalBoardState({ ...LAUNCHED, deliveryStatus: "assembling" }), "waiting_for_merge");
-  assert.equal(goalBoardState({ ...LAUNCHED, deliveryStatus: "blocked" }), "waiting_for_merge");
   assert.equal(goalBoardState({ ...LAUNCHED, boardPrState: "OPEN" }), "waiting_for_merge");
   assert.equal(goalBoardState({ ...LAUNCHED, deliveryStatus: "pr_open" }), "waiting_for_merge");
   assert.equal(goalBoardState({ ...LAUNCHED, finalPrUrl: "https://github.test/pr/42" }), "waiting_for_merge");
+});
+
+// A blocked delivery is the state that most needs a person. Hidden inside
+// "Waiting for merge" it looked exactly like work that was progressing.
+test("gives a blocked delivery its own column", () => {
+  assert.equal(goalBoardState({ ...LAUNCHED, deliveryStatus: "blocked" }), "blocked");
+  // A goal whose every agent died is not in progress either. Only the health
+  // sweep can know that, so it arrives as a verdict on the payload.
+  assert.equal(goalBoardState({ ...LAUNCHED, health: "dead" }), "blocked");
+  assert.equal(goalBoardState({ ...LAUNCHED, health: "idle" }), "blocked");
+  assert.equal(goalBoardState({ ...LAUNCHED, health: "failed" }), "blocked");
+  // A live agent, and a goal that already produced a pull request, both
+  // outrank a health verdict.
+  assert.equal(goalBoardState({ ...LAUNCHED, health: "working" }), "dev_in_progress");
+  assert.equal(goalBoardState({ ...LAUNCHED, health: "needs_you" }), "dev_in_progress");
+  assert.equal(goalBoardState({ ...LAUNCHED, health: "dead", boardPrState: "OPEN" }), "waiting_for_merge");
+  // A payload with no verdict keeps the derivation it always had.
+  assert.equal(goalBoardState(LAUNCHED), "dev_in_progress");
+  // And a terminal outcome still wins over everything.
+  assert.equal(goalBoardState({ ...LAUNCHED, health: "dead", boardStatus: "merged" }), "merged");
+  assert.equal(goalBoardState({ ...LAUNCHED, deliveryStatus: "blocked", boardStatus: "aborted" }), "aborted");
 });
 
 test("treats a closed pull request as development again", () => {
@@ -97,6 +117,8 @@ test("groups goals into every column, including the empty ones", () => {
     { ...LAUNCHED, planId: "plan-open", boardPrState: "OPEN" },
     { ...LAUNCHED, planId: "plan-merged", boardPrState: "MERGED" },
     { ...LAUNCHED, planId: "plan-aborted", boardStatus: "aborted" },
+    { ...LAUNCHED, planId: "plan-blocked", deliveryStatus: "blocked" },
+    { ...LAUNCHED, planId: "plan-dead", health: "dead" },
   ];
   const grouped = groupGoalsByBoardState(plans);
   assert.deepEqual(Object.fromEntries(Object.entries(grouped).map(([id, list]) => [id, list.map((plan) => plan.planId)])), {
@@ -105,6 +127,7 @@ test("groups goals into every column, including the empty ones", () => {
     waiting_for_dev: ["plan-ready"],
     dev_in_progress: ["plan-2"],
     waiting_for_merge: ["plan-open"],
+    blocked: ["plan-blocked", "plan-dead"],
     merged: ["plan-merged"],
     aborted: ["plan-aborted"],
   });

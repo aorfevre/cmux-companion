@@ -445,11 +445,15 @@ export async function buildApp({
 
   // Every saved plan, newest first. The list carries no prompt, so the sheet
   // can show a history without loading each task body.
+  // `health=1` asks cmux whether each launched goal's agents are still alive,
+  // so the board can put a goal whose agents all died in Blocked instead of
+  // reporting it as progressing. It costs one cmux call, so the board asks for
+  // it and a cheap poll does not.
   app.get("/api/worktree-plans", async (request) => planner.list({
     repositoryId: request.query?.repositoryId || null,
     status: request.query?.status || null,
     limit: request.query?.limit,
-  }));
+  }, { health: request.query?.health === "1" ? health : null }));
 
   app.get("/api/worktree-plans/:planId", async (request) => planner.detail(request.params.planId));
 

@@ -18,6 +18,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
   "session_retired", "board_merged", "board_aborted", "board_pull_request",
+  "task_relaunched", "task_skipped",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -688,8 +689,23 @@ export class WorktreePlanStore {
     if (status && status !== "all") { clauses.push("p.status = ?"); values.push(String(status)); }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     values.push(clampLimit(limit, 200));
+    // The board card needs "3 of 5 ready", the Claude/Codex split, and the
+    // session ids behind an Open-in-cmux button. Each was a per-plan detail
+    // fetch before, which the board cannot afford once it shows every goal at
+    // once, so the rollup is computed in the one list query.
     return this.db.prepare(`
-      SELECT p.*, (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id) AS task_count
+      SELECT p.*,
+        (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id) AS task_count,
+        (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.launch_status = 'launched') AS launched_count,
+        (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.launch_status = 'launched'
+           AND t.delivery_status IN ('ready','integrated')) AS ready_count,
+        (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.launch_status = 'failed') AS failed_count,
+        (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.launch_status = 'skipped') AS skipped_count,
+        (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.launch_status = 'queued') AS queued_count,
+        (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.agent = 'claude') AS claude_count,
+        (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.agent = 'codex') AS codex_count,
+        (SELECT group_concat(t.workspace_id) FROM plan_tasks t WHERE t.plan_id = p.plan_id
+           AND t.workspace_id IS NOT NULL AND t.session_closed_at IS NULL) AS open_workspace_ids
       FROM plans p ${where} ORDER BY p.updated_at DESC, p.plan_id DESC LIMIT ?
     `).all(...values).map((row) => ({
       planId: row.plan_id,
@@ -715,6 +731,16 @@ export class WorktreePlanStore {
       boardPrState: boardPrState(row.board_pr_state),
       boardPrObservedAt: row.board_pr_observed_at ?? null,
       taskCount: row.task_count,
+      launchedCount: row.launched_count,
+      readyCount: row.ready_count,
+      failedCount: row.failed_count,
+      skippedCount: row.skipped_count,
+      queuedCount: row.queued_count,
+      agentSplit: { claude: row.claude_count, codex: row.codex_count },
+      // Every session this goal still owns, so one card can offer Open in cmux
+      // without a second request. The merge session is included because it is
+      // the one the user opens when a merge is blocked.
+      workspaceIds: splitIds(row.open_workspace_ids, row.merge_workspace_id),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       launchedAt: row.launched_at,
@@ -941,6 +967,16 @@ function policy(value) {
 
 // A stored lifecycle value that is neither terminal state reads as unset. A
 // database edited by hand must not put an unknown word on the board.
+// `group_concat` returns one comma-joined string, or null when a plan has no
+// open session. The merge session lives on the plan row, not in plan_tasks, so
+// it is appended here rather than in the query.
+function splitIds(joined, mergeWorkspaceId) {
+  const ids = String(joined || "").split(",").map((value) => value.trim()).filter(Boolean);
+  const merge = text(mergeWorkspaceId);
+  if (merge && !ids.includes(merge)) ids.push(merge);
+  return ids;
+}
+
 function boardStatus(value) {
   return BOARD_STATUSES.has(value) ? value : null;
 }
