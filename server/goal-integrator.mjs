@@ -368,11 +368,11 @@ export class GoalIntegrator {
     const dashboard = await this.worktrees.snapshot?.({ refresh: true });
     const recovered = dashboard?.repositories?.find((repository) => repository.id === plan.repositoryId)?.worktrees?.find((worktree) => worktree.branch === branch);
     if (recovered?.path) return this.store.recordIntegrationStarted(plan.planId, { branch, path: recovered.path });
-    const created = await this.worktrees.create(plan.repositoryId, { branch, base: `origin/${baseBranch}` });
+    const created = await this.worktrees.create(plan.repositoryId, { branch, base: `origin/${baseBranch}`, reuseIfAtBase: true, workspaces: await this.#workspaces() });
     // A rebuild re-attaches the goal branch this plan already owns, so an
     // existing branch is only an error the first time round. Rejecting it on a
     // retry would strand a plan whose merge work is already on that branch.
-    if (created.branchCreated === false && !plan.integrationBranch) {
+    if (created.branchCreated === false && !created.reused && !plan.integrationBranch) {
       throw new TypeError(`The integration branch ${branch} already exists`);
     }
     return this.store.recordIntegrationStarted(plan.planId, { branch, path: created.worktree.path });
@@ -384,14 +384,17 @@ export class GoalIntegrator {
     const tasks = queued.filter((task) => (Number(task.wave) || 0) === wave);
     const startSha = (await this.#git(plan.integrationWorktreePath, ["rev-parse", "HEAD"])).trim();
     if (!startSha) throw new TypeError(`Could not resolve the integrated base for wave ${wave + 1}`);
+    // Read once for the whole wave. The list only feeds the worktree reuse
+    // check, which a stale entry cannot make looser.
+    const workspaces = await this.#workspaces();
     const results = [];
     for (const task of tasks) {
       const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent, wave };
       let path = null;
       try {
-        const created = await this.worktrees.create(plan.repositoryId, { branch: task.branch, base: startSha });
+        const created = await this.worktrees.create(plan.repositoryId, { branch: task.branch, base: startSha, reuseIfAtBase: true, workspaces });
         path = created.worktree.path;
-        if (created.branchCreated === false) {
+        if (created.branchCreated === false && !created.reused) {
           throw new TypeError(`Branch ${task.branch} already exists, so wave ${wave + 1} cannot start from its integrated dependency base`);
         }
         const workspace = await this.cmux.workspaceCreate({
@@ -407,6 +410,19 @@ export class GoalIntegrator {
       }
     }
     return this.store.recordWaveLaunch(plan.planId, { wave, startSha, results });
+  }
+
+  // The list feeds the worktree reuse check only. An empty list makes that
+  // check stricter, so a cmux that is absent or silent must not fail a wave.
+  async #workspaces() {
+    if (!this.cmux?.workspaceListDetailed) return [];
+    try {
+      const payload = await this.cmux.workspaceListDetailed();
+      return payload?.workspaces || [];
+    } catch (cause) {
+      this.log?.warn?.({ err: cause }, "workflow could not read the workspace list");
+      return [];
+    }
   }
 
   #git(cwd, args, options = {}) {

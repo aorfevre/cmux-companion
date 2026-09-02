@@ -531,7 +531,7 @@ test("creates one worktree and one session per task", async () => {
   assert.equal(result.base, "origin/main");
   assert.deepEqual(result.results.map((item) => item.status), ["launched"]);
   const create = deps.calls.find((call) => call[0] === "create");
-  assert.deepEqual(create[2], { branch: "feature/billing", base: "origin/main" });
+  assert.deepEqual(create[2], { branch: "feature/billing", base: "origin/main", reuseIfAtBase: true, workspaces: [] });
   const workspace = deps.calls.find((call) => call[0] === "workspace");
   assert.equal(workspace[1].agent, "claude");
   assert.equal(workspace[1].title, "Billing");
@@ -1291,4 +1291,36 @@ test("a background feedback round answers before it runs", async () => {
   const revised = await planner.resume(first.planId);
   assert.equal(revised.round, 2);
   assert.equal(revised.tasks[0].branch, "feature/one-unit");
+});
+
+test("a retry launches a task whose worktree a failed launch left behind", async () => {
+  const deps = launchDeps();
+  const seen = [];
+  deps.cmux.workspaceListDetailed = async () => ({ workspaces: [{ id: "ws-old", current_directory: "/repo/other" }] });
+  deps.worktrees.create = async (repositoryId, options) => {
+    seen.push(options);
+    return { created: false, reused: true, branchCreated: false, worktree: { id: "w1", branch: options.branch, path: "/repo/sample-feature-billing" } };
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.results[0].status, "launched");
+  assert.equal(result.launched, 1);
+  assert.equal(seen[0].reuseIfAtBase, true);
+  assert.deepEqual(seen[0].workspaces, [{ id: "ws-old", current_directory: "/repo/other" }]);
+});
+
+test("an unreachable cmux workspace list still lets a launch run", async () => {
+  const deps = launchDeps();
+  const seen = [];
+  deps.cmux.workspaceListDetailed = async () => { throw new Error("cmux is not running"); };
+  deps.worktrees.create = async (repositoryId, options) => {
+    seen.push(options);
+    return { created: true, reused: false, branchCreated: true, worktree: { id: "w1", branch: options.branch, path: "/repo/sample-feature-billing" } };
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.results[0].status, "launched");
+  assert.deepEqual(seen[0].workspaces, []);
 });

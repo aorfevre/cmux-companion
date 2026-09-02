@@ -613,13 +613,17 @@ export class WorktreePlanner {
     const baseSha = String(await this.git(repositoryPath, ["rev-parse", `${base}^{commit}`]).catch(() => "")).trim() || null;
     const deliveryMode = planDeliveryMode(draft);
     const firstWave = Math.min(...draft.tasks.map((task) => Number(task.wave) || 0));
+    // A retry may find worktrees a failed launch left behind. Reuse needs the
+    // live session list to tell a stranded worktree from one an agent owns.
+    // An unreachable cmux only makes the check stricter, never looser.
+    const workspaces = await this.#workspaces();
     const results = [];
     for (const task of draft.tasks) {
       if ((Number(task.wave) || 0) !== firstWave) {
         results.push({ id: task.id, title: task.title, branch: task.branch, agent: task.agent, status: "queued", wave: task.wave });
         continue;
       }
-      results.push(await this.#launchTask(draft, task, base, deliveryMode, baseSha));
+      results.push(await this.#launchTask(draft, task, base, deliveryMode, baseSha, workspaces));
     }
     const launched = results.filter((item) => item.status === "launched").length;
     this.#persist(() => this.store?.recordLaunch(draft.planId, { base, baseSha, results }), draft.planId, "launch");
@@ -632,17 +636,18 @@ export class WorktreePlanner {
 
   // One task never rolls back another: a half-made plan the user can see and
   // finish by hand beats a silent undo of work that already started.
-  async #launchTask(draft, task, base, deliveryMode, startSha = null) {
+  async #launchTask(draft, task, base, deliveryMode, startSha = null, workspaces = []) {
     const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent };
     let path = null;
     try {
-      const created = await this.worktrees.create(draft.repositoryId, { branch: task.branch, base });
+      const created = await this.worktrees.create(draft.repositoryId, { branch: task.branch, base, reuseIfAtBase: true, workspaces });
       path = created.worktree.path;
       // create() checks out an existing branch and ignores `base`, so the task
       // would start on old work instead of the fetched commit. Refuse it: an
       // agent committing on top of someone's in-progress branch is worse than
-      // a failed row the user can act on.
-      if (created.branchCreated === false) {
+      // a failed row the user can act on. A reused worktree is exempt: it
+      // already proved its HEAD equals `base`.
+      if (created.branchCreated === false && !created.reused) {
         throw new TypeError(`Branch ${task.branch} already exists, so this task would not start from ${base}. Rename it in the plan, or delete the branch first`);
       }
       const workspace = await this.cmux.workspaceCreate({
@@ -691,6 +696,18 @@ export class WorktreePlanner {
     const repository = dashboard.repositories.find((item) => item.id === draft.repositoryId);
     if (!repository) throw new TypeError("Unknown repository");
     return repository.path;
+  }
+
+  // The list feeds the worktree reuse check only. An empty list makes that
+  // check stricter, so a cmux that cannot answer must not fail the launch.
+  async #workspaces() {
+    try {
+      const payload = await this.cmux.workspaceListDetailed();
+      return payload?.workspaces || [];
+    } catch (cause) {
+      this.log?.warn?.({ err: cause }, "planner could not read the workspace list");
+      return [];
+    }
   }
 
   async #round(draft, prompt, onEvent = null, submitted = null) {

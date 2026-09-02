@@ -505,3 +505,30 @@ test("reuses the goal worktree that git already has for the integration branch",
   assert.equal(store.get("plan-12345678").integrationWorktreePath, recoveredPath);
   assert.equal(calls.filter((call) => call[0] === "create").length, 1);
 });
+
+// A wave launch makes the worktree first and opens the session second. When the
+// session step fails, a retry finds the leftover worktree. The dashboard hands
+// it back as reused, and the "branch already exists" guard must let it through.
+test("a wave retry launches a task whose worktree a failed launch left behind", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { contract: true, workflow: true });
+  await integrator.assemble("plan-12345678");
+  const git = integrator.repoCatalog.git;
+  const integratedSha = "d".repeat(40);
+  integrator.repoCatalog.git = async (cwd, args) => {
+    if (cwd === integrationPath && args[0] === "log") return `Task 1: Billing API\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`;
+    if (cwd === integrationPath && args[0] === "rev-parse") return `${integratedSha}\n`;
+    return git(cwd, args);
+  };
+  const create = integrator.worktrees.create;
+  integrator.worktrees.create = async (repositoryId, options) => {
+    const result = await create(repositoryId, options);
+    return { ...result, created: false, reused: true, branchCreated: false };
+  };
+  await integrator.settle("plan-12345678");
+  const saved = store.get("plan-12345678");
+  assert.equal(saved.tasks[1].launchStatus, "launched");
+  assert.equal(saved.tasks[1].startSha, integratedSha);
+  const waveCreate = calls.filter((call) => call[0] === "create" && call[2].branch === "feature/billing-ui").at(-1);
+  assert.equal(waveCreate[2].reuseIfAtBase, true);
+  assert.deepEqual(waveCreate[2].workspaces, []);
+});
