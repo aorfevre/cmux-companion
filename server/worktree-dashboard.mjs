@@ -333,7 +333,11 @@ export class WorktreeDashboard {
     const existing = repository.worktrees.find((item) => item.branch === branchName);
     if (existing) {
       if (reuseIfAtBase !== true) throw new TypeError("That branch already has a worktree");
-      return this.reuseWorktree(existing, repository, baseRef);
+      const reused = await this.reuseWorktree(existing, repository, baseRef);
+      // A null result means the leftover was behind the base and held nothing
+      // of its own, so reuseWorktree removed it. Fall through and build it
+      // again from the current base.
+      if (reused) return reused;
     }
 
     const branchExists = await this.repoCatalog.git(repository.path, ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`])
@@ -367,11 +371,16 @@ export class WorktreeDashboard {
 
   // A launch makes a worktree and then opens a session in it. When the session
   // step fails, the worktree stays behind and every retry hit the "already has
-  // a worktree" guard, so the plan could never restart. Reuse only that exact
-  // leftover: a worktree that holds nothing and already sits on the intended
-  // base commit is indistinguishable from one this method would create now.
-  // Every other worktree still fails, because recycling one under a new agent
-  // would bury work the user cannot see.
+  // a worktree" guard, so the plan could never restart.
+  //
+  // Recover that leftover, and only that leftover. It qualifies when it holds
+  // nothing of its own: no session, no uncommitted file, and no commit the base
+  // does not already contain. Then either
+  //   - it already sits on the base commit, so reuse it where it is, or
+  //   - it fell behind while the base moved, so delete it and return null. The
+  //     caller builds it again from the current base.
+  // Anything with work in it still fails, because recycling one under a new
+  // agent would bury changes the user cannot see.
   async reuseWorktree(worktree, repository, baseRef) {
     const refuse = (reason) => { throw new TypeError(`That branch already has a worktree ${reason}`); };
     if (worktree.isPrimary) refuse("that is the main checkout");
@@ -384,7 +393,7 @@ export class WorktreeDashboard {
     const target = this.targets.get(worktree.id);
     if (!target) refuse("that could not be inspected");
     // The snapshot is a moment old. Read the working tree again, so a file
-    // written since then still blocks the reuse.
+    // written since then still blocks the recovery.
     try {
       await this.assertStillClean(worktree, target);
     } catch {
@@ -396,9 +405,25 @@ export class WorktreeDashboard {
       this.repoCatalog.git(worktree.path, ["rev-parse", "HEAD"]).then((output) => String(output).trim(), () => ""),
     ]);
     if (!baseSha) throw new TypeError("The base revision does not exist");
-    if (!headSha || headSha !== baseSha) refuse(`on a different commit than ${baseRef}`);
+    if (!headSha) refuse("whose commit could not be read");
+    if (headSha === baseSha) return { created: false, reused: true, worktree, branchCreated: false };
 
-    return { created: false, reused: true, worktree, branchCreated: false };
+    // The base moved on, most often because the branch this plan waited for
+    // merged. Rebuilding is safe only when the branch carries no commit of its
+    // own, which `--is-ancestor` proves.
+    const contained = await this.repoCatalog.git(repository.path, ["merge-base", "--is-ancestor", headSha, baseSha])
+      .then(() => true, () => false);
+    if (!contained) refuse(`holding commits that ${baseRef} does not contain`);
+
+    await this.runWorktreeRemoval(target);
+    // The branch still points at the old commit. Left in place, `worktree add`
+    // would check it out again and the task would start behind the base once
+    // more. Deleting it loses nothing: every commit on it is already in the
+    // base. `-D` is needed because the branch has no upstream to compare with.
+    await this.repoCatalog.git(repository.path, ["branch", "-D", worktree.branch]).catch(() => {});
+    this.repoCatalog.cache = null;
+    this.invalidate();
+    return null;
   }
 
   async setRepositoryArchived(id, archived, { workspaces = [] } = {}) {
