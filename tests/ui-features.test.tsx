@@ -1212,6 +1212,297 @@ describe("worktree goal planner", () => {
   });
 });
 
+describe("goals board", () => {
+  const now = new Date().toISOString();
+  const repository = (id: string, name: string, root: string) => ({ id, name, root, path: `/repo/${name}`, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [{ id: `${id}-primary-worktree`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }] });
+  const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 2, worktrees: 2, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repo-karven", "trust-layer", "karven"), repository("repo-rekord", "recorder", "rekord")] };
+  const plan = (over: Record<string, unknown> & { planId: string }) => ({ repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "A goal", status: "draft", stage: "ready", round: 1, taskCount: 1, createdAt: now, updatedAt: now, launchedAt: null, ...over });
+
+  // One plan per column, plus a GitHub-issue plan and a Rekord plan.
+  const writing = plan({ planId: "plan-writing", goal: "Write the spec", stage: "questions", round: 0, taskCount: 0, running: true, runPhase: "running", runStage: "plan", runStep: "Reading app/page.tsx", boardState: "writing_spec" });
+  const review = plan({ planId: "plan-review", goal: "Review the spec", running: true, runPhase: "running", runStage: "review_spec", runStep: "Anything at all", boardState: "review_spec" });
+  const waitingDev = plan({ planId: "plan-waiting-dev", goal: "Ready to launch work", taskCount: 3, boardState: "waiting_for_dev", sourceType: "github_issues", issueNumbers: [42] });
+  const devInProgress = plan({ planId: "plan-dev", goal: "Agents are coding", status: "launched", taskCount: 2, deliveryStatus: "planning", launchedAt: now, boardState: "dev_in_progress" });
+  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "waiting_for_merge", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
+  const merged = plan({ planId: "plan-merged", goal: "Merged already", status: "launched", taskCount: 4, launchedAt: now, boardState: "merged", boardStatus: "merged", boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12" });
+  const aborted = plan({ planId: "plan-aborted", goal: "Stopped on purpose", taskCount: 1, boardState: "aborted", boardStatus: "aborted", boardChangedAt: now });
+  const rekord = plan({ planId: "plan-rekord", repositoryId: "repo-rekord", repositoryName: "recorder", goal: "Improve recording search", boardState: "waiting_for_dev" });
+  const allPlans = [writing, review, waitingDev, devInProgress, waitingMerge, merged, aborted, rekord];
+
+  function mountBoard(plans: unknown[] = allPlans, extra?: (url: string, init?: RequestInit) => Response | null) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const custom = extra?.(url, init);
+      if (custom) return custom;
+      if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    return fetchMock;
+  }
+
+  const COLUMNS = [
+    ["Writing Spec", "The planner is still drafting the specification."],
+    ["Review Spec", "A reviewer pass is checking the specification."],
+    ["Waiting for dev", "The specification is ready to launch."],
+    ["Dev in progress", "Agents are working on the launched tasks."],
+    ["Waiting for merge", "The work waits for the goal pull request to merge."],
+    ["Merged", "The goal pull request is merged."],
+    ["Aborted", "The goal was stopped and no more work is expected."],
+  ];
+
+  async function openBoard() {
+    await userEvent.click(await screen.findByRole("tab", { name: /Goals board/ }));
+    return screen.getByRole("region", { name: "Goals board" });
+  }
+
+  test("renders seven ordered columns with counts, descriptions, empty notes, and one card per state", async () => {
+    mountBoard();
+    const board = await openBoard();
+    assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("7"), true);
+    const headings = within(board).getAllByRole("heading", { level: 3 }).map((item) => item.textContent);
+    assert.deepEqual(headings, COLUMNS.map(([label]) => label));
+    for (const [label, description] of COLUMNS) assert.ok(within(board).getByText(description), `${label} description`);
+
+    const column = (label: string) => within(board).getByRole("region", { name: label });
+    assert.ok(within(column("Writing Spec")).getByText("Write the spec"));
+    assert.ok(within(column("Review Spec")).getByText("Review the spec"));
+    assert.ok(within(column("Waiting for dev")).getByText("Ready to launch work"));
+    assert.ok(within(column("Dev in progress")).getByText("Agents are coding"));
+    assert.ok(within(column("Waiting for merge")).getByText("Waiting on the PR"));
+    assert.ok(within(column("Merged")).getByText("Merged already"));
+    assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
+    assert.ok(within(column("Waiting for dev")).getByLabelText("1 goal in Waiting for dev"));
+    assert.ok(within(column("Merged")).getByLabelText("1 goal in Merged"));
+    assert.ok(within(column("Waiting for dev")).getByRole("list", { name: "Waiting for dev goals" }));
+    // Every column renders, so an empty one carries a note instead of nothing.
+    assert.equal(within(board).queryAllByText("No goal here yet.").length, 0);
+
+    cleanup();
+    mountBoard([]);
+    const emptyBoard = await openBoard();
+    assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 7);
+    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 7);
+  });
+
+  test("falls back to the shared derivation when a plan carries no usable board state", async () => {
+    const missing = plan({ planId: "plan-missing", goal: "No board state at all", status: "launched", taskCount: 1, launchedAt: now, deliveryStatus: "planning" });
+    const unknown = plan({ planId: "plan-unknown", goal: "An unknown board state", boardState: "somewhere_else", stage: "ready", round: 2 });
+    const runningReview = plan({ planId: "plan-derived-review", goal: "Derived reviewer pass", running: true, runStage: "review_spec", runStep: "Round 2 · rewriting the split" });
+    mountBoard([missing, unknown, runningReview]);
+    const board = await openBoard();
+    assert.ok(within(within(board).getByRole("region", { name: "Dev in progress" })).getByText("No board state at all"));
+    assert.ok(within(within(board).getByRole("region", { name: "Waiting for dev" })).getByText("An unknown board state"));
+    // Review Spec comes from runStage, so the wording of runStep cannot move it.
+    assert.ok(within(within(board).getByRole("region", { name: "Review Spec" })).getByText("Derived reviewer pass"));
+  });
+
+  test("filters by project and search without changing the status-based goal lists", async () => {
+    mountBoard();
+    const board = await openBoard();
+    assert.ok(within(board).getByText("Ready to launch work"));
+    // The board obeys the selected project, so the Rekord goal is not here.
+    assert.equal(within(board).queryByText("Improve recording search"), null);
+
+    await userEvent.click(screen.getByRole("tab", { name: /Rekord/ }));
+    const rekordBoard = screen.getByRole("region", { name: "Goals board" });
+    assert.ok(within(rekordBoard).getByText("Improve recording search"));
+    assert.equal(within(rekordBoard).queryByText("Ready to launch work"), null);
+    assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("1"), true);
+    await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
+
+    const searchBox = screen.getByRole("searchbox", { name: "Search projects" });
+    await userEvent.type(searchBox, "Merged already");
+    const filtered = screen.getByRole("region", { name: "Goals board" });
+    assert.ok(within(filtered).getByText("Merged already"));
+    assert.equal(within(filtered).queryByText("Write the spec"), null);
+    assert.equal(within(filtered).getAllByRole("heading", { level: 3 }).length, 7);
+    await userEvent.clear(searchBox);
+    await userEvent.type(searchBox, "trust-layer");
+    assert.ok(within(screen.getByRole("region", { name: "Goals board" })).getByText("Write the spec"));
+    await userEvent.clear(searchBox);
+
+    // Draft and Launched still count and list by plan.status alone.
+    const draftTab = screen.getByRole("tab", { name: /Draft Goals/ });
+    assert.equal(draftTab.textContent?.includes("4"), true);
+    await userEvent.click(draftTab);
+    const draftGoals = screen.getByRole("region", { name: "Draft goals" });
+    assert.deepEqual(within(draftGoals).getAllByRole("article").map((card) => card.querySelector("strong")?.textContent), ["Write the spec", "Review the spec", "Ready to launch work", "Stopped on purpose"]);
+    // The aborted draft is read-only, so it never says Resume.
+    assert.ok(within(draftGoals).getByRole("button", { name: "View Stopped on purpose" }));
+    assert.ok(within(draftGoals).getByText("Aborted"));
+    assert.ok(within(draftGoals).getByRole("button", { name: "Resume Ready to launch work" }));
+
+    const launchedTab = screen.getByRole("tab", { name: /Launched Goals/ });
+    assert.equal(launchedTab.textContent?.includes("3"), true);
+    await userEvent.click(launchedTab);
+    const launchedGoals = screen.getByRole("region", { name: "Launched goals" });
+    assert.deepEqual(within(launchedGoals).getAllByRole("article").map((card) => card.querySelector("strong")?.textContent), ["Agents are coding", "Waiting on the PR", "Merged already"]);
+    assert.ok(within(launchedGoals).getByRole("button", { name: "View Merged already" }));
+    assert.ok(within(launchedGoals).getByText("Merged"));
+  });
+
+  test("shows card metadata, lifecycle evidence, and pull-request links", async () => {
+    mountBoard();
+    const board = await openBoard();
+    const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
+
+    const dev = card("Ready to launch work");
+    assert.ok(within(dev).getByText("trust-layer"));
+    assert.ok(within(dev).getByText("3 tasks"));
+    assert.ok(within(dev).getByText("Updated now"));
+    assert.ok(within(dev).getByText("Ready to launch"));
+
+    assert.ok(within(card("Write the spec")).getByText("Reading app/page.tsx"));
+    assert.ok(within(card("Agents are coding")).getByText("Agents are working on the launched tasks"));
+    assert.ok(within(card("Stopped on purpose")).getByText("Stopped. Branches and worktrees were kept."));
+    assert.ok(within(card("Merged already")).getByText("4 tasks"));
+
+    assert.equal(within(card("Waiting on the PR")).getByRole("link", { name: "Open PR #77" }).getAttribute("href"), "https://github.test/pr/77");
+    assert.equal(within(card("Merged already")).getByRole("link", { name: "Open PR #12" }).getAttribute("href"), "https://github.test/pr/12");
+    assert.equal(within(card("Agents are coding")).queryByRole("link"), null);
+
+    // Nonterminal cards reuse the planner sheet; terminal ones open read-only.
+    assert.ok(within(card("Write the spec")).getByRole("button", { name: "Watch Write the spec" }));
+    assert.ok(within(card("Ready to launch work")).getByRole("button", { name: "Resume Ready to launch work" }));
+    assert.ok(within(card("Agents are coding")).getByRole("button", { name: "View Agents are coding" }));
+    assert.ok(within(card("Merged already")).getByRole("button", { name: "View Merged already" }));
+    assert.ok(within(card("Stopped on purpose")).getByRole("button", { name: "View Stopped on purpose" }));
+  });
+
+  test("aborts a goal behind an inline confirmation and reports partial session failures", async () => {
+    let plans: unknown[] = allPlans;
+    let abortCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/abort") && init?.method === "POST") {
+        abortCalls += 1;
+        plans = allPlans.map((item) => item.planId === "plan-waiting-dev" ? { ...item, boardState: "aborted", boardStatus: "aborted", status: "draft" } : item);
+        return new Response(JSON.stringify({ planId: "plan-waiting-dev", aborted: true, alreadyAborted: false, closedSessionIds: ["workspace-1"], failedSessionIds: abortCalls === 1 ? ["workspace-2"] : [] }), { status: 200 });
+      }
+      if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    const board = await openBoard();
+    const card = (goal: string) => within(screen.getByRole("region", { name: "Goals board" })).getByText(goal).closest("article") as HTMLElement;
+
+    // Terminal cards never offer Abort.
+    assert.equal(within(card("Merged already")).queryByRole("button", { name: "Abort Merged already" }), null);
+    assert.equal(within(card("Stopped on purpose")).queryByRole("button", { name: "Abort Stopped on purpose" }), null);
+    assert.equal(within(board).getAllByRole("button", { name: /^Abort / }).length, 5);
+
+    // The first click replaces the footer with the warning, and Cancel undoes it.
+    await userEvent.click(within(card("Ready to launch work")).getByRole("button", { name: "Abort Ready to launch work" }));
+    assert.ok(within(card("Ready to launch work")).getByText("Abort this goal? Active specification work and live cmux sessions are cancelled. Its worktrees and branches are kept."));
+    assert.equal(within(card("Ready to launch work")).queryByRole("button", { name: "Resume Ready to launch work" }), null);
+    await userEvent.click(within(card("Ready to launch work")).getByRole("button", { name: "Cancel aborting Ready to launch work" }));
+    assert.ok(within(card("Ready to launch work")).getByRole("button", { name: "Resume Ready to launch work" }));
+    assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/abort")), false);
+
+    await userEvent.click(within(card("Ready to launch work")).getByRole("button", { name: "Abort Ready to launch work" }));
+    await userEvent.click(within(card("Ready to launch work")).getByRole("button", { name: "Confirm abort Ready to launch work" }));
+    await waitFor(() => assert.ok(within(within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "Aborted" })).getByText("Ready to launch work")));
+    const abortCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/abort"));
+    assert.equal(String(abortCall?.[0]), "/api/worktree-plans/plan-waiting-dev/abort");
+    assert.equal(abortCall?.[1]?.method, "POST");
+    // The goal stays aborted, and the warning names the retryable failure.
+    assert.ok(await screen.findByText(/1 cmux session could not be closed. Abort is safe to retry/));
+    assert.equal(abortCalls, 1);
+    // The warning has the shared goal Retry, which reloads the list and clears it.
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => assert.equal(screen.queryByText(/could not be closed/), null));
+    assert.equal(within(card("Ready to launch work")).queryByRole("button", { name: "Abort Ready to launch work" }), null);
+    assert.ok(within(card("Ready to launch work")).getByRole("button", { name: "View Ready to launch work" }));
+  });
+
+  test("encodes the plan id and keeps the card in place when the abort request fails", async () => {
+    const awkward = plan({ planId: "plan/with space", goal: "Awkward id goal", boardState: "waiting_for_dev" });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/abort") && init?.method === "POST") return new Response(JSON.stringify({ error: "cmux is unreachable" }), { status: 502 });
+      if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans: [awkward] }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    await openBoard();
+    await userEvent.click(screen.getByRole("button", { name: "Abort Awkward id goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm abort Awkward id goal" }));
+    assert.ok(await screen.findByText("cmux is unreachable"));
+    const abortCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/abort"));
+    assert.equal(String(abortCall?.[0]), "/api/worktree-plans/plan%2Fwith%20space/abort");
+    assert.ok(within(screen.getByRole("region", { name: "Waiting for dev" })).getByText("Awkward id goal"));
+  });
+
+  test("Refresh GitHub reads the plan list only after the reconciled dashboard resolves", async () => {
+    const order: string[] = [];
+    let releaseDashboard: (() => void) | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("github=1")) {
+        order.push("dashboard-start");
+        await new Promise<void>((resolve) => { releaseDashboard = resolve; });
+        order.push("dashboard-end");
+        return new Response(JSON.stringify(dashboard), { status: 200 });
+      }
+      if (url.startsWith("/api/worktree-plans")) { order.push("plans"); return new Response(JSON.stringify({ plans: allPlans }), { status: 200 }); }
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    await screen.findByRole("tab", { name: /Goals board/ });
+    order.length = 0;
+    await userEvent.click(screen.getByRole("button", { name: "Refresh GitHub" }));
+    await waitFor(() => assert.equal(order[0], "dashboard-start"));
+    // No plan request may start while the reconciliation is still open.
+    assert.equal(order.includes("plans"), false);
+    await act(async () => { releaseDashboard?.(); await Promise.resolve(); });
+    await waitFor(() => assert.deepEqual(order, ["dashboard-start", "dashboard-end", "plans"]));
+  });
+
+  test("a terminal planner sheet is a record with no mutating control", async () => {
+    const mergedDetail = { planId: "plan-merged", repositoryId: "repo-1", goal: "Merged already", round: 2, status: "ready", planStatus: "launched", deliveryMode: "combined", deliveryStatus: "pr_open", boardStatus: "merged", boardState: "merged", boardChangedAt: now, boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12", finalPrNumber: 12, finalPrUrl: "https://github.test/pr/12", questions: [], tasks: [{ id: "task-1", title: "Build the sheet", branch: "feature/sheet", prompt: "Build it.", agent: "codex", agentReason: "UI work suits Codex", deliveryStatus: "integrated" }] };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(mergedDetail), { status: 200 });
+    }));
+    render(<WorktreePlannerSheet repository={{ id: "repo-1", name: "companion" }} initialPlanId="plan-merged" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    const sheet = await screen.findByRole("dialog", { name: "Plan a goal" });
+    assert.ok(await within(sheet).findByRole("region", { name: "Merged goal" }));
+    assert.ok(within(sheet).getByText("This goal is merged"));
+    // The historical plan is still readable.
+    assert.equal(within(sheet).getAllByText("Build the sheet").length, 2);
+    assert.ok(within(sheet).getByText("Round 2 · 1 task"));
+    assert.equal(within(sheet).getAllByRole("link", { name: "Open PR #12" }).length, 1);
+    for (const name of ["Answer", "Skip questions", "This plan is wrong", "Check & build combined PR", "Plan this goal again", "Remove Build the sheet"]) {
+      assert.equal(within(sheet).queryByRole("button", { name }), null, `${name} must be suppressed`);
+    }
+    assert.equal(within(sheet).queryByRole("button", { name: /^Launch / }), null);
+    // Closing stays available.
+    assert.ok(within(sheet).getByRole("button", { name: "Close goal planner sheet" }));
+
+    cleanup();
+    const abortedDetail = { ...mergedDetail, planId: "plan-aborted", goal: "Stopped on purpose", boardStatus: "aborted", boardState: "aborted", boardPrState: null, boardPrUrl: null, boardPrNumber: null, finalPrUrl: null, finalPrNumber: null, planStatus: "draft", status: "questions", questions: [{ id: "q1", text: "Which browsers?", options: ["All"] }], tasks: [] };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(abortedDetail), { status: 200 });
+    }));
+    render(<WorktreePlannerSheet repository={{ id: "repo-1", name: "companion" }} initialPlanId="plan-aborted" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    const abortedSheet = await screen.findByRole("dialog", { name: "Plan a goal" });
+    assert.ok(await within(abortedSheet).findByRole("region", { name: "Aborted goal" }));
+    assert.ok(within(abortedSheet).getByText("This goal is closed. Its questions and answers are read-only."));
+    assert.equal((within(abortedSheet).getByRole("textbox", { name: "Which browsers?" }) as HTMLTextAreaElement).readOnly, true);
+    assert.equal((within(abortedSheet).getByRole("button", { name: "Answer Which browsers? with All" }) as HTMLButtonElement).disabled, true);
+    assert.equal(within(abortedSheet).queryByRole("button", { name: "Answer" }), null);
+    assert.equal(within(abortedSheet).queryByRole("link"), null);
+  });
+});
+
 describe("last update stamp", () => {
   const jsonRoutes = (routes: Record<string, unknown>) => vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
