@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentBriefs } from "../server/agent-brief.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, finalEnvelope, normalizePlannerEngine, parsePlannerReply, progressEvent, reviewerEngine } from "../server/worktree-planner.mjs";
 
@@ -503,8 +507,30 @@ test("drops the oldest draft instead of growing without limit", async () => {
   assert.ok(planner.drafts.size <= 50, `held ${planner.drafts.size} drafts`);
 });
 
+// cmux caps a prompt at this many characters, so a launched session gets a
+// pointer and the brief itself lives in a file.
+const MAX_PROMPT = 8_000;
+
+const briefRoots = [];
+process.on("exit", () => { for (const root of briefRoots) rmSync(root, { recursive: true, force: true }); });
+
+// The prompt names the brief file. The brief content is what the agent reads.
+function briefText(prompt) {
+  const path = String(prompt).match(/^Read the file (.+?) in full/m)?.[1];
+  assert.ok(path, `the prompt must name a brief file, got: ${prompt}`);
+  return readFileSync(path, "utf8");
+}
+
+function assertPointer(prompt) {
+  assert.ok(prompt.length <= MAX_PROMPT, `the prompt must stay under ${MAX_PROMPT} characters, got ${prompt.length}`);
+  assert.match(prompt, /^Read the file .+ in full/m);
+}
+
 function launchDeps({ createFails = null, gitFails = null, reply = '{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}' } = {}) {
   const base = fakeDeps({ replies: [envelope(reply, "sess-a")] });
+  const root = mkdtempSync(join(tmpdir(), "planner-briefs-"));
+  briefRoots.push(root);
+  base.briefs = new AgentBriefs({ directory: join(root, "briefs") });
   base.worktrees.create = async (repositoryId, options) => {
     base.calls.push(["create", repositoryId, options]);
     if (createFails && options.branch === createFails) throw new TypeError("That branch already has a worktree");
@@ -536,9 +562,11 @@ test("creates one worktree and one session per task", async () => {
   assert.equal(workspace[1].agent, "claude");
   assert.equal(workspace[1].title, "Billing");
   assert.equal(workspace[1].cwd, "/repo/sample-feature-billing");
-  assert.match(workspace[1].prompt, /^Add billing\.\n\nDelivery contract for this task:/);
-  assert.match(workspace[1].prompt, /Cmux-Goal-Report:/);
-  assert.match(workspace[1].prompt, /Finish with a pull request:/);
+  assertPointer(workspace[1].prompt);
+  const brief = briefText(workspace[1].prompt);
+  assert.match(brief, /^Add billing\.\n\nDelivery contract for this task:/);
+  assert.match(brief, /Cmux-Goal-Report:/);
+  assert.match(brief, /Finish with a pull request:/);
 });
 
 test("launches only the first dependency wave and queues downstream tasks", async () => {
@@ -758,13 +786,16 @@ test("appends the image paths to every launched task prompt", async () => {
     { id: "t2", title: "Also", branch: "feature/also", prompt: "Do that.", agent: "codex" },
   ] });
   await planner.launch(draft.planId);
-  const prompts = deps.calls.filter((call) => call[0] === "workspace").map((call) => call[1].prompt);
-  assert.equal(prompts.length, 2);
-  for (const prompt of prompts) {
-    assert.match(prompt, /Attached images:\n- \/attachments\/one\.png\n- \/attachments\/two\.png\n\nDelivery contract for this task:/);
-    assert.match(prompt, /Do not open a pull request/);
+  const briefs = deps.calls.filter((call) => call[0] === "workspace").map((call) => {
+    assertPointer(call[1].prompt);
+    return briefText(call[1].prompt);
+  });
+  assert.equal(briefs.length, 2);
+  for (const brief of briefs) {
+    assert.match(brief, /Attached images:\n- \/attachments\/one\.png\n- \/attachments\/two\.png\n\nDelivery contract for this task:/);
+    assert.match(brief, /Do not open a pull request/);
   }
-  assert.ok(prompts[0].startsWith("Do it.\n\n"));
+  assert.ok(briefs[0].startsWith("Do it.\n\n"));
 });
 
 test("a launched task keeps its own prompt when no image is attached", async () => {
@@ -773,8 +804,9 @@ test("a launched task keeps its own prompt when no image is attached", async () 
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   const workspace = deps.calls.find((call) => call[0] === "workspace");
-  assert.ok(workspace[1].prompt.startsWith("Add billing."));
-  assert.ok(!workspace[1].prompt.includes("Attached image"));
+  const brief = briefText(workspace[1].prompt);
+  assert.ok(brief.startsWith("Add billing."));
+  assert.ok(!brief.includes("Attached image"));
 });
 
 test("multi-task goals push task branches without opening individual pull requests", async () => {
@@ -786,14 +818,17 @@ test("multi-task goals push task branches without opening individual pull reques
     { id: "t2", title: "Also", branch: "feature/also", prompt: "Do that.", agent: "codex" },
   ] });
   await planner.launch(draft.planId);
-  const prompts = deps.calls.filter((call) => call[0] === "workspace").map((call) => call[1].prompt);
-  assert.equal(prompts.length, 2);
-  for (const prompt of prompts) {
-    assert.match(prompt, /Finish your task branch for combined delivery:/);
-    assert.match(prompt, /Push this task branch to origin/);
-    assert.match(prompt, /Do not open a pull request/);
-    assert.match(prompt, /Cmux-Goal-Ready: .+\/t[12]/);
-    assert.ok(!prompt.includes("gh pr create"));
+  const briefs = deps.calls.filter((call) => call[0] === "workspace").map((call) => {
+    assertPointer(call[1].prompt);
+    return briefText(call[1].prompt);
+  });
+  assert.equal(briefs.length, 2);
+  for (const brief of briefs) {
+    assert.match(brief, /Finish your task branch for combined delivery:/);
+    assert.match(brief, /Push this task branch to origin/);
+    assert.match(brief, /Do not open a pull request/);
+    assert.match(brief, /Cmux-Goal-Ready: .+\/t[12]/);
+    assert.ok(!brief.includes("gh pr create"));
   }
 });
 
@@ -802,11 +837,11 @@ test("single-task goals keep the direct pull request workflow", async () => {
   const planner = new WorktreePlanner(deps);
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
   const result = await planner.launch(draft.planId);
-  const prompt = deps.calls.find((call) => call[0] === "workspace")[1].prompt;
+  const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
   assert.equal(result.deliveryMode, "single");
-  assert.match(prompt, /Finish with a pull request:/);
-  assert.match(prompt, /gh pr create/);
-  assert.match(prompt, /pull request against main\b/);
+  assert.match(brief, /Finish with a pull request:/);
+  assert.match(brief, /gh pr create/);
+  assert.match(brief, /pull request against main\b/);
 });
 
 test("a one-task issue topic is forced through Companion's combined delivery branch", async () => {
@@ -816,10 +851,10 @@ test("a one-task issue topic is forced through Companion's combined delivery bra
   assert.deepEqual(draft.issueNumbers, [54, 55]);
   assert.equal(draft.deliveryMode, "combined");
   const result = await planner.launch(draft.planId);
-  const prompt = deps.calls.find((call) => call[0] === "workspace")[1].prompt;
+  const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
   assert.equal(result.deliveryMode, "combined");
-  assert.match(prompt, /Finish your task branch for combined delivery/);
-  assert.doesNotMatch(prompt, /Closes #54|gh pr create/);
+  assert.match(brief, /Finish your task branch for combined delivery/);
+  assert.doesNotMatch(brief, /Closes #54|gh pr create/);
 });
 
 test("names a master default branch rather than assuming main", async () => {
@@ -833,7 +868,7 @@ test("names a master default branch rather than assuming main", async () => {
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
   const result = await planner.launch(draft.planId);
   assert.equal(result.base, "origin/master");
-  assert.match(deps.calls.find((call) => call[0] === "workspace")[1].prompt, /pull request against master\b/);
+  assert.match(briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt), /pull request against master\b/);
 });
 
 test("tells the planner not to write its own pull request instructions", async () => {

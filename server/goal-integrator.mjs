@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { parseCompletionReport, readyCount, scopeDrift, validateCompletionReport } from "./delivery-contract.mjs";
+import { AgentBriefs } from "./agent-brief.mjs";
 import { taskPrompt } from "./worktree-planner.mjs";
 
 export { readyCount } from "./delivery-contract.mjs";
@@ -12,7 +13,7 @@ class TasksNotReadyError extends TypeError {}
 // branch is ready by reading git, then hands the merge itself to one cmux agent:
 // a conflict needs judgement, which no subprocess can supply.
 export class GoalIntegrator {
-  constructor({ store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS } = {}) {
+  constructor({ store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS, briefs = new AgentBriefs() } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
@@ -20,6 +21,9 @@ export class GoalIntegrator {
     this.worktrees = worktrees;
     this.repoCatalog = repoCatalog;
     this.cmux = cmux;
+    // The full brief goes to a file. cmux caps a prompt at 8,000 characters, so
+    // every agent session gets a short pointer to that file instead.
+    this.briefs = briefs;
     this.execute = execute || ((bin, args, options) => repoCatalog.execute(bin, args, options));
     this.log = log;
     this.settleMs = settleMs;
@@ -178,11 +182,12 @@ export class GoalIntegrator {
         : false;
       if (resumed) plan = this.store.recordMergeLaunched(plan.planId, plan.mergeWorkspaceId);
       else {
+        const brief = await this.briefs.write({ planId: plan.planId, taskId: "merge", markdown: mergePrompt(plan) });
         const created = await this.cmux.workspaceCreate({
           cwd: plan.integrationWorktreePath,
           title: oneLine(`Merge: ${plan.goal}`, 100),
           agent: "claude",
-          prompt: mergePrompt(plan),
+          prompt: this.briefs.pointerPrompt({ title: `Merge: ${plan.goal}`, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });
         const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
         if (!workspaceId) throw new TypeError("cmux created the merge session but did not return its id");
@@ -397,11 +402,16 @@ export class GoalIntegrator {
         if (created.branchCreated === false && !created.reused) {
           throw new TypeError(`Branch ${task.branch} already exists, so wave ${wave + 1} cannot start from its integrated dependency base`);
         }
+        const brief = await this.briefs.write({
+          planId: plan.planId,
+          taskId: task.id,
+          markdown: taskPrompt(task, plan.spec, plan.images, plan.integrationBranch, "combined", `${plan.planId}/${task.id}`, plan.issueNumbers),
+        });
         const workspace = await this.cmux.workspaceCreate({
           cwd: path,
           title: task.title,
           agent: task.agent,
-          prompt: taskPrompt(task, plan.spec, plan.images, plan.integrationBranch, "combined", `${plan.planId}/${task.id}`, plan.issueNumbers),
+          prompt: this.briefs.pointerPrompt({ title: task.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });
         results.push({ ...summary, status: "launched", path, workspace, startSha });
       } catch (cause) {
@@ -436,19 +446,10 @@ export class GoalIntegrator {
   }
 }
 
-// cmux.workspaceCreate rejects a prompt over this many characters (see
-// server/cmux-client.mjs). It is a hard external constraint, not a guess.
-const MAX_PROMPT = 8_000;
-// Slack for the two joining newlines plus rounding: keeps the real total
-// safely under MAX_PROMPT rather than exactly at it.
-const PROMPT_MARGIN = 200;
-
 // The whole merge contract lives here. The agent gets pinned commits, not
 // branch names to resolve itself: a task agent that pushes again mid-merge must
-// not silently change what is delivered. Only the task list can grow without
-// bound, so it is the only part allowed to overflow the budget - and when it
-// does, that is a loud TypeError instead of a silently truncated prompt that
-// drops the verification gate and the finish instructions off the end.
+// not silently change what is delivered. The result is written to a brief file,
+// which has no size limit, so a long task list needs no budget check.
 export function mergePrompt(plan) {
   const base = baseBranch(plan);
   const tasks = plan.tasks.filter((task) => task.launchStatus === "launched" && task.headSha);
@@ -527,11 +528,6 @@ export function mergePrompt(plan) {
       "Do not open a pull request yet. Companion will branch the next workflow wave from this exact integrated commit.",
     ]),
   ].join("\n");
-
-  const budget = MAX_PROMPT - head.length - tail.length - PROMPT_MARGIN;
-  if (list.length > budget) {
-    throw new TypeError("This goal has too many tasks to merge in one agent session. Split it, or deliver the tasks as separate pull requests.");
-  }
 
   return [head, list, tail].join("\n");
 }
