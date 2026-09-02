@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
-import { WorktreePlanner } from "../server/worktree-planner.mjs";
+import { WorktreePlanner, describeTimeout, streamExecFile } from "../server/worktree-planner.mjs";
 
 const REPO_ID = "repository12345678";
 
@@ -297,4 +297,83 @@ test("a plan that plans again drops the previous failure", async (t) => {
   assert.equal(stored.lastErrorAt, null);
   assert.equal(stored.round, 1);
   assert.equal((await planner.resume(draft.planId)).lastError, null);
+});
+
+// --- run stage and abort -------------------------------------------------
+
+test("a background run begins at writing_spec and carries the stage into the list", async () => {
+  const { deps, release } = gatedDeps(envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a"));
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const planner = new WorktreePlanner({ ...deps, store });
+  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
+  const run = planner.runs.get(draft.planId);
+  assert.equal(run.stage, "writing_spec");
+  assert.equal((await planner.list()).plans[0].runStage, "writing_spec");
+  release();
+  await settled(planner, draft.planId);
+  store.close();
+});
+
+test("the run registry refuses a stage it does not define", () => {
+  const planner = new WorktreePlanner(fakeDeps({ replies: [] }));
+  planner.runs.begin("plan-1", "plan");
+  assert.throws(() => planner.runs.setStage("plan-1", "shipping"), /Unknown planner run stage/);
+  planner.runs.setStage("plan-1", "review_spec");
+  assert.equal(planner.runs.get("plan-1").stage, "review_spec");
+  // A finished run keeps the stage it ended on.
+  planner.runs.finish("plan-1", { phase: "done" });
+  planner.runs.setStage("plan-1", "writing_spec");
+  assert.equal(planner.runs.get("plan-1").stage, "review_spec");
+});
+
+test("aborting a live background round finishes its run and records the goal", async () => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const deps = fakeDeps({ replies: [] });
+  const events = [];
+  let started = () => {};
+  const running = new Promise((resolve) => { started = resolve; });
+  deps.execute = async (bin, args, options) => {
+    started();
+    await new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(Object.assign(new Error("Command failed"), { killed: true, reason: "aborted" })), { once: true });
+    });
+    return { stdout: "" };
+  };
+  const planner = new WorktreePlanner({ ...deps, store, progress: { publish: (planId, event) => events.push([planId, event]) } });
+  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
+  await running;
+  await planner.abort(draft.planId);
+  assert.equal(planner.isRunning(draft.planId), false);
+  assert.equal(planner.runs.get(draft.planId).phase, "aborted");
+  assert.match(planner.runs.get(draft.planId).error, /aborted/);
+  assert.ok(events.some(([, event]) => event.k === "error" && /aborted/.test(event.t)));
+  assert.equal(store.get(draft.planId).boardStatus, "aborted");
+  await settled(planner, draft.planId);
+  assert.equal(planner.controllers.size, 0, "the aborted round must clear its controller");
+  store.close();
+});
+
+test("a real child process stops when its abort signal fires", async () => {
+  const controller = new AbortController();
+  const promise = streamExecFile(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { signal: controller.signal, timeout: 30_000 });
+  controller.abort();
+  const failure = await promise.then(() => null, (cause) => cause);
+  assert.ok(failure, "an aborted child must reject");
+  assert.equal(failure.killed, true);
+  assert.equal(failure.reason, "aborted");
+  assert.match(describeTimeout(failure.reason, 1_000, 2_000), /aborted/);
+});
+
+test("an already aborted signal stops the child before it can produce output", async () => {
+  const failure = await streamExecFile(process.execPath, ["-e", "console.log('hello')"], { signal: AbortSignal.abort(), timeout: 30_000 })
+    .then(() => null, (cause) => cause);
+  assert.equal(failure.reason, "aborted");
+});
+
+test("a finished round removes its abort listener from a shared controller", async () => {
+  const controller = new AbortController();
+  await streamExecFile(process.execPath, ["-e", "console.log('done')"], { signal: controller.signal, timeout: 30_000 });
+  // A listener left behind would keep the finished round reachable from the
+  // controller, and would try to kill a child that no longer exists.
+  assert.doesNotThrow(() => controller.abort());
 });

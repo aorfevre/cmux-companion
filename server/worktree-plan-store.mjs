@@ -17,8 +17,13 @@ export const PLAN_EVENT_KINDS = new Set([
   "goal", "questions", "answers", "tasks", "feedback", "edit", "launch",
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
-  "session_retired",
+  "session_retired", "board_merged", "board_aborted", "board_pull_request",
 ]);
+// The only two lifecycle states that are stored. Every other column of the
+// board is derived, so a stored value that is neither of these is a bug.
+const BOARD_STATUSES = new Set(["merged", "aborted"]);
+// The pull-request states GitHub reports. A different word is a caller mistake.
+const BOARD_PR_STATES = new Set(["OPEN", "CLOSED", "MERGED"]);
 // A round either asked questions or returned the split. Any other stage is a
 // caller mistake, and storing it would make a reloaded plan unreadable.
 const PLAN_STAGES = new Set(["questions", "ready"]);
@@ -64,6 +69,12 @@ CREATE TABLE IF NOT EXISTS plans (
   merge_workspace_id TEXT,
   merge_status TEXT,
   superseded_merge_workspaces TEXT NOT NULL DEFAULT '[]',
+  board_status TEXT,
+  board_changed_at TEXT,
+  board_pr_number INTEGER,
+  board_pr_url TEXT,
+  board_pr_state TEXT,
+  board_pr_observed_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   launched_at TEXT
@@ -282,6 +293,7 @@ export class WorktreePlanStore {
       SELECT t.plan_id, t.task_id FROM plan_tasks t
       JOIN plans p ON p.plan_id = t.plan_id
       WHERE t.workspace_id = ? AND p.status = 'launched' AND p.delivery_mode = 'combined'
+        AND p.board_status IS NULL
       LIMIT 1
     `).get(id);
     if (!row) return null;
@@ -293,7 +305,7 @@ export class WorktreePlanStore {
     const id = text(workspaceIdValue);
     if (!id) return null;
     const row = this.db.prepare(
-      "SELECT plan_id FROM plans WHERE merge_workspace_id = ? AND merge_status = 'running' LIMIT 1",
+      "SELECT plan_id FROM plans WHERE merge_workspace_id = ? AND merge_status = 'running' AND board_status IS NULL LIMIT 1",
     ).get(id);
     return row ? this.get(row.plan_id) : null;
   }
@@ -302,6 +314,7 @@ export class WorktreePlanStore {
     return this.db.prepare(`
       SELECT plan_id FROM plans
       WHERE status = 'launched' AND delivery_mode = 'combined' AND final_pr_url IS NULL
+        AND board_status IS NULL
       ORDER BY updated_at
     `).all().map((row) => this.get(row.plan_id)).filter(Boolean);
   }
@@ -500,6 +513,92 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  // The two terminal lifecycle states and the pull-request observation that
+  // reaches one of them. Every other board column is derived at read time, so
+  // these three methods are the only writers of board state.
+
+  // The user stopped the goal. An already aborted plan is returned untouched,
+  // and a merged plan is never demoted: the two terminal states are exclusive.
+  recordGoalAborted(planId, { reason = null } = {}) {
+    const id = String(planId || "");
+    const row = this.#boardRow(id);
+    if (!row) return null;
+    if (boardStatus(row.board_status)) return this.get(id);
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET board_status = 'aborted', board_changed_at = ?, updated_at = ? WHERE plan_id = ?
+      `).run(at, at, id);
+      this.#insertEvent(id, null, "board_aborted", { reason: text(reason), at }, at);
+    });
+    return this.get(id);
+  }
+
+  // The goal landed. The merge is stored with the pull request that carried it,
+  // so the board can name the pull request without another GitHub call.
+  recordGoalMerged(planId, { number = null, url = null, observedAt = null } = {}) {
+    return this.#recordBoardMerged(String(planId || ""), { number, url, observedAt });
+  }
+
+  // One GitHub observation. It moves the board only when the stored
+  // number/url/state triple actually changes, so a refresh that reports the
+  // same pull request neither grows the event log nor reorders the goal.
+  recordGoalPullRequest(planId, { number = null, url = null, state, observedAt = null } = {}) {
+    if (!BOARD_PR_STATES.has(state)) throw new TypeError(`Unknown pull request state ${state}`);
+    const id = String(planId || "");
+    if (state === "MERGED") return this.#recordBoardMerged(id, { number, url, observedAt });
+    const row = this.#boardRow(id);
+    if (!row) return null;
+    // A terminal goal is finished. GitHub reports a merged pull request as
+    // MERGED forever, so an OPEN or CLOSED observation on a terminal plan is a
+    // stale read. It must not move the board backwards.
+    if (boardStatus(row.board_status)) return this.get(id);
+    const next = { number: prNumber(number), url: text(url), state };
+    if (this.#samePullRequest(row, next)) return this.get(id);
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET board_pr_number = ?, board_pr_url = ?, board_pr_state = ?,
+          board_pr_observed_at = ?, updated_at = ? WHERE plan_id = ?
+      `).run(next.number, next.url, next.state, text(observedAt) || at, at, id);
+      this.#insertEvent(id, null, "board_pull_request", { ...next, observedAt: text(observedAt) || at }, at);
+    });
+    return this.get(id);
+  }
+
+  #recordBoardMerged(planId, { number, url, observedAt }) {
+    const row = this.#boardRow(planId);
+    if (!row) return null;
+    const current = boardStatus(row.board_status);
+    // An aborted goal stays aborted, and a repeated merge of the same pull
+    // request is a no-op rather than a second event.
+    if (current === "aborted") return this.get(planId);
+    const next = { number: prNumber(number), url: text(url), state: "MERGED" };
+    if (current === "merged" && this.#samePullRequest(row, next)) return this.get(planId);
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET board_status = 'merged', board_changed_at = ?, board_pr_number = ?,
+          board_pr_url = ?, board_pr_state = 'MERGED', board_pr_observed_at = ?, updated_at = ?
+        WHERE plan_id = ?
+      `).run(current === "merged" ? row.board_changed_at : at, next.number, next.url, text(observedAt) || at, at, planId);
+      this.#insertEvent(planId, null, "board_merged", { ...next, observedAt: text(observedAt) || at }, at);
+    });
+    return this.get(planId);
+  }
+
+  #samePullRequest(row, next) {
+    return prNumber(row.board_pr_number) === next.number
+      && (row.board_pr_url ?? null) === next.url
+      && boardPrState(row.board_pr_state) === next.state;
+  }
+
+  #boardRow(planId) {
+    return this.db.prepare(
+      "SELECT board_status, board_changed_at, board_pr_number, board_pr_url, board_pr_state FROM plans WHERE plan_id = ?",
+    ).get(String(planId || "")) || null;
+  }
+
   get(planId) {
     const row = this.db.prepare("SELECT * FROM plans WHERE plan_id = ?").get(String(planId || ""));
     if (!row) return null;
@@ -551,6 +650,12 @@ export class WorktreePlanStore {
       engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
       lastError: row.last_error ?? null,
       lastErrorAt: row.last_error_at ?? null,
+      boardStatus: boardStatus(row.board_status),
+      boardChangedAt: row.board_changed_at ?? null,
+      boardPrNumber: Number.isInteger(row.board_pr_number) ? row.board_pr_number : null,
+      boardPrUrl: row.board_pr_url ?? null,
+      boardPrState: boardPrState(row.board_pr_state),
+      boardPrObservedAt: row.board_pr_observed_at ?? null,
       taskCount: row.task_count,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -630,6 +735,12 @@ export class WorktreePlanStore {
     ensure("plans", "merge_workspace_id", "TEXT");
     ensure("plans", "merge_status", "TEXT");
     ensure("plans", "superseded_merge_workspaces", "TEXT NOT NULL DEFAULT '[]'");
+    ensure("plans", "board_status", "TEXT");
+    ensure("plans", "board_changed_at", "TEXT");
+    ensure("plans", "board_pr_number", "INTEGER");
+    ensure("plans", "board_pr_url", "TEXT");
+    ensure("plans", "board_pr_state", "TEXT");
+    ensure("plans", "board_pr_observed_at", "TEXT");
     ensure("plans", "contract_version", "INTEGER NOT NULL DEFAULT 1");
     ensure("plans", "spec", "TEXT");
     ensure("plans", "readiness", "TEXT");
@@ -719,6 +830,12 @@ function readPlan(row) {
     mergeWorkspaceId: row.merge_workspace_id,
     mergeStatus: row.merge_status,
     supersededMergeWorkspaces: parse(row.superseded_merge_workspaces, []),
+    boardStatus: boardStatus(row.board_status),
+    boardChangedAt: row.board_changed_at ?? null,
+    boardPrNumber: Number.isInteger(row.board_pr_number) ? row.board_pr_number : null,
+    boardPrUrl: row.board_pr_url ?? null,
+    boardPrState: boardPrState(row.board_pr_state),
+    boardPrObservedAt: row.board_pr_observed_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     launchedAt: row.launched_at,
@@ -762,6 +879,20 @@ function deliveryMode(tasks) {
 
 function policy(value) {
   return value === "combined" ? "combined" : "auto";
+}
+
+// A stored lifecycle value that is neither terminal state reads as unset. A
+// database edited by hand must not put an unknown word on the board.
+function boardStatus(value) {
+  return BOARD_STATUSES.has(value) ? value : null;
+}
+
+function boardPrState(value) {
+  return BOARD_PR_STATES.has(value) ? value : null;
+}
+
+function prNumber(value) {
+  return Number.isInteger(value) ? value : null;
 }
 
 // cmux answers with one of several id fields depending on its version, so read

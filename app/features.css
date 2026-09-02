@@ -187,7 +187,7 @@
 .attachment-strip.review img{width:64px;height:46px}
 .attachment-strip .attachment-missing{display:flex;align-items:center;justify-content:center;width:64px;height:46px;color:#69717a;font-size:7px;font-style:normal}
 
-.worktree-filter-tabs{overflow-x:auto;scrollbar-width:none}.worktree-filter-tabs::-webkit-scrollbar{display:none}.worktree-filter-tabs button{flex:none}.worktree-filter-tabs button:nth-last-child(-n+2){color:#91afd2}.worktree-filter-tabs button:nth-last-child(-n+2).active{border-color:#465e78;background:#151d26;color:#c6dcff}.worktree-filter-tabs button:nth-last-child(-n+2).active b{background:#26394e;color:#b9d5f5}
+.worktree-filter-tabs{overflow-x:auto;scrollbar-width:none}.worktree-filter-tabs::-webkit-scrollbar{display:none}.worktree-filter-tabs button{flex:none}.worktree-filter-tabs button.goal-tab{color:#91afd2}.worktree-filter-tabs button.goal-tab.active{border-color:#465e78;background:#151d26;color:#c6dcff}.worktree-filter-tabs button.goal-tab.active b{background:#26394e;color:#b9d5f5}
 .worktree-filter-tabs .tab-planning{display:inline-block;margin-left:4px;border-radius:9px;background:rgba(159,196,255,.14);color:#9fc4ff;padding:2px 5px;font-size:7px;font-style:normal;font-weight:800;animation:planning-pulse 1.8s ease-in-out infinite}
 .worktree-goal-card.planning{border-color:rgba(159,196,255,.45)}
 .worktree-goal-card.planning>header em{background:rgba(159,196,255,.16);color:#9fc4ff;animation:planning-pulse 1.8s ease-in-out infinite}
@@ -196,6 +196,45 @@
 @media (prefers-reduced-motion:reduce){.worktree-filter-tabs .tab-planning,.worktree-goal-card.planning>header em{animation:none}}
 .worktree-goals{display:grid;gap:10px;margin-top:14px}.worktree-goal-card{display:flex;min-width:0;flex-direction:column;border:1px solid #2b3641;border-radius:15px;background:linear-gradient(145deg,#151b22,#11151a);padding:13px}.worktree-goal-card.draft{border-color:rgba(159,196,255,.28)}.worktree-goal-card.launched{border-color:rgba(201,255,80,.22)}.worktree-goal-card>header{display:flex;align-items:flex-start;gap:10px}.worktree-goal-card .repo-icon{display:grid;width:32px;height:32px;flex:none;place-items:center;border-radius:9px;background:#26311d;color:var(--lime);font-size:10px;font-weight:900}.worktree-goal-card>header>div{display:flex;min-width:0;flex:1;flex-direction:column;gap:4px}.worktree-goal-card>header strong{display:-webkit-box;color:#edf1f4;font-size:11px;line-height:1.45;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}.worktree-goal-card>header small{color:#8b96a1;font-size:8px;font-weight:750}.worktree-goal-card>header em{flex:none;border-radius:7px;background:rgba(159,196,255,.1);color:#9fc4ff;padding:4px 7px;font-size:7px;font-style:normal;font-weight:850}.worktree-goal-card.launched>header em{background:rgba(201,255,80,.1);color:var(--lime)}.worktree-goal-meta{display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px;margin:12px 0;color:#7f8994;font-size:8px}.worktree-goal-card>footer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;margin-top:auto;border-top:1px solid #273039;padding-top:10px}.worktree-goal-card>footer button{min-height:36px;border:1px solid var(--line);border-radius:9px;background:#20252c;color:#b8c0c8;padding:8px 12px;font-size:9px}.worktree-goal-card>footer .worktree-goal-open{border-color:#52632f;background:#18200f;color:var(--lime);font-weight:800}.worktree-goal-card>footer .worktree-goal-delete-button,.worktree-goal-card>footer .confirm-delete{border-color:rgba(255,109,120,.3);background:rgba(255,109,120,.06);color:#f08c95}.worktree-goal-card>footer.worktree-goal-delete{grid-template-columns:minmax(0,1fr) auto auto;align-items:center}.worktree-goal-delete>span{color:#ffb2b9;font-size:8px}.worktree-goal-card>footer button:disabled{opacity:.5}
 @media(min-width:700px){.worktree-goals{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.worktree-goal-card.merged{border-color:rgba(201,255,80,.3)}.worktree-goal-card.aborted{border-color:rgba(255,109,120,.28)}
+.worktree-goal-card.merged>header em{background:rgba(201,255,80,.12);color:var(--lime)}.worktree-goal-card.aborted>header em{background:rgba(255,109,120,.1);color:#f08c95}
+
+/* Goals board: seven fixed-width columns on one horizontal track. The page
+   itself never widens, because only this strip scrolls. */
+.goal-board{display:flex;gap:9px;margin-top:14px;overflow-x:auto;padding-bottom:8px;scrollbar-width:thin}
+.goal-board::-webkit-scrollbar{height:6px}.goal-board::-webkit-scrollbar-thumb{border-radius:6px;background:#2b3641}
+.goal-board-column{display:flex;width:224px;min-width:224px;flex:none;flex-direction:column;gap:8px;border:1px solid #232c35;border-radius:14px;background:#101418;padding:11px}
+.goal-board-column>header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 6px}
+.goal-board-column h3{margin:0;color:#e6ebef;font-size:10px;font-weight:850}
+.goal-board-column>header b{border-radius:8px;background:#242c34;color:#aeb7bf;padding:2px 6px;font-size:7px}
+.goal-board-column>header p{grid-column:1/-1;margin:0;color:#78828c;font-size:7px;line-height:1.5}
+.goal-board-empty{margin:0;border:1px dashed #262f38;border-radius:10px;color:#69717a;padding:12px 8px;font-size:7px;text-align:center}
+.goal-board-cards{display:flex;flex-direction:column;gap:8px;margin:0;list-style:none;padding:0}
+.goal-board-card{display:flex;min-width:0;flex-direction:column;gap:7px;border:1px solid #2b3641;border-radius:12px;background:linear-gradient(145deg,#151b22,#11151a);padding:10px}
+.goal-board-card.merged{border-color:rgba(201,255,80,.28)}.goal-board-card.aborted{border-color:rgba(255,109,120,.26)}
+.goal-board-card.writing_spec,.goal-board-card.review_spec{border-color:rgba(159,196,255,.26)}
+.goal-board-card>strong{display:-webkit-box;color:#edf1f4;font-size:9px;line-height:1.5;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.goal-board-card-meta{display:flex;flex-wrap:wrap;gap:4px 8px;color:#7f8994;font-size:7px}
+.goal-board-card-evidence{display:-webkit-box;margin:0;color:#96a0aa;font-size:7px;line-height:1.5;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.goal-board-pr{border:1px solid #2f4a2a;border-radius:8px;background:rgba(201,255,80,.06);color:var(--lime);padding:6px 8px;font-size:7px;font-weight:800;text-decoration:none}
+.goal-board-card>footer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;border-top:1px solid #232c35;padding-top:8px}
+.goal-board-card>footer button{min-height:32px;border:1px solid var(--line);border-radius:8px;background:#20252c;color:#b8c0c8;padding:6px 8px;font-size:8px}
+.goal-board-card>footer .goal-board-open{border-color:#52632f;background:#18200f;color:var(--lime);font-weight:800}
+.goal-board-card>footer .goal-board-abort,.goal-board-card>footer .confirm-abort{border-color:rgba(255,109,120,.3);background:rgba(255,109,120,.06);color:#f08c95}
+.goal-board-card>footer button:disabled{opacity:.5}
+.goal-board-abort-confirm{display:flex;flex-direction:column;gap:7px}
+.goal-board-abort-confirm>span{color:#ffb2b9;font-size:7px;line-height:1.55}
+.goal-board-abort-confirm>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px}
+
+/* Terminal planner sheet: the banner explains why the controls are gone. */
+.planner-terminal-banner{display:flex;flex-direction:column;gap:6px;border:1px solid #2b3641;border-radius:13px;background:#12171d;padding:12px}
+.planner-terminal-banner.merged{border-color:rgba(201,255,80,.3)}
+.planner-terminal-banner.aborted{border-color:rgba(255,109,120,.3)}
+.planner-terminal-banner strong{color:#edf1f4;font-size:11px}
+.planner-terminal-banner p{margin:0;color:#96a0aa;font-size:9px;line-height:1.6}
+.planner-terminal-banner small{color:#78828c;font-size:8px}
+.planner-terminal-pr{align-self:flex-start;border:1px solid #2f4a2a;border-radius:9px;background:rgba(201,255,80,.06);color:var(--lime);padding:8px 11px;font-size:9px;font-weight:800;text-decoration:none}
+@media (prefers-reduced-motion:reduce){.goal-board{scroll-behavior:auto}}
 
 /* Planner sheets: a wide, readable modal. The rules come after the desktop
    block on purpose, so they win without a rewrite of the minified shell.

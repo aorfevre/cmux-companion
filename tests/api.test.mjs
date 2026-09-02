@@ -531,6 +531,7 @@ test("every state-changing route requires pairing and same-origin requests", asy
     ["/api/worktree-dashboard/repositories/repository12345678/worktrees", { branch: "feature/safe", base: "main" }],
     ["/api/worktree-dashboard/worktree123456789/launch", { agent: "codex" }],
     ["/api/worktree-plans/plan-1/assemble", {}],
+    ["/api/worktree-plans/plan-1/abort", {}],
     [`/api/workspaces/${WS_ID}/rename`, { title: "x" }],
     [`/api/workspaces/${WS_ID}/close`, {}],
     [`/api/workspaces/${WS_ID}/respawn`, { surfaceId: TERM_ID }],
@@ -597,7 +598,8 @@ function fakePlanner() {
     run: async (planId) => { calls.push(["run", planId]); return { ...draft, round: 0, running: true }; },
     feedback: async (planId, options) => { calls.push(["feedback", planId, options]); return { ...draft, round: 3 }; },
     feedbackBackground: async (planId, options) => { calls.push(["feedbackBackground", planId, options]); return { ...draft, running: true }; },
-    activeRuns: () => { calls.push(["activeRuns"]); return { runs: [{ planId: "plan-1", kind: "plan", phase: "running", step: "Read app/page.tsx", startedAt: 1, finishedAt: null }] }; },
+    activeRuns: () => { calls.push(["activeRuns"]); return { runs: [{ planId: "plan-1", kind: "plan", phase: "running", stage: "writing_spec", step: "Read app/page.tsx", startedAt: 1, finishedAt: null }] }; },
+    abort: async (planId) => { calls.push(["abort", planId]); return { planId, aborted: true, alreadyAborted: false, closedSessionIds: ["ws-1"], failedSessionIds: ["ws-2"] }; },
   };
 }
 
@@ -916,4 +918,100 @@ test("a failed round ends its progress stream with an error", async (t) => {
   const { value } = await reader.read();
   assert.match(new TextDecoder().decode(value), /"k":"error"/);
   await reader.cancel();
+});
+
+test("aborting a goal cancels its scheduled work and reports every closure", async (t) => {
+  const planner = fakePlanner();
+  const calls = [];
+  const goalIntegrator = { cancel: (planId) => { calls.push(["cancel", planId]); return { planId, cancelled: true }; }, assemble: async () => ({}) };
+  const worktreeDashboard = { invalidate: () => calls.push(["invalidate"]) };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, goalIntegrator, worktreeDashboard });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/abort", headers, payload: {} });
+  assert.equal(response.statusCode, 200);
+  const body = response.json();
+  assert.equal(body.aborted, true);
+  assert.equal(body.alreadyAborted, false);
+  assert.deepEqual(body.closedSessionIds, ["ws-1"]);
+  assert.deepEqual(body.failedSessionIds, ["ws-2"], "a partial closure must reach the UI");
+  // Cancel runs before the abort, so no armed timer can create a session, and
+  // the caches are dropped afterwards.
+  assert.deepEqual(calls, [["cancel", "plan-1"], ["invalidate"]]);
+  assert.deepEqual(planner.calls.at(-1), ["abort", "plan-1"]);
+});
+
+test("a scheduling cancel that throws never stops the abort", async (t) => {
+  const planner = fakePlanner();
+  const goalIntegrator = { cancel: () => { throw new Error("timer map is gone"); }, assemble: async () => ({}) };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, goalIntegrator });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/abort", headers, payload: {} });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().aborted, true);
+});
+
+test("a planner refusal to abort a merged goal answers 400 with its own sentence", async (t) => {
+  const planner = fakePlanner();
+  planner.abort = async () => { throw new TypeError("This goal is already merged, so it cannot be aborted"); };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/abort", headers, payload: {} });
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /already merged/);
+});
+
+test("only an explicit GitHub refresh reconciles the goal board, and only after it succeeds", async (t) => {
+  const order = [];
+  const value = { generatedAt: "2026-09-01T00:00:00.000Z", summary: { repositories: 0, worktrees: 0, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, repositories: [], orphanSessions: [] };
+  const worktreeDashboard = { snapshot: async (input) => { order.push(["snapshot", input.refreshGitHub === true]); return value; }, invalidate: () => {} };
+  const goalMergeWatch = { reconcile: async () => { order.push(["reconcile"]); return { recorded: [] }; } };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreeDashboard, goalMergeWatch });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+
+  assert.equal((await app.inject({ url: "/api/worktree-dashboard", headers: { cookie } })).statusCode, 200);
+  assert.deepEqual(order, [["snapshot", false]], "an ordinary poll must not reconcile");
+
+  assert.equal((await app.inject({ url: "/api/worktree-dashboard?github=1", headers: { cookie } })).statusCode, 200);
+  assert.deepEqual(order, [["snapshot", false], ["snapshot", true], ["reconcile"]], "the board is written before the response returns");
+});
+
+test("a failed snapshot reconciles nothing, and a failed reconciliation still returns the dashboard", async (t) => {
+  const order = [];
+  const value = { generatedAt: "2026-09-01T00:00:00.000Z", summary: { repositories: 0, worktrees: 0, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, repositories: [], orphanSessions: [] };
+  let snapshotFails = true;
+  const worktreeDashboard = {
+    snapshot: async () => { if (snapshotFails) throw new Error("git is unavailable"); order.push(["snapshot"]); return value; },
+    invalidate: () => {},
+  };
+  const goalMergeWatch = { reconcile: async () => { order.push(["reconcile"]); throw new Error("the store is locked"); } };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreeDashboard, goalMergeWatch });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+
+  assert.equal((await app.inject({ url: "/api/worktree-dashboard?github=1", headers: { cookie } })).statusCode, 500);
+  assert.deepEqual(order, [], "a snapshot that failed must not reconcile");
+
+  snapshotFails = false;
+  const response = await app.inject({ url: "/api/worktree-dashboard?github=1", headers: { cookie } });
+  assert.equal(response.statusCode, 200, "a reconciliation failure must not fail the refresh");
+  assert.deepEqual(order, [["snapshot"], ["reconcile"]]);
+});
+
+test("the plan list and detail carry the lifecycle fields the board reads", async (t) => {
+  const planner = fakePlanner();
+  planner.list = async () => ({ plans: [{ planId: "plan-1", goal: "Add billing", status: "launched", running: false, runPhase: null, runStage: null, runStep: "", runError: "", boardStatus: null, boardPrState: "OPEN", boardState: "waiting_for_merge" }] });
+  planner.detail = async () => ({ planId: "plan-1", status: "launched", running: true, runPhase: "running", runStage: "review_spec", runStep: "Read app/page.tsx", runError: "", boardStatus: null, boardState: "review_spec", events: [] });
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const listed = (await app.inject({ url: "/api/worktree-plans", headers })).json();
+  assert.equal(listed.plans[0].boardState, "waiting_for_merge");
+  assert.equal(listed.plans[0].boardPrState, "OPEN");
+  const detail = (await app.inject({ url: "/api/worktree-plans/plan-1", headers })).json();
+  assert.equal(detail.runStage, "review_spec");
+  assert.equal(detail.boardState, "review_spec");
 });
