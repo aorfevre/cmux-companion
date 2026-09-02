@@ -325,6 +325,42 @@ export class WorktreeDashboard {
     }
   }
 
+  // Discards one task's worktree and its branch so the task can start again
+  // from its base. This is the deliberate opposite of `remove`: that method
+  // protects work, and this one is called only when a person asked for a clean
+  // restart of a task whose work they have decided to throw away.
+  //
+  // The branch goes with the worktree. Left behind, it would still point at the
+  // discarded commits, and `create` checks out an existing branch, so the next
+  // agent would land back on the work the restart was asked to remove.
+  //
+  // A missing worktree is success, not an error: the restart wants the path
+  // gone, and a task that never created one is already in that state.
+  async removeBranchWorktree(repositoryId, branch) {
+    if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
+    const name = normalizedGitInput(branch, "A branch name is required");
+    const repository = await this.repoCatalog.get(repositoryId);
+    if (!repository) throw new TypeError("Unknown repository");
+
+    const dashboard = await this.snapshot({ refresh: true });
+    const entry = dashboard.repositories.find((item) => item.id === repositoryId);
+    const worktree = entry?.worktrees.find((item) => item.branch === name && !item.isPrimary);
+    if (worktree) {
+      // A managed release checkout is never a task worktree, and removing one
+      // would break the updater. The name match alone must not reach it.
+      if (worktree.managedRelease) throw new TypeError("That branch belongs to a companion release");
+      const target = this.targets.get(worktree.id);
+      if (!target) throw new TypeError("That worktree could not be inspected");
+      await this.runWorktreeRemoval(target);
+    }
+    // `-D`, not `-d`: the whole point is to drop commits no base contains.
+    // A branch that is already gone is not a failure.
+    await this.repoCatalog.git(repository.path, ["branch", "-D", name]).catch(() => {});
+    this.repoCatalog.cache = null;
+    this.invalidate();
+    return { removed: Boolean(worktree), branch: name, path: worktree?.path || null };
+  }
+
   async create(repositoryId, { branch, base, reuseIfAtBase = false, workspaces = [] } = {}) {
     if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
     const branchName = normalizedGitInput(branch, "Enter a branch name");

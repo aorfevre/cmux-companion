@@ -589,6 +589,8 @@ function fakePlanner() {
     answer: async (planId, options) => { calls.push(["answer", planId, options]); return { ...draft, round: 2 }; },
     update: async (planId, options) => { calls.push(["update", planId, options]); return { ...draft, tasks: options.tasks }; },
     launch: async (planId) => { calls.push(["launch", planId]); return { planId, base: "origin/main", launched: 1, results: [{ id: "t1", title: "Billing", status: "launched" }] }; },
+    relaunchTask: async (planId, taskId, options) => { calls.push(["relaunch", planId, taskId, options]); return { planId, taskId, mode: options.mode, status: "launched" }; },
+    skipTask: async (planId, taskId, options) => { calls.push(["skip", planId, taskId, options]); return { planId, taskId, skipped: true, reason: options.reason }; },
     list: async (options) => { calls.push(["list", options]); return { plans: [{ planId: "plan-1", goal: "Add billing", status: "draft", taskCount: 1 }] }; },
     detail: async (planId) => { calls.push(["detail", planId]); return { ...draft, events: [{ round: 0, kind: "goal", payload: { goal: "Add billing" }, createdAt: "2026-09-01T00:00:00.000Z" }] }; },
     resume: async (planId) => { calls.push(["resume", planId]); return draft; },
@@ -1014,4 +1016,97 @@ test("the plan list and detail carry the lifecycle fields the board reads", asyn
   const detail = (await app.inject({ url: "/api/worktree-plans/plan-1", headers })).json();
   assert.equal(detail.runStage, "review_spec");
   assert.equal(detail.boardState, "review_spec");
+});
+
+
+// The supervision routes: the sensor that says whether a launched goal's agents
+// are alive, and the two actions that recover one that is not.
+function fakeHealth() {
+  const calls = [];
+  const goal = {
+    planId: "plan-1",
+    goal: "Add billing",
+    health: "dead",
+    stuckCount: 1,
+    tasks: [{ id: "t1", title: "Billing", health: "dead", reason: "This task session is no longer open in cmux" }],
+  };
+  return {
+    calls,
+    sweep: async () => { calls.push(["sweep"]); return { checkedAt: "2026-09-03T12:00:00.000Z", sessionsAvailable: true, goals: [goal], summary: { goals: 1, stuck: 1 } }; },
+    inspect: async (planId) => { calls.push(["inspect", planId]); return { ...goal, planId }; },
+  };
+}
+
+test("reports the health of every launched goal and of one goal alone", async (t) => {
+  const health = fakeHealth();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: health });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const swept = await app.inject({ method: "GET", url: "/api/goals/health", headers });
+  assert.equal(swept.statusCode, 200);
+  assert.equal(swept.json().goals[0].health, "dead");
+  assert.equal(swept.json().sessionsAvailable, true);
+
+  const one = await app.inject({ method: "GET", url: "/api/worktree-plans/plan-9/health", headers });
+  assert.equal(one.statusCode, 200);
+  assert.equal(one.json().planId, "plan-9");
+  assert.deepEqual(health.calls.map((call) => call[0]), ["sweep", "inspect"]);
+});
+
+test("the forced check runs the same pass the watchdog runs on its timer", async (t) => {
+  const calls = [];
+  const watchdog = { check: async () => { calls.push("check"); return { checked: true, alerts: [] }; }, start: () => () => {} };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: fakeHealth(), goalWatchdog: watchdog });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const forced = await app.inject({ method: "POST", url: "/api/goals/health/check", headers, payload: {} });
+  assert.equal(forced.statusCode, 200);
+  assert.equal(forced.json().checked, true);
+  assert.deepEqual(calls, ["check"]);
+});
+
+test("relaunches one task in either mode, and defaults to continue", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const restarted = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/tasks/t1/relaunch", headers, payload: { mode: "restart" } });
+  assert.equal(restarted.statusCode, 200);
+  assert.equal(restarted.json().mode, "restart");
+
+  // An empty body keeps the safe mode: continuing preserves the agent's work,
+  // and restarting discards it, so the default must never be the destructive one.
+  const continued = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/tasks/t1/relaunch", headers, payload: {} });
+  assert.equal(continued.json().mode, "continue");
+  assert.deepEqual(planner.calls.map((call) => [call[0], call[3]?.mode]), [["relaunch", "restart"], ["relaunch", "continue"]]);
+});
+
+test("skips one task and carries its reason", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const skipped = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/tasks/t1/skip", headers, payload: { reason: "Superseded by t3" } });
+  assert.equal(skipped.statusCode, 200);
+  assert.equal(skipped.json().skipped, true);
+  assert.equal(planner.calls[0][3].reason, "Superseded by t3");
+});
+
+test("every supervision route requires pairing", async (t) => {
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: fakeHealth() });
+  t.after(() => app.close());
+  for (const [method, url] of [
+    ["GET", "/api/goals/health"],
+    ["POST", "/api/goals/health/check"],
+    ["GET", "/api/worktree-plans/plan-1/health"],
+    ["POST", "/api/worktree-plans/plan-1/tasks/t1/relaunch"],
+    ["POST", "/api/worktree-plans/plan-1/tasks/t1/skip"],
+  ]) {
+    const response = await app.inject({ method, url, payload: method === "POST" ? {} : undefined });
+    assert.equal(response.statusCode, 401, `${method} ${url}`);
+  }
 });

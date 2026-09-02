@@ -245,7 +245,7 @@ export class CmuxClient {
     throw new TypeError("Unsupported inbox item");
   }
 
-  async workspaceCreate({ cwd, title, agent = "shell", prompt = "", script = null }) {
+  async workspaceCreate({ cwd, title, agent = "shell", prompt = "", script = null, env = null }) {
     if (typeof cwd !== "string" || !cwd.startsWith("/")) throw new TypeError("Invalid repository path");
     // cmux accepts a cwd that does not exist and creates the workspace anyway.
     // Its shell then cannot enter the directory and silently keeps the one cmux
@@ -257,6 +257,12 @@ export class CmuxClient {
     if (typeof prompt !== "string" || prompt.length > 8_000) throw new TypeError("Prompt is too long");
     if (script !== null && !/^[a-zA-Z0-9:_-]{1,64}$/.test(script)) throw new TypeError("Invalid package script");
 
+    // A title is what a person reads, and a person can rename it. These stamps
+    // are the identity that survives that, so a later sweep can still say which
+    // goal and task a session belongs to. They are exported in the session's
+    // own shell rather than passed to `workspace.create`, because the RPC's
+    // env parameter is not part of the surface this client has verified.
+    const exports = envExports(env);
     const created = await this.rpc("workspace.create", { cwd, title: title.trim(), focus: false });
     const workspaceId = created.workspace_id || created.workspace_ref;
     assertTarget(workspaceId);
@@ -265,7 +271,8 @@ export class CmuxClient {
     else if (agent === "codex") command = prompt.trim() ? `xcodex ${shellQuote(prompt.trim())}` : "xcodex";
     else if (agent === "claude") command = prompt.trim() ? `xclaude ${shellQuote(prompt.trim())}` : "xclaude";
     else if (prompt.trim()) command = `printf '%s\\n' ${shellQuote(prompt.trim())}`;
-    if (command) await this.rpc("surface.send_text", { workspace_id: workspaceId, text: `${command}\n` });
+    const text = `${exports}${command}`;
+    if (text) await this.rpc("surface.send_text", { workspace_id: workspaceId, text: `${text}\n` });
     return { ...created, workspace_id: workspaceId };
   }
 
@@ -535,6 +542,20 @@ function workspacePriority(workspace) {
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", `'\\''`)}'`;
+}
+
+// Builds the `export K=V; ` prefix that stamps a session's identity into its own
+// shell. The name pattern is strict rather than escaped: a variable name is
+// never user text, so anything that is not a plain identifier is a bug in the
+// caller and is dropped instead of being quoted into the command line. The
+// value is quoted like every other argument this client sends.
+function envExports(env) {
+  if (!env || typeof env !== "object") return "";
+  const pairs = Object.entries(env)
+    .filter(([name, value]) => /^[A-Z][A-Z0-9_]{0,63}$/.test(name) && typeof value === "string" && value.trim())
+    .slice(0, 12)
+    .map(([name, value]) => `export ${name}=${shellQuote(value.trim().slice(0, 200))}`);
+  return pairs.length ? `${pairs.join("; ")}; ` : "";
 }
 
 export { ALLOWED_KEYS, ALLOWED_AGENTS, ALLOWED_TODO_ACTIONS };

@@ -14,6 +14,7 @@ export const GOAL_BOARD_COLUMNS = Object.freeze([
   Object.freeze({ id: "waiting_for_dev", label: "Waiting for dev", description: "The specification is ready to launch." }),
   Object.freeze({ id: "dev_in_progress", label: "Dev in progress", description: "Agents are working on the launched tasks." }),
   Object.freeze({ id: "waiting_for_merge", label: "Waiting for merge", description: "The work waits for the goal pull request to merge." }),
+  Object.freeze({ id: "blocked", label: "Blocked", description: "The goal stopped and needs a person before it can continue." }),
   Object.freeze({ id: "merged", label: "Merged", description: "The goal pull request is merged." }),
   Object.freeze({ id: "aborted", label: "Aborted", description: "The goal was stopped and no more work is expected." }),
 ]);
@@ -30,6 +31,10 @@ export function goalBoardState(plan) {
   // An aborted goal that also carries merge evidence stays aborted.
   const boardStatus = text(source.boardStatus);
   if (boardStatus === "aborted") return "aborted";
+  // A launched goal whose agents all died is not "in progress". The sweep is
+  // the only thing that can know this, so the caller passes its verdict in
+  // `health`; a payload without one keeps the old derivation exactly.
+  const health = text(source.health);
   const prState = text(source.boardPrState).toUpperCase();
   if (boardStatus === "merged" || prState === "MERGED") return "merged";
 
@@ -37,10 +42,17 @@ export function goalBoardState(plan) {
 
   if (prState === "OPEN") return "waiting_for_merge";
   const delivery = text(source.deliveryStatus);
-  if (delivery === "assembling" || delivery === "blocked") return "waiting_for_merge";
+  // A blocked delivery used to sit in "Waiting for merge", where it looked
+  // exactly like work that was progressing. It is the state that most needs a
+  // person, so it gets its own column and says so.
+  if (delivery === "blocked") return "blocked";
+  if (delivery === "assembling") return "waiting_for_merge";
   // A closed pull request means the branch went back to development. It
   // overrides a stale `pr_open` status or a final URL left from the closed run.
   if (prState !== "CLOSED" && (delivery === "pr_open" || text(source.finalPrUrl) !== "")) return "waiting_for_merge";
+  // Live agents outrank a health verdict that is merely stale, so this is the
+  // last check: everything above describes work that has already moved on.
+  if (health === "dead" || health === "idle" || health === "failed") return "blocked";
   return "dev_in_progress";
 }
 

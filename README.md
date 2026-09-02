@@ -15,6 +15,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Turns one goal into a validated Delivery Contract with observable acceptance criteria, scope, assumptions, risks, ownership, verification, and dependency waves; then starts each eligible task in an isolated worktree while balancing Claude and Codex by remaining quota
 - Groups a repository's open GitHub issues into selectable master topics, plans and launches the topics in parallel, and links every final PR back to the issues it closes
 - Delivers a multi-task goal as one verified pull request: task agents push isolated branches, Companion pins their finished commits and cuts one goal branch, and a single merge agent squash-merges them, resolves the conflicts it can, re-runs the repository's own verification against a baseline, and opens the combined PR
+- Supervises every launched goal: checks each task's agent against the live cmux session list, alerts when one dies or goes quiet, and can continue, restart or skip that one task without abandoning the goal
 - Reviews staged, unstaged, and untracked Git changes and per-file diffs
 - Shows the current branch's open pull request, review decision, and check status directly inside its session
 - Sends contextual Web Push alerts for decisions, failures, completion, PR changes, and detected local apps
@@ -111,6 +112,58 @@ Every step is written to a local SQLite database at `~/.config/cmux-companion/go
 
 The Worktrees view surfaces those saved plans beside the repository filters. **Draft Goals** collects resumable plans and **Launched Goals** keeps a read-only launch history for the selected Karven or Rekord project group. Each card opens the exact saved plan and can delete it after confirmation.
 
+## Supervising launched goals
+
+A launched goal used to have no liveness signal. Companion only heard cmux's
+agent-stop event, so a crashed agent, a closed workspace, a hung session or a
+sleeping Mac left a task pending for ever while the board reported "Dev in
+progress". Nothing could start that task again, because a launch refuses a plan
+that already launched.
+
+**Goals board** now carries a **Blocked** column and an attention rail. The rail
+lists every task that died, went quiet, failed to launch, or is waiting for an
+answer, across both project groups, with **Continue**, **Restart**, **Skip** and
+**Open in cmux** on each row. Continue keeps the worktree and whatever the dead
+agent already wrote, and its brief tells the new agent to read `git status` and
+`git log` before it does anything. Restart discards the branch and the worktree
+and rebuilds from the base, so it confirms first. Skip drops one task, so a
+single dead task stops blocking every other task's finished work from reaching a
+pull request.
+
+The verdict comes from a read-only sweep that joins each task's recorded cmux
+workspace to the live workspace list. It writes no plan state: moving a goal on
+a timer could declare a slow agent dead and rebuild its worktree underneath it,
+so every recovery stays an explicit decision. When cmux cannot be reached the
+sweep reports every session as unknown, and the rail says liveness is unknown
+rather than listing live agents as dead.
+
+A watchdog runs that sweep every five minutes and sends one Web Push alert when
+a goal's health gets worse. A goal in the same state is not alerted twice, a
+goal that recovers is forgotten so a relapse alerts again, and an unreachable
+cmux skips the pass entirely. An alert that reached no device, because quiet
+hours are on or no phone is registered, is offered again on the next pass rather
+than remembered as sent.
+
+Each pass refreshes GitHub and reconciles pull requests before it judges
+liveness. Without that, a goal whose agent opened its pull request and stopped
+would keep a stale board state and be reported as quiet twenty minutes after it
+succeeded. A goal that already has an open pull request has finished the work
+the sweep watches, so its task reads as ready whatever became of its session.
+
+A crashed agent usually leaves its cmux workspace open at a shell prompt, so
+**Continue** closes that session first when the sweep has already judged the
+task stuck. A session that is still working, or one that is waiting for an
+answer, is never closed by Continue.
+
+Each cmux session Companion opens is named `KRV-T2-api · <task title>`: the
+project code, the task code within its goal, and the part of the work, before
+the title. The same identity is exported into the session's own shell as
+`COMPANION_PROJECT`, `COMPANION_TASK` and `COMPANION_PART`, so it survives a
+rename.
+
+On a screen 1280 pixels wide or wider the board is an eight-column grid whose
+columns scroll independently. Narrower screens keep the scrolling strip.
+
 | Route | Purpose |
 | --- | --- |
 | `GET /api/worktree-plans` | Saved plans, newest first. Filter with `repositoryId`, `status` (`draft`, `launched` or `all`) and `limit`. |
@@ -120,6 +173,11 @@ The Worktrees view surfaces those saved plans beside the repository filters. **D
 | `POST /api/github-topic-plans/analyze` | Load open issues for a repository and propose bounded master topics. |
 | `POST /api/github-topic-plans/prepare` | Refresh selected tickets and compile each selected topic into a saved goal plan. |
 | `POST /api/github-topic-plans/launch` | Launch every ready selected topic; agents run in parallel after deterministic worktree creation. |
+| `GET /api/goals/health` | Check every launched goal's agents against the live cmux session list. Read-only. |
+| `POST /api/goals/health/check` | Force the pass the watchdog runs on its timer, and report what changed. |
+| `GET /api/worktree-plans/:planId/health` | The same verdict for one goal. |
+| `POST /api/worktree-plans/:planId/tasks/:taskId/relaunch` | Start one task again. `mode` is `continue` or `restart`. |
+| `POST /api/worktree-plans/:planId/tasks/:taskId/skip` | Drop one task so it stops blocking the merge. |
 
 The server chooses Codex or Claude per task from live CCS quota, not the model. It takes the lower of each provider's 5-hour and weekly remaining percent, sends the work to the provider with more headroom, and alternates when the two are within ten points. Every task keeps a toggle, so you can override the choice.
 
@@ -150,6 +208,10 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
 - The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
+- The goal health sweep and its watchdog only read. They never move a goal, never close a session, and never touch a worktree, so an automatic check cannot destroy work.
+- Restarting a task deletes its branch and its worktree, so it is refused for the primary checkout and for a managed release checkout, and the phone confirms before it runs.
+- Relaunching a task is refused while its cmux session is still open, because a second agent in one worktree would fight the first over the same files.
+- Session identity is exported with a strict variable-name pattern and shell-quoted values, so neither a goal nor a task title can become a command.
 - The GitHub topic analyzer treats ticket content as untrusted data and denies every local repository, shell, write, task, and web tool; it accepts only a complete grouping of the server-fetched issue numbers.
 - Git diff requests are restricted to files currently reported as changed, and untracked symlink content is hidden.
 - The CLI is spawned with argv arrays and never through a shell.

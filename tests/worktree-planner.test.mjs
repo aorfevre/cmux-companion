@@ -621,7 +621,14 @@ test("creates one worktree and one session per task", async () => {
   assert.deepEqual(create[2], { branch: "feature/billing", base: "origin/main", reuseIfAtBase: true, workspaces: [] });
   const workspace = deps.calls.find((call) => call[0] === "workspace");
   assert.equal(workspace[1].agent, "claude");
-  assert.equal(workspace[1].title, "Billing");
+  // The session name is the scheme, not the bare task title: project code,
+  // task code, part, then the title.
+  assert.equal(workspace[1].title, "SMP-T1-feat \u00b7 Billing");
+  // The same identity is stamped into the session's own shell, so it survives
+  // a rename by the user.
+  assert.equal(workspace[1].env.COMPANION_PROJECT, "SMP");
+  assert.equal(workspace[1].env.COMPANION_TASK, "T1");
+  assert.equal(workspace[1].env.COMPANION_PART, "feat");
   assert.equal(workspace[1].cwd, "/repo/sample-feature-billing");
   assertPointer(workspace[1].prompt);
   const brief = briefText(workspace[1].prompt);
