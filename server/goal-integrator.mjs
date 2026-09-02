@@ -7,7 +7,13 @@ export { readyCount } from "./delivery-contract.mjs";
 
 const TASK_SETTLE_MS = 1_000;
 
+const ABORTED_GOAL = "This goal was aborted, so Companion will not build a pull request for it";
+const MERGED_GOAL = "This goal is already merged";
+
 class TasksNotReadyError extends TypeError {}
+// Automatic work on a terminal goal stops quietly. An explicit assemble says
+// which terminal state stopped it, because a user asked for that answer.
+class TerminalGoalError extends TypeError {}
 
 // A multi-task goal owns one delivery branch. Companion decides when each task
 // branch is ready by reading git, then hands the merge itself to one cmux agent:
@@ -44,6 +50,9 @@ export class GoalIntegrator {
     hub.addConsumer();
     const startup = setTimeout(() => {
       for (const plan of this.store.activeCombinedPlans()) {
+        // A goal aborted while the companion was down keeps its row, so read
+        // the lifecycle again rather than trusting the query alone.
+        if (this.#terminal(plan.planId)) continue;
         // A merge left running across a restart lost its Stop event, so check
         // for its pull request rather than waiting for an event that is gone.
         if (plan.mergeStatus === "running") this.scheduleSettle(plan.planId);
@@ -69,19 +78,54 @@ export class GoalIntegrator {
     if (found?.plan) this.schedulePlan(found.plan.planId);
   }
 
+  // Abort calls this before it stops the plan. It drops the scheduled work, so
+  // no timer that is already armed can create a session after the goal ended.
+  cancel(planId) {
+    const id = String(planId || "");
+    for (const timers of [this.timers, this.settleTimers]) {
+      clearTimeout(timers.get(id));
+      timers.delete(id);
+    }
+    return { planId: id, cancelled: true };
+  }
+
+  // The durable lifecycle, read fresh. Every automatic path checks it, because
+  // an abort can land between the moment work was scheduled and the moment it
+  // runs.
+  #terminal(planId) {
+    try {
+      return Boolean(this.store.get(String(planId || ""))?.boardStatus);
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, planId }, "could not read the goal lifecycle");
+      return false;
+    }
+  }
+
+  // The explicit answer. An automatic path never reaches this, because it
+  // stops at #terminal before it queues any work.
+  #assertNotTerminal(plan) {
+    if (plan?.boardStatus === "aborted") throw new TerminalGoalError(ABORTED_GOAL);
+    if (plan?.boardStatus === "merged") throw new TerminalGoalError(MERGED_GOAL);
+  }
+
   // Assembly and settling keep separate timers: a task Stop landing inside the
   // merge agent's debounce window would otherwise replace the settle with an
   // assemble, and the merge agent's Stop is the only settle trigger there is.
   scheduleSettle(planId) {
+    if (this.#terminal(planId)) return;
     this.#debounce(this.settleTimers, planId, () => {
+      if (this.#terminal(planId)) return;
       this.settle(planId).catch((cause) => this.log?.warn?.({ err: cause, planId }, "merge settle failed"));
     });
   }
 
   schedulePlan(planId) {
+    if (this.#terminal(planId)) return;
     this.#debounce(this.timers, planId, () => {
+      if (this.#terminal(planId)) return;
       this.assemble(planId, { automatic: true }).catch((cause) => {
-        if (!(cause instanceof TasksNotReadyError)) this.log?.warn?.({ err: cause, planId }, "combined goal assembly failed");
+        if (cause instanceof TasksNotReadyError || cause instanceof TerminalGoalError) return;
+        this.log?.warn?.({ err: cause, planId }, "combined goal assembly failed");
       });
     });
   }
@@ -129,6 +173,7 @@ export class GoalIntegrator {
   async #assemble(planId, { automatic }) {
     let plan = this.store.get(planId);
     if (!plan) throw new TypeError("Unknown plan. Start a new goal");
+    this.#assertNotTerminal(plan);
     if (plan.status !== "launched" || plan.deliveryMode !== "combined") {
       throw new TypeError("Only a launched multi-task goal can build a combined pull request");
     }
@@ -156,6 +201,7 @@ export class GoalIntegrator {
       return this.#guard(plan, async () => {
         if (!this.cmux) throw new TypeError("Workflow delivery needs a cmux connection");
         plan = await this.#integrationWorktree(plan);
+        this.#assertNotTerminal(this.store.get(plan.planId));
         plan = await this.#launchNextWave(plan);
         await this.#publish(plan);
         return deliveryResult(plan);
@@ -181,6 +227,10 @@ export class GoalIntegrator {
       // "hiccup" on a workspace that is really gone strands the plan on a dead
       // id forever. A duplicate session is the recoverable failure of the two -
       // it is visible, and the trailer-skip rule makes a re-run idempotent.
+      // Building the worktree awaits git and cmux, so an abort can land inside
+      // it. Re-read the lifecycle immediately before anything creates or
+      // resumes a session, or the goal ends with a session it does not own.
+      this.#assertNotTerminal(this.store.get(plan.planId));
       const resumed = sameWorktree && plan.mergeWorkspaceId && plan.mergeStatus === "blocked"
         ? await this.#resumeMerge(plan)
         : false;
@@ -217,6 +267,9 @@ export class GoalIntegrator {
     try {
       return await work();
     } catch (cause) {
+      // A goal that ended is not a delivery that failed. Recording an error on
+      // an aborted plan would put a red message on a card the user closed.
+      if (cause instanceof TerminalGoalError) throw cause;
       const message = conciseError(cause);
       this.store.recordDeliveryFailure(plan.planId, message);
       throw new TypeError(message);
@@ -237,6 +290,8 @@ export class GoalIntegrator {
   async #settle(planId) {
     let plan = this.store.get(planId);
     if (!plan || plan.mergeStatus !== "running") return plan ? deliveryResult(plan) : null;
+    // The abort may have landed while this settle waited in the queue.
+    if (plan.boardStatus) return deliveryResult(plan);
     const mergedWave = activeWave(plan);
     plan = await this.#recordIntegrated(plan);
     const queued = plan.tasks.filter((task) => task.launchStatus === "queued");
@@ -251,6 +306,9 @@ export class GoalIntegrator {
         return deliveryResult(blocked);
       }
       plan = this.store.recordWaveIntegrated(plan.planId, mergedWave);
+      // An abort during the wave merge ends the goal here. The integrated wave
+      // is already recorded; the next one never starts.
+      if (this.#terminal(plan.planId)) return deliveryResult(plan);
       const advanced = await this.#launchNextWave(plan);
       await this.#publish(advanced);
       return deliveryResult(advanced);
@@ -404,6 +462,10 @@ export class GoalIntegrator {
     for (const task of tasks) {
       const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent, wave };
       let path = null;
+      // One re-read per task. A wave of four tasks takes minutes, and an abort
+      // during it must not open the sessions that are still to come. This sits
+      // outside the try: a stopped goal is not a failed task launch.
+      if (this.#terminal(plan.planId)) break;
       try {
         const created = await this.worktrees.create(plan.repositoryId, { branch: task.branch, base: startSha, reuseIfAtBase: true, workspaces });
         path = created.worktree.path;
@@ -427,6 +489,9 @@ export class GoalIntegrator {
         results.push({ ...summary, status: "failed", path, startSha, error: cause?.message || "Could not launch this task" });
       }
     }
+    // An abort before the first task leaves nothing to record, and writing an
+    // empty wave would reset the delivery state of a goal that has ended.
+    if (!results.length) return this.store.get(plan.planId);
     return this.store.recordWaveLaunch(plan.planId, { wave, startSha, results });
   }
 

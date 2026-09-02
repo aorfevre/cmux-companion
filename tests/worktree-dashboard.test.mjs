@@ -6,6 +6,7 @@ import test from "node:test";
 import { RepositoryArchive } from "../server/repository-archive.mjs";
 import { RepositoryFavorites } from "../server/repository-favorites.mjs";
 import { WorktreeDashboard, countUpdaterArtifacts, isManagedReleasePath, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
+import { GoalMergeWatch, selectGoalPullRequest } from "../server/goal-merge-watch.mjs";
 
 const REPO = { id: "repo-1234567890123", name: "sample", root: "karven", path: "/repo/sample", branch: "main" };
 
@@ -515,5 +516,275 @@ test("refuses to reuse a worktree that Git has locked", async () => {
   await assert.rejects(
     () => dashboard.create(repositoryId, { branch: "feature/safe-name", base: "main", reuseIfAtBase: true }),
     /already has a worktree that Git has locked/,
+  );
+});
+
+// One `gh` process per refreshed repository is the whole budget. The goal board
+// needs CLOSED and MERGED, so the single command asks for every state and the
+// two shapes are built from that one answer.
+function lifecycleCatalog(payload) {
+  const calls = [];
+  return {
+    calls,
+    repoCatalog: {
+      list: async () => [REPO],
+      git: async (cwd, args) => {
+        if (args[0] === "worktree") return "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
+        if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+        if (args[0] === "rev-parse") return `${cwd}\n`;
+        if (args[0] === "status") return `# branch.head ${cwd.endsWith("feature") ? "feature/mobile" : "main"}\n# branch.ab +0 -0\n`;
+        if (args[0] === "log") return "100\n";
+        throw new Error("unexpected git call");
+      },
+      execute: async (bin, args, options) => {
+        calls.push([bin, args, options]);
+        if (payload instanceof Error) throw payload;
+        return { stdout: typeof payload === "string" ? payload : JSON.stringify(payload) };
+      },
+    },
+  };
+}
+
+function pullRequestPayload(overrides = {}) {
+  return {
+    number: 7, title: "Feature", url: "https://github.test/pr/7", state: "OPEN", isDraft: false,
+    headRefName: "feature/mobile", baseRefName: "main", statusCheckRollup: [],
+    updatedAt: "2026-09-01T00:00:00.000Z", createdAt: "2026-09-01T00:00:00.000Z", closedAt: null, mergedAt: null,
+    ...overrides,
+  };
+}
+
+test("one gh command per refreshed repository reports every pull request state", async () => {
+  const { repoCatalog, calls } = lifecycleCatalog([
+    pullRequestPayload(),
+    pullRequestPayload({ number: 6, url: "https://github.test/pr/6", state: "MERGED", headRefName: "goal/billing-abcd1234", mergedAt: "2026-08-30T00:00:00.000Z" }),
+    pullRequestPayload({ number: 5, url: "https://github.test/pr/5", state: "CLOSED", headRefName: "feature/old", closedAt: "2026-08-29T00:00:00.000Z" }),
+  ]);
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const value = await dashboard.snapshot({ refreshGitHub: true });
+  assert.equal(calls.length, 1, "a refresh must run exactly one gh process for the repository");
+  const [bin, args, options] = calls[0];
+  assert.equal(bin, "gh");
+  assert.deepEqual(args.slice(0, 6), ["pr", "list", "--state", "all", "--limit", "100"]);
+  for (const field of ["createdAt", "closedAt", "mergedAt"]) assert.ok(args.at(-1).includes(field), `the command must request ${field}`);
+  assert.equal(options.timeout, 2_500);
+  assert.equal(options.maxBuffer, 2 * 1024 * 1024);
+  assert.equal(options.cwd, REPO.path);
+
+  // The badge and the counts keep their old meaning: OPEN pull requests only.
+  const repository = value.repositories[0];
+  assert.equal(repository.worktrees.find((item) => item.branch === "feature/mobile").pullRequest.number, 7);
+  assert.equal(value.summary.pullRequests, 1);
+  assert.equal(value.github.status, "ready");
+
+  const observed = dashboard.pullRequestObservations(repository.id);
+  assert.equal(observed.available, true);
+  assert.deepEqual(observed.observations.map((item) => [item.number, item.state]), [[7, "OPEN"], [6, "MERGED"], [5, "CLOSED"]]);
+  assert.equal(observed.observations[1].mergedAt, "2026-08-30T00:00:00.000Z");
+  assert.equal(observed.observations[2].closedAt, "2026-08-29T00:00:00.000Z");
+});
+
+test("a closed pull request never becomes a worktree badge", async () => {
+  const { repoCatalog } = lifecycleCatalog([
+    pullRequestPayload({ number: 4, state: "CLOSED", closedAt: "2026-08-28T00:00:00.000Z" }),
+    pullRequestPayload({ number: 3, state: "MERGED", mergedAt: "2026-08-27T00:00:00.000Z" }),
+  ]);
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const value = await dashboard.snapshot({ refreshGitHub: true });
+  assert.equal(value.repositories[0].worktrees.every((item) => item.pullRequest === null), true);
+  assert.equal(value.summary.pullRequests, 0);
+  assert.equal(dashboard.pullRequestObservations(value.repositories[0].id).observations.length, 2);
+});
+
+test("an ordinary dashboard poll reads no GitHub state and no observation", async () => {
+  const { repoCatalog, calls } = lifecycleCatalog([pullRequestPayload()]);
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const value = await dashboard.snapshot();
+  assert.equal(calls.length, 0, "a poll must never call gh");
+  assert.deepEqual(dashboard.pullRequestObservations(value.repositories[0].id), { available: false, observations: [] });
+});
+
+test("a failed gh command leaves a usable dashboard and no observations", async () => {
+  const { repoCatalog, calls } = lifecycleCatalog(new Error("gh unavailable"));
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const value = await dashboard.snapshot({ refreshGitHub: true });
+  assert.equal(calls.length, 1);
+  assert.equal(value.github.status, "partial");
+  assert.equal(value.repositories[0].pullRequestsAvailable, false);
+  assert.deepEqual(dashboard.pullRequestObservations(value.repositories[0].id), { available: false, observations: [] });
+});
+
+test("malformed gh JSON leaves a usable dashboard and no observations", async () => {
+  const { repoCatalog } = lifecycleCatalog("not json at all");
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const value = await dashboard.snapshot({ refreshGitHub: true });
+  assert.equal(value.github.status, "partial");
+  assert.equal(value.repositories[0].worktrees.every((item) => item.pullRequest === null), true);
+  assert.deepEqual(dashboard.pullRequestObservations(value.repositories[0].id).observations, []);
+});
+
+test("two concurrent refreshes of one repository share a single gh process", async () => {
+  const { repoCatalog, calls } = lifecycleCatalog([pullRequestPayload()]);
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  await Promise.all([dashboard.snapshot({ refreshGitHub: true }), dashboard.snapshot({ refreshGitHub: true })]);
+  assert.equal(calls.length, 1, "the pending call must be shared, not duplicated");
+});
+
+test("the newest open pull request wins a branch that carries several", async () => {
+  const { repoCatalog } = lifecycleCatalog([
+    pullRequestPayload({ number: 8, url: "https://github.test/pr/8", updatedAt: "2026-09-02T00:00:00.000Z" }),
+    pullRequestPayload({ number: 7, url: "https://github.test/pr/7", updatedAt: "2026-09-01T00:00:00.000Z" }),
+  ]);
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const value = await dashboard.snapshot({ refreshGitHub: true });
+  assert.equal(value.repositories[0].worktrees.find((item) => item.branch === "feature/mobile").pullRequest.number, 8);
+});
+
+// The goal merge watcher reads the observations above. It never runs gh, so
+// every fixture here injects a store and a dashboard rather than a command.
+function watchStore(plans) {
+  const recorded = [];
+  const rows = new Map(plans.map((plan) => [plan.planId, { status: "launched", deliveryMode: "single", launchedAt: "2026-09-01T00:00:00.000Z", tasks: [], ...plan }]));
+  return {
+    recorded,
+    rows,
+    list: () => [...rows.values()].map((plan) => ({ planId: plan.planId, boardStatus: plan.boardStatus ?? null })),
+    get: (planId) => rows.get(planId) || null,
+    recordGoalMerged: (planId, payload) => { recorded.push(["merged", planId, payload]); return rows.get(planId); },
+    recordGoalPullRequest: (planId, payload) => { recorded.push([payload.state, planId, payload]); return rows.get(planId); },
+  };
+}
+
+function watchDashboard(byRepository) {
+  return { pullRequestObservations: (repositoryId) => byRepository[repositoryId] || { available: false, observations: [] } };
+}
+
+function observation(overrides = {}) {
+  return { number: 11, url: "https://github.test/pr/11", state: "OPEN", headBranch: "feature/billing", createdAt: "2026-09-01T06:00:00.000Z", updatedAt: "2026-09-01T06:00:00.000Z", closedAt: null, mergedAt: null, ...overrides };
+}
+
+test("a stored final pull request identifies the goal even off its own branch", async () => {
+  const store = watchStore([{ planId: "plan-1", repositoryId: "repo-a", deliveryMode: "combined", integrationBranch: "goal/billing", finalPrNumber: 42, finalPrUrl: "https://github.test/pr/42" }]);
+  const watch = new GoalMergeWatch({
+    store,
+    worktrees: watchDashboard({ "repo-a": { available: true, observations: [
+      observation({ number: 42, url: "https://github.test/pr/42", headBranch: "someone-renamed-it", state: "MERGED", mergedAt: "2026-09-02T00:00:00.000Z" }),
+      observation({ number: 9, headBranch: "goal/billing", state: "OPEN" }),
+    ] } }),
+  });
+  await watch.reconcile();
+  assert.deepEqual(store.recorded, [["merged", "plan-1", { number: 42, url: "https://github.test/pr/42", observedAt: "2026-09-02T00:00:00.000Z" }]]);
+});
+
+test("a combined goal matches its integration branch and a single goal its task branches", async () => {
+  const store = watchStore([
+    { planId: "plan-combined", repositoryId: "repo-a", deliveryMode: "combined", integrationBranch: "goal/billing" },
+    { planId: "plan-single", repositoryId: "repo-a", deliveryMode: "single", tasks: [{ branch: "feature/billing", launchStatus: "launched" }] },
+  ]);
+  const watch = new GoalMergeWatch({
+    store,
+    worktrees: watchDashboard({ "repo-a": { available: true, observations: [
+      observation({ number: 20, url: "https://github.test/pr/20", headBranch: "goal/billing", state: "MERGED", mergedAt: "2026-09-02T00:00:00.000Z" }),
+      observation({ number: 21, url: "https://github.test/pr/21", headBranch: "feature/billing", state: "OPEN" }),
+      observation({ number: 22, url: "https://github.test/pr/22", headBranch: "feature/unrelated", state: "OPEN" }),
+    ] } }),
+  });
+  await watch.reconcile();
+  assert.deepEqual(store.recorded, [
+    ["merged", "plan-combined", { number: 20, url: "https://github.test/pr/20", observedAt: "2026-09-02T00:00:00.000Z" }],
+    ["OPEN", "plan-single", { number: 21, url: "https://github.test/pr/21", observedAt: "2026-09-01T06:00:00.000Z", state: "OPEN" }],
+  ]);
+});
+
+test("a queued task branch that never launched matches nothing", async () => {
+  const store = watchStore([{ planId: "plan-1", repositoryId: "repo-a", tasks: [{ branch: "feature/billing", launchStatus: "queued" }] }]);
+  const watch = new GoalMergeWatch({ store, worktrees: watchDashboard({ "repo-a": { available: true, observations: [observation()] } }) });
+  await watch.reconcile();
+  assert.deepEqual(store.recorded, []);
+});
+
+test("a branch pull request opened before the launch is rejected", async () => {
+  const store = watchStore([{ planId: "plan-1", repositoryId: "repo-a", launchedAt: "2026-09-01T12:00:00.000Z", tasks: [{ branch: "feature/billing", launchStatus: "launched" }] }]);
+  const watch = new GoalMergeWatch({
+    store,
+    worktrees: watchDashboard({ "repo-a": { available: true, observations: [observation({ createdAt: "2026-08-01T00:00:00.000Z", state: "MERGED", mergedAt: "2026-08-02T00:00:00.000Z" })] } }),
+  });
+  await watch.reconcile();
+  assert.deepEqual(store.recorded, [], "a pull request older than the launch belongs to earlier work");
+});
+
+test("MERGED beats OPEN, and OPEN beats CLOSED, among several candidates", async () => {
+  const store = watchStore([{ planId: "plan-1", repositoryId: "repo-a", tasks: [{ branch: "feature/billing", launchStatus: "launched" }] }]);
+  const watch = new GoalMergeWatch({
+    store,
+    worktrees: watchDashboard({ "repo-a": { available: true, observations: [
+      observation({ number: 30, url: "https://github.test/pr/30", state: "CLOSED", closedAt: "2026-09-03T00:00:00.000Z", updatedAt: "2026-09-03T00:00:00.000Z" }),
+      observation({ number: 31, url: "https://github.test/pr/31", state: "OPEN", updatedAt: "2026-09-02T00:00:00.000Z" }),
+      observation({ number: 32, url: "https://github.test/pr/32", state: "MERGED", mergedAt: "2026-09-01T09:00:00.000Z", updatedAt: "2026-09-01T09:00:00.000Z" }),
+    ] } }),
+  });
+  await watch.reconcile();
+  assert.deepEqual(store.recorded, [["merged", "plan-1", { number: 32, url: "https://github.test/pr/32", observedAt: "2026-09-01T09:00:00.000Z" }]]);
+});
+
+test("the most recently updated candidate wins within one state", async () => {
+  const store = watchStore([{ planId: "plan-1", repositoryId: "repo-a", tasks: [{ branch: "feature/billing", launchStatus: "launched" }] }]);
+  const watch = new GoalMergeWatch({
+    store,
+    worktrees: watchDashboard({ "repo-a": { available: true, observations: [
+      observation({ number: 40, url: "https://github.test/pr/40", state: "CLOSED", closedAt: "2026-09-01T08:00:00.000Z", updatedAt: "2026-09-01T08:00:00.000Z" }),
+      observation({ number: 41, url: "https://github.test/pr/41", state: "CLOSED", closedAt: "2026-09-04T00:00:00.000Z", updatedAt: "2026-09-04T00:00:00.000Z" }),
+    ] } }),
+  });
+  await watch.reconcile();
+  assert.deepEqual(store.recorded, [["CLOSED", "plan-1", { number: 41, url: "https://github.test/pr/41", observedAt: "2026-09-04T00:00:00.000Z", state: "CLOSED" }]]);
+});
+
+test("a terminal goal, an unavailable repository and a malformed row all record nothing", async () => {
+  const store = watchStore([
+    { planId: "plan-terminal", repositoryId: "repo-a", boardStatus: "aborted", tasks: [{ branch: "feature/billing", launchStatus: "launched" }] },
+    { planId: "plan-unavailable", repositoryId: "repo-b", tasks: [{ branch: "feature/billing", launchStatus: "launched" }] },
+    { planId: "plan-malformed", repositoryId: "repo-c", tasks: [{ branch: "feature/billing", launchStatus: "launched" }] },
+    { planId: "plan-draft", repositoryId: "repo-a", status: "draft", tasks: [{ branch: "feature/billing", launchStatus: "launched" }] },
+  ]);
+  const warnings = [];
+  const watch = new GoalMergeWatch({
+    store,
+    log: { warn: (...args) => warnings.push(args) },
+    worktrees: {
+      pullRequestObservations: (repositoryId) => {
+        if (repositoryId === "repo-c") throw new Error("repository data is unreadable");
+        if (repositoryId === "repo-b") return { available: false, observations: [] };
+        return { available: true, observations: [observation(), null, "not an object"] };
+      },
+    },
+  });
+  const result = await watch.reconcile();
+  assert.deepEqual(store.recorded, []);
+  assert.deepEqual(result.recorded, []);
+  assert.equal(warnings.length, 1, "only the throwing repository is worth a warning");
+});
+
+test("a store that rejects a write is logged rather than failing the refresh", async () => {
+  const store = watchStore([{ planId: "plan-1", repositoryId: "repo-a", tasks: [{ branch: "feature/billing", launchStatus: "launched" }] }]);
+  store.recordGoalPullRequest = () => { throw new Error("database is locked"); };
+  const warnings = [];
+  const watch = new GoalMergeWatch({
+    store,
+    log: { warn: (...args) => warnings.push(args) },
+    worktrees: watchDashboard({ "repo-a": { available: true, observations: [observation()] } }),
+  });
+  const result = await watch.reconcile();
+  assert.deepEqual(result.recorded, []);
+  assert.equal(warnings.length, 1);
+});
+
+test("the selection rule is a pure function of one plan and its observations", () => {
+  const plan = { deliveryMode: "combined", integrationBranch: "goal/billing", launchedAt: "2026-09-01T00:00:00.000Z" };
+  assert.equal(selectGoalPullRequest(plan, null), null);
+  assert.equal(selectGoalPullRequest(plan, [observation({ headBranch: "goal/billing", state: "UNKNOWN" })]), null);
+  assert.deepEqual(
+    selectGoalPullRequest(plan, [observation({ number: 50, url: "https://github.test/pr/50", headBranch: "goal/billing" })]),
+    { number: 50, url: "https://github.test/pr/50", state: "OPEN", observedAt: "2026-09-01T06:00:00.000Z" },
   );
 });

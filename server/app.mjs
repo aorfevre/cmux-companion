@@ -14,6 +14,7 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
+import { GoalMergeWatch } from "./goal-merge-watch.mjs";
 import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
@@ -41,6 +42,7 @@ export async function buildApp({
   worktreePlanner = null,
   worktreePlanStore = null,
   goalIntegrator = null,
+  goalMergeWatch = null,
   // Accepted but deliberately unused: see the header of cmux-groups.mjs for why
   // cmux workspace grouping is inert. The option stays in the signature so
   // grouping can be restored, and injected, without another API change here.
@@ -83,6 +85,10 @@ export async function buildApp({
     || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
   const integrator = goalIntegrator
     || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs }) : null);
+  // The watcher never runs `gh`. It reads what the dashboard already cached
+  // during the one Refresh GitHub command per repository.
+  const mergeWatch = goalMergeWatch
+    || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
     || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   const pairAttempts = new Map();
@@ -303,6 +309,13 @@ export async function buildApp({
       try { await pushService.inspectPullRequests(dashboard); }
       catch (cause) { app.log.warn({ err: cause }, "manual PR notification inspection failed"); }
     }
+    // Only an explicit refresh reconciles the board, and only after the
+    // snapshot succeeded, so the lifecycle is written before the client asks
+    // for the refreshed goal list. A failure here still returns the dashboard.
+    if (refreshGitHub && mergeWatch?.reconcile) {
+      try { await mergeWatch.reconcile(); }
+      catch (cause) { app.log.warn({ err: cause }, "goal merge reconciliation failed"); }
+    }
     return dashboard;
   });
 
@@ -447,6 +460,17 @@ export async function buildApp({
 
   app.post("/api/worktree-plans/:planId/launch", async (request) => {
     const result = await planner.launch(request.params.planId);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
+  });
+
+  // Abort is terminal and idempotent. The integrator drops its scheduled work
+  // first, so no timer can create a session between the two calls.
+  app.post("/api/worktree-plans/:planId/abort", async (request) => {
+    try { integrator?.cancel?.(request.params.planId); }
+    catch (cause) { app.log.warn({ err: cause, planId: request.params.planId }, "cancelling scheduled goal work failed"); }
+    const result = await planner.abort(request.params.planId);
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return result;

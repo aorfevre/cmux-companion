@@ -1420,3 +1420,243 @@ test("an unreachable cmux workspace list still lets a launch run", async () => {
   assert.equal(result.results[0].status, "launched");
   assert.deepEqual(seen[0].workspaces, []);
 });
+
+// --- lifecycle state, cancellation and abort -----------------------------
+
+const READY_TASKS = '{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}';
+
+// A durable planner that can also launch: launchDeps supplies the git runner,
+// the worktree creator and a temporary brief directory that a launch needs.
+function launchablePlanner(replies = 1) {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const deps = launchDeps();
+  deps.execute = async () => ({ stdout: envelope(READY_TASKS, "sess-a") });
+  const planner = new WorktreePlanner({ ...deps, store });
+  return { store, deps, planner, replies };
+}
+
+// The reviewer pass must be legible to the board as a structured stage. This
+// test deliberately never reads the display line, so a reworded progress
+// message cannot make it pass or fail.
+test("the reviewer pass sets the structured review_spec run stage", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const deps = fakeDeps({ replies: [] });
+  let releaseReview = () => {};
+  const reviewStarted = new Promise((resolve) => {
+    let round = 0;
+    deps.execute = async () => {
+      round += 1;
+      if (round === 1) return { stdout: envelope(READY_TASKS, "sess-a") };
+      resolve();
+      await new Promise((done) => { releaseReview = done; });
+      return { stdout: envelope(READY_TASKS, "sess-a") };
+    };
+  });
+  const planner = new WorktreePlanner({ ...deps, store });
+  const draft = await planner.startBackground({
+    repositoryId: REPO_ID, goal: "Add billing",
+    engine: { provider: "claude", model: "default", effort: "default", reviewer: true },
+  });
+  await reviewStarted;
+  const running = await planner.detail(draft.planId);
+  assert.equal(running.running, true);
+  assert.equal(running.runStage, "review_spec");
+  assert.equal(running.boardState, "review_spec");
+  const listed = (await planner.list()).plans.find((plan) => plan.planId === draft.planId);
+  assert.equal(listed.runStage, "review_spec");
+  assert.equal(listed.boardState, "review_spec");
+  releaseReview();
+  for (let index = 0; index < 500 && planner.isRunning(draft.planId); index += 1) await new Promise((resolve) => setImmediate(resolve));
+  const finished = await planner.detail(draft.planId);
+  assert.equal(finished.running, false);
+  assert.equal(finished.boardState, "waiting_for_dev");
+});
+
+test("a live first round reads as writing_spec in both the list and the detail", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const deps = fakeDeps({ replies: [] });
+  let release = () => {};
+  const started = new Promise((resolve) => {
+    deps.execute = async () => {
+      resolve();
+      await new Promise((done) => { release = done; });
+      return { stdout: envelope(READY_TASKS, "sess-a") };
+    };
+  });
+  const planner = new WorktreePlanner({ ...deps, store });
+  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
+  await started;
+  assert.equal((await planner.detail(draft.planId)).runStage, "writing_spec");
+  assert.equal((await planner.detail(draft.planId)).boardState, "writing_spec");
+  assert.equal((await planner.list()).plans[0].boardState, "writing_spec");
+  release();
+  for (let index = 0; index < 500 && planner.isRunning(draft.planId); index += 1) await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("list and detail place a launched, a merged and an aborted goal in their own columns", async (t) => {
+  const { store, planner } = launchablePlanner();
+  t.after(() => store.close());
+  const launched = await planner.start({ repositoryId: REPO_ID, goal: "Launch this" });
+  await planner.launch(launched.planId);
+  const merged = await planner.start({ repositoryId: REPO_ID, goal: "Merge this" });
+  await planner.launch(merged.planId);
+  store.recordGoalMerged(merged.planId, { number: 5, url: "https://github.test/pr/5" });
+  const aborted = await planner.start({ repositoryId: REPO_ID, goal: "Abort this" });
+  store.recordGoalAborted(aborted.planId);
+
+  const byId = new Map((await planner.list({ status: "all" })).plans.map((plan) => [plan.planId, plan]));
+  assert.equal(byId.get(launched.planId).boardState, "dev_in_progress");
+  assert.equal(byId.get(merged.planId).boardState, "merged");
+  assert.equal(byId.get(aborted.planId).boardState, "aborted");
+  assert.equal(byId.get(merged.planId).boardStatus, "merged");
+  assert.equal(byId.get(merged.planId).boardPrNumber, 5);
+  assert.equal((await planner.detail(aborted.planId)).boardState, "aborted");
+  assert.equal((await planner.detail(merged.planId)).boardState, "merged");
+});
+
+test("an aborted goal refuses every mutation and stays readable and deletable", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.abort(draft.planId);
+  const refused = /This goal was aborted/;
+  await assert.rejects(() => planner.resume(draft.planId), refused);
+  await assert.rejects(() => planner.run(draft.planId), refused);
+  await assert.rejects(() => planner.answer(draft.planId, { skip: true }), refused);
+  await assert.rejects(() => planner.answerBackground(draft.planId, { skip: true }), refused);
+  await assert.rejects(() => planner.feedback(draft.planId, { text: "wrong" }), refused);
+  await assert.rejects(() => planner.feedbackBackground(draft.planId, { text: "wrong" }), refused);
+  await assert.rejects(() => planner.update(draft.planId, { tasks: [{ id: "t1", title: "x", branch: "feature/x", prompt: "x" }] }), refused);
+  await assert.rejects(() => planner.launch(draft.planId), refused);
+  assert.equal((await planner.detail(draft.planId)).boardState, "aborted");
+  assert.deepEqual(await planner.remove(draft.planId), { planId: draft.planId, deleted: true });
+});
+
+test("a merged goal refuses every mutation and refuses to be aborted", async (t) => {
+  const { store, planner } = launchablePlanner();
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  store.recordGoalMerged(draft.planId, { number: 7, url: "https://github.test/pr/7" });
+  await assert.rejects(() => planner.resume(draft.planId), /already merged/);
+  await assert.rejects(() => planner.launch(draft.planId), /already merged/);
+  await assert.rejects(() => planner.abort(draft.planId), /already merged, so it cannot be aborted/);
+  assert.equal((await planner.detail(draft.planId)).boardState, "merged");
+});
+
+test("abort cancels the live round, kills its child and clears its controller", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const deps = fakeDeps({ replies: [] });
+  const signals = [];
+  let started = () => {};
+  const running = new Promise((resolve) => { started = resolve; });
+  deps.execute = async (bin, args, options) => {
+    signals.push(options.signal);
+    started();
+    // A real child rejects the way streamExecFile does when it is killed.
+    await new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(Object.assign(new Error("Command failed"), { killed: true, reason: "aborted" })), { once: true });
+    });
+    return { stdout: "" };
+  };
+  const planner = new WorktreePlanner({ ...deps, store });
+  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
+  await running;
+  assert.equal(planner.controllers.has(draft.planId), true);
+  const result = await planner.abort(draft.planId);
+  assert.equal(result.aborted, true);
+  assert.equal(result.alreadyAborted, false);
+  assert.equal(signals[0].aborted, true, "the round must receive the abort on its own signal");
+  assert.equal(planner.controllers.has(draft.planId), false, "the controller must not outlive the abort");
+  assert.equal(planner.isRunning(draft.planId), false);
+  for (let index = 0; index < 500 && planner.controllers.has(draft.planId); index += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(store.get(draft.planId).boardStatus, "aborted");
+});
+
+test("a finished round leaves no controller behind for a later abort", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [TASKS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  assert.equal(planner.controllers.size, 0);
+  const result = await planner.abort(draft.planId);
+  assert.deepEqual(result, { planId: draft.planId, aborted: true, alreadyAborted: false, closedSessionIds: [], failedSessionIds: [] });
+});
+
+test("a failed round also clears its controller", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [new Error("boom"), new Error("boom")] });
+  t.after(() => store.close());
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }));
+  assert.equal(planner.controllers.size, 0);
+});
+
+test("abort closes every distinct task and merge session exactly once", async (t) => {
+  const { store, planner, deps } = launchablePlanner();
+  t.after(() => store.close());
+  const closed = [];
+  deps.cmux.workspaceClose = async (id) => { closed.push(id); };
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  store.recordIntegrationStarted(draft.planId, { branch: "goal/billing", path: "/repo/sample-goal" });
+  store.recordMergeLaunched(draft.planId, "merge-one");
+  store.recordMergeLaunched(draft.planId, "merge-two");
+  const result = await planner.abort(draft.planId);
+  // ws-1 is the launched task session; merge-one was superseded by merge-two.
+  assert.deepEqual(closed.slice().sort(), ["merge-one", "merge-two", "ws-1"]);
+  assert.deepEqual(result.closedSessionIds.slice().sort(), ["merge-one", "merge-two", "ws-1"]);
+  assert.deepEqual(result.failedSessionIds, []);
+  assert.equal(new Set(closed).size, closed.length, "no session id may be closed twice");
+});
+
+test("abort reports the sessions cmux refused to close", async (t) => {
+  const { store, planner, deps } = launchablePlanner();
+  t.after(() => store.close());
+  deps.cmux.workspaceClose = async (id) => { if (id === "merge-one") throw new Error("cmux is down"); };
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  store.recordIntegrationStarted(draft.planId, { branch: "goal/billing", path: "/repo/sample-goal" });
+  store.recordMergeLaunched(draft.planId, "merge-one");
+  const result = await planner.abort(draft.planId);
+  assert.deepEqual(result.closedSessionIds, ["ws-1"]);
+  assert.deepEqual(result.failedSessionIds, ["merge-one"]);
+  assert.equal(store.get(draft.planId).boardStatus, "aborted", "a failed closure still ends the goal");
+});
+
+test("a repeated abort retries the closures and appends no second event", async (t) => {
+  const { store, planner, deps } = launchablePlanner();
+  t.after(() => store.close());
+  let attempts = 0;
+  deps.cmux.workspaceClose = async () => { attempts += 1; if (attempts === 1) throw new Error("cmux is down"); };
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  const first = await planner.abort(draft.planId);
+  assert.deepEqual(first.failedSessionIds, ["ws-1"]);
+  const second = await planner.abort(draft.planId);
+  assert.equal(second.alreadyAborted, true);
+  assert.deepEqual(second.closedSessionIds, ["ws-1"], "a repeat retries what failed before");
+  const events = store.events(draft.planId).filter((event) => event.kind === "board_aborted");
+  assert.equal(events.length, 1, "one abort event, however many calls");
+});
+
+test("abort leaves the worktrees, the branches and the plan row untouched", async (t) => {
+  const { store, planner, deps } = launchablePlanner();
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  const before = store.get(draft.planId);
+  deps.worktrees.remove = () => { throw new Error("a worktree must never be removed by an abort"); };
+  deps.worktrees.removeCleanWorktrees = () => { throw new Error("a worktree must never be removed by an abort"); };
+  await planner.abort(draft.planId);
+  const after = store.get(draft.planId);
+  assert.deepEqual(after.tasks.map((task) => [task.branch, task.worktreePath, task.launchStatus]), before.tasks.map((task) => [task.branch, task.worktreePath, task.launchStatus]));
+  assert.equal(after.status, before.status);
+  assert.equal(after.goal, before.goal);
+});
+
+test("abort refuses a plan that does not exist", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [] });
+  t.after(() => store.close());
+  await assert.rejects(() => planner.abort("no-such-plan"), /Unknown plan/);
+});

@@ -677,3 +677,112 @@ test("closes nothing new when the merge agent stops without a pull request", asy
   assert.equal(result.mergeStatus, "blocked");
   assert.equal(closedWorkspaces(calls).length, 0);
 });
+
+// --- terminal lifecycle guards -------------------------------------------
+
+function eventHub() {
+  const listeners = new Set();
+  return {
+    listeners,
+    on: (_name, listener) => listeners.add(listener),
+    off: (_name, listener) => listeners.delete(listener),
+    addConsumer: () => {},
+    removeConsumer: () => {},
+    emit: (event) => { for (const listener of listeners) listener(event); },
+  };
+}
+
+test("an explicit assemble on an aborted goal says the goal was aborted", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  store.recordGoalAborted("plan-12345678");
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /was aborted/);
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false);
+  // A stopped goal is not a failed delivery, so no error is written to it.
+  assert.equal(store.get("plan-12345678").deliveryError, null);
+});
+
+test("an explicit assemble on a merged goal says it is already merged", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  store.recordGoalMerged("plan-12345678", { number: 9, url: "https://github.test/pr/9" });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /already merged/);
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false);
+});
+
+test("a Stop hook on an aborted goal schedules nothing and creates no session", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  const events = eventHub();
+  const detach = integrator.attach({ hub: events });
+  t.after(() => detach());
+  store.recordGoalAborted("plan-12345678");
+  events.emit({ name: "agent.hook.Stop", workspace_id: "workspace-one" });
+  assert.equal(integrator.timers.size, 0, "no timer may be armed for a terminal goal");
+  await tick(20);
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false);
+});
+
+test("startup iteration skips a goal that was aborted while the companion was down", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  store.recordGoalAborted("plan-12345678");
+  const detach = integrator.attach({ hub: eventHub() });
+  t.after(() => detach());
+  await tick(20);
+  assert.equal(integrator.timers.size, 0);
+  assert.equal(integrator.settleTimers.size, 0);
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false);
+});
+
+test("an abort landing inside a debounce window stops the scheduled assembly", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  integrator.schedulePlan("plan-12345678");
+  assert.equal(integrator.timers.size, 1, "the timer is armed while the goal is still live");
+  // The abort route calls cancel first, then the store records the outcome.
+  assert.deepEqual(integrator.cancel("plan-12345678"), { planId: "plan-12345678", cancelled: true });
+  store.recordGoalAborted("plan-12345678");
+  assert.equal(integrator.timers.size, 0);
+  await tick(20);
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false);
+});
+
+// The dangerous race: the timer already fired and the assembly is inside its
+// own async work when the abort lands. The re-read before workspaceCreate is
+// the only thing that stops a session being opened for a goal that has ended.
+test("an abort racing the point before a merge session is created creates none", async (t) => {
+  const { store, integrator, calls } = fixture(t);
+  const create = integrator.worktrees.create;
+  integrator.worktrees.create = async (repositoryId, options) => {
+    const result = await create(repositoryId, options);
+    store.recordGoalAborted("plan-12345678");
+    return result;
+  };
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /was aborted/);
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false, "no merge session may exist after the abort");
+});
+
+test("an abort during a wave merge stops the next wave from launching", async (t) => {
+  const { store, integrator, calls } = fixture(t, { contract: true, workflow: true });
+  await integrator.assemble("plan-12345678");
+  assert.equal(store.get("plan-12345678").mergeStatus, "running");
+  const launchedBefore = calls.filter((call) => call[0] === "workspaceCreate").length;
+  store.recordGoalAborted("plan-12345678");
+  await integrator.settle("plan-12345678");
+  assert.equal(calls.filter((call) => call[0] === "workspaceCreate").length, launchedBefore, "the queued wave must not launch");
+  assert.equal(store.get("plan-12345678").tasks.find((task) => task.id === "t2").launchStatus, "queued");
+});
+
+test("cancel is safe on a plan that has nothing scheduled", async (t) => {
+  const { integrator } = fixture(t);
+  assert.deepEqual(integrator.cancel("plan-12345678"), { planId: "plan-12345678", cancelled: true });
+  assert.deepEqual(integrator.cancel(null), { planId: "", cancelled: true });
+});
+
+test("an unreadable lifecycle never blocks delivery", async (t) => {
+  const { store, integrator } = fixture(t);
+  const warnings = [];
+  integrator.log = { warn: (...args) => warnings.push(args) };
+  store.get = () => { throw new Error("database is locked"); };
+  assert.equal(integrator.timers.size, 0);
+  integrator.schedulePlan("plan-12345678");
+  assert.equal(integrator.timers.size, 1, "an unreadable lifecycle must not be read as terminal");
+  integrator.cancel("plan-12345678");
+  assert.equal(warnings.length, 1);
+});
