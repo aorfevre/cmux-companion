@@ -93,7 +93,10 @@ export function sessionTitle(plan, task, { suffix = "" } = {}) {
 // project code and the goal text in the same shape.
 export function mergeSessionTitle(plan) {
   const code = `${projectCode(plan?.repositoryName)}-MERGE`;
-  const goal = oneLine(plan?.spec?.outcome || plan?.goal);
+  // Both sides are trimmed before the choice. A whitespace-only outcome is
+  // truthy, so an untrimmed `||` would let it win and then collapse to empty,
+  // and the merge session would lose its goal text for no reason.
+  const goal = oneLine(plan?.spec?.outcome) || oneLine(plan?.goal);
   const room = MAX_TITLE - code.length - SEPARATOR.length;
   if (!goal || room < 8) return code.slice(0, MAX_TITLE);
   return `${code}${SEPARATOR}${clip(goal, room)}`;

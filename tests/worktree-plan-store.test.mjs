@@ -655,3 +655,206 @@ test("a terminal goal is no longer active work", (t) => {
   assert.equal(merged.mergeWorkspaceId, "plan-merged-merge");
   assert.deepEqual(merged.tasks.map((task) => task.workspaceId), ["plan-merged-workspace-0", "plan-merged-workspace-1"]);
 });
+
+// --- one task starts again, or is dropped --------------------------------
+
+// A launched plan with two tasks: t1 carries a full set of evidence, t2 is
+// untouched. Every relaunch test below asserts against both, because the
+// failure this writer exists to avoid is resetting the whole plan.
+function launchedPair(store, planId = "plan-1") {
+  seed(store, planId);
+  store.recordRound(planId, { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.recordLaunch(planId, {
+    base: "origin/main", baseSha: "a".repeat(40),
+    results: TASKS.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/task-${index}`, workspace: { workspace_id: `workspace-${index}` } })),
+  });
+  return store.get(planId);
+}
+
+test("a relaunch clears every trace of the dead agent's run", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  const report = { criteria: ["AC-1"], verification: [{ check: "npm test", status: "passed" }] };
+  store.recordTaskReady("plan-1", "t1", "b".repeat(40), { report, changedFiles: ["server/billing.mjs"], scopeWarnings: ["README.md"] });
+  store.recordIntegrationStarted("plan-1", { branch: "goal/billing", path: "/repo/goal" });
+  store.recordTaskIntegrated("plan-1", "t1", "d".repeat(40));
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "workspace-0", taskId: "t1" }]);
+
+  const plan = store.recordTaskRelaunch("plan-1", "t1", {
+    status: "launched", path: "/repo/task-0", workspace: { workspace_id: "workspace-new" }, startSha: "f".repeat(40),
+  });
+  const task = plan.tasks.find((item) => item.id === "t1");
+
+  // The new session and its worktree are written.
+  assert.equal(task.launchStatus, "launched");
+  assert.equal(task.launchError, null);
+  assert.equal(task.worktreePath, "/repo/task-0");
+  assert.equal(task.workspaceId, "workspace-new");
+  assert.equal(task.startSha, "f".repeat(40));
+
+  // And every field the previous run produced is gone. A stale head or a stale
+  // report would let the integrator merge work the new agent never wrote.
+  assert.equal(task.headSha, null);
+  assert.equal(task.deliveryStatus, "pending");
+  assert.equal(task.completionReport, null);
+  assert.equal(task.evidenceStatus, null);
+  assert.equal(task.evidenceError, null);
+  assert.deepEqual(task.changedFiles, []);
+  assert.deepEqual(task.scopeWarnings, []);
+  assert.equal(task.integratedCommitSha, null);
+  assert.equal(task.sessionClosedAt, null);
+});
+
+// This is the whole reason the writer exists. `recordWaveLaunch` resets the
+// plan's delivery state because a wave is a plan-wide transition; a relaunch is
+// one task, and the sibling's evidence is the work the goal is waiting on.
+test("a relaunch touches only the named task and leaves its siblings intact", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  const report = { criteria: ["AC-2"], verification: [{ check: "npm test -- invoices", status: "passed" }] };
+  store.recordTaskReady("plan-1", "t2", "c".repeat(40), { report, changedFiles: ["server/invoices.mjs"], scopeWarnings: ["docs/api.md"] });
+
+  store.recordTaskRelaunch("plan-1", "t1", { status: "launched", path: "/repo/task-0", workspace: { workspace_id: "workspace-new" } });
+
+  const sibling = store.get("plan-1").tasks.find((item) => item.id === "t2");
+  assert.equal(sibling.headSha, "c".repeat(40));
+  assert.equal(sibling.deliveryStatus, "ready");
+  assert.equal(sibling.evidenceStatus, "ready");
+  assert.deepEqual(sibling.completionReport, report);
+  assert.deepEqual(sibling.changedFiles, ["server/invoices.mjs"]);
+  assert.deepEqual(sibling.scopeWarnings, ["docs/api.md"]);
+  assert.equal(sibling.workspaceId, "workspace-1");
+  assert.equal(sibling.worktreePath, "/repo/task-1");
+});
+
+// The two reasons a launched plan blocks are "a task never launched" and "a
+// task is not ready". A relaunch answers both, so the goal must leave the merge
+// column while its new agent works.
+test("a relaunch clears a blocked plan and drops the delivery error", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  const blocked = store.recordDeliveryFailure("plan-1", "t1 never produced a head");
+  assert.equal(blocked.deliveryStatus, "blocked");
+
+  const plan = store.recordTaskRelaunch("plan-1", "t1", { status: "launched", path: "/repo/task-0", workspace: { workspace_id: "workspace-new" } });
+  assert.equal(plan.deliveryStatus, "implementing");
+  assert.equal(plan.deliveryError, null);
+});
+
+// Only `blocked` is a state a relaunch resolves. Promoting an assembling plan
+// back to implementing, or demoting an open pull request, would rewrite a
+// delivery stage this writer knows nothing about.
+test("a relaunch leaves a delivery status that is not blocked alone", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  assert.equal(store.get("plan-1").deliveryStatus, "implementing");
+  assert.equal(store.recordTaskRelaunch("plan-1", "t1", { status: "launched", path: "/repo/task-0" }).deliveryStatus, "implementing");
+
+  launchedPair(store, "plan-2");
+  store.recordTaskReady("plan-2", "t1", "b".repeat(40));
+  store.recordTaskReady("plan-2", "t2", "c".repeat(40));
+  store.recordFinalPr("plan-2", { number: 7, url: "https://github.test/pr/7" });
+  assert.equal(store.get("plan-2").deliveryStatus, "pr_open");
+  const stillOpen = store.recordTaskRelaunch("plan-2", "t1", { status: "launched", path: "/repo/task-0" });
+  assert.equal(stillOpen.deliveryStatus, "pr_open");
+  assert.equal(stillOpen.finalPrNumber, 7);
+});
+
+test("a relaunch writes one task_relaunched event carrying the result", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  const result = { status: "launched", path: "/repo/task-0", workspace: { workspace_id: "workspace-new" }, startSha: "f".repeat(40) };
+  store.recordTaskRelaunch("plan-1", "t1", result);
+  const event = store.events("plan-1").at(-1);
+  assert.equal(event.kind, "task_relaunched");
+  assert.equal(event.payload.taskId, "t1");
+  assert.deepEqual(event.payload.result, result);
+});
+
+// A relaunch that failed at the cmux call is still recorded, so the board says
+// why instead of showing a task that silently stayed dead.
+test("a failed relaunch is stored with its reason and no session", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  const plan = store.recordTaskRelaunch("plan-1", "t1", { status: "failed", path: "/repo/task-0", error: "cmux is not running" });
+  const task = plan.tasks.find((item) => item.id === "t1");
+  assert.equal(task.launchStatus, "failed");
+  assert.equal(task.launchError, "cmux is not running");
+  assert.equal(task.workspaceId, null);
+  // Even a failed relaunch clears the blocked flag, because the user has been
+  // told what happened and the plan is no longer waiting on an absent answer.
+  assert.equal(plan.deliveryStatus, "implementing");
+});
+
+// A result with no status at all still has to leave a launched row behind:
+// writing an empty launch_status would drop the task out of every reader that
+// counts launched work.
+test("a relaunch with no status defaults to launched", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  const plan = store.recordTaskRelaunch("plan-1", "t1", {});
+  assert.equal(plan.tasks.find((item) => item.id === "t1").launchStatus, "launched");
+});
+
+// A skipped task keeps its row and its reason. A silent disappearance is what
+// made the old failures impossible to diagnose.
+test("a skip marks the task skipped, keeps the row, and records why", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  store.recordTaskPending("plan-1", "t1", { error: "the agent never answered" });
+  const plan = store.recordTaskSkipped("plan-1", "t1", "duplicated by t2");
+  const task = plan.tasks.find((item) => item.id === "t1");
+
+  assert.equal(plan.tasks.length, 2, "the row must stay");
+  assert.equal(task.launchStatus, "skipped");
+  assert.equal(task.launchError, "duplicated by t2");
+  assert.equal(task.deliveryStatus, "pending");
+  assert.equal(task.evidenceStatus, null);
+  assert.equal(task.evidenceError, null);
+  // The worktree and the branch survive: the work stays on disk to read.
+  assert.equal(task.worktreePath, "/repo/task-0");
+  assert.equal(task.branch, "feature/billing");
+  const event = store.events("plan-1").at(-1);
+  assert.equal(event.kind, "task_skipped");
+  assert.deepEqual(event.payload, { taskId: "t1", reason: "duplicated by t2" });
+});
+
+// Skipping is the answer to "one dead task blocks the merge for every other
+// task that finished", so it too has to clear the blocked flag.
+test("a skip clears a blocked plan", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  store.recordDeliveryFailure("plan-1", "t1 is not ready");
+  const plan = store.recordTaskSkipped("plan-1", "t1");
+  assert.equal(plan.deliveryStatus, "implementing");
+  assert.equal(plan.deliveryError, null);
+  assert.equal(plan.tasks.find((item) => item.id === "t1").launchError, null);
+  assert.equal(store.events("plan-1").at(-1).payload.reason, null);
+});
+
+test("a skip leaves a plan that is not blocked at its own delivery status", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  store.recordIntegrationStarted("plan-1", { branch: "goal/billing", path: "/repo/goal" });
+  assert.equal(store.recordTaskSkipped("plan-1", "t2").deliveryStatus, "assembling");
+});
+
+// A reason a user pasted from a terminal must not become an unbounded column.
+test("a skip reason is clipped to the stored bound", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  const plan = store.recordTaskSkipped("plan-1", "t1", "x".repeat(5_000));
+  assert.equal(plan.tasks.find((item) => item.id === "t1").launchError.length, 2_000);
+});
+
+// Both writers address one row by its composite key. An unknown task id must
+// leave every row alone rather than falling back to the first task.
+test("a relaunch or a skip of an unknown task changes no task row", (t) => {
+  const store = memoryStore(t);
+  launchedPair(store);
+  const before = store.get("plan-1").tasks;
+  const relaunched = store.recordTaskRelaunch("plan-1", "nope", { status: "launched", path: "/repo/ghost" });
+  assert.deepEqual(relaunched.tasks, before);
+  const skipped = store.recordTaskSkipped("plan-1", "nope", "ghost");
+  assert.deepEqual(skipped.tasks, before);
+});

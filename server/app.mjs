@@ -15,6 +15,7 @@ import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
 import { GoalHealthSweep } from "./goal-health.mjs";
+import { GoalWatchdog } from "./goal-watchdog.mjs";
 import { GoalMergeWatch } from "./goal-merge-watch.mjs";
 import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
 import { AccountUsage } from "./account-usage.mjs";
@@ -45,6 +46,7 @@ export async function buildApp({
   goalIntegrator = null,
   goalMergeWatch = null,
   goalHealthSweep = null,
+  goalWatchdog = null,
   // Accepted but deliberately unused: see the header of cmux-groups.mjs for why
   // cmux workspace grouping is inert. The option stays in the signature so
   // grouping can be restored, and injected, without another API change here.
@@ -104,6 +106,11 @@ export async function buildApp({
   let bootstrapPending = null;
   let inboxSnapshot = null;
   let inboxPending = null;
+  // The sweep answers when asked. This asks, on a timer, and pushes once when a
+  // goal's health gets worse — so a dead agent reaches the user instead of
+  // waiting to be noticed. It moves no goal: every recovery stays explicit.
+  const watchdog = goalWatchdog || (health ? new GoalWatchdog({ health, pushService, log: app.log }) : null);
+  const detachWatchdog = watchdog?.start() || null;
   const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
   const detachQueue = promptQueue?.attach({ hub, cmux }) || null;
   // Production already keeps the event stream alive for push/queue handling.
@@ -494,6 +501,13 @@ export async function buildApp({
     return health.sweep();
   });
 
+  // The same pass the watchdog runs on its timer, forced. "Check all devs":
+  // one action that inspects every launched goal and reports what it found.
+  app.post("/api/goals/health/check", async () => {
+    if (!watchdog) throw serviceUnavailable("Goal supervision is unavailable");
+    return watchdog.check();
+  });
+
   app.get("/api/worktree-plans/:planId/health", async (request) => {
     if (!health) throw serviceUnavailable("Goal supervision is unavailable");
     return health.inspect(request.params.planId);
@@ -815,6 +829,7 @@ export async function buildApp({
     detachPush?.();
     detachQueue?.();
     detachIntegrator?.();
+    detachWatchdog?.();
     hub.stop();
     if (!worktreePlanStore && planStore) planStore.close();
   });
