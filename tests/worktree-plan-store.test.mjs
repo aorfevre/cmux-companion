@@ -481,3 +481,177 @@ test("offers no session for a task that is not integrated or for the live merge"
   store.recordMergeLaunched("plan-1", "workspace-merge");
   assert.deepEqual(store.pendingSessionClosures("plan-1"), []);
 });
+
+// The board columns arrived after goals were already on disk. A database that
+// predates them must open, keep its plan, its tasks and its events, and read
+// every new field as null.
+test("migrates a database that predates the board columns", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "board-plan-store-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "goal-plans.db");
+  const first = new WorktreePlanStore({ path });
+  seed(first);
+  first.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "board-session", tasks: TASKS });
+  first.close();
+
+  const legacy = new DatabaseSync(path);
+  for (const column of ["board_status", "board_changed_at", "board_pr_number", "board_pr_url", "board_pr_state", "board_pr_observed_at"]) {
+    legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
+  }
+  legacy.close();
+
+  const migrated = new WorktreePlanStore({ path });
+  t.after(() => migrated.close());
+  const plan = migrated.get("plan-1");
+  assert.equal(plan.goal, "Add billing");
+  assert.equal(plan.sessionId, "board-session");
+  assert.deepEqual(plan.tasks.map((task) => task.id), ["t1", "t2"]);
+  assert.equal(plan.boardStatus, null);
+  assert.equal(plan.boardChangedAt, null);
+  assert.equal(plan.boardPrNumber, null);
+  assert.equal(plan.boardPrUrl, null);
+  assert.equal(plan.boardPrState, null);
+  assert.equal(plan.boardPrObservedAt, null);
+  assert.deepEqual(migrated.events("plan-1").map((event) => event.kind), ["goal", "tasks"]);
+  const [summary] = migrated.list();
+  assert.equal(summary.boardStatus, null);
+  assert.equal(summary.boardPrState, null);
+});
+
+test("records an open pull request and only re-records a changed one", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  const opened = store.recordGoalPullRequest("plan-1", {
+    number: 7, url: "https://github.test/pr/7", state: "OPEN", observedAt: "2026-09-01T10:00:00.000Z",
+  });
+  assert.equal(opened.boardStatus, null);
+  assert.equal(opened.boardPrNumber, 7);
+  assert.equal(opened.boardPrUrl, "https://github.test/pr/7");
+  assert.equal(opened.boardPrState, "OPEN");
+  assert.equal(opened.boardPrObservedAt, "2026-09-01T10:00:00.000Z");
+  const [summary] = store.list();
+  assert.equal(summary.boardPrNumber, 7);
+  assert.equal(summary.boardPrState, "OPEN");
+  assert.equal(summary.boardStatus, null);
+
+  // The same pull request seen again, only later. Nothing changed, so the goal
+  // neither gains an event nor moves to the top of the list.
+  const before = store.get("plan-1").updatedAt;
+  const again = store.recordGoalPullRequest("plan-1", {
+    number: 7, url: "https://github.test/pr/7", state: "OPEN", observedAt: "2026-09-01T11:00:00.000Z",
+  });
+  assert.equal(again.boardPrObservedAt, "2026-09-01T10:00:00.000Z");
+  assert.equal(again.updatedAt, before);
+  assert.equal(store.events("plan-1").filter((event) => event.kind === "board_pull_request").length, 1);
+
+  const closed = store.recordGoalPullRequest("plan-1", { number: 7, url: "https://github.test/pr/7", state: "CLOSED" });
+  assert.equal(closed.boardPrState, "CLOSED");
+  assert.equal(closed.boardStatus, null);
+  assert.equal(store.events("plan-1").filter((event) => event.kind === "board_pull_request").length, 2);
+});
+
+test("rejects a pull request state that GitHub never reports", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  assert.throws(() => store.recordGoalPullRequest("plan-1", { state: "DRAFT" }), /Unknown pull request state/);
+  assert.equal(store.get("plan-1").boardPrState, null);
+  assert.equal(store.events("plan-1").length, 1);
+});
+
+test("a MERGED observation is terminal and never leaves the status null", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  const merged = store.recordGoalPullRequest("plan-1", {
+    number: 9, url: "https://github.test/pr/9", state: "MERGED", observedAt: "2026-09-02T08:00:00.000Z",
+  });
+  assert.equal(merged.boardStatus, "merged");
+  assert.equal(merged.boardPrState, "MERGED");
+  assert.equal(merged.boardPrNumber, 9);
+  assert.ok(merged.boardChangedAt);
+  assert.equal(merged.boardPrObservedAt, "2026-09-02T08:00:00.000Z");
+  assert.equal(store.events("plan-1").filter((event) => event.kind === "board_merged").length, 1);
+
+  // Repeating the same merge changes nothing and adds no second event.
+  const repeated = store.recordGoalMerged("plan-1", { number: 9, url: "https://github.test/pr/9" });
+  assert.equal(repeated.boardChangedAt, merged.boardChangedAt);
+  assert.equal(store.events("plan-1").filter((event) => event.kind === "board_merged").length, 1);
+
+  // A stale OPEN read arriving after the merge must not move the board back.
+  const stale = store.recordGoalPullRequest("plan-1", { number: 9, url: "https://github.test/pr/9", state: "OPEN" });
+  assert.equal(stale.boardStatus, "merged");
+  assert.equal(stale.boardPrState, "MERGED");
+  assert.equal(store.events("plan-1").filter((event) => event.kind === "board_pull_request").length, 0);
+});
+
+test("aborts a goal once and refuses to overwrite either terminal state", (t) => {
+  const store = memoryStore(t);
+  seed(store, "plan-abort");
+  seed(store, "plan-merge");
+
+  const aborted = store.recordGoalAborted("plan-abort", { reason: "The goal was replaced" });
+  assert.equal(aborted.boardStatus, "aborted");
+  assert.ok(aborted.boardChangedAt);
+  assert.equal(store.events("plan-abort").filter((event) => event.kind === "board_aborted").length, 1);
+  assert.equal(store.events("plan-abort").at(-1).payload.reason, "The goal was replaced");
+
+  const repeated = store.recordGoalAborted("plan-abort");
+  assert.equal(repeated.boardChangedAt, aborted.boardChangedAt);
+  assert.equal(store.events("plan-abort").filter((event) => event.kind === "board_aborted").length, 1);
+
+  // A merge that arrives after an abort leaves the aborted goal alone.
+  const stillAborted = store.recordGoalMerged("plan-abort", { number: 3, url: "https://github.test/pr/3" });
+  assert.equal(stillAborted.boardStatus, "aborted");
+  assert.equal(stillAborted.boardPrNumber, null);
+  assert.equal(store.events("plan-abort").filter((event) => event.kind === "board_merged").length, 0);
+  assert.equal(store.recordGoalPullRequest("plan-abort", { number: 3, url: "https://github.test/pr/3", state: "OPEN" }).boardPrState, null);
+
+  // And an abort that arrives after a merge leaves the merged goal alone.
+  const merged = store.recordGoalMerged("plan-merge", { number: 4, url: "https://github.test/pr/4" });
+  assert.equal(merged.boardStatus, "merged");
+  const stillMerged = store.recordGoalAborted("plan-merge", { reason: "too late" });
+  assert.equal(stillMerged.boardStatus, "merged");
+  assert.equal(stillMerged.boardChangedAt, merged.boardChangedAt);
+  assert.equal(store.events("plan-merge").filter((event) => event.kind === "board_aborted").length, 0);
+});
+
+test("returns null for a board transition on an unknown plan", (t) => {
+  const store = memoryStore(t);
+  assert.equal(store.recordGoalAborted("nope"), null);
+  assert.equal(store.recordGoalMerged("nope"), null);
+  assert.equal(store.recordGoalPullRequest("nope", { state: "OPEN" }), null);
+});
+
+// A terminal goal is finished work. Leaving it in the active lookups would let
+// the integrator keep opening sessions for a goal the user already closed.
+test("a terminal goal is no longer active work", (t) => {
+  const store = memoryStore(t);
+  for (const planId of ["plan-open", "plan-merged", "plan-aborted"]) {
+    seed(store, planId);
+    store.recordRound(planId, { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+    store.recordLaunch(planId, {
+      base: "origin/main",
+      results: TASKS.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/${planId}-${index}`, workspace: { workspace_id: `${planId}-workspace-${index}` } })),
+    });
+    store.recordMergeLaunched(planId, `${planId}-merge`);
+  }
+  assert.deepEqual(store.activeCombinedPlans().map((plan) => plan.planId).sort(), ["plan-aborted", "plan-merged", "plan-open"]);
+
+  store.recordGoalMerged("plan-merged", { number: 11, url: "https://github.test/pr/11" });
+  store.recordGoalAborted("plan-aborted");
+
+  assert.deepEqual(store.activeCombinedPlans().map((plan) => plan.planId), ["plan-open"]);
+  assert.equal(store.findTaskByWorkspace("plan-open-workspace-0").task.id, "t1");
+  assert.equal(store.findTaskByWorkspace("plan-merged-workspace-0"), null);
+  assert.equal(store.findTaskByWorkspace("plan-aborted-workspace-0"), null);
+  assert.equal(store.findPlanByMergeWorkspace("plan-open-merge").planId, "plan-open");
+  assert.equal(store.findPlanByMergeWorkspace("plan-merged-merge"), null);
+  assert.equal(store.findPlanByMergeWorkspace("plan-aborted-merge"), null);
+
+  // The terminal plans keep every delivery field they had.
+  const merged = store.get("plan-merged");
+  assert.equal(merged.status, "launched");
+  assert.equal(merged.deliveryStatus, "assembling");
+  assert.equal(merged.mergeStatus, "running");
+  assert.equal(merged.mergeWorkspaceId, "plan-merged-merge");
+  assert.deepEqual(merged.tasks.map((task) => task.workspaceId), ["plan-merged-workspace-0", "plan-merged-workspace-1"]);
+});
