@@ -7,6 +7,9 @@ import { GoalBoardStateId, GoalHealth, goalPrLink, PlanSummary, terminalStatus, 
 // the dashboard can never invent a column the server does not know.
 import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../server/goal-board.mjs";
 import { GitHubIssuePlannerSheet } from "./github-issue-planner";
+// The quota countdown already exists on the licence page. Reusing it keeps one
+// reset time from reading two different ways on two screens.
+import { resetText } from "./account-usage";
 
 type DeliveryState = { label: string; tone: "attention" | "working" | "done" | "ready" };
 type WorktreeSession = { id: string; title: string; preview: string; directory?: string | null; terminalCount: number; lastActivityAt: number; provider: string; state: DeliveryState };
@@ -22,6 +25,15 @@ type HealthSession = { id: string; title: string | null; lastActivityAt: number;
 type HealthTask = { id: string; title: string; branch: string; agent: string | null; wave: number; launchStatus: string | null; launchError: string | null; deliveryStatus: string; workspaceId: string | null; health: GoalHealth; reason: string; session: HealthSession | null };
 type HealthGoal = { planId: string; goal: string; repositoryName: string; health: GoalHealth; stuckCount: number; readyCount: number; launchedCount: number; taskCount: number; deliveryStatus?: string; tasks: HealthTask[] };
 type HealthSummary = { goals: number; tasks: number; stuck: number; needsYou: number; working: number; deadTasks: number; idleTasks: number; failedTasks: number };
+// GET /api/goals/capacity. The dispatcher's own verdict, rendered: nothing here
+// recomputes which provider is next.
+type CapacityWindow = { cadence: "5h" | "weekly"; label: string; remainingPercent: number; resetAt: string | null };
+type CapacityAccount = { id: string | null; label: string; status: string; headroom: number | null; windows: CapacityWindow[] };
+type CapacityProvider = { id: "claude" | "codex"; label: string; available: boolean; headroom: number | null; bestPercent: number | null; resetAt: string | null; accounts: CapacityAccount[] };
+type AgentCapacity = { providers: CapacityProvider[]; next: "claude" | "codex" | null; reason: string; nextReset: string | null; available: boolean };
+// POST /api/worktree-plans/:planId/check-merge. `changed` is the only field
+// that says the board moved; the rest explains why it did not.
+type MergeCheck = { planId: string; changed: boolean; state: "OPEN" | "CLOSED" | "MERGED" | null; boardStatus: "merged" | "aborted" | null; pullRequest: { number: number; url: string } | null; checked: true };
 type GoalHealthSweep = { checkedAt: string; sessionsAvailable: boolean; goals: HealthGoal[]; summary: HealthSummary };
 // The four verdicts that mean a person is needed. Everything else is either
 // progress or a state with nothing to act on, so the rail never lists it.
@@ -71,6 +83,21 @@ function issueBaseFrom(urls: (string | null | undefined)[]) {
   return "";
 }
 
+// Two repositories must never share a chip colour, and a hardcoded pair would
+// break on the third repository. The hue comes from the name itself, so it is
+// stable across reloads and needs no list to maintain.
+function repoChipStyle(name: string) {
+  let hash = 0;
+  for (const character of name) hash = (hash * 31 + character.charCodeAt(0)) % 360;
+  // The comma form on purpose: the space-and-slash syntax is dropped by some
+  // CSSOM parsers, which would leave the chip unstyled rather than coloured.
+  return { borderColor: `hsla(${hash}, 52%, 46%, .5)`, background: `hsla(${hash}, 58%, 32%, .2)`, color: `hsl(${hash}, 82%, 78%)` };
+}
+
+// The product a goal belongs to, as a label rather than a footnote. The board
+// and the rail both lead with it.
+function RepoChip({ name }: { name: string }) { return <span className="goal-repo-chip" style={repoChipStyle(name)}>{name}</span>; }
+
 function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
 function relativePlanTime(timestamp?: string) { const value = timestamp ? Date.parse(timestamp) : NaN; return relativeTime(Number.isFinite(value) ? Math.round(value / 1000) : undefined); }
 function githubCheckedTime(timestamp: string) { const value = relativePlanTime(timestamp); return value === "now" ? "just now" : `${value} ago`; }
@@ -102,6 +129,14 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const [goalPlans, setGoalPlans] = useState<PlanSummary[]>([]);
   const [health, setHealth] = useState<GoalHealthSweep | null>(null);
   const [healthError, setHealthError] = useState("");
+  const [capacity, setCapacity] = useState<AgentCapacity | null>(null);
+  const [capacityError, setCapacityError] = useState("");
+  // The countdown ticks on its own clock: the capacity payload only changes
+  // every ten seconds, but "resets in 00:04:12" must move every second.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  // Picking a repository for a new goal. The planner sheet needs one, and the
+  // board spans every repository in the project, so it cannot guess.
+  const [newGoalOpen, setNewGoalOpen] = useState(false);
   // One key per operation. A shared busy string would disable every Continue
   // button on the rail while a single task was relaunching.
   const [boardBusy, setBoardBusy] = useState<Record<string, boolean>>({});
@@ -144,6 +179,18 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
       setHealthError("");
     } catch (cause) { setHealthError(cause instanceof Error ? cause.message : "Goal supervision unavailable"); }
   }, []);
+  // Which provider takes the next task. `refresh=1` re-reads CCS itself, which
+  // is slow, so only the explicit GitHub refresh asks for it.
+  const loadCapacity = useCallback(async (refresh = false) => {
+    try {
+      const snapshot = await request<AgentCapacity>(`/api/goals/capacity${refresh ? "?refresh=1" : ""}`);
+      // A payload without providers is not a capacity answer. Showing an empty
+      // strip would read as "no quota anywhere", which is the opposite verdict.
+      if (!Array.isArray(snapshot?.providers)) throw new Error("Agent capacity is unavailable");
+      setCapacity(snapshot);
+      setCapacityError("");
+    } catch (cause) { setCapacityError(cause instanceof Error ? cause.message : "Agent capacity unavailable"); }
+  }, []);
   useEffect(() => {
     const kickoff = setTimeout(() => { void load(); void loadGoalPlans(); }, 0);
     const poll = setInterval(() => { if (document.visibilityState === "visible") { void load(); void loadGoalPlans(); } }, 10_000);
@@ -162,10 +209,26 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const boardView = dashboardFilter === "goals-board";
   useEffect(() => {
     if (!boardView) return;
-    const kickoff = setTimeout(() => { void loadHealth(); }, 0);
-    const poll = setInterval(() => { if (document.visibilityState === "visible") void loadHealth(); }, 10_000);
+    const kickoff = setTimeout(() => { void loadHealth(); void loadCapacity(); }, 0);
+    const poll = setInterval(() => { if (document.visibilityState === "visible") { void loadHealth(); void loadCapacity(); } }, 10_000);
     return () => { clearTimeout(kickoff); clearInterval(poll); };
-  }, [boardView, loadHealth]);
+  }, [boardView, loadCapacity, loadHealth]);
+  // One second, and only while the strip is on screen. A reset countdown that
+  // moves in ten-second jumps reads as broken.
+  useEffect(() => {
+    if (!boardView) return;
+    const tick = setInterval(() => { if (document.visibilityState === "visible") setNowTick(Date.now()); }, 1_000);
+    return () => clearInterval(tick);
+  }, [boardView]);
+
+  // The shell is capped at 1500px so prose and forms stay readable. A board of
+  // parallel work is the opposite problem: it wants every pixel of a wide
+  // screen. The flag lives on the document because the shell is an ancestor of
+  // this component, so only CSS can reach it from here.
+  useEffect(() => {
+    document.body.classList.toggle("board-wide", boardView);
+    return () => document.body.classList.remove("board-wide");
+  }, [boardView]);
   // A notification about a finished round links straight to its goal. The sheet
   // needs the repository, which arrives with the dashboard, so this waits for
   // both and then opens the plan once.
@@ -200,7 +263,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     // The dashboard request reconciles the goal pull requests on the server.
     // The plan list must be fetched after it, so the cards read the lifecycle
     // the refresh just recorded. A parallel pair would read the old one.
-    try { await load(true, true); await loadGoalPlans(); await loadHealth(); }
+    try { await load(true, true); await loadGoalPlans(); await loadHealth(); await loadCapacity(true); }
     finally { setBusy(""); }
   }
 
@@ -320,6 +383,21 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     });
   }
 
+  // "Is this actually merged?" answered for one goal. The call refreshes GitHub
+  // first, so it is slow: only that one button shows a busy label, and the
+  // notice distinguishes moved / still open / GitHub knows nothing.
+  async function checkMerge(plan: PlanSummary) {
+    await runBoardAction(`checkmerge:${plan.planId}`, async () => {
+      try {
+        const result = await request<MergeCheck>(`/api/worktree-plans/${encodeURIComponent(plan.planId)}/check-merge`, { method: "POST" });
+        await loadGoalPlans();
+        if (result.changed || result.boardStatus === "merged") onNotice(`${plan.goal} is merged. It moved to Merged.`);
+        else if (result.pullRequest) onNotice(`${plan.goal} is still open on GitHub (PR #${result.pullRequest.number}). Nothing moved.`);
+        else onNotice(`GitHub knows no pull request for this goal's branch. It may never have been pushed.`);
+      } catch (cause) { onNotice(cause instanceof Error ? cause.message : `Could not check ${plan.goal} against GitHub`); }
+    });
+  }
+
   // Skipping drops one task so its goal can assemble without it. The reason is
   // recorded, so the plan says later why a task is missing from the merge.
   async function skipTask(goal: HealthGoal, task: HealthTask) {
@@ -355,6 +433,8 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   // of rounds running right now across every repository in this project.
   const planningCount = projectPlans.filter((plan) => plan.running).length;
   const isBoardView = dashboardFilter === "goals-board";
+  // An archived repository takes no new goals, so it never reaches the picker.
+  const goalRepositories = projectRepositories.filter((repo) => !repo.archived);
   const isGoalView = dashboardFilter === "draft-goals" || dashboardFilter === "launched-goals" || isBoardView;
   // The search box sits in the shared header, so one query narrows whichever
   // list the current tab shows.
@@ -408,7 +488,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     <section className="content-section worktree-content">
       <div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={project === "karven"} className={project === "karven" ? "active" : ""} onClick={() => setProject("karven")}><span>K</span>Karven</button><button role="tab" aria-selected={project === "rekord"} className={project === "rekord" ? "active" : ""} onClick={() => setProject("rekord")}><span>R</span>Rekord</button></div>
       <div className="worktree-filter-tabs" role="tablist" aria-label="Project status">{filterTabs.map((filter) => <button role="tab" aria-selected={dashboardFilter === filter.id} className={`${GOAL_FILTERS.has(filter.id) ? "goal-tab" : ""}${dashboardFilter === filter.id ? " active" : ""}`.trim()} onClick={() => setDashboardFilter(filter.id)} key={filter.id}>{filter.label} <b>{filter.count}</b>{filter.planning ? <i className="tab-planning" aria-label={`${filter.planning} planning`}>{filter.planning} planning</i> : null}</button>)}</div>
-      <div className="section-heading"><div><h2>{project === "karven" ? "Karven" : "Rekord"} {isGoalView ? goalHeadingTitle : "projects"}</h2>{dashboard && <p>{isGoalView ? `${visiblePlans.length} shown · ${projectPlans.length} total goals` : `${visibleRepositories.length} shown · ${projectRepositories.length} total`} · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</p>}</div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div><button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>
+      <div className="section-heading"><div><h2>{project === "karven" ? "Karven" : "Rekord"} {isGoalView ? goalHeadingTitle : "projects"}</h2>{dashboard && <p>{isGoalView ? `${visiblePlans.length} shown · ${projectPlans.length} total goals` : `${visibleRepositories.length} shown · ${projectRepositories.length} total`} · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</p>}</div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div>{isBoardView && goalRepositories.length > 0 && <div className="board-new-goal"><button type="button" className="board-new-goal-button" aria-label={goalRepositories.length === 1 ? `Plan a goal for ${goalRepositories[0].name}` : "Plan a new goal"} aria-expanded={goalRepositories.length === 1 ? undefined : newGoalOpen} aria-haspopup={goalRepositories.length === 1 ? undefined : "menu"} onClick={() => { if (goalRepositories.length === 1) setPlanTarget({ repository: goalRepositories[0] }); else setNewGoalOpen((open) => !open); }}>＋ New goal</button>{newGoalOpen && goalRepositories.length > 1 && <><button type="button" className="board-new-goal-backdrop" aria-label="Close the repository picker" onClick={() => setNewGoalOpen(false)} /><div className="board-new-goal-menu" role="menu" aria-label="Pick a repository for the new goal">{goalRepositories.map((repo) => <button type="button" role="menuitem" aria-label={`Plan a goal for ${repo.name}`} onClick={() => { setNewGoalOpen(false); setPlanTarget({ repository: repo }); }} key={repo.id}><RepoChip name={repo.name} /><small>{compactPath(repo.path)}</small></button>)}</div></>}</div>}<button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>
       {error && <div className="apps-warning">{error}<button onClick={() => load(true)}>Retry</button></div>}
       {isGoalView && goalError && <div className="apps-warning">{goalError}<button onClick={loadGoalPlans}>Retry</button></div>}
       {!dashboard && !error && <WorktreeSkeleton />}
@@ -420,6 +500,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
       {isGoalView && !isBoardView && dashboard && visiblePlans.length === 0 && !goalError && query && <div className="empty-card filtered-empty"><span>⌕</span><strong>No goal matches “{search.trim()}”</strong><p>Clear the search to see every goal again.</p><button type="button" className="text-button" onClick={() => setSearch("")}>Clear search</button></div>}
       {isGoalView && !isBoardView && dashboard && visiblePlans.length === 0 && !goalError && !query && <div className="empty-card filtered-empty"><span>{dashboardFilter === "draft-goals" ? "◇" : "✓"}</span><strong>No {dashboardFilter === "draft-goals" ? "draft" : "launched"} {project === "karven" ? "Karven" : "Rekord"} goals</strong><p>{dashboardFilter === "draft-goals" ? "New and interrupted plans will appear here." : "Goals appear here after their worktree sessions are launched."}</p></div>}
       {isGoalView && !isBoardView && <section className="worktree-goals" aria-label={dashboardFilter === "draft-goals" ? "Draft goals" : "Launched goals"}>{visiblePlans.map((plan) => { const repo = projectRepositories.find((item) => item.id === plan.repositoryId); if (!repo) return null; const closed = terminalStatus(plan); return <article className={`worktree-goal-card ${closed || (plan.running ? "planning" : plan.status)}`} key={plan.planId}><header><span className="repo-icon">{repo.name.slice(0, 1).toUpperCase()}</span><div><strong>{plan.goal}</strong><small>{repo.name}</small></div><em>{closed === "merged" ? "Merged" : closed === "aborted" ? "Aborted" : plan.running ? "Planning…" : plan.status === "draft" ? "Draft" : "Launched"}</em></header><div className="worktree-goal-meta"><span>{closed ? closed === "merged" ? "The goal pull request is merged" : "Stopped. Branches and worktrees were kept." : plan.running ? plan.runStep || "Reading the repository…" : plan.runPhase === "failed" ? plan.runError || "The last round failed" : plan.round === 0 ? "Planning stopped before it produced anything" : plan.stage === "questions" ? `Round ${plan.round} · waiting for answers` : `${plan.taskCount} task${plan.taskCount === 1 ? "" : "s"}`}</span><span>Updated {relativePlanTime(plan.updatedAt)}</span></div>{confirmDeleteGoalId === plan.planId ? <footer className="worktree-goal-delete"><span>Delete this saved goal?</span><button type="button" aria-label={`Cancel deleting ${plan.goal}`} disabled={deletingGoalId === plan.planId} onClick={() => setConfirmDeleteGoalId("")}>Cancel</button><button type="button" className="confirm-delete" aria-label={`Confirm delete ${plan.goal}`} disabled={deletingGoalId === plan.planId} onClick={() => { void deleteGoal(plan); }}>{deletingGoalId === plan.planId ? "Deleting…" : "Confirm delete"}</button></footer> : <footer><button type="button" className="worktree-goal-open" aria-label={`${goalOpenLabel(plan)} ${plan.goal}`} onClick={() => setPlanTarget({ repository: repo, planId: plan.planId })}>{goalOpenLabel(plan)}</button><button type="button" className="worktree-goal-delete-button" aria-label={`Delete ${plan.goal}`} disabled={plan.running === true} onClick={() => setConfirmDeleteGoalId(plan.planId)}>Delete</button></footer>}</article>; })}</section>}
+      {isBoardView && dashboard && <AgentCapacityStrip capacity={capacity} error={capacityError} now={nowTick} onRetry={() => { void loadCapacity(true); }} />}
       {isBoardView && dashboard && <GoalKpiTiles columns={BOARD_COLUMNS} groups={boardGroups} summary={healthSummary} sessions={boardLaunchedSessions} />}
       {isBoardView && dashboard && <AttentionRail
         rows={attentionRows}
@@ -448,6 +529,8 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
               onRequestAbort={() => { setGoalError(""); setConfirmAbortGoalId(plan.planId); }}
               onCancelAbort={() => setConfirmAbortGoalId("")}
               onConfirmAbort={() => { void abortGoal(plan); }}
+              checking={boardBusy[`checkmerge:${plan.planId}`] === true}
+              onCheckMerge={() => { void checkMerge(plan); }}
               focusing={plan.workspaceIds?.length ? boardBusy[`focus:${plan.workspaceIds[0]}`] === true : false}
               onFocusWorkspace={() => { const id = plan.workspaceIds?.[0]; if (id) void focusWorkspace(id, plan.goal); }}
             /></li>)}</ul>}
@@ -469,7 +552,7 @@ function goalOpenLabel(plan: PlanSummary) {
   return plan.running ? "Watch" : plan.status === "draft" ? "Resume" : "View";
 }
 
-function GoalBoardCard({ plan, state, repositoryName, confirming, aborting, focusing, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; confirming: boolean; aborting: boolean; focusing: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void }) {
+function GoalBoardCard({ plan, state, repositoryName, confirming, aborting, focusing, checking, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void }) {
   const closed = state === "merged" || state === "aborted";
   const link = goalPrLink(plan);
   const openLabel = goalOpenLabel(plan);
@@ -481,9 +564,14 @@ function GoalBoardCard({ plan, state, repositoryName, confirming, aborting, focu
   const sessions = plan.workspaceIds || [];
   // Only a URL this same repository already produced can build an issue link.
   const issueBase = issueBaseFrom([plan.boardPrUrl, plan.finalPrUrl]);
+  // A goal that says "Waiting for merge" while its pull request is already
+  // merged is the one wrong answer this board can give, so those two columns
+  // carry the on-demand check.
+  const checkable = state === "waiting_for_merge" || state === "blocked";
   return <article className={`goal-board-card ${state}`}>
+    <RepoChip name={repositoryName} />
     <strong>{plan.goal}</strong>
-    <div className="goal-board-card-meta"><span>{repositoryName}</span><span>{plan.taskCount} task{plan.taskCount === 1 ? "" : "s"}</span><span>Updated {relativePlanTime(plan.updatedAt)}</span></div>
+    <div className="goal-board-card-meta"><span>{plan.taskCount} task{plan.taskCount === 1 ? "" : "s"}</span><span>Updated {relativePlanTime(plan.updatedAt)}</span></div>
     {health && <p className={`goal-board-health ${health}`}><b>{HEALTH_LABELS[health]}</b><span>{plan.healthReason || "This goal needs a person"}</span></p>}
     {launched > 0 && <p className="goal-board-ready" aria-label={`${plan.readyCount || 0} of ${launched} launched tasks ready`}><i style={{ width: `${Math.round(Math.min(1, (plan.readyCount || 0) / launched) * 100)}%` }} /><span>{plan.readyCount || 0}/{launched} ready</span></p>}
     {split && (split.claude > 0 || split.codex > 0) && <p className="goal-board-agents">{[split.claude ? `${split.claude} Claude` : "", split.codex ? `${split.codex} Codex` : ""].filter(Boolean).join(" · ")}</p>}
@@ -494,7 +582,40 @@ function GoalBoardCard({ plan, state, repositoryName, confirming, aborting, focu
     {link && (state === "waiting_for_merge" || state === "merged") && <a className="goal-board-pr" href={link.url} target="_blank" rel="noreferrer">{link.label}</a>}
     {confirming
       ? <footer className="goal-board-abort-confirm"><span>Abort this goal? Active specification work and live cmux sessions are cancelled. Its worktrees and branches are kept.</span><div><button type="button" aria-label={`Cancel aborting ${plan.goal}`} disabled={aborting} onClick={onCancelAbort}>Cancel</button><button type="button" className="confirm-abort" aria-label={`Confirm abort ${plan.goal}`} disabled={aborting} onClick={onConfirmAbort}>{aborting ? "Aborting…" : "Confirm abort"}</button></div></footer>
-      : <footer><button type="button" className="goal-board-open" aria-label={`${openLabel} ${plan.goal}`} onClick={onOpen}>{openLabel}</button>{!closed && <button type="button" className="goal-board-abort" aria-label={`Abort ${plan.goal}`} onClick={onRequestAbort}>Abort</button>}{sessions.length > 0 && <button type="button" className="goal-board-focus" aria-label={`Open ${plan.goal} in cmux`} disabled={focusing} onClick={onFocusWorkspace}>{focusing ? "Opening…" : "Open in cmux"}</button>}</footer>}
+      : <footer><button type="button" className="goal-board-open" aria-label={`${openLabel} ${plan.goal}`} onClick={onOpen}>{openLabel}</button>{!closed && <button type="button" className="goal-board-abort" aria-label={`Abort ${plan.goal}`} onClick={onRequestAbort}>Abort</button>}{checkable && <button type="button" className="goal-board-check" aria-label={`Check if ${plan.goal} is merged`} disabled={checking} onClick={onCheckMerge}>{checking ? "Checking GitHub…" : "Check if merged"}</button>}{sessions.length > 0 && <button type="button" className="goal-board-focus" aria-label={`Open ${plan.goal} in cmux`} disabled={focusing} onClick={onFocusWorkspace}>{focusing ? "Opening…" : "Open in cmux"}</button>}</footer>}
+  </article>;
+}
+
+// Which provider takes the next task, and what would change that answer. The
+// verdict is the server's; this renders it and never recomputes it.
+function AgentCapacityStrip({ capacity, error, now, onRetry }: { capacity: AgentCapacity | null; error: string; now: number; onRetry: () => void }) {
+  return <section className="agent-capacity" aria-label="Agent capacity">
+    <header><h3>Agent capacity</h3>{capacity && <span className={`agent-capacity-verdict${capacity.available ? "" : " exhausted"}`}>{capacity.available ? capacity.next ? `${labelOf(capacity, capacity.next)} takes the next task` : "No provider chosen" : `Both exhausted · ${resetText(capacity.nextReset, now)}`}</span>}{error && <button type="button" className="text-button" aria-label="Retry the agent capacity check" onClick={onRetry}>Retry</button>}</header>
+    {error && <p className="agent-capacity-note">{error}</p>}
+    {/* The reason is written to be read as one sentence. It is the only line
+        that explains an alternation between two near-equal providers. */}
+    {capacity?.reason && <p className="agent-capacity-reason">{capacity.reason}</p>}
+    {!capacity && !error && <p className="agent-capacity-note">Reading agent quota…</p>}
+    {capacity && <div className="agent-capacity-providers">{capacity.providers.map((provider) => <ProviderCapacity provider={provider} next={capacity.next === provider.id} now={now} key={provider.id} />)}</div>}
+  </section>;
+}
+
+function labelOf(capacity: AgentCapacity, id: "claude" | "codex") { return capacity.providers.find((provider) => provider.id === id)?.label || id; }
+
+function ProviderCapacity({ provider, next, now }: { provider: CapacityProvider; next: boolean; now: number }) {
+  // `headroom` is null for a provider the dispatcher will not offer work to.
+  // `bestPercent` still carries its real number, so a provider at 3% reads as
+  // three percent rather than as no data at all.
+  const percent = provider.headroom ?? provider.bestPercent;
+  const windows = provider.accounts.flatMap((account) => account.windows);
+  const attention = provider.accounts.filter((account) => account.status !== "ready");
+  return <article className={`agent-capacity-provider${next ? " next" : ""}${provider.headroom === null ? " blocked" : ""}`}>
+    <header><strong>{provider.label}</strong>{next && <em>Next task</em>}<b>{percent === null ? "—" : `${percent}%`}</b></header>
+    <p className="agent-capacity-bar" aria-label={`${provider.label} headroom ${percent === null ? "unknown" : `${percent} percent`}`}><i style={{ width: `${Math.max(0, Math.min(100, percent ?? 0))}%` }} /></p>
+    {windows.length === 0
+      ? <p className="agent-capacity-window-empty">No deciding window reported.</p>
+      : <ul className="agent-capacity-windows">{windows.map((window, index) => <li key={`${window.cadence}:${index}`}><span>{window.label}</span><b>{window.remainingPercent}%</b><small>{resetText(window.resetAt, now)}</small></li>)}</ul>}
+    {attention.map((account) => <p className={`agent-capacity-account ${account.status}`} key={account.id || account.label}><span>{account.label}</span><b>{account.status}</b></p>)}
   </article>;
 }
 
@@ -535,8 +656,9 @@ function AttentionRail({ rows, sessionsAvailable, loaded, error, busy, confirmin
         const confirmSkip = confirming === `skip:${goal.planId}:${task.id}`;
         return <li key={`${goal.planId}:${task.id}`}>
           <div className="goal-attention-copy">
+            <RepoChip name={goal.repositoryName} />
             <strong>{task.title}</strong>
-            <small>{goal.goal} · {goal.repositoryName}{task.agent ? ` · ${task.agent === "claude" ? "Claude" : "Codex"}` : ""}</small>
+            <small>{goal.goal}{task.agent ? ` · ${task.agent === "claude" ? "Claude" : "Codex"}` : ""}</small>
             <p><span className={`goal-attention-badge ${task.health}`}>{HEALTH_LABELS[task.health]}</span>{task.reason}</p>
           </div>
           {confirmRestart
