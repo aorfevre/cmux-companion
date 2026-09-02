@@ -60,8 +60,20 @@ test("validates criterion coverage, task ownership and verification", () => {
   assert.ok(unsafe.errors.some((error) => error.includes("duplicated")));
   assert.ok(unsafe.errors.some((error) => error.includes("unknown task not a valid id")));
 
-  const oversized = validateDeliveryContract(SPEC, [{ ...TASKS[0], prompt: "x".repeat(4_000), verification: ["v".repeat(500)], criterionIds: ["AC-1", "AC-2"] }]);
-  assert.ok(oversized.errors.some((error) => error.includes("too large for one agent brief")));
+  const inlineSized = validateDeliveryContract(SPEC, [{ ...TASKS[0], prompt: "x".repeat(4_000), verification: ["v".repeat(500)], criterionIds: ["AC-1", "AC-2"] }]);
+  assert.equal(inlineSized.ready, true);
+  assert.ok(!inlineSized.errors.some((error) => error.includes("brief")));
+});
+
+test("rejects a task whose brief file would be oversized", () => {
+  const oversized = validateDeliveryContract(SPEC, [{
+    ...TASKS[0],
+    prompt: "x".repeat(12_000),
+    verification: Array.from({ length: 20 }, () => "v".repeat(500)),
+    criterionIds: ["AC-1", "AC-2"],
+  }]);
+  assert.equal(oversized.ready, false);
+  assert.ok(oversized.errors.some((error) => error.includes("would produce an oversized brief file")));
 });
 
 test("warns when parallel tasks claim the same implementation area", () => {

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AgentBriefs } from "../server/agent-brief.mjs";
 import { GoalIntegrator, mergePrompt, readyCount } from "../server/goal-integrator.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 
@@ -93,9 +94,26 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
     rpc: async (method, params) => { calls.push(["rpc", method, params]); return {}; },
     notify: async (workspaceId, body) => { calls.push(["notify", workspaceId, body]); return {}; },
   };
-  const integrator = new GoalIntegrator({ store, worktrees, repoCatalog, cmux, execute, settleMs: 1 });
+  const briefs = new AgentBriefs({ directory: join(root, "briefs") });
+  const integrator = new GoalIntegrator({ store, worktrees, repoCatalog, cmux, execute, settleMs: 1, briefs });
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
   return { store, integrator, calls, integrationPath };
+}
+
+// cmux caps a prompt at this many characters, so the session gets a pointer and
+// the brief itself lives in a file.
+const MAX_PROMPT = 8_000;
+
+// The prompt names the brief file. The brief content is what the agent reads.
+function briefText(prompt) {
+  const path = String(prompt).match(/^Read the file (.+?) in full/m)?.[1];
+  assert.ok(path, `the prompt must name a brief file, got: ${prompt}`);
+  return readFileSync(path, "utf8");
+}
+
+function assertPointer(prompt) {
+  assert.ok(prompt.length <= MAX_PROMPT, `the prompt must stay under ${MAX_PROMPT} characters, got ${prompt.length}`);
+  assert.match(prompt, /^Read the file .+ in full/m);
 }
 
 test("launches one merge agent in a fresh goal worktree when every branch is ready", async (t) => {
@@ -107,8 +125,13 @@ test("launches one merge agent in a fresh goal worktree when every branch is rea
   const created = calls.find((call) => call[0] === "workspaceCreate")[1];
   assert.equal(created.cwd, integrationPath);
   assert.equal(created.agent, "claude");
-  assert.ok(created.prompt.includes(TASK_ONE));
-  assert.ok(created.prompt.includes(TASK_TWO));
+  assertPointer(created.prompt);
+  const brief = briefText(created.prompt);
+  assert.ok(brief.includes(TASK_ONE));
+  assert.ok(brief.includes(TASK_TWO));
+  assert.match(brief, /Closes #54/);
+  assert.match(brief, /## How to merge/);
+  assert.match(brief, /## Finish/);
   assert.equal(calls.some((call) => call[0] === "git" && call[2][0] === "merge"), false);
   assert.equal(calls.some((call) => call[0] === "git" && call[2][0] === "push"), false);
   assert.equal(calls.some((call) => call[0] === "gh" && call[1][1] === "create"), false);
@@ -175,9 +198,11 @@ test("a completed workflow wave launches its dependents from the integrated comm
   const { store, integrator, calls, integrationPath } = fixture(t, { contract: true, workflow: true });
   await integrator.assemble("plan-12345678");
   const wavePrompt = calls.find((call) => call[0] === "workspaceCreate")[1].prompt;
-  assert.match(wavePrompt, /workflow wave 1/i);
-  assert.match(wavePrompt, /Do not open a pull request yet/);
-  assert.equal(wavePrompt.includes("gh pr create"), false);
+  assertPointer(wavePrompt);
+  const waveBrief = briefText(wavePrompt);
+  assert.match(waveBrief, /workflow wave 1/i);
+  assert.match(waveBrief, /Do not open a pull request yet/);
+  assert.equal(waveBrief.includes("gh pr create"), false);
   const git = integrator.repoCatalog.git;
   const integratedSha = "d".repeat(40);
   integrator.repoCatalog.git = async (cwd, args) => {
@@ -193,7 +218,8 @@ test("a completed workflow wave launches its dependents from the integrated comm
   assert.equal(saved.tasks[1].startSha, integratedSha);
   assert.equal(calls.some((call) => call[0] === "create" && call[2].branch === "feature/billing-ui" && call[2].base === integratedSha), true);
   const downstream = calls.filter((call) => call[0] === "workspaceCreate").at(-1)[1];
-  assert.match(downstream.prompt, /Workflow dependencies: t1/);
+  assertPointer(downstream.prompt);
+  assert.match(briefText(downstream.prompt), /Workflow dependencies: t1/);
 });
 
 test("a restart advances queued work when the previous wave was already recorded as integrated", async (t) => {
@@ -276,7 +302,6 @@ test("the merge prompt pins every task commit and states the conflict rule", () 
   assert.match(prompt, /current HEAD.*do not checkout or reset another ref/i);
   assert.match(prompt, /gh pr create/);
   assert.match(prompt, /--base main/);
-  assert.ok(prompt.length <= 8_000);
 });
 
 test("the merge prompt skips a task that failed to launch", () => {
@@ -307,15 +332,19 @@ function manyTaskPlan(count) {
   };
 }
 
-test("the merge prompt refuses a goal with too many tasks to fit the cmux prompt limit", () => {
-  assert.throws(() => mergePrompt(manyTaskPlan(40)), /too many tasks/);
-});
-
-test("the merge prompt keeps the finish section and the conflicts-resolved requirement near the size limit", () => {
+// The brief is a file, so no task count can overflow a prompt limit any more.
+test("a twenty task goal still produces one complete merge brief", () => {
   const prompt = mergePrompt(manyTaskPlan(20));
-  assert.ok(prompt.length <= 8_000);
   assert.match(prompt, /## Finish/);
   assert.match(prompt, /## Conflicts resolved` section. This section is required/);
+  assert.match(prompt, /Task title number 19/);
+});
+
+test("a forty task goal produces a merge brief instead of throwing", () => {
+  const prompt = mergePrompt(manyTaskPlan(40));
+  assert.match(prompt, /Task title number 39/);
+  assert.match(prompt, /## Finish/);
+  assert.ok(prompt.length > MAX_PROMPT, "a forty task brief is longer than a cmux prompt, which is why it goes to a file");
 });
 
 test("the merge prompt omits the linked issues section when there are no issue numbers", () => {
