@@ -41,7 +41,7 @@ export function countUpdaterArtifacts(output, artifacts = UPDATER_ARTIFACTS) {
 }
 
 export class WorktreeDashboard {
-  constructor({ repoCatalog, cacheMs = 5_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), repositoryFavorites = new RepositoryFavorites(), managedReleaseRoots = defaultManagedReleaseRoots() } = {}) {
+  constructor({ repoCatalog, cacheMs = 5_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), repositoryFavorites = new RepositoryFavorites(), managedReleaseRoots = defaultManagedReleaseRoots(), log = null } = {}) {
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
     this.repoCatalog = repoCatalog;
     this.cacheMs = cacheMs;
@@ -49,6 +49,7 @@ export class WorktreeDashboard {
     this.repositoryArchive = repositoryArchive;
     this.repositoryFavorites = repositoryFavorites;
     this.managedReleaseRoots = managedReleaseRoots.map((path) => resolve(path));
+    this.log = log;
     this.cache = null;
     this.pullRequestCache = new Map();
     this.pullRequestPending = new Map();
@@ -216,14 +217,25 @@ export class WorktreeDashboard {
     const pending = (async () => {
       let value;
       try {
-        const { stdout = "" } = await this.repoCatalog.execute("gh", [
-          "pr", "list", "--state", "all", "--limit", "100",
-          "--json", "number,title,url,state,isDraft,reviewDecision,statusCheckRollup,headRefName,baseRefName,mergeStateStatus,updatedAt,author,createdAt,closedAt,mergedAt",
-        ], { cwd: repo.path, encoding: "utf8", timeout: 2_500, maxBuffer: 2 * 1024 * 1024, env: process.env });
-        const pullRequests = JSON.parse(stdout);
-        value = buildPullRequests(Array.isArray(pullRequests) ? pullRequests : []);
-      } catch {
-        value = emptyPullRequests();
+        value = await this.#readPullRequests(repo, { checks: true });
+      } catch (cause) {
+        // `statusCheckRollup` makes GitHub walk every check of every pull
+        // request. On a busy repository that costs seconds, and GitHub itself
+        // answers 504 on the worst of them, whatever timeout is allowed. The
+        // check counts are a badge; the states are what the goal board needs to
+        // stop reporting a merged goal as waiting. So drop the badge data and
+        // ask again rather than losing the states with it.
+        this.log?.warn?.({ err: cause, repository: repo.name }, "reading pull requests with checks failed, retrying without them");
+        try {
+          value = await this.#readPullRequests(repo, { checks: false });
+        } catch (retryCause) {
+          // A swallowed failure told the user "GitHub checked just now" when
+          // nothing had been fetched at all. `available: false` already says the
+          // read failed; this makes it say so out loud as well.
+          const detail = String(retryCause?.stderr || retryCause?.message || "").split("\n")[0].slice(0, 200);
+          this.log?.warn?.({ err: retryCause, repository: repo.name }, "reading pull requests failed");
+          value = { ...emptyPullRequests(), error: detail || "GitHub could not be read" };
+        }
       }
       this.pullRequestCache.set(cacheKey, { at: Date.now(), value });
       return value;
@@ -233,13 +245,31 @@ export class WorktreeDashboard {
     finally { this.pullRequestPending.delete(cacheKey); }
   }
 
+  // One `gh` read. `checks: false` drops `statusCheckRollup`, which is the field
+  // that makes the query slow enough to time out or to be refused outright.
+  async #readPullRequests(repo, { checks }) {
+    const fields = [
+      "number", "title", "url", "state", "isDraft", "reviewDecision",
+      ...(checks ? ["statusCheckRollup"] : []),
+      "headRefName", "baseRefName", "mergeStateStatus", "updatedAt", "author", "createdAt", "closedAt", "mergedAt",
+    ].join(",");
+    const { stdout = "" } = await this.repoCatalog.execute("gh", [
+      "pr", "list", "--state", "all", "--limit", "100", "--json", fields,
+    ], { cwd: repo.path, encoding: "utf8", timeout: checks ? 20_000 : 15_000, maxBuffer: 8 * 1024 * 1024, env: process.env });
+    const pullRequests = JSON.parse(stdout);
+    const built = buildPullRequests(Array.isArray(pullRequests) ? pullRequests : []);
+    // Saying so matters: a badge showing "0/0 checks" would otherwise read as a
+    // pull request with no CI rather than one whose checks were not read.
+    return checks ? built : { ...built, checksAvailable: false };
+  }
+
   // What the last successful refresh saw for one repository, with no GitHub
   // call of its own. The goal merge watcher reads observations through this,
   // so reconciliation can never add a process to a Refresh.
   pullRequestObservations(repositoryId) {
     const cached = this.pullRequestCache.get(String(repositoryId || ""));
-    if (!cached?.value) return { available: false, observations: [] };
-    return { available: cached.value.available === true, observations: cached.value.observations || [] };
+    if (!cached?.value) return { available: false, observations: [], error: null };
+    return { available: cached.value.available === true, observations: cached.value.observations || [], error: cached.value.error || null };
   }
 
   async resolve(id) {

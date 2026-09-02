@@ -567,8 +567,11 @@ test("one gh command per refreshed repository reports every pull request state",
   assert.equal(bin, "gh");
   assert.deepEqual(args.slice(0, 6), ["pr", "list", "--state", "all", "--limit", "100"]);
   for (const field of ["createdAt", "closedAt", "mergedAt"]) assert.ok(args.at(-1).includes(field), `the command must request ${field}`);
-  assert.equal(options.timeout, 2_500);
-  assert.equal(options.maxBuffer, 2 * 1024 * 1024);
+  // `statusCheckRollup` makes GitHub walk every check of every pull request, so
+  // a busy repository takes seconds. At 2.5s it timed out every time, silently,
+  // and its goals never left "Waiting for merge".
+  assert.equal(options.timeout, 20_000);
+  assert.equal(options.maxBuffer, 8 * 1024 * 1024);
   assert.equal(options.cwd, REPO.path);
 
   // The badge and the counts keep their old meaning: OPEN pull requests only.
@@ -601,17 +604,52 @@ test("an ordinary dashboard poll reads no GitHub state and no observation", asyn
   const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
   const value = await dashboard.snapshot();
   assert.equal(calls.length, 0, "a poll must never call gh");
-  assert.deepEqual(dashboard.pullRequestObservations(value.repositories[0].id), { available: false, observations: [] });
+  assert.deepEqual(dashboard.pullRequestObservations(value.repositories[0].id), { available: false, observations: [], error: null });
 });
 
 test("a failed gh command leaves a usable dashboard and no observations", async () => {
   const { repoCatalog, calls } = lifecycleCatalog(new Error("gh unavailable"));
   const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
   const value = await dashboard.snapshot({ refreshGitHub: true });
-  assert.equal(calls.length, 1);
+  // Two attempts: the second drops `statusCheckRollup`, which is the field that
+  // makes GitHub slow enough to refuse the query on a busy repository.
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0][1].at(-1).includes("statusCheckRollup"));
+  assert.ok(!calls[1][1].at(-1).includes("statusCheckRollup"), "the retry drops the expensive field");
   assert.equal(value.github.status, "partial");
   assert.equal(value.repositories[0].pullRequestsAvailable, false);
-  assert.deepEqual(dashboard.pullRequestObservations(value.repositories[0].id), { available: false, observations: [] });
+  // The failure is now named rather than swallowed: a silent catch told the
+  // user "GitHub checked just now" when nothing had been fetched.
+  const observations = dashboard.pullRequestObservations(value.repositories[0].id);
+  assert.equal(observations.available, false);
+  assert.deepEqual(observations.observations, []);
+  assert.match(observations.error, /gh unavailable/);
+});
+
+// The real failure this fixes: `statusCheckRollup` makes GitHub walk every
+// check of every pull request, and on a busy repository it answers 504 whatever
+// timeout is allowed. Losing the states with the badge left merged goals sitting
+// in "Waiting for merge" for ever.
+test("a repository too slow for check data still yields its pull request states", async () => {
+  const calls = [];
+  const payload = [pullRequestPayload({ number: 6, state: "MERGED", headRefName: "goal/billing-abcd1234", mergedAt: "2026-08-30T00:00:00.000Z" })];
+  const repoCatalog = {
+    ...lifecycleCatalog(payload).repoCatalog,
+    execute: async (bin, args, options) => {
+      calls.push([bin, args, options]);
+      if (args.at(-1).includes("statusCheckRollup")) throw new Error("HTTP 504: We couldn't respond to your request in time");
+      return { stdout: JSON.stringify(payload) };
+    },
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const value = await dashboard.snapshot({ refreshGitHub: true });
+
+  assert.equal(calls.length, 2);
+  const observations = dashboard.pullRequestObservations(value.repositories[0].id);
+  assert.equal(observations.available, true, "the states survive the retry");
+  assert.equal(observations.error, null);
+  assert.deepEqual(observations.observations.map((item) => item.state), ["MERGED"]);
+  assert.equal(value.repositories[0].pullRequestsAvailable, true);
 });
 
 test("malformed gh JSON leaves a usable dashboard and no observations", async () => {

@@ -14,6 +14,7 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
+import { agentCapacity } from "./agent-capacity.mjs";
 import { GoalHealthSweep } from "./goal-health.mjs";
 import { GoalWatchdog } from "./goal-watchdog.mjs";
 import { GoalMergeWatch } from "./goal-merge-watch.mjs";
@@ -78,7 +79,7 @@ export async function buildApp({
   });
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
-  const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog });
+  const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog, log: app.log });
   // The planner and delivery controller share one durable goal record. Tests
   // that inject a whole planner do not open the production database implicitly.
   const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
@@ -496,6 +497,12 @@ export async function buildApp({
 
   // Check every launched goal at once: the answer to "is this dev still
   // running, or did it die an hour ago". Read-only by design.
+  // Which provider takes the next task, and what would change that answer. The
+  // dispatcher has always known this; nothing showed it.
+  app.get("/api/goals/capacity", async (request) => (
+    agentCapacity(await accountUsage.snapshot({ refresh: request.query?.refresh === "1" }))
+  ));
+
   app.get("/api/goals/health", async () => {
     if (!health) throw serviceUnavailable("Goal supervision is unavailable");
     return health.sweep();
@@ -503,6 +510,35 @@ export async function buildApp({
 
   // The same pass the watchdog runs on its timer, forced. "Check all devs":
   // one action that inspects every launched goal and reports what it found.
+  // "Is this actually merged?" answered for one goal, on demand. The board's own
+  // reconciliation runs on the watchdog timer and on a manual GitHub refresh,
+  // which leaves a gap the user can see: a goal they know is merged still says
+  // Waiting for merge until the next pass. This closes that gap per card.
+  app.post("/api/worktree-plans/:planId/check-merge", async (request) => {
+    if (!mergeWatch) throw serviceUnavailable("Goal pull-request tracking is unavailable");
+    const planId = String(request.params.planId || "");
+    const before = planStore?.get(planId);
+    if (!before) throw new TypeError("Unknown plan. Start a new goal");
+    // The watcher reads what the dashboard cached, so GitHub is refreshed for
+    // this goal's repository first. Without it the check would report the state
+    // of the last refresh rather than the state now.
+    await worktrees.snapshot({ refresh: true, refreshGitHub: true });
+    const { recorded } = await mergeWatch.reconcile();
+    const change = recorded.find((entry) => entry.planId === planId) || null;
+    const after = planStore.get(planId);
+    bootstrapSnapshot = null;
+    return {
+      planId,
+      changed: Boolean(change),
+      state: after?.boardPrState || null,
+      boardStatus: after?.boardStatus || null,
+      pullRequest: change ? { number: change.number, url: change.url } : (after?.boardPrUrl ? { number: after.boardPrNumber, url: after.boardPrUrl } : null),
+      // A goal whose branch GitHub has never seen is the common surprise: the
+      // agent never pushed, or it opened its pull request from another branch.
+      checked: true,
+    };
+  });
+
   app.post("/api/goals/health/check", async () => {
     if (!watchdog) throw serviceUnavailable("Goal supervision is unavailable");
     return watchdog.check();
