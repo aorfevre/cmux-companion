@@ -8,6 +8,7 @@ import {
   taskWave,
   validateDeliveryContract,
 } from "./delivery-contract.mjs";
+import { AgentBriefs } from "./agent-brief.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
 import { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs";
 
@@ -337,7 +338,7 @@ export function describeRunFailure(stderr) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null, runs = null, progress = null, pushService = null } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, timeoutMs = ROUND_TIMEOUT_MS, ttlMs = DRAFT_TTL_MS, store = null, runs = null, progress = null, pushService = null, briefs = new AgentBriefs() } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
@@ -345,6 +346,9 @@ export class WorktreePlanner {
     this.git = git || ((cwd, args, options) => worktrees.repoCatalog.git(cwd, args, options));
     this.cmux = cmux;
     this.accountUsage = accountUsage;
+    // The full brief goes to a file. cmux caps a prompt at 8,000 characters, so
+    // the session gets a short pointer to that file instead of the brief text.
+    this.briefs = briefs;
     this.log = log;
     this.execute = execute;
     this.maxRounds = maxRounds;
@@ -650,13 +654,19 @@ export class WorktreePlanner {
       if (created.branchCreated === false && !created.reused) {
         throw new TypeError(`Branch ${task.branch} already exists, so this task would not start from ${base}. Rename it in the plan, or delete the branch first`);
       }
+      // Each worktree agent is isolated, so every task brief carries its images
+      // and the delivery contract selected for the whole goal. The brief is
+      // written to disk; the session receives only a pointer to it.
+      const brief = await this.briefs.write({
+        planId: draft.planId,
+        taskId: task.id,
+        markdown: taskPrompt(task, draft.spec, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers),
+      });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: task.title,
         agent: task.agent,
-        // Each worktree agent is isolated, so every task prompt carries its
-        // images and the delivery contract selected for the whole goal.
-        prompt: taskPrompt(task, draft.spec, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers),
+        prompt: this.briefs.pointerPrompt({ title: task.title, outcome: draft.spec?.outcome || draft.goal, path: brief.path }),
       });
       return { ...summary, status: "launched", path, workspace, startSha };
     } catch (cause) {
