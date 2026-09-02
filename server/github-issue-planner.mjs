@@ -24,25 +24,32 @@ export class GitHubIssuePlanner {
     this.analyses = new Map();
   }
 
-  async analyze({ repositoryId, onEvent = null }) {
+  async analyze({ repositoryId, mode = "topics", onEvent = null }) {
+    // "issues" mode lists the raw backlog so a user can pick one ticket. Every
+    // other value keeps the grouping behaviour the topic sheet depends on.
+    const issuesMode = mode === "issues";
     emit(onEvent, { k: "phase", t: "Opening repository…" });
     const repository = await this.#repository(repositoryId);
     emit(onEvent, { k: "phase", t: "Fetching repository details and open issues…" });
     const snapshot = await this.#load(repository);
     emit(onEvent, { k: "phase", t: `Found ${snapshot.issues.length} open issue${snapshot.issues.length === 1 ? "" : "s"}` });
-    if (!snapshot.issues.length) {
-      return { analysisId: null, repository: snapshot.repository, issues: [], topics: [], analyzedAt: new Date(this.now()).toISOString() };
+    let topics = [];
+    if (!issuesMode) {
+      if (!snapshot.issues.length) {
+        return { analysisId: null, repository: snapshot.repository, issues: [], topics: [], analyzedAt: new Date(this.now()).toISOString() };
+      }
+      emit(onEvent, { k: "phase", t: `Grouping ${snapshot.issues.length} issues by outcome and implementation overlap…` });
+      const reply = await this.#model(repository, snapshot, onEvent);
+      emit(onEvent, { k: "phase", t: "Finalizing delivery topics…" });
+      topics = normalizeTopics(reply?.topics, snapshot.issues);
     }
-    emit(onEvent, { k: "phase", t: `Grouping ${snapshot.issues.length} issues by outcome and implementation overlap…` });
-    const reply = await this.#model(repository, snapshot, onEvent);
-    emit(onEvent, { k: "phase", t: "Finalizing delivery topics…" });
-    const topics = normalizeTopics(reply?.topics, snapshot.issues);
     const analysis = {
       analysisId: randomUUID(),
       repositoryId: repository.id,
       repository: snapshot.repository,
       issues: snapshot.issues,
       topics,
+      mode: issuesMode ? "issues" : "topics",
       at: this.now(),
       analyzedAt: new Date(this.now()).toISOString(),
     };
@@ -87,6 +94,39 @@ export class GitHubIssuePlanner {
       }
     }));
     return { analysisId: analysis.analysisId, results };
+  }
+
+  // Plans exactly one open issue. The goal text is built server-side from the
+  // stored issue record so a client can never inject planner instructions.
+  async prepareIssue({ analysisId, issueNumber, onEvent = null }) {
+    const analysis = this.#analysis(analysisId);
+    const number = Number(issueNumber);
+    const issue = analysis.issues.find((item) => item.number === number);
+    if (!issue) throw new TypeError("That issue is no longer part of this analysis. Analyze the repository again");
+    emit(onEvent, { k: "phase", t: `Checking issue #${issue.number}…` });
+    const selections = [{ id: `issue-${issue.number}`, issueNumbers: [issue.number], answers: {} }];
+    const repository = await this.#repository(analysis.repositoryId);
+    const refreshed = await this.#load(repository);
+    assertFresh(analysis.issues, refreshed.issues, selections);
+    await this.#assertUnclaimed(analysis.repositoryId, selections);
+
+    emit(onEvent, { k: "phase", t: `Planning issue #${issue.number}: ${issue.title}` });
+    try {
+      const plan = await this.planner.start({
+        repositoryId: analysis.repositoryId,
+        goal: issueGoal(issue),
+        issueNumbers: [issue.number],
+        issueUrls: [issue.url].filter(Boolean),
+        deliveryPolicy: "auto",
+        ...(onEvent ? { onEvent: (event) => emit(onEvent, { ...event, t: `#${issue.number} · ${event?.t || "Working…"}` }) } : {}),
+      });
+      return { analysisId: analysis.analysisId, result: { issueNumber: issue.number, title: issue.title, status: "planned", plan } };
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, issueNumber: issue.number }, "GitHub issue plan failed");
+      return { analysisId: analysis.analysisId, result: { issueNumber: issue.number, title: issue.title, status: "failed", error: cause?.message || "Could not plan this issue" } };
+    } finally {
+      emit(onEvent, { k: "phase", t: "Finished 1 of 1 issue plan" });
+    }
   }
 
   async launch({ planIds, onEvent = null }) {
@@ -304,6 +344,16 @@ function topicGoal(topic, answers) {
   ].join("\n").slice(0, 4_000);
 }
 
+function issueGoal(issue) {
+  return [
+    issue.title,
+    "",
+    clean(issue.body, 2_000) || issue.title,
+    "",
+    `GitHub issues: #${issue.number}`,
+  ].join("\n").slice(0, 4_000);
+}
+
 function groupingPrompt(repository, snapshot) {
   const issueData = snapshot.issues.map((issue) => ({
     number: issue.number, title: issue.title, body: issue.body, labels: issue.labels, updatedAt: issue.updatedAt,
@@ -382,6 +432,7 @@ function publicAnalysis(analysis) {
       number: issue.number, title: issue.title, labels: issue.labels, url: issue.url, updatedAt: issue.updatedAt,
     })),
     topics: analysis.topics,
+    mode: analysis.mode,
     analyzedAt: analysis.analyzedAt,
   };
 }

@@ -377,6 +377,7 @@ test("analyzes, prepares, and bulk-launches GitHub issue topics through authenti
   const githubIssuePlanner = {
     analyze: async (input) => { calls.push(["analyze", input]); return { analysisId: "analysis-1", topics: [] }; },
     prepare: async (input) => { calls.push(["prepare", input]); return { analysisId: input.analysisId, results: [] }; },
+    prepareIssue: async (input) => { calls.push(["prepareIssue", input]); return { analysisId: input.analysisId, result: { issueNumber: input.issueNumber, title: "Keep caret visible", status: "planned" } }; },
     launch: async (input) => { calls.push(["launch", input]); return { requested: 1, launchedTopics: 1, launchedWorktrees: 2, results: [] }; },
   };
   const worktreeDashboard = { invalidate: () => calls.push(["invalidate"]) };
@@ -387,13 +388,21 @@ test("analyzes, prepares, and bulk-launches GitHub issue topics through authenti
   assert.equal((await app.inject({ method: "POST", url: "/api/github-topic-plans/analyze", payload: { repositoryId: "repository12345678" } })).statusCode, 401);
   const analyzed = await app.inject({ method: "POST", url: "/api/github-topic-plans/analyze", headers, payload: { repositoryId: "repository12345678" } });
   assert.equal(analyzed.statusCode, 200);
+  const analyzedIssues = await app.inject({ method: "POST", url: "/api/github-topic-plans/analyze", headers, payload: { repositoryId: "repository12345678", mode: "issues" } });
+  assert.equal(analyzedIssues.statusCode, 200);
   const prepared = await app.inject({ method: "POST", url: "/api/github-topic-plans/prepare", headers, payload: { analysisId: "analysis-1", topics: [{ id: "topic-1" }] } });
   assert.equal(prepared.statusCode, 200);
+  assert.equal((await app.inject({ method: "POST", url: "/api/github-topic-plans/prepare-issue", payload: { analysisId: "analysis-1", issueNumber: 55 } })).statusCode, 401);
+  const preparedIssue = await app.inject({ method: "POST", url: "/api/github-topic-plans/prepare-issue", headers, payload: { analysisId: "analysis-1", issueNumber: 55 } });
+  assert.equal(preparedIssue.statusCode, 200);
+  assert.equal(preparedIssue.json().result.issueNumber, 55);
   const launched = await app.inject({ method: "POST", url: "/api/github-topic-plans/launch", headers, payload: { planIds: ["plan-1"] } });
   assert.equal(launched.json().launchedWorktrees, 2);
   assert.deepEqual(calls, [
-    ["analyze", { repositoryId: "repository12345678" }],
+    ["analyze", { repositoryId: "repository12345678", mode: undefined }],
+    ["analyze", { repositoryId: "repository12345678", mode: "issues" }],
     ["prepare", { analysisId: "analysis-1", topics: [{ id: "topic-1" }] }],
+    ["prepareIssue", { analysisId: "analysis-1", issueNumber: 55 }],
     ["launch", { planIds: ["plan-1"] }],
     ["invalidate"],
   ]);

@@ -463,6 +463,15 @@ export async function buildApp({
   app.post("/api/github-topic-plans/analyze", async (request) => (
     reportRound(request.body?.traceId, (onEvent) => issuePlanner.analyze({
       repositoryId: request.body?.repositoryId,
+      mode: request.body?.mode,
+      ...(onEvent ? { onEvent } : {}),
+    }))
+  ));
+
+  app.post("/api/github-topic-plans/prepare-issue", async (request) => (
+    reportRound(request.body?.traceId, (onEvent) => issuePlanner.prepareIssue({
+      analysisId: request.body?.analysisId,
+      issueNumber: request.body?.issueNumber,
       ...(onEvent ? { onEvent } : {}),
     }))
   ));

@@ -112,3 +112,59 @@ test("launches prepared topic plans in order and reports parallel worktree count
   assert.equal(result.launchedTopics, 2);
   assert.equal(result.launchedWorktrees, 4);
 });
+
+test("lists open issues without grouping them when analyze runs in issues mode", async () => {
+  const { service, calls } = harness();
+  const events = [];
+  const analysis = await service.analyze({ repositoryId: REPOSITORY_ID, mode: "issues", onEvent: (event) => events.push(event) });
+  assert.equal(analysis.mode, "issues");
+  assert.ok(analysis.analysisId);
+  assert.deepEqual(analysis.topics, []);
+  assert.equal(analysis.issues.length, 3);
+  assert.equal(analysis.issues[0].body, undefined);
+  assert.equal(analysis.repository.issuesUrl, "https://github.com/acme/app/issues");
+  assert.equal(calls.some(([bin]) => bin === "ccs"), false);
+  assert.deepEqual(events.map((event) => event.t), [
+    "Opening repository…",
+    "Fetching repository details and open issues…",
+    "Found 3 open issues",
+  ]);
+});
+
+test("plans exactly one selected issue with a server-built goal", async () => {
+  const { service, starts, launches } = harness();
+  const analysis = await service.analyze({ repositoryId: REPOSITORY_ID, mode: "issues" });
+  const events = [];
+  const prepared = await service.prepareIssue({ analysisId: analysis.analysisId, issueNumber: 55, onEvent: (event) => events.push(event) });
+
+  assert.equal(prepared.analysisId, analysis.analysisId);
+  assert.equal(prepared.result.status, "planned");
+  assert.equal(prepared.result.issueNumber, 55);
+  assert.equal(prepared.result.title, "Keep caret visible");
+  assert.equal(starts.length, 1);
+  assert.deepEqual(starts[0].issueNumbers, [55]);
+  assert.deepEqual(starts[0].issueUrls, ["https://github.com/acme/app/issues/55"]);
+  assert.equal(starts[0].deliveryPolicy, "auto");
+  assert.equal(starts[0].goal, "Keep caret visible\n\nScroll the caret into view\n\nGitHub issues: #55");
+  assert.ok(events.some((event) => event.t === "Planning issue #55: Keep caret visible"));
+  assert.ok(events.some((event) => event.t === "#55 · Read app/editor.tsx"));
+  assert.equal(events.at(-1).t, "Finished 1 of 1 issue plan");
+
+  const result = await service.launch({ planIds: [prepared.result.plan.planId] });
+  assert.deepEqual(launches, ["plan-1"]);
+  assert.equal(result.launchedTopics, 1);
+});
+
+test("refuses an unknown, stale, or already claimed single issue", async () => {
+  const known = harness();
+  const knownAnalysis = await known.service.analyze({ repositoryId: REPOSITORY_ID, mode: "issues" });
+  await assert.rejects(() => known.service.prepareIssue({ analysisId: knownAnalysis.analysisId, issueNumber: 999 }), /no longer part of this analysis/);
+
+  const stale = harness({ refreshedIssues: issues.map((issue) => issue.number === 55 ? { ...issue, updatedAt: "2026-09-01T10:00:00Z" } : issue) });
+  const staleAnalysis = await stale.service.analyze({ repositoryId: REPOSITORY_ID, mode: "issues" });
+  await assert.rejects(() => stale.service.prepareIssue({ analysisId: staleAnalysis.analysisId, issueNumber: 55 }), /#55 changed or closed/);
+
+  const claimed = harness({ existingPlans: [{ planId: "existing", issueNumbers: [55] }] });
+  const claimedAnalysis = await claimed.service.analyze({ repositoryId: REPOSITORY_ID, mode: "issues" });
+  await assert.rejects(() => claimed.service.prepareIssue({ analysisId: claimedAnalysis.analysisId, issueNumber: 55 }), /#55 already belongs/);
+});
