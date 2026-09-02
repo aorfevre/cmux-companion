@@ -1061,6 +1061,49 @@ describe("worktree goal planner", () => {
     assert.ok(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/worktree-plans/plan-1/run")));
   });
 
+  // A timeout is not a restart. Blaming one for the other sent a user looking
+  // for a crash that never happened, while the real limit stayed invisible.
+  test("names the reason a round stopped instead of blaming a restart", async () => {
+    fakeEventSource();
+    const at = new Date(Date.now() - 3 * 60_000).toISOString();
+    const stalledSummary = { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, createdAt: at, updatedAt: at, launchedAt: null };
+    const stalledDraft = { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", round: 0, status: "questions", planStatus: "draft", questions: [], tasks: [], running: false, lastError: "The planner stopped answering: no output for 4 minutes. Try again", lastErrorAt: at };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [stalledSummary] }), { status: 200 });
+      return new Response(JSON.stringify(stalledDraft), { status: 200 });
+    }));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Resume Ship the planner" }));
+    const panel = await screen.findByRole("region", { name: "Planning stopped" });
+    assert.ok(within(panel).getByText(/no output for 4 minutes/));
+    assert.ok(within(panel).getByText(/3m ago/));
+    // The wrong explanation must be gone, not merely accompanied by the right one.
+    assert.equal(within(panel).queryByText(/A companion restart does this/), null);
+    // The goal is still recoverable either way.
+    assert.ok(within(panel).getByRole("button", { name: "Plan this goal again" }));
+  });
+
+  // A round that failed seconds ago is still in the run registry, which is
+  // fresher than the stored copy.
+  test("prefers the live failure over the stored one", async () => {
+    fakeEventSource();
+    const stalledSummary = { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), launchedAt: null };
+    const stalledDraft = { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", round: 0, status: "questions", planStatus: "draft", questions: [], tasks: [], running: false, runError: "The planner needs the ccs CLI. Install it, then try again", lastError: "an older failure" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [stalledSummary] }), { status: 200 });
+      return new Response(JSON.stringify(stalledDraft), { status: 200 });
+    }));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Resume Ship the planner" }));
+    const panel = await screen.findByRole("region", { name: "Planning stopped" });
+    assert.ok(within(panel).getByText(/needs the ccs CLI/));
+    assert.equal(within(panel).queryByText(/an older failure/), null);
+  });
+
   test("marks a saved goal that is planning right now and blocks its delete", async () => {
     fakeEventSource();
     const now = new Date().toISOString();

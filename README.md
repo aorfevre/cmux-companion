@@ -105,6 +105,8 @@ Each selected topic is an independent delivery unit. Tickets likely to touch the
 
 This workflow requires the GitHub CLI to be authenticated for the repository (`gh auth status`). Issue bodies are treated as untrusted text, and the grouping model runs with local reads, writes, shell commands, tasks, and web tools disabled.
 
+A planner round is bounded by silence, not by total time. Reading a large repository for a long goal is legitimate work, so the round is killed only after four minutes with no output, or at a thirty-minute ceiling. Whichever limit fires is stored on the plan, so a sheet reopened later names the real reason instead of guessing.
+
 Every step is written to a local SQLite database at `~/.config/cmux-companion/goal-plans.db`, which the companion creates with mode 0600. It holds the goal, planner session, contract and readiness result, question rounds, answers, workflow tasks, edits, launch state, completion reports, changed files, ownership warnings, and integration evidence. A plan therefore survives a companion restart and an interrupted question round: reload it, and the next answer resumes the same planner session instead of starting the goal again.
 
 The Worktrees view surfaces those saved plans beside the repository filters. **Draft Goals** collects resumable plans and **Launched Goals** keeps a read-only launch history for the selected Karven or Rekord project group. Each card opens the exact saved plan and can delete it after confirmation.
@@ -211,6 +213,8 @@ Open **Settings → Deployments** to see the running Companion release and the d
 | `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
 | `CMUX_COMPANION_QUEUE_FILE` | `~/.config/cmux-companion/prompt-queue.json` | Persistent follow-up prompt queue |
 | `CMUX_COMPANION_PLANS_DB` | `~/.config/cmux-companion/goal-plans.db` | SQLite database of saved goal plans |
+| `CMUX_PLANNER_IDLE_TIMEOUT_MS` | `240000` | How long a planner round may print nothing before it is killed |
+| `CMUX_PLANNER_CEILING_MS` | `1800000` | Absolute limit on one planner round, whatever it prints |
 | `CMUX_COMPANION_CHROME_BIN` | Google Chrome, Chromium, or Edge in `/Applications` | Browser executable used for private preview capture |
 | `CCS_BIN` | First `ccs` executable in `PATH`, then installed NVM versions | Optional explicit CCS executable used to discover structured account quota support |
 | `CMUX_COMPANION_PREVIEW_PORT_START` | `8500` | First Tailscale HTTPS preview port |

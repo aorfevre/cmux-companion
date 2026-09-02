@@ -19,8 +19,8 @@ export type PlanImage = { path: string; name: string };
 export type PlanRun = { planId: string; kind: string; phase: "running" | "done" | "failed"; step: string; error: string; startedAt: number; finishedAt: number | null };
 export type PlannerProvider = "claude" | "codex";
 export type PlannerEngine = { provider: PlannerProvider; model: string; effort: string; reviewer: boolean };
-export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; issueNumbers?: number[]; deliveryMode?: "single" | "combined"; deliveryStatus?: string; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; createdAt: string; updatedAt: string; launchedAt: string | null };
-export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
+export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; issueNumbers?: number[]; deliveryMode?: "single" | "combined"; deliveryStatus?: string; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; createdAt: string; updatedAt: string; launchedAt: string | null };
+export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
 export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed" | "queued"; wave?: number; path?: string | null; workspace?: unknown; error?: string };
 export type PlanLaunchResult = { planId: string; base: string; deliveryMode?: "single" | "combined"; launched: number; results: PlanLaunchRow[] };
 type DeliveryResult = { planId: string; deliveryMode: "combined"; deliveryStatus: string; integrationBranch?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null };
@@ -296,6 +296,10 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   // A round that never finished: the plan exists, no round is watching it, and
   // it holds neither a question nor a task. A companion restart does this.
   const stalled = Boolean(draft && !running && !launchedPlan && draft.round === 0 && !draft.questions.length && !draft.tasks.length);
+  // Why it stopped. runError is this process's memory of a round that just
+  // failed and expires within a minute; lastError is the copy the plan row
+  // keeps. Without either, a restart really is the likeliest cause.
+  const stalledReason = draft?.runError || draft?.lastError || "";
   const heading = result ? "Launch result" : running ? "Planning this goal" : stalled ? "Planning stopped" : launchedPlan ? "Launched goal" : draft?.status === "ready" ? "Review the plan" : draft ? "A few questions" : "Plan a goal";
   // Every action on a plan needs its ccs session, and one round already owns it.
   const locked = running || busy !== "";
@@ -339,7 +343,8 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     </section>}
     {draft && !result && stalled && <section className="planner-stalled" aria-label="Planning stopped">
       <ContextReview goal={reviewGoal} images={reviewImages} />
-      <p className="planner-background-note">This round stopped before it produced anything. A companion restart does this. The goal is saved, so it can run again.</p>
+      <p className="planner-background-note">This round stopped before it produced anything.{stalledReason ? "" : " A companion restart does this."} The goal is saved, so it can run again.</p>
+      {stalledReason && <p className="planner-stalled-reason">{stalledReason}{draft.lastErrorAt ? <span> · {relativeTime(draft.lastErrorAt)} ago</span> : null}</p>}
       {error && <p className="worktree-action-error">{error}</p>}
       <div className="planner-actions"><button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void rerun(); }}>{busy === "plan" ? "Starting…" : "Plan this goal again"}</button></div>
     </section>}

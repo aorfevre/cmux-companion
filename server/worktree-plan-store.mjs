@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS plans (
   contract_version INTEGER NOT NULL DEFAULT 1,
   spec TEXT,
   readiness TEXT,
+  last_error TEXT,
+  last_error_at TEXT,
   base_ref TEXT,
   base_sha TEXT,
   delivery_mode TEXT NOT NULL DEFAULT 'single',
@@ -155,6 +157,7 @@ export class WorktreePlanStore {
       this.db.prepare(`
         UPDATE plans SET round = ?, stage = ?, session_id = ?, questions = ?, contract_version = ?, spec = ?, readiness = ?,
           delivery_mode = CASE WHEN delivery_policy = 'combined' THEN 'combined' ELSE ? END,
+          last_error = NULL, last_error_at = NULL,
           updated_at = ? WHERE plan_id = ?
       `).run(round, stage, sessionId, json(questions), spec ? 2 : 1, spec ? json(spec) : null, readiness ? json(readiness) : null, deliveryMode(tasks), at, planId);
       // An answered round replaces the previous task list wholesale, because the
@@ -167,6 +170,19 @@ export class WorktreePlanStore {
       if (stage === "questions") this.#insertEvent(planId, round, "questions", { questions }, at);
       else this.#insertEvent(planId, round, "tasks", { spec, readiness, tasks }, at);
     });
+    return this.get(planId);
+  }
+
+  // A round that died. The message lives only in memory otherwise — the run
+  // registry expires after a minute and the progress stream is closed — so a
+  // reopened sheet had to guess the cause and blamed a companion restart.
+  // No event row: PLAN_EVENT_KINDS is a closed set, and a failure is plan state
+  // rather than a turn of the conversation.
+  recordRoundFailure(planId, error) {
+    const at = this.#stamp();
+    const message = String(error || "The planner round failed").slice(0, 2_000);
+    this.db.prepare("UPDATE plans SET last_error = ?, last_error_at = ?, updated_at = ? WHERE plan_id = ?")
+      .run(message, at, at, String(planId));
     return this.get(planId);
   }
 
@@ -533,6 +549,8 @@ export class WorktreePlanStore {
       issueNumbers: parse(row.issue_numbers, []),
       deliveryPolicy: row.delivery_policy || "auto",
       engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
+      lastError: row.last_error ?? null,
+      lastErrorAt: row.last_error_at ?? null,
       taskCount: row.task_count,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -615,6 +633,8 @@ export class WorktreePlanStore {
     ensure("plans", "contract_version", "INTEGER NOT NULL DEFAULT 1");
     ensure("plans", "spec", "TEXT");
     ensure("plans", "readiness", "TEXT");
+    ensure("plans", "last_error", "TEXT");
+    ensure("plans", "last_error_at", "TEXT");
     ensure("plan_tasks", "task_type", "TEXT NOT NULL DEFAULT 'feature'");
     ensure("plan_tasks", "criterion_ids", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plan_tasks", "depends_on", "TEXT NOT NULL DEFAULT '[]'");
@@ -682,6 +702,8 @@ function readPlan(row) {
     contractVersion: Number(row.contract_version) || 1,
     spec: parse(row.spec, null),
     readiness: parse(row.readiness, null),
+    lastError: row.last_error ?? null,
+    lastErrorAt: row.last_error_at ?? null,
     baseRef: row.base_ref,
     baseSha: row.base_sha,
     deliveryMode: row.delivery_mode || "single",

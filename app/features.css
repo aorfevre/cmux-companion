@@ -178,6 +178,8 @@
 .worktree-planner-sheet .planner-background-note{margin:0 2px 11px;color:var(--muted);font-size:8px;line-height:1.5;white-space:normal}
 .worktree-planner-sheet .planner-status.running{background:rgba(159,196,255,.14);color:#9fc4ff}
 .worktree-planner-sheet .planner-stalled .planner-background-note{color:#ffb27a}
+.worktree-planner-sheet .planner-stalled-reason{margin:0 2px 11px;border:1px solid rgba(255,109,120,.3);border-radius:9px;background:rgba(255,109,120,.06);color:#ff9ca5;padding:9px;font-size:9px;line-height:1.45;overflow-wrap:anywhere}
+.worktree-planner-sheet .planner-stalled-reason span{color:#a9a198}
 .worktree-planner-sheet .planner-context{margin:0 2px 11px;border:1px solid #252d34;border-radius:11px;background:#171c21;padding:9px}
 .worktree-planner-sheet .planner-context .planner-prompt>summary{font-size:9px}
 .worktree-planner-sheet .planner-context .worktree-attachments{margin:8px 0 0}
@@ -240,6 +242,7 @@
 .worktree-planner-sheet .planner-no-retry{margin:0 0 13px;border-radius:10px;padding:12px;font-size:13px;line-height:1.55}
 .worktree-planner-sheet .planner-launched-note{border-radius:10px;padding:12px;font:13px/1.55 -apple-system,sans-serif}
 .worktree-planner-sheet .planner-background-note{margin:0 2px 13px;font-size:12px;line-height:1.6}
+.worktree-planner-sheet .planner-stalled-reason{margin:0 2px 13px;border-radius:10px;padding:12px;font-size:12px;line-height:1.6}
 .worktree-planner-sheet .planner-progress{gap:5px;margin:10px 0 0;padding:10px 0 0}
 .worktree-planner-sheet .planner-progress li{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 .worktree-planner-sheet .planner-context{margin:0 2px 13px;border-radius:12px;padding:12px}
