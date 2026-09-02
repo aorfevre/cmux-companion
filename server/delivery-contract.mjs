@@ -1,6 +1,8 @@
 const MAX_LIST = 20;
 const MAX_TEXT = 1_000;
-const MAX_TASK_BRIEF = 6_500;
+// The brief is written to a Markdown file that the agent reads from disk.
+// The cap is no longer a prompt limit. It only guards against one runaway task.
+const MAX_TASK_BRIEF = 20_000;
 const CRITERION_ID = /^[A-Z][A-Z0-9_-]{0,31}$/;
 const TASK_ID = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/;
@@ -30,7 +32,7 @@ export function normalizeContractTask(raw, index = 0) {
     id: taskId(source.id, index),
     title: clean(source.title, 300),
     branch: clean(source.branch, 100),
-    prompt: clean(source.prompt, 4_000),
+    prompt: clean(source.prompt, 12_000),
     type: taskType(source.type),
     // Keep malformed references long enough for validation to reject them.
     // Silently dropping a bad dependency would incorrectly make two tasks
@@ -72,7 +74,7 @@ export function validateDeliveryContract(specValue, taskValues) {
     if (!task.criterionIds.length) errors.push(`Task ${task.id} is not linked to an acceptance criterion`);
     if (!task.ownedAreas.length) errors.push(`Task ${task.id} needs at least one owned file or area`);
     if (!task.verification.length) errors.push(`Task ${task.id} needs an expected verification`);
-    if (taskBriefSize(spec, task) > MAX_TASK_BRIEF) errors.push(`Task ${task.id} is too large for one agent brief; split it or shorten its contract`);
+    if (taskBriefSize(spec, task) > MAX_TASK_BRIEF) errors.push(`Task ${task.id} would produce an oversized brief file; split it or shorten its contract`);
   }
 
   for (const task of tasks) {
