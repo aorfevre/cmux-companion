@@ -321,7 +321,7 @@ describe("contextual mobile features", () => {
     const launchedDetail = { ...launched, questions: [], tasks: [{ id: "task-2", title: "Measure prompt quality", branch: "feature/prompt-quality", prompt: "Measure prompt quality.", agent: "claude", agentReason: "Claude has more headroom" }] };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/worktree-plans?status=all&limit=200") return new Response(JSON.stringify({ plans: [draft, launched, rekordDraft] }), { status: 200 });
+      if (url === "/api/worktree-plans?status=all&limit=200&health=1") return new Response(JSON.stringify({ plans: [draft, launched, rekordDraft] }), { status: 200 });
       if (url === "/api/worktree-plans?repositoryId=repo-karven") return new Response(JSON.stringify({ plans: [draft, launched] }), { status: 200 });
       if (url === "/api/worktree-plans/plan-draft") return new Response(JSON.stringify(detail), { status: 200 });
       if (url === "/api/worktree-plans/plan-launched" && !init?.method) return new Response(JSON.stringify(launchedDetail), { status: 200 });
@@ -1226,8 +1226,11 @@ describe("goals board", () => {
   const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "waiting_for_merge", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
   const merged = plan({ planId: "plan-merged", goal: "Merged already", status: "launched", taskCount: 4, launchedAt: now, boardState: "merged", boardStatus: "merged", boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12" });
   const aborted = plan({ planId: "plan-aborted", goal: "Stopped on purpose", taskCount: 1, boardState: "aborted", boardStatus: "aborted", boardChangedAt: now });
+  // A launched goal whose agents died. It used to read as "Dev in progress",
+  // which is the one state a supervisor must never be told wrongly.
+  const blocked = plan({ planId: "plan-blocked", goal: "Its agent died", status: "launched", taskCount: 2, launchedAt: now, boardState: "blocked", deliveryStatus: "blocked", health: "dead", healthReason: "This task session is no longer open in cmux", stuckCount: 1 });
   const rekord = plan({ planId: "plan-rekord", repositoryId: "repo-rekord", repositoryName: "recorder", goal: "Improve recording search", boardState: "waiting_for_dev" });
-  const allPlans = [writing, review, waitingDev, devInProgress, waitingMerge, merged, aborted, rekord];
+  const allPlans = [writing, review, waitingDev, devInProgress, waitingMerge, blocked, merged, aborted, rekord];
 
   function mountBoard(plans: unknown[] = allPlans, extra?: (url: string, init?: RequestInit) => Response | null) {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1248,6 +1251,7 @@ describe("goals board", () => {
     ["Waiting for dev", "The specification is ready to launch."],
     ["Dev in progress", "Agents are working on the launched tasks."],
     ["Waiting for merge", "The work waits for the goal pull request to merge."],
+    ["Blocked", "The goal stopped and needs a person before it can continue."],
     ["Merged", "The goal pull request is merged."],
     ["Aborted", "The goal was stopped and no more work is expected."],
   ];
@@ -1257,10 +1261,10 @@ describe("goals board", () => {
     return screen.getByRole("region", { name: "Goals board" });
   }
 
-  test("renders seven ordered columns with counts, descriptions, empty notes, and one card per state", async () => {
+  test("renders eight ordered columns with counts, descriptions, empty notes, and one card per state", async () => {
     mountBoard();
     const board = await openBoard();
-    assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("7"), true);
+    assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("8"), true);
     const headings = within(board).getAllByRole("heading", { level: 3 }).map((item) => item.textContent);
     assert.deepEqual(headings, COLUMNS.map(([label]) => label));
     for (const [label, description] of COLUMNS) assert.ok(within(board).getByText(description), `${label} description`);
@@ -1271,6 +1275,7 @@ describe("goals board", () => {
     assert.ok(within(column("Waiting for dev")).getByText("Ready to launch work"));
     assert.ok(within(column("Dev in progress")).getByText("Agents are coding"));
     assert.ok(within(column("Waiting for merge")).getByText("Waiting on the PR"));
+    assert.ok(within(column("Blocked")).getByText("Its agent died"));
     assert.ok(within(column("Merged")).getByText("Merged already"));
     assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
     assert.ok(within(column("Waiting for dev")).getByLabelText("1 goal in Waiting for dev"));
@@ -1282,8 +1287,8 @@ describe("goals board", () => {
     cleanup();
     mountBoard([]);
     const emptyBoard = await openBoard();
-    assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 7);
-    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 7);
+    assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 8);
+    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 8);
   });
 
   test("falls back to the shared derivation when a plan carries no usable board state", async () => {
@@ -1317,7 +1322,7 @@ describe("goals board", () => {
     const filtered = screen.getByRole("region", { name: "Goals board" });
     assert.ok(within(filtered).getByText("Merged already"));
     assert.equal(within(filtered).queryByText("Write the spec"), null);
-    assert.equal(within(filtered).getAllByRole("heading", { level: 3 }).length, 7);
+    assert.equal(within(filtered).getAllByRole("heading", { level: 3 }).length, 8);
     await userEvent.clear(searchBox);
     await userEvent.type(searchBox, "trust-layer");
     assert.ok(within(screen.getByRole("region", { name: "Goals board" })).getByText("Write the spec"));
@@ -1335,10 +1340,11 @@ describe("goals board", () => {
     assert.ok(within(draftGoals).getByRole("button", { name: "Resume Ready to launch work" }));
 
     const launchedTab = screen.getByRole("tab", { name: /Launched Goals/ });
-    assert.equal(launchedTab.textContent?.includes("3"), true);
+    // Four launched Karven goals now: the blocked one is launched too.
+    assert.equal(launchedTab.textContent?.includes("4"), true);
     await userEvent.click(launchedTab);
     const launchedGoals = screen.getByRole("region", { name: "Launched goals" });
-    assert.deepEqual(within(launchedGoals).getAllByRole("article").map((card) => card.querySelector("strong")?.textContent), ["Agents are coding", "Waiting on the PR", "Merged already"]);
+    assert.deepEqual(within(launchedGoals).getAllByRole("article").map((card) => card.querySelector("strong")?.textContent), ["Agents are coding", "Waiting on the PR", "Its agent died", "Merged already"]);
     assert.ok(within(launchedGoals).getByRole("button", { name: "View Merged already" }));
     assert.ok(within(launchedGoals).getByText("Merged"));
   });
@@ -1392,7 +1398,8 @@ describe("goals board", () => {
     // Terminal cards never offer Abort.
     assert.equal(within(card("Merged already")).queryByRole("button", { name: "Abort Merged already" }), null);
     assert.equal(within(card("Stopped on purpose")).queryByRole("button", { name: "Abort Stopped on purpose" }), null);
-    assert.equal(within(board).getAllByRole("button", { name: /^Abort / }).length, 5);
+    // Every non-terminal goal offers Abort, and the blocked goal is one of them.
+    assert.equal(within(board).getAllByRole("button", { name: /^Abort / }).length, 6);
 
     // The first click replaces the footer with the warning, and Cancel undoes it.
     await userEvent.click(within(card("Ready to launch work")).getByRole("button", { name: "Abort Ready to launch work" }));

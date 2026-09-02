@@ -199,8 +199,10 @@
 .worktree-goal-card.merged{border-color:rgba(201,255,80,.3)}.worktree-goal-card.aborted{border-color:rgba(255,109,120,.28)}
 .worktree-goal-card.merged>header em{background:rgba(201,255,80,.12);color:var(--lime)}.worktree-goal-card.aborted>header em{background:rgba(255,109,120,.1);color:#f08c95}
 
-/* Goals board: seven fixed-width columns on one horizontal track. The page
-   itself never widens, because only this strip scrolls. */
+/* Goals board: eight fixed-width columns on one horizontal track. This is the
+   phone layout and stays exactly as it was; the desktop block below turns the
+   same markup into a grid, because a strip of 224px columns is unreadable on a
+   screen that can show all eight at once. */
 .goal-board{display:flex;gap:9px;margin-top:14px;overflow-x:auto;padding-bottom:8px;scrollbar-width:thin}
 .goal-board::-webkit-scrollbar{height:6px}.goal-board::-webkit-scrollbar-thumb{border-radius:6px;background:#2b3641}
 .goal-board-column{display:flex;width:224px;min-width:224px;flex:none;flex-direction:column;gap:8px;border:1px solid #232c35;border-radius:14px;background:#101418;padding:11px}
@@ -225,6 +227,91 @@
 .goal-board-abort-confirm{display:flex;flex-direction:column;gap:7px}
 .goal-board-abort-confirm>span{color:#ffb2b9;font-size:7px;line-height:1.55}
 .goal-board-abort-confirm>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px}
+.goal-board-card.blocked,.goal-board-card.dev_in_progress.blocked{border-color:rgba(255,179,92,.32)}
+.goal-board-card>footer .goal-board-focus{grid-column:1/-1}
+/* Health, readiness, agents and issues: the evidence the sweep already knows
+   and no card showed. Each one is a single line, so eight columns still fit. */
+.goal-board-health{display:flex;flex-direction:column;gap:3px;margin:0;border-left:2px solid rgba(255,179,92,.5);padding-left:7px}
+.goal-board-health b{color:var(--orange);font-size:7px;letter-spacing:.06em;text-transform:uppercase}
+.goal-board-health span{color:#c2a687;font-size:7px;line-height:1.5}
+.goal-board-health.dead,.goal-board-health.failed{border-color:rgba(255,109,120,.5)}
+.goal-board-health.dead b,.goal-board-health.failed b{color:#f08c95}
+.goal-board-health.dead span,.goal-board-health.failed span{color:#c79aa0}
+.goal-board-health.needs_you{border-color:rgba(159,196,255,.5)}
+.goal-board-health.needs_you b{color:#9fc4ff}.goal-board-health.needs_you span{color:#93a2b2}
+.goal-board-ready{position:relative;display:flex;align-items:center;margin:0;border-radius:6px;background:#1b2127;padding:4px 6px;overflow:hidden}
+.goal-board-ready i{position:absolute;top:0;bottom:0;left:0;background:rgba(201,255,80,.14)}
+.goal-board-ready span{position:relative;color:#b6ca8d;font-size:7px;font-weight:800}
+.goal-board-agents{margin:0;color:#8b96a1;font-size:7px;font-weight:700}
+.goal-board-issues{display:flex;flex-wrap:wrap;gap:4px;margin:0}
+.goal-board-issues a,.goal-board-issues span{border:1px solid #34404a;border-radius:6px;background:#1b2127;color:#9fc4ff;padding:2px 5px;font-size:7px;font-weight:700;text-decoration:none}
+.goal-board-issues span{color:#8b96a1}
+
+/* KPI tiles: one line above the rail. Column counts come from the board's own
+   grouping, so a tile can never disagree with the column beneath it. */
+.goal-kpis{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.goal-kpi-columns,.goal-kpi-health{display:flex;flex:1;flex-wrap:wrap;gap:6px;min-width:0}
+.goal-kpi-columns>div,.goal-kpi-health>div{display:flex;min-width:0;flex:1;flex-direction:column;gap:2px;border:1px solid #232c35;border-radius:10px;background:#101418;padding:7px 8px}
+.goal-kpi-health>div{border-color:#2b3641;background:#12171d}
+.goal-kpi-health>div.attention{border-color:rgba(255,179,92,.34)}
+.goal-kpi-columns b,.goal-kpi-health b{color:#e6ebef;font-size:12px;font-weight:850}
+.goal-kpi-health>div.attention b{color:var(--orange)}
+.goal-kpi-columns span,.goal-kpi-health span{color:#78828c;font-size:7px;line-height:1.35}
+
+/* Attention rail: every task a person must answer for, across repositories.
+   It sits above the board because it is the only list with a deadline. */
+.goal-attention{display:flex;flex-direction:column;gap:9px;margin-top:12px;border:1px solid #2b3641;border-radius:14px;background:#101418;padding:11px}
+.goal-attention>header{display:flex;align-items:center;gap:8px}
+.goal-attention h3{margin:0;color:#e6ebef;font-size:11px;font-weight:850}
+.goal-attention>header b{border-radius:8px;background:rgba(255,179,92,.12);color:var(--orange);padding:2px 6px;font-size:8px}
+.goal-attention>header .text-button{margin-left:auto}
+.goal-attention-note{margin:0;border:1px solid rgba(255,179,92,.3);border-radius:9px;background:rgba(255,179,92,.06);color:var(--orange);padding:8px;font-size:8px;line-height:1.5}
+.goal-attention-empty{margin:0;border:1px dashed #262f38;border-radius:10px;color:#69717a;padding:12px 8px;font-size:8px;text-align:center}
+.goal-attention-rows{display:flex;flex-direction:column;gap:8px;margin:0;list-style:none;padding:0}
+.goal-attention-rows>li{display:flex;min-width:0;flex-direction:column;gap:7px;border:1px solid #2b3641;border-radius:12px;background:linear-gradient(145deg,#151b22,#11151a);padding:9px}
+.goal-attention-copy{display:flex;min-width:0;flex-direction:column;gap:3px}
+.goal-attention-copy strong{color:#edf1f4;font-size:9px;line-height:1.45}
+.goal-attention-copy small{color:#8b96a1;font-size:7px;line-height:1.4}
+.goal-attention-copy p{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;margin:0;color:#96a0aa;font-size:7px;line-height:1.5}
+.goal-attention-badge{flex:none;border-radius:6px;background:rgba(255,179,92,.12);color:var(--orange);padding:2px 5px;font-size:7px;font-weight:800}
+.goal-attention-badge.dead,.goal-attention-badge.failed{background:rgba(255,109,120,.1);color:#f08c95}
+.goal-attention-badge.needs_you{background:rgba(159,196,255,.12);color:#9fc4ff}
+.goal-attention-actions{display:flex;flex-wrap:wrap;gap:6px}
+.goal-attention-actions button,.goal-attention-confirm button{min-height:32px;flex:1;border:1px solid var(--line);border-radius:8px;background:#20252c;color:#b8c0c8;padding:6px 8px;font-size:8px}
+.goal-attention-actions button:disabled,.goal-attention-confirm button:disabled{opacity:.5}
+.goal-attention-confirm{display:flex;flex-direction:column;gap:7px}
+.goal-attention-confirm>span{color:#ffb2b9;font-size:7px;line-height:1.55}
+.goal-attention-confirm>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px}
+.goal-attention-confirm .confirm-restart,.goal-attention-confirm .confirm-skip{border-color:rgba(255,109,120,.3);background:rgba(255,109,120,.06);color:#f08c95}
+
+/* Desktop board: all eight columns at once, each scrolling on its own under a
+   sticky header, at a type scale a person can read from a chair. */
+@media(min-width:1280px){
+  .goal-board{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:10px;overflow-x:visible;padding-bottom:0}
+  .goal-board-column{width:auto;min-width:0;max-height:calc(100dvh - 300px);flex:1 1 auto;overflow-y:auto;padding:0 11px 11px;scrollbar-width:thin}
+  .goal-board-column::-webkit-scrollbar{width:6px}.goal-board-column::-webkit-scrollbar-thumb{border-radius:6px;background:#2b3641}
+  .goal-board-column>header{position:sticky;top:0;z-index:1;background:#101418;padding:11px 0 8px}
+  .goal-board-column h3{font-size:13px}
+  .goal-board-column>header b{font-size:11px}
+  .goal-board-column>header p{font-size:11px}
+  .goal-board-empty{font-size:11px}
+  .goal-board-card>strong{font-size:13px}
+  .goal-board-card-meta,.goal-board-card-evidence{font-size:11px}
+  .goal-board-health b,.goal-board-health span,.goal-board-ready span,.goal-board-agents{font-size:11px}
+  .goal-board-issues a,.goal-board-issues span{font-size:11px}
+  .goal-board-pr{font-size:11px}
+  .goal-board-card>footer button{min-height:36px;font-size:11px}
+  .goal-board-abort-confirm>span{font-size:11px}
+  .goal-kpi-columns b,.goal-kpi-health b{font-size:17px}
+  .goal-kpi-columns span,.goal-kpi-health span{font-size:11px}
+  .goal-attention h3{font-size:13px}
+  .goal-attention>header b,.goal-attention-note,.goal-attention-empty{font-size:12px}
+  /* A wide row reads left to right: what is wrong, then what to do about it. */
+  .goal-attention-rows>li{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,auto);align-items:center;gap:12px}
+  .goal-attention-copy strong{font-size:13px}
+  .goal-attention-copy small,.goal-attention-copy p,.goal-attention-badge{font-size:11px}
+  .goal-attention-actions button,.goal-attention-confirm button,.goal-attention-confirm>span{font-size:11px}
+}
 
 /* Terminal planner sheet: the banner explains why the controls are gone. */
 .planner-terminal-banner{display:flex;flex-direction:column;gap:6px;border:1px solid #2b3641;border-radius:13px;background:#12171d;padding:12px}
