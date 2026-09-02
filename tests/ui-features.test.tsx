@@ -701,6 +701,48 @@ describe("worktree goal planner", () => {
     assert.ok(screen.getByRole("heading", { name: "Step one" }));
   });
 
+  test("renders the delivery contract, workflow waves, and completion evidence as a Goal Passport", async () => {
+    const passportDraft = {
+      ...readyDraft,
+      contractVersion: 2,
+      spec: {
+        version: 2, outcome: "Operators can ship billing safely", inScope: ["Billing API", "Billing UI"], nonGoals: ["New payment provider"], constraints: ["Keep the public API stable"], assumptions: ["Stripe sandbox is available"], risks: [{ text: "Provider outage", mitigation: "Keep retries bounded", level: "high" }],
+        acceptanceCriteria: [
+          { id: "AC-1", text: "API creates invoices", verification: "API tests pass" },
+          { id: "AC-2", text: "UI shows invoices", verification: "UI tests pass" },
+          { id: "AC-3", text: "Docs explain rollout", verification: "Docs build passes" },
+        ],
+      },
+      readiness: { ready: true, errors: [], warnings: ["One planner assumption remains visible for approval"], waves: [["task-1"], ["task-2", "task-3"]], coverage: [] },
+      tasks: [
+        { ...tasks[0], criterionIds: ["AC-1"], ownedAreas: ["server/**"], verification: ["npm test"], wave: 0, launchStatus: "launched", deliveryStatus: "integrated", evidenceStatus: "ready", completionReport: { criteria: ["AC-1"], verification: [{ check: "npm test", status: "passed" }], limitations: [] } },
+        { ...tasks[1], criterionIds: ["AC-2"], dependsOn: ["task-1"], ownedAreas: ["app/**"], verification: ["npm run test:ui"], wave: 1, launchStatus: "launched", deliveryStatus: "ready", evidenceStatus: "ready", completionReport: { criteria: ["AC-2"], verification: [{ check: "npm run test:ui", status: "passed" }], limitations: ["Safari was not available"] }, scopeWarnings: ["README.md"] },
+        { id: "task-3", title: "Write rollout docs", branch: "docs/billing", prompt: "Document it", agent: "claude", agentReason: "", criterionIds: ["AC-3"], dependsOn: ["task-1"], ownedAreas: ["docs/**"], verification: ["npm run build"], wave: 1, launchStatus: "queued", deliveryStatus: "pending" },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(passportDraft), { status: 201 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship billing safely");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const passport = await screen.findByRole("region", { name: "Goal passport" });
+    assert.ok(within(passport).getByText("Operators can ship billing safely"));
+    assert.ok(within(passport).getByText("New payment provider"));
+    assert.ok(within(passport).getByText("One planner assumption remains visible for approval"));
+    assert.ok(within(passport).getByText("Provider outage"));
+    assert.ok(within(passport).getByText("Keep retries bounded"));
+    assert.ok(within(passport).getByText("Wave 1"));
+    assert.ok(within(passport).getByText("Wave 2"));
+    assert.ok(within(passport).getByText("integrated"));
+    assert.ok(within(passport).getByText("completed"));
+    assert.ok(within(passport).getByText("planned"));
+    assert.ok(within(passport).getByText("Limitation: Safari was not available"));
+    assert.ok(within(passport).getByText("Outside ownership: README.md"));
+    assert.ok(within(passport).getByText("Owns: server/**"));
+    assert.ok(within(passport).getByText("Verify: npm run test:ui"));
+    assert.ok(screen.getByRole("button", { name: "Start workflow · 1 session in wave 1" }));
+  });
+
   test("rejects a plan with written feedback and starts a fresh analysis", async () => {
     const revised = { ...readyDraft, round: 3, running: true, tasks: [] };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -785,6 +827,7 @@ describe("worktree goal planner", () => {
         { id: "t2", title: "UI", branch: "feature/ui", prompt: "Do", agent: "claude", agentReason: "", launchStatus: "launched", deliveryStatus: "pending" },
         { id: "t3", title: "Docs", branch: "feature/docs", prompt: "Do", agent: "claude", agentReason: "", launchStatus: "launched", deliveryStatus: "integrated" },
         { id: "t4", title: "Metrics", branch: "feature/metrics", prompt: "Do", agent: "claude", agentReason: "", launchStatus: "failed", deliveryStatus: "pending" },
+        { id: "t5", title: "Docs follow-up", branch: "feature/docs-follow-up", prompt: "Do", agent: "claude", agentReason: "", launchStatus: "queued", deliveryStatus: "pending", wave: 1 },
       ],
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -805,6 +848,7 @@ describe("worktree goal planner", () => {
     assert.ok(within(rows).getByText("Waiting"));
     assert.ok(within(rows).getByText("Merged"));
     assert.ok(within(rows).getByText("Not launched"));
+    assert.ok(within(rows).getByText("Queued · wave 2"));
   });
 
   test("counts tasks with no recorded launch status as launched", async () => {

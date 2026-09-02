@@ -11,7 +11,7 @@ const TASK_ONE = "a".repeat(40);
 const TASK_TWO = "b".repeat(40);
 const BASE = "c".repeat(40);
 
-function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = false } = {}) {
+function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = false, contract = false, workflow = false, reports = {}, changedFiles = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "goal-integrator-"));
   const integrationPath = join(root, "sample-goal");
   mkdirSync(integrationPath);
@@ -19,9 +19,19 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
   store.createPlan({ planId: "plan-12345678", repositoryId: REPO_ID, repositoryName: "sample", cwd: root, goal: "Ship combined billing", sourceType: "github_issues", issueNumbers: [54, 55], issueUrls: ["https://github.test/issues/54"] });
   store.recordRound("plan-12345678", {
     round: 1, stage: "ready", sessionId: "session",
+    ...(contract ? {
+      spec: {
+        version: 2, outcome: "Ship combined billing", inScope: ["Billing API and UI"], nonGoals: [], constraints: [], assumptions: [], risks: [],
+        acceptanceCriteria: [
+          { id: "AC-1", text: "The API supports billing", verification: "API tests pass" },
+          { id: "AC-2", text: "The UI supports billing", verification: "UI tests pass" },
+        ],
+      },
+      readiness: { ready: true, errors: [], warnings: [], waves: workflow ? [["t1"], ["t2"]] : [["t1", "t2"]], coverage: [] },
+    } : {}),
     tasks: [
-      { id: "t1", title: "Billing API", branch: "feature/billing-api", prompt: "Build it", agent: "codex" },
-      { id: "t2", title: "Billing UI", branch: "feature/billing-ui", prompt: "Build it", agent: "claude" },
+      { id: "t1", title: "Billing API", branch: "feature/billing-api", prompt: "Build it", agent: "codex", ...(contract ? { type: "backend", criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["server/**"], verification: ["npm test"] } : {}) },
+      { id: "t2", title: "Billing UI", branch: "feature/billing-ui", prompt: "Build it", agent: "claude", ...(contract ? { type: "ui", criterionIds: ["AC-2"], dependsOn: workflow ? ["t1"] : [], ownedAreas: ["app/**"], verification: ["npm test"], wave: workflow ? 1 : 0 } : {}) },
       ...(thirdFailed ? [{ id: "t3", title: "Billing docs", branch: "feature/billing-docs", prompt: "Build it", agent: "codex" }] : []),
     ],
   });
@@ -29,7 +39,7 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
     base: "origin/main", baseSha: BASE,
     results: [
       { id: "t1", status: "launched", path: join(root, "task-one"), workspace: { workspace_id: "workspace-one" } },
-      { id: "t2", status: "launched", path: join(root, "task-two"), workspace: { workspace_id: "workspace-two" } },
+      { id: "t2", status: workflow ? "queued" : "launched", ...(workflow ? {} : { path: join(root, "task-two"), workspace: { workspace_id: "workspace-two" } }) },
       ...(thirdFailed ? [{ id: "t3", status: "failed", error: "worktree already exists" }] : []),
     ],
   });
@@ -41,7 +51,14 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
       if (args[0] === "rev-list") return "1\n";
       if (args[0] === "log") {
         const taskId = cwd.endsWith("task-one") ? "t1" : "t2";
-        return `Finish task\n\nCmux-Goal-Ready: plan-12345678/${taskId}\n`;
+        const criterion = taskId === "t1" ? "AC-1" : "AC-2";
+        const defaultReport = { criteria: [criterion], verification: [{ check: "npm test", status: "passed" }], limitations: [] };
+        const report = Object.hasOwn(reports, taskId) ? reports[taskId] : defaultReport;
+        return `Finish task\n\n${contract && report !== null ? `Cmux-Goal-Report: ${JSON.stringify(report)}\n` : ""}Cmux-Goal-Ready: plan-12345678/${taskId}\n`;
+      }
+      if (args[0] === "diff") {
+        const taskId = cwd.endsWith("task-one") ? "t1" : "t2";
+        return (changedFiles[taskId] || []).join("\0");
       }
       if (args[0] === "ls-remote") {
         if (!secondPushed && cwd.endsWith("task-two")) return "";
@@ -55,10 +72,11 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
   const worktrees = {
     create: async (repositoryId, options) => {
       calls.push(["create", repositoryId, options]);
+      const path = options.branch === "feature/billing-ui" ? join(root, "task-two") : integrationPath;
       // Real git makes the directory. The fake must too, or a test cannot tell
       // a rebuilt worktree apart from a path that was never created.
-      mkdirSync(integrationPath, { recursive: true });
-      return { branchCreated: true, worktree: { path: integrationPath, branch: options.branch } };
+      mkdirSync(path, { recursive: true });
+      return { branchCreated: true, worktree: { path, branch: options.branch } };
     },
     snapshot: async () => ({ repositories: [] }),
   };
@@ -113,6 +131,88 @@ test("waits without creating a goal worktree until every task branch is pushed",
   assert.equal(store.get("plan-12345678").tasks[1].deliveryStatus, "pending");
 });
 
+test("a valid Delivery Contract report makes a task branch ready", async (t) => {
+  const { store, integrator } = fixture(t, { contract: true, secondPushed: false });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for 1 task branch/);
+  const task = store.get("plan-12345678").tasks[0];
+  assert.equal(task.deliveryStatus, "ready");
+  assert.equal(task.evidenceStatus, "ready");
+  assert.deepEqual(task.completionReport.criteria, ["AC-1"]);
+});
+
+test("missing completion evidence keeps the task pending and sends one correction", async (t) => {
+  const { store, integrator, calls } = fixture(t, { contract: true, reports: { t1: null }, secondPushed: false });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for 2 task branches/);
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for 2 task branches/);
+  const task = store.get("plan-12345678").tasks[0];
+  assert.equal(task.deliveryStatus, "pending");
+  assert.match(task.evidenceError, /no Cmux-Goal-Report/);
+  assert.equal(calls.filter((call) => call[0] === "rpc" && call[2].workspace_id === "workspace-one").length, 1);
+});
+
+test("incomplete criterion coverage and failed verification keep branches pending", async (t) => {
+  const reports = {
+    t1: { criteria: [], verification: [{ check: "npm test", status: "passed" }], limitations: [] },
+    t2: { criteria: ["AC-2"], verification: [{ check: "npm test", status: "failed" }], limitations: [] },
+  };
+  const { store, integrator } = fixture(t, { contract: true, reports });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for 2 task branches/);
+  const [first, second] = store.get("plan-12345678").tasks;
+  assert.match(first.evidenceError, /missing AC-1/);
+  assert.match(second.evidenceError, /must pass/);
+});
+
+test("scope drift is stored as a warning but does not block readiness", async (t) => {
+  const { store, integrator } = fixture(t, { contract: true, secondPushed: false, changedFiles: { t1: ["server/billing.mjs", "README.md"] } });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for 1 task branch/);
+  const task = store.get("plan-12345678").tasks[0];
+  assert.equal(task.deliveryStatus, "ready");
+  assert.deepEqual(task.changedFiles, ["server/billing.mjs", "README.md"]);
+  assert.deepEqual(task.scopeWarnings, ["README.md"]);
+});
+
+test("a completed workflow wave launches its dependents from the integrated commit", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { contract: true, workflow: true });
+  await integrator.assemble("plan-12345678");
+  const wavePrompt = calls.find((call) => call[0] === "workspaceCreate")[1].prompt;
+  assert.match(wavePrompt, /workflow wave 1/i);
+  assert.match(wavePrompt, /Do not open a pull request yet/);
+  assert.equal(wavePrompt.includes("gh pr create"), false);
+  const git = integrator.repoCatalog.git;
+  const integratedSha = "d".repeat(40);
+  integrator.repoCatalog.git = async (cwd, args) => {
+    if (cwd === integrationPath && args[0] === "log") return `Task 1: Billing API\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`;
+    if (cwd === integrationPath && args[0] === "rev-parse") return `${integratedSha}\n`;
+    return git(cwd, args);
+  };
+  const result = await integrator.settle("plan-12345678");
+  assert.equal(result.deliveryStatus, "implementing");
+  const saved = store.get("plan-12345678");
+  assert.equal(saved.tasks[0].deliveryStatus, "integrated");
+  assert.equal(saved.tasks[1].launchStatus, "launched");
+  assert.equal(saved.tasks[1].startSha, integratedSha);
+  assert.equal(calls.some((call) => call[0] === "create" && call[2].branch === "feature/billing-ui" && call[2].base === integratedSha), true);
+  const downstream = calls.filter((call) => call[0] === "workspaceCreate").at(-1)[1];
+  assert.match(downstream.prompt, /Workflow dependencies: t1/);
+});
+
+test("a restart advances queued work when the previous wave was already recorded as integrated", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { contract: true, workflow: true });
+  store.recordTaskReady("plan-12345678", "t1", TASK_ONE, { report: { criteria: ["AC-1"], verification: [{ check: "npm test", status: "passed" }], limitations: [] } });
+  store.recordIntegrationStarted("plan-12345678", { branch: "goal/ship-combined-billing-plan1234", path: integrationPath });
+  store.recordTaskIntegrated("plan-12345678", "t1", TASK_ONE);
+  const integratedSha = "e".repeat(40);
+  const git = integrator.repoCatalog.git;
+  integrator.repoCatalog.git = async (cwd, args) => (cwd === integrationPath && args[0] === "rev-parse" ? `${integratedSha}\n` : git(cwd, args));
+
+  const result = await integrator.assemble("plan-12345678");
+  assert.equal(result.deliveryStatus, "implementing");
+  assert.equal(store.get("plan-12345678").tasks[1].startSha, integratedSha);
+  const workspace = calls.find((call) => call[0] === "workspaceCreate");
+  assert.equal(workspace[1].title, "Billing UI");
+  assert.equal(workspace[1].cwd.endsWith("task-two"), true);
+});
+
 test("records the final pull request when the merge agent stops and a pull request exists", async (t) => {
   const { store, integrator } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
   await integrator.assemble("plan-12345678");
@@ -154,8 +254,9 @@ test("the merge prompt pins every task commit and states the conflict rule", () 
     baseRef: "origin/main",
     integrationBranch: "goal/ship-combined-billing-plan1234",
     issueNumbers: [54, 55],
+    spec: { outcome: "Customers can pay invoices", acceptanceCriteria: [{ id: "AC-1", text: "Payment succeeds", verification: "npm test" }], nonGoals: ["Refunds"], constraints: ["Stable API"] },
     tasks: [
-      { id: "t1", title: "Billing API", branch: "feature/billing-api", headSha: "a".repeat(40), launchStatus: "launched" },
+      { id: "t1", title: "Billing API", branch: "feature/billing-api", headSha: "a".repeat(40), launchStatus: "launched", criterionIds: ["AC-1"], completionReport: { criteria: ["AC-1"], verification: [{ check: "npm test", status: "passed" }], limitations: [] }, scopeWarnings: ["README.md"] },
       { id: "t2", title: "Billing UI", branch: "feature/billing-ui", headSha: "b".repeat(40), launchStatus: "launched" },
     ],
   };
@@ -166,7 +267,13 @@ test("the merge prompt pins every task commit and states the conflict rule", () 
   assert.ok(prompt.includes("Cmux-Goal-Task: plan-12345678/t1/" + "a".repeat(40)));
   assert.match(prompt, /Closes #54/);
   assert.match(prompt, /Conflicts resolved/);
+  assert.match(prompt, /## Delivery contract/);
+  assert.match(prompt, /AC-1: Payment succeeds/);
+  assert.match(prompt, /## Evidence/);
+  assert.match(prompt, /npm test=passed/);
+  assert.match(prompt, /scope exceptions: README.md/);
   assert.match(prompt, /Do not guess/);
+  assert.match(prompt, /current HEAD.*do not checkout or reset another ref/i);
   assert.match(prompt, /gh pr create/);
   assert.match(prompt, /--base main/);
   assert.ok(prompt.length <= 8_000);

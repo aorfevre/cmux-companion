@@ -22,7 +22,11 @@ test("parses a tasks reply wrapped in a fenced code block", () => {
   const reply = parsePlannerReply(envelope(text));
   assert.equal(reply.status, "ready");
   assert.equal(reply.tasks.length, 1);
-  assert.deepEqual(reply.tasks[0], { id: "t1", title: "Add API", branch: "feature/api", prompt: "Build the API." });
+  assert.deepEqual(reply.tasks[0], {
+    id: "t1", title: "Add API", branch: "feature/api", prompt: "Build the API.", type: "feature",
+    criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["**/*"],
+    verification: ["Run the repository verification appropriate for this task"],
+  });
 });
 
 test("rejects a reply that holds both questions and tasks", () => {
@@ -256,7 +260,7 @@ test("the other provider reviews and replaces a ready plan at its largest model 
   assert.equal(reviewerArgs[reviewerArgs.indexOf("--model") + 1], PLANNER_ENGINES.providers.codex.largestModel);
   assert.equal(reviewerArgs[reviewerArgs.indexOf("--effort") + 1], PLANNER_ENGINES.reviewerEffort);
   assert.equal(reviewerArgs.includes("--resume"), false);
-  assert.match(reviewerArgs.at(-1), /Critique the proposed plan/);
+  assert.match(reviewerArgs.at(-1), /Critique the proposed delivery contract/);
   assert.deepEqual(reviewerEngine("codex"), { provider: "claude", model: PLANNER_ENGINES.providers.claude.largestModel, effort: "xhigh", reviewer: false });
 });
 
@@ -499,8 +503,8 @@ test("drops the oldest draft instead of growing without limit", async () => {
   assert.ok(planner.drafts.size <= 50, `held ${planner.drafts.size} drafts`);
 });
 
-function launchDeps({ createFails = null, gitFails = null } = {}) {
-  const base = fakeDeps({ replies: [envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a")] });
+function launchDeps({ createFails = null, gitFails = null, reply = '{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}' } = {}) {
+  const base = fakeDeps({ replies: [envelope(reply, "sess-a")] });
   base.worktrees.create = async (repositoryId, options) => {
     base.calls.push(["create", repositoryId, options]);
     if (createFails && options.branch === createFails) throw new TypeError("That branch already has a worktree");
@@ -532,7 +536,32 @@ test("creates one worktree and one session per task", async () => {
   assert.equal(workspace[1].agent, "claude");
   assert.equal(workspace[1].title, "Billing");
   assert.equal(workspace[1].cwd, "/repo/sample-feature-billing");
-  assert.match(workspace[1].prompt, /^Add billing\.\n\nFinish with a pull request:/);
+  assert.match(workspace[1].prompt, /^Add billing\.\n\nDelivery contract for this task:/);
+  assert.match(workspace[1].prompt, /Cmux-Goal-Report:/);
+  assert.match(workspace[1].prompt, /Finish with a pull request:/);
+});
+
+test("launches only the first dependency wave and queues downstream tasks", async () => {
+  const reply = JSON.stringify({
+    spec: { outcome: "Ship billing", inScope: ["API and UI"], nonGoals: [], constraints: [], assumptions: [], risks: [], acceptanceCriteria: [
+      { id: "AC-1", text: "API works", verification: "npm test -- api" },
+      { id: "AC-2", text: "UI works", verification: "npm test -- ui" },
+    ] },
+    tasks: [
+      { id: "T1", title: "Billing API", branch: "feature/billing-api", prompt: "Build API.", criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["server/**"], verification: ["npm test -- api"] },
+      { id: "T2", title: "Billing UI", branch: "feature/billing-ui", prompt: "Build UI.", criterionIds: ["AC-2"], dependsOn: ["T1"], ownedAreas: ["app/**"], verification: ["npm test -- ui"] },
+    ],
+  });
+  const deps = launchDeps({ reply });
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  assert.deepEqual(draft.readiness.waves, [["T1"], ["T2"]]);
+  const result = await planner.launch(draft.planId);
+
+  assert.deepEqual(result.results.map((item) => item.status), ["launched", "queued"]);
+  assert.equal(deps.calls.filter((call) => call[0] === "create").length, 1);
+  assert.equal(deps.calls.filter((call) => call[0] === "workspace").length, 1);
+  assert.equal(result.results[1].wave, 1);
 });
 
 test("fetches the default branch before it creates anything", async () => {
@@ -732,7 +761,7 @@ test("appends the image paths to every launched task prompt", async () => {
   const prompts = deps.calls.filter((call) => call[0] === "workspace").map((call) => call[1].prompt);
   assert.equal(prompts.length, 2);
   for (const prompt of prompts) {
-    assert.match(prompt, /Attached images:\n- \/attachments\/one\.png\n- \/attachments\/two\.png\n\nFinish your task branch for combined delivery:/);
+    assert.match(prompt, /Attached images:\n- \/attachments\/one\.png\n- \/attachments\/two\.png\n\nDelivery contract for this task:/);
     assert.match(prompt, /Do not open a pull request/);
   }
   assert.ok(prompts[0].startsWith("Do it.\n\n"));
