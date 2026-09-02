@@ -501,6 +501,64 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  // One task starts again. `recordWaveLaunch` writes a subset of tasks the
+  // same way, but it also resets the whole plan's delivery state because a
+  // wave is a plan-wide transition. A relaunch is not: the other tasks keep
+  // their evidence, so only this row and the plan's blocked flag move.
+  //
+  // The blocked flag is cleared because the two reasons a launched plan blocks
+  // are "a task never launched" and "a task is not ready", and a relaunch is
+  // the answer to both. Leaving it set would keep the goal in the merge column
+  // while its agent works.
+  recordTaskRelaunch(planId, taskId, result = {}) {
+    const id = String(planId || "");
+    const task = String(taskId || "");
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, workspace_id = ?,
+          start_sha = ?, head_sha = NULL, delivery_status = 'pending', evidence_status = NULL,
+          evidence_error = NULL, completion_report = NULL, changed_files = '[]', scope_warnings = '[]',
+          integrated_commit_sha = NULL, session_closed_at = NULL
+        WHERE plan_id = ? AND task_id = ?
+      `).run(
+        text(result?.status) || "launched", text(result?.error), text(result?.path),
+        workspaceId(result?.workspace), text(result?.startSha), id, task,
+      );
+      this.db.prepare(`
+        UPDATE plans SET delivery_status = CASE delivery_status WHEN 'blocked' THEN 'implementing' ELSE delivery_status END,
+          delivery_error = NULL, updated_at = ? WHERE plan_id = ?
+      `).run(at, id);
+      this.#insertEvent(id, null, "task_relaunched", { taskId: task, result }, at);
+    });
+    return this.get(id);
+  }
+
+  // A task the goal no longer needs. `skipped` is deliberately not `failed`:
+  // every reader that counts launched work already ignores an unlaunched
+  // status, so a skipped task drops out of readiness without pretending it
+  // succeeded. The row stays, with its reason, because a silent disappearance
+  // is what made the old failures impossible to diagnose.
+  recordTaskSkipped(planId, taskId, reason = null) {
+    const id = String(planId || "");
+    const task = String(taskId || "");
+    const at = this.#stamp();
+    const note = reason ? String(reason).slice(0, 2_000) : null;
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plan_tasks SET launch_status = 'skipped', launch_error = ?, delivery_status = 'pending',
+          evidence_status = NULL, evidence_error = NULL
+        WHERE plan_id = ? AND task_id = ?
+      `).run(note, id, task);
+      this.db.prepare(`
+        UPDATE plans SET delivery_status = CASE delivery_status WHEN 'blocked' THEN 'implementing' ELSE delivery_status END,
+          delivery_error = NULL, updated_at = ? WHERE plan_id = ?
+      `).run(at, id);
+      this.#insertEvent(id, null, "task_skipped", { taskId: task, reason: note }, at);
+    });
+    return this.get(id);
+  }
+
   recordFinalPr(planId, { number = null, url, verifiedAt = null }) {
     const at = this.#stamp();
     this.#transaction(() => {

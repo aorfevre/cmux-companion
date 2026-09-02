@@ -38,15 +38,20 @@ export class AgentBriefs {
     return { path };
   }
 
-  pointerPrompt({ title, outcome, path }) {
+  // `resume` is set only when this session takes over a worktree a previous
+  // agent already worked in. Without it the new agent reads a brief that
+  // describes untouched work and starts again from nothing, undoing whatever
+  // the dead agent had finished.
+  pointerPrompt({ title, outcome, path, resume = "" }) {
     if (typeof path !== "string" || !path.trim()) throw new TypeError("path must not be empty");
     const lines = [
       `Read the file ${path.trim()} in full before you do anything else.`,
       "That file is your complete brief. It holds the delivery contract, the verification steps, and the finish steps.",
       `Task: ${summary(title, 200) || "see the brief"}`,
       `Goal outcome: ${summary(outcome, 400) || "see the brief"}`,
-      "Follow the brief file exactly. Do not start work before you read it.",
     ];
+    if (typeof resume === "string" && resume.trim()) lines.push(summary(resume, 600));
+    lines.push("Follow the brief file exactly. Do not start work before you read it.");
     return lines.join("\n").slice(0, MAX_POINTER_CHARACTERS);
   }
 

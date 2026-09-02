@@ -236,7 +236,9 @@ test("a restart advances queued work when the previous wave was already recorded
   assert.equal(result.deliveryStatus, "implementing");
   assert.equal(store.get("plan-12345678").tasks[1].startSha, integratedSha);
   const workspace = calls.find((call) => call[0] === "workspaceCreate");
-  assert.equal(workspace[1].title, "Billing UI");
+  // The session name carries the project, task and part codes before the
+  // title, so a sidebar of parallel sessions is readable at a glance.
+  assert.equal(workspace[1].title, "SMP-T2-ui \u00b7 Billing UI");
   assert.equal(workspace[1].cwd.endsWith("task-two"), true);
 });
 
@@ -380,7 +382,9 @@ test("notifies at the three milestones and never twice for one", async (t) => {
 test("refuses to assemble while any task failed to launch", async (t) => {
   const { store, integrator } = fixture(t, { secondPushed: false, thirdFailed: true });
   assert.equal(store.get("plan-12345678").tasks.length, 3);
-  await assert.rejects(() => integrator.assemble("plan-12345678"), /Every task must launch successfully/);
+  // The refusal now names the task and the two ways out, because a failed
+  // task used to end the goal with no route back.
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /1 task never launched \(Billing docs\)\. Relaunch each one, or skip it/);
 });
 
 test("a notification failure never blocks the merge", async (t) => {

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { parseCompletionReport, readyCount, scopeDrift, validateCompletionReport } from "./delivery-contract.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
+import { mergeSessionTitle, sessionEnv, sessionTitle } from "./session-name.mjs";
 import { taskPrompt } from "./worktree-planner.mjs";
 
 export { readyCount } from "./delivery-contract.mjs";
@@ -188,7 +189,13 @@ export class GoalIntegrator {
     const pending = plan.tasks.filter((task) => task.launchStatus === "launched" && task.deliveryStatus !== "ready" && task.deliveryStatus !== "integrated");
     const failed = plan.tasks.filter((task) => task.launchStatus === "failed");
     const queued = plan.tasks.filter((task) => task.launchStatus === "queued");
-    if (failed.length) throw new TypeError("Every task must launch successfully before Companion can build the combined pull request");
+    // A failed task used to end the goal for good: this threw on every call,
+    // automatic or manual, and no route could start that one task again. Name
+    // the two ways out, so the message points at an action instead of a wall.
+    if (failed.length) {
+      const names = failed.map((task) => task.title || task.id).slice(0, 3).join(", ");
+      throw new TypeError(`${failed.length} task${failed.length === 1 ? "" : "s"} never launched (${names}). Relaunch each one, or skip it, before Companion can build the combined pull request`);
+    }
     if (pending.length) {
       const message = `Waiting for ${pending.length} task branch${pending.length === 1 ? "" : "es"} in wave ${activeWave(plan) + 1} to be committed, pushed, and evidenced`;
       if (automatic) throw new TasksNotReadyError(message);
@@ -239,7 +246,7 @@ export class GoalIntegrator {
         const brief = await this.briefs.write({ planId: plan.planId, taskId: "merge", markdown: mergePrompt(plan) });
         const created = await this.cmux.workspaceCreate({
           cwd: plan.integrationWorktreePath,
-          title: oneLine(`Merge: ${plan.goal}`, 100),
+          title: mergeSessionTitle(plan),
           agent: "claude",
           prompt: this.briefs.pointerPrompt({ title: `Merge: ${plan.goal}`, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });
@@ -479,8 +486,9 @@ export class GoalIntegrator {
         });
         const workspace = await this.cmux.workspaceCreate({
           cwd: path,
-          title: task.title,
+          title: sessionTitle(plan, task),
           agent: task.agent,
+          env: sessionEnv(plan, task),
           prompt: this.briefs.pointerPrompt({ title: task.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });
         results.push({ ...summary, status: "launched", path, workspace, startSha });

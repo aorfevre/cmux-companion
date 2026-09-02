@@ -14,6 +14,7 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
+import { GoalHealthSweep } from "./goal-health.mjs";
 import { GoalMergeWatch } from "./goal-merge-watch.mjs";
 import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
 import { AccountUsage } from "./account-usage.mjs";
@@ -43,6 +44,7 @@ export async function buildApp({
   worktreePlanStore = null,
   goalIntegrator = null,
   goalMergeWatch = null,
+  goalHealthSweep = null,
   // Accepted but deliberately unused: see the header of cmux-groups.mjs for why
   // cmux workspace grouping is inert. The option stays in the signature so
   // grouping can be restored, and injected, without another API change here.
@@ -89,6 +91,11 @@ export async function buildApp({
   // during the one Refresh GitHub command per repository.
   const mergeWatch = goalMergeWatch
     || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, log: app.log }) : null);
+  // The one thing no other module does: ask cmux whether each launched task's
+  // agent is still alive. It writes nothing, so a sweep can never move a goal
+  // on its own.
+  const health = goalHealthSweep
+    || (planStore ? new GoalHealthSweep({ store: planStore, cmux, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
     || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   const pairAttempts = new Map();
@@ -471,6 +478,36 @@ export async function buildApp({
     try { integrator?.cancel?.(request.params.planId); }
     catch (cause) { app.log.warn({ err: cause, planId: request.params.planId }, "cancelling scheduled goal work failed"); }
     const result = await planner.abort(request.params.planId);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
+  });
+
+  // Check every launched goal at once: the answer to "is this dev still
+  // running, or did it die an hour ago". Read-only by design.
+  app.get("/api/goals/health", async () => {
+    if (!health) throw serviceUnavailable("Goal supervision is unavailable");
+    return health.sweep();
+  });
+
+  app.get("/api/worktree-plans/:planId/health", async (request) => {
+    if (!health) throw serviceUnavailable("Goal supervision is unavailable");
+    return health.inspect(request.params.planId);
+  });
+
+  // Start one task again on a plan that is already launched. `continue` keeps
+  // the worktree and its work; `restart` discards both and rebuilds from base.
+  app.post("/api/worktree-plans/:planId/tasks/:taskId/relaunch", async (request) => {
+    const result = await planner.relaunchTask(request.params.planId, request.params.taskId, { mode: request.body?.mode || "continue" });
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
+  });
+
+  // Drop one task, so a single dead task stops blocking every other task's
+  // finished work from reaching a pull request.
+  app.post("/api/worktree-plans/:planId/tasks/:taskId/skip", async (request) => {
+    const result = await planner.skipTask(request.params.planId, request.params.taskId, { reason: request.body?.reason || null });
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return result;
