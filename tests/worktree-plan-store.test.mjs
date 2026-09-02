@@ -3,6 +3,7 @@ import test from "node:test";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 
 function memoryStore(t) {
@@ -124,6 +125,37 @@ test("stores a task list in order and reads it back whole", (t) => {
   assert.equal(plan.tasks[1].agent, "codex");
   assert.equal(plan.tasks[0].prompt, "Add billing.");
   assert.equal(plan.deliveryMode, "combined");
+});
+
+test("round-trips a Delivery Contract, workflow metadata, and task evidence", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  const spec = {
+    version: 2, outcome: "Customers can pay invoices", inScope: ["Billing"], nonGoals: ["Refunds"], constraints: ["Stable API"], assumptions: ["Sandbox available"],
+    acceptanceCriteria: [{ id: "AC-1", text: "Invoice payment succeeds", verification: "npm test" }],
+    risks: [{ text: "Provider outage", mitigation: "Retry", level: "medium" }],
+  };
+  const readiness = { ready: true, errors: [], warnings: ["One assumption remains"], waves: [["t1"]], coverage: [{ criterionId: "AC-1", taskIds: ["t1"] }] };
+  const task = { ...TASKS[0], type: "backend", criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["server/**"], verification: ["npm test"], wave: 0 };
+  store.recordRound("plan-1", { round: 1, stage: "ready", spec, readiness, tasks: [task] });
+  store.recordLaunch("plan-1", { base: "origin/main", baseSha: "a".repeat(40), results: [{ id: "t1", status: "launched", path: "/repo/task", workspace: { workspace_id: "workspace-1" } }] });
+  const report = { criteria: ["AC-1"], verification: [{ check: "npm test", status: "passed" }], limitations: ["Sandbox only"] };
+  const plan = store.recordTaskReady("plan-1", "t1", "b".repeat(40), { report, changedFiles: ["server/billing.mjs", "README.md"], scopeWarnings: ["README.md"] });
+
+  assert.equal(plan.contractVersion, 2);
+  assert.deepEqual(plan.spec, spec);
+  assert.deepEqual(plan.readiness, readiness);
+  assert.equal(plan.tasks[0].type, "backend");
+  assert.deepEqual(plan.tasks[0].criterionIds, ["AC-1"]);
+  assert.deepEqual(plan.tasks[0].ownedAreas, ["server/**"]);
+  assert.equal(plan.tasks[0].startSha, "a".repeat(40));
+  assert.deepEqual(plan.tasks[0].completionReport, report);
+  assert.deepEqual(plan.tasks[0].changedFiles, ["server/billing.mjs", "README.md"]);
+  assert.deepEqual(plan.tasks[0].scopeWarnings, ["README.md"]);
+  const events = store.events("plan-1");
+  assert.deepEqual(events.find((event) => event.kind === "tasks").payload.spec, spec);
+  assert.deepEqual(events.find((event) => event.kind === "tasks").payload.readiness, readiness);
+  assert.ok(events.some((event) => event.kind === "task_evidence"));
 });
 
 test("a later round replaces the previous task list", (t) => {
@@ -296,6 +328,35 @@ test("survives a reopen of the same file and keeps mode 0600", (t) => {
   assert.equal(plan.sessionId, "sess-a");
   assert.equal(plan.round, 1);
   assert.deepEqual(plan.tasks.map((task) => task.branch), ["feature/billing", "feature/invoices"]);
+});
+
+test("migrates a pre-contract database without losing legacy plans", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "legacy-plan-store-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "goal-plans.db");
+  const first = new WorktreePlanStore({ path });
+  seed(first);
+  first.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "legacy-session", tasks: [TASKS[0]] });
+  first.close();
+
+  const legacy = new DatabaseSync(path);
+  for (const column of ["contract_version", "spec", "readiness"]) legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
+  for (const column of ["task_type", "criterion_ids", "depends_on", "owned_areas", "verification", "wave", "start_sha", "completion_report", "evidence_status", "evidence_error", "changed_files", "scope_warnings"]) {
+    legacy.exec(`ALTER TABLE plan_tasks DROP COLUMN ${column}`);
+  }
+  legacy.close();
+
+  const migrated = new WorktreePlanStore({ path });
+  t.after(() => migrated.close());
+  const plan = migrated.get("plan-1");
+  assert.equal(plan.goal, "Add billing");
+  assert.equal(plan.sessionId, "legacy-session");
+  assert.equal(plan.contractVersion, 1);
+  assert.equal(plan.spec, null);
+  assert.equal(plan.tasks[0].title, "Billing");
+  assert.equal(plan.tasks[0].type, "feature");
+  assert.deepEqual(plan.tasks[0].criterionIds, []);
+  assert.deepEqual(plan.tasks[0].changedFiles, []);
 });
 
 test("records the cmux group, the merge workspace and a merge block", (t) => {

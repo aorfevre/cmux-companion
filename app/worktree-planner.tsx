@@ -5,19 +5,23 @@ import { PLANNER_ENGINES, reviewerEngine } from "../server/worktree-planner-opti
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 // One shared predicate: two copies had already drifted, so the sheet read
 // "1 of 2 ready" while the group read 1/1.
-import { readyCount } from "../server/goal-integrator.mjs";
+import { readyCount } from "../server/delivery-contract.mjs";
 import { PromptDisclosure } from "./prompt-markdown";
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
-export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; launchStatus?: string; deliveryStatus?: string };
+export type CompletionReport = { criteria: string[]; verification: { check: string; status: "passed" | "failed" | "not_run" }[]; limitations: string[] };
+export type PlanCriterion = { id: string; text: string; verification: string };
+export type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[] };
+export type PlanReadiness = { ready: boolean; errors: string[]; warnings: string[]; waves: string[][]; coverage: { criterionId: string; taskIds: string[] }[] };
+export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; type?: string; criterionIds?: string[]; dependsOn?: string[]; ownedAreas?: string[]; verification?: string[]; wave?: number; launchStatus?: string; deliveryStatus?: string; completionReport?: CompletionReport | null; evidenceStatus?: string | null; evidenceError?: string | null; changedFiles?: string[]; scopeWarnings?: string[] };
 export type PlanImage = { path: string; name: string };
 export type PlanRun = { planId: string; kind: string; phase: "running" | "done" | "failed"; step: string; error: string; startedAt: number; finishedAt: number | null };
 export type PlannerProvider = "claude" | "codex";
 export type PlannerEngine = { provider: PlannerProvider; model: string; effort: string; reviewer: boolean };
 export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; issueNumbers?: number[]; deliveryMode?: "single" | "combined"; deliveryStatus?: string; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; createdAt: string; updatedAt: string; launchedAt: string | null };
-export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
-export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed"; path?: string | null; workspace?: unknown; error?: string };
+export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] };
+export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed" | "queued"; wave?: number; path?: string | null; workspace?: unknown; error?: string };
 export type PlanLaunchResult = { planId: string; base: string; deliveryMode?: "single" | "combined"; launched: number; results: PlanLaunchRow[] };
 type DeliveryResult = { planId: string; deliveryMode: "combined"; deliveryStatus: string; integrationBranch?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null };
 type PlannerRepository = { id: string; name: string };
@@ -73,7 +77,46 @@ function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string })
 function DeliveryTasks({ tasks }: { tasks: PlanTask[] }) {
   if (tasks.length === 0) return null;
   const { ready, total } = readyCount(tasks);
-  return <><p className="planner-delivery-count">{ready} of {total} branches ready</p><ul className="planner-delivery-tasks" aria-label="Task delivery">{tasks.map((task) => { const state = taskState(task); return <li key={task.id}><span>{task.title}</span><code>{task.branch}</code><em className={`delivery-${state.toLowerCase().replace(/\s+/g, "-")}`}>{state}</em></li>; })}</ul></>;
+  return <><p className="planner-delivery-count">{ready} of {total} branches ready</p><ul className="planner-delivery-tasks" aria-label="Task delivery">{tasks.map((task) => { const state = taskState(task); return <li key={task.id}><span>{task.title}</span><code>{task.branch}</code><em className={`delivery-${state.tone}`}>{state.label}</em></li>; })}</ul></>;
+}
+
+function GoalPassport({ draft }: { draft: PlanDraft }) {
+  const spec = draft.spec;
+  if (!spec) return null;
+  const readiness = draft.readiness;
+  const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave || 0))].sort().map((wave) => draft.tasks.filter((task) => (task.wave || 0) === wave).map((task) => task.id));
+  return <section className="goal-passport" aria-label="Goal passport">
+    <header><div><small>DELIVERY CONTRACT</small><strong>{spec.outcome}</strong></div><em className={readiness?.ready === false ? "blocked" : "ready"}>{readiness?.ready === false ? "Needs work" : "Ready to code"}</em></header>
+    {(readiness?.errors?.length || readiness?.warnings?.length) ? <div className="goal-passport-readiness">
+      {readiness.errors?.map((item) => <p className="error" key={item}>{item}</p>)}
+      {readiness.warnings?.map((item) => <p className="warning" key={item}>{item}</p>)}
+    </div> : null}
+    <div className="goal-passport-scope">
+      <PassportList title="In scope" items={spec.inScope} empty="Defined by the outcome" />
+      <PassportList title="Non-goals" items={spec.nonGoals} empty="None declared" />
+      <PassportList title="Constraints" items={spec.constraints} empty="None declared" />
+      <PassportList title="Assumptions" items={spec.assumptions} empty="None" />
+    </div>
+    {spec.risks?.length > 0 && <div className="goal-passport-block"><strong>Risks and mitigations</strong><ul className="goal-passport-risks">{spec.risks.map((risk, index) => <li key={`${index}-${risk.text}-${risk.mitigation}`}><em>{risk.level}</em><div><span>{risk.text}</span><small>{risk.mitigation || "No mitigation recorded"}</small></div></li>)}</ul></div>}
+    <div className="goal-passport-block"><strong>Acceptance evidence</strong><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
+      const tasks = draft.tasks.filter((task) => task.criterionIds?.includes(criterion.id));
+      const state = criterionState(tasks);
+      return <li key={criterion.id}><code>{criterion.id}</code><div><span>{criterion.text}</span><small>{criterion.verification}</small><small>{tasks.map((task) => task.title).join(" · ") || "No task assigned"}</small></div><em className={state}>{state}</em></li>;
+    })}</ul></div>
+    <div className="goal-passport-block"><strong>Workflow</strong><ol className="goal-passport-waves">{waves.map((wave, index) => <li key={`${index}-${wave.join("-")}`}><span>Wave {index + 1}</span><div>{wave.map((id) => { const task = draft.tasks.find((item) => item.id === id); return <b key={id}>{task?.title || id}</b>; })}</div></li>)}</ol></div>
+    <div className="goal-passport-block"><strong>Task plan</strong><ul className="goal-passport-task-plan">{draft.tasks.map((task) => <li key={task.id}><span>{task.title}</span><small>Owns: {task.ownedAreas?.join(", ") || "Not declared"}</small><small>Depends on: {task.dependsOn?.join(", ") || "None"}</small><small>Verify: {task.verification?.join(" · ") || "Not declared"}</small></li>)}</ul></div>
+    {draft.tasks.some((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length) && <div className="goal-passport-block"><strong>Task evidence</strong><ul className="goal-passport-evidence">{draft.tasks.filter((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length).map((task) => <li key={task.id}><span>{task.title}</span>{task.completionReport?.verification.map((item) => <small key={`${item.check}-${item.status}`}>{item.check}: <b className={item.status}>{item.status}</b></small>)}{task.completionReport?.limitations.map((item) => <small className="limitation" key={item}>Limitation: {item}</small>)}{task.scopeWarnings?.map((item) => <small className="warning" key={item}>Outside ownership: {item}</small>)}{task.evidenceError && <small className="error">{task.evidenceError}</small>}</li>)}</ul></div>}
+  </section>;
+}
+
+function PassportList({ title, items, empty }: { title: string; items?: string[]; empty: string }) {
+  return <div><strong>{title}</strong>{items?.length ? <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul> : <small>{empty}</small>}</div>;
+}
+
+function criterionState(tasks: PlanTask[]) {
+  if (tasks.length && tasks.every((task) => task.deliveryStatus === "integrated")) return "integrated";
+  if (tasks.length && tasks.every((task) => task.evidenceStatus === "ready" || task.deliveryStatus === "ready" || task.deliveryStatus === "integrated")) return "completed";
+  return "planned";
 }
 
 function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
@@ -313,6 +356,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     {draft && !result && !running && !stalled && draft.status === "ready" && <>
       <p className="planner-round">Round {draft.round} · {draft.tasks.length} task{draft.tasks.length === 1 ? "" : "s"}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />
+      <GoalPassport draft={draft} />
       {draft.tasks.length > 1 && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Task agents commit and push isolated branches. Companion pins their commits and starts a merge agent that resolves conflicts, verifies against a baseline, and opens one pull request.</p></section>}
       <div className="planner-tasks">{draft.tasks.map((task) => <article className="planner-task" key={task.id}>
         <header><strong>{task.title}</strong>{!launchedPlan && <button type="button" className="planner-remove-task" aria-label={`Remove ${task.title}`} disabled={locked || draft.tasks.length < 2} onClick={() => editTasks(draft.tasks.filter((item) => item.id !== task.id))}>×</button>}</header>
@@ -330,14 +374,14 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
         </> : <button type="button" className="planner-reject-open" disabled={locked} onClick={() => setRejecting(true)}>This plan is wrong</button>}
       </section>}
       {error && <p className="worktree-action-error">{error}</p>}
-      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{busy === "launch" ? "Launching…" : `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`}</button>}
+      {launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p> : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{busy === "launch" ? "Launching…" : launchLabel(draft)}</button>}
     </>}
     {result && <>
       <p className="planner-round">Branched from <code>{result.base}</code> · {result.launched} of {result.results.length} started</p>
       {result.deliveryMode === "combined" && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Each agent will commit and push its task branch without opening a PR. When every branch is ready, a merge agent will resolve conflicts and open one pull request.</p></section>}
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <div className="planner-results">{result.results.map((row) => <div className={`planner-result ${row.status}`} key={row.id}>
-        <header><strong>{row.title}</strong><em>{row.status === "launched" ? "Launched" : "Failed"}</em></header>
+        <header><strong>{row.title}</strong><em>{row.status === "launched" ? "Launched" : row.status === "queued" ? `Queued · wave ${(row.wave || 0) + 1}` : "Failed"}</em></header>
         <code className="planner-branch">{row.branch}</code><small>{agentLabel(row.agent)}</small>
         {row.status === "failed" && row.error && <small className="planner-result-error">{row.error}</small>}
         {row.status === "failed" && row.path && <small className="planner-result-leftover">Its worktree is still on disk at <code>{compactPath(row.path)}</code>, with no session. Remove it from the dashboard before reusing this branch.</small>}
@@ -358,8 +402,18 @@ function deliveryLabel(status?: string) {
 }
 
 function taskState(task: PlanTask) {
-  if (task.launchStatus && task.launchStatus !== "launched") return "Not launched";
-  if (task.deliveryStatus === "integrated") return "Merged";
-  if (task.deliveryStatus === "ready") return "Ready";
-  return "Waiting";
+  if (task.launchStatus === "queued") return { label: `Queued · wave ${(task.wave || 0) + 1}`, tone: "queued" };
+  if (task.launchStatus && task.launchStatus !== "launched") return { label: "Not launched", tone: "not-launched" };
+  if (task.deliveryStatus === "integrated") return { label: "Merged", tone: "merged" };
+  if (task.deliveryStatus === "ready") return { label: "Ready", tone: "ready" };
+  return { label: "Waiting", tone: "waiting" };
+}
+
+function launchLabel(draft: PlanDraft) {
+  const waves = draft.readiness?.waves || [];
+  if (waves.length > 1) {
+    const count = waves[0]?.length || draft.tasks.filter((task) => (task.wave || 0) === 0).length;
+    return `Start workflow · ${count} session${count === 1 ? "" : "s"} in wave 1`;
+  }
+  return `Launch ${draft.tasks.length} session${draft.tasks.length === 1 ? "" : "s"}`;
 }

@@ -1,6 +1,13 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
+import {
+  completionReportInstruction,
+  normalizeContractTask,
+  normalizeDeliveryContract,
+  taskWave,
+  validateDeliveryContract,
+} from "./delivery-contract.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
 import { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs";
 
@@ -114,19 +121,30 @@ export function parsePlannerReply(stdout) {
       }))
       .filter((item) => item.text);
     if (!questions.length) throw new TypeError(UNUSABLE);
-    return { sessionId, status: "questions", questions, tasks: [] };
+    return { sessionId, status: "questions", questions, spec: null, tasks: [], readiness: null };
   }
 
-  const tasks = payload.tasks
-    .map((item, index) => ({
-      id: `t${index + 1}`,
-      title: cleanText(item?.title),
-      branch: cleanText(item?.branch),
-      prompt: cleanText(item?.prompt),
-    }))
+  let tasks = payload.tasks
+    .map((item, index) => normalizeContractTask(item, index))
     .filter((item) => item.title && item.branch && item.prompt);
   if (!tasks.length) throw new TypeError(UNUSABLE);
-  return { sessionId, status: "ready", questions: [], tasks };
+  const legacy = !payload.spec || typeof payload.spec !== "object";
+  const spec = legacy
+    ? normalizeDeliveryContract({
+      outcome: "Complete the requested goal",
+      assumptions: ["The planner returned a legacy task-only answer"],
+      acceptanceCriteria: tasks.map((task, index) => ({ id: `AC-${index + 1}`, text: `Complete ${task.title}`, verification: "Run the repository verification appropriate for this task" })),
+    })
+    : normalizeDeliveryContract(payload.spec);
+  if (legacy) tasks = tasks.map((task, index) => ({
+    ...task,
+    criterionIds: [`AC-${index + 1}`],
+    ownedAreas: ["**/*"],
+    verification: ["Run the repository verification appropriate for this task"],
+  }));
+  const readiness = validateDeliveryContract(spec, tasks);
+  if (!readiness.ready) throw new TypeError(`${UNUSABLE}: ${readiness.errors[0]}`);
+  return { sessionId, status: "ready", questions: [], spec, tasks, readiness, legacy };
 }
 
 const MAX_SCAN_BYTES = 256 * 1024;
@@ -380,6 +398,8 @@ export class WorktreePlanner {
       at: Date.now(),
       status: "questions",
       questions: [],
+      spec: null,
+      readiness: null,
       tasks: [],
     };
     this.#sweep();
@@ -551,6 +571,7 @@ export class WorktreePlanner {
     if (!Array.isArray(tasks) || !tasks.length) throw new TypeError("Keep at least one task");
     if (tasks.length > MAX_TASKS) throw new TypeError(`A plan can hold at most ${MAX_TASKS} tasks`);
     const next = tasks.map((task, index) => {
+      const previous = draft.tasks.find((item) => item.id === task?.id) || draft.tasks[index] || {};
       const branch = String(task?.branch || "").trim();
       if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/.test(branch) || branch.includes("..")) {
         throw new TypeError(`Task ${index + 1} needs a valid Git branch name`);
@@ -559,13 +580,24 @@ export class WorktreePlanner {
       const prompt = String(task?.prompt || "").trim();
       if (!title || !prompt) throw new TypeError(`Task ${index + 1} needs a title and a prompt`);
       const agent = task?.agent === "codex" ? "codex" : "claude";
-      return { id: task?.id || `t${index + 1}`, title, branch, prompt, agent, agentReason: String(task?.agentReason || "") };
+      const contract = normalizeContractTask({
+        criterionIds: draft.spec?.acceptanceCriteria?.map((criterion) => criterion.id) || [],
+        ownedAreas: ["**/*"],
+        verification: ["Run the repository verification appropriate for this task"],
+        ...previous,
+        ...task,
+        title, branch, prompt,
+      }, index);
+      return { ...contract, agent, agentReason: String(task?.agentReason || "") };
     });
     const branches = new Set(next.map((task) => task.branch));
     if (branches.size !== next.length) throw new TypeError("Two tasks share a branch name");
-    draft.tasks = next;
+    const readiness = validateDeliveryContract(draft.spec, next);
+    if (!readiness.ready) throw new TypeError(readiness.errors[0]);
+    draft.tasks = next.map((task) => ({ ...task, wave: taskWave(task.id, readiness) }));
+    draft.readiness = readiness;
     draft.at = Date.now();
-    this.#persist(() => this.store?.recordEdit(draft.planId, next), draft.planId, "edit");
+    this.#persist(() => this.store?.recordEdit(draft.planId, draft.tasks, readiness), draft.planId, "edit");
     return publicDraft(draft);
   }
 
@@ -573,13 +605,21 @@ export class WorktreePlanner {
     const draft = await this.#draft(planId);
     this.#assertIdle(draft.planId);
     if (draft.status !== "ready" || !draft.tasks.length) throw new TypeError("This plan is not ready to launch yet");
+    const readiness = validateDeliveryContract(draft.spec, draft.tasks);
+    if (!readiness.ready) throw new TypeError(`This delivery contract is not ready: ${readiness.errors[0]}`);
+    draft.readiness = readiness;
     const base = await this.#baseRef(draft);
     const repositoryPath = await this.#repositoryPath(draft);
     const baseSha = String(await this.git(repositoryPath, ["rev-parse", `${base}^{commit}`]).catch(() => "")).trim() || null;
     const deliveryMode = planDeliveryMode(draft);
+    const firstWave = Math.min(...draft.tasks.map((task) => Number(task.wave) || 0));
     const results = [];
     for (const task of draft.tasks) {
-      results.push(await this.#launchTask(draft, task, base, deliveryMode));
+      if ((Number(task.wave) || 0) !== firstWave) {
+        results.push({ id: task.id, title: task.title, branch: task.branch, agent: task.agent, status: "queued", wave: task.wave });
+        continue;
+      }
+      results.push(await this.#launchTask(draft, task, base, deliveryMode, baseSha));
     }
     const launched = results.filter((item) => item.status === "launched").length;
     this.#persist(() => this.store?.recordLaunch(draft.planId, { base, baseSha, results }), draft.planId, "launch");
@@ -592,7 +632,7 @@ export class WorktreePlanner {
 
   // One task never rolls back another: a half-made plan the user can see and
   // finish by hand beats a silent undo of work that already started.
-  async #launchTask(draft, task, base, deliveryMode) {
+  async #launchTask(draft, task, base, deliveryMode, startSha = null) {
     const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent };
     let path = null;
     try {
@@ -611,9 +651,9 @@ export class WorktreePlanner {
         agent: task.agent,
         // Each worktree agent is isolated, so every task prompt carries its
         // images and the delivery contract selected for the whole goal.
-        prompt: taskPrompt(task.prompt, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers),
+        prompt: taskPrompt(task, draft.spec, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers),
       });
-      return { ...summary, status: "launched", path, workspace };
+      return { ...summary, status: "launched", path, workspace, startSha };
     } catch (cause) {
       this.log?.warn?.({ err: cause, branch: task.branch }, "planner task launch failed");
       return { ...summary, status: "failed", path, error: cause?.message || "Could not launch this task" };
@@ -664,19 +704,30 @@ export class WorktreePlanner {
     }
     draft.status = reply.status;
     draft.questions = reply.questions;
+    let spec = reply.legacy ? { ...reply.spec, outcome: draft.goal } : reply.spec;
     let tasks = reply.tasks;
     if (reply.status === "ready" && draft.engine.reviewer) {
       const reviewer = reviewerEngine(draft.engine.provider);
       emit(onEvent, { k: "text", t: `Reviewing with ${PLANNER_ENGINES.providers[reviewer.provider].label}…` });
-      const reviewed = await this.#reply(draft, reviewerPrompt(draft, tasks), reviewer, null, onEvent, true);
+      const reviewed = await this.#reply(draft, reviewerPrompt(draft, spec, tasks), reviewer, null, onEvent, true);
+      spec = reviewed.legacy ? spec : reviewed.spec;
       tasks = reviewed.tasks;
+      if (reviewed.legacy && spec?.acceptanceCriteria?.length === tasks.length) {
+        tasks = tasks.map((task, index) => ({ ...task, criterionIds: [spec.acceptanceCriteria[index].id] }));
+      }
     }
-    draft.tasks = reply.status === "ready" ? assignAgents(tasks, await this.#usage()) : [];
+    draft.spec = reply.status === "ready" ? spec : null;
+    draft.readiness = reply.status === "ready" ? validateDeliveryContract(spec, tasks) : null;
+    draft.tasks = reply.status === "ready"
+      ? assignAgents(tasks.map((task) => ({ ...task, wave: taskWave(task.id, draft.readiness) })), await this.#usage())
+      : [];
     this.#persist(() => this.store?.recordRound(draft.planId, {
       round: draft.round,
       stage: draft.status,
       sessionId: draft.sessionId,
       questions: draft.questions,
+      spec: draft.spec,
+      readiness: draft.readiness,
       tasks: draft.tasks,
       answers: submitted?.answers ?? null,
       skipped: submitted?.skipped === true,
@@ -862,6 +913,8 @@ function publicDraft(draft) {
     round: draft.round,
     status: draft.status,
     questions: draft.questions,
+    spec: draft.spec,
+    readiness: draft.readiness,
     tasks: draft.tasks,
     deliveryMode: planDeliveryMode(draft),
   };
@@ -870,6 +923,7 @@ function publicDraft(draft) {
 // The stored row holds every field a round needs, so a rebuilt draft resumes
 // the same ccs session with the same goal, questions and tasks.
 function draftFromStore(stored) {
+  const contract = storedContract(stored);
   return {
     planId: stored.planId,
     repositoryId: stored.repositoryId,
@@ -887,15 +941,47 @@ function draftFromStore(stored) {
     at: Date.now(),
     status: stored.stage === "ready" ? "ready" : "questions",
     questions: Array.isArray(stored.questions) ? stored.questions : [],
-    tasks: (Array.isArray(stored.tasks) ? stored.tasks : []).map((task) => ({
-      id: task.id,
-      title: task.title,
-      branch: task.branch,
-      prompt: task.prompt,
+    spec: contract.spec,
+    readiness: contract.readiness,
+    tasks: contract.tasks.map((task) => ({
+      ...task,
       agent: task.agent || "claude",
       agentReason: task.agentReason || "",
     })),
   };
+}
+
+// Plans created before Delivery Contract v2 remain launchable. Their fallback
+// is deliberately explicit and visible in the passport; new model replies must
+// provide the full structured contract and never pass through this path.
+function storedContract(stored) {
+  const rawTasks = Array.isArray(stored.tasks) ? stored.tasks : [];
+  if (stored.spec?.acceptanceCriteria?.length) {
+    const spec = normalizeDeliveryContract(stored.spec, stored.goal);
+    const tasks = rawTasks.map((task, index) => ({ ...normalizeContractTask(task, index), ...task }));
+    return { spec, tasks, readiness: stored.readiness || validateDeliveryContract(spec, tasks) };
+  }
+  const spec = normalizeDeliveryContract({
+    outcome: stored.goal,
+    assumptions: ["Imported from a plan created before Delivery Contract v2"],
+    acceptanceCriteria: rawTasks.map((task, index) => ({
+      id: `AC-${index + 1}`,
+      text: `Complete ${task.title || `task ${index + 1}`} as described in its saved prompt`,
+      verification: "Run the repository verification appropriate for the task",
+    })),
+  }, stored.goal);
+  const tasks = rawTasks.map((task, index) => ({
+    ...normalizeContractTask({
+      ...task,
+      id: task.id || `T${index + 1}`,
+      criterionIds: [`AC-${index + 1}`],
+      ownedAreas: ["**/*"],
+      verification: ["Run the repository verification appropriate for the task"],
+    }, index),
+    agent: task.agent,
+    agentReason: task.agentReason,
+  }));
+  return { spec, tasks, readiness: validateDeliveryContract(spec, tasks) };
 }
 
 function planDeliveryMode(draft) {
@@ -912,14 +998,17 @@ function answeredPairs(draft, answers) {
   })).filter((item) => item.text);
 }
 
-const SKIP_PROMPT = "Stop asking questions. Decide the remaining details yourself and reply now with the tasks JSON object.";
+const SKIP_PROMPT = "Stop asking questions. Decide the remaining details yourself and reply now with the delivery-contract JSON object.";
 
 const CONTRACT = [
   "Reply with exactly one JSON object and no other prose.",
-  'It holds either {"questions": [{"text": "...", "options": ["..."]}]} or {"tasks": [{"title": "...", "branch": "feature/...", "prompt": "..."}]}.',
+  'It holds either {"questions":[{"text":"...","options":["..."]}]} or the Delivery Contract shape below.',
+  '{"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}]},"tasks":[{"id":"T1","title":"...","branch":"feature/...","prompt":"...","type":"feature|bugfix|ui|backend|docs|test|migration|investigation|refactor","criterionIds":["AC-1"],"dependsOn":[],"ownedAreas":["path/or/glob/**"],"verification":["specific command or manual check"]}]}',
   "It never holds both keys.",
   "Ask questions only while a real ambiguity would change the split. Otherwise return the tasks.",
-  "Each task must be independent of every other task, because the agents run in separate worktrees and never see each other.",
+  "The spec states the user-visible outcome, explicit scope boundaries, constraints, visible assumptions, observable acceptance criteria, and material risks.",
+  "Every acceptance criterion has at least one task. Every task names the criteria it delivers, its owned files or areas, and concrete verification.",
+  "Use dependsOn only when ordering is real. Tasks in the same dependency wave must be safe to run in separate worktrees and should not claim the same files.",
   "Each task branch starts with feature/ and uses only letters, digits, dots, dashes and slashes.",
   "Each task prompt is self-contained: it states the outcome, the files or areas to touch, and how to verify the work.",
   "Return one task when the goal is a single unit of work. That is a valid answer.",
@@ -970,9 +1059,22 @@ function combinedBranchStep(readyToken) {
   ].join("\n");
 }
 
-function taskPrompt(prompt, images, base, deliveryMode = "single", readyToken = "", issueNumbers = []) {
+export function taskPrompt(task, spec, images, base, deliveryMode = "single", readyToken = "", issueNumbers = []) {
+  const criteria = (spec?.acceptanceCriteria || []).filter((criterion) => task.criterionIds?.includes(criterion.id));
+  const contract = [
+    "Delivery contract for this task:",
+    `Outcome: ${spec?.outcome || "Complete the requested goal"}`,
+    `Task: ${task.id} · ${task.title} · type ${task.type}`,
+    `Owned areas: ${(task.ownedAreas || []).join(", ")}`,
+    ...(task.dependsOn?.length ? [`Workflow dependencies: ${task.dependsOn.join(", ")}. Do not duplicate their owned work.`] : []),
+    "Acceptance criteria:",
+    ...criteria.map((criterion) => `- ${criterion.id}: ${criterion.text}\n  Verify: ${criterion.verification}`),
+    "Expected task verification:",
+    ...(task.verification || []).map((check) => `- ${check}`),
+    "Keep changes inside the owned areas unless a necessary adjacent change is required. Report every such exception in the completion limitations.",
+  ].join("\n");
   const finish = deliveryMode === "combined" ? combinedBranchStep(readyToken) : pullRequestStep(base, issueNumbers);
-  return [withImages(prompt, images), finish].join("\n\n");
+  return [withImages(task.prompt, images), contract, completionReportInstruction(task), finish].join("\n\n");
 }
 
 function normalizeImages(images) {
@@ -1008,7 +1110,7 @@ function openingPrompt(draft) {
     `Goal: ${draft.goal}`,
     ...(images ? ["", images, "Read each image with the Read tool. It shows what the user means.", "Do not repeat these paths in the task prompts. The server adds them to every task."] : []),
     "",
-    "Read the repository to understand the goal. Ask a question only when a real ambiguity would change how the work splits. Split the goal into tasks that share no files and depend on no other task's output.",
+    "Read the repository to understand the goal. Ask a question only when a real ambiguity would change scope, acceptance criteria, risk, or execution order. Build a delivery contract, then split it into the smallest coherent workflow. Parallel tasks must have disjoint ownership; dependent work uses explicit dependsOn edges.",
     "",
     OVERRIDES,
     "",
@@ -1016,21 +1118,21 @@ function openingPrompt(draft) {
   ].join("\n");
 }
 
-function reviewerPrompt(draft, tasks) {
+function reviewerPrompt(draft, spec, tasks) {
   return [
     `Repository: ${draft.repositoryName} at ${draft.cwd}`,
     `Goal: ${draft.goal}`,
     "",
-    "Critique the proposed plan against the repository and the goal. Fix omissions, overlap, dependencies, unsafe branch names, and prompts that are not self-contained. Return the improved tasks, even when the proposal was already sound.",
+    "Critique the proposed delivery contract against the repository and the goal. Fix missing or unobservable acceptance criteria, hidden assumptions, scope gaps, overlap, dependencies, unsafe branch names, and prompts that are not self-contained. Return the improved full contract, even when the proposal was already sound.",
     "",
-    "Proposed tasks:",
-    JSON.stringify({ tasks }),
+    "Proposed delivery contract:",
+    JSON.stringify({ spec, tasks }),
     "",
     OVERRIDES,
     "",
     CONTRACT,
     "",
-    "Return tasks, not questions.",
+    "Return a spec and tasks, not questions.",
   ].join("\n");
 }
 
@@ -1077,6 +1179,9 @@ function rejectedTasks(draft) {
   return draft.tasks.map((task, index) => [
     `${index + 1}. ${task.title}`,
     `   branch: ${task.branch}`,
+    `   criteria: ${(task.criterionIds || []).join(", ")}`,
+    `   depends on: ${(task.dependsOn || []).join(", ") || "none"}`,
+    `   owns: ${(task.ownedAreas || []).join(", ")}`,
     `   prompt: ${task.prompt}`,
   ].join("\n"));
 }
@@ -1100,8 +1205,9 @@ function feedbackRound(draft, note) {
   return [
     openingPrompt(draft),
     "",
-    "The split you returned before, which the reviewer rejected:",
+    "The delivery contract you returned before, which the reviewer rejected:",
     "",
+    JSON.stringify({ spec: draft.spec }),
     ...rejectedTasks(draft),
     "",
     rejection,
