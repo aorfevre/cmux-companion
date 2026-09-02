@@ -98,7 +98,11 @@ export class GoalIntegrator {
 
   async assemble(planId, { automatic = false } = {}) {
     const id = String(planId || "");
-    return this.#queue("assemble", id, () => this.#assemble(id, { automatic }));
+    return this.#queue("assemble", id, async () => {
+      const result = await this.#assemble(id, { automatic });
+      await this.#retireSessions(id);
+      return result;
+    });
   }
 
   // Each operation dedupes under its own key, because one key per plan would
@@ -223,7 +227,11 @@ export class GoalIntegrator {
   // proof of success, so it is read rather than reported.
   async settle(planId) {
     const id = String(planId || "");
-    return this.#queue("settle", id, () => this.#settle(id));
+    return this.#queue("settle", id, async () => {
+      const result = await this.#settle(id);
+      await this.#retireSessions(id);
+      return result;
+    });
   }
 
   async #settle(planId) {
@@ -420,6 +428,41 @@ export class GoalIntegrator {
       }
     }
     return this.store.recordWaveLaunch(plan.planId, { wave, startSha, results });
+  }
+
+  // A goal leaves one session per task plus one per merge attempt behind. Each
+  // stops being useful the moment its work is integrated, and cmux shows every
+  // one of them until something closes it. This runs after the store has
+  // committed the transition, and it swallows everything: a session left open
+  // is untidy, while a throw here would blame a delivery that already
+  // succeeded.
+  async #retireSessions(planId) {
+    try {
+      const plan = this.store.get(planId);
+      if (!plan || plan.deliveryMode !== "combined") return;
+      // A blocked merge keeps its worktree and every session the user may need
+      // to read, so a block closes nothing new.
+      if (plan.mergeStatus === "blocked") return;
+      if (!this.store.pendingSessionClosures || !this.cmux?.workspaceClose) return;
+      // The live merge session is the one the user is watching, and after the
+      // pull request it is the session that opened it. Never close it.
+      const pending = this.store.pendingSessionClosures(plan.planId)
+        .filter((entry) => entry.workspaceId && entry.workspaceId !== plan.mergeWorkspaceId);
+      const retired = [];
+      for (const entry of pending) {
+        const closed = await this.cmux.workspaceClose(entry.workspaceId).then(() => true, (cause) => {
+          // A session the user already closed rejects exactly like one that was
+          // never opened. Both are retired, or the same dead id would be
+          // retried on every settle for the life of the plan.
+          this.log?.warn?.({ err: cause, planId: plan.planId, workspaceId: entry.workspaceId }, "closing a finished goal session failed");
+          return missingWorkspace(cause);
+        });
+        if (closed) retired.push(entry);
+      }
+      if (retired.length) this.store.recordSessionsRetired(plan.planId, retired);
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, planId }, "goal session cleanup failed");
+    }
   }
 
   // The list feeds the worktree reuse check only. An empty list makes that
@@ -634,6 +677,12 @@ function evidenceChanged(task, evidence) {
     || JSON.stringify(task.completionReport) !== JSON.stringify(evidence.report || null)
     || JSON.stringify(task.changedFiles || []) !== JSON.stringify(evidence.changedFiles || [])
     || JSON.stringify(task.scopeWarnings || []) !== JSON.stringify(evidence.scopeWarnings || []);
+}
+
+// cmux has no typed error for a workspace that is gone, so its message is all
+// there is to read. Anything else may be a passing fault, and stays retryable.
+function missingWorkspace(cause) {
+  return /not found|no such|unknown workspace|does not exist|already closed/i.test(String(cause?.message || ""));
 }
 
 function oneLine(value, max) {

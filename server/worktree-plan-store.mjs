@@ -17,6 +17,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "goal", "questions", "answers", "tasks", "feedback", "edit", "launch",
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
+  "session_retired",
 ]);
 // A round either asked questions or returned the split. Any other stage is a
 // caller mistake, and storing it would make a reloaded plan unreadable.
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS plans (
   cmux_notice_key TEXT,
   merge_workspace_id TEXT,
   merge_status TEXT,
+  superseded_merge_workspaces TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   launched_at TEXT
@@ -92,6 +94,7 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
   scope_warnings TEXT NOT NULL DEFAULT '[]',
   delivery_status TEXT NOT NULL DEFAULT 'pending',
   integrated_commit_sha TEXT,
+  session_closed_at TEXT,
   PRIMARY KEY (plan_id, task_id)
 );
 CREATE TABLE IF NOT EXISTS plan_events (
@@ -243,6 +246,10 @@ export class WorktreePlanStore {
   recordWaveIntegrated(planId, wave) {
     const at = this.#stamp();
     this.#transaction(() => {
+      // The statement below is about to clear merge_workspace_id, and that
+      // column is the only record of the wave merge session there is. Capture
+      // it first, or the session stays open with nothing left to point at it.
+      this.#supersedeMerge(String(planId));
       this.db.prepare(`
         UPDATE plans SET delivery_status = 'implementing', merge_status = NULL, merge_workspace_id = NULL,
           delivery_error = NULL, updated_at = ? WHERE plan_id = ?
@@ -347,6 +354,9 @@ export class WorktreePlanStore {
   recordMergeLaunched(planId, workspaceId) {
     const at = this.#stamp();
     this.#transaction(() => {
+      // A resumed merge is recorded under its own id, so only a different id
+      // means the previous session was replaced rather than continued.
+      this.#supersedeMerge(String(planId), { except: text(workspaceId) });
       this.db.prepare(`
         UPDATE plans SET merge_workspace_id = ?, merge_status = 'running',
           delivery_status = 'assembling', delivery_error = NULL, updated_at = ? WHERE plan_id = ?
@@ -382,6 +392,67 @@ export class WorktreePlanStore {
       this.#insertEvent(String(planId), null, "task_integrated", { taskId, commitSha }, at);
     });
     return this.get(planId);
+  }
+
+  // The sessions Companion opened for this plan that have stopped being useful:
+  // a task session once its branch is integrated, and a merge session once a
+  // wave landed or a fresh merge agent replaced it. The live merge session is
+  // never in this list, because only a cleared or replaced id is superseded.
+  pendingSessionClosures(planId) {
+    const id = String(planId || "");
+    const tasks = this.db.prepare(`
+      SELECT task_id, workspace_id FROM plan_tasks
+      WHERE plan_id = ? AND delivery_status = 'integrated' AND workspace_id IS NOT NULL AND session_closed_at IS NULL
+      ORDER BY position
+    `).all(id).map((row) => ({ workspaceId: row.workspace_id, taskId: row.task_id }));
+    const merges = this.#superseded(id)
+      .filter((entry) => !entry.retiredAt)
+      .map((entry) => ({ workspaceId: entry.workspaceId, taskId: null }));
+    return [...tasks, ...merges];
+  }
+
+  // Retirement is durable so a restart never closes the same session twice and
+  // never keeps asking cmux about a session that is already gone.
+  recordSessionsRetired(planId, entries = []) {
+    const id = String(planId || "");
+    const wanted = (Array.isArray(entries) ? entries : [])
+      .map((entry) => ({ workspaceId: text(entry?.workspaceId), taskId: text(entry?.taskId) }))
+      .filter((entry) => entry.workspaceId);
+    if (!wanted.length) return this.get(id);
+    const at = this.#stamp();
+    this.#transaction(() => {
+      const close = this.db.prepare(
+        "UPDATE plan_tasks SET session_closed_at = ? WHERE plan_id = ? AND task_id = ? AND session_closed_at IS NULL",
+      );
+      for (const entry of wanted) if (entry.taskId) close.run(at, id, entry.taskId);
+      const retired = new Set(wanted.filter((entry) => !entry.taskId).map((entry) => entry.workspaceId));
+      if (retired.size) {
+        const merges = this.#superseded(id)
+          .map((entry) => (retired.has(entry.workspaceId) && !entry.retiredAt ? { ...entry, retiredAt: at } : entry));
+        this.db.prepare("UPDATE plans SET superseded_merge_workspaces = ? WHERE plan_id = ?").run(json(merges), id);
+      }
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
+      this.#insertEvent(id, null, "session_retired", { sessions: wanted }, at);
+    });
+    return this.get(id);
+  }
+
+  #superseded(planId) {
+    const row = this.db.prepare("SELECT superseded_merge_workspaces FROM plans WHERE plan_id = ?").get(String(planId));
+    const list = parse(row?.superseded_merge_workspaces, []);
+    return Array.isArray(list) ? list.filter((entry) => entry && typeof entry.workspaceId === "string") : [];
+  }
+
+  // Called from inside the transaction that is about to drop the current merge
+  // workspace id. Nothing else records that a session was left behind.
+  #supersedeMerge(planId, { except = null } = {}) {
+    const row = this.db.prepare("SELECT merge_workspace_id FROM plans WHERE plan_id = ?").get(String(planId));
+    const current = text(row?.merge_workspace_id);
+    if (!current || current === except) return;
+    const merges = this.#superseded(planId);
+    if (merges.some((entry) => entry.workspaceId === current)) return;
+    merges.push({ workspaceId: current, retiredAt: null });
+    this.db.prepare("UPDATE plans SET superseded_merge_workspaces = ? WHERE plan_id = ?").run(json(merges), String(planId));
   }
 
   recordDeliveryFailure(planId, error) {
@@ -540,6 +611,7 @@ export class WorktreePlanStore {
     ensure("plans", "cmux_notice_key", "TEXT");
     ensure("plans", "merge_workspace_id", "TEXT");
     ensure("plans", "merge_status", "TEXT");
+    ensure("plans", "superseded_merge_workspaces", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plans", "contract_version", "INTEGER NOT NULL DEFAULT 1");
     ensure("plans", "spec", "TEXT");
     ensure("plans", "readiness", "TEXT");
@@ -558,6 +630,7 @@ export class WorktreePlanStore {
     ensure("plan_tasks", "scope_warnings", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plan_tasks", "delivery_status", "TEXT NOT NULL DEFAULT 'pending'");
     ensure("plan_tasks", "integrated_commit_sha", "TEXT");
+    ensure("plan_tasks", "session_closed_at", "TEXT");
   }
 
   // node:sqlite has no transaction helper, so BEGIN/COMMIT is written out. A
@@ -623,6 +696,7 @@ function readPlan(row) {
     cmuxNoticeKey: row.cmux_notice_key ?? null,
     mergeWorkspaceId: row.merge_workspace_id,
     mergeStatus: row.merge_status,
+    supersededMergeWorkspaces: parse(row.superseded_merge_workspaces, []),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     launchedAt: row.launched_at,
@@ -656,6 +730,7 @@ function readTask(row) {
     scopeWarnings: parse(row.scope_warnings, []),
     deliveryStatus: row.delivery_status || "pending",
     integratedCommitSha: row.integrated_commit_sha,
+    sessionClosedAt: row.session_closed_at ?? null,
   };
 }
 
