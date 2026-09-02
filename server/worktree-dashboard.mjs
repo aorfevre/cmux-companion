@@ -315,13 +315,12 @@ export class WorktreeDashboard {
     }
   }
 
-  async create(repositoryId, { branch, base } = {}) {
+  async create(repositoryId, { branch, base, reuseIfAtBase = false, workspaces = [] } = {}) {
     if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
     const branchName = normalizedGitInput(branch, "Enter a branch name");
-    const dashboard = await this.snapshot({ refresh: true });
+    const dashboard = await this.snapshot({ workspaces, refresh: true });
     const repository = dashboard.repositories.find((item) => item.id === repositoryId);
     if (!repository) throw new TypeError("Unknown repository");
-    if (repository.worktrees.some((item) => item.branch === branchName)) throw new TypeError("That branch already has a worktree");
 
     try {
       await this.repoCatalog.git(repository.path, ["check-ref-format", "--branch", branchName]);
@@ -331,6 +330,12 @@ export class WorktreeDashboard {
 
     const primary = repository.worktrees.find((item) => item.isPrimary) || repository.worktrees[0];
     const baseRef = normalizedGitInput(base || primary?.branch || "HEAD", "Enter a base revision");
+    const existing = repository.worktrees.find((item) => item.branch === branchName);
+    if (existing) {
+      if (reuseIfAtBase !== true) throw new TypeError("That branch already has a worktree");
+      return this.reuseWorktree(existing, repository, baseRef);
+    }
+
     const branchExists = await this.repoCatalog.git(repository.path, ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`])
       .then(() => true, () => false);
     if (!branchExists) {
@@ -357,7 +362,43 @@ export class WorktreeDashboard {
     const refreshed = await this.snapshot({ refresh: true });
     const created = refreshed.repositories.flatMap((item) => item.worktrees).find((item) => item.path === targetPath);
     if (!created) throw new TypeError("The worktree was created but could not be loaded");
-    return { created: true, worktree: created, branchCreated: !branchExists };
+    return { created: true, reused: false, worktree: created, branchCreated: !branchExists };
+  }
+
+  // A launch makes a worktree and then opens a session in it. When the session
+  // step fails, the worktree stays behind and every retry hit the "already has
+  // a worktree" guard, so the plan could never restart. Reuse only that exact
+  // leftover: a worktree that holds nothing and already sits on the intended
+  // base commit is indistinguishable from one this method would create now.
+  // Every other worktree still fails, because recycling one under a new agent
+  // would bury work the user cannot see.
+  async reuseWorktree(worktree, repository, baseRef) {
+    const refuse = (reason) => { throw new TypeError(`That branch already has a worktree ${reason}`); };
+    if (worktree.isPrimary) refuse("that is the main checkout");
+    if (worktree.managedRelease) refuse("that belongs to a companion release");
+    if (worktree.locked) refuse("that Git has locked");
+    if (worktree.detached) refuse("with a detached HEAD");
+    if (worktree.sessions.length > 0) refuse("with a running session");
+    if (worktree.changedFiles > 0) refuse("with uncommitted changes");
+
+    const target = this.targets.get(worktree.id);
+    if (!target) refuse("that could not be inspected");
+    // The snapshot is a moment old. Read the working tree again, so a file
+    // written since then still blocks the reuse.
+    try {
+      await this.assertStillClean(worktree, target);
+    } catch {
+      refuse("with uncommitted changes");
+    }
+
+    const [baseSha, headSha] = await Promise.all([
+      this.repoCatalog.git(repository.path, ["rev-parse", `${baseRef}^{commit}`]).then((output) => String(output).trim(), () => ""),
+      this.repoCatalog.git(worktree.path, ["rev-parse", "HEAD"]).then((output) => String(output).trim(), () => ""),
+    ]);
+    if (!baseSha) throw new TypeError("The base revision does not exist");
+    if (!headSha || headSha !== baseSha) refuse(`on a different commit than ${baseRef}`);
+
+    return { created: false, reused: true, worktree, branchCreated: false };
   }
 
   async setRepositoryArchived(id, archived, { workspaces = [] } = {}) {
