@@ -161,8 +161,28 @@ the title. The same identity is exported into the session's own shell as
 `COMPANION_PROJECT`, `COMPANION_TASK` and `COMPANION_PART`, so it survives a
 rename.
 
-On a screen 1280 pixels wide or wider the board is an eight-column grid whose
-columns scroll independently. Narrower screens keep the scrolling strip.
+On a screen 1280 pixels wide or wider the board takes the whole window, its
+lanes keep a readable minimum width, and the row scrolls sideways when eight of
+them no longer fit. Squeezing every lane to fit is what made the board
+unreadable. Every other view keeps its 1500-pixel cap, because prose and forms
+stop being readable past it. Narrower screens keep the phone strip.
+
+**＋ New goal** in the board header starts a goal without leaving the board, and
+asks which repository only when more than one is visible. Each card carries its
+repository as a coloured chip, so a board of parallel work says which product
+each goal belongs to at a glance.
+
+An **agent capacity** strip above the board answers which provider takes the
+next task and why. It shows each provider's headroom, its deciding 5-hour and
+weekly windows with live reset countdowns, and the account status behind them.
+The verdict comes from the dispatcher's own rule rather than a second copy of
+it, so the panel and the behaviour cannot disagree. When both providers are
+exhausted it leads with the reset countdown.
+
+**Check if merged** on a card in Waiting for merge or Blocked asks GitHub about
+that one goal, instead of waiting for the next reconciliation pass. It reports
+three outcomes differently: the goal moved to Merged, its pull request is still
+open, or GitHub knows no pull request for its branch.
 
 | Route | Purpose |
 | --- | --- |
@@ -176,6 +196,8 @@ columns scroll independently. Narrower screens keep the scrolling strip.
 | `GET /api/goals/health` | Check every launched goal's agents against the live cmux session list. Read-only. |
 | `POST /api/goals/health/check` | Force the pass the watchdog runs on its timer, and report what changed. |
 | `GET /api/worktree-plans/:planId/health` | The same verdict for one goal. |
+| `GET /api/goals/capacity` | Which provider takes the next task, its headroom, deciding windows and resets. |
+| `POST /api/worktree-plans/:planId/check-merge` | Ask GitHub about one goal's pull request now. |
 | `POST /api/worktree-plans/:planId/tasks/:taskId/relaunch` | Start one task again. `mode` is `continue` or `restart`. |
 | `POST /api/worktree-plans/:planId/tasks/:taskId/skip` | Drop one task so it stops blocking the merge. |
 
