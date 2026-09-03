@@ -57,7 +57,11 @@ export default function Home() {
   const [notificationContext, setNotificationContext] = useState<{ kind: string; file?: string | null } | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); const kind = query.get("context"); return kind && query.has("workspace") ? { kind, file: query.get("file") } : null; });
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const [queueItems, setQueueItems] = useState<PromptQueueItem[]>([]);
-  const [homeMode, setHomeMode] = useState<HomeMode>(() => { if (typeof window === "undefined") return "sessions"; const query = new URLSearchParams(location.search).get("mode"); if (query === "worktrees") return "worktrees"; return localStorage.getItem("cmux-companion-home-mode") === "worktrees" ? "worktrees" : "sessions"; });
+  // Worktrees is the landing view, because its board is the one screen that says
+  // what is running and what needs a person. `?mode=sessions` and a stored
+  // choice both still win, so a phone that prefers the flat session list keeps
+  // it and a notification link can still name either view.
+  const [homeMode, setHomeMode] = useState<HomeMode>(() => { if (typeof window === "undefined") return "worktrees"; const query = new URLSearchParams(location.search).get("mode"); if (query === "worktrees" || query === "sessions") return query; return localStorage.getItem("cmux-companion-home-mode") === "sessions" ? "sessions" : "worktrees"; });
   // A notification about a finished planner round carries its plan id. The
   // dashboard opens that goal, then clears this so a later render cannot reopen
   // the sheet the user just closed.
@@ -125,7 +129,7 @@ export default function Home() {
   async function fixPreview(preview: Preview, prompt: string, queue: boolean) { const workspace = bootstrap?.workspaces.find((item) => item.id === preview.workspaceId); const terminal = workspace?.terminals.find((item) => item.is_focused) || workspace?.terminals[0]; if (!workspace || !terminal) throw new Error("That cmux session is no longer open"); if (queue) await api("/api/prompt-queue", { method: "POST", body: JSON.stringify({ workspaceId: workspace.id, surfaceId: terminal.id, text: prompt }) }); else await api(`/api/terminals/${terminal.id}/input`, { method: "POST", body: JSON.stringify({ text: prompt, enter: true }) }); if (selectedWorkspace?.id === workspace.id) await loadPromptQueue(); setNotice(queue ? "Visual fix queued for the agent" : "Visual fix sent to the agent"); }
   async function sendKey(key: string) { if (!selectedTerminal || readOnly) return; setSending(true); try { await api(`/api/terminals/${selectedTerminal.id}/key`, { method: "POST", body: JSON.stringify({ key }) }); setTimeout(loadTerminal, 150); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not send key"); } finally { setSending(false); } }
   function changeReadOnly(value: boolean) { setReadOnly(value); localStorage.setItem("cmux-companion-read-only", String(value)); }
-  function changeHomeMode(mode: HomeMode) { setHomeMode(mode); localStorage.setItem("cmux-companion-home-mode", mode); history.replaceState(null, "", `/?view=sessions${mode === "worktrees" ? "&mode=worktrees" : ""}`); }
+  function changeHomeMode(mode: HomeMode) { setHomeMode(mode); localStorage.setItem("cmux-companion-home-mode", mode); history.replaceState(null, "", `/?view=sessions&mode=${mode}`); }
   function changeView(next: View) { setSelectedWorkspaceId(null); setDocumentTarget(null); setActionId(null); setView(next); history.replaceState(null, "", `/?view=${next}`); }
   function openDocument(repoId: string, path: string) { setDocumentTarget({ repoId, path: path.replace(/^\.\//, "") }); history.replaceState(null, "", `/?repo=${encodeURIComponent(repoId)}&file=${encodeURIComponent(path.replace(/^\.\//, ""))}`); }
   function openRepoWorkspace(repoId: string) { const repo = repos.find((item) => item.id === repoId); const workspace = bootstrap?.workspaces.find((item) => repo && (item.current_directory === repo.path || item.current_directory?.startsWith(`${repo.path}/`))); if (workspace) openWorkspace(workspace); else setNotice("No open cmux session uses this repository"); }

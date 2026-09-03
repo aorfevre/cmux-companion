@@ -85,11 +85,39 @@ function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string })
   return <div className="planner-waiting"><span>{waiting}</span>{steps.length > 0 && <ul className="planner-progress">{steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ul>}</div>;
 }
 
-function DeliveryTasks({ tasks }: { tasks: PlanTask[] }) {
+// A launched goal used to show its task states and nothing else, so a goal
+// waiting on one task read as locked: the state was visible and the way out was
+// not. Each waiting task now carries the same three recoveries the attention
+// rail offers, plus the agent's live verdict so the user can tell a task that is
+// still working from one that died an hour ago.
+function DeliveryTasks({ tasks, planId, health, busy, confirming, onRelaunch, onSkip, onConfirm }: {
+  tasks: PlanTask[]; planId: string; health: Record<string, TaskHealth>; busy: Record<string, boolean>;
+  confirming: string; onRelaunch: (taskId: string, mode: "continue" | "restart") => void; onSkip: (taskId: string) => void; onConfirm: (key: string) => void;
+}) {
   if (tasks.length === 0) return null;
   const { ready, total } = readyCount(tasks);
-  return <><p className="planner-delivery-count">{ready} of {total} branches ready</p><ul className="planner-delivery-tasks" aria-label="Task delivery">{tasks.map((task) => { const state = taskState(task); return <li key={task.id}><span>{task.title}</span><code>{task.branch}</code><em className={`delivery-${state.tone}`}>{state.label}</em></li>; })}</ul></>;
+  return <><p className="planner-delivery-count">{ready} of {total} branches ready</p><ul className="planner-delivery-tasks" aria-label="Task delivery">{tasks.map((task) => {
+    const state = taskState(task);
+    const verdict = health[task.id];
+    // Only a launched task that has not delivered can be recovered. A ready or
+    // integrated task has nothing to redo, and a queued one has not started.
+    const recoverable = task.launchStatus === "launched" && task.deliveryStatus !== "ready" && task.deliveryStatus !== "integrated";
+    const relaunchKey = `relaunch:${task.id}`;
+    const skipKey = `skip:${task.id}`;
+    const working = busy[relaunchKey] === true || busy[skipKey] === true;
+    return <li key={task.id}>
+      <span>{task.title}</span>
+      <code>{task.branch}</code>
+      <em className={`delivery-${state.tone}`}>{state.label}</em>
+      {verdict && <p className={`planner-delivery-health health-${verdict.health}`}>{verdict.reason}</p>}
+      {recoverable && (confirming === `${planId}:${task.id}`
+        ? <div className="planner-delivery-confirm"><span>Restart discards this task&rsquo;s branch and worktree, and everything its agent wrote. Continue keeps them.</span><div><button type="button" aria-label={`Cancel recovering ${task.title}`} onClick={() => onConfirm("")}>Cancel</button><button type="button" className="confirm-restart" aria-label={`Confirm restart ${task.title}`} disabled={working} onClick={() => onRelaunch(task.id, "restart")}>{busy[relaunchKey] ? "Restarting…" : "Confirm restart"}</button><button type="button" className="confirm-skip" aria-label={`Confirm skip ${task.title}`} disabled={working} onClick={() => onSkip(task.id)}>{busy[skipKey] ? "Skipping…" : "Skip this task"}</button></div></div>
+        : <div className="planner-delivery-actions"><button type="button" aria-label={`Continue ${task.title}`} disabled={working} onClick={() => onRelaunch(task.id, "continue")}>{busy[relaunchKey] ? "Continuing…" : "Continue"}</button><button type="button" aria-label={`Restart or skip ${task.title}`} disabled={working} onClick={() => onConfirm(`${planId}:${task.id}`)}>Restart or skip…</button></div>)}
+    </li>;
+  })}</ul></>;
 }
+
+type TaskHealth = { health: string; reason: string };
 
 function GoalPassport({ draft }: { draft: PlanDraft }) {
   const spec = draft.spec;
@@ -160,13 +188,14 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   const [effort, setEffort] = useState<string>(PLANNER_ENGINES.defaultEffort);
   const [reviewer, setReviewer] = useState(false);
   const [draft, setDraft] = useState<PlanDraft | null>(null);
-  const [plans, setPlans] = useState<PlanSummary[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [result, setResult] = useState<PlanLaunchResult | null>(null);
   const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch" | "assemble" | "feedback">("");
-  const [openingPlanId, setOpeningPlanId] = useState("");
-  const [deletingPlanId, setDeletingPlanId] = useState("");
-  const [confirmDeleteId, setConfirmDeleteId] = useState("");
+  // Keyed per task, not one shared string: one task relaunching must not
+  // disable the recovery buttons of every other task on the sheet.
+  const [taskBusy, setTaskBusy] = useState<Record<string, boolean>>({});
+  const [taskHealth, setTaskHealth] = useState<Record<string, TaskHealth>>({});
+  const [confirmTask, setConfirmTask] = useState("");
   const [error, setError] = useState("");
   // The reviewer's rejection. It is cleared by receive(), so a finished round
   // never leaves the previous complaint in the box.
@@ -202,42 +231,23 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     setError(message);
   }, []);
 
-  const loadPlans = useCallback(async () => {
-    try {
-      const response = await request<{ plans: PlanSummary[] }>(`/api/worktree-plans?repositoryId=${encodeURIComponent(repository.id)}`);
-      setPlans(Array.isArray(response.plans) ? response.plans : []);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load saved goals"); }
-  }, [repository.id]);
-
+  // Still used by the notification deep link, which opens one saved goal
+  // straight into this sheet.
   const openPlan = useCallback(async (planId: string) => {
-    setOpeningPlanId(planId); setError("");
+    setError("");
     try { receive(await request<PlanDraft>(`/api/worktree-plans/${encodeURIComponent(planId)}`)); }
     catch (cause) { fail(cause, "Could not open this goal"); }
-    finally { setOpeningPlanId(""); }
   }, [fail, receive]);
 
   useEffect(() => {
-    const kickoff = setTimeout(() => {
-      void loadPlans();
-      if (initialPlanId) void openPlan(initialPlanId);
-    }, 0);
+    if (!initialPlanId) return;
+    const kickoff = setTimeout(() => { void openPlan(initialPlanId); }, 0);
     return () => clearTimeout(kickoff);
-  }, [initialPlanId, loadPlans, openPlan]);
-
-  async function deletePlan(planId: string) {
-    setDeletingPlanId(planId); setError("");
-    try {
-      await request<{ deleted: true }>(`/api/worktree-plans/${encodeURIComponent(planId)}`, { method: "DELETE" });
-      setPlans((current) => current.filter((plan) => plan.planId !== planId));
-      setConfirmDeleteId("");
-    } catch (cause) { fail(cause, "Could not delete this goal"); }
-    finally { setDeletingPlanId(""); }
-  }
+  }, [initialPlanId, openPlan]);
 
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
-    setGoal(""); setDraft(null); setResult(null); setAnswers({}); setError(""); setConfirmDeleteId(""); setFeedback(""); setRejecting(false);
-    void loadPlans();
+    setGoal(""); setDraft(null); setResult(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false);
   }
 
   // The round runs in the background, so this answers as soon as the plan row
@@ -310,6 +320,60 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     finally { setBusy(""); }
   }
 
+  // The verdict for each task, so a waiting task says whether its agent is
+  // running or dead. Read once when a launched plan opens and after each
+  // recovery: it costs a cmux round trip, so it does not poll here.
+  const loadTaskHealth = useCallback(async (planId: string) => {
+    try {
+      const report = await request<{ tasks: { id: string; health: string; reason: string }[] }>(`/api/worktree-plans/${encodeURIComponent(planId)}/health`);
+      setTaskHealth(Object.fromEntries((report.tasks || []).map((task) => [task.id, { health: task.health, reason: task.reason }])));
+    } catch { setTaskHealth({}); }
+  }, []);
+
+  useEffect(() => {
+    if (draft?.planStatus !== "launched" || !draft.planId) return;
+    // Deferred by one tick, like the other loaders in this file, so the fetch
+    // does not write state inside the effect's own render pass.
+    const planId = draft.planId;
+    const kickoff = setTimeout(() => { void loadTaskHealth(planId); }, 0);
+    return () => clearTimeout(kickoff);
+  }, [draft?.planStatus, draft?.planId, loadTaskHealth]);
+
+  // One task starts again without abandoning the goal. `continue` keeps the
+  // worktree and its work; `restart` discards both, so it confirms first.
+  async function relaunchTask(taskId: string, mode: "continue" | "restart") {
+    if (!draft) return;
+    const key = `relaunch:${taskId}`;
+    setTaskBusy((current) => ({ ...current, [key]: true })); setError("");
+    try {
+      // A crashed agent usually leaves its workspace open at a shell prompt, so
+      // closing it here saves a trip to cmux. A task the sweep still reports as
+      // working is never closed by a button labelled Continue.
+      const verdict = taskHealth[taskId]?.health;
+      const closeLive = verdict !== undefined && verdict !== "working" && verdict !== "needs_you";
+      await request(`/api/worktree-plans/${draft.planId}/tasks/${encodeURIComponent(taskId)}/relaunch`, { method: "POST", body: JSON.stringify({ mode, closeLive }) });
+      setConfirmTask("");
+      receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}`));
+      await loadTaskHealth(draft.planId);
+      onNotice(mode === "restart" ? "Restarted the task from its base branch" : "Continued the task in its existing worktree");
+    } catch (cause) { fail(cause, "Could not relaunch this task"); }
+    finally { setTaskBusy((current) => ({ ...current, [key]: false })); }
+  }
+
+  async function skipTask(taskId: string) {
+    if (!draft) return;
+    const key = `skip:${taskId}`;
+    setTaskBusy((current) => ({ ...current, [key]: true })); setError("");
+    try {
+      await request(`/api/worktree-plans/${draft.planId}/tasks/${encodeURIComponent(taskId)}/skip`, { method: "POST", body: JSON.stringify({ reason: "Skipped from the goal sheet" }) });
+      setConfirmTask("");
+      receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}`));
+      await loadTaskHealth(draft.planId);
+      onNotice("Skipped the task, so the goal can assemble without it");
+    } catch (cause) { fail(cause, "Could not skip this task"); }
+    finally { setTaskBusy((current) => ({ ...current, [key]: false })); }
+  }
+
   // The local attachments still hold their preview data URLs, so prefer them
   // over the draft's paths for as long as this sheet is open.
   const reviewImages = attachments.length ? attachments : draft?.images || [];
@@ -344,10 +408,6 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     {(draft || result) && <button type="button" className="planner-new-goal" disabled={busy !== ""} onClick={newGoal}>← New goal</button>}
     {draft && !result && terminal && <TerminalGoalBanner status={terminal} plan={draft} />}
     {!draft && !result && <>
-      {plans.length > 0 && <section className="planner-saved" aria-label="Saved goals"><strong>Saved goals</strong><div>{plans.map((saved) => <article className="planner-saved-row" key={saved.planId}>
-        <div className="planner-saved-copy"><div><p>{saved.goal}</p><span className={`planner-status ${terminalStatus(saved) || (saved.running ? "running" : saved.status)}`}>{terminalStatus(saved) === "merged" ? "Merged" : terminalStatus(saved) === "aborted" ? "Aborted" : saved.running ? "Planning…" : saved.status === "draft" ? "Draft" : "Launched"}</span></div><small>{saved.running && saved.runStep ? saved.runStep : `round ${saved.round} · ${saved.taskCount} task${saved.taskCount === 1 ? "" : "s"} · ${relativeTime(saved.updatedAt)}`}</small></div>
-        {confirmDeleteId === saved.planId ? <div className="planner-delete-confirm"><button type="button" disabled={deletingPlanId === saved.planId} aria-label={`Cancel deleting ${saved.goal}`} onClick={() => setConfirmDeleteId("")}>Cancel</button><button type="button" className="confirm-delete" disabled={deletingPlanId === saved.planId} aria-label={`Confirm delete ${saved.goal}`} onClick={() => { void deletePlan(saved.planId); }}>{deletingPlanId === saved.planId ? "Deleting…" : "Confirm delete"}</button></div> : <div className="planner-saved-actions"><button type="button" className="planner-open-plan" disabled={openingPlanId !== "" || deletingPlanId !== ""} aria-label={`${!terminalStatus(saved) && saved.status === "draft" ? "Resume" : "View"} ${saved.goal}`} onClick={() => { void openPlan(saved.planId); }}>{openingPlanId === saved.planId ? "Opening…" : !terminalStatus(saved) && saved.status === "draft" ? "Resume" : "View"}</button><button type="button" className="planner-delete-plan" disabled={openingPlanId !== "" || deletingPlanId !== "" || saved.running === true} aria-label={`Delete ${saved.goal}`} onClick={() => setConfirmDeleteId(saved.planId)}>Delete</button></div>}
-      </article>)}</div></section>}
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       <section className="planner-engine-config" aria-label="Planner configuration">
@@ -408,8 +468,8 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
         </> : <button type="button" className="planner-reject-open" disabled={locked} onClick={() => setRejecting(true)}>This plan is wrong</button>}
       </section>}
       {error && <p className="worktree-action-error">{error}</p>}
-      {terminal ? <section className="planner-delivery-status" aria-label="Recorded delivery status"><strong>{terminal === "merged" ? "Merged" : "Aborted"}</strong><DeliveryTasks tasks={draft.tasks} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}</section>
-        : launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p>
+      {terminal ? <section className="planner-delivery-status" aria-label="Recorded delivery status"><strong>{terminal === "merged" ? "Merged" : "Aborted"}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}</section>
+        : launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p>
         : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{busy === "launch" ? "Launching…" : launchLabel(draft)}</button>}
     </>}
     {result && <>

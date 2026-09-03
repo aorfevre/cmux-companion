@@ -165,6 +165,28 @@
 .worktree-planner-sheet .planner-delivery-count{margin:0;color:#c6dcff;font:9px/1.4 -apple-system,sans-serif;font-weight:700}.worktree-planner-sheet .planner-delivery-tasks{display:flex;flex-direction:column;gap:5px;margin:0;padding:0;list-style:none}.worktree-planner-sheet .planner-delivery-tasks li{display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:baseline}.worktree-planner-sheet .planner-delivery-tasks span{grid-row:1;grid-column:1;color:#dbe6f4;font-size:9px}.worktree-planner-sheet .planner-delivery-tasks code{grid-column:1;color:#7f93ab;font-size:8px;overflow-wrap:anywhere}.worktree-planner-sheet .planner-delivery-tasks em{grid-row:1;grid-column:2;font-size:8px;font-style:normal;font-weight:700}.worktree-planner-sheet .planner-delivery-tasks .delivery-waiting{color:#93a2b2}.worktree-planner-sheet .planner-delivery-tasks .delivery-ready{color:#9fc4ff}.worktree-planner-sheet .planner-delivery-tasks .delivery-merged{color:var(--lime)}.worktree-planner-sheet .planner-delivery-tasks .delivery-not-launched{color:#e0796b}
 .worktree-planner-sheet .goal-passport{display:flex;flex-direction:column;gap:11px;margin:0 0 12px;border:1px solid #3b4a2d;border-radius:13px;background:linear-gradient(145deg,rgba(201,255,80,.055),#151a20 45%);padding:12px}.worktree-planner-sheet .goal-passport>header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.worktree-planner-sheet .goal-passport>header>div{display:flex;min-width:0;flex-direction:column;gap:4px}.worktree-planner-sheet .goal-passport>header small{color:#91ad5c;font:7px ui-monospace,monospace;letter-spacing:.12em}.worktree-planner-sheet .goal-passport>header strong{color:#edf3e5;font-size:11px;line-height:1.4}.worktree-planner-sheet .goal-passport>header em{flex:none;border-radius:8px;background:rgba(201,255,80,.1);color:var(--lime);padding:5px 7px;font-size:7px;font-style:normal}.worktree-planner-sheet .goal-passport>header em.blocked{background:rgba(255,109,120,.1);color:#ff9ca5}.worktree-planner-sheet .goal-passport-readiness{display:flex;flex-direction:column;gap:4px}.worktree-planner-sheet .goal-passport-readiness p{margin:0;border-left:2px solid;padding-left:7px;white-space:normal;font-size:8px;line-height:1.45}.worktree-planner-sheet .goal-passport .error{border-color:#ff6d78;color:#ff9ca5}.worktree-planner-sheet .goal-passport .warning{border-color:#ffb35c;color:#d7ad7c}.worktree-planner-sheet .goal-passport-scope{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.worktree-planner-sheet .goal-passport-scope>div{border:1px solid #29333a;border-radius:9px;background:#151a20;padding:8px}.worktree-planner-sheet .goal-passport-scope strong,.worktree-planner-sheet .goal-passport-block>strong{display:block;margin-bottom:5px;color:#aab7c1;font-size:8px}.worktree-planner-sheet .goal-passport-scope ul{display:flex;flex-direction:column;gap:3px;margin:0;padding-left:13px}.worktree-planner-sheet .goal-passport-scope li,.worktree-planner-sheet .goal-passport-scope small{color:#89949e;white-space:normal;font-size:7px;line-height:1.4}.worktree-planner-sheet .goal-passport-criteria,.worktree-planner-sheet .goal-passport-evidence{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}.worktree-planner-sheet .goal-passport-criteria li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:7px;border-top:1px solid #293239;padding-top:6px}.worktree-planner-sheet .goal-passport-criteria code{color:#9fc4ff;font-size:7px}.worktree-planner-sheet .goal-passport-criteria div{display:flex;min-width:0;flex-direction:column;gap:2px}.worktree-planner-sheet .goal-passport-criteria span{color:#d8dee3;font-size:8px;line-height:1.35}.worktree-planner-sheet .goal-passport-criteria small{color:#7f8a94;font-size:7px;line-height:1.35}.worktree-planner-sheet .goal-passport-criteria em{border-radius:6px;background:#252c32;color:#929da6;padding:3px 5px;font-size:7px;font-style:normal}.worktree-planner-sheet .goal-passport-criteria em.completed{background:rgba(159,196,255,.1);color:#9fc4ff}.worktree-planner-sheet .goal-passport-criteria em.integrated{background:rgba(201,255,80,.1);color:var(--lime)}.worktree-planner-sheet .goal-passport-waves{display:flex;flex-direction:column;gap:5px;margin:0;padding:0;list-style:none}.worktree-planner-sheet .goal-passport-waves li{display:grid;grid-template-columns:48px 1fr;gap:7px;align-items:start}.worktree-planner-sheet .goal-passport-waves span{color:#8ca760;font:7px ui-monospace,monospace}.worktree-planner-sheet .goal-passport-waves div{display:flex;flex-wrap:wrap;gap:4px}.worktree-planner-sheet .goal-passport-waves b{border:1px solid #34404a;border-radius:6px;background:#1b2127;color:#bcc6ce;padding:4px 6px;font-size:7px;font-weight:600}.worktree-planner-sheet .goal-passport-evidence li{display:flex;flex-direction:column;gap:3px;border-top:1px solid #293239;padding-top:6px}.worktree-planner-sheet .goal-passport-evidence span{color:#d8dee3;font-size:8px}.worktree-planner-sheet .goal-passport-evidence small{color:#8e99a2;font-size:7px;line-height:1.4}.worktree-planner-sheet .goal-passport-evidence b.passed{color:var(--lime)}.worktree-planner-sheet .goal-passport-evidence b.failed,.worktree-planner-sheet .goal-passport-evidence b.not_run{color:#ff9ca5}
 .worktree-planner-sheet .goal-passport-risks,.worktree-planner-sheet .goal-passport-task-plan{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}.worktree-planner-sheet .goal-passport-risks li{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px;border-top:1px solid #293239;padding-top:6px}.worktree-planner-sheet .goal-passport-risks em{border-radius:6px;background:rgba(255,179,92,.09);color:#d7ad7c;padding:3px 5px;font-size:7px;font-style:normal}.worktree-planner-sheet .goal-passport-risks div,.worktree-planner-sheet .goal-passport-task-plan li{display:flex;min-width:0;flex-direction:column;gap:2px}.worktree-planner-sheet .goal-passport-risks span,.worktree-planner-sheet .goal-passport-task-plan span{color:#d8dee3;font-size:8px;line-height:1.35}.worktree-planner-sheet .goal-passport-risks small,.worktree-planner-sheet .goal-passport-task-plan small{color:#7f8a94;font-size:7px;line-height:1.35}.worktree-planner-sheet .goal-passport-task-plan li{border-top:1px solid #293239;padding-top:6px}.worktree-planner-sheet .planner-delivery-tasks .delivery-queued{color:#d7ad7c}
+/* A waiting task now says why it is waiting and offers the way out. Without
+   these the sheet showed a state with no action, which reads as locked. */
+.worktree-planner-sheet .planner-delivery-tasks li{padding-bottom:7px}
+.worktree-planner-sheet .planner-delivery-tasks li+li{border-top:1px solid #232c35;padding-top:7px}
+.worktree-planner-sheet .planner-delivery-health{grid-column:1/-1;margin:3px 0 0;color:#8d99a5;font-size:8px;line-height:1.45}
+.worktree-planner-sheet .planner-delivery-health.health-dead,.worktree-planner-sheet .planner-delivery-health.health-failed{color:#f08c95}
+.worktree-planner-sheet .planner-delivery-health.health-idle{color:#d7ad7c}
+.worktree-planner-sheet .planner-delivery-health.health-working{color:#9fc4ff}
+.worktree-planner-sheet .planner-delivery-actions{display:flex;grid-column:1/-1;gap:6px;margin-top:6px}
+.worktree-planner-sheet .planner-delivery-actions button{min-height:30px;flex:1;border:1px solid var(--line);border-radius:8px;background:#20252c;color:#b8c0c8;padding:5px 8px;font-size:8px;font-weight:700}
+.worktree-planner-sheet .planner-delivery-actions button:first-child{border-color:#52632f;background:#18200f;color:var(--lime)}
+.worktree-planner-sheet .planner-delivery-actions button:disabled{opacity:.55}
+.worktree-planner-sheet .planner-delivery-confirm{display:flex;grid-column:1/-1;flex-direction:column;gap:6px;margin-top:6px;border:1px solid rgba(255,109,120,.28);border-radius:9px;background:rgba(255,109,120,.05);padding:8px}
+.worktree-planner-sheet .planner-delivery-confirm>span{color:#c9d2db;font-size:8px;line-height:1.45}
+.worktree-planner-sheet .planner-delivery-confirm>div{display:flex;gap:6px}
+.worktree-planner-sheet .planner-delivery-confirm button{min-height:30px;flex:1;border:1px solid var(--line);border-radius:8px;background:#20252c;color:#b8c0c8;padding:5px 8px;font-size:8px;font-weight:700}
+.worktree-planner-sheet .planner-delivery-confirm .confirm-restart,.worktree-planner-sheet .planner-delivery-confirm .confirm-skip{border-color:rgba(255,109,120,.3);background:rgba(255,109,120,.07);color:#f08c95}
+@media(min-width:1024px){
+  .worktree-planner-sheet .planner-delivery-health{font-size:11px}
+  .worktree-planner-sheet .planner-delivery-actions button,.worktree-planner-sheet .planner-delivery-confirm button,.worktree-planner-sheet .planner-delivery-confirm>span{font-size:11px}
+  .worktree-planner-sheet .planner-delivery-actions button,.worktree-planner-sheet .planner-delivery-confirm button{min-height:34px}
+}
 .worktree-planner-sheet .planner-actions{display:flex;gap:7px}
 .worktree-planner-sheet .planner-actions>button{min-height:44px;flex:1;border:1px solid var(--line);border-radius:11px;background:#191e24;color:#b8c0c8;font-size:10px}
 .worktree-planner-sheet .planner-actions>.primary-button{flex:2;border-color:var(--lime);background:var(--lime);color:#10150b;font-weight:800}
@@ -289,21 +311,52 @@
 .board-new-goal{position:relative;display:flex}
 .board-new-goal-button{min-height:32px;border:1px solid #52632f;border-radius:9px;background:#18200f;color:var(--lime);padding:6px 10px;font-size:10px;font-weight:800;white-space:nowrap}
 .board-new-goal-backdrop{position:fixed;z-index:70;inset:0;border:0;background:transparent}
-.board-new-goal-menu{position:absolute;z-index:71;top:calc(100% + 6px);right:0;display:flex;min-width:190px;flex-direction:column;gap:4px;border:1px solid #303740;border-radius:12px;background:#12171d;padding:6px;box-shadow:0 18px 44px rgba(0,0,0,.55)}
+.board-new-goal-menu{position:absolute;z-index:71;top:calc(100% + 6px);right:0;display:flex;width:min(92vw,300px);max-height:min(60vh,420px);flex-direction:column;gap:6px;border:1px solid #303740;border-radius:12px;background:#12171d;padding:9px;box-shadow:0 18px 40px rgba(0,0,0,.55)}
+.board-new-goal-menu input{width:100%;min-height:34px;border:1px solid var(--line);border-radius:9px;background:#0c1014;color:#e6ebef;padding:0 10px;font-size:12px}
+.board-new-goal-menu>div[role=menu]{display:flex;min-height:0;flex-direction:column;gap:4px;overflow-y:auto;scrollbar-width:thin}
+.board-new-goal-empty{margin:0;color:#78828c;font-size:11px;line-height:1.45;text-align:center}
+.board-new-goal-menu button em{margin-left:auto;color:#8d99a5;font-size:10px;font-style:normal}
 .board-new-goal-menu button{display:flex;flex-direction:column;align-items:flex-start;gap:3px;border:0;border-radius:9px;background:transparent;color:#c8d0d8;padding:7px 8px;text-align:left}
 .board-new-goal-menu button:hover,.board-new-goal-menu button:focus-visible{background:#1b2127}
 .board-new-goal-menu small{color:#78828c;font:7px ui-monospace,monospace}
 
-/* KPI tiles: one line above the rail. Column counts come from the board's own
-   grouping, so a tile can never disagree with the column beneath it. */
-.goal-kpis{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
-.goal-kpi-columns,.goal-kpi-health{display:flex;flex:1;flex-wrap:wrap;gap:6px;min-width:0}
-.goal-kpi-columns>div,.goal-kpi-health>div{display:flex;min-width:0;flex:1;flex-direction:column;gap:2px;border:1px solid #232c35;border-radius:10px;background:#101418;padding:7px 8px}
-.goal-kpi-health>div{border-color:#2b3641;background:#12171d}
-.goal-kpi-health>div.attention{border-color:rgba(255,179,92,.34)}
-.goal-kpi-columns b,.goal-kpi-health b{color:#e6ebef;font-size:12px;font-weight:850}
-.goal-kpi-health>div.attention b{color:var(--orange)}
-.goal-kpi-columns span,.goal-kpi-health span{color:#78828c;font-size:7px;line-height:1.35}
+/* Board header: one bar. Project, search, capacity, new goal, refresh — the
+   five controls the board itself needs, on the line above the counts. */
+.board-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}
+.board-bar .worktree-project-tabs{display:flex;flex:none;gap:5px;margin-bottom:0}
+.board-bar .worktree-project-tabs button{min-height:32px;border-radius:9px;padding:0 10px;font-size:10px}
+.board-bar .worktree-project-tabs button>span{width:18px;height:18px;border-radius:6px;font-size:8px}
+.board-bar .dashboard-search{flex:1 1 150px;max-width:none}
+.board-bar .board-new-goal{margin-left:auto}
+.board-bar .text-button{flex:none;color:#8c959f;font-size:10px}
+.board-bar .text-button:hover:not(:disabled),.board-bar .text-button:focus-visible:not(:disabled){color:var(--lime)}
+
+/* The capacity verdict as one chip. The full strip opens beneath it and keeps
+   every number; this only says which provider is next and how much is left. */
+.agent-capacity-chip{display:flex;flex:none;align-items:center;gap:6px;min-height:32px;border:1px solid #2b3641;border-radius:9px;background:#12171d;color:#c8d0d8;padding:0 9px;font-size:10px;font-weight:800}
+.agent-capacity-chip>span{color:var(--lime)}
+.agent-capacity-chip>b{color:#78828c;font-size:9px;transition:.2s}
+.agent-capacity-chip.open>b{transform:rotate(180deg)}
+.agent-capacity-chip.open{border-color:#414b55;background:#20262c}
+.agent-capacity-chip.warn{border-color:rgba(255,179,92,.34);color:var(--orange)}
+.agent-capacity-chip.warn>span{color:var(--orange)}
+.agent-capacity-chip:hover,.agent-capacity-chip:focus-visible{border-color:#414b55}
+.board-bar+.agent-capacity{margin-top:0}
+
+/* The counts that are not printed anywhere else on this screen. The two that
+   name a problem are buttons, because a number nobody can reach is a decoration. */
+.board-counts{display:flex;flex-wrap:wrap;align-items:center;gap:5px 14px;margin-bottom:9px}
+.board-counts>span,.board-counts>button{display:flex;align-items:center;gap:5px;border:0;background:transparent;color:#78828c;padding:0;font-size:9px}
+.board-counts b{color:#c8d0d8;font-size:12px;font-weight:850}
+.board-counts>button{border-radius:7px;padding:2px 6px;color:var(--orange)}
+.board-counts>button b{color:var(--orange)}
+.board-counts>button:hover,.board-counts>button:focus-visible{background:rgba(255,179,92,.09)}
+.board-counts>small{margin-left:auto;color:#69717a;font-size:8px}
+.goal-attention:focus-visible{outline:1px solid #414b55;outline-offset:3px}
+
+/* On the board the filter row is secondary to the bar above it. */
+.worktree-filter-tabs.quiet{margin-bottom:12px;border-bottom:0;padding-bottom:0}
+.worktree-filter-tabs.quiet button{min-height:28px;padding:5px 8px;font-size:8px}
 
 /* Attention rail: every task a person must answer for, across repositories.
    It sits above the board because it is the only list with a deadline. */
@@ -345,7 +398,7 @@
      them no longer fit. Squeezing them to fit is what made the board unreadable:
      a lane narrower than its card is worse than a lane you scroll to. */
   .goal-board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(300px,1fr);gap:14px;overflow-x:auto;padding-bottom:10px;scroll-snap-type:x proximity}
-  .goal-board-column{width:auto;min-width:0;max-height:calc(100dvh - 300px);flex:1 1 auto;overflow-y:auto;padding:0 13px 13px;scroll-snap-align:start;scrollbar-width:thin}
+  .goal-board-column{width:auto;min-width:0;max-height:calc(100dvh - 210px);flex:1 1 auto;overflow-y:auto;padding:0 13px 13px;scroll-snap-align:start;scrollbar-width:thin}
   .goal-board-column::-webkit-scrollbar{width:6px}.goal-board-column::-webkit-scrollbar-thumb{border-radius:6px;background:#2b3641}
   .goal-board-column>header{position:sticky;top:0;z-index:1;background:#101418;padding:11px 0 8px}
   .goal-board-column h3{font-size:13px}
@@ -359,14 +412,18 @@
   .goal-board-pr{font-size:11px}
   .goal-board-card>footer button{min-height:36px;font-size:11px}
   .goal-board-abort-confirm>span{font-size:11px}
-  .goal-kpi-columns b,.goal-kpi-health b{font-size:17px}
   .agent-capacity h3{font-size:13px}
   .agent-capacity-verdict,.agent-capacity-reason,.agent-capacity-note{font-size:12px}
   .agent-capacity-provider>header strong{font-size:12px}
   .agent-capacity-provider>header em,.agent-capacity-windows span,.agent-capacity-windows b,.agent-capacity-windows small,.agent-capacity-account,.agent-capacity-window-empty{font-size:11px}
   .agent-capacity-provider>header b{font-size:16px}
   .goal-repo-chip{font-size:11px;padding:3px 8px}
-  .goal-kpi-columns span,.goal-kpi-health span{font-size:11px}
+  .board-bar .worktree-project-tabs button{min-height:36px;font-size:12px}
+  .board-bar .dashboard-search input,.board-bar .board-new-goal-button,.board-bar .text-button,.agent-capacity-chip{min-height:36px;font-size:12px}
+  .board-counts>span,.board-counts>button{font-size:11px}
+  .board-counts b{font-size:15px}
+  .board-counts>small{font-size:11px}
+  .worktree-filter-tabs.quiet button{min-height:32px;font-size:10px}
   .goal-attention h3{font-size:13px}
   .goal-attention>header b,.goal-attention-note,.goal-attention-empty{font-size:12px}
   /* A wide row reads left to right: what is wrong, then what to do about it. */
@@ -384,7 +441,7 @@
    keeps them a comfortable reading width instead. */
 @media(min-width:2000px){
   .goal-board{grid-auto-columns:minmax(340px,1fr)}
-  .goal-board-column{max-height:calc(100dvh - 280px)}
+  .goal-board-column{max-height:calc(100dvh - 190px)}
 }
 
 /* Terminal planner sheet: the banner explains why the controls are gone. */
@@ -407,7 +464,11 @@
 .worktree-planner-sheet>p,.github-issue-planner>p{margin:0 2px 14px;font:11px ui-monospace,monospace}
 @media(min-width:640px){.worktree-planner-sheet,.github-issue-planner{width:min(100% - 40px,780px)}}
 @media(min-width:1024px){.worktree-planner-sheet,.github-issue-planner{width:min(100% - 96px,1040px);max-height:min(88dvh,900px);padding:16px 18px 18px}}
-@media(min-width:1440px){.worktree-planner-sheet,.github-issue-planner{width:min(100% - 140px,1220px)}}
+@media(min-width:1440px){.worktree-planner-sheet,.github-issue-planner{width:min(100% - 140px,1220px);max-height:min(92dvh,1100px)}}
+/* A goal read on a 2000px screen was a small box of 8px type inside 400px of
+   empty margin. The sheet takes the width the screen has. */
+@media(min-width:1600px){.worktree-planner-sheet,.github-issue-planner{width:min(100% - 120px,1600px)}}
+@media(min-width:2200px){.worktree-planner-sheet,.github-issue-planner{width:min(100% - 160px,1800px)}}
 
 /* Goal planner type scale. Body copy 13px, meta 12px, labels 11px. */
 .worktree-planner-sheet .planner-new-goal{margin:0 2px 13px;font-size:12px}
@@ -539,6 +600,56 @@
   .worktree-planner-sheet .planner-saved>div{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));align-items:start}
   .worktree-planner-sheet .planner-prompt-body{max-height:400px}
   .github-issue-planner .issue-topics,.github-issue-planner .issue-prepared-plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));align-items:start}
+}
+
+/* Wide-screen goal detail. Nothing in the sheet renders below 12px here: the
+   delivery contract, the risks, the evidence rows and the task cards were all
+   written at 7-9px, which is a diagram of a document rather than a document. */
+@media(min-width:1440px){
+  .worktree-planner-sheet>p{font-size:13px}
+  .worktree-planner-sheet .planner-status{font-size:12px}
+  .worktree-planner-sheet .planner-saved>strong{font-size:13px}
+  .worktree-planner-sheet .planner-saved-copy small{font-size:12px;line-height:1.5}
+  .worktree-planner-sheet .planner-raw-toggle{font-size:12px;padding:5px 10px}
+  .worktree-planner-sheet .planner-result>header em{font-size:12px}
+  .worktree-planner-sheet .planner-markdown code,.worktree-planner-sheet .planner-markdown pre,.worktree-planner-sheet .planner-markdown pre code{font-size:12px}
+  .worktree-planner-sheet .planner-markdown th,.worktree-planner-sheet .planner-markdown td{font-size:12px;line-height:1.5}
+  .worktree-planner-sheet .planner-engine-controls label>span,.worktree-planner-sheet .planner-reviewer-identity{font-size:12px}
+  .worktree-planner-sheet .planner-delivery-count{font-size:13px}
+  .worktree-planner-sheet .planner-delivery-tasks span{font-size:13px;line-height:1.5}
+  .worktree-planner-sheet .planner-delivery-tasks code,.worktree-planner-sheet .planner-delivery-tasks em{font-size:12px}
+  .worktree-planner-sheet .planner-delivery-health{font-size:12px;line-height:1.5}
+  .worktree-planner-sheet .planner-delivery-actions button,.worktree-planner-sheet .planner-delivery-confirm button{min-height:38px;font-size:12px}
+  .worktree-planner-sheet .planner-delivery-confirm>span{font-size:12px;line-height:1.55}
+  /* Goal Passport. Its lists are the part a person actually reads before
+     approving a launch, and they were the smallest type on the screen. */
+  .worktree-planner-sheet .goal-passport{gap:14px;padding:16px}
+  .worktree-planner-sheet .goal-passport>header small{font-size:12px}
+  .worktree-planner-sheet .goal-passport>header strong{font-size:17px;line-height:1.35}
+  .worktree-planner-sheet .goal-passport>header em{font-size:12px;padding:6px 9px}
+  .worktree-planner-sheet .goal-passport-readiness p{font-size:13px;line-height:1.55;padding-left:10px}
+  .worktree-planner-sheet .goal-passport-scope>div{padding:11px}
+  .worktree-planner-sheet .goal-passport-scope strong,.worktree-planner-sheet .goal-passport-block>strong{margin-bottom:8px;font-size:13px}
+  .worktree-planner-sheet .goal-passport-scope li,.worktree-planner-sheet .goal-passport-scope small{font-size:12px;line-height:1.55}
+  .worktree-planner-sheet .goal-passport-criteria li,.worktree-planner-sheet .goal-passport-evidence li,.worktree-planner-sheet .goal-passport-risks li,.worktree-planner-sheet .goal-passport-task-plan li{padding-top:9px}
+  .worktree-planner-sheet .goal-passport-criteria code{font-size:12px}
+  .worktree-planner-sheet .goal-passport-criteria span,.worktree-planner-sheet .goal-passport-evidence span,.worktree-planner-sheet .goal-passport-risks span,.worktree-planner-sheet .goal-passport-task-plan span{font-size:13px;line-height:1.5}
+  .worktree-planner-sheet .goal-passport-criteria small,.worktree-planner-sheet .goal-passport-evidence small,.worktree-planner-sheet .goal-passport-risks small,.worktree-planner-sheet .goal-passport-task-plan small{font-size:12px;line-height:1.5}
+  .worktree-planner-sheet .goal-passport-criteria em,.worktree-planner-sheet .goal-passport-risks em{font-size:12px;padding:4px 7px}
+  .worktree-planner-sheet .goal-passport-waves li{grid-template-columns:72px 1fr}
+  .worktree-planner-sheet .goal-passport-waves span{font-size:12px}
+  .worktree-planner-sheet .goal-passport-waves b{font-size:12px;padding:5px 8px}
+}
+
+/* Past 1600px the passport stops stacking: four scope boxes read as four
+   columns, and the evidence rows use the width instead of a narrow gutter. */
+@media(min-width:1600px){
+  .worktree-planner-sheet .goal-passport-scope{grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+  .worktree-planner-sheet .goal-passport-criteria li{grid-template-columns:auto minmax(0,1fr) auto;gap:12px}
+  .worktree-planner-sheet .goal-passport-criteria div{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr);align-items:baseline;gap:4px 14px}
+  .worktree-planner-sheet .goal-passport-evidence li{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);align-items:baseline;gap:4px 14px}
+  .worktree-planner-sheet .goal-passport-evidence span{grid-row:1;grid-column:1}
+  .worktree-planner-sheet .goal-passport-task-plan li{display:grid;grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(0,1fr));align-items:baseline;gap:4px 14px}
 }
 
 /* Licence usage quotas */
