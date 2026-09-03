@@ -1326,6 +1326,49 @@ describe("goals board", () => {
     assert.ok(within(launchedGoals).getByText("Merged"));
   });
 
+  test("the board search narrows the GitHub Issues column, its count, and offers a way back", async () => {
+    // The stored issue column, seeded through the same route the column reads.
+    const issues = [
+      { repositoryId: "repo-karven", repositoryName: "trust-layer", number: 12, title: "Restore the caret", labels: ["editor"], url: "https://github.test/acme/trust-layer/issues/12", updatedAt: now, syncedAt: now, planId: null },
+      { repositoryId: "repo-karven", repositoryName: "trust-layer", number: 31, title: "Speed up the indexer", labels: ["performance"], url: "https://github.test/acme/trust-layer/issues/31", updatedAt: now, syncedAt: now, planId: null },
+      // A card with no label proves an empty field is skipped, and its number
+      // is the only thing the "#44" query can match.
+      { repositoryId: "repo-karven", repositoryName: "trust-layer", number: 44, title: "Fix the sync", labels: [], url: "https://github.test/acme/trust-layer/issues/44", updatedAt: now, syncedAt: now, planId: null },
+    ];
+    mountBoard(allPlans, (url) => (url === "/api/github-issues" ? new Response(JSON.stringify({ syncedAt: now, issues }), { status: 200 }) : null));
+    const board = await openBoard();
+    const issueColumn = () => within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "GitHub Issues" });
+    await within(issueColumn()).findByText("Restore the caret");
+    assert.ok(within(issueColumn()).getByLabelText("3 issues in GitHub Issues"));
+
+    const searchBox = screen.getByRole("searchbox", { name: "Search projects" });
+    await userEvent.type(searchBox, "caret");
+    assert.ok(within(issueColumn()).getByText("Restore the caret"));
+    assert.equal(within(issueColumn()).queryByText("Speed up the indexer"), null);
+    // The count comes from the rendered array, so it reads 1, not 3.
+    assert.ok(within(issueColumn()).getByLabelText("1 issue in GitHub Issues"));
+    assert.equal(within(issueColumn()).getAllByRole("article").length, 1);
+
+    // A label matches, and so does an issue number typed either way.
+    await userEvent.clear(searchBox);
+    await userEvent.type(searchBox, "performance");
+    assert.ok(within(issueColumn()).getByText("Speed up the indexer"));
+    assert.ok(within(issueColumn()).getByLabelText("1 issue in GitHub Issues"));
+    await userEvent.clear(searchBox);
+    await userEvent.type(searchBox, "#44");
+    assert.ok(within(issueColumn()).getByLabelText("1 issue in GitHub Issues"));
+
+    // Nothing matches: the column names the query and offers the way back.
+    await userEvent.clear(searchBox);
+    await userEvent.type(searchBox, "nothing-here");
+    assert.ok(within(issueColumn()).getByText("No issue matches “nothing-here”"));
+    assert.equal(within(issueColumn()).queryAllByRole("article").length, 0);
+    await userEvent.click(within(issueColumn()).getByRole("button", { name: "Clear search" }));
+    assert.equal((searchBox as HTMLInputElement).value, "");
+    assert.ok(within(issueColumn()).getByLabelText("3 issues in GitHub Issues"));
+    assert.ok(within(board).getByText("Write the spec"));
+  });
+
   test("shows card metadata, lifecycle evidence, and pull-request links", async () => {
     mountBoard();
     const board = await openBoard();

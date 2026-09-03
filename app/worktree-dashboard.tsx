@@ -578,6 +578,19 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const query = search.trim().toLowerCase();
   const repositoryMatchesQuery = (repo: DashboardRepository) => !query || repo.name.toLowerCase().includes(query) || compactPath(repo.path).toLowerCase().includes(query);
   const planMatchesQuery = (plan: PlanSummary) => !query || plan.goal.toLowerCase().includes(query) || plan.repositoryName.toLowerCase().includes(query);
+  // One query narrows the whole board, so the issue column reads the same
+  // `query` as the goal columns. Every field is repository content that can be
+  // missing or null, so each access is guarded rather than trusted.
+  const issueMatchesQuery = (issue: GitHubIssueCard) => {
+    if (!query) return true;
+    const text = [issue?.title, issue?.repositoryName, ...(Array.isArray(issue?.labels) ? issue.labels : [])];
+    if (text.some((field) => typeof field === "string" && field.toLowerCase().includes(query))) return true;
+    const number = Number(issue?.number);
+    if (!Number.isInteger(number)) return false;
+    // A person types either `42` or `#42`; both name the same issue.
+    return String(number).includes(query) || `#${number}`.includes(query);
+  };
+  const visibleIssueCards = issueCards.filter(issueMatchesQuery);
   const visiblePlans = !isGoalView ? []
     : isBoardView ? projectPlans.filter(planMatchesQuery)
       : projectPlans.filter((plan) => plan.status === (dashboardFilter === "draft-goals" ? "draft" : "launched")).filter(planMatchesQuery);
@@ -673,10 +686,16 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
         onFocus={(workspaceId, label) => { void focusWorkspace(workspaceId, label); }}
       />}
       {isBoardView && dashboard && <section className="goal-board" aria-label="Goals board"><section className="goal-board-column github-issue-column" aria-labelledby={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>
-        <header><h3 id={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>{GITHUB_ISSUE_COLUMN.label}</h3><b aria-label={`${issueCards.length} issue${issueCards.length === 1 ? "" : "s"} in ${GITHUB_ISSUE_COLUMN.label}`}>{issueCards.length}</b><p>{GITHUB_ISSUE_COLUMN.description}</p></header>
-        {issueCards.length === 0
-          ? <p className="goal-board-empty">{GITHUB_ISSUE_EMPTY_HINT}</p>
-          : <ul className="goal-board-cards" aria-label={`${GITHUB_ISSUE_COLUMN.label} cards`}>{issueCards.map((issue) => <li key={githubIssueCardId(issue)}><GitHubIssueBoardCard
+        {/* The count comes from the same array the list renders, so the header
+            number and the cards can never disagree. */}
+        <header><h3 id={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>{GITHUB_ISSUE_COLUMN.label}</h3><b aria-label={`${visibleIssueCards.length} issue${visibleIssueCards.length === 1 ? "" : "s"} in ${GITHUB_ISSUE_COLUMN.label}`}>{visibleIssueCards.length}</b><p>{GITHUB_ISSUE_COLUMN.description}</p></header>
+        {visibleIssueCards.length === 0
+          ? (issueCards.length > 0
+            // The column is empty because of the search, not because of the
+            // sync. It says which, and offers the way back.
+            ? <div className="goal-board-empty filtered-empty"><strong>No issue matches “{search.trim()}”</strong><button type="button" className="text-button" onClick={() => setSearch("")}>Clear search</button></div>
+            : <p className="goal-board-empty">{GITHUB_ISSUE_EMPTY_HINT}</p>)
+          : <ul className="goal-board-cards" aria-label={`${GITHUB_ISSUE_COLUMN.label} cards`}>{visibleIssueCards.map((issue) => <li key={githubIssueCardId(issue)}><GitHubIssueBoardCard
               issue={issue}
               starting={boardBusy[githubIssueCardId(issue)] === true}
               onStart={() => { void startIssueGoal(issue); }}
