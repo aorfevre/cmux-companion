@@ -1,0 +1,187 @@
+type Session = { id: string; title: string; effective: string };
+
+const now = "2026-09-03T12:00:00.000Z";
+const repository = {
+  id: "repo-e2e", name: "cmux-e2e-cypress", root: "karven", path: "/Users/test/Developers/karven/cmux-e2e-cypress",
+  pullRequestsAvailable: true,
+  summary: { worktrees: 1, releases: 0, sessions: 0, needsYou: 0, working: 0, dirty: 0 },
+  worktrees: [{ id: "worktree-e2e", repoId: "repo-e2e", path: "/Users/test/Developers/karven/cmux-e2e-cypress", name: "cmux-e2e-cypress", branch: "main", isPrimary: true, detached: false, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }],
+  releases: [],
+};
+
+function task(id: string, health: string, session: Session | null, overrides: Record<string, unknown> = {}) {
+  return {
+    id, title: id === "T1" ? "Implement the fixture" : "Verify the fixture", branch: `e2e/${id.toLowerCase()}`,
+    agent: id === "T1" ? "codex" : "claude", wave: 0, launchStatus: "launched", launchError: null,
+    deliveryStatus: health === "ready" ? "ready" : "pending", workspaceId: session?.id || null,
+    health, reason: health === "working" ? "This task agent is running" : health === "ready" ? "This task pushed its evidence and waits for the merge" : health === "needs_you" ? "This task agent is waiting for an answer" : "This task session is no longer open in cmux",
+    session: session ? { id: session.id, title: session.title, lastActivityAt: Date.parse(now), effective: session.effective } : null,
+    ...overrides,
+  };
+}
+
+function plan(id: string, goal: string, count: number, overrides: Record<string, unknown> = {}) {
+  return {
+    planId: id, repositoryId: "repo-e2e", repositoryName: "cmux-e2e-cypress", goal,
+    status: "launched", stage: "ready", round: 1, taskCount: count, launchedCount: count, readyCount: 0,
+    agentSplit: { claude: count === 2 ? 1 : 0, codex: 1 }, workspaceIds: [], deliveryStatus: "implementing",
+    boardState: "dev_in_progress", createdAt: now, updatedAt: now, launchedAt: now,
+    ...overrides,
+  };
+}
+
+function healthGoal(source: ReturnType<typeof plan>, tasks: ReturnType<typeof task>[], overrides: Record<string, unknown> = {}) {
+  return {
+    planId: source.planId, goal: source.goal, repositoryId: source.repositoryId, repositoryName: source.repositoryName,
+    health: tasks.some((item) => item.health === "dead") ? "dead" : tasks.some((item) => item.health === "needs_you") ? "needs_you" : tasks.every((item) => item.health === "ready") ? "ready" : "working",
+    stuckCount: tasks.filter((item) => item.health === "dead").length, readyCount: tasks.filter((item) => item.health === "ready").length,
+    launchedCount: tasks.length, taskCount: tasks.length, deliveryStatus: source.deliveryStatus, merge: null, tasks,
+    ...overrides,
+  };
+}
+
+type Scenario = {
+  plans: Array<ReturnType<typeof plan> & Record<string, unknown>>;
+  goals: Array<ReturnType<typeof healthGoal> & Record<string, unknown>>;
+  liveSessions: number;
+};
+
+function installScenario(state: Scenario) {
+  const dashboard = () => ({
+    generatedAt: now, github: { checkedAt: now, status: "ready" },
+    summary: { repositories: 1, worktrees: 1, releases: 0, sessions: state.liveSessions, needsYou: 0, working: state.liveSessions, dirty: 0, pullRequests: 0 },
+    repositories: [{ ...repository, summary: { ...repository.summary, sessions: state.liveSessions, working: state.liveSessions } }], orphanSessions: [],
+  });
+  const health = () => ({
+    checkedAt: now, sessionsAvailable: true, goals: state.goals,
+    summary: { goals: state.goals.length, tasks: state.goals.reduce((sum, goal) => sum + goal.tasks.length, 0), stuck: state.goals.filter((goal) => ["dead", "idle", "failed"].includes(goal.health)).length, needsYou: state.goals.filter((goal) => goal.health === "needs_you").length, working: state.goals.filter((goal) => goal.health === "working").length, deadTasks: 0, idleTasks: 0, failedTasks: 0 },
+  });
+
+  // Registered first so the explicit routes below win Cypress's reverse-order
+  // matching. Any missing fixture, including a future mutation, fails closed
+  // instead of escaping through Vite's proxy to the installed Companion.
+  cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing deterministic Cypress API fixture" } });
+  cy.intercept("GET", "**/api/auth/status", { paired: true });
+  cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "E2E Mac" }, workspaces: [], error: null, refreshedAt: now });
+  cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
+  cy.intercept("GET", "**/api/repos", { repos: [] });
+  cy.intercept("GET", "**/api/prompt-queue*", { items: [] });
+  cy.intercept("GET", "**/api/updater/status", { available: false });
+  cy.intercept("GET", "**/api/health", { version: { builtAt: now } });
+  cy.intercept("GET", "**/api/goals/capacity*", { providers: [], next: null, reason: "Local fixture", nextReset: null, available: false });
+  cy.intercept("GET", "**/api/worktree-dashboard*", (request) => request.reply(dashboard())).as("dashboard");
+  cy.intercept("GET", "**/api/worktree-plans*", (request) => request.reply({ plans: state.plans })).as("plans");
+  cy.intercept("GET", "**/api/goals/health", (request) => request.reply(health())).as("health");
+}
+
+function visitBoard() {
+  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
+  cy.wait(["@dashboard", "@plans", "@health"]);
+  cy.findByRole("region", { name: "Goals board" }).should("be.visible");
+}
+
+describe("goal board matches live cmux evidence", () => {
+  it("moves one goal through every successful Kanban column", () => {
+    const goal = "Kanban lifecycle fixture";
+    const writing = plan("goal-kanban", goal, 0, { status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, running: true, runStage: "writing_spec", runStep: "Reading the repository…", boardState: "writing_spec" });
+    const state: Scenario = { plans: [writing], goals: [], liveSessions: 0 };
+    installScenario(state);
+    visitBoard();
+
+    const expectColumn = (name: string) => cy.findByRole("region", { name }).should("contain.text", goal);
+    const advance = (next: ReturnType<typeof plan>, goals: ReturnType<typeof healthGoal>[] = [], liveSessions = 0) => {
+      cy.then(() => { state.plans = [next]; state.goals = goals; state.liveSessions = liveSessions; });
+      cy.findByRole("button", { name: "Refresh GitHub" }).click();
+      cy.wait("@plans");
+    };
+
+    expectColumn("Writing Spec");
+    const review = { ...writing, running: true, runStage: "review_spec", runStep: "Reviewing the specification…", boardState: "review_spec" };
+    advance(review);
+    expectColumn("Review Spec");
+
+    const waiting = plan("goal-kanban", goal, 1, { status: "draft", stage: "ready", running: false, boardState: "waiting_for_dev" });
+    advance(waiting);
+    expectColumn("Waiting for dev");
+
+    const session = { id: "ws-kanban", title: "E2E-T1-code · Implement fixture", effective: "working" };
+    const developing = plan("goal-kanban", goal, 1, { workspaceIds: [session.id], health: "working", boardState: "dev_in_progress" });
+    advance(developing, [healthGoal(developing, [task("T1", "working", session)])], 1);
+    expectColumn("Dev in progress");
+
+    const waitingMerge = plan("goal-kanban", goal, 1, { workspaceIds: [session.id], readyCount: 1, health: "ready", deliveryStatus: "pr_open", boardPrState: "OPEN", boardPrNumber: 7, boardPrUrl: "https://github.test/pull/7", boardState: "waiting_for_merge" });
+    advance(waitingMerge, [healthGoal(waitingMerge, [task("T1", "ready", session)], { health: "ready", readyCount: 1 })], 1);
+    expectColumn("Waiting for merge");
+
+    const merged = { ...waitingMerge, health: null, boardStatus: "merged", boardPrState: "MERGED", boardState: "merged" };
+    advance(merged);
+    expectColumn("Merged");
+    cy.findAllByText(goal).should("have.length", 1);
+  });
+
+  it("moves a one-task goal from working to blocked on the next local poll", () => {
+    const live = { id: "ws-one", title: "E2E-T1-code · Implement the fixture", effective: "working" };
+    const source = plan("goal-one", "One task lifecycle", 1, { workspaceIds: [live.id], health: "working" });
+    const state: Scenario = { plans: [source], goals: [healthGoal(source, [task("T1", "working", live)])], liveSessions: 1 };
+    installScenario(state);
+    visitBoard();
+
+    cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", "One task lifecycle");
+    cy.findByLabelText("1 live cmux sessions").should("exist");
+    cy.findByLabelText("E2E-T1-code: Implement the fixture").should("exist");
+
+    cy.then(() => {
+      state.liveSessions = 0;
+      state.plans = [{ ...source, boardState: "blocked", health: "dead", healthReason: "This task session is no longer open in cmux", stuckCount: 1 }];
+      state.goals = [healthGoal(source, [task("T1", "dead", null)], { health: "dead", stuckCount: 1 })];
+    });
+    cy.wait(10_500);
+
+    cy.findByRole("region", { name: "Blocked" }).should("contain.text", "One task lifecycle");
+    cy.findByRole("button", { name: "1 stuck goals. Show the tasks that need you" }).should("exist");
+    cy.findByRole("region", { name: "Goals needing attention" }).should("contain.text", "This task session is no longer open in cmux");
+    cy.findByLabelText("0 live cmux sessions").should("exist");
+  });
+
+  it("shows a two-task blocked merge as stuck and opens the real merge workspace", () => {
+    const taskSession = { id: "ws-task", title: "E2E-T1-code · Implement the fixture", effective: "todo" };
+    const mergeSession = { id: "ws-merge", title: "E2E-MERGE · Assemble goal", effective: "todo" };
+    const source = plan("goal-two", "Two task merge lifecycle", 2, {
+      deliveryStatus: "blocked", deliveryError: "The merge agent stopped before opening the pull request", mergeStatus: "blocked", mergeWorkspaceId: mergeSession.id,
+      readyCount: 2, workspaceIds: [taskSession.id, mergeSession.id], health: "failed", healthReason: "The merge agent stopped before opening the pull request", boardState: "blocked", stuckCount: 1,
+    });
+    const tasks = [task("T1", "ready", taskSession), task("T2", "ready", null)];
+    const merge = { id: "merge", kind: "merge", title: "Goal merge", workspaceId: mergeSession.id, health: "failed", reason: "The merge agent stopped before opening the pull request", session: { id: mergeSession.id, title: mergeSession.title, lastActivityAt: Date.parse(now), effective: "todo" }, observedHealth: "working" };
+    const state = { plans: [source], goals: [healthGoal(source, tasks, { health: "failed", stuckCount: 1, merge })], liveSessions: 2 };
+    installScenario(state);
+    cy.intercept("POST", "**/api/workspaces/ws-merge/select", { selected: true }).as("selectMerge");
+    visitBoard();
+
+    cy.findByRole("region", { name: "Blocked" }).within(() => {
+      cy.contains("Two task merge lifecycle");
+      cy.findByLabelText("2 of 2 launched tasks ready").should("exist");
+      cy.contains("The merge agent stopped before opening the pull request");
+      cy.findByRole("button", { name: "Open Two task merge lifecycle in cmux" }).click();
+    });
+    cy.wait("@selectMerge").its("request.url").should("match", /\/api\/workspaces\/ws-merge\/select$/);
+    cy.findByRole("region", { name: "Goals needing attention" }).within(() => {
+      cy.contains("Goal merge");
+      cy.findByRole("button", { name: "Open Goal merge in cmux" }).should("exist");
+      cy.findByRole("button", { name: /Continue|Restart|Skip/ }).should("not.exist");
+    });
+    cy.findByLabelText("2 live cmux sessions").should("exist");
+  });
+
+  it("keeps a two-task goal in development while making an agent question visible", () => {
+    const asking = { id: "ws-two", title: "E2E-T2-test · Verify the fixture", effective: "waiting" };
+    const source = plan("goal-question", "Two task question lifecycle", 2, { readyCount: 1, workspaceIds: [asking.id], health: "needs_you" });
+    const tasks = [task("T1", "ready", null), task("T2", "needs_you", asking)];
+    const state = { plans: [source], goals: [healthGoal(source, tasks)], liveSessions: 1 };
+    installScenario(state);
+    visitBoard();
+
+    cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", "Two task question lifecycle");
+    cy.findByRole("button", { name: "1 goals need you. Show the tasks that need you" }).should("exist");
+    cy.findByRole("region", { name: "Goals needing attention" }).should("contain.text", "This task agent is waiting for an answer");
+  });
+});

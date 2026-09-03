@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DEFAULT_IDLE_MS, GoalHealthSweep, isStuck, worst } from "../server/goal-health.mjs";
+import { agentStateFromScreen, DEFAULT_IDLE_MS, GoalHealthSweep, isStuck, screenShowsBlockingPrompt, worst } from "../server/goal-health.mjs";
 
 const NOW = Date.parse("2026-09-03T12:00:00.000Z");
 const now = () => NOW;
@@ -112,6 +112,54 @@ test("an agent that asked a question needs you rather than a relaunch", async ()
   assert.equal(result.summary.stuck, 0);
 });
 
+test("a visible trust prompt repairs a missing cmux needs-input signal", async () => {
+  let reads = 0;
+  const quiet = workspace({
+    terminals: [{ id: "surface-1", title: "xcodex" }],
+    status: { effective: "todo", signals: { any_agent_running: false, any_agent_needs_input: false } },
+  });
+  const fakeCmux = {
+    workspaceListDetailed: async () => ({ workspaces: [quiet] }),
+    readScreen: async (surfaceId) => {
+      reads += 1;
+      assert.equal(surfaceId, "surface-1");
+      return { text: "Do you trust the contents of this directory?\n› 1. Yes, continue\n  2. No, quit" };
+    },
+  };
+  const sweep = new GoalHealthSweep({ store: store(plan({ tasks: [task()] })), cmux: fakeCmux, now });
+  const first = await sweep.sweep();
+  const second = await sweep.sweep();
+
+  assert.equal(first.goals[0].health, "needs_you");
+  assert.match(first.goals[0].tasks[0].reason, /cmux status did not report/);
+  assert.equal(first.goals[0].tasks[0].session.inputEvidence, "terminal_screen");
+  assert.equal(reads, 1, "the next poll reuses the short screen cache");
+  assert.equal(second.goals[0].health, "needs_you");
+});
+
+test("screen prompt detection is narrow to agent approval and trust dialogs", () => {
+  assert.equal(screenShowsBlockingPrompt("Do you trust the files in this folder?"), true);
+  assert.equal(screenShowsBlockingPrompt("Would you like to run the following command?"), true);
+  assert.equal(screenShowsBlockingPrompt("Tests passed. Waiting for your next task."), false);
+});
+
+test("a visibly thinking Claude session repairs a missing running signal", async () => {
+  const quiet = workspace({
+    terminals: [{ id: "surface-1", title: "xclaude" }],
+    status: { effective: "todo", signals: { any_agent_running: false, any_agent_needs_input: false } },
+  });
+  const fakeCmux = {
+    workspaceListDetailed: async () => ({ workspaces: [quiet] }),
+    readScreen: async () => ({ text: "· Zesting… (11s · ↓ 307 tokens · thinking with medium effort)\n❯" }),
+  };
+  const result = await new GoalHealthSweep({ store: store(plan({ tasks: [task()] })), cmux: fakeCmux, now }).sweep();
+  assert.equal(result.goals[0].tasks[0].health, "working");
+  assert.match(result.goals[0].tasks[0].reason, /visibly working although cmux status/);
+  assert.equal(result.goals[0].tasks[0].session.workingEvidence, "terminal_screen");
+  assert.equal(agentStateFromScreen("Working (12s • esc to interrupt)"), "working");
+  assert.equal(agentStateFromScreen("Tests passed. Ready for the next task."), null);
+});
+
 // cmux sets `has_unread` whenever a turn ends with nobody watching, so an agent
 // that crashed to a shell prompt carries it too. Reading it as a question would
 // label every silent crash as "waiting for an answer" and, worse, keep it out
@@ -206,6 +254,21 @@ test("a goal with an open pull request has finished, whatever its session did", 
   assert.equal(after.goals[0].health, "ready");
 });
 
+test("a closed pull request does not hide a dead task behind its stale URL", async () => {
+  const reopened = plan({
+    deliveryMode: "single",
+    boardPrState: "CLOSED",
+    finalPrUrl: "https://github.test/pr/9",
+    tasks: [task()],
+  });
+  const result = await new GoalHealthSweep({ store: store(reopened), cmux: cmux([]), now }).sweep();
+
+  assert.equal(result.goals[0].tasks[0].health, "dead");
+  assert.equal(result.goals[0].health, "dead");
+  assert.equal(result.goals[0].stuckCount, 1);
+  assert.match(result.goals[0].tasks[0].reason, /no longer open in cmux/);
+});
+
 test("checks a single-task goal, which no other watcher covers", async () => {
   const single = plan({ deliveryMode: "single", tasks: [task()] });
   const sweep = new GoalHealthSweep({ store: store(single), cmux: cmux([]), now });
@@ -232,6 +295,38 @@ test("checks the merge session only while a merge is running", async () => {
   const settled = plan({ mergeStatus: "done", mergeWorkspaceId: "ws-merge", tasks: [task({ deliveryStatus: "integrated" })] });
   const after = await new GoalHealthSweep({ store: store(settled), cmux: cmux([]), now }).sweep();
   assert.equal(after.goals[0].merge, null);
+});
+
+test("a persistently blocked merge is stuck even when its cmux workspace is still open", async () => {
+  const blocked = plan({
+    deliveryStatus: "blocked",
+    deliveryError: "The wave merge agent stopped before every task was integrated",
+    mergeStatus: "blocked",
+    mergeWorkspaceId: "ws-merge",
+    tasks: [task({ deliveryStatus: "ready" })],
+  });
+  const openShell = workspace({
+    id: "ws-merge",
+    title: "CC-MERGE · Assemble goal",
+    status: { effective: "todo", signals: { any_agent_running: false } },
+  });
+  const result = await new GoalHealthSweep({ store: store(blocked), cmux: cmux([openShell]), now }).sweep();
+
+  assert.equal(result.goals[0].health, "failed");
+  assert.equal(result.goals[0].stuckCount, 1);
+  assert.equal(result.goals[0].merge.kind, "merge");
+  assert.equal(result.goals[0].merge.session.id, "ws-merge");
+  assert.equal(result.goals[0].merge.observedHealth, "working");
+  assert.match(result.goals[0].merge.reason, /stopped before every task/);
+  assert.equal(result.summary.stuck, 1);
+});
+
+test("completed tasks keep their live cmux session as observable evidence", async () => {
+  const ready = plan({ tasks: [task({ deliveryStatus: "ready" })] });
+  const result = await new GoalHealthSweep({ store: store(ready), cmux: cmux([workspace()]), now }).sweep();
+
+  assert.equal(result.goals[0].tasks[0].health, "ready");
+  assert.equal(result.goals[0].tasks[0].session.id, "ws-1");
 });
 
 test("skips terminal goals and goals the store cannot read", async () => {

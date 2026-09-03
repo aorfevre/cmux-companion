@@ -1102,7 +1102,7 @@ test("skips one task and carries its reason", async (t) => {
 test("checks one goal against GitHub and reports what changed", async (t) => {
   let boardPrState = null;
   const store = {
-    get: (planId) => (planId === "plan-1" ? { planId, boardPrState, boardStatus: boardPrState === "MERGED" ? "merged" : null, boardPrNumber: 34, boardPrUrl: "https://github.test/pr/34" } : null),
+    get: (planId) => (planId === "plan-1" ? { planId, repositoryId: "repository12345678", boardPrState, boardStatus: boardPrState === "MERGED" ? "merged" : null, boardPrNumber: 34, boardPrUrl: "https://github.test/pr/34" } : null),
   };
   const mergeWatch = { reconcile: async () => { boardPrState = "MERGED"; return { recorded: [{ planId: "plan-1", state: "MERGED", number: 34, url: "https://github.test/pr/34" }] }; } };
   const refreshes = [];
@@ -1122,7 +1122,7 @@ test("checks one goal against GitHub and reports what changed", async (t) => {
   });
   // GitHub is refreshed first, or the check would report the state of the last
   // refresh rather than the state now.
-  assert.deepEqual(refreshes, [{ refresh: true, refreshGitHub: true }]);
+  assert.deepEqual(refreshes, [{ refresh: true, refreshGitHub: true, refreshGitHubRepositoryId: "repository12345678" }]);
 });
 
 test("a goal GitHub knows nothing about reports no change rather than an error", async (t) => {

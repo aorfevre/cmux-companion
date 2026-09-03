@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { normalizePullRequest, parseNameStatus, RepoCatalog } from "../server/repo-catalog.mjs";
+import { normalizePullRequest, parseGitHubRepository, parseNameStatus, RepoCatalog } from "../server/repo-catalog.mjs";
 
 const exec = promisify(execFile);
 
@@ -38,6 +38,7 @@ test("discovers approved repositories and reports live Git changes", async (t) =
   const [record] = await catalog.list();
   assert.equal(record.name, "sample");
   assert.equal(record.dirty, true);
+  assert.equal(record.githubRepository, null);
   assert.deepEqual(record.scripts, ["test", "safe:dev"]);
 
   const changes = await catalog.changes(record.id);
@@ -85,6 +86,13 @@ test("parses NUL-delimited rename status", () => {
     { path: "new.txt", status: "R", area: "staged" },
     { path: "same.txt", status: "M", area: "staged" },
   ]);
+});
+
+test("recognizes HTTPS and SSH GitHub remotes without accepting other hosts", () => {
+  assert.equal(parseGitHubRepository("remote.origin.url https://github.com/karven/companion.git\n"), "karven/companion");
+  assert.equal(parseGitHubRepository("remote.origin.url git@github.com:karven/companion.git\n"), "karven/companion");
+  assert.equal(parseGitHubRepository("remote.origin.url ssh://git@github.com/karven/companion\n"), "karven/companion");
+  assert.equal(parseGitHubRepository("remote.origin.url https://gitlab.com/karven/companion.git\n"), null);
 });
 
 test("normalizes open pull request review and check state", () => {

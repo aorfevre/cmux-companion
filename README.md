@@ -184,6 +184,39 @@ that one goal, instead of waiting for the next reconciliation pass. It reports
 three outcomes differently: the goal moved to Merged, its pull request is still
 open, or GitHub knows no pull request for its branch.
 
+## Local end-to-end checks
+
+The Cypress suite is intentionally excluded from `npm test`, `npm run verify`,
+and CI. It starts an isolated frontend on port 3221 and stubs the application
+API with one- and two-task goal fixtures, including a task that dies, an agent
+waiting for input, and a blocked merge whose cmux workspace remains open:
+
+```bash
+npm run test:e2e:local
+npm run test:e2e:open
+```
+
+The live audit is also local-only. It compares the installed companion's goal
+board and health responses to workspace ids returned directly by cmux. It does
+not create, close, or focus sessions:
+
+```bash
+npm run test:e2e:live-audit
+```
+
+The destructive smoke suite targets the disposable
+`karven/cmux-e2e-cypress` checkout (remote:
+`aorfevre/cmux-e2e-cypress`) and launch real `xclaude`/`xcodex` sessions. It is
+separate from the deterministic Cypress suite and requires an explicit opt-in
+before it creates branches and a pull request. Failed runs abort their goal and
+close cmux sessions whose fixture worktree contains the unique run marker;
+successful runs also remove their temporary worktrees and branches:
+
+```bash
+CMUX_COMPANION_LIVE_E2E=I_UNDERSTAND npm run test:e2e:live-agent -- --tasks=1
+CMUX_COMPANION_LIVE_E2E=I_UNDERSTAND npm run test:e2e:live-agent -- --tasks=2
+```
+
 | Route | Purpose |
 | --- | --- |
 | `GET /api/worktree-plans` | Saved plans, newest first. Filter with `repositoryId`, `status` (`draft`, `launched` or `all`) and `limit`. |

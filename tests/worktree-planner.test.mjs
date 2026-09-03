@@ -144,6 +144,25 @@ test("survives a null usage snapshot", () => {
   assert.deepEqual(tasks.map((task) => task.agent), ["claude", "claude", "claude"]);
 });
 
+test("a hanging usage snapshot cannot strand a ready plan", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a")] });
+  const warnings = [];
+  deps.accountUsage.snapshot = () => new Promise(() => {});
+  const planner = new WorktreePlanner({
+    ...deps,
+    usageTimeoutMs: 20,
+    log: { warn: (detail, message) => warnings.push([detail, message]) },
+  });
+
+  const started = Date.now();
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+
+  assert.equal(draft.status, "ready");
+  assert.equal(draft.tasks[0].agent, "claude");
+  assert.ok(Date.now() - started < 500, "the ready plan should not wait for a stuck quota provider");
+  assert.deepEqual(warnings, [[{ timeoutMs: 20 }, "planner usage snapshot timed out"]]);
+});
+
 test("takes the best usable account when a provider has several", () => {
   const usage = usageFor(30, 20);
   usage.providers[0].accounts.push({

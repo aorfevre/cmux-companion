@@ -117,7 +117,17 @@ export class GoalWatchdog {
     try {
       // The watcher reads what the dashboard cached, so the cache is refreshed
       // first or it would reconcile against the last manual refresh.
-      if (this.worktrees?.snapshot) await this.worktrees.snapshot({ refresh: true, refreshGitHub: true });
+      const repositoryIds = this.mergeWatch.activeRepositoryIds?.();
+      // An older injected watcher may not expose its scope. Preserve the
+      // original all-repository behavior for that adapter, but production
+      // refreshes only repositories with a live goal and skips GitHub entirely
+      // when there are none.
+      if (Array.isArray(repositoryIds) && repositoryIds.length === 0) return;
+      if (this.worktrees?.snapshot) await this.worktrees.snapshot({
+        refresh: true,
+        refreshGitHub: true,
+        ...(Array.isArray(repositoryIds) ? { refreshGitHubRepositoryIds: repositoryIds } : {}),
+      });
       await this.mergeWatch.reconcile();
     } catch (cause) {
       this.log?.warn?.({ err: cause }, "goal watchdog could not reconcile pull requests");

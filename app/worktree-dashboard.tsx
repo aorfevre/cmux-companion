@@ -21,9 +21,10 @@ type BulkRemovalEntry = { id: string; branch: string; path: string; removed: boo
 type BulkRemoval = { requested: number; removed: number; failed: number; results: BulkRemovalEntry[] };
 // The sweep payload from GET /api/goals/health. It is read-only evidence: the
 // rail acts through the relaunch and skip routes, never through this shape.
-type HealthSession = { id: string; title: string | null; lastActivityAt: number; effective: string | null };
+type HealthSession = { id: string; title: string | null; lastActivityAt: number; effective: string | null; inputEvidence?: string | null; workingEvidence?: string | null };
 type HealthTask = { id: string; title: string; branch: string; agent: string | null; wave: number; launchStatus: string | null; launchError: string | null; deliveryStatus: string; workspaceId: string | null; health: GoalHealth; reason: string; session: HealthSession | null };
-type HealthGoal = { planId: string; goal: string; repositoryId: string; repositoryName: string; health: GoalHealth; stuckCount: number; readyCount: number; launchedCount: number; taskCount: number; deliveryStatus?: string; tasks: HealthTask[] };
+type HealthMerge = { id: "merge"; kind: "merge"; title: string; workspaceId: string | null; health: GoalHealth; reason: string; session: HealthSession | null; observedHealth?: GoalHealth };
+type HealthGoal = { planId: string; goal: string; repositoryId: string; repositoryName: string; health: GoalHealth; stuckCount: number; readyCount: number; launchedCount: number; taskCount: number; deliveryStatus?: string; merge?: HealthMerge | null; tasks: HealthTask[] };
 type HealthSummary = { goals: number; tasks: number; stuck: number; needsYou: number; working: number; deadTasks: number; idleTasks: number; failedTasks: number };
 // GET /api/goals/capacity. The dispatcher's own verdict, rendered: nothing here
 // recomputes which provider is next.
@@ -56,12 +57,22 @@ function boardStateOf(plan: PlanSummary): GoalBoardStateId {
   return goalBoardState(plan) as GoalBoardStateId;
 }
 
+// A durable workspace id is historical evidence, not proof that cmux can open
+// it now. Board focus actions are offered only for sessions the latest health
+// sweep actually joined to the live cmux workspace list.
+function liveGoalSessionId(state: GoalBoardStateId, goal?: HealthGoal) {
+  if (!goal) return null;
+  if (state === "blocked" && goal.merge?.session?.id) return goal.merge.session.id;
+  return goal.tasks.find((task) => task.session?.id)?.session?.id || goal.merge?.session?.id || null;
+}
+
 // The one line of evidence under a card. Each state shows the structured field
 // that explains it, never a label parsed from another one.
 function boardEvidence(plan: PlanSummary, state: GoalBoardStateId) {
   if (state === "aborted") return "Stopped. Branches and worktrees were kept.";
   if (state === "merged") return "Its pull request was observed as merged.";
   if (state === "waiting_for_merge") return plan.deliveryError || (plan.deliveryStatus === "assembling" ? "A merge agent is assembling this goal" : "Waiting for the goal pull request to merge");
+  if (state === "blocked") return plan.deliveryError || plan.healthReason || "This goal stopped and needs attention";
   if (state === "dev_in_progress") return plan.deliveryError || deliveryEvidence(plan.deliveryStatus);
   if (state === "waiting_for_dev") return "Ready to launch";
   if (plan.running) return plan.runStep || (state === "review_spec" ? "A reviewer pass is reading the specification…" : "Reading the repository…");
@@ -495,9 +506,16 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   // header can never say "2 working" above a board that only contains one.
   const scopedHealthGoals = (health?.goals || []).filter((goal) => projectRepositoryIds.has(goal.repositoryId));
   const healthByPlanId = new Map(scopedHealthGoals.map((goal) => [goal.planId, goal]));
-  const attentionRows = scopedHealthGoals.flatMap((goal) => goal.tasks.filter((task) => ATTENTION_HEALTH.has(task.health)).map((task) => ({ goal, task })));
+  const attentionRows = scopedHealthGoals.flatMap((goal) => [
+    ...goal.tasks.filter((task) => ATTENTION_HEALTH.has(task.health)).map((task) => ({ goal, item: task, kind: "task" as const })),
+    ...(goal.merge && ATTENTION_HEALTH.has(goal.merge.health) ? [{ goal, item: goal.merge, kind: "merge" as const }] : []),
+  ]);
   const healthSummary = summarizeHealthGoals(scopedHealthGoals);
-  const boardLaunchedSessions = visiblePlans.reduce((total, plan) => total + (plan.workspaceIds?.length || 0), 0);
+  // This number describes cmux, so it comes from the live dashboard snapshot,
+  // not from durable workspace ids that can outlive a closed session.
+  const boardLiveSessions = boardProject === "all"
+    ? dashboard?.summary.sessions || 0
+    : projectRepositories.reduce((total, repository) => total + repository.summary.sessions, 0);
   const visibleRepositories = isGoalView ? [] : projectRepositories
     .filter((repo) => dashboardFilter === "archived" ? repo.archived : dashboardFilter === "active" ? isActiveRepository(repo) : !repo.archived && repo.favorite !== true && repo.summary.sessions === 0)
     .filter(repositoryMatchesQuery)
@@ -539,7 +557,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
         <input type="search" autoFocus aria-label="Find a repository" placeholder="Find a repository…" value={newGoalQuery} onChange={(event) => setNewGoalQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setNewGoalOpen(false); setNewGoalQuery(""); } if (event.key === "Enter" && newGoalMatches.length > 0) { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: newGoalMatches[0] }); } }} />{newGoalMatches.length === 0 ? <p className="board-new-goal-empty">No repository matches that.</p> : <div role="menu">{newGoalMatches.map((repo) => <button type="button" role="menuitem" aria-label={`Plan a goal for ${repo.name}`} onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: repo }); }} key={repo.id}><RepoChip name={repo.name} />{repo.summary.sessions > 0 && <em>{repo.summary.sessions} session{repo.summary.sessions === 1 ? "" : "s"}</em>}</button>)}</div>}{newGoalQuery === "" && goalRepositories.length > newGoalMatches.length && <p className="board-new-goal-empty">Type to reach the other {goalRepositories.length - newGoalMatches.length}.</p>}</div></>}</div>}<button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>}
       {/* Stuck and needs-you are the only two numbers here a person acts on, so
           they are the two that reach the rail. The rest are read-only totals. */}
-      {isBoardView && <div className="board-counts">{healthSummary.stuck > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.stuck} stuck goals. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.stuck}</b>stuck</button> : <span aria-label="0 stuck goals"><b>0</b>stuck</span>}{healthSummary.needsYou > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.needsYou} goals need you. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.needsYou}</b>needs you</button> : <span aria-label="0 goals need you"><b>0</b>needs you</span>}<span aria-label={`${healthSummary.working} goals working`}><b>{healthSummary.working}</b>working</span><span aria-label={`${boardLaunchedSessions} launched sessions`}><b>{boardLaunchedSessions}</b>sessions</span>{dashboard && <small>{visiblePlans.length} shown · {projectPlans.length} total · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</small>}</div>}
+      {isBoardView && <div className="board-counts">{healthSummary.stuck > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.stuck} stuck goals. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.stuck}</b>stuck</button> : <span aria-label="0 stuck goals"><b>0</b>stuck</span>}{healthSummary.needsYou > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.needsYou} goals need you. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.needsYou}</b>needs you</button> : <span aria-label="0 goals need you"><b>0</b>needs you</span>}<span aria-label={`${healthSummary.working} goals working`}><b>{healthSummary.working}</b>working</span><span aria-label={`${boardLiveSessions} live cmux sessions`}><b>{boardLiveSessions}</b>sessions</span>{dashboard && <small>{visiblePlans.length} shown · {projectPlans.length} total · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</small>}</div>}
       <div className={`worktree-filter-tabs${isBoardView ? " quiet" : ""}`} role="tablist" aria-label="Project status">{filterTabs.map((filter) => <button role="tab" aria-selected={dashboardFilter === filter.id} className={`${GOAL_FILTERS.has(filter.id) ? "goal-tab" : ""}${dashboardFilter === filter.id ? " active" : ""}`.trim()} onClick={() => setDashboardFilter(filter.id)} key={filter.id}>{filter.label} <b>{filter.count}</b>{filter.planning ? <i className="tab-planning" aria-label={`${filter.planning} planning`}>{filter.planning} planning</i> : null}</button>)}</div>
       {!isBoardView && <div className="section-heading"><div><h2>{project === "karven" ? "Karven" : "Rekord"} {isGoalView ? goalHeadingTitle : "projects"}</h2>{dashboard && <p>{isGoalView ? `${visiblePlans.length} shown · ${projectPlans.length} total goals` : `${visibleRepositories.length} shown · ${projectRepositories.length} total`} · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</p>}</div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div><button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>}
       {error && <div className="apps-warning">{error}<button onClick={() => load(true)}>Retry</button></div>}
@@ -572,11 +590,12 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
         <header><h3 id={`goal-board-${column.id}`}>{column.label}</h3><b aria-label={`${cards.length} goal${cards.length === 1 ? "" : "s"} in ${column.label}`}>{cards.length}</b><p>{column.description}</p></header>
         {cards.length === 0
           ? <p className="goal-board-empty">No goal here yet.</p>
-          : <ul className="goal-board-cards" aria-label={`${column.label} goals`}>{cards.map((plan) => <li key={plan.planId}><GoalBoardCard
+          : <ul className="goal-board-cards" aria-label={`${column.label} goals`}>{cards.map((plan) => { const goalHealth = healthByPlanId.get(plan.planId); const focusSessionId = liveGoalSessionId(column.id, goalHealth); return <li key={plan.planId}><GoalBoardCard
               plan={plan}
               state={column.id}
               repositoryName={projectRepositories.find((item) => item.id === plan.repositoryId)?.name || plan.repositoryName}
-              tasks={healthByPlanId.get(plan.planId)?.tasks || []}
+              tasks={goalHealth?.tasks || []}
+              focusSessionId={focusSessionId}
               confirming={confirmAbortGoalId === plan.planId}
               aborting={abortingGoalId === plan.planId}
               onOpen={() => { const repo = projectRepositories.find((item) => item.id === plan.repositoryId); if (repo) setPlanTarget({ repository: repo, planId: plan.planId }); }}
@@ -585,9 +604,9 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
               onConfirmAbort={() => { void abortGoal(plan); }}
               checking={boardBusy[`checkmerge:${plan.planId}`] === true}
               onCheckMerge={() => { void checkMerge(plan); }}
-              focusing={plan.workspaceIds?.length ? boardBusy[`focus:${plan.workspaceIds[0]}`] === true : false}
-              onFocusWorkspace={() => { const id = plan.workspaceIds?.[0]; if (id) void focusWorkspace(id, plan.goal); }}
-            /></li>)}</ul>}
+              focusing={focusSessionId ? boardBusy[`focus:${focusSessionId}`] === true : false}
+              onFocusWorkspace={() => { if (focusSessionId) void focusWorkspace(focusSessionId, plan.goal); }}
+            /></li>; })}</ul>}
       </section>; })}</section>}
       {visibleOrphans.length > 0 && <section className="orphan-workstreams"><header><strong>Other sessions</strong><span>Not inside a catalogued Git worktree</span></header>{visibleOrphans.map((session) => <div className="orphan-session" key={session.id}><button className="session-open" onClick={() => onOpenWorkspace(session.id)}><span className={`status-orb ${session.state.tone}`} /><div><strong>{session.title}</strong><small>{session.preview}</small></div><b>›</b></button><button className="session-close" aria-label={`Close session ${session.title}`} disabled={busy === `session:${session.id}`} onClick={() => closeSession(session)}>×</button></div>)}</section>}
     </section>
@@ -606,7 +625,7 @@ function goalOpenLabel(plan: PlanSummary) {
   return plan.running ? "Watch" : plan.status === "draft" ? "Resume" : "View";
 }
 
-function GoalBoardCard({ plan, state, repositoryName, tasks, confirming, aborting, focusing, checking, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; tasks: HealthTask[]; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void }) {
+function GoalBoardCard({ plan, state, repositoryName, tasks, focusSessionId, confirming, aborting, focusing, checking, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; tasks: HealthTask[]; focusSessionId: string | null; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void }) {
   const closed = state === "merged" || state === "aborted";
   const link = goalPrLink(plan);
   const openLabel = goalOpenLabel(plan);
@@ -615,7 +634,6 @@ function GoalBoardCard({ plan, state, repositoryName, tasks, confirming, abortin
   const health = plan.health && ATTENTION_HEALTH.has(plan.health) ? plan.health : null;
   const launched = plan.launchedCount || 0;
   const split = plan.agentSplit;
-  const sessions = plan.workspaceIds || [];
   const liveTasks = tasks.filter((task) => task.session?.id);
   // Only a URL this same repository already produced can build an issue link.
   const issueBase = issueBaseFrom([plan.boardPrUrl, plan.finalPrUrl]);
@@ -638,7 +656,7 @@ function GoalBoardCard({ plan, state, repositoryName, tasks, confirming, abortin
     {link && (state === "waiting_for_merge" || state === "merged") && <a className="goal-board-pr" href={link.url} target="_blank" rel="noreferrer">{link.label}</a>}
     {confirming
       ? <footer className="goal-board-abort-confirm"><span>Abort this goal? Active specification work and live cmux sessions are cancelled. Its worktrees and branches are kept.</span><div><button type="button" aria-label={`Cancel aborting ${plan.goal}`} disabled={aborting} onClick={onCancelAbort}>Cancel</button><button type="button" className="confirm-abort" aria-label={`Confirm abort ${plan.goal}`} disabled={aborting} onClick={onConfirmAbort}>{aborting ? "Aborting…" : "Confirm abort"}</button></div></footer>
-      : <footer><button type="button" className="goal-board-open" aria-label={`${openLabel} ${plan.goal}`} onClick={onOpen}>{openLabel}</button>{!closed && <button type="button" className="goal-board-abort" aria-label={`Abort ${plan.goal}`} onClick={onRequestAbort}>Abort</button>}{checkable && <button type="button" className="goal-board-check" aria-label={`Check if ${plan.goal} is merged`} disabled={checking} onClick={onCheckMerge}>{checking ? "Checking GitHub…" : "Check if merged"}</button>}{sessions.length > 0 && <button type="button" className="goal-board-focus" aria-label={`Open ${plan.goal} in cmux`} disabled={focusing} onClick={onFocusWorkspace}>{focusing ? "Opening…" : "Open in cmux"}</button>}</footer>}
+      : <footer><button type="button" className="goal-board-open" aria-label={`${openLabel} ${plan.goal}`} onClick={onOpen}>{openLabel}</button>{!closed && <button type="button" className="goal-board-abort" aria-label={`Abort ${plan.goal}`} onClick={onRequestAbort}>Abort</button>}{checkable && <button type="button" className="goal-board-check" aria-label={`Check if ${plan.goal} is merged`} disabled={checking} onClick={onCheckMerge}>{checking ? "Checking GitHub…" : "Check if merged"}</button>}{focusSessionId && <button type="button" className="goal-board-focus" aria-label={`Open ${plan.goal} in cmux`} disabled={focusing} onClick={onFocusWorkspace}>{focusing ? "Opening…" : "Open in cmux"}</button>}</footer>}
   </article>;
 }
 
@@ -715,7 +733,7 @@ function AgentCapacityChip({ capacity, error, now, open, onToggle }: { capacity:
 
 // Every task a person must answer for, across every repository, on one screen.
 // Restart and Skip both destroy something, so each confirms inline first.
-function AttentionRail({ railRef, rows, sessionsAvailable, loaded, error, busy, confirming, onRetry, onRequestConfirm, onRelaunch, onSkip, onFocus }: { railRef: RefObject<HTMLElement | null>; rows: { goal: HealthGoal; task: HealthTask }[]; sessionsAvailable: boolean; loaded: boolean; error: string; busy: Record<string, boolean>; confirming: string; onRetry: () => void; onRequestConfirm: (key: string) => void; onRelaunch: (goal: HealthGoal, task: HealthTask, mode: "continue" | "restart") => void; onSkip: (goal: HealthGoal, task: HealthTask) => void; onFocus: (workspaceId: string, label: string) => void }) {
+function AttentionRail({ railRef, rows, sessionsAvailable, loaded, error, busy, confirming, onRetry, onRequestConfirm, onRelaunch, onSkip, onFocus }: { railRef: RefObject<HTMLElement | null>; rows: { goal: HealthGoal; item: HealthTask | HealthMerge; kind: "task" | "merge" }[]; sessionsAvailable: boolean; loaded: boolean; error: string; busy: Record<string, boolean>; confirming: string; onRetry: () => void; onRequestConfirm: (key: string) => void; onRelaunch: (goal: HealthGoal, task: HealthTask, mode: "continue" | "restart") => void; onSkip: (goal: HealthGoal, task: HealthTask) => void; onFocus: (workspaceId: string, label: string) => void }) {
   return <section className="goal-attention" ref={railRef} tabIndex={-1} aria-label="Goals needing attention">
     <header><h3>Needs you</h3><b aria-label={`${rows.length} task${rows.length === 1 ? "" : "s"} need you`}>{rows.length}</b>{error && <button type="button" className="text-button" aria-label="Retry the goal health check" onClick={onRetry}>Retry</button>}</header>
     {error && <p className="goal-attention-note">{error}</p>}
@@ -724,20 +742,23 @@ function AttentionRail({ railRef, rows, sessionsAvailable, loaded, error, busy, 
     {loaded && !sessionsAvailable && <p className="goal-attention-note">cmux could not be reached, so agent liveness is unknown. Nothing below is reported as dead.</p>}
     {rows.length === 0
       ? <p className="goal-attention-empty">{loaded ? "Nothing needs you. Every launched agent is working, ready or merged." : "Checking every launched agent…"}</p>
-      : <ul className="goal-attention-rows">{rows.map(({ goal, task }) => {
+      : <ul className="goal-attention-rows">{rows.map(({ goal, item, kind }) => {
+        const task = item as HealthTask;
         const relaunchKey = `relaunch:${goal.planId}:${task.id}`;
         const skipKey = `skip:${goal.planId}:${task.id}`;
         const working = busy[relaunchKey] === true || busy[skipKey] === true;
         const confirmRestart = confirming === `restart:${goal.planId}:${task.id}`;
         const confirmSkip = confirming === `skip:${goal.planId}:${task.id}`;
-        return <li key={`${goal.planId}:${task.id}`}>
+        return <li key={`${goal.planId}:${kind}:${item.id}`}>
           <div className="goal-attention-copy">
             <RepoChip name={goal.repositoryName} />
-            <strong>{task.title}</strong>
-            <small>{goal.goal}{task.agent ? ` · ${task.agent === "claude" ? "Claude" : "Codex"}` : ""}</small>
-            <p><span className={`goal-attention-badge ${task.health}`}>{HEALTH_LABELS[task.health]}</span>{task.reason}</p>
+            <strong>{item.title}</strong>
+            <small>{goal.goal}{kind === "task" && task.agent ? ` · ${task.agent === "claude" ? "Claude" : "Codex"}` : ""}</small>
+            <p><span className={`goal-attention-badge ${item.health}`}>{HEALTH_LABELS[item.health]}</span>{item.reason}</p>
           </div>
-          {confirmRestart
+          {kind === "merge"
+            ? <div className="goal-attention-actions">{item.session?.id && <button type="button" aria-label={`Open ${item.title} in cmux`} disabled={busy[`focus:${item.session.id}`] === true} onClick={() => onFocus(String(item.session?.id), item.title)}>Open in cmux</button>}</div>
+            : confirmRestart
             ? <div className="goal-attention-confirm"><span>Restart discards this branch and its worktree, then rebuilds from base. Work the agent already did is lost.</span><div><button type="button" aria-label={`Cancel restarting ${task.title}`} onClick={() => onRequestConfirm("")}>Cancel</button><button type="button" className="confirm-restart" aria-label={`Confirm restart ${task.title}`} disabled={working} onClick={() => onRelaunch(goal, task, "restart")}>{busy[relaunchKey] ? "Restarting…" : "Confirm restart"}</button></div></div>
             : confirmSkip
               ? <div className="goal-attention-confirm"><span>Skipping drops this task from the goal, so the merge no longer waits for it.</span><div><button type="button" aria-label={`Cancel skipping ${task.title}`} onClick={() => onRequestConfirm("")}>Cancel</button><button type="button" className="confirm-skip" aria-label={`Confirm skip ${task.title}`} disabled={working} onClick={() => onSkip(goal, task)}>{busy[skipKey] ? "Skipping…" : "Confirm skip"}</button></div></div>

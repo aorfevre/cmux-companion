@@ -404,7 +404,7 @@ function minutes(ms) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, idleTimeoutMs = ROUND_IDLE_TIMEOUT_MS, ceilingMs = ROUND_CEILING_MS, ttlMs = DRAFT_TTL_MS, store = null, runs = null, progress = null, pushService = null, briefs = new AgentBriefs() } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, idleTimeoutMs = ROUND_IDLE_TIMEOUT_MS, ceilingMs = ROUND_CEILING_MS, usageTimeoutMs = 10_000, ttlMs = DRAFT_TTL_MS, store = null, runs = null, progress = null, pushService = null, briefs = new AgentBriefs() } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
@@ -420,6 +420,7 @@ export class WorktreePlanner {
     this.maxRounds = maxRounds;
     this.idleTimeoutMs = idleTimeoutMs;
     this.ceilingMs = ceilingMs;
+    this.usageTimeoutMs = usageTimeoutMs;
     this.ttlMs = ttlMs;
     // The database owns every plan. The map is only a hot cache in front of it,
     // so a companion restart loses no goal, no session and no task list.
@@ -1115,11 +1116,27 @@ export class WorktreePlanner {
   }
 
   async #usage() {
+    const timedOut = Symbol("usage-timeout");
+    let timer = null;
     try {
-      return await this.accountUsage?.snapshot();
+      const snapshot = Promise.resolve().then(() => this.accountUsage?.snapshot()).catch((cause) => {
+        this.log?.warn?.({ err: cause }, "planner usage snapshot failed");
+        return null;
+      });
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(timedOut), this.usageTimeoutMs);
+      });
+      const result = await Promise.race([snapshot, timeout]);
+      if (result === timedOut) {
+        this.log?.warn?.({ timeoutMs: this.usageTimeoutMs }, "planner usage snapshot timed out");
+        return null;
+      }
+      return result;
     } catch (cause) {
       this.log?.warn?.({ err: cause }, "planner usage snapshot failed");
       return null;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
