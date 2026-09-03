@@ -226,6 +226,9 @@ CMUX_COMPANION_LIVE_E2E=I_UNDERSTAND npm run test:e2e:live-agent -- --tasks=2
 | `POST /api/github-topic-plans/analyze` | Load open issues for a repository and propose bounded master topics. |
 | `POST /api/github-topic-plans/prepare` | Refresh selected tickets and compile each selected topic into a saved goal plan. |
 | `POST /api/github-topic-plans/launch` | Launch every ready selected topic; agents run in parallel after deterministic worktree creation. |
+| `GET /api/github-issues` | The stored open issues of your starred repositories, with the last sync time and the per-repository results. |
+| `POST /api/github-issues/sync` | Pull the open issues of every starred repository into the durable store. Reports each repository, and says so plainly when nothing is starred. |
+| `POST /api/github-issues/:repositoryId/:number/goal` | Turn one synced issue into one goal plan. Returns the existing plan when that issue already started one. |
 | `GET /api/goals/health` | Check every launched goal's agents against the live cmux session list. Read-only. |
 | `POST /api/goals/health/check` | Force the pass the watchdog runs on its timer, and report what changed. |
 | `GET /api/worktree-plans/:planId/health` | The same verdict for one goal. |
