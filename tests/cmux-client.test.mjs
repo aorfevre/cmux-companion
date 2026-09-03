@@ -120,6 +120,21 @@ test("sends a multiline prompt without leaking bracketed-paste markers", async (
   assert.equal(JSON.stringify(calls).includes("200~"), false);
 });
 
+test("submits a multiline recovery prompt to the active surface in a workspace", async () => {
+  const calls = [];
+  const client = new CmuxClient({ execute: async (_bin, args) => {
+    calls.push(args);
+    return { stdout: "", stderr: "" };
+  } });
+  await client.sendWorkspacePrompt(ID, "repair the trailer\nthen stop again");
+  assert.deepEqual(calls, [
+    ["send", "--workspace", ID, "--", "repair the trailer"],
+    ["send-key", "--workspace", ID, "--", "ctrl+j"],
+    ["send", "--workspace", ID, "--", "then stop again"],
+    ["send-key", "--workspace", ID, "--", "enter"],
+  ]);
+});
+
 test("rejects arbitrary targets, keys, and oversized input", async () => {
   const client = new CmuxClient({ execute: async () => ({ stdout: "", stderr: "" }) });
   await client.sendPrompt(ID, "x".repeat(16_000));
@@ -127,6 +142,7 @@ test("rejects arbitrary targets, keys, and oversized input", async () => {
   await assert.rejects(() => client.sendKey(ID, "cmd+q"), /Unsupported key/);
   await assert.rejects(() => client.sendText(ID, "x".repeat(16_001)), /16,000/);
   await assert.rejects(() => client.sendPrompt(ID, "x".repeat(16_001)), /16,000/);
+  await assert.rejects(() => client.sendWorkspacePrompt(ID, "x".repeat(16_001)), /16,000/);
 });
 
 test("parses JSON output and rejects malformed JSON", async () => {

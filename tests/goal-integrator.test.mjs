@@ -51,6 +51,7 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
       if (args[0] === "status") return "";
       if (args[0] === "rev-list") return "1\n";
       if (args[0] === "log") {
+        if (cwd === integrationPath) return "";
         const taskId = cwd.endsWith("task-one") ? "t1" : "t2";
         const criterion = taskId === "t1" ? "AC-1" : "AC-2";
         const defaultReport = { criteria: [criterion], verification: [{ check: "npm test", status: "passed" }], limitations: [] };
@@ -92,6 +93,7 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
   const cmux = {
     workspaceCreate: async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge" }; },
     rpc: async (method, params) => { calls.push(["rpc", method, params]); return {}; },
+    sendWorkspacePrompt: async (workspaceId, text) => { calls.push(["sendWorkspacePrompt", workspaceId, text]); },
     notify: async (workspaceId, body) => { calls.push(["notify", workspaceId, body]); return {}; },
     workspaceClose: async (workspaceId) => { calls.push(["workspaceClose", workspaceId]); return { ok: true }; },
   };
@@ -171,7 +173,9 @@ test("missing completion evidence keeps the task pending and sends one correctio
   const task = store.get("plan-12345678").tasks[0];
   assert.equal(task.deliveryStatus, "pending");
   assert.match(task.evidenceError, /no Cmux-Goal-Report/);
-  assert.equal(calls.filter((call) => call[0] === "rpc" && call[2].workspace_id === "workspace-one").length, 1);
+  const corrections = calls.filter((call) => call[0] === "sendWorkspacePrompt" && call[1] === "workspace-one");
+  assert.equal(corrections.length, 1);
+  assert.match(corrections[0][2], /delivery evidence is incomplete/);
 });
 
 test("incomplete criterion coverage and failed verification keep branches pending", async (t) => {
@@ -242,6 +246,32 @@ test("a restart advances queued work when the previous wave was already recorded
   assert.equal(workspace[1].cwd.endsWith("task-two"), true);
 });
 
+test("a blocked completed wave advances from its trailers without prompting the merge agent again", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { contract: true, workflow: true });
+  await integrator.assemble("plan-12345678");
+  await integrator.settle("plan-12345678");
+  assert.equal(store.get("plan-12345678").mergeStatus, "blocked");
+
+  const git = integrator.repoCatalog.git;
+  const integratedSha = "f".repeat(40);
+  integrator.repoCatalog.git = async (cwd, args) => {
+    if (cwd === integrationPath && args[0] === "log") {
+      const pattern = args.find((argument) => argument.startsWith("--grep=")) || "";
+      return pattern.includes(`/t1/${TASK_ONE}`) ? "wave-one-commit\n" : "";
+    }
+    if (cwd === integrationPath && args[0] === "rev-parse") return `${integratedSha}\n`;
+    return git(cwd, args);
+  };
+
+  const result = await integrator.assemble("plan-12345678");
+  assert.equal(result.deliveryStatus, "implementing");
+  const saved = store.get("plan-12345678");
+  assert.equal(saved.tasks[0].deliveryStatus, "integrated");
+  assert.equal(saved.tasks[1].launchStatus, "launched");
+  assert.equal(saved.tasks[1].startSha, integratedSha);
+  assert.equal(calls.some((call) => call[0] === "sendWorkspacePrompt"), false);
+});
+
 test("records the final pull request when the merge agent stops and a pull request exists", async (t) => {
   const { store, integrator } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
   await integrator.assemble("plan-12345678");
@@ -270,10 +300,10 @@ test("retries a blocked merge in the same workspace instead of opening a second 
   await integrator.settle("plan-12345678");
   await integrator.assemble("plan-12345678");
   assert.equal(calls.filter((call) => call[0] === "workspaceCreate").length, 1);
-  const sent = calls.filter((call) => call[0] === "rpc" && call[1] === "surface.send_text");
+  const sent = calls.filter((call) => call[0] === "sendWorkspacePrompt");
   assert.equal(sent.length, 1);
-  assert.equal(sent[0][2].workspace_id, "workspace-merge");
-  assert.match(sent[0][2].text, /Continue the merge/);
+  assert.equal(sent[0][1], "workspace-merge");
+  assert.match(sent[0][2], /Continue the merge/);
 });
 
 test("the merge prompt pins every task commit and states the conflict rule", () => {
@@ -447,7 +477,7 @@ test("a blocked retry whose merge workspace is gone opens a fresh one", async (t
   const { store, integrator, calls } = fixture(t);
   await integrator.assemble("plan-12345678");
   await integrator.settle("plan-12345678");
-  integrator.cmux.rpc = async () => { throw new Error("workspace not found"); };
+  integrator.cmux.sendWorkspacePrompt = async () => { throw new Error("workspace not found"); };
   integrator.cmux.workspaceCreate = async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge-2" }; };
   const result = await integrator.assemble("plan-12345678");
   assert.equal(result.mergeStatus, "running");
@@ -497,17 +527,25 @@ test("marks each task integrated from the trailers on the merged branch", async 
   const { store, integrator, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
   await integrator.assemble("plan-12345678");
   const git = integrator.repoCatalog.git;
+  const logCalls = [];
   integrator.repoCatalog.git = async (cwd, args) => {
     if (cwd !== integrationPath || args[0] !== "log") return git(cwd, args);
-    return args.includes("HEAD")
-      ? `Task 1: Billing API\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`
-      : "Some earlier commit on the base branch\n";
+    logCalls.push(args);
+    const pattern = args.find((argument) => argument.startsWith("--grep=")) || "";
+    return args.includes("HEAD") && pattern.includes(`/t1/${TASK_ONE}`) ? "merged-task-commit\n" : "";
   };
   await integrator.settle("plan-12345678");
   const saved = store.get("plan-12345678");
   assert.equal(saved.tasks[0].deliveryStatus, "integrated");
   assert.equal(saved.tasks[0].integratedCommitSha, TASK_ONE);
   assert.equal(saved.tasks[1].deliveryStatus, "ready");
+  assert.equal(logCalls.length, 2);
+  for (const args of logCalls) {
+    assert.ok(args.includes("--max-count=1"));
+    assert.ok(args.includes("--format=%H"));
+    assert.ok(args.includes("--fixed-strings"));
+    assert.equal(args.includes("--format=%B"), false);
+  }
 });
 
 test("rebuilds the goal worktree when its recorded path no longer exists on disk", async (t) => {
@@ -519,7 +557,7 @@ test("rebuilds the goal worktree when its recorded path no longer exists on disk
   rmSync(integrationPath, { recursive: true, force: true });
   await integrator.assemble("plan-12345678");
   const cwds = calls.filter((call) => call[0] === "workspaceCreate").map((call) => call[1].cwd);
-  const nudges = calls.filter((call) => call[0] === "rpc" && call[1] === "surface.send_text");
+  const nudges = calls.filter((call) => call[0] === "sendWorkspacePrompt");
   for (const cwd of cwds) assert.equal(existsSync(cwd), true, `merge agent was sent to a missing directory: ${cwd}`);
   assert.equal(nudges.length === 0 || existsSync(store.get("plan-12345678").integrationWorktreePath), true);
 });
@@ -597,7 +635,7 @@ test("closes a merge session that a fresh merge agent superseded", async (t) => 
   const { store, integrator, calls } = fixture(t);
   await integrator.assemble("plan-12345678");
   await integrator.settle("plan-12345678");
-  integrator.cmux.rpc = async () => { throw new Error("workspace not found"); };
+  integrator.cmux.sendWorkspacePrompt = async () => { throw new Error("workspace not found"); };
   integrator.cmux.workspaceCreate = async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge-2" }; };
   const result = await integrator.assemble("plan-12345678");
   assert.equal(result.mergeWorkspaceId, "workspace-merge-2");

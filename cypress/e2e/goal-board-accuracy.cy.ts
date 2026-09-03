@@ -24,7 +24,7 @@ function plan(id: string, goal: string, count: number, overrides: Record<string,
   return {
     planId: id, repositoryId: "repo-e2e", repositoryName: "cmux-e2e-cypress", goal,
     status: "launched", stage: "ready", round: 1, taskCount: count, launchedCount: count, readyCount: 0,
-    agentSplit: { claude: count === 2 ? 1 : 0, codex: 1 }, workspaceIds: [], deliveryStatus: "implementing",
+    agentSplit: { claude: count === 2 ? 1 : 0, codex: 1 }, workspaceIds: [] as string[], deliveryStatus: "implementing",
     boardState: "dev_in_progress", createdAt: now, updatedAt: now, launchedAt: now,
     ...overrides,
   };
@@ -169,6 +169,59 @@ describe("goal board matches live cmux evidence", () => {
       cy.findByRole("button", { name: "Open Goal merge in cmux" }).should("exist");
       cy.findByRole("button", { name: /Continue|Restart|Skip/ }).should("not.exist");
     });
+    cy.findByLabelText("2 live cmux sessions").should("exist");
+  });
+
+  it("shows the next dependency wave launching automatically after integration", () => {
+    const mergeSession = { id: "ws-wave-merge", title: "E2E-MERGE · Integrate wave 1", effective: "working" };
+    const source = plan("goal-waves", "Automatic dependency waves", 4, {
+      launchedCount: 2, readyCount: 2, deliveryStatus: "assembling", mergeStatus: "running", mergeWorkspaceId: mergeSession.id,
+      workspaceIds: [mergeSession.id], health: "working", boardState: "dev_in_progress",
+    });
+    const waitingTasks = [
+      task("T1", "ready", null),
+      task("T2", "ready", null),
+      task("T3", "queued", null, { wave: 1, launchStatus: "queued", deliveryStatus: "pending", reason: "This task waits for wave 1 to integrate" }),
+      task("T4", "queued", null, { wave: 1, launchStatus: "queued", deliveryStatus: "pending", reason: "This task waits for wave 1 to integrate" }),
+    ];
+    const state: Scenario = {
+      plans: [source],
+      goals: [healthGoal(source, waitingTasks, { health: "working", merge: { id: "merge", kind: "merge", title: "Goal merge", workspaceId: mergeSession.id, health: "working", reason: "The merge agent is running", session: { ...mergeSession, lastActivityAt: Date.parse(now) } } })],
+      liveSessions: 1,
+    };
+    installScenario(state);
+    visitBoard();
+
+    cy.findByRole("region", { name: "Dev in progress" }).within(() => {
+      cy.contains("Automatic dependency waves");
+      cy.findByLabelText("2 of 2 launched tasks ready").should("exist");
+      cy.contains("Agents are working on the launched tasks");
+    });
+
+    const waveTwoCodex = { id: "ws-wave-t3", title: "E2E-T3-code · Continue workflow", effective: "working" };
+    const waveTwoClaude = { id: "ws-wave-t4", title: "E2E-T4-test · Verify workflow", effective: "working" };
+    const advanced = { ...source, launchedCount: 4, deliveryStatus: "implementing", mergeStatus: null, mergeWorkspaceId: null, workspaceIds: [waveTwoCodex.id, waveTwoClaude.id] };
+    const activeTasks = [
+      task("T1", "ready", null, { deliveryStatus: "integrated" }),
+      task("T2", "ready", null, { deliveryStatus: "integrated" }),
+      task("T3", "working", waveTwoCodex, { wave: 1, title: "Continue workflow" }),
+      task("T4", "working", waveTwoClaude, { wave: 1, title: "Verify workflow" }),
+    ];
+    cy.then(() => {
+      state.plans = [advanced];
+      state.goals = [healthGoal(advanced, activeTasks, { health: "working", readyCount: 2, launchedCount: 4 })];
+      state.liveSessions = 2;
+    });
+    cy.findByRole("button", { name: "Refresh GitHub" }).click();
+    cy.wait("@plans");
+
+    cy.findByRole("region", { name: "Dev in progress" }).within(() => {
+      cy.contains("Automatic dependency waves");
+      cy.findByLabelText("2 of 4 launched tasks ready").should("exist");
+      cy.findByLabelText("E2E-T3-code: Continue workflow").should("exist");
+      cy.findByLabelText("E2E-T4-test: Verify workflow").should("exist");
+    });
+    cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", "Automatic dependency waves");
     cy.findByLabelText("2 live cmux sessions").should("exist");
   });
 
