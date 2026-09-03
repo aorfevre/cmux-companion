@@ -467,12 +467,25 @@ export class CmuxClient {
   async sendPrompt(surfaceId, text) {
     assertTarget(surfaceId);
     assertInputText(text);
+    await this.#sendPrompt("--surface", surfaceId, text);
+  }
+
+  // Recovery commands target the agent workspace recorded by a goal. Text
+  // insertion alone leaves a composed prompt sitting in Claude's input box;
+  // send the same explicit Enter sequence used by the mobile terminal.
+  async sendWorkspacePrompt(workspaceId, text) {
+    assertTarget(workspaceId);
+    assertInputText(text);
+    await this.#sendPrompt("--workspace", workspaceId, text);
+  }
+
+  async #sendPrompt(targetFlag, targetId, text) {
     const lines = text.replace(/\r\n?/g, "\n").split("\n");
     for (let index = 0; index < lines.length; index += 1) {
-      if (lines[index]) await this.sendText(surfaceId, lines[index]);
-      if (index < lines.length - 1) await this.sendKey(surfaceId, "ctrl+j");
+      if (lines[index]) await this.run(["send", targetFlag, targetId, "--", lines[index]]);
+      if (index < lines.length - 1) await this.run(["send-key", targetFlag, targetId, "--", "ctrl+j"]);
     }
-    await this.sendKey(surfaceId, "enter");
+    await this.run(["send-key", targetFlag, targetId, "--", "enter"]);
   }
 
   async selectWorkspace(workspaceId) {

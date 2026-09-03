@@ -186,6 +186,14 @@ export class GoalIntegrator {
     // it. Task state must not second-guess it: a task agent that pushes again
     // mid-merge would otherwise flip back to pending and strand the plan.
     if (plan.mergeStatus === "running") return deliveryResult(plan);
+    // A missed Stop hook may already have left every wave commit on disk while
+    // an earlier Companion marked the merge blocked. Reconcile that objective
+    // evidence before asking the agent to repeat finished work. When the whole
+    // intermediate wave is present, the queued-wave branch below advances it
+    // directly.
+    if (plan.mergeStatus === "blocked" && plan.integrationWorktreePath) {
+      plan = await this.#guard(plan, () => this.#recordIntegrated(plan));
+    }
     const pending = plan.tasks.filter((task) => task.launchStatus === "launched" && task.deliveryStatus !== "ready" && task.deliveryStatus !== "integrated");
     const failed = plan.tasks.filter((task) => task.launchStatus === "failed");
     const queued = plan.tasks.filter((task) => task.launchStatus === "queued");
@@ -262,7 +270,8 @@ export class GoalIntegrator {
 
   async #resumeMerge(plan) {
     const nudge = `Continue the merge. ${remaining(plan)}`;
-    return this.cmux.rpc("surface.send_text", { workspace_id: plan.mergeWorkspaceId, text: `${nudge}\n` })
+    if (!this.cmux?.sendWorkspacePrompt) return false;
+    return this.cmux.sendWorkspacePrompt(plan.mergeWorkspaceId, nudge)
       .then(() => true, (cause) => {
         this.log?.warn?.({ err: cause, planId: plan.planId }, "the merge nudge failed, starting a fresh merge session");
         return false;
@@ -301,7 +310,7 @@ export class GoalIntegrator {
     // The abort may have landed while this settle waited in the queue.
     if (plan.boardStatus) return deliveryResult(plan);
     const mergedWave = activeWave(plan);
-    plan = await this.#recordIntegrated(plan);
+    plan = await this.#guard(plan, () => this.#recordIntegrated(plan));
     const queued = plan.tasks.filter((task) => task.launchStatus === "queued");
     const active = plan.tasks.filter((task) => task.launchStatus === "launched" && task.deliveryStatus !== "integrated");
     if (queued.length) {
@@ -342,12 +351,18 @@ export class GoalIntegrator {
   // checked out, so HEAD is what the merge agent actually committed onto, and
   // no tag or remote ref of the same name can resolve ahead of it.
   async #recordIntegrated(plan) {
-    const log = await this.#git(plan.integrationWorktreePath, ["log", "--format=%B", "HEAD"])
-      .catch(() => "");
     let current = plan;
     for (const task of plan.tasks) {
       if (task.deliveryStatus === "integrated" || !task.headSha) continue;
-      if (!log.includes(`Cmux-Goal-Task: ${plan.planId}/${task.id}/${task.headSha}`)) continue;
+      const trailer = `Cmux-Goal-Task: ${plan.planId}/${task.id}/${task.headSha}`;
+      // Never stream every commit message into Node. A mature repository can
+      // exceed the child-process buffer by megabytes, making valid trailers
+      // look absent. Git performs the fixed-string search and returns at most
+      // one small hash instead.
+      const match = await this.#git(plan.integrationWorktreePath, [
+        "log", "--max-count=1", "--format=%H", "--fixed-strings", `--grep=${trailer}`, "HEAD",
+      ]);
+      if (!match.trim()) continue;
       current = this.store.recordTaskIntegrated(plan.planId, task.id, task.headSha);
     }
     return current;
@@ -424,13 +439,13 @@ export class GoalIntegrator {
   }
 
   async #nudgeTask(task, error) {
-    if (!task.workspaceId || !this.cmux?.rpc) return;
+    if (!task.workspaceId || !this.cmux?.sendWorkspacePrompt) return;
     const text = [
       "Your branch is committed and pushed, but its delivery evidence is incomplete.",
       error,
       "Amend the final commit with a valid Cmux-Goal-Report trailer, keep the existing Cmux-Goal-Ready trailer, force-push with lease, then stop again.",
     ].join("\n");
-    await this.cmux.rpc("surface.send_text", { workspace_id: task.workspaceId, text: `${text}\n` })
+    await this.cmux.sendWorkspacePrompt(task.workspaceId, text)
       .catch((cause) => this.log?.warn?.({ err: cause, taskId: task.id }, "task evidence nudge failed"));
   }
 
