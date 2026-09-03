@@ -155,6 +155,40 @@ test("creates a sibling worktree from a validated branch and base revision", asy
   assert.equal(worktreePath("/repo/sample", "feature/safe-name"), targetPath);
 });
 
+// Goal plans persist the dashboard id (one id for a repository and all of its
+// linked worktrees), while RepoCatalog has a path-derived id. A clean task
+// restart must resolve the former from the dashboard just like create() does.
+test("discards a task branch using its persisted dashboard repository id", async () => {
+  const calls = [];
+  const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0";
+  const repoCatalog = {
+    cache: {},
+    list: async () => [REPO],
+    git: async (cwd, args, options) => {
+      calls.push([cwd, args, options]);
+      if (args[0] === "worktree" && args[1] === "list") return inventory;
+      if (args[0] === "worktree" && args[1] === "remove") return "";
+      if (args[0] === "branch" && args[1] === "-D") return "";
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd.endsWith("feature") ? "feature/mobile" : "main"}\n`;
+      if (args[0] === "log") return "100\n";
+      throw new Error(`unexpected git call: ${args.join(" ")}`);
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  assert.notEqual(repositoryId, REPO.id, "the fixture must exercise the two repository id namespaces");
+
+  const result = await dashboard.removeBranchWorktree(repositoryId, "feature/mobile");
+
+  assert.deepEqual(result, { removed: true, branch: "feature/mobile", path: "/repo/sample-feature" });
+  assert.ok(calls.some(([cwd, args]) => cwd === "/repo/sample" && args[0] === "worktree" && args[1] === "remove" && args[3] === "/repo/sample-feature"));
+  assert.ok(calls.some(([cwd, args]) => cwd === "/repo/sample" && args[0] === "branch" && args[1] === "-D" && args[2] === "feature/mobile"));
+  assert.equal(repoCatalog.cache, null);
+});
+
 test("coalesces catalog entries that belong to one linked-worktree repository", async () => {
   const linked = { ...REPO, id: "linked-repo-id", name: "sample-feature", path: "/repo/sample-feature", branch: "feature/mobile" };
   const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature/mobile\0\0worktree /releases/1111111old\0HEAD cccccccc\0detached\0\0worktree /releases/2222222new\0HEAD dddddddd\0detached\0\0";

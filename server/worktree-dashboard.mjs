@@ -369,12 +369,14 @@ export class WorktreeDashboard {
   async removeBranchWorktree(repositoryId, branch) {
     if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
     const name = normalizedGitInput(branch, "A branch name is required");
-    const repository = await this.repoCatalog.get(repositoryId);
-    if (!repository) throw new TypeError("Unknown repository");
-
     const dashboard = await this.snapshot({ refresh: true });
-    const entry = dashboard.repositories.find((item) => item.id === repositoryId);
-    const worktree = entry?.worktrees.find((item) => item.branch === name && !item.isPrimary);
+    // Plans store the dashboard repository id, which is derived from Git's
+    // common directory so every linked worktree shares one identity. The raw
+    // catalog uses a different, path-derived id. Looking this id up through the
+    // catalog therefore rejected every clean restart as "Unknown repository".
+    const repository = dashboard.repositories.find((item) => item.id === repositoryId);
+    if (!repository) throw new TypeError("Unknown repository");
+    const worktree = repository.worktrees.find((item) => item.branch === name && !item.isPrimary);
     if (worktree) {
       // A managed release checkout is never a task worktree, and removing one
       // would break the updater. The name match alone must not reach it.
