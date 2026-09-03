@@ -23,7 +23,7 @@ type BulkRemoval = { requested: number; removed: number; failed: number; results
 // rail acts through the relaunch and skip routes, never through this shape.
 type HealthSession = { id: string; title: string | null; lastActivityAt: number; effective: string | null };
 type HealthTask = { id: string; title: string; branch: string; agent: string | null; wave: number; launchStatus: string | null; launchError: string | null; deliveryStatus: string; workspaceId: string | null; health: GoalHealth; reason: string; session: HealthSession | null };
-type HealthGoal = { planId: string; goal: string; repositoryName: string; health: GoalHealth; stuckCount: number; readyCount: number; launchedCount: number; taskCount: number; deliveryStatus?: string; tasks: HealthTask[] };
+type HealthGoal = { planId: string; goal: string; repositoryId: string; repositoryName: string; health: GoalHealth; stuckCount: number; readyCount: number; launchedCount: number; taskCount: number; deliveryStatus?: string; tasks: HealthTask[] };
 type HealthSummary = { goals: number; tasks: number; stuck: number; needsYou: number; working: number; deadTasks: number; idleTasks: number; failedTasks: number };
 // GET /api/goals/capacity. The dispatcher's own verdict, rendered: nothing here
 // recomputes which provider is next.
@@ -40,6 +40,7 @@ type GoalHealthSweep = { checkedAt: string; sessionsAvailable: boolean; goals: H
 const ATTENTION_HEALTH = new Set<GoalHealth>(["dead", "idle", "failed", "needs_you"]);
 const HEALTH_LABELS: Record<string, string> = { failed: "Failed", dead: "Dead", idle: "Idle", needs_you: "Needs you", working: "Working", ready: "Ready", integrated: "Integrated", queued: "Queued", unknown: "Unknown" };
 type ProjectKey = "karven" | "rekord";
+type BoardProjectKey = ProjectKey | "all";
 type DashboardFilter = "active" | "inactive" | "archived" | "draft-goals" | "launched-goals" | "goals-board";
 type AbortResult = { planId: string; aborted: boolean; alreadyAborted: boolean; closedSessionIds: string[]; failedSessionIds: string[] };
 const GOAL_FILTERS = new Set<DashboardFilter>(["draft-goals", "launched-goals", "goals-board"]);
@@ -98,6 +99,14 @@ function repoChipStyle(name: string) {
 // and the rail both lead with it.
 function RepoChip({ name }: { name: string }) { return <span className="goal-repo-chip" style={repoChipStyle(name)}>{name}</span>; }
 
+// The generated cmux title begins with the stable task identity (CC-T2-ui),
+// followed by a human title. Showing that same code on the board lets a person
+// match a card to cmux's narrow sidebar without comparing two long sentences.
+function sessionTaskCode(task: HealthTask) {
+  const title = String(task.session?.title || "").trim();
+  return /^([A-Z0-9]{2,4}-T\d{1,3}-[a-z0-9]+)/i.exec(title)?.[1] || task.id;
+}
+
 function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
 function relativePlanTime(timestamp?: string) { const value = timestamp ? Date.parse(timestamp) : NaN; return relativeTime(Number.isFinite(value) ? Math.round(value / 1000) : undefined); }
 function githubCheckedTime(timestamp: string) { const value = relativePlanTime(timestamp); return value === "now" ? "just now" : `${value} ago`; }
@@ -125,6 +134,9 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const [goalError, setGoalError] = useState("");
   const [busy, setBusy] = useState("");
   const [project, setProject] = useState<ProjectKey>("karven");
+  // The board supervises both repository roots by default. Worktree and goal
+  // lists keep their narrower Karven/Rekord selection in `project`.
+  const [boardProject, setBoardProject] = useState<BoardProjectKey>("all");
   // The board is the landing view: it is the one screen that answers "what is
   // running, what is stuck, what needs me" across every repository. The other
   // tabs are for looking at one repository's worktrees, which is a narrower
@@ -423,9 +435,15 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     });
   }
 
-  const projectRepositories = dashboard?.repositories.filter((repo) => (projectFor(repo.root) || projectFor(repo.path)) === project) || [];
+  const isBoardView = dashboardFilter === "goals-board";
+  const allRepositories = dashboard?.repositories || [];
+  const rootProjectRepositories = allRepositories.filter((repo) => (projectFor(repo.root) || projectFor(repo.path)) === project);
+  const boardProjectRepositories = allRepositories.filter((repo) => boardProject === "all" || (projectFor(repo.root) || projectFor(repo.path)) === boardProject);
+  const projectRepositories = isBoardView ? boardProjectRepositories : rootProjectRepositories;
   const projectRepositoryIds = new Set(projectRepositories.map((repo) => repo.id));
   const projectPlans = goalPlans.filter((plan) => projectRepositoryIds.has(plan.repositoryId));
+  const rootProjectRepositoryIds = new Set(rootProjectRepositories.map((repo) => repo.id));
+  const rootProjectPlans = goalPlans.filter((plan) => rootProjectRepositoryIds.has(plan.repositoryId));
   // A favorite stays in Active even with no session, so both the tab badge and
   // the list read the same rule.
   const isActiveRepository = (repo: DashboardRepository) => !repo.archived && (repo.favorite === true || repo.summary.sessions > 0);
@@ -437,14 +455,13 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   // Draft and Launched stay exactly as they were: membership and counts read
   // `plan.status`. Only the board reads the lifecycle.
   const goalCounts = {
-    "draft-goals": projectPlans.filter((plan) => plan.status === "draft").length,
-    "launched-goals": projectPlans.filter((plan) => plan.status === "launched").length,
+    "draft-goals": rootProjectPlans.filter((plan) => plan.status === "draft").length,
+    "launched-goals": rootProjectPlans.filter((plan) => plan.status === "launched").length,
     "goals-board": projectPlans.length,
   };
   // A goal keeps planning after its sheet closes, so the tab carries the count
   // of rounds running right now across every repository in this project.
-  const planningCount = projectPlans.filter((plan) => plan.running).length;
-  const isBoardView = dashboardFilter === "goals-board";
+  const planningCount = rootProjectPlans.filter((plan) => plan.running).length;
   // An archived repository takes no new goals, so it never reaches the picker.
   const goalRepositories = projectRepositories.filter((repo) => !repo.archived);
   // A flat list of every repository is unusable once there are thirty of them.
@@ -473,10 +490,13 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   // derivation as the fallback for a payload that carries none.
   const boardGroups = groupGoalsByBoardState([]) as Record<GoalBoardStateId, PlanSummary[]>;
   if (isBoardView) for (const plan of visiblePlans) boardGroups[boardStateOf(plan)].push(plan);
-  // The rail crosses repositories on purpose: a dead agent in Rekord still
-  // needs the person watching Karven, and the sweep is already project-wide.
-  const attentionRows = (health?.goals || []).flatMap((goal) => goal.tasks.filter((task) => ATTENTION_HEALTH.has(task.health)).map((task) => ({ goal, task })));
-  const healthSummary = health?.summary || emptyHealthSummary();
+  // The default All scope makes every live goal and attention item visible.
+  // Choosing one project narrows the counters and rail with the cards, so the
+  // header can never say "2 working" above a board that only contains one.
+  const scopedHealthGoals = (health?.goals || []).filter((goal) => projectRepositoryIds.has(goal.repositoryId));
+  const healthByPlanId = new Map(scopedHealthGoals.map((goal) => [goal.planId, goal]));
+  const attentionRows = scopedHealthGoals.flatMap((goal) => goal.tasks.filter((task) => ATTENTION_HEALTH.has(task.health)).map((task) => ({ goal, task })));
+  const healthSummary = summarizeHealthGoals(scopedHealthGoals);
   const boardLaunchedSessions = visiblePlans.reduce((total, plan) => total + (plan.workspaceIds?.length || 0), 0);
   const visibleRepositories = isGoalView ? [] : projectRepositories
     .filter((repo) => dashboardFilter === "archived" ? repo.archived : dashboardFilter === "active" ? isActiveRepository(repo) : !repo.archived && repo.favorite !== true && repo.summary.sessions === 0)
@@ -515,7 +535,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     {!isBoardView && <section className="hero worktree-hero"><p className="eyebrow">BETA · PARALLEL WORK</p><h1>{isGoalView ? goalHeroHeading : visibleNeedsYou ? `${visibleNeedsYou} agent${visibleNeedsYou > 1 ? "s" : ""} need you.` : visibleWorking ? "Your workstreams are moving." : "Worktrees at a glance."}</h1><p>{isBoardView ? "Follow every goal in this project through its eight lifecycle states." : isGoalView ? "Resume plans and inspect launches across every repository in this project." : "Supervise isolated branches, agents, changes, and pull requests without watching every terminal."}</p><div className="summary-row">{isGoalView ? <><div><strong>{dashboard ? visiblePlans.length : "–"}</strong><span>goals</span></div><div><strong className="accent-number">{dashboard ? goalTaskCount : "–"}</strong><span>tasks</span></div><div><strong>{dashboard ? goalRepositoryCount : "–"}</strong><span>repositories</span></div></> : <><div><strong>{dashboard ? visibleWorktrees.length : "–"}</strong><span>worktrees</span></div><div><strong>{dashboard ? visibleReleases.length : "–"}</strong><span>releases</span></div><div><strong className="accent-number">{dashboard ? visibleNeedsYou : "–"}</strong><span>needs you</span></div><div><strong>{dashboard ? visibleWorking : "–"}</strong><span>working</span></div></>}</div></section>}
     <section className="content-section worktree-content">
       {!isBoardView && <div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={project === "karven"} className={project === "karven" ? "active" : ""} onClick={() => setProject("karven")}><span>K</span>Karven</button><button role="tab" aria-selected={project === "rekord"} className={project === "rekord" ? "active" : ""} onClick={() => setProject("rekord")}><span>R</span>Rekord</button></div>}
-      {isBoardView && <div className="board-bar"><div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={project === "karven"} className={project === "karven" ? "active" : ""} onClick={() => setProject("karven")}><span>K</span>Karven</button><button role="tab" aria-selected={project === "rekord"} className={project === "rekord" ? "active" : ""} onClick={() => setProject("rekord")}><span>R</span>Rekord</button></div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div><AgentCapacityChip capacity={capacity} error={capacityError} now={nowTick} open={capacityOpen} onToggle={() => setCapacityOpen((open) => !open)} />{goalRepositories.length > 0 && <div className="board-new-goal"><button type="button" className="board-new-goal-button" aria-label={goalRepositories.length === 1 ? `Plan a goal for ${goalRepositories[0].name}` : "Plan a new goal"} aria-expanded={goalRepositories.length === 1 ? undefined : newGoalOpen} aria-haspopup={goalRepositories.length === 1 ? undefined : "menu"} onClick={() => { if (goalRepositories.length === 1) setPlanTarget({ repository: goalRepositories[0] }); else setNewGoalOpen((open) => !open); }}>＋ New goal</button>{newGoalOpen && goalRepositories.length > 1 && <><button type="button" className="board-new-goal-backdrop" aria-label="Close the repository picker" onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); }} /><div className="board-new-goal-menu" aria-label="Pick a repository for the new goal">{/* eslint-disable-next-line jsx-a11y/no-autofocus -- the picker opens for typing: a search box nobody can type into is the problem this replaced */}
+      {isBoardView && <div className="board-bar"><div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={boardProject === "all"} className={boardProject === "all" ? "active" : ""} onClick={() => setBoardProject("all")}><span aria-hidden="true">∞</span>All</button><button role="tab" aria-selected={boardProject === "karven"} className={boardProject === "karven" ? "active" : ""} onClick={() => setBoardProject("karven")}><span aria-hidden="true">K</span>Karven</button><button role="tab" aria-selected={boardProject === "rekord"} className={boardProject === "rekord" ? "active" : ""} onClick={() => setBoardProject("rekord")}><span aria-hidden="true">R</span>Rekord</button></div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div><AgentCapacityChip capacity={capacity} error={capacityError} now={nowTick} open={capacityOpen} onToggle={() => setCapacityOpen((open) => !open)} />{goalRepositories.length > 0 && <div className="board-new-goal"><button type="button" className="board-new-goal-button" aria-label={goalRepositories.length === 1 ? `Plan a goal for ${goalRepositories[0].name}` : "Plan a new goal"} aria-expanded={goalRepositories.length === 1 ? undefined : newGoalOpen} aria-haspopup={goalRepositories.length === 1 ? undefined : "menu"} onClick={() => { if (goalRepositories.length === 1) setPlanTarget({ repository: goalRepositories[0] }); else setNewGoalOpen((open) => !open); }}>＋ New goal</button>{newGoalOpen && goalRepositories.length > 1 && <><button type="button" className="board-new-goal-backdrop" aria-label="Close the repository picker" onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); }} /><div className="board-new-goal-menu" aria-label="Pick a repository for the new goal">{/* eslint-disable-next-line jsx-a11y/no-autofocus -- the picker opens for typing: a search box nobody can type into is the problem this replaced */}
         <input type="search" autoFocus aria-label="Find a repository" placeholder="Find a repository…" value={newGoalQuery} onChange={(event) => setNewGoalQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setNewGoalOpen(false); setNewGoalQuery(""); } if (event.key === "Enter" && newGoalMatches.length > 0) { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: newGoalMatches[0] }); } }} />{newGoalMatches.length === 0 ? <p className="board-new-goal-empty">No repository matches that.</p> : <div role="menu">{newGoalMatches.map((repo) => <button type="button" role="menuitem" aria-label={`Plan a goal for ${repo.name}`} onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: repo }); }} key={repo.id}><RepoChip name={repo.name} />{repo.summary.sessions > 0 && <em>{repo.summary.sessions} session{repo.summary.sessions === 1 ? "" : "s"}</em>}</button>)}</div>}{newGoalQuery === "" && goalRepositories.length > newGoalMatches.length && <p className="board-new-goal-empty">Type to reach the other {goalRepositories.length - newGoalMatches.length}.</p>}</div></>}</div>}<button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>}
       {/* Stuck and needs-you are the only two numbers here a person acts on, so
           they are the two that reach the rail. The rest are read-only totals. */}
@@ -556,6 +576,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
               plan={plan}
               state={column.id}
               repositoryName={projectRepositories.find((item) => item.id === plan.repositoryId)?.name || plan.repositoryName}
+              tasks={healthByPlanId.get(plan.planId)?.tasks || []}
               confirming={confirmAbortGoalId === plan.planId}
               aborting={abortingGoalId === plan.planId}
               onOpen={() => { const repo = projectRepositories.find((item) => item.id === plan.repositoryId); if (repo) setPlanTarget({ repository: repo, planId: plan.planId }); }}
@@ -585,7 +606,7 @@ function goalOpenLabel(plan: PlanSummary) {
   return plan.running ? "Watch" : plan.status === "draft" ? "Resume" : "View";
 }
 
-function GoalBoardCard({ plan, state, repositoryName, confirming, aborting, focusing, checking, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void }) {
+function GoalBoardCard({ plan, state, repositoryName, tasks, confirming, aborting, focusing, checking, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; tasks: HealthTask[]; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void }) {
   const closed = state === "merged" || state === "aborted";
   const link = goalPrLink(plan);
   const openLabel = goalOpenLabel(plan);
@@ -595,6 +616,7 @@ function GoalBoardCard({ plan, state, repositoryName, confirming, aborting, focu
   const launched = plan.launchedCount || 0;
   const split = plan.agentSplit;
   const sessions = plan.workspaceIds || [];
+  const liveTasks = tasks.filter((task) => task.session?.id);
   // Only a URL this same repository already produced can build an issue link.
   const issueBase = issueBaseFrom([plan.boardPrUrl, plan.finalPrUrl]);
   // A goal that says "Waiting for merge" while its pull request is already
@@ -605,6 +627,7 @@ function GoalBoardCard({ plan, state, repositoryName, confirming, aborting, focu
     <RepoChip name={repositoryName} />
     <strong>{plan.goal}</strong>
     <div className="goal-board-card-meta"><span>{plan.taskCount} task{plan.taskCount === 1 ? "" : "s"}</span><span>Updated {relativePlanTime(plan.updatedAt)}</span></div>
+    {liveTasks.length > 0 && <p className="goal-board-task-codes" aria-label="Live task sessions">{liveTasks.map((task) => <code title={task.title} aria-label={`${sessionTaskCode(task)}: ${task.title}`} key={task.id}>{sessionTaskCode(task)}</code>)}</p>}
     {health && <p className={`goal-board-health ${health}`}><b>{HEALTH_LABELS[health]}</b><span>{plan.healthReason || "This goal needs a person"}</span></p>}
     {launched > 0 && <p className="goal-board-ready" aria-label={`${plan.readyCount || 0} of ${launched} launched tasks ready`}><i style={{ width: `${Math.round(Math.min(1, (plan.readyCount || 0) / launched) * 100)}%` }} /><span>{plan.readyCount || 0}/{launched} ready</span></p>}
     {split && (split.claude > 0 || split.codex > 0) && <p className="goal-board-agents">{[split.claude ? `${split.claude} Claude` : "", split.codex ? `${split.codex} Codex` : ""].filter(Boolean).join(" · ")}</p>}
@@ -654,6 +677,23 @@ function ProviderCapacity({ provider, next, now }: { provider: CapacityProvider;
 
 function emptyHealthSummary(): HealthSummary {
   return { goals: 0, tasks: 0, stuck: 0, needsYou: 0, working: 0, deadTasks: 0, idleTasks: 0, failedTasks: 0 };
+}
+
+function summarizeHealthGoals(goals: HealthGoal[]): HealthSummary {
+  const summary = emptyHealthSummary();
+  for (const goal of goals) {
+    summary.goals += 1;
+    if (goal.health === "dead" || goal.health === "idle" || goal.health === "failed") summary.stuck += 1;
+    if (goal.health === "needs_you") summary.needsYou += 1;
+    if (goal.health === "working") summary.working += 1;
+    for (const task of goal.tasks) {
+      summary.tasks += 1;
+      if (task.health === "dead") summary.deadTasks += 1;
+      if (task.health === "idle") summary.idleTasks += 1;
+      if (task.health === "failed") summary.failedTasks += 1;
+    }
+  }
+  return summary;
 }
 
 // The strip's verdict as one chip, so the board bar answers "who takes the next
