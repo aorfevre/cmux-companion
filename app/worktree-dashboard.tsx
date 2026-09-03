@@ -6,6 +6,9 @@ import { GoalBoardStateId, GoalHealth, goalPrLink, PlanSummary, terminalStatus, 
 // The board reads its columns and its placement from the one shared module, so
 // the dashboard can never invent a column the server does not know.
 import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../server/goal-board.mjs";
+// The GitHub Issues column shares its identity with the server, exactly like
+// the goal columns above. One label, one id, one empty hint, in one file.
+import { GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_HINT, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, isGithubIssueStarted } from "../server/github-issue-board.mjs";
 import { GitHubIssuePlannerSheet } from "./github-issue-planner";
 // The quota countdown already exists on the licence page. Reusing it keeps one
 // reset time from reading two different ways on two screens.
@@ -36,6 +39,14 @@ type AgentCapacity = { providers: CapacityProvider[]; next: "claude" | "codex" |
 // that says the board moved; the rest explains why it did not.
 type MergeCheck = { planId: string; changed: boolean; state: "OPEN" | "CLOSED" | "MERGED" | null; boardStatus: "merged" | "aborted" | null; pullRequest: { number: number; url: string } | null; checked: true };
 type GoalHealthSweep = { checkedAt: string; sessionsAvailable: boolean; goals: HealthGoal[]; summary: HealthSummary };
+// GET /api/github-issues and POST /api/github-issues/sync. Every field here is
+// repository content that any GitHub user can write, so the column renders it
+// as plain text and never as markup or as an instruction.
+type GitHubIssueCard = { repositoryId: string; repositoryName: string; number: number; title: string; labels: string[]; url: string; updatedAt: string; syncedAt: string; planId: string | null };
+type GitHubIssueColumnPayload = { syncedAt: string | null; issues: GitHubIssueCard[] };
+type GitHubIssueSyncRepository = { repositoryId: string; name: string; status: string; issueCount: number; truncated: boolean; error: string | null };
+type GitHubIssueSyncResult = { syncedAt: string; status: string; message: string | null; repositories: GitHubIssueSyncRepository[]; issues: GitHubIssueCard[] };
+type GitHubIssueGoalResult = { issue: GitHubIssueCard; plan: { planId: string }; created: boolean };
 // The four verdicts that mean a person is needed. Everything else is either
 // progress or a state with nothing to act on, so the rail never lists it.
 const ATTENTION_HEALTH = new Set<GoalHealth>(["dead", "idle", "failed", "needs_you"]);
@@ -172,6 +183,13 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   // One key per operation. A shared busy string would disable every Continue
   // button on the rail while a single task was relaunching.
   const [boardBusy, setBoardBusy] = useState<Record<string, boolean>>({});
+  // The synced GitHub issue column. It is stored server side, so the board
+  // reads it on mount and a reload shows the last sync without a new one.
+  const [issueCards, setIssueCards] = useState<GitHubIssueCard[]>([]);
+  const [issueSyncing, setIssueSyncing] = useState(false);
+  // A sync that read nothing, or read only failures, states the reason on the
+  // board through the same warning strip as every other dashboard failure.
+  const [issueNotice, setIssueNotice] = useState("");
   const [confirmTaskAction, setConfirmTaskAction] = useState("");
   const [confirmDeleteGoalId, setConfirmDeleteGoalId] = useState("");
   const [deletingGoalId, setDeletingGoalId] = useState("");
@@ -226,6 +244,17 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
       setCapacityError("");
     } catch (cause) { setCapacityError(cause instanceof Error ? cause.message : "Agent capacity unavailable"); }
   }, []);
+  // The stored issue column. This is a read of the last sync only: it never
+  // touches GitHub, so it is safe on mount and stays off the sync's slow path.
+  const loadIssues = useCallback(async () => {
+    try {
+      const payload = await request<GitHubIssueColumnPayload>("/api/github-issues");
+      setIssueCards(Array.isArray(payload?.issues) ? payload.issues : []);
+    } catch {
+      // A failed read leaves the last cards on screen. The column is evidence
+      // of the last sync, so emptying it would state something untrue.
+    }
+  }, []);
   useEffect(() => {
     const kickoff = setTimeout(() => { void load(); void loadGoalPlans(); }, 0);
     const poll = setInterval(() => { if (document.visibilityState === "visible") { void load(); void loadGoalPlans(); } }, 10_000);
@@ -244,10 +273,12 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const boardView = dashboardFilter === "goals-board";
   useEffect(() => {
     if (!boardView) return;
-    const kickoff = setTimeout(() => { void loadHealth(); void loadCapacity(); }, 0);
+    // The issue column is read once per board mount. It is deliberately not on
+    // the ten-second poll: only an explicit GitHub Sync changes it.
+    const kickoff = setTimeout(() => { void loadHealth(); void loadCapacity(); void loadIssues(); }, 0);
     const poll = setInterval(() => { if (document.visibilityState === "visible") { void loadHealth(); void loadCapacity(); } }, 10_000);
     return () => { clearTimeout(kickoff); clearInterval(poll); };
-  }, [boardView, loadCapacity, loadHealth]);
+  }, [boardView, loadCapacity, loadHealth, loadIssues]);
   // One second, and only while the strip is on screen. A reset countdown that
   // moves in ten-second jumps reads as broken.
   useEffect(() => {
@@ -446,6 +477,60 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     });
   }
 
+  // GitHub Sync. It reads every starred repository through `gh`, which is slow,
+  // so it is its own button with its own busy label and never joins the
+  // ten-second dashboard poll behind Refresh GitHub.
+  async function syncGitHubIssues() {
+    setIssueSyncing(true);
+    try {
+      const result = await request<GitHubIssueSyncResult>("/api/github-issues/sync", { method: "POST" });
+      setIssueCards(Array.isArray(result?.issues) ? result.issues : []);
+      // A sync with nothing to read must say why. Silence would read as a
+      // button that does nothing.
+      if (result?.status === GITHUB_ISSUE_SYNC_NO_FAVORITES) {
+        const message = result.message || "No starred repositories. Star a repository first; GitHub Sync reads starred repositories only.";
+        setIssueNotice(message);
+        onNotice(message);
+        return;
+      }
+      const failed = (Array.isArray(result?.repositories) ? result.repositories : []).filter((repository) => repository.status !== "ok");
+      if (failed.length) {
+        const message = `GitHub Sync could not read ${failed.length} starred repositor${failed.length === 1 ? "y" : "ies"}: ${failed.map((repository) => `${repository.name} (${repository.error || "unknown error"})`).join("; ")}`;
+        setIssueNotice(message);
+        onNotice(message);
+        return;
+      }
+      setIssueNotice("");
+      onNotice(`GitHub Sync read ${result.issues.length} open issue${result.issues.length === 1 ? "" : "s"}`);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "GitHub Sync failed";
+      setIssueNotice(message);
+      onNotice(message);
+    } finally { setIssueSyncing(false); }
+  }
+
+  // One issue becomes one goal plan. The plan lands in Writing Spec, so the
+  // goal list is re-read after the call rather than guessed at locally.
+  async function startIssueGoal(issue: GitHubIssueCard) {
+    await runBoardAction(githubIssueCardId(issue), async () => {
+      try {
+        const result = await request<GitHubIssueGoalResult>(`/api/github-issues/${encodeURIComponent(issue.repositoryId)}/${issue.number}/goal`, { method: "POST" });
+        setIssueCards((cards) => cards.map((card) => (
+          card.repositoryId === issue.repositoryId && card.number === issue.number ? { ...card, planId: result?.issue?.planId ?? card.planId } : card
+        )));
+        await loadGoalPlans();
+        setIssueNotice("");
+        onNotice(result?.created === false
+          ? `Issue #${issue.number} already has a goal. Nothing new was created.`
+          : `Started a goal for issue #${issue.number}. It is in Writing Spec.`);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : `Could not start a goal for issue #${issue.number}`;
+        setIssueNotice(message);
+        onNotice(message);
+      }
+    });
+  }
+
   const isBoardView = dashboardFilter === "goals-board";
   const allRepositories = dashboard?.repositories || [];
   const rootProjectRepositories = allRepositories.filter((repo) => (projectFor(repo.root) || projectFor(repo.path)) === project);
@@ -554,13 +639,14 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     <section className="content-section worktree-content">
       {!isBoardView && <div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={project === "karven"} className={project === "karven" ? "active" : ""} onClick={() => setProject("karven")}><span>K</span>Karven</button><button role="tab" aria-selected={project === "rekord"} className={project === "rekord" ? "active" : ""} onClick={() => setProject("rekord")}><span>R</span>Rekord</button></div>}
       {isBoardView && <div className="board-bar"><div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={boardProject === "all"} className={boardProject === "all" ? "active" : ""} onClick={() => setBoardProject("all")}><span aria-hidden="true">∞</span>All</button><button role="tab" aria-selected={boardProject === "karven"} className={boardProject === "karven" ? "active" : ""} onClick={() => setBoardProject("karven")}><span aria-hidden="true">K</span>Karven</button><button role="tab" aria-selected={boardProject === "rekord"} className={boardProject === "rekord" ? "active" : ""} onClick={() => setBoardProject("rekord")}><span aria-hidden="true">R</span>Rekord</button></div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div><AgentCapacityChip capacity={capacity} error={capacityError} now={nowTick} open={capacityOpen} onToggle={() => setCapacityOpen((open) => !open)} />{goalRepositories.length > 0 && <div className="board-new-goal"><button type="button" className="board-new-goal-button" aria-label={goalRepositories.length === 1 ? `Plan a goal for ${goalRepositories[0].name}` : "Plan a new goal"} aria-expanded={goalRepositories.length === 1 ? undefined : newGoalOpen} aria-haspopup={goalRepositories.length === 1 ? undefined : "menu"} onClick={() => { if (goalRepositories.length === 1) setPlanTarget({ repository: goalRepositories[0] }); else setNewGoalOpen((open) => !open); }}>＋ New goal</button>{newGoalOpen && goalRepositories.length > 1 && <><button type="button" className="board-new-goal-backdrop" aria-label="Close the repository picker" onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); }} /><div className="board-new-goal-menu" aria-label="Pick a repository for the new goal">{/* eslint-disable-next-line jsx-a11y/no-autofocus -- the picker opens for typing: a search box nobody can type into is the problem this replaced */}
-        <input type="search" autoFocus aria-label="Find a repository" placeholder="Find a repository…" value={newGoalQuery} onChange={(event) => setNewGoalQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setNewGoalOpen(false); setNewGoalQuery(""); } if (event.key === "Enter" && newGoalMatches.length > 0) { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: newGoalMatches[0] }); } }} />{newGoalMatches.length === 0 ? <p className="board-new-goal-empty">No repository matches that.</p> : <div role="menu">{newGoalMatches.map((repo) => <button type="button" role="menuitem" aria-label={`Plan a goal for ${repo.name}`} onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: repo }); }} key={repo.id}><RepoChip name={repo.name} />{repo.summary.sessions > 0 && <em>{repo.summary.sessions} session{repo.summary.sessions === 1 ? "" : "s"}</em>}</button>)}</div>}{newGoalQuery === "" && goalRepositories.length > newGoalMatches.length && <p className="board-new-goal-empty">Type to reach the other {goalRepositories.length - newGoalMatches.length}.</p>}</div></>}</div>}<button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>}
+        <input type="search" autoFocus aria-label="Find a repository" placeholder="Find a repository…" value={newGoalQuery} onChange={(event) => setNewGoalQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setNewGoalOpen(false); setNewGoalQuery(""); } if (event.key === "Enter" && newGoalMatches.length > 0) { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: newGoalMatches[0] }); } }} />{newGoalMatches.length === 0 ? <p className="board-new-goal-empty">No repository matches that.</p> : <div role="menu">{newGoalMatches.map((repo) => <button type="button" role="menuitem" aria-label={`Plan a goal for ${repo.name}`} onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: repo }); }} key={repo.id}><RepoChip name={repo.name} />{repo.summary.sessions > 0 && <em>{repo.summary.sessions} session{repo.summary.sessions === 1 ? "" : "s"}</em>}</button>)}</div>}{newGoalQuery === "" && goalRepositories.length > newGoalMatches.length && <p className="board-new-goal-empty">Type to reach the other {goalRepositories.length - newGoalMatches.length}.</p>}</div></>}</div>}<button className="text-button" disabled={issueSyncing} onClick={() => { void syncGitHubIssues(); }}>{issueSyncing ? "Syncing GitHub issues…" : "GitHub Sync"}</button><button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>}
       {/* Stuck and needs-you are the only two numbers here a person acts on, so
           they are the two that reach the rail. The rest are read-only totals. */}
       {isBoardView && <div className="board-counts">{healthSummary.stuck > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.stuck} stuck goals. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.stuck}</b>stuck</button> : <span aria-label="0 stuck goals"><b>0</b>stuck</span>}{healthSummary.needsYou > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.needsYou} goals need you. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.needsYou}</b>needs you</button> : <span aria-label="0 goals need you"><b>0</b>needs you</span>}<span aria-label={`${healthSummary.working} goals working`}><b>{healthSummary.working}</b>working</span><span aria-label={`${boardLiveSessions} live cmux sessions`}><b>{boardLiveSessions}</b>sessions</span>{dashboard && <small>{visiblePlans.length} shown · {projectPlans.length} total · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</small>}</div>}
       <div className={`worktree-filter-tabs${isBoardView ? " quiet" : ""}`} role="tablist" aria-label="Project status">{filterTabs.map((filter) => <button role="tab" aria-selected={dashboardFilter === filter.id} className={`${GOAL_FILTERS.has(filter.id) ? "goal-tab" : ""}${dashboardFilter === filter.id ? " active" : ""}`.trim()} onClick={() => setDashboardFilter(filter.id)} key={filter.id}>{filter.label} <b>{filter.count}</b>{filter.planning ? <i className="tab-planning" aria-label={`${filter.planning} planning`}>{filter.planning} planning</i> : null}</button>)}</div>
       {!isBoardView && <div className="section-heading"><div><h2>{project === "karven" ? "Karven" : "Rekord"} {isGoalView ? goalHeadingTitle : "projects"}</h2>{dashboard && <p>{isGoalView ? `${visiblePlans.length} shown · ${projectPlans.length} total goals` : `${visibleRepositories.length} shown · ${projectRepositories.length} total`} · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</p>}</div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div><button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>}
       {error && <div className="apps-warning">{error}<button onClick={() => load(true)}>Retry</button></div>}
+      {isBoardView && issueNotice && <div className="apps-warning">{issueNotice}<button onClick={() => setIssueNotice("")}>Dismiss</button></div>}
       {isGoalView && goalError && <div className="apps-warning">{goalError}<button onClick={loadGoalPlans}>Retry</button></div>}
       {!dashboard && !error && <WorktreeSkeleton />}
       {!isGoalView && dashboard && dashboard.repositories.length === 0 && <div className="empty-card"><span>⑂</span><strong>No Git worktrees found</strong><p>Add repositories in the companion settings, then refresh this beta dashboard.</p></div>}
@@ -586,7 +672,16 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
         onSkip={(goal, task) => { void skipTask(goal, task); }}
         onFocus={(workspaceId, label) => { void focusWorkspace(workspaceId, label); }}
       />}
-      {isBoardView && dashboard && <section className="goal-board" aria-label="Goals board">{BOARD_COLUMNS.map((column) => { const cards = boardGroups[column.id]; return <section className="goal-board-column" aria-labelledby={`goal-board-${column.id}`} key={column.id}>
+      {isBoardView && dashboard && <section className="goal-board" aria-label="Goals board"><section className="goal-board-column github-issue-column" aria-labelledby={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>
+        <header><h3 id={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>{GITHUB_ISSUE_COLUMN.label}</h3><b aria-label={`${issueCards.length} issue${issueCards.length === 1 ? "" : "s"} in ${GITHUB_ISSUE_COLUMN.label}`}>{issueCards.length}</b><p>{GITHUB_ISSUE_COLUMN.description}</p></header>
+        {issueCards.length === 0
+          ? <p className="goal-board-empty">{GITHUB_ISSUE_EMPTY_HINT}</p>
+          : <ul className="goal-board-cards" aria-label={`${GITHUB_ISSUE_COLUMN.label} cards`}>{issueCards.map((issue) => <li key={githubIssueCardId(issue)}><GitHubIssueBoardCard
+              issue={issue}
+              starting={boardBusy[githubIssueCardId(issue)] === true}
+              onStart={() => { void startIssueGoal(issue); }}
+            /></li>)}</ul>}
+      </section>{BOARD_COLUMNS.map((column) => { const cards = boardGroups[column.id]; return <section className="goal-board-column" aria-labelledby={`goal-board-${column.id}`} key={column.id}>
         <header><h3 id={`goal-board-${column.id}`}>{column.label}</h3><b aria-label={`${cards.length} goal${cards.length === 1 ? "" : "s"} in ${column.label}`}>{cards.length}</b><p>{column.description}</p></header>
         {cards.length === 0
           ? <p className="goal-board-empty">No goal here yet.</p>
@@ -623,6 +718,24 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
 function goalOpenLabel(plan: PlanSummary) {
   if (terminalStatus(plan)) return "View";
   return plan.running ? "Watch" : plan.status === "draft" ? "Resume" : "View";
+}
+
+// One synced GitHub issue. Every field is repository prose that any GitHub user
+// can write, so it is rendered as text children only: never through
+// dangerouslySetInnerHTML, and never as an instruction to an agent.
+function GitHubIssueBoardCard({ issue, starting, onStart }: { issue: GitHubIssueCard; starting: boolean; onStart: () => void }) {
+  const started = isGithubIssueStarted(issue);
+  return <article className="goal-board-card github-issue-card">
+    <div className="github-issue-head"><span className="github-issue-repository">{issue.repositoryName}</span><b className="github-issue-number">#{issue.number}</b></div>
+    <strong>{issue.title}</strong>
+    {issue.labels.length > 0 && <p className="github-issue-labels" aria-label={`Labels for issue #${issue.number}`}>{issue.labels.map((label) => <span key={label}>{label}</span>)}</p>}
+    {issue.url && <a className="github-issue-link" href={issue.url} target="_blank" rel="noreferrer">{`Open #${issue.number} on GitHub`}</a>}
+    <footer>{started
+      // A started issue offers no second start. The card links to the goal it
+      // already created instead, so the same issue is never planned twice.
+      ? <a className="github-issue-started" href={`?plan=${encodeURIComponent(String(issue.planId))}`}>{`Goal started for #${issue.number}`}</a>
+      : <button type="button" className="github-issue-start" aria-label={`Start a goal for #${issue.number} ${issue.title}`} disabled={starting} onClick={onStart}>{starting ? "Starting a goal…" : "Start a goal"}</button>}</footer>
+  </article>;
 }
 
 function GoalBoardCard({ plan, state, repositoryName, tasks, focusSessionId, confirming, aborting, focusing, checking, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; tasks: HealthTask[]; focusSessionId: string | null; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void }) {

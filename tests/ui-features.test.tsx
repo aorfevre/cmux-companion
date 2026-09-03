@@ -1202,6 +1202,9 @@ describe("goals board", () => {
       const url = String(input);
       const custom = extra?.(url, init);
       if (custom) return custom;
+      // The stored issue column is empty unless a test says otherwise, so the
+      // goal-column assertions never depend on a synced issue.
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: null, issues: [] }), { status: 200 });
       if (url === "/api/goals/health") return new Response(JSON.stringify(healthSweep), { status: 200 });
       if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans }), { status: 200 });
       return new Response(JSON.stringify(dashboard), { status: 200 });
@@ -1232,7 +1235,8 @@ describe("goals board", () => {
     const board = await openBoard();
     assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("9"), true);
     const headings = within(board).getAllByRole("heading", { level: 3 }).map((item) => item.textContent);
-    assert.deepEqual(headings, COLUMNS.map(([label]) => label));
+    // GitHub Issues is the leftmost column, ahead of the eight goal columns.
+    assert.deepEqual(headings, ["GitHub Issues", ...COLUMNS.map(([label]) => label)]);
     for (const [label, description] of COLUMNS) assert.ok(within(board).getByText(description), `${label} description`);
 
     const column = (label: string) => within(board).getByRole("region", { name: label });
@@ -1253,7 +1257,7 @@ describe("goals board", () => {
     cleanup();
     mountBoard([]);
     const emptyBoard = await openBoard();
-    assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 8);
+    assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 9);
     assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 8);
   });
 
@@ -1293,7 +1297,9 @@ describe("goals board", () => {
     const filtered = screen.getByRole("region", { name: "Goals board" });
     assert.ok(within(filtered).getByText("Merged already"));
     assert.equal(within(filtered).queryByText("Write the spec"), null);
-    assert.equal(within(filtered).getAllByRole("heading", { level: 3 }).length, 8);
+    // Eight goal columns plus the GitHub Issues column. The search filters
+    // goals, so every column still renders.
+    assert.equal(within(filtered).getAllByRole("heading", { level: 3 }).length, 9);
     await userEvent.clear(searchBox);
     await userEvent.type(searchBox, "trust-layer");
     assert.ok(within(screen.getByRole("region", { name: "Goals board" })).getByText("Write the spec"));
@@ -1557,6 +1563,189 @@ describe("goals board", () => {
     assert.equal((within(abortedSheet).getByRole("button", { name: "Answer Which browsers? with All" }) as HTMLButtonElement).disabled, true);
     assert.equal(within(abortedSheet).queryByRole("button", { name: "Answer" }), null);
     assert.equal(within(abortedSheet).queryByRole("link"), null);
+  });
+});
+
+describe("GitHub Issues board column", () => {
+  const now = new Date().toISOString();
+  const repository = (id: string, name: string, root: string, favorite: boolean) => ({ id, name, root, path: `/repo/${name}`, favorite, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [] });
+  const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 2, worktrees: 0, releases: 0, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repositoryStarred01", "trust-layer", "karven", true), repository("repositoryPlain00001", "recorder", "rekord", false)] };
+  const issue = (over: Record<string, unknown> = {}) => ({
+    repositoryId: "repositoryStarred01", repositoryName: "trust-layer", number: 12, title: "Restore the caret",
+    labels: ["editor", "bug"], url: "https://github.test/acme/trust-layer/issues/12", updatedAt: now, syncedAt: now, planId: null, ...over,
+  });
+  const startedPlan = { planId: "plan-issue-12", repositoryId: "repositoryStarred01", repositoryName: "trust-layer", goal: "Resolve GitHub issue #12: Restore the caret", status: "draft", stage: "questions", round: 0, taskCount: 0, createdAt: now, updatedAt: now, launchedAt: null, boardState: "writing_spec", sourceType: "github_issues", issueNumbers: [12] };
+
+  // The board mounts with a stored column and an optional route override, in
+  // the same shape as the goals-board helper above.
+  function mountIssues({ issues = [] as unknown[], plans = [] as unknown[], extra }: { issues?: unknown[]; plans?: unknown[]; extra?: (url: string, init?: RequestInit) => Response | null | undefined } = {}) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const custom = extra?.(url, init);
+      if (custom) return custom;
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: null, issues }), { status: 200 });
+      if (url === "/api/goals/health") return new Response(JSON.stringify({ checkedAt: now, sessionsAvailable: true, summary: { goals: 0, tasks: 0, stuck: 0, needsYou: 0, working: 0, deadTasks: 0, idleTasks: 0, failedTasks: 0 }, goals: [] }), { status: 200 });
+      if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const notice = vi.fn();
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={notice} />);
+    return { fetchMock, notice };
+  }
+
+  async function openBoard() {
+    await userEvent.click(await screen.findByRole("tab", { name: /Goals board/ }));
+    return screen.getByRole("region", { name: "Goals board" });
+  }
+
+  test("renders the GitHub Issues column ahead of Writing Spec with the issue's repository, number, title, labels and link", async () => {
+    mountIssues({ issues: [issue()] });
+    const board = await openBoard();
+    const column = await within(board).findByRole("region", { name: "GitHub Issues" });
+    const writingSpec = within(board).getByRole("region", { name: "Writing Spec" });
+    // DOM order is the column order, so the issue column really is leftmost.
+    assert.equal(Boolean(column.compareDocumentPosition(writingSpec) & Node.DOCUMENT_POSITION_FOLLOWING), true);
+
+    assert.ok(within(column).getByText("trust-layer"));
+    assert.ok(within(column).getByText("#12"));
+    assert.ok(within(column).getByText("Restore the caret"));
+    assert.ok(within(column).getByText("editor"));
+    assert.ok(within(column).getByText("bug"));
+    assert.ok(within(column).getByLabelText("1 issue in GitHub Issues"));
+    const link = within(column).getByRole("link", { name: "Open #12 on GitHub" }) as HTMLAnchorElement;
+    assert.equal(link.getAttribute("href"), "https://github.test/acme/trust-layer/issues/12");
+    assert.equal(link.getAttribute("target"), "_blank");
+    assert.equal(link.getAttribute("rel"), "noreferrer");
+  });
+
+  test("the empty column explains that starring a repository and syncing populates it", async () => {
+    mountIssues();
+    const board = await openBoard();
+    const column = within(board).getByRole("region", { name: "GitHub Issues" });
+    assert.ok(within(column).getByText("No GitHub issues yet. Star a repository, then choose GitHub Sync to pull its open issues."));
+    assert.equal(within(column).queryByRole("button", { name: /^Start a goal/ }), null);
+  });
+
+  test("GitHub Sync posts to the sync route, shows its busy label, and leaves Refresh GitHub alone", async () => {
+    let release: ((value: Response) => void) | null = null;
+    const { fetchMock } = mountIssues({
+      extra: (url, init) => {
+        if (url === "/api/github-issues/sync" && init?.method === "POST") return undefined;
+        return null;
+      },
+    });
+    // The sync route is held open, so the busy label is observable.
+    const held = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/github-issues/sync" && init?.method === "POST") return new Promise<Response>((resolve) => { release = resolve; });
+      return fetchMock(input, init);
+    });
+    vi.stubGlobal("fetch", held);
+    await openBoard();
+
+    await userEvent.click(screen.getByRole("button", { name: "GitHub Sync" }));
+    assert.ok(await screen.findByRole("button", { name: "Syncing GitHub issues…" }));
+    // Refresh GitHub keeps its own label and its own request.
+    assert.ok(screen.getByRole("button", { name: "Refresh GitHub" }));
+    const syncCall = held.mock.calls.find(([url]) => String(url) === "/api/github-issues/sync");
+    assert.equal(syncCall?.[1]?.method, "POST");
+
+    await act(async () => {
+      release?.(new Response(JSON.stringify({ syncedAt: now, status: "ok", message: null, repositories: [{ repositoryId: "repositoryStarred01", name: "trust-layer", status: "ok", issueCount: 1, truncated: false, error: null }], issues: [issue()] }), { status: 200 }));
+      await Promise.resolve();
+    });
+    assert.ok(await screen.findByText("Restore the caret"));
+    assert.ok(screen.getByRole("button", { name: "GitHub Sync" }));
+  });
+
+  test("a sync with no starred repository states the reason instead of doing nothing visible", async () => {
+    const { notice } = mountIssues({
+      extra: (url, init) => (url === "/api/github-issues/sync" && init?.method === "POST"
+        ? new Response(JSON.stringify({ syncedAt: now, status: "no_starred_repositories", message: "No starred repositories. Star a repository first; GitHub Sync reads starred repositories only.", repositories: [], issues: [] }), { status: 200 })
+        : null),
+    });
+    await openBoard();
+    await userEvent.click(screen.getByRole("button", { name: "GitHub Sync" }));
+    assert.ok(await screen.findByText("No starred repositories. Star a repository first; GitHub Sync reads starred repositories only."));
+    assert.equal(notice.mock.calls.at(-1)?.[0], "No starred repositories. Star a repository first; GitHub Sync reads starred repositories only.");
+  });
+
+  test("a per-repository sync failure is surfaced rather than swallowed", async () => {
+    const { notice } = mountIssues({
+      extra: (url, init) => (url === "/api/github-issues/sync" && init?.method === "POST"
+        ? new Response(JSON.stringify({ syncedAt: now, status: "ok", message: null, repositories: [{ repositoryId: "repositoryStarred01", name: "trust-layer", status: "failed", issueCount: 0, truncated: false, error: "gh: not authenticated" }], issues: [] }), { status: 200 })
+        : null),
+    });
+    await openBoard();
+    await userEvent.click(screen.getByRole("button", { name: "GitHub Sync" }));
+    assert.ok(await screen.findByText(/could not read 1 starred repository: trust-layer \(gh: not authenticated\)/));
+    assert.equal(notice.mock.calls.length > 0, true);
+  });
+
+  test("Start a goal posts once to the per-issue route, disables while in flight, and lands the goal in Writing Spec", async () => {
+    let release: ((value: Response) => void) | null = null;
+    let plans: unknown[] = [];
+    const goalCalls: RequestInit[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/goal") && init?.method === "POST") {
+        goalCalls.push(init);
+        return new Promise<Response>((resolve) => { release = resolve; });
+      }
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: null, issues: [issue()] }), { status: 200 });
+      if (url === "/api/goals/health") return new Response(JSON.stringify({ checkedAt: now, sessionsAvailable: true, summary: { goals: 0, tasks: 0, stuck: 0, needsYou: 0, working: 0, deadTasks: 0, idleTasks: 0, failedTasks: 0 }, goals: [] }), { status: 200 });
+      if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    const board = await openBoard();
+    await within(board).findByText("Restore the caret");
+
+    const start = screen.getByRole("button", { name: "Start a goal for #12 Restore the caret" });
+    await userEvent.click(start);
+    // The button is disabled while its own request is open, so a second click
+    // cannot create a second plan.
+    const busy = await screen.findByRole("button", { name: "Start a goal for #12 Restore the caret" });
+    assert.equal((busy as HTMLButtonElement).disabled, true);
+    await userEvent.click(busy);
+    assert.equal(goalCalls.length, 1);
+
+    const goalCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/goal") && String(url).startsWith("/api/github-issues/"));
+    assert.equal(String(goalCall?.[0]), "/api/github-issues/repositoryStarred01/12/goal");
+
+    plans = [startedPlan];
+    await act(async () => {
+      release?.(new Response(JSON.stringify({ issue: issue({ planId: "plan-issue-12" }), plan: { planId: "plan-issue-12" }, created: true }), { status: 200 }));
+      await Promise.resolve();
+    });
+
+    // The new goal lands in Writing Spec, and the card no longer offers to
+    // start the same issue again.
+    await waitFor(() => assert.ok(within(within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "Writing Spec" })).getByText("Resolve GitHub issue #12: Restore the caret")));
+    await waitFor(() => assert.equal(screen.queryByRole("button", { name: "Start a goal for #12 Restore the caret" }), null));
+    assert.ok(screen.getByRole("link", { name: "Goal started for #12" }));
+    assert.equal(goalCalls.length, 1);
+  });
+
+  test("an issue that already carries a plan id shows the started state and offers no start button", async () => {
+    mountIssues({ issues: [issue({ planId: "plan-issue-12" })], plans: [startedPlan] });
+    const board = await openBoard();
+    const column = await within(board).findByRole("region", { name: "GitHub Issues" });
+    assert.equal(within(column).queryByRole("button", { name: /^Start a goal/ }), null);
+    const started = within(column).getByRole("link", { name: "Goal started for #12" }) as HTMLAnchorElement;
+    assert.equal(started.getAttribute("href"), "?plan=plan-issue-12");
+  });
+
+  test("a non-favorited repository contributes no card, because the sync reads starred repositories only", async () => {
+    // The server answers with the starred repository's issue only. The column
+    // renders exactly what it was given and invents nothing for `recorder`.
+    mountIssues({ issues: [issue()] });
+    const board = await openBoard();
+    const column = await within(board).findByRole("region", { name: "GitHub Issues" });
+    assert.equal(within(column).queryByText("recorder"), null);
+    assert.equal(within(column).getAllByRole("article").length, 1);
   });
 });
 
