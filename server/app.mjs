@@ -19,6 +19,8 @@ import { GoalHealthSweep } from "./goal-health.mjs";
 import { GoalWatchdog } from "./goal-watchdog.mjs";
 import { GoalMergeWatch } from "./goal-merge-watch.mjs";
 import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
+import { GitHubIssueStore } from "./github-issue-store.mjs";
+import { GitHubIssueSync } from "./github-issue-sync.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import { deploymentStatus, updaterLaunchAgentRunning } from "./deployment-health.mjs";
@@ -54,6 +56,7 @@ export async function buildApp({
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   cmuxGroups = null,
   githubIssuePlanner = null,
+  githubIssueSync = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
   previewManager = null,
@@ -101,6 +104,10 @@ export async function buildApp({
     || (planStore ? new GoalHealthSweep({ store: planStore, cmux, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
     || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+  // GitHub Sync owns its own durable store. A test that injects the whole
+  // service never opens the production file, exactly like the planner above.
+  const issueSync = githubIssueSync
+    || new GitHubIssueSync({ worktrees, planner, store: new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
@@ -601,6 +608,25 @@ export async function buildApp({
       planIds: request.body?.planIds,
       ...(onEvent ? { onEvent } : {}),
     }));
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
+  });
+
+  // GitHub Sync. The board reads the stored column here, so a reload shows the
+  // last sync without touching GitHub again.
+  app.get("/api/github-issues", async () => issueSync.read());
+
+  app.post("/api/github-issues/sync", async () => issueSync.sync());
+
+  // One issue becomes one goal plan. The plan then appears in Writing Spec
+  // like every other draft, so the caches that feed the board are dropped.
+  app.post("/api/github-issues/:repositoryId/:number/goal", async (request) => {
+    const repositoryId = String(request.params.repositoryId || "");
+    const number = Number(request.params.number);
+    if (!/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
+    if (!Number.isInteger(number) || number <= 0) throw new TypeError("Invalid issue number");
+    const result = await issueSync.startGoal({ repositoryId, number });
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return result;
