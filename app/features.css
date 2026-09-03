@@ -233,6 +233,12 @@
 .goal-board-column>header b{border-radius:8px;background:#242c34;color:#aeb7bf;padding:2px 6px;font-size:7px}
 .goal-board-column>header p{grid-column:1/-1;margin:0;color:#78828c;font-size:7px;line-height:1.5}
 .goal-board-empty{margin:0;border:1px dashed #262f38;border-radius:10px;color:#69717a;padding:12px 8px;font-size:7px;text-align:center}
+/* The same dashed empty box, used when the board search — not the sync —
+   emptied a column. It reuses .goal-board-empty and .filtered-empty; only the
+   stacking of the message above its clear control is new. */
+.goal-board-empty.filtered-empty{display:flex;flex-direction:column;align-items:center;gap:6px;margin:0}
+.goal-board-empty.filtered-empty strong{color:#8b96a1;font-size:7px;font-weight:800}
+.goal-board-empty.filtered-empty .text-button{margin-top:0;color:var(--lime);font-size:7px;font-weight:800}
 .goal-board-cards{display:flex;flex-direction:column;gap:8px;margin:0;list-style:none;padding:0}
 .goal-board-card{display:flex;min-width:0;flex-direction:column;gap:7px;border:1px solid #2b3641;border-radius:12px;background:linear-gradient(145deg,#151b22,#11151a);padding:10px}
 .goal-board-card.merged{border-color:rgba(201,255,80,.28)}.goal-board-card.aborted{border-color:rgba(255,109,120,.26)}
