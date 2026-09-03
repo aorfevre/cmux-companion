@@ -1188,12 +1188,21 @@ describe("goals board", () => {
   const blocked = plan({ planId: "plan-blocked", goal: "Its agent died", status: "launched", taskCount: 2, launchedAt: now, boardState: "blocked", deliveryStatus: "blocked", health: "dead", healthReason: "This task session is no longer open in cmux", stuckCount: 1 });
   const rekord = plan({ planId: "plan-rekord", repositoryId: "repo-rekord", repositoryName: "recorder", goal: "Improve recording search", boardState: "waiting_for_dev" });
   const allPlans = [writing, review, waitingDev, devInProgress, waitingMerge, blocked, merged, aborted, rekord];
+  const healthSweep = {
+    checkedAt: now, sessionsAvailable: true,
+    summary: { goals: 2, tasks: 2, stuck: 0, needsYou: 0, working: 2, deadTasks: 0, idleTasks: 0, failedTasks: 0 },
+    goals: [
+      { planId: "plan-dev", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Agents are coding", health: "working", stuckCount: 0, readyCount: 0, launchedCount: 1, taskCount: 1, tasks: [{ id: "T2", title: "Build the board UI", branch: "feature/board-ui", agent: "codex", wave: 1, launchStatus: "launched", launchError: null, deliveryStatus: "pending", workspaceId: "ws-dev", health: "working", reason: "This task agent is running", session: { id: "ws-dev", title: "TL-T2-ui · Build the board UI", lastActivityAt: Date.now(), effective: "working" } }] },
+      { planId: "plan-rekord", repositoryId: "repo-rekord", repositoryName: "recorder", goal: "Improve recording search", health: "working", stuckCount: 0, readyCount: 0, launchedCount: 1, taskCount: 1, tasks: [{ id: "T1", title: "Index recording transcripts", branch: "feature/search-index", agent: "claude", wave: 1, launchStatus: "launched", launchError: null, deliveryStatus: "pending", workspaceId: "ws-rekord", health: "working", reason: "This task agent is running", session: { id: "ws-rekord", title: "RCR-T1-api · Index recording transcripts", lastActivityAt: Date.now(), effective: "working" } }] },
+    ],
+  };
 
   function mountBoard(plans: unknown[] = allPlans, extra?: (url: string, init?: RequestInit) => Response | null) {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const custom = extra?.(url, init);
       if (custom) return custom;
+      if (url === "/api/goals/health") return new Response(JSON.stringify(healthSweep), { status: 200 });
       if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans }), { status: 200 });
       return new Response(JSON.stringify(dashboard), { status: 200 });
     });
@@ -1221,7 +1230,7 @@ describe("goals board", () => {
   test("renders eight ordered columns with counts, descriptions, empty notes, and one card per state", async () => {
     mountBoard();
     const board = await openBoard();
-    assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("8"), true);
+    assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("9"), true);
     const headings = within(board).getAllByRole("heading", { level: 3 }).map((item) => item.textContent);
     assert.deepEqual(headings, COLUMNS.map(([label]) => label));
     for (const [label, description] of COLUMNS) assert.ok(within(board).getByText(description), `${label} description`);
@@ -1235,7 +1244,7 @@ describe("goals board", () => {
     assert.ok(within(column("Blocked")).getByText("Its agent died"));
     assert.ok(within(column("Merged")).getByText("Merged already"));
     assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
-    assert.ok(within(column("Waiting for dev")).getByLabelText("1 goal in Waiting for dev"));
+    assert.ok(within(column("Waiting for dev")).getByLabelText("2 goals in Waiting for dev"));
     assert.ok(within(column("Merged")).getByLabelText("1 goal in Merged"));
     assert.ok(within(column("Waiting for dev")).getByRole("list", { name: "Waiting for dev goals" }));
     // Every column renders, so an empty one carries a note instead of nothing.
@@ -1263,9 +1272,14 @@ describe("goals board", () => {
   test("filters by project and search without changing the status-based goal lists", async () => {
     mountBoard();
     const board = await openBoard();
+    assert.equal(screen.getByRole("tab", { name: "All" }).getAttribute("aria-selected"), "true");
     assert.ok(within(board).getByText("Ready to launch work"));
-    // The board obeys the selected project, so the Rekord goal is not here.
-    assert.equal(within(board).queryByText("Improve recording search"), null);
+    assert.ok(within(board).getByText("Improve recording search"), "All shows live goals from both repository roots");
+
+    await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
+    const karvenBoard = screen.getByRole("region", { name: "Goals board" });
+    assert.ok(within(karvenBoard).getByText("Ready to launch work"));
+    assert.equal(within(karvenBoard).queryByText("Improve recording search"), null);
 
     await userEvent.click(screen.getByRole("tab", { name: /Rekord/ }));
     const rekordBoard = screen.getByRole("region", { name: "Goals board" });
@@ -1319,6 +1333,7 @@ describe("goals board", () => {
 
     assert.ok(within(card("Write the spec")).getByText("Reading app/page.tsx"));
     assert.ok(within(card("Agents are coding")).getByText("Agents are working on the launched tasks"));
+    assert.ok(within(card("Agents are coding")).getByLabelText("TL-T2-ui: Build the board UI"));
     assert.ok(within(card("Stopped on purpose")).getByText("Stopped. Branches and worktrees were kept."));
     assert.ok(within(card("Merged already")).getByText("4 tasks"));
 
@@ -1356,7 +1371,7 @@ describe("goals board", () => {
     assert.equal(within(card("Merged already")).queryByRole("button", { name: "Abort Merged already" }), null);
     assert.equal(within(card("Stopped on purpose")).queryByRole("button", { name: "Abort Stopped on purpose" }), null);
     // Every non-terminal goal offers Abort, and the blocked goal is one of them.
-    assert.equal(within(board).getAllByRole("button", { name: /^Abort / }).length, 6);
+    assert.equal(within(board).getAllByRole("button", { name: /^Abort / }).length, 7);
 
     // The first click replaces the footer with the warning, and Cancel undoes it.
     await userEvent.click(within(card("Ready to launch work")).getByRole("button", { name: "Abort Ready to launch work" }));

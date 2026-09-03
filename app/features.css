@@ -266,6 +266,8 @@
 .goal-board-ready i{position:absolute;top:0;bottom:0;left:0;background:rgba(201,255,80,.14)}
 .goal-board-ready span{position:relative;color:#b6ca8d;font-size:7px;font-weight:800}
 .goal-board-agents{margin:0;color:#8b96a1;font-size:7px;font-weight:700}
+.goal-board-task-codes{display:flex;flex-wrap:wrap;gap:4px;margin:0}
+.goal-board-task-codes code{border:1px solid rgba(159,196,255,.28);border-radius:6px;background:rgba(159,196,255,.07);color:#9fc4ff;padding:2px 5px;font-size:7px;font-weight:800}
 .goal-board-issues{display:flex;flex-wrap:wrap;gap:4px;margin:0}
 .goal-board-issues a,.goal-board-issues span{border:1px solid #34404a;border-radius:6px;background:#1b2127;color:#9fc4ff;padding:2px 5px;font-size:7px;font-weight:700;text-decoration:none}
 .goal-board-issues span{color:#8b96a1}
@@ -407,7 +409,7 @@
   .goal-board-empty{font-size:11px}
   .goal-board-card>strong{font-size:13px}
   .goal-board-card-meta,.goal-board-card-evidence{font-size:11px}
-  .goal-board-health b,.goal-board-health span,.goal-board-ready span,.goal-board-agents{font-size:11px}
+  .goal-board-health b,.goal-board-health span,.goal-board-ready span,.goal-board-agents,.goal-board-task-codes code{font-size:11px}
   .goal-board-issues a,.goal-board-issues span{font-size:11px}
   .goal-board-pr{font-size:11px}
   .goal-board-card>footer button{min-height:36px;font-size:11px}
