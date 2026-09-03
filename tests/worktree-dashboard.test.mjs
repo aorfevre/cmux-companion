@@ -702,6 +702,50 @@ test("two concurrent refreshes of one repository share a single gh process", asy
   assert.equal(calls.length, 1, "the pending call must be shared, not duplicated");
 });
 
+test("a goal-scoped refresh asks GitHub only for that goal's repository", async () => {
+  const repos = [REPO, { ...REPO, id: "repo-9876543210123", name: "other", path: "/repo/other" }];
+  const calls = [];
+  const repoCatalog = {
+    list: async () => repos,
+    git: async (cwd, args) => {
+      if (args[0] === "worktree") return `worktree ${cwd}\0HEAD aaaaaaaa\0branch refs/heads/main\0\0`;
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return `${cwd}/.git\n`;
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return "# branch.head main\n";
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async (_bin, _args, options) => { calls.push(options.cwd); return { stdout: "[]" }; },
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const initial = await dashboard.snapshot();
+  const wanted = initial.repositories.find((repository) => repository.path === REPO.path).id;
+  await dashboard.snapshot({ refreshGitHub: true, refreshGitHubRepositoryIds: [wanted] });
+
+  assert.deepEqual(calls, [REPO.path]);
+  assert.equal(dashboard.pullRequestObservations(wanted).available, true);
+  const other = initial.repositories.find((repository) => repository.path === "/repo/other").id;
+  assert.equal(dashboard.pullRequestObservations(other).available, false);
+});
+
+test("a failed GitHub repository is backed off across repeated refreshes", async () => {
+  const { repoCatalog, calls } = lifecycleCatalog(new Error("repository has no remote"));
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path, githubFailureBackoffMs: 60_000 });
+  await dashboard.snapshot({ refreshGitHub: true });
+  await dashboard.snapshot({ refreshGitHub: true });
+  assert.equal(calls.length, 2, "only the first refresh performs the normal query and state-only retry");
+});
+
+test("a repository without a GitHub remote never spawns gh or makes refresh partial", async () => {
+  const { repoCatalog, calls } = lifecycleCatalog([]);
+  repoCatalog.list = async () => [{ ...REPO, githubRepository: null }];
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const value = await dashboard.snapshot({ refreshGitHub: true });
+  assert.equal(calls.length, 0);
+  assert.equal(value.github.status, "ready");
+  assert.equal(value.repositories[0].pullRequestsAvailable, true);
+});
+
 test("the newest open pull request wins a branch that carries several", async () => {
   const { repoCatalog } = lifecycleCatalog([
     pullRequestPayload({ number: 8, url: "https://github.test/pr/8", updatedAt: "2026-09-02T00:00:00.000Z" }),
@@ -730,6 +774,20 @@ function watchStore(plans) {
 function watchDashboard(byRepository) {
   return { pullRequestObservations: (repositoryId) => byRepository[repositoryId] || { available: false, observations: [] } };
 }
+
+test("merge watch reports each repository with a non-terminal launched goal once", () => {
+  const plans = [
+    { planId: "plan-a", repositoryId: "repository12345678", status: "launched", boardStatus: null },
+    { planId: "plan-b", repositoryId: "repository12345678", status: "launched", boardStatus: null },
+    { planId: "plan-c", repositoryId: "repository87654321", status: "launched", boardStatus: "merged" },
+  ];
+  const store = {
+    list: () => plans.map(({ planId, boardStatus }) => ({ planId, boardStatus })),
+    get: (planId) => plans.find((plan) => plan.planId === planId),
+  };
+  const watch = new GoalMergeWatch({ store, worktrees: watchDashboard({}) });
+  assert.deepEqual(watch.activeRepositoryIds(), ["repository12345678"]);
+});
 
 function observation(overrides = {}) {
   return { number: 11, url: "https://github.test/pr/11", state: "OPEN", headBranch: "feature/billing", createdAt: "2026-09-01T06:00:00.000Z", updatedAt: "2026-09-01T06:00:00.000Z", closedAt: null, mergedAt: null, ...overrides };

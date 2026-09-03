@@ -1349,6 +1349,84 @@ describe("goals board", () => {
     assert.ok(within(card("Stopped on purpose")).getByRole("button", { name: "View Stopped on purpose" }));
   });
 
+  test("makes a blocked merge agree with cmux evidence, counters, and focus actions", async () => {
+    const mergeBlocked = plan({
+      planId: "plan-merge-blocked",
+      goal: "Assemble the two ready tasks",
+      status: "launched",
+      taskCount: 2,
+      launchedCount: 2,
+      readyCount: 2,
+      launchedAt: now,
+      boardState: "blocked",
+      deliveryStatus: "blocked",
+      deliveryError: "The merge agent stopped before opening the pull request",
+      mergeStatus: "blocked",
+      mergeWorkspaceId: "ws-merge",
+      workspaceIds: ["ws-task", "ws-merge"],
+      health: "failed",
+      healthReason: "The merge agent stopped before opening the pull request",
+    });
+    const mergeHealth = {
+      checkedAt: now,
+      sessionsAvailable: true,
+      summary: { goals: 1, tasks: 2, stuck: 1, needsYou: 0, working: 0, deadTasks: 0, idleTasks: 0, failedTasks: 0 },
+      goals: [{
+        planId: "plan-merge-blocked", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Assemble the two ready tasks",
+        health: "failed", stuckCount: 1, readyCount: 2, launchedCount: 2, taskCount: 2, deliveryStatus: "blocked", tasks: [],
+        merge: { id: "merge", kind: "merge", title: "Goal merge", workspaceId: "ws-merge", health: "failed", reason: "The merge agent stopped before opening the pull request", session: { id: "ws-merge", title: "TL-MERGE · Assemble goal", lastActivityAt: Date.now(), effective: "todo" } },
+      }],
+    };
+    const selected: string[] = [];
+    mountBoard([mergeBlocked], (url, init) => {
+      if (url === "/api/goals/health") return new Response(JSON.stringify(mergeHealth), { status: 200 });
+      if (url === "/api/workspaces/ws-merge/select" && init?.method === "POST") { selected.push(url); return new Response(JSON.stringify({ selected: true }), { status: 200 }); }
+      return null;
+    });
+    const board = await openBoard();
+    const card = within(board).getByText("Assemble the two ready tasks").closest("article") as HTMLElement;
+
+    assert.equal(within(card).getAllByText("The merge agent stopped before opening the pull request").length, 2);
+    assert.ok(screen.getByRole("button", { name: "1 stuck goals. Show the tasks that need you" }));
+    const rail = screen.getByRole("region", { name: "Goals needing attention" });
+    assert.ok(within(rail).getByText("Goal merge"));
+    assert.equal(within(rail).queryByRole("button", { name: /Continue|Restart|Skip/ }), null);
+
+    await userEvent.click(within(card).getByRole("button", { name: "Open Assemble the two ready tasks in cmux" }));
+    await waitFor(() => assert.deepEqual(selected, ["/api/workspaces/ws-merge/select"]));
+  });
+
+  test("does not offer a cmux focus action for a stale persisted workspace id", async () => {
+    const stale = plan({
+      planId: "plan-stale-session",
+      goal: "Workspace already closed",
+      status: "launched",
+      taskCount: 1,
+      launchedCount: 1,
+      launchedAt: now,
+      boardState: "blocked",
+      deliveryStatus: "blocked",
+      workspaceIds: ["ws-gone"],
+      health: "dead",
+      healthReason: "This task session is no longer open in cmux",
+    });
+    const staleHealth = {
+      checkedAt: now,
+      sessionsAvailable: true,
+      summary: { goals: 1, tasks: 1, stuck: 1, needsYou: 0, working: 0, deadTasks: 1, idleTasks: 0, failedTasks: 0 },
+      goals: [{
+        planId: "plan-stale-session", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Workspace already closed",
+        health: "dead", stuckCount: 1, readyCount: 0, launchedCount: 1, taskCount: 1, deliveryStatus: "blocked", merge: null,
+        tasks: [{ id: "T1", title: "Closed task", branch: "feature/closed", agent: "codex", wave: 0, launchStatus: "launched", launchError: null, deliveryStatus: "pending", workspaceId: "ws-gone", health: "dead", reason: "This task session is no longer open in cmux", session: null }],
+      }],
+    };
+    mountBoard([stale], (url) => url === "/api/goals/health" ? new Response(JSON.stringify(staleHealth), { status: 200 }) : null);
+    const board = await openBoard();
+    const card = within(board).getByText("Workspace already closed").closest("article") as HTMLElement;
+
+    assert.equal(within(card).queryByRole("button", { name: "Open Workspace already closed in cmux" }), null);
+  });
+
   test("aborts a goal behind an inline confirmation and reports partial session failures", async () => {
     let plans: unknown[] = allPlans;
     let abortCalls = 0;

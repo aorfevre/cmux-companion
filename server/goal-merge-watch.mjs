@@ -19,6 +19,29 @@ export class GoalMergeWatch {
     this.log = log;
   }
 
+  // The watchdog only needs GitHub state for repositories that still own a
+  // non-terminal launched goal. Returning unique ids lets it avoid refreshing
+  // every unrelated checkout on each supervision tick.
+  activeRepositoryIds() {
+    const ids = new Set();
+    let plans;
+    try { plans = this.store.list({ status: "launched", limit: 200 }) || []; }
+    catch (cause) {
+      this.log?.warn?.({ err: cause }, "goal merge watch could not read the plan list");
+      return [];
+    }
+    for (const summary of plans) {
+      if (!summary || summary.boardStatus) continue;
+      try {
+        const plan = this.store.get(summary.planId);
+        if (plan?.status === "launched" && !plan.boardStatus && plan.repositoryId) ids.add(String(plan.repositoryId));
+      } catch (cause) {
+        this.log?.warn?.({ err: cause, planId: summary.planId }, "goal merge watch could not read a plan");
+      }
+    }
+    return [...ids];
+  }
+
   // Called once after a successful explicit GitHub refresh, and never on an
   // ordinary poll. It returns what it recorded, so a test and a log line can
   // both read the outcome.

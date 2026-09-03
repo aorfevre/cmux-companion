@@ -315,10 +315,13 @@ export async function buildApp({
   app.get("/api/worktree-dashboard", async (request) => {
     const bootstrap = await loadBootstrap();
     const refreshGitHub = request.query?.github === "1";
+    const refreshGitHubRepositoryId = refreshGitHub ? request.query?.repositoryId || null : null;
+    if (refreshGitHubRepositoryId && !/^[A-Za-z0-9_-]{18}$/.test(refreshGitHubRepositoryId)) throw new TypeError("Invalid repository");
     const dashboard = await worktrees.snapshot({
       workspaces: bootstrap.workspaces,
       refresh: request.query?.refresh === "1",
       refreshGitHub,
+      ...(refreshGitHubRepositoryId ? { refreshGitHubRepositoryId } : {}),
     });
     if (refreshGitHub && pushService?.inspectPullRequests) {
       try { await pushService.inspectPullRequests(dashboard); }
@@ -522,7 +525,7 @@ export async function buildApp({
     // The watcher reads what the dashboard cached, so GitHub is refreshed for
     // this goal's repository first. Without it the check would report the state
     // of the last refresh rather than the state now.
-    await worktrees.snapshot({ refresh: true, refreshGitHub: true });
+    await worktrees.snapshot({ refresh: true, refreshGitHub: true, refreshGitHubRepositoryId: before.repositoryId });
     const { recorded } = await mergeWatch.reconcile();
     const change = recorded.find((entry) => entry.planId === planId) || null;
     const after = planStore.get(planId);

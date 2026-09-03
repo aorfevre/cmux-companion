@@ -417,6 +417,11 @@ test("records the cmux group, the merge workspace and a merge block", (t) => {
   assert.equal(blocked.deliveryError, "Two tasks disagree about the retry policy");
   assert.equal(blocked.mergeWorkspaceId, "workspace-merge");
 
+  const [summary] = store.list({ status: "all" });
+  assert.equal(summary.deliveryError, "Two tasks disagree about the retry policy");
+  assert.equal(summary.mergeStatus, "blocked");
+  assert.equal(summary.mergeWorkspaceId, "workspace-merge");
+
   const kinds = store.events("plan-groups").map((event) => event.kind);
   assert.ok(kinds.includes("merge_launched"));
   assert.ok(kinds.includes("merge_blocked"));

@@ -41,7 +41,7 @@ export function countUpdaterArtifacts(output, artifacts = UPDATER_ARTIFACTS) {
 }
 
 export class WorktreeDashboard {
-  constructor({ repoCatalog, cacheMs = 5_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), repositoryFavorites = new RepositoryFavorites(), managedReleaseRoots = defaultManagedReleaseRoots(), log = null } = {}) {
+  constructor({ repoCatalog, cacheMs = 5_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), repositoryFavorites = new RepositoryFavorites(), managedReleaseRoots = defaultManagedReleaseRoots(), repositoryConcurrency = 6, githubFailureBackoffMs = 60_000, log = null } = {}) {
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
     this.repoCatalog = repoCatalog;
     this.cacheMs = cacheMs;
@@ -49,6 +49,8 @@ export class WorktreeDashboard {
     this.repositoryArchive = repositoryArchive;
     this.repositoryFavorites = repositoryFavorites;
     this.managedReleaseRoots = managedReleaseRoots.map((path) => resolve(path));
+    this.repositoryConcurrency = Math.max(1, Number(repositoryConcurrency) || 6);
+    this.githubFailureBackoffMs = Math.max(0, Number(githubFailureBackoffMs) || 0);
     this.log = log;
     this.cache = null;
     this.pullRequestCache = new Map();
@@ -57,7 +59,7 @@ export class WorktreeDashboard {
     this.targets = new Map();
   }
 
-  async snapshot({ workspaces = [], refresh = false, refreshGitHub = false } = {}) {
+  async snapshot({ workspaces = [], refresh = false, refreshGitHub = false, refreshGitHubRepositoryId = null, refreshGitHubRepositoryIds = null } = {}) {
     const workspaceSignature = (workspaces || []).map((workspace) => [
       workspace.id,
       workspace.current_directory,
@@ -72,8 +74,20 @@ export class WorktreeDashboard {
     }
 
     const repos = await this.repoCatalog.list({ refresh });
+    // RepoCatalog intentionally sees each top-level linked worktree. Expanding
+    // `git worktree list` from every one of those aliases multiplies the same
+    // repository inspection quadratically. Collapse aliases by their common
+    // Git directory before inspecting worktrees or asking GitHub anything.
+    const uniqueRepos = await this.#uniqueRepositoryCandidates(repos);
     const targets = new Map();
-    const inspected = await Promise.all(repos.map((repo) => this.inspectRepository(repo, { refreshGitHub, targets })));
+    const scopedRepositoryIds = Array.isArray(refreshGitHubRepositoryIds)
+      ? new Set(refreshGitHubRepositoryIds.map(String))
+      : refreshGitHubRepositoryId ? new Set([String(refreshGitHubRepositoryId)]) : null;
+    const inspected = await mapWithConcurrency(uniqueRepos, this.repositoryConcurrency, (repo) => this.inspectRepository(repo, {
+      refreshGitHub,
+      refreshGitHubRepositoryIds: scopedRepositoryIds,
+      targets,
+    }));
     const repositories = dedupeRepositories(inspected.filter(Boolean));
     if (refreshGitHub) this.githubCheckedAt = new Date().toISOString();
     const worktreeIndex = repositories.flatMap((repo) => [...repo.worktrees, ...repo.releases])
@@ -124,7 +138,23 @@ export class WorktreeDashboard {
     return value;
   }
 
-  async inspectRepository(repo, { refreshGitHub = false, targets = this.targets } = {}) {
+  async #uniqueRepositoryCandidates(repos) {
+    const identified = await mapWithConcurrency(repos, this.repositoryConcurrency, async (repo) => {
+      const commonDir = await this.repoCatalog.git(repo.path, ["rev-parse", "--git-common-dir"])
+        .then((output) => resolve(repo.path, output.trim()))
+        .catch(() => resolve(repo.path, ".git"));
+      return { repo, commonDir };
+    });
+    const unique = new Map();
+    for (const candidate of identified) {
+      const current = unique.get(candidate.commonDir);
+      const primaryPath = dirname(candidate.commonDir);
+      if (!current || candidate.repo.path === primaryPath) unique.set(candidate.commonDir, candidate.repo);
+    }
+    return [...unique.values()];
+  }
+
+  async inspectRepository(repo, { refreshGitHub = false, refreshGitHubRepositoryIds = null, targets = this.targets } = {}) {
     let records;
     try {
       records = parseWorktreeList(await this.repoCatalog.git(repo.path, ["worktree", "list", "--porcelain", "-z"]));
@@ -136,9 +166,10 @@ export class WorktreeDashboard {
       .then((output) => resolve(repo.path, output.trim()))
       .catch(() => resolve(primaryPath, ".git"));
     const repositoryId = repositoryKey(commonDir);
+    const shouldRefreshGitHub = refreshGitHub && (!refreshGitHubRepositoryIds || refreshGitHubRepositoryIds.has(repositoryId));
     const [worktrees, pullRequests] = await Promise.all([
-      Promise.all(records.map((record) => this.inspectWorktree(repo, record, { primaryPath, repositoryId, targets }))),
-      this.loadPullRequests(repo, { refresh: refreshGitHub, cacheKey: repositoryId }),
+      mapWithConcurrency(records, this.repositoryConcurrency, (record) => this.inspectWorktree(repo, record, { primaryPath, repositoryId, targets })),
+      this.loadPullRequests(repo, { refresh: shouldRefreshGitHub, cacheKey: repositoryId }),
     ]);
     const valid = worktrees.filter(Boolean);
     for (const worktree of valid) worktree.pullRequest = pullRequests.byBranch.get(worktree.branch) || null;
@@ -213,6 +244,18 @@ export class WorktreeDashboard {
     // explicit refresh replaces this cache; every other snapshot reuses it
     // indefinitely, including the first snapshot after a server restart.
     if (!refresh) return cached?.value || emptyPullRequests();
+    // A local Git repository without a GitHub remote has no pull requests to
+    // query. Treat that as a successful empty result: spawning `gh` would fail,
+    // retry, and incorrectly make the whole dashboard look partially broken.
+    if (repo.githubRepository === null) {
+      const value = { ...emptyPullRequests(), available: true, notApplicable: true };
+      this.pullRequestCache.set(cacheKey, { at: Date.now(), value });
+      return value;
+    }
+    // Repeated dashboard refreshes used to retry inaccessible repositories
+    // twice every time. Keep the last explicit failure briefly; one unrelated
+    // repository must not create an endless process storm.
+    if (cached?.value?.error && Date.now() - cached.at < this.githubFailureBackoffMs) return cached.value;
     if (this.pullRequestPending.has(cacheKey)) return this.pullRequestPending.get(cacheKey);
     const pending = (async () => {
       let value;
@@ -255,6 +298,7 @@ export class WorktreeDashboard {
     ].join(",");
     const { stdout = "" } = await this.repoCatalog.execute("gh", [
       "pr", "list", "--state", "all", "--limit", "100", "--json", fields,
+      ...(repo.githubRepository ? ["--repo", repo.githubRepository] : []),
     ], { cwd: repo.path, encoding: "utf8", timeout: checks ? 20_000 : 15_000, maxBuffer: 8 * 1024 * 1024, env: process.env });
     const pullRequests = JSON.parse(stdout);
     const built = buildPullRequests(Array.isArray(pullRequests) ? pullRequests : []);
@@ -529,6 +573,20 @@ export class WorktreeDashboard {
   invalidate() {
     this.cache = null;
   }
+}
+
+async function mapWithConcurrency(items, concurrency, operation) {
+  if (!items.length) return [];
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await operation(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
 }
 
 function emptyPullRequests() {

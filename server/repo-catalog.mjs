@@ -15,10 +15,12 @@ export class RepoCatalog {
     roots = parseRoots(process.env.CMUX_COMPANION_REPO_ROOTS) || DEFAULT_ROOTS,
     execute = execFileAsync,
     cacheMs = 10_000,
+    inspectConcurrency = 8,
   } = {}) {
     this.roots = roots.map((root) => resolve(root));
     this.execute = execute;
     this.cacheMs = cacheMs;
+    this.inspectConcurrency = Math.max(1, Number(inspectConcurrency) || 8);
     this.cache = null;
     this.prCache = new Map();
   }
@@ -42,7 +44,10 @@ export class RepoCatalog {
       }
     }
 
-    const settled = await Promise.allSettled(candidates.map((candidate) => this.inspect(candidate)));
+    // A root can contain dozens of linked goal worktrees. Inspecting every
+    // directory at once used to create hundreds of simultaneous git children,
+    // which could make even /api/health unresponsive during a manual refresh.
+    const settled = await mapSettledWithConcurrency(candidates, this.inspectConcurrency, (candidate) => this.inspect(candidate));
     const repos = settled
       .filter((result) => result.status === "fulfilled" && result.value)
       .map((result) => result.value)
@@ -68,10 +73,11 @@ export class RepoCatalog {
     const canonicalTop = await realpath(topLevel);
     if (canonicalTop !== canonicalPath) return null;
 
-    const [statusResult, lastActivityResult, scripts] = await Promise.all([
+    const [statusResult, lastActivityResult, scripts, remotes] = await Promise.all([
       this.git(canonicalPath, ["status", "--porcelain=v2", "--branch"]).catch(() => ""),
       this.git(canonicalPath, ["log", "-1", "--format=%ct"]).catch(() => "0"),
       readScripts(canonicalPath),
+      this.git(canonicalPath, ["config", "--get-regexp", "^remote\\..*\\.url$"]).catch(() => ""),
     ]);
     const status = parsePorcelainV2(statusResult);
     return {
@@ -87,6 +93,7 @@ export class RepoCatalog {
       changedFiles: status.changedFiles,
       dirty: status.changedFiles > 0,
       lastActivity: Number(lastActivityResult.trim()) || 0,
+      githubRepository: parseGitHubRepository(remotes),
       scripts,
     };
   }
@@ -233,6 +240,20 @@ export class RepoCatalog {
   }
 }
 
+async function mapSettledWithConcurrency(items, concurrency, operation) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const index = next++;
+      try { results[index] = { status: "fulfilled", value: await operation(items[index], index) }; }
+      catch (reason) { results[index] = { status: "rejected", reason }; }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}
+
 export function parsePorcelainV2(output) {
   let branch = "HEAD";
   let ahead = 0;
@@ -291,6 +312,15 @@ export function parseNameStatus(output, area) {
     if (path) files.push({ path, status: status[0], area });
   }
   return files;
+}
+
+export function parseGitHubRepository(output) {
+  for (const line of String(output || "").split("\n")) {
+    const url = line.trim().split(/\s+/).at(-1) || "";
+    const match = url.match(/^(?:https?:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i);
+    if (match) return `${match[1]}/${match[2]}`;
+  }
+  return null;
 }
 
 function mergeChangeSets(...sets) {

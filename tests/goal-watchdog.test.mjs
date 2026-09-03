@@ -228,6 +228,22 @@ test("refreshes GitHub and reconciles pull requests before it judges liveness", 
   assert.deepEqual(order, ["snapshot:true", "reconcile", "sweep"]);
 });
 
+test("refreshes only repositories with active goals and skips GitHub when none remain", async () => {
+  const snapshots = [];
+  let active = ["repository12345678", "repository87654321"];
+  const watchdog = new GoalWatchdog({
+    health: { sweep: async () => ({ sessionsAvailable: true, goals: [], summary: {} }) },
+    mergeWatch: { activeRepositoryIds: () => active, reconcile: async () => ({ recorded: [] }) },
+    worktrees: { snapshot: async (options) => { snapshots.push(options); return {}; } },
+  });
+
+  await watchdog.check();
+  assert.deepEqual(snapshots, [{ refresh: true, refreshGitHub: true, refreshGitHubRepositoryIds: active }]);
+  active = [];
+  await watchdog.check();
+  assert.equal(snapshots.length, 1, "a terminal goal set creates no GitHub processes");
+});
+
 test("a GitHub failure never stops the liveness check", async () => {
   const warnings = [];
   const pushService = push();
