@@ -40,6 +40,7 @@ describe("GitHub issue topic planner", () => {
     await waitFor(() => assert.equal(streams.length, 1));
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     assert.match(body.traceId, /^[0-9a-f-]{36}$/);
+    assert.equal(body.mode, "issues");
     assert.ok(streams[0].url.endsWith(`/api/worktree-plans/progress/${body.traceId}`));
 
     streams[0].emit({ k: "phase", t: "Fetching repository details and open issues…" });
@@ -70,7 +71,10 @@ describe("GitHub issue topic planner", () => {
     const plan = (id: string, title: string, branch: string) => ({ planId: id, repositoryId: "repository12345678", goal: title, round: 1, status: "ready", deliveryMode: "combined", questions: [], tasks: [{ id: "t1", title, branch, prompt: "Do it", agent: "codex", agentReason: "Codex has headroom" }] });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith("/analyze")) return new Response(JSON.stringify(analysis), { status: 200 });
+      if (url.endsWith("/analyze")) {
+        const body = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify(body.mode === "issues" ? { ...analysis, mode: "issues", topics: [] } : analysis), { status: 200 });
+      }
       if (url.endsWith("/prepare")) return new Response(JSON.stringify({ analysisId: "analysis-1", results: [
         { topicId: "topic-1", title: "Editor reliability", issueNumbers: [54, 55], status: "planned", plan: plan("plan-1", "Editor task", "feature/editor") },
         { topicId: "topic-2", title: "Correction observability", issueNumbers: [57], status: "planned", plan: plan("plan-2", "Diagnostics task", "feature/diagnostics") },
@@ -82,7 +86,11 @@ describe("GitHub issue topic planner", () => {
     const launched = vi.fn(async () => {});
     render(<GitHubIssuePlannerSheet repository={{ id: "repository12345678", name: "app" }} onClose={() => {}} onLaunched={launched} onNotice={() => {}} />);
     const sheet = await screen.findByRole("dialog", { name: "Plan GitHub issues" });
+    assert.ok(await within(sheet).findByText("Restore focus"));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Group all issues into topics" }));
     assert.ok(await within(sheet).findByText("Editor reliability"));
+    const groupingCall = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/analyze")).at(-1);
+    assert.equal("mode" in JSON.parse(String(groupingCall?.[1]?.body)), false);
     await userEvent.click(within(sheet).getByRole("button", { name: "All" }));
     await userEvent.click(within(sheet).getByRole("button", { name: "Create 2 goal plans" }));
     assert.ok(await within(sheet).findByText("Editor task"));
@@ -92,6 +100,57 @@ describe("GitHub issue topic planner", () => {
     assert.equal(launched.mock.calls.length, 1);
     const prepareCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/prepare"));
     assert.match(String(prepareCall?.[1]?.body), /"question-1":"All"/);
+  });
+
+  test("opens on the issue list and plans exactly the one selected ticket", async () => {
+    const issuesAnalysis = {
+      analysisId: "analysis-2", mode: "issues", analyzedAt: new Date().toISOString(),
+      repository: { nameWithOwner: "acme/app", url: "https://github.com/acme/app", issuesUrl: "https://github.com/acme/app/issues" },
+      issues: [
+        { number: 54, title: "Restore focus", labels: ["editor"], url: "https://github.com/acme/app/issues/54", updatedAt: "2026-09-01" },
+        { number: 57, title: "Diagnostics", labels: ["backend"], url: "https://github.com/acme/app/issues/57", updatedAt: "2026-09-02" },
+      ],
+      topics: [],
+    };
+    const issuePlan = { planId: "plan-54", repositoryId: "repository12345678", goal: "Restore focus", round: 1, status: "ready", deliveryMode: "single", questions: [], tasks: [{ id: "t1", title: "Fix the focus trap", branch: "feature/focus", prompt: "Do it", agent: "codex", agentReason: "Codex has headroom" }] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/analyze")) return new Response(JSON.stringify(issuesAnalysis), { status: 200 });
+      if (url.endsWith("/prepare-issue")) return new Response(JSON.stringify({ analysisId: "analysis-2", result: { issueNumber: 54, title: "Restore focus", status: "planned", plan: issuePlan } }), { status: 200 });
+      if (url.endsWith("/launch")) return new Response(JSON.stringify({ requested: 1, launchedTopics: 1, launchedWorktrees: 1, results: [{ planId: "plan-54", status: "launched" }] }), { status: 200 });
+      throw new Error(`Unexpected ${url} ${init?.method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const launched = vi.fn(async () => {});
+    render(<GitHubIssuePlannerSheet repository={{ id: "repository12345678", name: "app" }} onClose={() => {}} onLaunched={launched} onNotice={() => {}} />);
+    const sheet = await screen.findByRole("dialog", { name: "Plan GitHub issues" });
+
+    assert.ok(await within(sheet).findByText("Restore focus"));
+    assert.ok(within(sheet).getByText("Diagnostics"));
+    assert.equal(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).mode, "issues");
+    assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/prepare")), false);
+    assert.equal(within(sheet).getByRole("link", { name: "Open issue #54 on GitHub" }).getAttribute("href"), "https://github.com/acme/app/issues/54");
+    assert.ok(within(sheet).getByText("editor"));
+
+    const first = within(sheet).getByRole("radio", { name: "Select issue #54 Restore focus" });
+    const second = within(sheet).getByRole("radio", { name: "Select issue #57 Diagnostics" });
+    await userEvent.click(second);
+    await userEvent.click(first);
+    assert.equal((second as HTMLInputElement).checked, false);
+    assert.equal((first as HTMLInputElement).checked, true);
+
+    await userEvent.click(within(sheet).getByRole("button", { name: "Plan this issue" }));
+    assert.ok(await within(sheet).findByText("Fix the focus trap"));
+    const prepareIssueCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/prepare-issue"));
+    assert.equal(prepareIssueCalls.length, 1);
+    const prepareBody = JSON.parse(String(prepareIssueCalls[0]?.[1]?.body));
+    assert.equal(prepareBody.issueNumber, 54);
+    assert.equal(prepareBody.analysisId, "analysis-2");
+
+    await userEvent.click(within(sheet).getByRole("button", { name: "Launch 1 issue" }));
+    assert.ok(await within(sheet).findByText("1 issue in flight"));
+    assert.deepEqual(JSON.parse(String(fetchMock.mock.calls.find(([url]) => String(url).endsWith("/launch"))?.[1]?.body)).planIds, ["plan-54"]);
+    assert.equal(launched.mock.calls.length, 1);
   });
 });
 
