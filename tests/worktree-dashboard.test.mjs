@@ -120,10 +120,10 @@ test("refreshes the registered inventory before resolving a launch target", asyn
 
 // A person waits on this call inside the goal submit. Scanning every repository
 // to read three fields cost ten seconds on a machine with many worktrees.
-function resolverDashboard({ commonDir = (cwd) => `${cwd}/.git\n` } = {}) {
+function resolverDashboard({ commonDir = (cwd) => `${cwd}/.git\n`, cacheMs = 0, gate = null } = {}) {
   const listed = [];
   const repoCatalog = {
-    list: async () => { listed.push(true); return [REPO]; },
+    list: async () => { listed.push(true); if (gate) await gate.promise; return [REPO]; },
     git: async (cwd, args) => {
       if (args[0] === "worktree") return `worktree ${cwd}\0HEAD aaaaaaaa\0branch refs/heads/main\0\0`;
       if (args[1] === "--git-common-dir") return commonDir(cwd);
@@ -134,8 +134,81 @@ function resolverDashboard({ commonDir = (cwd) => `${cwd}/.git\n` } = {}) {
     },
     execute: async () => ({ stdout: "[]" }),
   };
-  return { listed, dashboard: new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path }) };
+  return { listed, dashboard: new WorktreeDashboard({ repoCatalog, cacheMs, canonicalize: async (path) => path }) };
 }
+
+// A session whose agent is running rewrites `last_activity_at` every few
+// seconds. While that stamp was part of the cache key, the ten-second dashboard
+// poll never hit the cache and ran a full scan every time.
+test("a session heartbeat alone does not rescan every repository", async () => {
+  const { listed, dashboard } = resolverDashboard({ cacheMs: 60_000 });
+  const workspace = (at) => [{ id: "ws-1", current_directory: "/repo/sample", last_activity_at: at, status: { effective: "working" } }];
+  await dashboard.snapshot({ workspaces: workspace(1) });
+  const scans = listed.length;
+  for (const at of [2, 3, 4]) await dashboard.snapshot({ workspaces: workspace(at) });
+  assert.equal(listed.length, scans, "a moving activity stamp alone must reuse the cache");
+});
+
+test("a session whose rendered state changes still rescans", async () => {
+  const { listed, dashboard } = resolverDashboard({ cacheMs: 60_000 });
+  await dashboard.snapshot({ workspaces: [{ id: "ws-1", current_directory: "/repo/sample", status: { effective: "working" } }] });
+  const scans = listed.length;
+  // Every remaining field in the key drives something a person reads: the state
+  // pill, the status orb, the "needs you" count.
+  await dashboard.snapshot({ workspaces: [{ id: "ws-1", current_directory: "/repo/sample", status: { effective: "done" } }] });
+  assert.equal(listed.length, scans + 1);
+  await dashboard.snapshot({ workspaces: [{ id: "ws-1", current_directory: "/repo/sample", has_unread: true, status: { effective: "done" } }] });
+  assert.equal(listed.length, scans + 2);
+});
+
+// A scan takes seconds and the poll runs on a fixed clock, so callers overlap.
+// Each used to spawn its own git child per repository.
+test("callers that overlap one scan share it instead of starting their own", async () => {
+  let release = () => {};
+  const gate = { promise: new Promise((resolve) => { release = resolve; }) };
+  const { listed, dashboard } = resolverDashboard({ gate });
+  const pending = [dashboard.snapshot(), dashboard.snapshot(), dashboard.snapshot()];
+  assert.equal(dashboard.pendingSnapshots.size, 1);
+  release();
+  const [first, second, third] = await Promise.all(pending);
+  assert.equal(listed.length, 1, "three overlapping callers must walk the roots once");
+  assert.equal(first, second);
+  assert.equal(second, third);
+  assert.equal(dashboard.pendingSnapshots.size, 0, "a settled scan must leave nothing behind");
+});
+
+test("two scans that would answer differently are never shared", async () => {
+  let release = () => {};
+  const gate = { promise: new Promise((resolve) => { release = resolve; }) };
+  const { listed, dashboard } = resolverDashboard({ gate });
+  const pending = [dashboard.snapshot(), dashboard.snapshot({ refreshGitHub: true })];
+  assert.equal(dashboard.pendingSnapshots.size, 2);
+  release();
+  await Promise.all(pending);
+  assert.equal(listed.length, 2);
+});
+
+test("a failed scan is not left behind for the next caller", async () => {
+  let fail = true;
+  const repoCatalog = {
+    list: async () => { if (fail) throw new Error("git is unavailable"); return [REPO]; },
+    git: async (cwd, args) => {
+      if (args[0] === "worktree") return `worktree ${cwd}\0HEAD aaaaaaaa\0branch refs/heads/main\0\0`;
+      if (args[1] === "--git-common-dir") return `${cwd}/.git\n`;
+      if (args[1] === "--show-toplevel") return `${cwd}\n`;
+      if (args[0] === "status") return "# branch.head main\n";
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  await assert.rejects(() => dashboard.snapshot(), /git is unavailable/);
+  assert.equal(dashboard.pendingSnapshots.size, 0);
+  // A rejected scan must not become the answer every later caller waits on.
+  fail = false;
+  assert.equal((await dashboard.snapshot()).repositories.length, 1);
+});
 
 test("resolves a repository from its directory without scanning again", async () => {
   const { listed, dashboard } = resolverDashboard();
