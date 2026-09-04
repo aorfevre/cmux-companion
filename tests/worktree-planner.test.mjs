@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentBriefs } from "../server/agent-brief.mjs";
+import { LaunchRuns } from "../server/launch-runs.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, describeTimeout, finalEnvelope, normalizePlannerEngine, parsePlannerReply, progressEvent, reviewerEngine, streamExecFile } from "../server/worktree-planner.mjs";
 
@@ -1685,4 +1686,32 @@ test("abort refuses a plan that does not exist", async (t) => {
   const { store, planner } = storedPlanner({ replies: [] });
   t.after(() => store.close());
   await assert.rejects(() => planner.abort("no-such-plan"), /Unknown plan/);
+});
+
+// --- the launch registry -------------------------------------------------
+
+// The launch registry is deliberately not the PlannerRuns registry. That one
+// holds one entry per plan and carries a specification stage, so a launch
+// stored there would replace the round entry and move the card.
+test("the launch registry admits one launch per plan and releases it", () => {
+  const launches = new LaunchRuns();
+  assert.equal(launches.begin("plan-1"), true);
+  assert.equal(launches.begin("plan-1"), false);
+  assert.equal(launches.isLaunching("plan-1"), true);
+  // A different plan is free to launch at the same time.
+  assert.equal(launches.begin("plan-2"), true);
+  assert.deepEqual(launches.list().map((entry) => entry.planId).sort(), ["plan-1", "plan-2"]);
+
+  launches.finish("plan-1");
+  assert.equal(launches.isLaunching("plan-1"), false);
+  assert.equal(launches.begin("plan-1"), true);
+
+  launches.clear();
+  assert.deepEqual(launches.list(), []);
+});
+
+test("the launch registry refuses an empty plan id", () => {
+  const launches = new LaunchRuns();
+  assert.equal(launches.begin(""), false);
+  assert.equal(launches.isLaunching(""), false);
 });

@@ -11,6 +11,7 @@ import {
 } from "./delivery-contract.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
+import { LaunchRuns } from "./launch-runs.mjs";
 import { goalBoardState } from "./goal-board.mjs";
 import { sessionEnv, sessionTitle } from "./session-name.mjs";
 import { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs";
@@ -140,6 +141,9 @@ class PlannerRunError extends TypeError {}
 
 const UNUSABLE = "The planner returned an unusable answer. Try again";
 const BUSY = "This goal is planning right now. Wait for the round to finish";
+// A launch creates worktrees and cmux sessions. A second one would create them
+// twice, so it is refused in the same voice as a second planner round.
+const LAUNCHING = "This goal is launching right now. Wait for the launch to finish";
 const ABORTED_ROUND = "This goal was aborted, so its planner round stopped";
 // A terminal goal is finished. Every mutation says so in the sentence the sheet
 // shows, rather than failing with a generic message the user cannot act on.
@@ -404,7 +408,7 @@ function minutes(ms) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, idleTimeoutMs = ROUND_IDLE_TIMEOUT_MS, ceilingMs = ROUND_CEILING_MS, usageTimeoutMs = 10_000, ttlMs = DRAFT_TTL_MS, store = null, runs = null, progress = null, pushService = null, briefs = new AgentBriefs() } = {}) {
+  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, idleTimeoutMs = ROUND_IDLE_TIMEOUT_MS, ceilingMs = ROUND_CEILING_MS, usageTimeoutMs = 10_000, ttlMs = DRAFT_TTL_MS, store = null, runs = null, launches = null, progress = null, pushService = null, briefs = new AgentBriefs(), onLaunchSettled = null } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
@@ -428,6 +432,12 @@ export class WorktreePlanner {
     // A background round outlives its request, so the registry, not the request
     // cycle, is what says whether a plan is busy.
     this.runs = runs || new PlannerRuns();
+    // A launch is not a specification round, so it gets its own registry. One
+    // shared map would put a launching goal in the "Writing Spec" column.
+    this.launches = launches || new LaunchRuns();
+    // The dashboard caches describe worktrees a background launch creates, so
+    // they can only be invalidated once that launch has settled.
+    this.onLaunchSettled = onLaunchSettled;
     // The same hub the synchronous rounds publish to. A background round keys
     // its stream on the plan id, which exists before the round starts.
     this.progress = progress;
@@ -614,6 +624,64 @@ export class WorktreePlanner {
       kind: "failure",
       planId: draft.planId,
     });
+  }
+
+  // One notification per background launch, and only one. It names the count,
+  // because "the launch finished" does not say whether anything started.
+  #notifyLaunch(draft, result) {
+    const launched = Number(result?.launched) || 0;
+    // A launch that started nothing is a failure the user has to act on, even
+    // though no exception was thrown. It must not report as a success.
+    if (launched === 0) {
+      const reason = result?.results?.find((item) => item?.status === "failed")?.error || "No task could start";
+      this.#notifyLaunchFailure(draft, reason);
+      return;
+    }
+    void this.#push({
+      title: "A goal is running",
+      body: `${launched} session${launched === 1 ? "" : "s"} started for “${shortGoal(draft.goal)}”`,
+      kind: "completion",
+      planId: draft.planId,
+    });
+  }
+
+  #notifyLaunchFailure(draft, message) {
+    void this.#push({
+      title: "A goal launch failed",
+      body: `“${shortGoal(draft.goal)}”: ${message}`,
+      kind: "failure",
+      planId: draft.planId,
+    });
+  }
+
+  // A launch that threw wrote nothing, so the plan would show a goal that is
+  // still "ready to launch" and no reason why the launch never happened. The
+  // per-task rows carry the failure and the plan row carries the sentence, so
+  // a sheet reopened later can explain it.
+  #recordLaunchFailure(draft, message) {
+    const results = (draft.tasks || []).map((task) => ({
+      id: task.id,
+      title: task.title,
+      branch: task.branch,
+      agent: task.agent,
+      status: "failed",
+      error: message,
+    }));
+    this.#persist(() => this.store?.recordLaunch(draft.planId, { base: null, baseSha: null, results }), draft.planId, "launch-failed");
+    draft.lastError = message;
+    draft.lastErrorAt = new Date().toISOString();
+    this.#persist(() => this.store?.recordRoundFailure(draft.planId, message), draft.planId, "launch-failed");
+  }
+
+  // The dashboard caches describe the worktrees this launch created, so they
+  // are only stale once it has settled. A hook that throws must never turn a
+  // finished launch into a failed one.
+  #launchSettled(planId) {
+    try {
+      this.onLaunchSettled?.(planId);
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, planId }, "launch settled hook failed");
+    }
   }
 
   // A notification is the least important part of a round. It must never turn a
@@ -836,6 +904,11 @@ export class WorktreePlanner {
     return this.runs.isRunning(planId);
   }
 
+  // A launch is not a planner round, so it answers a question of its own.
+  isLaunching(planId) {
+    return this.launches.isLaunching(planId);
+  }
+
   activeRuns() {
     return { runs: this.runs.list() };
   }
@@ -887,12 +960,56 @@ export class WorktreePlanner {
   }
 
   async launch(planId) {
+    return this.#launchWork(await this.#launchable(planId));
+  }
+
+  // The background entry point. It answers as soon as the launch is registered,
+  // and the worktrees and the sessions are created after the request has ended.
+  //
+  // Every validation that can fail cheaply already ran in #launchable, so the
+  // caller still learns about an unusable plan in its own hand. Nothing awaits
+  // the work below, so both outcomes are handled here: an unhandled rejection
+  // would take the whole companion down.
+  async launchBackground(planId) {
+    const draft = await this.#launchable(planId);
+    // The registry, not the check above, is the real gate. Two requests can
+    // both pass an async validation before either of them registers.
+    if (!this.launches.begin(draft.planId)) throw new TypeError(LAUNCHING);
+    Promise.resolve()
+      .then(() => this.#launchWork(draft))
+      .then((result) => {
+        this.launches.finish(draft.planId);
+        this.#notifyLaunch(draft, result);
+        this.#launchSettled(draft.planId);
+      })
+      .catch((cause) => {
+        this.launches.finish(draft.planId);
+        const message = cause?.message || "The launch failed";
+        this.log?.warn?.({ err: cause, planId: draft.planId }, "background launch failed");
+        this.#recordLaunchFailure(draft, message);
+        this.#notifyLaunchFailure(draft, message);
+        this.#launchSettled(draft.planId);
+      });
+    return { planId: draft.planId, launching: true };
+  }
+
+  // The validation both launch paths share. It is cheap and it touches nothing
+  // outside this process, so a background launch can run it before it answers.
+  async #launchable(planId) {
     const draft = await this.#draft(planId);
     this.#assertIdle(draft.planId);
+    if (this.launches.isLaunching(draft.planId)) throw new TypeError(LAUNCHING);
     if (draft.status !== "ready" || !draft.tasks.length) throw new TypeError("This plan is not ready to launch yet");
     const readiness = validateDeliveryContract(draft.spec, draft.tasks);
     if (!readiness.ready) throw new TypeError(`This delivery contract is not ready: ${readiness.errors[0]}`);
     draft.readiness = readiness;
+    return draft;
+  }
+
+  // Everything a launch does after the plan is known to be launchable. The
+  // synchronous path awaits it; the background path detaches it. Neither one
+  // has its own copy, so the two can never drift apart.
+  async #launchWork(draft) {
     const base = await this.#baseRef(draft);
     const repositoryPath = await this.#repositoryPath(draft);
     const baseSha = String(await this.git(repositoryPath, ["rev-parse", `${base}^{commit}`]).catch(() => "")).trim() || null;
@@ -1177,7 +1294,7 @@ export class WorktreePlanner {
   // same ccs session rather than starting a new one.
   async resume(planId) {
     const draft = await this.#draft(planId);
-    return { ...publicDraft(draft), running: this.runs.isRunning(draft.planId) };
+    return { ...publicDraft(draft), running: this.runs.isRunning(draft.planId), launching: this.launches.isLaunching(draft.planId) };
   }
 
   // The stored view of a plan, including a launched one, with its event log.
@@ -1192,6 +1309,10 @@ export class WorktreePlanner {
       ...stored,
       events: this.#read(() => this.store?.events(stored.planId)) || [],
       running: this.runs.isRunning(stored.planId),
+      // A launching goal is neither planning nor launched yet. The marker is
+      // its own field, so the board reads it without mistaking it for a
+      // specification round.
+      launching: this.launches.isLaunching(stored.planId),
       runPhase: run?.phase || null,
       runStage: run?.stage || null,
       runStep: run?.step || "",
@@ -1217,6 +1338,7 @@ export class WorktreePlanner {
         const summary = {
           ...plan,
           running: this.runs.isRunning(plan.planId),
+          launching: this.launches.isLaunching(plan.planId),
           runPhase: run?.phase || null,
           runStage: run?.stage || null,
           runStep: run?.step || "",
