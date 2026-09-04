@@ -214,7 +214,10 @@ export class WorktreeDashboard {
 
   async #uniqueRepositoryCandidates(repos) {
     const identified = await mapWithConcurrency(repos, this.repositoryConcurrency, async (repo) => {
-      const commonDir = await this.repoCatalog.git(repo.path, ["rev-parse", "--git-common-dir"])
+      // The catalog resolves this while it inspects each candidate. The git
+      // call below is the fallback for a catalog that does not report it,
+      // which every injected test double is.
+      const commonDir = repo.commonDir || await this.repoCatalog.git(repo.path, ["rev-parse", "--git-common-dir"])
         .then((output) => resolve(repo.path, output.trim()))
         .catch(() => resolve(repo.path, ".git"));
       return { repo, commonDir };

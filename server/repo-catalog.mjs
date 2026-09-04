@@ -64,9 +64,15 @@ export class RepoCatalog {
     const canonicalPath = await realpath(path);
     assertInside(canonicalRoot, canonicalPath);
 
+    // One rev-parse answers both questions. Asking them separately spawned a
+    // second process per candidate directory for no extra information.
     let topLevel;
+    let commonDir;
     try {
-      topLevel = (await this.git(canonicalPath, ["rev-parse", "--show-toplevel"])).trim();
+      const [topLevelLine, commonDirLine] = (await this.git(canonicalPath, ["rev-parse", "--show-toplevel", "--git-common-dir"])).split("\n");
+      topLevel = String(topLevelLine || "").trim();
+      if (!topLevel) return null;
+      commonDir = resolve(canonicalPath, String(commonDirLine || ".git").trim());
     } catch {
       return null;
     }
@@ -86,6 +92,9 @@ export class RepoCatalog {
       root: basename(canonicalRoot),
       rootPath: canonicalRoot,
       path: canonicalPath,
+      // The dashboard groups aliases of one repository by this directory. It
+      // costs nothing here, and it saves the dashboard a process per candidate.
+      commonDir,
       relativePath: relative(canonicalRoot, canonicalPath),
       branch: status.branch,
       ahead: status.ahead,

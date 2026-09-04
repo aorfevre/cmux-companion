@@ -116,3 +116,34 @@ test("normalizes open pull request review and check state", () => {
   assert.equal(pullRequest.reviewDecision, "APPROVED");
   assert.deepEqual(pullRequest.checks, { passed: 1, failed: 1, pending: 1, total: 3 });
 });
+
+// The dashboard groups aliases of one repository by its common Git directory.
+// It used to spawn a process per candidate to learn it, while the catalog was
+// already one rev-parse away from the same answer.
+test("reports each repository's common Git directory without a second process", async (t) => {
+  const { catalog } = await fixture(t);
+  const spawned = [];
+  const run = catalog.git.bind(catalog);
+  catalog.git = async (cwd, args, options) => { spawned.push(args.slice(0, 2).join(" ")); return run(cwd, args, options); };
+
+  const [record] = await catalog.list();
+  // Compared against the record's own canonical path: on macOS the temporary
+  // directory is reached through a symlink, and the record is canonicalized.
+  assert.equal(record.commonDir, join(record.path, ".git"));
+  assert.equal(record.path.endsWith("/sample"), true);
+  assert.equal(spawned.filter((call) => call === "rev-parse --git-common-dir").length, 0,
+    "the common directory must come from the call that already runs, not a second one");
+});
+
+test("a linked worktree reports the shared common directory of its repository", async (t) => {
+  const { root, repo, catalog } = await fixture(t);
+  const linked = join(root, "sample-feature");
+  await git(repo, "worktree", "add", "-q", "-b", "feature", linked);
+
+  const records = await catalog.list();
+  const primary = records.find((item) => item.name === "sample");
+  const worktree = records.find((item) => item.name === "sample-feature");
+  // Both are separate checkouts, and both must resolve to one shared Git
+  // directory. That is exactly what lets the dashboard collapse the alias.
+  assert.equal(worktree.commonDir, primary.commonDir);
+});
