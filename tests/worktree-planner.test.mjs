@@ -641,13 +641,16 @@ test("creates one worktree and one session per task", async () => {
   const workspace = deps.calls.find((call) => call[0] === "workspace");
   assert.equal(workspace[1].agent, "claude");
   // The session name is the scheme, not the bare task title: project code,
-  // task code, part, then the title.
-  assert.equal(workspace[1].title, "SMP-T1-feat \u00b7 Billing");
+  // goal with its id fragment, task-part code, then the title.
+  assert.match(workspace[1].title, /^SMP \u00b7 Add billing \([a-z0-9]{4}\) \u00b7 T1-feat \u00b7 Billing$/);
   // The same identity is stamped into the session's own shell, so it survives
   // a rename by the user.
   assert.equal(workspace[1].env.COMPANION_PROJECT, "SMP");
   assert.equal(workspace[1].env.COMPANION_TASK, "T1");
   assert.equal(workspace[1].env.COMPANION_PART, "feat");
+  // The env fragment is the same one the title shows, so a sweep can match a
+  // session to its goal without parsing the name.
+  assert.ok(workspace[1].title.includes(`(${workspace[1].env.COMPANION_GOAL})`), workspace[1].title);
   assert.equal(workspace[1].cwd, "/repo/sample-feature-billing");
   assertPointer(workspace[1].prompt);
   const brief = briefText(workspace[1].prompt);

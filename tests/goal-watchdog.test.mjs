@@ -273,8 +273,9 @@ test("requires a health sweep", () => {
 // --- retiring finished sessions -------------------------------------------
 
 // The reason this exists: a person had to close dozens of finished
-// `KRV-T2-api` and `*-MERGE` workspaces by hand. The supervision timer already
-// looks at every launched goal, so it is the one pass that can do it for them.
+// `KRV · … · T2-api` and `… · MERGE` workspaces by hand. The supervision
+// timer already looks at every launched goal, so it is the one pass that can
+// do it for them.
 test("a driven tick retires the finished sessions of a goal whose work is delivered", async () => {
   const reaped = [];
   const reaper = {

@@ -155,11 +155,34 @@ A crashed agent usually leaves its cmux workspace open at a shell prompt, so
 task stuck. A session that is still working, or one that is waiting for an
 answer, is never closed by Continue.
 
-Each cmux session Companion opens is named `KRV-T2-api · <task title>`: the
-project code, the task code within its goal, and the part of the work, before
-the title. The same identity is exported into the session's own shell as
-`COMPANION_PROJECT`, `COMPANION_TASK` and `COMPANION_PART`, so it survives a
-rename.
+Each cmux session Companion opens is named
+`CC · Recover completed goal waves (7a2b) · T2-api · Wire the health sweep`:
+the project code, then the goal, then the task code and the part of the work,
+then the title. A merge session belongs to the goal rather than to one task, so
+it reads `CC · Recover completed goal waves (7a2b) · MERGE`. The goal leads
+because that is the order a person asks the questions in. In a sidebar of
+twelve parallel sessions you look for which goal a session belongs to before
+you look for which task it is, so the goal groups the list by eye. The goal
+segment is the goal's own text plus a short fragment of the plan id, which is
+what keeps two goals in one repository apart when they open with the same
+words.
+
+The reorder has a cost. The identifying code no longer leads, so it no longer
+survives sidebar truncation for free. Fixed budgets pay that cost. The project
+code takes at most 4 characters, the task-part code at most 10, and the goal
+text is clipped to 36 characters before the plan-id fragment. That fragment is
+4 characters in parentheses, and it is never the part that clips, so `T2-api`
+stays at a near-fixed offset in cmux's narrow sidebar. Only the task title
+loses characters. The same identity is exported into the session's own shell
+as `COMPANION_PROJECT`, `COMPANION_PLAN`, `COMPANION_GOAL`, `COMPANION_TASK`
+and `COMPANION_PART`, so it survives a rename.
+
+Two limits are honest ones. A 4-character plan-id fragment can collide between
+two goals. That stays cosmetic, because `COMPANION_GOAL` is only the readable
+short form and `COMPANION_PLAN` carries the full plan id for every lookup. The
+format also applies to newly opened sessions only. Companion does not rename
+sessions that already exist, so a board can show both the old shape and the new
+one until the last old session closes.
 
 On a screen 1280 pixels wide or wider the board takes the whole window, its
 lanes keep a readable minimum width, and the row scrolls sideways when eight of

@@ -145,12 +145,32 @@ function repoChipStyle(name: string) {
 // and the rail both lead with it.
 function RepoChip({ name }: { name: string }) { return <span className="goal-repo-chip" style={repoChipStyle(name)}>{name}</span>; }
 
-// The generated cmux title begins with the stable task identity (CC-T2-ui),
-// followed by a human title. Showing that same code on the board lets a person
-// match a card to cmux's narrow sidebar without comparing two long sentences.
+// The generated cmux title carries the stable task identity as one of its
+// ` · `-delimited segments: `CC · The goal text (7a2b) · T2-api · Wire the
+// sweep`. Showing that same code on the board lets a person match a card to
+// cmux's narrow sidebar without comparing two long sentences.
+//
+// The code no longer leads the title, so the parser reads segments rather than
+// a prefix. Two shapes live on one board at the same time, because a session is
+// never renamed after it is opened:
+//   new     CC · The goal text (7a2b) · T2-api · Wire the sweep
+//   legacy  CC-T2-api · Wire the sweep
+// A whole segment must match, not a substring, so a goal text that happens to
+// read like a code ("Ship T2-api parity") is never mistaken for the code.
+const TASK_PART_SEGMENT = /^T\d{1,3}-[a-z0-9]+$/i;
+const LEGACY_PART_SEGMENT = /^[A-Z0-9]{2,4}-T\d{1,3}-[a-z0-9]+$/i;
+const SESSION_SEPARATOR = " \u00b7 ";
+
 function sessionTaskCode(task: HealthTask) {
   const title = String(task.session?.title || "").trim();
-  return /^([A-Z0-9]{2,4}-T\d{1,3}-[a-z0-9]+)/i.exec(title)?.[1] || task.id;
+  const segments = title.split(SESSION_SEPARATOR).map((segment) => segment.trim()).filter(Boolean);
+  const part = segments.find((segment) => TASK_PART_SEGMENT.test(segment));
+  if (part) return part;
+  const legacy = segments.find((segment) => LEGACY_PART_SEGMENT.test(segment));
+  if (legacy) return legacy;
+  // Last resort for a legacy title whose separator did not survive. The
+  // segment scans run first, so this never overrides a real segment.
+  return /^([A-Z0-9]{2,4}-T\d{1,3}-[a-z0-9]+)\b/i.exec(title)?.[1] || task.id;
 }
 
 function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }

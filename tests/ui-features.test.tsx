@@ -1221,7 +1221,7 @@ describe("goals board", () => {
     checkedAt: now, sessionsAvailable: true,
     summary: { goals: 2, tasks: 2, stuck: 0, needsYou: 0, working: 2, deadTasks: 0, idleTasks: 0, failedTasks: 0 },
     goals: [
-      { planId: "plan-dev", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Agents are coding", health: "working", stuckCount: 0, readyCount: 0, launchedCount: 1, taskCount: 1, tasks: [{ id: "T2", title: "Build the board UI", branch: "feature/board-ui", agent: "codex", wave: 1, launchStatus: "launched", launchError: null, deliveryStatus: "pending", workspaceId: "ws-dev", health: "working", reason: "This task agent is running", session: { id: "ws-dev", title: "TL-T2-ui · Build the board UI", lastActivityAt: Date.now(), effective: "working" } }] },
+      { planId: "plan-dev", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Agents are coding", health: "working", stuckCount: 0, readyCount: 0, launchedCount: 1, taskCount: 1, tasks: [{ id: "T2", title: "Build the board UI", branch: "feature/board-ui", agent: "codex", wave: 1, launchStatus: "launched", launchError: null, deliveryStatus: "pending", workspaceId: "ws-dev", health: "working", reason: "This task agent is running", session: { id: "ws-dev", title: "TL · Agents are coding (pdev) · T2-ui · Build the board UI", lastActivityAt: Date.now(), effective: "working" } }] },
       { planId: "plan-rekord", repositoryId: "repo-rekord", repositoryName: "recorder", goal: "Improve recording search", health: "working", stuckCount: 0, readyCount: 0, launchedCount: 1, taskCount: 1, tasks: [{ id: "T1", title: "Index recording transcripts", branch: "feature/search-index", agent: "claude", wave: 1, launchStatus: "launched", launchError: null, deliveryStatus: "pending", workspaceId: "ws-rekord", health: "working", reason: "This task agent is running", session: { id: "ws-rekord", title: "RCR-T1-api · Index recording transcripts", lastActivityAt: Date.now(), effective: "working" } }] },
     ],
   };
@@ -1398,6 +1398,45 @@ describe("goals board", () => {
     assert.ok(within(board).getByText("Write the spec"));
   });
 
+  // A cmux session is never renamed after it is opened, so both title shapes
+  // sit on the same board while the fleet turns over. The card must resolve a
+  // readable code from each one, and must not invent a code from goal words.
+  test("resolves a task code from the new segmented title, a legacy prefix title, and neither", async () => {
+    const session = (id: string, title: string) => ({ id, title, lastActivityAt: Date.now(), effective: "working" });
+    const codedTask = (id: string, title: string, workspaceId: string, sessionTitle: string) => ({
+      id, title, branch: `feature/${id.toLowerCase()}`, agent: "codex", wave: 1, launchStatus: "launched", launchError: null,
+      deliveryStatus: "pending", workspaceId, health: "working", reason: "This task agent is running",
+      session: session(workspaceId, sessionTitle),
+    });
+    // The goal text is clipped by the generator's own budget, so the parser is
+    // exercised against a realistic long title rather than a short one.
+    const longGoal = "TL · Recover every completed goal wave before the mer… (7a2b) · T2-ui · Wire the health sweep";
+    const sweep = {
+      checkedAt: now, sessionsAvailable: true,
+      summary: { goals: 1, tasks: 3, stuck: 0, needsYou: 0, working: 3, deadTasks: 0, idleTasks: 0, failedTasks: 0 },
+      goals: [{
+        planId: "plan-dev", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Agents are coding",
+        health: "working", stuckCount: 0, readyCount: 0, launchedCount: 3, taskCount: 3,
+        tasks: [
+          codedTask("T2", "Wire the health sweep", "ws-new", longGoal),
+          codedTask("T5", "Carry the legacy title", "ws-legacy", "TL-T5-api · Carry the legacy title"),
+          codedTask("T9", "Ship T7-api parity", "ws-bare", "Ship T7-api parity"),
+        ],
+      }],
+    };
+    mountBoard(allPlans, (url) => (url === "/api/goals/health" ? new Response(JSON.stringify(sweep), { status: 200 }) : null));
+    const board = await openBoard();
+    const card = within(board).getByText("Agents are coding").closest("article") as HTMLElement;
+
+    // The new shape: the task-part segment, taken from the middle of the title.
+    assert.ok(within(card).getByLabelText("T2-ui: Wire the health sweep"));
+    // The legacy shape: the leading prefix still resolves to a code.
+    assert.ok(within(card).getByLabelText("TL-T5-api: Carry the legacy title"));
+    // No code segment at all: the raw task id, never a word from the goal text.
+    assert.ok(within(card).getByLabelText("T9: Ship T7-api parity"));
+    assert.equal(within(card).queryByLabelText("T7-api: Ship T7-api parity"), null);
+  });
+
   test("shows card metadata, lifecycle evidence, and pull-request links", async () => {
     mountBoard();
     const board = await openBoard();
@@ -1411,7 +1450,7 @@ describe("goals board", () => {
 
     assert.ok(within(card("Write the spec")).getByText("Reading app/page.tsx"));
     assert.ok(within(card("Agents are coding")).getByText("Agents are working on the launched tasks"));
-    assert.ok(within(card("Agents are coding")).getByLabelText("TL-T2-ui: Build the board UI"));
+    assert.ok(within(card("Agents are coding")).getByLabelText("T2-ui: Build the board UI"));
     assert.ok(within(card("Stopped on purpose")).getByText("Stopped. Branches and worktrees were kept."));
     assert.ok(within(card("Merged already")).getByText("4 tasks"));
 

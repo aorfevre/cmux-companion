@@ -247,7 +247,7 @@ test("continue reuses the existing worktree and creates none", async (t) => {
   const workspace = deps.calls.find((call) => call[0] === "workspace")[1];
   assert.equal(workspace.cwd, path);
   assert.equal(workspace.agent, "claude");
-  assert.equal(workspace.title, "SMP-T1-api · Billing");
+  assert.equal(workspace.title, "SMP · Customers can pay invoices (plan) · T1-api · Billing");
   assert.equal(store.get("plan-1").tasks[0].worktreePath, path);
 });
 
