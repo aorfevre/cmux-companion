@@ -291,7 +291,6 @@
 .github-issue-card>footer{border-top:1px solid #232c35;padding-top:8px}
 .github-issue-card>footer .github-issue-start{width:100%;min-height:32px;border:1px solid #52632f;border-radius:8px;background:#18200f;color:var(--lime);padding:6px 8px;font-size:8px;font-weight:800}
 .github-issue-card>footer .github-issue-start:disabled{opacity:.5}
-.github-issue-started{display:block;border:1px solid #34404a;border-radius:8px;background:#1b2127;color:#9fc4ff;padding:7px 8px;font-size:7px;font-weight:800;text-align:center;text-decoration:none}
 
 /* Agent capacity: which provider takes the next task, and when the exhausted
    one frees up. It sits above the tiles because it answers the question a
@@ -433,7 +432,7 @@
   .goal-board-card-meta,.goal-board-card-evidence{font-size:11px}
   .goal-board-health b,.goal-board-health span,.goal-board-ready span,.goal-board-agents,.goal-board-task-codes code{font-size:11px}
   .goal-board-issues a,.goal-board-issues span{font-size:11px}
-  .github-issue-repository,.github-issue-number,.github-issue-labels span,.github-issue-link,.github-issue-started{font-size:11px}
+  .github-issue-repository,.github-issue-number,.github-issue-labels span,.github-issue-link{font-size:11px}
   .github-issue-card>footer .github-issue-start{min-height:36px;font-size:11px}
   .goal-board-pr{font-size:11px}
   .goal-board-card>footer button{min-height:36px;font-size:11px}

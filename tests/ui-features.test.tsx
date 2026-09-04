@@ -1832,21 +1832,67 @@ describe("GitHub Issues board column", () => {
       await Promise.resolve();
     });
 
-    // The new goal lands in Writing Spec, and the card no longer offers to
-    // start the same issue again.
+    // The new goal lands in Writing Spec, and the issue leaves the issue column
+    // in the same render: the work is on the board once, not twice.
     await waitFor(() => assert.ok(within(within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "Writing Spec" })).getByText("Resolve GitHub issue #12: Restore the caret")));
     await waitFor(() => assert.equal(screen.queryByRole("button", { name: "Start a goal for #12 Restore the caret" }), null));
-    assert.ok(screen.getByRole("link", { name: "Goal started for #12" }));
+    const issueColumn = within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "GitHub Issues" });
+    assert.equal(within(issueColumn).queryByText("Restore the caret"), null);
+    assert.equal(within(issueColumn).queryAllByRole("article").length, 0);
+    assert.ok(within(issueColumn).getByLabelText("0 issues in GitHub Issues"));
     assert.equal(goalCalls.length, 1);
   });
 
-  test("an issue that already carries a plan id shows the started state and offers no start button", async () => {
+  test("an issue whose goal is on the board renders no card and is not counted", async () => {
     mountIssues({ issues: [issue({ planId: "plan-issue-12" })], plans: [startedPlan] });
     const board = await openBoard();
     const column = await within(board).findByRole("region", { name: "GitHub Issues" });
+    // The issue is gone from its own column…
+    assert.equal(within(column).queryAllByRole("article").length, 0);
+    assert.equal(within(column).queryByText("Restore the caret"), null);
     assert.equal(within(column).queryByRole("button", { name: /^Start a goal/ }), null);
-    const started = within(column).getByRole("link", { name: "Goal started for #12" }) as HTMLAnchorElement;
-    assert.equal(started.getAttribute("href"), "?plan=plan-issue-12");
+    // …the header agrees with what is rendered…
+    assert.ok(within(column).getByLabelText("0 issues in GitHub Issues"));
+    // …and the work is still on the board, as its goal card.
+    assert.ok(within(within(board).getByRole("region", { name: "Writing Spec" })).getByText("Resolve GitHub issue #12: Restore the caret"));
+  });
+
+  test("an issue whose goal was deleted comes back with a working Start a goal button", async () => {
+    // The stored issue still carries the plan id, but the board loaded no such
+    // plan. A stale id must never strand an issue off the board.
+    mountIssues({ issues: [issue({ planId: "plan-gone" })], plans: [] });
+    const board = await openBoard();
+    const column = await within(board).findByRole("region", { name: "GitHub Issues" });
+    assert.equal(within(column).getAllByRole("article").length, 1);
+    assert.ok(within(column).getByText("Restore the caret"));
+    assert.ok(within(column).getByLabelText("1 issue in GitHub Issues"));
+    const start = within(column).getByRole("button", { name: "Start a goal for #12 Restore the caret" }) as HTMLButtonElement;
+    assert.equal(start.disabled, false);
+  });
+
+  test("a column emptied only by started goals says so instead of the star-a-repository hint", async () => {
+    mountIssues({ issues: [issue({ planId: "plan-issue-12" })], plans: [startedPlan] });
+    const board = await openBoard();
+    const column = await within(board).findByRole("region", { name: "GitHub Issues" });
+    assert.ok(within(column).getByText("Every synced GitHub issue already has a goal. Each one is on the board in its lifecycle column."));
+    assert.equal(within(column).queryByText("No GitHub issues yet. Star a repository, then choose GitHub Sync to pull its open issues."), null);
+  });
+
+  test("the goal filter runs before the search, so the column never blames the search for a hidden goal", async () => {
+    // Two issues, one already a goal. A search that matches only the started
+    // one leaves an empty column that reports the search, and a count of 0.
+    const startedIssue = issue({ planId: "plan-issue-12" });
+    const openIssue = issue({ number: 31, title: "Speed up the indexer", labels: [], url: "https://github.test/acme/trust-layer/issues/31" });
+    mountIssues({ issues: [startedIssue, openIssue], plans: [startedPlan] });
+    const board = await openBoard();
+    const column = () => within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "GitHub Issues" });
+    await within(column()).findByText("Speed up the indexer");
+    assert.ok(within(column()).getByLabelText("1 issue in GitHub Issues"));
+    assert.equal(within(board).queryByText("Restore the caret"), null);
+
+    await userEvent.type(screen.getByRole("searchbox", { name: "Search projects" }), "caret");
+    await waitFor(() => assert.ok(within(column()).getByText(/No issue matches/)));
+    assert.ok(within(column()).getByLabelText("0 issues in GitHub Issues"));
   });
 
   test("a board left open re-reads the column on its slow clock, and stops when the board is not the active view", async () => {
