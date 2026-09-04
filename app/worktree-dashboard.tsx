@@ -306,11 +306,13 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const boardView = dashboardFilter === "goals-board";
   useEffect(() => {
     if (!boardView) return;
-    // The issue column is read once per board mount. It is deliberately not on
-    // the ten-second poll: only an explicit GitHub Sync changes it.
+    // The server now syncs the issue column on its own schedule, so a board
+    // left open must re-read it. The source changes about once an hour, so the
+    // column keeps a slow clock of its own instead of the ten-second poll.
     const kickoff = setTimeout(() => { void loadHealth(); void loadCapacity(); void loadRetirable(); void loadIssues(); }, 0);
     const poll = setInterval(() => { if (document.visibilityState === "visible") { void loadHealth(); void loadCapacity(); void loadRetirable(); } }, 10_000);
-    return () => { clearTimeout(kickoff); clearInterval(poll); };
+    const issuePoll = setInterval(() => { if (document.visibilityState === "visible") void loadIssues(); }, 60_000);
+    return () => { clearTimeout(kickoff); clearInterval(poll); clearInterval(issuePoll); };
   }, [boardView, loadCapacity, loadHealth, loadRetirable, loadIssues]);
   // One second, and only while the strip is on screen. A reset countdown that
   // moves in ten-second jumps reads as broken.

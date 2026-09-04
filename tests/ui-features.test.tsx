@@ -1810,6 +1810,35 @@ describe("GitHub Issues board column", () => {
     assert.equal(started.getAttribute("href"), "?plan=plan-issue-12");
   });
 
+  test("a board left open re-reads the column on its slow clock, and stops when the board is not the active view", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    // The server syncs on its own schedule, so the second read answers with a
+    // card that the first read did not carry.
+    let served: unknown[] = [issue()];
+    const { fetchMock } = mountIssues({
+      extra: (url) => (url === "/api/github-issues" ? new Response(JSON.stringify({ syncedAt: now, issues: served }), { status: 200 }) : null),
+    });
+    await user.click(await screen.findByRole("tab", { name: /Goals board/ }));
+    const column = () => within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "GitHub Issues" });
+    await within(column()).findByText("Restore the caret");
+    const issueReads = () => fetchMock.mock.calls.filter(([url]) => String(url) === "/api/github-issues").length;
+    assert.equal(issueReads(), 1);
+
+    served = [issue(), issue({ number: 31, title: "Speed up the indexer", labels: ["performance"], url: "https://github.test/acme/trust-layer/issues/31" })];
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    assert.equal(issueReads(), 2);
+    assert.ok(await within(column()).findByText("Speed up the indexer"));
+
+    // The board is no longer the active view, so its clock stops with it.
+    await user.click(screen.getByRole("tab", { name: /Draft Goals/ }));
+    const readsWhenClosed = issueReads();
+    served = [issue(), issue({ number: 44, title: "Fix the sync", labels: [], url: "https://github.test/acme/trust-layer/issues/44" })];
+    await act(async () => { await vi.advanceTimersByTimeAsync(180_000); });
+    assert.equal(issueReads(), readsWhenClosed);
+    assert.equal(screen.queryByText("Fix the sync"), null);
+  });
+
   test("a non-favorited repository contributes no card, because the sync reads starred repositories only", async () => {
     // The server answers with the starred repository's issue only. The column
     // renders exactly what it was given and invents nothing for `recorder`.
