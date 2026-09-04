@@ -22,6 +22,7 @@ import { GoalMergeWatch } from "./goal-merge-watch.mjs";
 import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
 import { GitHubIssueStore } from "./github-issue-store.mjs";
 import { GitHubIssueSync } from "./github-issue-sync.mjs";
+import { GitHubIssueSyncScheduler } from "./github-issue-sync-scheduler.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import { deploymentStatus, updaterLaunchAgentRunning } from "./deployment-health.mjs";
@@ -65,6 +66,7 @@ export async function buildApp({
   cmuxGroups = null,
   githubIssuePlanner = null,
   githubIssueSync = null,
+  githubIssueSyncScheduler = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
   previewManager = null,
@@ -132,6 +134,17 @@ export async function buildApp({
   // service never opens the production file, exactly like the planner above.
   const issueSync = githubIssueSync
     || new GitHubIssueSync({ worktrees, planner, store: new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+  // The timer that keeps the issue column current without anyone pressing
+  // GitHub Sync. The interval is read here rather than inside the class, so the
+  // class stays purely injected and a test never depends on the environment.
+  const issueSyncScheduler = githubIssueSyncScheduler
+    || new GitHubIssueSyncScheduler({
+      sync: issueSync,
+      log: app.log,
+      ...(Number(process.env.CMUX_COMPANION_GITHUB_ISSUE_SYNC_INTERVAL_MS) > 0
+        ? { intervalMs: Number(process.env.CMUX_COMPANION_GITHUB_ISSUE_SYNC_INTERVAL_MS) }
+        : {}),
+    });
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
@@ -144,6 +157,7 @@ export async function buildApp({
   const watchdog = goalWatchdog
     || (health ? new GoalWatchdog({ health, pushService, mergeWatch, worktrees, sessionReaper: autoCloseSessions ? reaper : null, log: app.log }) : null);
   const detachWatchdog = watchdog?.start() || null;
+  const detachIssueSyncScheduler = issueSyncScheduler?.start() || null;
   const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
   const detachQueue = promptQueue?.attach({ hub, cmux }) || null;
   // Production already keeps the event stream alive for push/queue handling.
@@ -706,7 +720,12 @@ export async function buildApp({
   // last sync without touching GitHub again.
   app.get("/api/github-issues", async () => issueSync.read());
 
-  app.post("/api/github-issues/sync", async () => issueSync.sync());
+  // Delegated to the scheduler so a manual press and a scheduled pass share one
+  // in-flight guard. The response is whatever GitHubIssueSync.sync() returns,
+  // unchanged: a caller that joins a running pass gets that pass's own result.
+  app.post("/api/github-issues/sync", async () => (
+    issueSyncScheduler ? issueSyncScheduler.syncNow() : issueSync.sync()
+  ));
 
   // One issue becomes one goal plan. The plan then appears in Writing Spec
   // like every other draft, so the caches that feed the board are dropped.
@@ -987,6 +1006,7 @@ export async function buildApp({
     detachQueue?.();
     detachIntegrator?.();
     detachWatchdog?.();
+    detachIssueSyncScheduler?.();
     hub.stop();
     if (!worktreePlanStore && planStore) planStore.close();
   });
