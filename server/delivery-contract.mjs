@@ -1,3 +1,6 @@
+import { SPEC_OPTIONS } from "./worktree-planner-options.mjs";
+import { normalizeSpecOptions, specOptionsBriefLines } from "./spec-options.mjs";
+
 const MAX_LIST = 20;
 const MAX_TEXT = 1_000;
 // The brief is written to a Markdown file that the agent reads from disk.
@@ -6,6 +9,23 @@ const MAX_TASK_BRIEF = 20_000;
 const CRITERION_ID = /^[A-Z][A-Z0-9_-]{0,31}$/;
 const TASK_ID = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/;
+
+// Design artifacts arrive from a model, so every list, every identifier and
+// the total retained text is capped. The caps are deliberately small: the
+// artifacts exist to make a plan reviewable, not to carry a whole design.
+const MAX_ARTIFACTS = 6;
+const MAX_NODES = 24;
+const MAX_EDGES = 40;
+const MAX_ELEMENTS = 24;
+const MAX_TITLE = 200;
+const MAX_LABEL = 160;
+const MAX_RATIONALE = 500;
+const MAX_ARTIFACT_TEXT = 16_000;
+const NODE_KINDS = ["start", "step", "decision", "end"];
+const ELEMENT_KINDS = ["header", "text", "input", "button", "list", "image", "note"];
+const ELEMENT_CHANGES = ["new", "changed", "unchanged"];
+const EVIDENCE_STATUSES = ["planned", "not_applicable"];
+const SPEC_OPTION_IDS = SPEC_OPTIONS.options.map((option) => option.id);
 
 export const DELIVERY_CONTRACT_VERSION = 2;
 
@@ -23,7 +43,150 @@ export function normalizeDeliveryContract(raw, goal = "") {
     assumptions: strings(source.assumptions, MAX_LIST, MAX_TEXT),
     acceptanceCriteria,
     risks: list(source.risks, 12).map(normalizeRisk).filter((item) => item.text),
+    optionEvidence: normalizeOptionEvidence(source.optionEvidence),
+    designArtifacts: normalizeDesignArtifacts(source.designArtifacts),
   };
+}
+
+// Evidence is keyed by option id and ordered by the catalog, so two equal
+// contracts always serialize the same way.
+function normalizeOptionEvidence(raw) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const evidence = {};
+  for (const id of SPEC_OPTION_IDS) {
+    const entry = source[id];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const status = EVIDENCE_STATUSES.includes(entry.status) ? entry.status : "";
+    if (!status) continue;
+    evidence[id] = {
+      status,
+      rationale: clean(entry.rationale, MAX_RATIONALE),
+      taskIds: ids(entry.taskIds, TASK_ID, MAX_LIST),
+      criterionIds: ids(entry.criterionIds, CRITERION_ID, MAX_LIST),
+    };
+  }
+  return evidence;
+}
+
+// Ids that a model invented can collide or be unusable. Repairing them with
+// their own position keeps the result stable across identical inputs, and an
+// edge that pointed at a repaired duplicate simply becomes dangling and is
+// dropped rather than silently re-targeted.
+function normalizeDesignArtifacts(raw) {
+  const budget = { left: MAX_ARTIFACT_TEXT };
+  const seen = new Set();
+  const artifacts = [];
+  for (const [index, item] of list(raw, MAX_ARTIFACTS).entries()) {
+    const source = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+    const kind = source.kind === "flow" || source.kind === "screen" ? source.kind : "";
+    if (!kind) continue;
+    const candidate = normalizedId(source.id, `a${index + 1}`, TASK_ID);
+    const id = seen.has(candidate) ? `a${index + 1}` : candidate;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const title = spend(budget, clean(source.title, MAX_TITLE));
+    const artifact = kind === "flow"
+      ? { id, kind, title, ...normalizeFlow(source, budget) }
+      : { id, kind, title, elements: normalizeElements(source.elements, budget) };
+    if (kind === "flow" && !artifact.nodes.length) continue;
+    if (kind === "screen" && !artifact.elements.length) continue;
+    artifacts.push(artifact);
+  }
+  return artifacts;
+}
+
+function normalizeFlow(source, budget) {
+  const seen = new Set();
+  const nodes = [];
+  for (const [index, item] of list(source.nodes, MAX_NODES).entries()) {
+    const node = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+    const label = spend(budget, clean(node.label, MAX_LABEL));
+    if (!label) continue;
+    const candidate = normalizedId(node.id, `n${index + 1}`, TASK_ID);
+    const id = seen.has(candidate) ? `n${index + 1}` : candidate;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    nodes.push({ id, label, kind: NODE_KINDS.includes(node.kind) ? node.kind : "step" });
+  }
+  const edges = [];
+  const pairs = new Set();
+  for (const item of list(source.edges, MAX_EDGES)) {
+    const edge = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+    const from = clean(edge.from, 40);
+    const to = clean(edge.to, 40);
+    if (!seen.has(from) || !seen.has(to)) continue;
+    const label = spend(budget, clean(edge.label, MAX_LABEL));
+    const pair = `${from}\u0000${to}\u0000${label}`;
+    if (pairs.has(pair)) continue;
+    pairs.add(pair);
+    edges.push({ from, to, label });
+  }
+  return { nodes, edges };
+}
+
+function normalizeElements(raw, budget) {
+  const seen = new Set();
+  const elements = [];
+  for (const [index, item] of list(raw, MAX_ELEMENTS).entries()) {
+    const element = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+    const label = spend(budget, clean(element.label, MAX_LABEL));
+    if (!label) continue;
+    const candidate = normalizedId(element.id, `e${index + 1}`, TASK_ID);
+    const id = seen.has(candidate) ? `e${index + 1}` : candidate;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    elements.push({
+      id,
+      label,
+      kind: ELEMENT_KINDS.includes(element.kind) ? element.kind : "text",
+      change: ELEMENT_CHANGES.includes(element.change) ? element.change : "new",
+    });
+  }
+  return elements;
+}
+
+// The aggregate budget truncates instead of throwing. A model that returns one
+// enormous diagram still leaves a readable plan behind.
+function spend(budget, text) {
+  if (!text) return "";
+  if (budget.left <= 0) return "";
+  const kept = text.slice(0, budget.left);
+  budget.left -= kept.length;
+  return kept;
+}
+
+// One plain-text rendering, shared by the brief writer and by the size guard,
+// so validation measures exactly what an agent later receives.
+export function formatDesignArtifacts(artifacts) {
+  const items = Array.isArray(artifacts) ? artifacts : [];
+  if (!items.length) return "";
+  const lines = ["Design artifacts:"];
+  for (const artifact of items) {
+    if (artifact?.kind === "flow") {
+      lines.push(`Flow ${artifact.id}: ${artifact.title || "untitled"}`);
+      for (const node of artifact.nodes || []) lines.push(`- node ${node.id} (${node.kind}): ${node.label}`);
+      for (const edge of artifact.edges || []) lines.push(`- edge ${edge.from} -> ${edge.to}${edge.label ? `: ${edge.label}` : ""}`);
+    } else if (artifact?.kind === "screen") {
+      lines.push(`Screen ${artifact.id}: ${artifact.title || "untitled"}`);
+      for (const element of artifact.elements || []) lines.push(`- ${element.change} ${element.kind} ${element.id}: ${element.label}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+export function formatOptionEvidence(evidence) {
+  const source = evidence && typeof evidence === "object" ? evidence : {};
+  const lines = [];
+  for (const id of SPEC_OPTION_IDS) {
+    const entry = source[id];
+    if (!entry) continue;
+    const links = [
+      ...(entry.taskIds?.length ? [`tasks ${entry.taskIds.join(", ")}`] : []),
+      ...(entry.criterionIds?.length ? [`criteria ${entry.criterionIds.join(", ")}`] : []),
+    ].join("; ");
+    lines.push(`- ${id}: ${entry.status}${links ? ` (${links})` : ""}${entry.rationale ? ` — ${entry.rationale}` : ""}`);
+  }
+  return lines.length ? ["Specification option evidence:", ...lines].join("\n") : "";
 }
 
 export function normalizeContractTask(raw, index = 0) {
@@ -44,8 +207,9 @@ export function normalizeContractTask(raw, index = 0) {
   };
 }
 
-export function validateDeliveryContract(specValue, taskValues) {
+export function validateDeliveryContract(specValue, taskValues, specOptionsValue) {
   const spec = normalizeDeliveryContract(specValue);
+  const specOptions = normalizeSpecOptions(specOptionsValue);
   const tasks = (Array.isArray(taskValues) ? taskValues : []).map(normalizeExistingTask);
   const errors = [];
   const warnings = [];
@@ -74,7 +238,7 @@ export function validateDeliveryContract(specValue, taskValues) {
     if (!task.criterionIds.length) errors.push(`Task ${task.id} is not linked to an acceptance criterion`);
     if (!task.ownedAreas.length) errors.push(`Task ${task.id} needs at least one owned file or area`);
     if (!task.verification.length) errors.push(`Task ${task.id} needs an expected verification`);
-    if (taskBriefSize(spec, task) > MAX_TASK_BRIEF) errors.push(`Task ${task.id} would produce an oversized brief file; split it or shorten its contract`);
+    if (taskBriefSize(spec, task, specOptions) > MAX_TASK_BRIEF) errors.push(`Task ${task.id} would produce an oversized brief file; split it or shorten its contract`);
   }
 
   for (const task of tasks) {
@@ -104,11 +268,48 @@ export function validateDeliveryContract(specValue, taskValues) {
   }
   if (spec.assumptions.length) warnings.push(`${spec.assumptions.length} planner assumption${spec.assumptions.length === 1 ? " remains" : "s remain"} visible for approval`);
 
+  const optionCoverage = specOptionCoverage(spec, tasks, specOptions);
+  for (const entry of optionCoverage) {
+    if (entry.status === "missing") warnings.push(`Requested ${entry.id} coverage is missing: ${entry.message}`);
+  }
+
   const coverage = spec.acceptanceCriteria.map((criterion) => ({
     criterionId: criterion.id,
     taskIds: tasks.filter((task) => task.criterionIds.includes(criterion.id)).map((task) => task.id),
   }));
-  return { ready: errors.length === 0, errors: unique(errors), warnings: unique(warnings), waves: workflow.waves, coverage };
+  return { ready: errors.length === 0, errors: unique(errors), warnings: unique(warnings), waves: workflow.waves, coverage, optionCoverage };
+}
+
+// Coverage is computed from explicit references only. Searching task prose for
+// words such as "unit" or "e2e" would report rigor that nobody planned.
+function specOptionCoverage(spec, tasks, specOptions) {
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const criterionIds = new Set(spec.acceptanceCriteria.map((criterion) => criterion.id));
+  const artifactKinds = new Set(spec.designArtifacts.map((artifact) => artifact.kind));
+  return SPEC_OPTIONS.options.map((option) => {
+    const requested = specOptions[option.id] === true;
+    if (!requested) return { id: option.id, requested: false, status: "not_requested", message: "" };
+    const entry = spec.optionEvidence[option.id];
+    if (!entry) return missingOption(option.id, "the contract records no evidence entry");
+    if (entry.status === "not_applicable") {
+      if (!entry.rationale) return missingOption(option.id, "the not-applicable entry has no rationale");
+      return { id: option.id, requested: true, status: "not_applicable", message: entry.rationale };
+    }
+    const linkedTasks = entry.taskIds.filter((id) => taskById.has(id));
+    const linkedCriteria = entry.criterionIds.filter((id) => criterionIds.has(id));
+    if (!linkedTasks.length) return missingOption(option.id, "the evidence names no known task");
+    if (!linkedCriteria.length) return missingOption(option.id, "the evidence names no known acceptance criterion");
+    if (option.id === "refactorPass" && !linkedTasks.some((id) => taskById.get(id).type === "refactor")) {
+      return missingOption(option.id, "no linked task has the refactor type");
+    }
+    if (option.id === "screenMocks" && !artifactKinds.has("screen")) return missingOption(option.id, "the contract holds no screen artifact");
+    if (option.id === "flowcharts" && !artifactKinds.has("flow")) return missingOption(option.id, "the contract holds no flow artifact");
+    return { id: option.id, requested: true, status: "covered", message: `${linkedTasks.join(", ")} · ${linkedCriteria.join(", ")}` };
+  });
+}
+
+function missingOption(id, message) {
+  return { id, requested: true, status: "missing", message };
 }
 
 export function deliveryWaves(taskValues) {
@@ -202,9 +403,12 @@ function normalizeCriterion(raw, index) {
   };
 }
 
-function taskBriefSize(spec, task) {
+function taskBriefSize(spec, task, specOptions) {
   const criteria = spec.acceptanceCriteria.filter((criterion) => task.criterionIds.includes(criterion.id));
   return 1_600
+    + formatDesignArtifacts(spec.designArtifacts).length
+    + formatOptionEvidence(spec.optionEvidence).length
+    + specOptionsBriefLines(specOptions).join("\n").length
     + spec.outcome.length
     + task.prompt.length
     + task.ownedAreas.join(", ").length
