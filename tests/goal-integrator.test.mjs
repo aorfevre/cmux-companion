@@ -244,9 +244,10 @@ test("a restart advances queued work when the previous wave was already recorded
   assert.equal(result.deliveryStatus, "implementing");
   assert.equal(store.get("plan-12345678").tasks[1].startSha, integratedSha);
   const workspace = calls.find((call) => call[0] === "workspaceCreate");
-  // The session name carries the project, task and part codes before the
-  // title, so a sidebar of parallel sessions is readable at a glance.
-  assert.equal(workspace[1].title, "SMP-T2-ui \u00b7 Billing UI");
+  // The session name leads with the project and the goal, then the task-part
+  // code, so a sidebar of parallel sessions groups by goal at a glance.
+  assert.equal(workspace[1].title, "SMP \u00b7 Ship combined billing (plan) \u00b7 T2-ui \u00b7 Billing UI");
+  assert.equal(workspace[1].env.COMPANION_GOAL, "plan");
   assert.equal(workspace[1].cwd.endsWith("task-two"), true);
 });
 
