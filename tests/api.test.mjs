@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildApp, normalizeInbox } from "../server/app.mjs";
+import { buildApp, normalizeInbox, withDeadline } from "../server/app.mjs";
 import { CmuxCommandError } from "../server/cmux-client.mjs";
 import { deploymentStatus, launchAgentIsRunning } from "../server/deployment-health.mjs";
 
@@ -437,6 +437,63 @@ test("keeps the dashboard available while cmux is closed", async (t) => {
   assert.equal(response.json().connected, false);
   assert.deepEqual(response.json().workspaces, []);
   assert.equal(response.json().error, "Waiting for cmux");
+});
+
+test("answers the dashboard without live sessions when cmux stalls", async (t) => {
+  const cmux = fakeCmux();
+  // A stalled cmux never rejects, which is exactly the failure that used to
+  // hold the whole page open on a saturated machine.
+  cmux.workspaceList = () => new Promise(() => {});
+  cmux.hostStatus = () => new Promise(() => {});
+  cmux.capabilities = () => new Promise(() => {});
+  const snapshots = [];
+  const worktreeDashboard = {
+    snapshot: async (input) => { snapshots.push(input); return { summary: { repositories: 2, worktrees: 3, sessions: 0 }, repositories: [], orphanSessions: [] }; },
+    invalidate: () => {},
+  };
+  const app = await buildApp({ cmux, token: TOKEN, worktreeDashboard, bootstrapTimeoutMs: 25 });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const response = await app.inject({ url: "/api/worktree-dashboard", headers: { cookie } });
+  assert.equal(response.statusCode, 200);
+  // The repositories still arrive. Only the session decoration is lost.
+  assert.equal(response.json().summary.worktrees, 3);
+  assert.deepEqual(snapshots[0].workspaces, []);
+});
+
+test("reports a stalled worktree scan as 503 instead of hanging", async (t) => {
+  const worktreeDashboard = {
+    snapshot: () => new Promise(() => {}),
+    invalidate: () => {},
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreeDashboard, dashboardTimeoutMs: 25 });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const response = await app.inject({ url: "/api/worktree-dashboard", headers: { cookie } });
+  assert.equal(response.statusCode, 503);
+  assert.match(response.json().error, /did not finish in time/);
+});
+
+test("answers bootstrap as waiting when cmux never replies", async (t) => {
+  const cmux = fakeCmux();
+  cmux.workspaceList = () => new Promise(() => {});
+  cmux.hostStatus = () => new Promise(() => {});
+  cmux.capabilities = () => new Promise(() => {});
+  const app = await buildApp({ cmux, token: TOKEN, bootstrapTimeoutMs: 25 });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const response = await app.inject({ url: "/api/bootstrap", headers: { cookie } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().connected, false);
+  assert.equal(response.json().error, "Waiting for cmux");
+  assert.deepEqual(response.json().workspaces, []);
+});
+
+test("a deadline does not change a promise that settles in time", async () => {
+  assert.equal(await withDeadline(Promise.resolve("value"), 5_000, "too slow"), "value");
+  await assert.rejects(withDeadline(Promise.reject(new TypeError("real cause")), 5_000, "too slow"), /real cause/);
+  // A non-positive budget means "no deadline", so the promise passes through.
+  assert.equal(await withDeadline(Promise.resolve("value"), 0, "too slow"), "value");
 });
 
 test("launches only catalogued repositories and exposes overview/inbox state", async (t) => {

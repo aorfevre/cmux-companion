@@ -35,6 +35,9 @@ import {
 
 const PUBLIC_API = new Set(["/api/health", "/api/auth/status", "/api/auth/pair"]);
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+// The dashboard sends this sentence itself, so the board can tell an overloaded
+// Mac apart from a broken companion. Both sides compare against this constant.
+const DASHBOARD_TIMEOUT_MESSAGE = "The worktree scan did not finish in time. This Mac may be overloaded.";
 
 export async function buildApp({
   cmux = new CmuxClient(),
@@ -72,6 +75,12 @@ export async function buildApp({
   updaterStatePath = process.env.CMUX_COMPANION_UPDATER_STATE || null,
   updaterConfigPath = process.env.CMUX_COMPANION_UPDATER_CONFIG || (updaterStatePath ? join(dirname(dirname(updaterStatePath)), "updater.json") : null),
   updaterProcessCheck = updaterLaunchAgentRunning,
+  // A dashboard snapshot spawns one git child per repository, and bootstrap
+  // spawns cmux children. On a saturated machine `posix_spawn` becomes slow
+  // enough to hold the event loop, and a request with no deadline waits for
+  // ever. These caps turn that wait into an answer the board can render.
+  bootstrapTimeoutMs = Number(process.env.CMUX_COMPANION_BOOTSTRAP_TIMEOUT_MS) || 12_000,
+  dashboardTimeoutMs = Number(process.env.CMUX_COMPANION_DASHBOARD_TIMEOUT_MS) || 45_000,
 } = {}) {
   if (!token) throw new Error("A companion pairing token is required");
 
@@ -240,9 +249,16 @@ export async function buildApp({
         cmux.capabilities(),
       ]);
       const connected = workspacePayload.status === "fulfilled";
+      // Preview syncing is a side effect of bootstrap, not part of its answer.
+      // It scans every repository, so a saturated machine must not let it hold
+      // the reply that the whole page waits on.
       if (connected && previewManager) {
-        const repos = await repoCatalog.list().catch(() => []);
-        await previewManager.syncWorkspaces(workspacePayload.value.workspaces || [], repos).catch(() => {});
+        await withDeadline((async () => {
+          const repos = await repoCatalog.list().catch(() => []);
+          await previewManager.syncWorkspaces(workspacePayload.value.workspaces || [], repos).catch(() => {});
+        })(), bootstrapTimeoutMs, "Preview sync timed out").catch((cause) => {
+          app.log.warn({ err: cause }, "preview sync skipped");
+        });
       }
       const value = {
         connected,
@@ -263,7 +279,21 @@ export async function buildApp({
     }
   };
 
-  app.get("/api/bootstrap", loadBootstrap);
+  // The whole page waits on this call, so it answers "Waiting for cmux" rather
+  // than holding the connection open when cmux cannot be reached in time.
+  app.get("/api/bootstrap", async () => withDeadline(loadBootstrap(), bootstrapTimeoutMs, "cmux did not answer in time")
+    .catch((cause) => {
+      app.log.warn({ err: cause }, "bootstrap timed out");
+      return {
+        connected: false,
+        host: null,
+        workspaces: [],
+        groups: [],
+        capabilities: null,
+        error: "Waiting for cmux",
+        refreshedAt: new Date().toISOString(),
+      };
+    }));
 
   app.get("/api/account-usage", async (request) => accountUsage.snapshot({
     refresh: request.query?.refresh === "1",
@@ -319,17 +349,34 @@ export async function buildApp({
 
   app.get("/api/repos", async (request) => ({ repos: await repoCatalog.list({ refresh: request.query?.refresh === "1" }) }));
 
-  app.get("/api/worktree-dashboard", async (request) => {
-    const bootstrap = await loadBootstrap();
+  app.get("/api/worktree-dashboard", async (request, reply) => {
     const refreshGitHub = request.query?.github === "1";
     const refreshGitHubRepositoryId = refreshGitHub ? request.query?.repositoryId || null : null;
     if (refreshGitHubRepositoryId && !/^[A-Za-z0-9_-]{18}$/.test(refreshGitHubRepositoryId)) throw new TypeError("Invalid repository");
-    const dashboard = await worktrees.snapshot({
-      workspaces: bootstrap.workspaces,
-      refresh: request.query?.refresh === "1",
-      refreshGitHub,
-      ...(refreshGitHubRepositoryId ? { refreshGitHubRepositoryId } : {}),
-    });
+    // cmux supplies the live sessions that decorate each worktree. It is not
+    // what the board is made of. A cmux call that stalls must cost the board
+    // its session badges, not every repository and every goal on the page.
+    const bootstrap = await withDeadline(loadBootstrap(), bootstrapTimeoutMs, "cmux did not answer in time")
+      .catch((cause) => {
+        app.log.warn({ err: cause }, "bootstrap timed out; serving the dashboard without live sessions");
+        return { workspaces: [] };
+      });
+    // The generic error handler hides the reason behind any 5xx. A scan that
+    // ran out of time is the one thing the person can act on, so this route
+    // sends that sentence itself instead of "Unexpected companion error".
+    let dashboard;
+    try {
+      dashboard = await withDeadline(worktrees.snapshot({
+        workspaces: bootstrap.workspaces,
+        refresh: request.query?.refresh === "1",
+        refreshGitHub,
+        ...(refreshGitHubRepositoryId ? { refreshGitHubRepositoryId } : {}),
+      }), dashboardTimeoutMs, DASHBOARD_TIMEOUT_MESSAGE);
+    } catch (cause) {
+      if (cause?.message !== DASHBOARD_TIMEOUT_MESSAGE) throw cause;
+      app.log.warn({ err: cause }, "worktree scan timed out");
+      return reply.code(503).send({ error: DASHBOARD_TIMEOUT_MESSAGE, code: "DASHBOARD_TIMEOUT" });
+    }
     if (refreshGitHub && pushService?.inspectPullRequests) {
       try { await pushService.inspectPullRequests(dashboard); }
       catch (cause) { app.log.warn({ err: cause }, "manual PR notification inspection failed"); }
@@ -971,6 +1018,22 @@ function allowPairAttempt(store, ip) {
   record.count += 1;
   store.set(ip, record);
   return record.count <= 8;
+}
+
+// Reject after `ms` instead of waiting for a child process that a saturated
+// machine may never schedule. The underlying promise is left to settle on its
+// own: cancelling it is not possible, and its own child-process timeout ends
+// it. The timer stays referenced so the deadline still fires while a request
+// is the only work in flight; it is cleared as soon as either side settles.
+export function withDeadline(promise, ms, message) {
+  if (!Number.isFinite(ms) || ms <= 0) return promise;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(serviceUnavailable(message)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (cause) => { clearTimeout(timer); reject(cause); },
+    );
+  });
 }
 
 function serviceUnavailable(message) {
