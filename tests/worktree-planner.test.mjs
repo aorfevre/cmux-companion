@@ -288,6 +288,234 @@ test("the other provider reviews and replaces a ready plan at its largest model 
   assert.deepEqual(reviewerEngine("codex"), { provider: "claude", model: PLANNER_ENGINES.providers.claude.largestModel, effort: "xhigh", reviewer: false });
 });
 
+// --- specification options ------------------------------------------------
+
+const NO_OPTIONS = { unitTests: false, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: false, flowcharts: false };
+const TEST_OPTIONS = { unitTests: true, e2eTests: true, edgeCases: false, refactorPass: false, screenMocks: false, flowcharts: false };
+const DESIGN_OPTIONS = { unitTests: false, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: true, flowcharts: true };
+
+function lastPrompt(deps) {
+  return deps.calls.filter((call) => call[0] === "ccs").at(-1)[1].at(-1);
+}
+
+test("refuses an unknown specification option before any plan row is created", async (t) => {
+  const { store, deps, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
+  t.after(() => store.close());
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: { sketches: true } }), /Unknown specification option sketches/);
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: { unitTests: "yes" } }), /must be true or false/);
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: [] }), /must be an object/);
+  assert.equal(deps.calls.length, 0);
+  assert.deepEqual(store.list(), []);
+});
+
+test("returns and reloads the requested specification options", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: TEST_OPTIONS });
+  assert.deepEqual(draft.specOptions, TEST_OPTIONS);
+  assert.deepEqual(store.get(draft.planId).specOptions, TEST_OPTIONS);
+  planner.drafts.clear();
+  assert.deepEqual((await planner.resume(draft.planId)).specOptions, TEST_OPTIONS);
+});
+
+test("a goal with no options sends exactly the prompt an explicit all-false goal sends", async () => {
+  const omitted = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(omitted).start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const explicit = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(explicit).start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: NO_OPTIONS });
+  assert.equal(lastPrompt(explicit), lastPrompt(omitted));
+  assert.equal(lastPrompt(omitted).includes("optionEvidence"), false);
+  assert.equal(lastPrompt(omitted).includes("designArtifacts"), false);
+  assert.equal(lastPrompt(omitted).includes("specification rigor"), false);
+});
+
+test("the opening prompt carries the enabled demands and the evidence schema only", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: TEST_OPTIONS });
+  const prompt = lastPrompt(deps);
+  assert.match(prompt, /The user requested explicit specification rigor for this goal:/);
+  assert.match(prompt, /- Unit tests: Cover the new logic with unit tests\./);
+  assert.match(prompt, /- End-to-end tests: Cover the user-visible flow with end-to-end tests\./);
+  assert.match(prompt, /"optionEvidence"/);
+  // No design request was made, so the artifact schema stays out of the prompt.
+  assert.equal(prompt.includes('"designArtifacts"'), false);
+  assert.equal(prompt.includes("Edge cases"), false);
+});
+
+test("a screen or flow request adds the design artifact schema", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: DESIGN_OPTIONS });
+  const prompt = lastPrompt(deps);
+  assert.match(prompt, /"designArtifacts"/);
+  assert.match(prompt, /"optionEvidence"/);
+  assert.match(prompt, /Return the requested design artifacts in spec\.designArtifacts/);
+});
+
+test("every later round keeps demanding the enabled options", async (t) => {
+  const { store, deps, planner } = storedPlanner({
+    replies: [QUESTIONS_REPLY, QUESTIONS_REPLY, TASKS_REPLY, TASKS_REPLY],
+  });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: TEST_OPTIONS });
+
+  await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
+  assert.match(lastPrompt(deps), /- Unit tests: Cover the new logic with unit tests\./);
+
+  await planner.answer(draft.planId, { skip: true });
+  const skipped = lastPrompt(deps);
+  assert.match(skipped, /^Stop asking questions\./);
+  assert.match(skipped, /- End-to-end tests: Cover the user-visible flow with end-to-end tests\./);
+
+  await planner.feedback(draft.planId, { text: "These tasks share a file." });
+  assert.match(lastPrompt(deps), /- Unit tests: Cover the new logic with unit tests\./);
+});
+
+test("a skipped round with no option keeps its single original sentence", async (t) => {
+  const { store, deps, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.answer(draft.planId, { skip: true });
+  assert.equal(lastPrompt(deps), "Stop asking questions. Decide the remaining details yourself and reply now with the delivery-contract JSON object.");
+});
+
+test("a resumed session whose ccs session is gone still demands the options", async (t) => {
+  const { store, deps, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
+  t.after(() => store.close());
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: DESIGN_OPTIONS });
+  // A companion restart drops the cache, and the reloaded draft has no live
+  // session id, so the answer round restates the whole opening context.
+  planner.drafts.clear();
+  store.db.prepare("UPDATE plans SET session_id = NULL WHERE plan_id = ?").run(draft.planId);
+  await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
+  const prompt = lastPrompt(deps);
+  assert.match(prompt, /- Screen wireframes: Return a screen wireframe for each new or changed screen\./);
+  assert.match(prompt, /"designArtifacts"/);
+});
+
+test("the reviewer round demands the same options as the round it reviews", async () => {
+  const proposed = envelope('{"tasks":[{"title":"Rough billing","branch":"feature/rough-billing","prompt":"Add it."}]}', "planner-session");
+  const improved = envelope('{"tasks":[{"title":"Reviewed billing","branch":"feature/billing","prompt":"Add billing and verify it."}]}', "review-session");
+  const deps = fakeDeps({ replies: [proposed, improved] });
+  await new WorktreePlanner(deps).start({
+    repositoryId: REPO_ID,
+    goal: "Add billing",
+    specOptions: TEST_OPTIONS,
+    engine: { provider: "claude", model: "default", effort: "default", reviewer: true },
+  });
+  const prompt = lastPrompt(deps);
+  assert.match(prompt, /Critique the proposed delivery contract/);
+  assert.match(prompt, /- Unit tests: Cover the new logic with unit tests\./);
+  assert.match(prompt, /"optionEvidence"/);
+});
+
+test("parsePlannerReply applies the option-aware contract limits", () => {
+  const spec = {
+    outcome: "Ship billing",
+    acceptanceCriteria: [{ id: "AC-1", text: "Billing works", verification: "npm test" }],
+    designArtifacts: [{
+      id: "F1",
+      kind: "flow",
+      title: "Checkout",
+      nodes: Array.from({ length: 24 }, (unused, index) => ({ id: `n${index + 1}`, label: "x".repeat(160), kind: "step" })),
+      edges: Array.from({ length: 23 }, (unused, index) => ({ from: `n${index + 1}`, to: `n${index + 2}`, label: "y".repeat(160) })),
+    }],
+  };
+  const tasks = [{
+    id: "T1", title: "Billing", branch: "feature/billing", prompt: "x".repeat(9_700), type: "feature",
+    criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["server/**"], verification: ["npm test"],
+  }];
+  const reply = envelope(JSON.stringify({ spec, tasks }));
+  // The same reply is fine without the requests and oversized with them, so
+  // the option text is what crosses the brief limit.
+  assert.equal(parsePlannerReply(reply).status, "ready");
+  assert.throws(() => parsePlannerReply(reply, DESIGN_OPTIONS), /oversized brief file/);
+});
+
+test("an option-dependent oversized reply is retried and never stored as ready", async (t) => {
+  const spec = {
+    outcome: "Ship billing",
+    acceptanceCriteria: [{ id: "AC-1", text: "Billing works", verification: "npm test" }],
+    designArtifacts: [{
+      id: "F1",
+      kind: "flow",
+      title: "Checkout",
+      nodes: Array.from({ length: 24 }, (unused, index) => ({ id: `n${index + 1}`, label: "x".repeat(160), kind: "step" })),
+      edges: Array.from({ length: 23 }, (unused, index) => ({ from: `n${index + 1}`, to: `n${index + 2}`, label: "y".repeat(160) })),
+    }],
+  };
+  const tasks = [{
+    id: "T1", title: "Billing", branch: "feature/billing", prompt: "x".repeat(9_700), type: "feature",
+    criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["server/**"], verification: ["npm test"],
+  }];
+  const oversized = envelope(JSON.stringify({ spec, tasks }));
+  const { store, deps, planner } = storedPlanner({ replies: [oversized, oversized] });
+  t.after(() => store.close());
+  await assert.rejects(
+    () => planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: DESIGN_OPTIONS }),
+    /unusable answer\. Try again: Task T1 would produce an oversized brief file/,
+  );
+  // The retry path ran, and no ready plan was written.
+  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 2);
+  assert.equal(store.list()[0].stage, "questions");
+});
+
+test("a task brief carries the enabled instructions, the evidence and every artifact", async () => {
+  const spec = {
+    outcome: "Ship billing",
+    acceptanceCriteria: [{ id: "AC-1", text: "Billing works", verification: "npm test" }],
+    optionEvidence: {
+      unitTests: { status: "planned", rationale: "Covered by the billing suite", taskIds: ["T1"], criterionIds: ["AC-1"] },
+      screenMocks: { status: "planned", rationale: "", taskIds: ["T1"], criterionIds: ["AC-1"] },
+      flowcharts: { status: "not_applicable", rationale: "The goal changes no flow", taskIds: [], criterionIds: [] },
+    },
+    designArtifacts: [
+      { id: "F1", kind: "flow", title: "Checkout", nodes: [{ id: "n1", label: "Open cart", kind: "start" }, { id: "n2", label: "Pay", kind: "end" }], edges: [{ from: "n1", to: "n2", label: "confirms" }] },
+      { id: "S1", kind: "screen", title: "Billing page", elements: [{ id: "e1", label: "Total due", kind: "text", change: "changed" }] },
+    ],
+  };
+  const options = { unitTests: true, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: true, flowcharts: true };
+  const reply = JSON.stringify({
+    spec,
+    tasks: [{ id: "T1", title: "Billing", branch: "feature/billing", prompt: "Add billing.", type: "feature", criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["server/**"], verification: ["npm test"] }],
+  });
+  const deps = launchDeps({ reply });
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: options });
+  await planner.launch(draft.planId);
+  const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
+
+  assert.match(brief, /Requested specification rigor for this goal:/);
+  assert.match(brief, /- Unit tests: Cover the new logic with unit tests\./);
+  assert.match(brief, /- Screen wireframes: Return a screen wireframe for each new or changed screen\./);
+  assert.equal(brief.includes("End-to-end tests:"), false);
+
+  assert.match(brief, /Specification option evidence:/);
+  assert.match(brief, /- unitTests: planned \(tasks T1; criteria AC-1\)/);
+  assert.match(brief, /- flowcharts: not_applicable — The goal changes no flow/);
+
+  assert.match(brief, /Design artifacts:/);
+  assert.match(brief, /Flow F1: Checkout/);
+  assert.match(brief, /- node n1 \(start\): Open cart/);
+  assert.match(brief, /- edge n1 -> n2: confirms/);
+  assert.match(brief, /Screen S1: Billing page/);
+  assert.match(brief, /- changed text e1: Total due/);
+
+  // The rigor block sits after the contract and before the finish steps.
+  assert.ok(brief.indexOf("Delivery contract for this task:") < brief.indexOf("Requested specification rigor"));
+  assert.ok(brief.indexOf("Design artifacts:") < brief.indexOf("Cmux-Goal-Report:"));
+});
+
+test("a task brief with no requested option keeps its original shape", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
+  assert.equal(brief.includes("Requested specification rigor"), false);
+  assert.equal(brief.includes("Specification option evidence"), false);
+  assert.equal(brief.includes("Design artifacts:"), false);
+});
+
 test("normalizes omitted engine fields without coercing invalid input", () => {
   assert.deepEqual(normalizePlannerEngine({ provider: "codex" }), { provider: "codex", model: "default", effort: "default", reviewer: false });
   assert.throws(() => normalizePlannerEngine(null), /must be an object/);

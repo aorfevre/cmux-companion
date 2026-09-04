@@ -497,7 +497,7 @@ export async function buildApp({
   // free to close and the next goal can start at once. The round then streams on
   // its own plan id. The synchronous path stays for callers that want the round.
   app.post("/api/worktree-plans", async (request, reply) => {
-    const goal = { repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, engine: request.body?.engine };
+    const goal = { repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, engine: request.body?.engine, specOptions: request.body?.specOptions };
     if (request.body?.background === true) return reply.code(202).send(await planner.startBackground(goal));
     return reply.code(201).send(await reportRound(request.body?.traceId, (onEvent) => planner.start({ ...goal, onEvent })));
   });
