@@ -104,7 +104,7 @@ describe("goal board matches live cmux evidence", () => {
     advance(waiting);
     expectColumn("Waiting for dev");
 
-    const session = { id: "ws-kanban", title: "E2E-T1-code · Implement fixture", effective: "working" };
+    const session = { id: "ws-kanban", title: "E2E · Kanban lifecycle (kanb) · T1-code · Implement fixture", effective: "working" };
     const developing = plan("goal-kanban", goal, 1, { workspaceIds: [session.id], health: "working", boardState: "dev_in_progress" });
     advance(developing, [healthGoal(developing, [task("T1", "working", session)])], 1);
     expectColumn("Dev in progress");
@@ -120,7 +120,9 @@ describe("goal board matches live cmux evidence", () => {
   });
 
   it("moves a one-task goal from working to blocked on the next local poll", () => {
-    const live = { id: "ws-one", title: "E2E-T1-code · Implement the fixture", effective: "working" };
+    // A goal text long enough to be clipped by the generator's own budget, so
+    // the parser meets a realistic title rather than a short one.
+    const live = { id: "ws-one", title: "E2E · One task lifecycle across the whole boa… (one) · T1-code · Implement the fixture", effective: "working" };
     const source = plan("goal-one", "One task lifecycle", 1, { workspaceIds: [live.id], health: "working" });
     const state: Scenario = { plans: [source], goals: [healthGoal(source, [task("T1", "working", live)])], liveSessions: 1 };
     installScenario(state);
@@ -128,7 +130,7 @@ describe("goal board matches live cmux evidence", () => {
 
     cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", "One task lifecycle");
     cy.findByLabelText("1 live cmux sessions").should("exist");
-    cy.findByLabelText("E2E-T1-code: Implement the fixture").should("exist");
+    cy.findByLabelText("T1-code: Implement the fixture").should("exist");
 
     cy.then(() => {
       state.liveSessions = 0;
@@ -144,8 +146,9 @@ describe("goal board matches live cmux evidence", () => {
   });
 
   it("shows a two-task blocked merge as stuck and opens the real merge workspace", () => {
+    // Another legacy-shape session, kept to prove the two shapes coexist.
     const taskSession = { id: "ws-task", title: "E2E-T1-code · Implement the fixture", effective: "todo" };
-    const mergeSession = { id: "ws-merge", title: "E2E-MERGE · Assemble goal", effective: "todo" };
+    const mergeSession = { id: "ws-merge", title: "E2E · Two task merge lifecycle (two) · MERGE", effective: "todo" };
     const source = plan("goal-two", "Two task merge lifecycle", 2, {
       deliveryStatus: "blocked", deliveryError: "The merge agent stopped before opening the pull request", mergeStatus: "blocked", mergeWorkspaceId: mergeSession.id,
       readyCount: 2, workspaceIds: [taskSession.id, mergeSession.id], health: "failed", healthReason: "The merge agent stopped before opening the pull request", boardState: "blocked", stuckCount: 1,
@@ -173,7 +176,7 @@ describe("goal board matches live cmux evidence", () => {
   });
 
   it("shows the next dependency wave launching automatically after integration", () => {
-    const mergeSession = { id: "ws-wave-merge", title: "E2E-MERGE · Integrate wave 1", effective: "working" };
+    const mergeSession = { id: "ws-wave-merge", title: "E2E · Automatic dependency waves (wave) · MERGE", effective: "working" };
     const source = plan("goal-waves", "Automatic dependency waves", 4, {
       launchedCount: 2, readyCount: 2, deliveryStatus: "assembling", mergeStatus: "running", mergeWorkspaceId: mergeSession.id,
       workspaceIds: [mergeSession.id], health: "working", boardState: "dev_in_progress",
@@ -198,7 +201,10 @@ describe("goal board matches live cmux evidence", () => {
       cy.contains("Agents are working on the launched tasks");
     });
 
-    const waveTwoCodex = { id: "ws-wave-t3", title: "E2E-T3-code · Continue workflow", effective: "working" };
+    const waveTwoCodex = { id: "ws-wave-t3", title: "E2E · Automatic dependency waves (wave) · T3-code · Continue workflow", effective: "working" };
+    // Kept on the legacy leading-prefix shape on purpose. A cmux session is
+    // never renamed, so a board carries both shapes at once during the
+    // migration, and the card must still show a code for this one.
     const waveTwoClaude = { id: "ws-wave-t4", title: "E2E-T4-test · Verify workflow", effective: "working" };
     const advanced = { ...source, launchedCount: 4, deliveryStatus: "implementing", mergeStatus: null, mergeWorkspaceId: null, workspaceIds: [waveTwoCodex.id, waveTwoClaude.id] };
     const activeTasks = [
@@ -218,15 +224,20 @@ describe("goal board matches live cmux evidence", () => {
     cy.findByRole("region", { name: "Dev in progress" }).within(() => {
       cy.contains("Automatic dependency waves");
       cy.findByLabelText("2 of 4 launched tasks ready").should("exist");
-      cy.findByLabelText("E2E-T3-code: Continue workflow").should("exist");
-      cy.findByLabelText("E2E-T4-test: Verify workflow").should("exist");
+      // New shape: the mid-string task-part segment. Legacy shape: the
+      // leading prefix. Neither card falls back to the raw task id (T3 / T4).
+      cy.findByLabelText("T3-code: Continue workflow").should("have.text", "T3-code");
+      cy.findByLabelText("E2E-T4-test: Verify workflow").should("have.text", "E2E-T4-test");
+      // The bare task id is the fallback. Neither card is allowed to show it.
+      cy.findByLabelText("T3: Continue workflow").should("not.exist");
+      cy.findByLabelText("T4: Verify workflow").should("not.exist");
     });
     cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", "Automatic dependency waves");
     cy.findByLabelText("2 live cmux sessions").should("exist");
   });
 
   it("keeps a two-task goal in development while making an agent question visible", () => {
-    const asking = { id: "ws-two", title: "E2E-T2-test · Verify the fixture", effective: "waiting" };
+    const asking = { id: "ws-two", title: "E2E · Two task question lifecycle (ques) · T2-test · Verify the fixture", effective: "waiting" };
     const source = plan("goal-question", "Two task question lifecycle", 2, { readyCount: 1, workspaceIds: [asking.id], health: "needs_you" });
     const tasks = [task("T1", "ready", null), task("T2", "needs_you", asking)];
     const state = { plans: [source], goals: [healthGoal(source, tasks)], liveSessions: 1 };
