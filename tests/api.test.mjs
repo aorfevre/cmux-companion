@@ -652,6 +652,7 @@ function fakePlanner() {
     detail: async (planId) => { calls.push(["detail", planId]); return { ...draft, events: [{ round: 0, kind: "goal", payload: { goal: "Add billing" }, createdAt: "2026-09-01T00:00:00.000Z" }] }; },
     resume: async (planId) => { calls.push(["resume", planId]); return draft; },
     remove: async (planId) => { calls.push(["remove", planId]); return { planId, deleted: true }; },
+    launchBackground: async (planId) => { calls.push(["launchBackground", planId]); return { planId, launching: true }; },
     startBackground: async (options) => { calls.push(["startBackground", options]); return { ...draft, round: 0, status: "questions", tasks: [], running: true }; },
     answerBackground: async (planId, options) => { calls.push(["answerBackground", planId, options]); return { ...draft, running: true }; },
     run: async (planId) => { calls.push(["run", planId]); return { ...draft, round: 0, running: true }; },
@@ -805,6 +806,41 @@ test("drives a worktree plan from goal to launch", async (t) => {
   assert.equal(launched.json().base, "origin/main");
   assert.equal(launched.json().launched, 1);
   assert.deepEqual(planner.calls.map((call) => call[0]), ["start", "answer", "answer", "update", "launch"]);
+});
+
+// The launch route answers 202 without waiting for a worktree, and the caches
+// it used to clear are cleared by the planner's settled hook instead.
+test("answers a background launch with 202 and leaves the caches to the settled hook", async (t) => {
+  const planner = fakePlanner();
+  let settled = null;
+  planner.launchBackground = async (planId) => {
+    planner.calls.push(["launchBackground", planId]);
+    settled = planner.onLaunchSettled;
+    return { planId, launching: true };
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/launch", headers, payload: { background: true } });
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(response.json(), { planId: "plan-1", launching: true });
+  assert.deepEqual(planner.calls.map((call) => call[0]), ["launchBackground"]);
+  // The app owns the invalidation, and it hands it to the planner rather than
+  // running it when the 202 is sent.
+  assert.equal(typeof settled, "function");
+  assert.doesNotThrow(() => settled("plan-1"));
+});
+
+test("still launches a plan synchronously when no background flag is sent", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/launch", headers, payload: { background: false } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().launched, 1);
+  assert.deepEqual(planner.calls.map((call) => call[0]), ["launch"]);
 });
 
 test("builds the single combined pull request through the goal integrator", async (t) => {

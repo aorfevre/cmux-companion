@@ -151,6 +151,14 @@ export async function buildApp({
   let bootstrapPending = null;
   let inboxSnapshot = null;
   let inboxPending = null;
+  // A background launch creates the worktrees after its request has ended, so
+  // the dashboard caches only go stale once that launch settles. The hook is
+  // assigned rather than passed to the constructor, so an injected planner gets
+  // it too, and it is declared here because it closes over the caches above.
+  planner.onLaunchSettled = () => {
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+  };
   // The sweep answers when asked. This asks, on a timer, and pushes once when a
   // goal's health gets worse — so a dead agent reaches the user instead of
   // waiting to be noticed. It moves no goal: every recovery stays explicit.
@@ -566,7 +574,13 @@ export async function buildApp({
     planner.update(request.params.planId, { tasks: request.body?.tasks })
   ));
 
-  app.post("/api/worktree-plans/:planId/launch", async (request) => {
+  // A launch creates a worktree and a cmux session per task, which takes long
+  // enough that the sheet used to sit on a blocking screen. The background
+  // branch answers 202 as soon as the launch is registered and reports the
+  // outcome by push notification. The caches are invalidated by the settled
+  // hook above, because nothing exists to invalidate when the 202 is sent.
+  app.post("/api/worktree-plans/:planId/launch", async (request, reply) => {
+    if (request.body?.background === true) return reply.code(202).send(await planner.launchBackground(request.params.planId));
     const result = await planner.launch(request.params.planId);
     bootstrapSnapshot = null;
     worktrees.invalidate();
