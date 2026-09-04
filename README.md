@@ -98,6 +98,41 @@ Worktrees Beta discovers Git's registered worktrees for the configured repositor
 
 **Plan a goal** on a repository sends one goal to a read-only headless planner. The planner may ask clarifying questions first; answer them, or skip and keep its assumptions visible. A ready plan is a Delivery Contract: outcome, scope and non-goals, constraints, assumptions, risks, observable acceptance criteria, task ownership, expected verification, and explicit dependencies. The Goal Passport shows that contract, readiness warnings, workflow waves, and criterion evidence before and after launch. You can still switch a task's agent, edit it, reject the split with written feedback, or drop it before confirming.
 
+### Spec depth
+
+**Spec depth** on the Plan a goal sheet holds six independent requests. All six are off by default. Each request you enable becomes a written requirement in every planning round and in every task brief. The six are:
+
+- **Unit tests** — cover the new logic with unit tests.
+- **End-to-end tests** — cover the user-visible flow with end-to-end tests.
+- **Edge cases** — name the edge cases and cover each one.
+- **Refactor review** — add a refactor task that reviews and cleans the touched code.
+- **Screen wireframes** — return a screen wireframe for each new or changed screen.
+- **Flowcharts** — return a flowchart for each new or changed flow.
+
+A request is not a keyword search over the plan text. The planner must record structured evidence for each enabled request: a status, a rationale, the task ids and the acceptance criterion ids that carry it. Companion then derives one status per request from that evidence and from the contract itself.
+
+**Planner Effort** is the existing extended-thinking control. It stays the only control for reasoning depth. Effort accepts Default, Low, Medium, High and Xhigh. Default sends no effort flag to the CLI; any other value is passed as `--effort`. Spec depth adds no second reasoning toggle, on purpose: the six requests state what the plan must contain, and Effort states how hard the planner thinks about it.
+
+### Coverage states
+
+The Goal Passport shows one line for each request you enabled. A request you left off is absent from the list, rather than reported as clean. Each line carries one of three states:
+
+1. **Covered** — the evidence names at least one real task id and at least one real acceptance criterion id from the same contract. A covered **Refactor review** must also name a task whose type is `refactor`. A covered **Screen wireframes** must carry a screen artifact, and a covered **Flowcharts** must carry a flow artifact.
+2. **Not applicable** — the planner declared the request does not apply and gave a rationale. The rationale is shown in place of the task and criterion links.
+3. **Missing** — the request was made and the evidence does not hold up. The line states why: no evidence entry, a not-applicable entry with no rationale, no known task, no known acceptance criterion, no refactor-type task, or no artifact of the required kind.
+
+Missing coverage is a readiness warning, not an error. It does not block the launch. A plan can read **Ready to code** and still warn that one requested kind of coverage is missing, so you decide whether to launch, ask another round, or reject the split.
+
+### Design artifacts
+
+**Screen wireframes** and **Flowcharts** ask the planner to return structured design artifacts with the contract. They are text descriptions of structure. They are not generated screenshots, not images, and not running UI.
+
+A flow artifact is a list of nodes and a list of edges. Each node has a label and one kind: `start`, `step`, `decision` or `end`. Each edge names a source node, a target node and an optional label. Companion computes the layout from the edges alone, so the same artifact always draws the same picture. An edge whose source or target is unknown is dropped rather than re-targeted.
+
+A screen artifact is a list of elements. Each element has a label, one kind of `header`, `text`, `input`, `button`, `list`, `image` or `note`, and one change marker. The contract keeps `new`, `changed` and `unchanged`; the passport renders those as **Added**, **Changed** and **Unchanged**, and also labels a `removed` marker as **Removed**.
+
+Every string in an artifact comes from a model, so all of it is capped and treated as untrusted text. One contract keeps at most 6 artifacts. One flow keeps at most 24 nodes and 40 edges. One screen keeps at most 24 elements. A title is cut at 200 characters, a node, edge or element label at 160 characters, and an evidence rationale at 500 characters. All retained artifact text shares one aggregate budget of 16000 characters; text beyond that budget is dropped, and the rest of the plan stays readable. Artifact text reaches the page as React children only. No artifact supplies a link, a style, a coordinate or any raw HTML.
+
 Tasks with no dependencies launch together from the freshly fetched default remote branch. Dependent tasks wait. Once a wave is clean, pushed, and carries valid completion evidence, the merge agent composes its pinned commits on the goal branch; Companion then creates the next wave's worktrees from that exact integrated commit. Downstream agents therefore see their dependencies without duplicating their work.
 
 **GitHub Issues** loads up to 100 open tickets from the repository selected by the local checkout's `origin`, then asks an isolated Claude analyzer to group every ticket exactly once into delivery-sized master topics. Select the topics to deliver, answer topic-level clarifications, and create the saved goal plans. Any repository-planner follow-up questions stay in the same sheet. Once every selected plan is ready, one action launches all topic worktrees; their agents then run in parallel.
@@ -108,7 +143,7 @@ This workflow requires the GitHub CLI to be authenticated for the repository (`g
 
 A planner round is bounded by silence, not by total time. Reading a large repository for a long goal is legitimate work, so the round is killed only after four minutes with no output, or at a thirty-minute ceiling. Whichever limit fires is stored on the plan, so a sheet reopened later names the real reason instead of guessing.
 
-Every step is written to a local SQLite database at `~/.config/cmux-companion/goal-plans.db`, which the companion creates with mode 0600. It holds the goal, planner session, contract and readiness result, question rounds, answers, workflow tasks, edits, launch state, completion reports, changed files, ownership warnings, and integration evidence. A plan therefore survives a companion restart and an interrupted question round: reload it, and the next answer resumes the same planner session instead of starting the goal again.
+Every step is written to a local SQLite database at `~/.config/cmux-companion/goal-plans.db`, which the companion creates with mode 0600. It holds the goal, planner session, engine choice, the six Spec depth requests, contract and readiness result, option evidence, design artifacts, question rounds, answers, workflow tasks, edits, launch state, completion reports, changed files, ownership warnings, and integration evidence. A plan therefore survives a companion restart and an interrupted question round: reload it, and the next answer resumes the same planner session instead of starting the goal again.
 
 The Worktrees view surfaces those saved plans beside the repository filters. **Draft Goals** collects resumable plans and **Launched Goals** keeps a read-only launch history for the selected Karven or Rekord project group. Each card opens the exact saved plan and can delete it after confirmation.
 
@@ -236,7 +271,9 @@ open, or GitHub knows no pull request for its branch.
 The Cypress suite is intentionally excluded from `npm test`, `npm run verify`,
 and CI. It starts an isolated frontend on port 3221 and stubs the application
 API with one- and two-task goal fixtures, including a task that dies, an agent
-waiting for input, and a blocked merge whose cmux workspace remains open:
+waiting for input, a blocked merge whose cmux workspace remains open, and a
+spec-rigor goal that submits its six requests and renders their coverage
+evidence:
 
 ```bash
 npm run test:e2e:local
