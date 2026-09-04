@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { realpath } from "node:fs/promises";
+import { lstat, readdir, realpath, rmdir } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { normalizePullRequest, parsePorcelainV2 } from "./repo-catalog.mjs";
 import { RepositoryArchive } from "./repository-archive.mjs";
 import { RepositoryFavorites } from "./repository-favorites.mjs";
+import { WORKTREE_REASONS, worktreeStateError } from "./worktree-errors.mjs";
 
 const STATUS_PRIORITY = { ready: 0, done: 1, working: 2, attention: 3 };
 
@@ -534,7 +535,10 @@ export class WorktreeDashboard {
       await this.repoCatalog.git(target.repositoryPath, ["worktree", "remove", "--force", target.path], { timeout: 120_000 });
     } catch (cause) {
       const detail = gitErrorDetail(cause);
-      throw new TypeError(detail ? `Git could not remove this worktree: ${detail}` : "Git could not remove this worktree");
+      throw worktreeStateError(
+        detail ? `Git could not remove this worktree: ${detail}` : "Git could not remove this worktree",
+        WORKTREE_REASONS.REMOVE_FAILURE,
+      );
     }
   }
 
@@ -549,10 +553,17 @@ export class WorktreeDashboard {
   //
   // A missing worktree is success, not an error: the restart wants the path
   // gone, and a task that never created one is already in that state.
-  async removeBranchWorktree(repositoryId, branch) {
+  async removeBranchWorktree(repositoryId, branch, options) {
     if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
     const name = normalizedGitInput(branch, "A branch name is required");
-    const dashboard = await this.snapshot({ refresh: true });
+    // Keep the historical two-argument call working until every planner caller
+    // supplies inventory metadata. Once an options object is present, absence
+    // of an explicit successful inventory is unknown and therefore unsafe.
+    const legacyCall = options === undefined;
+    const workspaces = Array.isArray(options?.workspaces) ? options.workspaces : [];
+    const workspacesAvailable = legacyCall ? true : workspaceInventoryIsAvailable(options);
+    const allowedWorkspaceIds = new Set(options?.allowedWorkspaceIds || options?.allowedWorkspaces || []);
+    const dashboard = await this.snapshot({ workspaces, refresh: true });
     // Plans store the dashboard repository id, which is derived from Git's
     // common directory so every linked worktree shares one identity. The raw
     // catalog uses a different, path-derived id. Looking this id up through the
@@ -563,9 +574,23 @@ export class WorktreeDashboard {
     if (worktree) {
       // A managed release checkout is never a task worktree, and removing one
       // would break the updater. The name match alone must not reach it.
-      if (worktree.managedRelease) throw new TypeError("That branch belongs to a companion release");
+      if (worktree.managedRelease) throw worktreeStateError("That branch belongs to a companion release", WORKTREE_REASONS.MANAGED_RELEASE);
       const target = this.targets.get(worktree.id);
-      if (!target) throw new TypeError("That worktree could not be inspected");
+      if (!target) throw worktreeStateError("That worktree could not be inspected", WORKTREE_REASONS.UNINSPECTABLE_WORKTREE);
+      if (!workspacesAvailable) {
+        throw worktreeStateError("That worktree cannot be removed while cmux sessions are unavailable", WORKTREE_REASONS.SESSIONS_UNAVAILABLE);
+      }
+      const blocking = workspaces.find((workspace) => {
+        const directory = workspaceDirectory(workspace);
+        return directory && isInside(worktree.path, directory) && !allowedWorkspaceIds.has(workspace.id);
+      });
+      if (blocking) {
+        const title = typeof blocking.title === "string" && blocking.title.trim() ? blocking.title.trim() : "Untitled workspace";
+        throw worktreeStateError(
+          `Close workspace ${blocking.id} (${title}) before removing this task worktree`,
+          WORKTREE_REASONS.RUNNING_SESSION,
+        );
+      }
       await this.runWorktreeRemoval(target);
     }
     // `-D`, not `-d`: the whole point is to drop commits no base contains.
@@ -576,7 +601,18 @@ export class WorktreeDashboard {
     return { removed: Boolean(worktree), branch: name, path: worktree?.path || null };
   }
 
-  async create(repositoryId, { branch, base, reuseIfAtBase = false, workspaces = [] } = {}) {
+  async create(repositoryId, options = {}) {
+    const {
+      branch,
+      base,
+      reuseIfAtBase = false,
+      workspaces = [],
+    } = options;
+    const workspacesAvailable = workspaceInventoryIsAvailable(options, true);
+    const requireFreshAtBase = options.requireFreshAtBase === true
+      || options.requireFreshBranch === true
+      || options.requireFreshBranchAtBase === true
+      || options.requireBranchAtBase === true;
     if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
     const branchName = normalizedGitInput(branch, "Enter a branch name");
     const dashboard = await this.snapshot({ workspaces, refresh: true });
@@ -592,17 +628,22 @@ export class WorktreeDashboard {
     const primary = repository.worktrees.find((item) => item.isPrimary) || repository.worktrees[0];
     const baseRef = normalizedGitInput(base || primary?.branch || "HEAD", "Enter a base revision");
     const existing = repository.worktrees.find((item) => item.branch === branchName);
+    let retiredExisting = null;
     if (existing) {
-      if (reuseIfAtBase !== true) throw new TypeError("That branch already has a worktree");
-      const reused = await this.reuseWorktree(existing, repository, baseRef);
+      if (reuseIfAtBase !== true) throw worktreeStateError("That branch already has a worktree", WORKTREE_REASONS.REGISTERED_WORKTREE);
+      const reused = await this.reuseWorktree(existing, repository, baseRef, { workspacesAvailable });
       // A null result means the leftover was behind the base and held nothing
       // of its own, so reuseWorktree removed it. Fall through and build it
       // again from the current base.
       if (reused) return reused;
+      retiredExisting = existing;
     }
 
     const branchExists = await this.repoCatalog.git(repository.path, ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`])
       .then(() => true, () => false);
+    if (branchExists && requireFreshAtBase) {
+      throw worktreeStateError("That branch already exists locally", WORKTREE_REASONS.BRANCH_EXISTS);
+    }
     if (!branchExists) {
       try {
         await this.repoCatalog.git(repository.path, ["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`]);
@@ -611,23 +652,81 @@ export class WorktreeDashboard {
       }
     }
 
-    const targetPath = worktreePath(repository.path, branchName);
+    const targetPath = await resolveWorktreeAcquisitionPath(repository.path, branchName, [
+      ...repository.worktrees,
+      ...repository.releases,
+    ].filter((item) => item !== retiredExisting));
     const args = branchExists
       ? ["worktree", "add", targetPath, branchName]
       : ["worktree", "add", "-b", branchName, targetPath, baseRef];
     try {
       await this.repoCatalog.git(repository.path, args, { timeout: 120_000 });
     } catch (cause) {
-      const detail = gitErrorDetail(cause);
-      throw new TypeError(detail ? `Git could not create this worktree: ${detail}` : "Git could not create this worktree");
+      if (!isAlreadyExistsForTarget(cause, targetPath)) throw worktreeAddError(cause, targetPath);
+      const recovered = await this.recoverAlreadyExistsRace({
+        repository,
+        branchName,
+        baseRef,
+        args,
+        targetPath,
+        reuseIfAtBase,
+        workspaces,
+        workspacesAvailable,
+        originalError: cause,
+      });
+      if (recovered) return recovered;
     }
 
     if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     const refreshed = await this.snapshot({ refresh: true });
     const created = refreshed.repositories.flatMap((item) => item.worktrees).find((item) => item.path === targetPath);
-    if (!created) throw new TypeError("The worktree was created but could not be loaded");
+    if (!created) throw worktreeStateError("The worktree was created but could not be loaded", WORKTREE_REASONS.CREATED_NOT_LOADABLE);
     return { created: true, reused: false, worktree: created, branchCreated: !branchExists };
+  }
+
+  async recoverAlreadyExistsRace({ repository, branchName, baseRef, args, targetPath, reuseIfAtBase, workspaces, workspacesAvailable, originalError }) {
+    try {
+      await this.repoCatalog.git(repository.path, ["worktree", "prune"]);
+    } catch {
+      throw worktreeAddError(originalError, targetPath);
+    }
+
+    let records;
+    try {
+      records = parseWorktreeList(await this.repoCatalog.git(repository.path, ["worktree", "list", "--porcelain", "-z"]));
+    } catch {
+      // Without a trustworthy repository inventory, neither the path nor the
+      // branch can be classified safely. Preserve the original refusal.
+      throw worktreeAddError(originalError, targetPath);
+    }
+
+    const registeredBranch = records.find((record) => record.branch === branchName);
+    if (registeredBranch) {
+      this.invalidate();
+      const refreshed = await this.snapshot({ workspaces, refresh: true });
+      const refreshedRepository = refreshed.repositories.find((item) => item.id === repository.id);
+      const existing = refreshedRepository?.worktrees.find((item) => item.branch === branchName);
+      if (!existing) {
+        throw worktreeStateError("That worktree could not be inspected", WORKTREE_REASONS.UNINSPECTABLE_WORKTREE);
+      }
+      if (reuseIfAtBase !== true) {
+        throw worktreeStateError("That branch already has a worktree", WORKTREE_REASONS.REGISTERED_WORKTREE);
+      }
+      const reused = await this.reuseWorktree(existing, refreshedRepository, baseRef, { workspacesAvailable });
+      if (reused) return reused;
+    } else if (records.some((record) => resolve(record.path) === resolve(targetPath))) {
+      throw worktreeAddError(originalError, targetPath);
+    } else if (!await removeEmptyUnownedDirectory(targetPath, { workspaces, workspacesAvailable })) {
+      throw worktreeAddError(originalError, targetPath);
+    }
+
+    try {
+      await this.repoCatalog.git(repository.path, args, { timeout: 120_000 });
+    } catch (cause) {
+      throw worktreeAddError(cause, targetPath);
+    }
+    return null;
   }
 
   // A launch makes a worktree and then opens a session in it. When the session
@@ -642,23 +741,24 @@ export class WorktreeDashboard {
   //     caller builds it again from the current base.
   // Anything with work in it still fails, because recycling one under a new
   // agent would bury changes the user cannot see.
-  async reuseWorktree(worktree, repository, baseRef) {
-    const refuse = (reason) => { throw new TypeError(`That branch already has a worktree ${reason}`); };
-    if (worktree.isPrimary) refuse("that is the main checkout");
-    if (worktree.managedRelease) refuse("that belongs to a companion release");
-    if (worktree.locked) refuse("that Git has locked");
-    if (worktree.detached) refuse("with a detached HEAD");
-    if (worktree.sessions.length > 0) refuse("with a running session");
-    if (worktree.changedFiles > 0) refuse("with uncommitted changes");
+  async reuseWorktree(worktree, repository, baseRef, { workspacesAvailable = true } = {}) {
+    const refuse = (message, reason) => { throw worktreeStateError(`That branch already has a worktree ${message}`, reason); };
+    if (worktree.isPrimary) refuse("that is the main checkout", WORKTREE_REASONS.PRIMARY);
+    if (worktree.managedRelease) refuse("that belongs to a companion release", WORKTREE_REASONS.MANAGED_RELEASE);
+    if (worktree.locked) refuse("that Git has locked", WORKTREE_REASONS.LOCKED);
+    if (worktree.detached) refuse("with a detached HEAD", WORKTREE_REASONS.DETACHED);
+    if (!workspacesAvailable) refuse("whose sessions could not be checked", WORKTREE_REASONS.SESSIONS_UNAVAILABLE);
+    if (worktree.sessions.length > 0) refuse("with a running session", WORKTREE_REASONS.RUNNING_SESSION);
+    if (worktree.changedFiles > 0) refuse("with uncommitted changes", WORKTREE_REASONS.UNCOMMITTED_CHANGES);
 
     const target = this.targets.get(worktree.id);
-    if (!target) refuse("that could not be inspected");
+    if (!target) refuse("that could not be inspected", WORKTREE_REASONS.UNINSPECTABLE_WORKTREE);
     // The snapshot is a moment old. Read the working tree again, so a file
     // written since then still blocks the recovery.
     try {
       await this.assertStillClean(worktree, target);
     } catch {
-      refuse("with uncommitted changes");
+      refuse("with uncommitted changes", WORKTREE_REASONS.UNCOMMITTED_CHANGES);
     }
 
     const [baseSha, headSha] = await Promise.all([
@@ -666,7 +766,7 @@ export class WorktreeDashboard {
       this.repoCatalog.git(worktree.path, ["rev-parse", "HEAD"]).then((output) => String(output).trim(), () => ""),
     ]);
     if (!baseSha) throw new TypeError("The base revision does not exist");
-    if (!headSha) refuse("whose commit could not be read");
+    if (!headSha) refuse("whose commit could not be read", WORKTREE_REASONS.UNREADABLE_COMMIT);
     if (headSha === baseSha) return { created: false, reused: true, worktree, branchCreated: false };
 
     // The base moved on, most often because the branch this plan waited for
@@ -674,7 +774,7 @@ export class WorktreeDashboard {
     // own, which `--is-ancestor` proves.
     const contained = await this.repoCatalog.git(repository.path, ["merge-base", "--is-ancestor", headSha, baseSha])
       .then(() => true, () => false);
-    if (!contained) refuse(`holding commits that ${baseRef} does not contain`);
+    if (!contained) refuse(`holding commits that ${baseRef} does not contain`, WORKTREE_REASONS.FOREIGN_COMMITS);
 
     await this.runWorktreeRemoval(target);
     // The branch still points at the old commit. Left in place, `worktree add`
@@ -805,8 +905,87 @@ function normalizedGitInput(value, missingMessage) {
 }
 
 export function worktreePath(repositoryPath, branch) {
-  const slug = String(branch).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 72) || "worktree";
+  const slug = worktreeSlug(branch);
   return resolve(dirname(repositoryPath), `${basename(repositoryPath)}-${slug}`);
+}
+
+// Resolve before invoking Git so ordinary branch-name normalization collisions
+// and unrelated filesystem occupants never become destructive cleanup cases.
+// The natural legacy path remains first for every non-colliding branch.
+export async function resolveWorktreeAcquisitionPath(repositoryPath, branch, registeredWorktrees = []) {
+  const naturalPath = worktreePath(repositoryPath, branch);
+  const existing = (registeredWorktrees || []).find((item) => item?.path && item.branch === branch);
+  if (existing) return resolve(existing.path);
+  const registered = (registeredWorktrees || []).filter((item) => item?.path);
+  const naturalCollision = registered.some((item) => (
+    item.branch
+    && item.branch !== branch
+    && worktreePath(repositoryPath, item.branch) === naturalPath
+  ));
+  if (!naturalCollision && await pathIsAvailable(naturalPath, registered)) return naturalPath;
+
+  const suffix = createHash("sha256").update(String(branch)).digest("hex").slice(0, 10);
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const candidate = `${naturalPath}-${suffix}${attempt === 0 ? "" : `-${attempt + 1}`}`;
+    if (await pathIsAvailable(candidate, registered)) return candidate;
+  }
+  throw worktreeStateError(
+    "Git could not create this worktree: every deterministic target path is occupied",
+    WORKTREE_REASONS.PATH_OCCUPIED,
+  );
+}
+
+function worktreeSlug(branch) {
+  return String(branch).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 72) || "worktree";
+}
+
+async function pathIsAvailable(path, registeredWorktrees) {
+  if (registeredWorktrees.some((item) => resolve(item.path) === resolve(path))) return false;
+  return lstat(path).then(() => false, (cause) => cause?.code === "ENOENT" ? true : false);
+}
+
+function workspaceInventoryIsAvailable(options, legacyDefault = false) {
+  for (const key of ["workspacesAvailable", "workspaceInventoryAvailable", "sessionsAvailable"]) {
+    if (options && Object.hasOwn(options, key)) return options[key] === true;
+  }
+  return legacyDefault;
+}
+
+async function removeEmptyUnownedDirectory(path, { workspaces, workspacesAvailable }) {
+  if (!workspacesAvailable) return false;
+  const first = await lstat(path).catch(() => null);
+  if (!first?.isDirectory() || first.isSymbolicLink()) return false;
+  if ((await readdir(path).catch(() => null))?.length !== 0) return false;
+  if ((workspaces || []).some((workspace) => {
+    const directory = workspaceDirectory(workspace);
+    return directory && isInside(path, directory);
+  })) return false;
+
+  // Repeat both identity and emptiness checks immediately before rmdir. If an
+  // actor replaced or populated the directory in between, leave it untouched.
+  const second = await lstat(path).catch(() => null);
+  if (!second?.isDirectory() || second.isSymbolicLink() || second.dev !== first.dev || second.ino !== first.ino) return false;
+  if ((await readdir(path).catch(() => null))?.length !== 0) return false;
+  try {
+    await rmdir(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isAlreadyExistsForTarget(cause, targetPath) {
+  const stderr = typeof cause?.stderr === "string" ? cause.stderr : "";
+  return stderr.includes(`fatal: '${targetPath}' already exists`)
+    || stderr.includes(`fatal: "${targetPath}" already exists`);
+}
+
+function worktreeAddError(cause, targetPath) {
+  const detail = gitErrorDetail(cause);
+  return worktreeStateError(
+    detail ? `Git could not create this worktree: ${detail}` : "Git could not create this worktree",
+    isAlreadyExistsForTarget(cause, targetPath) ? WORKTREE_REASONS.PATH_OCCUPIED : WORKTREE_REASONS.ADD_FAILURE,
+  );
 }
 
 function gitErrorDetail(cause) {

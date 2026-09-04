@@ -10,6 +10,7 @@ import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
 import { capturePreview } from "./preview-capture.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import { WorktreeDashboard } from "./worktree-dashboard.mjs";
+import { isWorktreeReason } from "./worktree-errors.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
@@ -197,7 +198,11 @@ export async function buildApp({
   app.setErrorHandler((error, request, reply) => {
     request.log?.error?.(error);
     if (error instanceof TypeError) {
-      return reply.code(400).send({ error: error.message, code: "INVALID_REQUEST" });
+      return reply.code(400).send({
+        error: error.message,
+        code: "INVALID_REQUEST",
+        ...(isWorktreeReason(error.reason) ? { reason: error.reason } : {}),
+      });
     }
     if (error instanceof CmuxCommandError) {
       return reply.code(503).send({ error: "cmux is not available yet", code: "CMUX_UNAVAILABLE" });
@@ -424,7 +429,12 @@ export async function buildApp({
   });
 
   app.post("/api/worktree-dashboard/repositories/:id/worktrees", async (request, reply) => {
-    const created = await worktrees.create(request.params.id, request.body || {});
+    const bootstrap = await loadBootstrap();
+    const created = await worktrees.create(request.params.id, {
+      ...(request.body || {}),
+      workspaces: bootstrap.workspaces,
+      workspacesAvailable: bootstrap.connected === true,
+    });
     return reply.code(201).send(created);
   });
 
