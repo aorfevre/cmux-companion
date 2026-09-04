@@ -8,7 +8,7 @@ import { GoalBoardStateId, GoalHealth, goalPrLink, PlanSummary, terminalStatus, 
 import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../server/goal-board.mjs";
 // The GitHub Issues column shares its identity with the server, exactly like
 // the goal columns above. One label, one id, one empty hint, in one file.
-import { GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_HINT, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, isGithubIssueStarted } from "../server/github-issue-board.mjs";
+import { GITHUB_ISSUE_ALL_STARTED_HINT, GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_HINT, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, visibleGithubIssues } from "../server/github-issue-board.mjs";
 import { GitHubIssuePlannerSheet } from "./github-issue-planner";
 // The quota countdown already exists on the licence page. Reusing it keeps one
 // reset time from reading two different ways on two screens.
@@ -664,7 +664,16 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     // A person types either `42` or `#42`; both name the same issue.
     return String(number).includes(query) || `#${number}`.includes(query);
   };
-  const visibleIssueCards = issueCards.filter(issueMatchesQuery);
+  // A started issue is already on the board as its goal card, so it leaves the
+  // issue column. The plan ids come from the UNSCOPED goal list: picking one
+  // project must narrow the goal columns, never make a started issue reappear
+  // in the issue column beside them.
+  const knownPlanIds = new Set(goalPlans.map((plan) => plan.planId));
+  // The goal filter runs first, so a search can only narrow what is already on
+  // the board. The header count and the "No issue matches" fallback both read
+  // this array, never the raw `issueCards`.
+  const unstartedIssueCards = visibleGithubIssues(issueCards, knownPlanIds) as GitHubIssueCard[];
+  const visibleIssueCards = unstartedIssueCards.filter(issueMatchesQuery);
   const visiblePlans = !isGoalView ? []
     : isBoardView ? projectPlans.filter(planMatchesQuery)
       : projectPlans.filter((plan) => plan.status === (dashboardFilter === "draft-goals" ? "draft" : "launched")).filter(planMatchesQuery);
@@ -768,11 +777,13 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
             number and the cards can never disagree. */}
         <header><h3 id={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>{GITHUB_ISSUE_COLUMN.label}</h3><b aria-label={`${visibleIssueCards.length} issue${visibleIssueCards.length === 1 ? "" : "s"} in ${GITHUB_ISSUE_COLUMN.label}`}>{visibleIssueCards.length}</b><p>{GITHUB_ISSUE_COLUMN.description}</p></header>
         {visibleIssueCards.length === 0
-          ? (issueCards.length > 0
+          ? (unstartedIssueCards.length > 0
             // The column is empty because of the search, not because of the
             // sync. It says which, and offers the way back.
             ? <div className="goal-board-empty filtered-empty"><strong>No issue matches “{search.trim()}”</strong><button type="button" className="text-button" onClick={() => setSearch("")}>Clear search</button></div>
-            : <p className="goal-board-empty">{GITHUB_ISSUE_EMPTY_HINT}</p>)
+            // Nothing was hidden by the search. Either nothing was synced, or
+            // every synced issue already became a goal; those read differently.
+            : <p className="goal-board-empty">{issueCards.length > 0 ? GITHUB_ISSUE_ALL_STARTED_HINT : GITHUB_ISSUE_EMPTY_HINT}</p>)
           : <ul className="goal-board-cards" aria-label={`${GITHUB_ISSUE_COLUMN.label} cards`}>{visibleIssueCards.map((issue) => <li key={githubIssueCardId(issue)}><GitHubIssueBoardCard
               issue={issue}
               starting={boardBusy[githubIssueCardId(issue)] === true}
@@ -821,17 +832,15 @@ function goalOpenLabel(plan: PlanSummary) {
 // can write, so it is rendered as text children only: never through
 // dangerouslySetInnerHTML, and never as an instruction to an agent.
 function GitHubIssueBoardCard({ issue, starting, onStart }: { issue: GitHubIssueCard; starting: boolean; onStart: () => void }) {
-  const started = isGithubIssueStarted(issue);
   return <article className="goal-board-card github-issue-card">
     <div className="github-issue-head"><span className="github-issue-repository">{issue.repositoryName}</span><b className="github-issue-number">#{issue.number}</b></div>
     <strong>{issue.title}</strong>
     {issue.labels.length > 0 && <p className="github-issue-labels" aria-label={`Labels for issue #${issue.number}`}>{issue.labels.map((label) => <span key={label}>{label}</span>)}</p>}
     {issue.url && <a className="github-issue-link" href={issue.url} target="_blank" rel="noreferrer">{`Open #${issue.number} on GitHub`}</a>}
-    <footer>{started
-      // A started issue offers no second start. The card links to the goal it
-      // already created instead, so the same issue is never planned twice.
-      ? <a className="github-issue-started" href={`?plan=${encodeURIComponent(String(issue.planId))}`}>{`Goal started for #${issue.number}`}</a>
-      : <button type="button" className="github-issue-start" aria-label={`Start a goal for #${issue.number} ${issue.title}`} disabled={starting} onClick={onStart}>{starting ? "Starting a goal…" : "Start a goal"}</button>}</footer>
+    {/* Only an issue with no goal on the board reaches this card, so the card
+        always offers a start. A started issue is filtered out of the column
+        upstream, not shown here in a second state. */}
+    <footer><button type="button" className="github-issue-start" aria-label={`Start a goal for #${issue.number} ${issue.title}`} disabled={starting} onClick={onStart}>{starting ? "Starting a goal…" : "Start a goal"}</button></footer>
   </article>;
 }
 
