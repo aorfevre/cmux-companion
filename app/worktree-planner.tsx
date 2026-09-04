@@ -1,19 +1,29 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { PLANNER_ENGINES, reviewerEngine } from "../server/worktree-planner-options.mjs";
+import { PLANNER_ENGINES, reviewerEngine, SPEC_OPTIONS } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 // One shared predicate: two copies had already drifted, so the sheet read
 // "1 of 2 ready" while the group read 1/1.
 import { readyCount } from "../server/delivery-contract.mjs";
 import { PromptDisclosure } from "./prompt-markdown";
+import { DesignArtifacts, DesignArtifact } from "./spec-artifacts";
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
 export type CompletionReport = { criteria: string[]; verification: { check: string; status: "passed" | "failed" | "not_run" }[]; limitations: string[] };
 export type PlanCriterion = { id: string; text: string; verification: string };
-export type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[] };
-export type PlanReadiness = { ready: boolean; errors: string[]; warnings: string[]; waves: string[][]; coverage: { criterionId: string; taskIds: string[] }[] };
+// The six specification-rigor requests. The keys and their order come from
+// SPEC_OPTIONS, so the sheet cannot offer a request the server refuses.
+export type SpecOptionId = "unitTests" | "e2eTests" | "edgeCases" | "refactorPass" | "screenMocks" | "flowcharts";
+export type SpecOptions = Record<SpecOptionId, boolean>;
+export type SpecOptionCatalogEntry = { id: SpecOptionId; label: string; hint: string };
+export type PlanOptionEvidence = { status: "planned" | "not_applicable"; rationale: string; taskIds: string[]; criterionIds: string[] };
+// The server derives this. The sheet only displays it, so a status here is
+// never re-computed from readiness warning prose.
+export type PlanOptionCoverage = { id: SpecOptionId; requested: boolean; status: "not_requested" | "covered" | "not_applicable" | "missing"; message: string };
+export type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[]; optionEvidence?: Partial<Record<SpecOptionId, PlanOptionEvidence>>; designArtifacts?: DesignArtifact[] };
+export type PlanReadiness = { ready: boolean; errors: string[]; warnings: string[]; waves: string[][]; coverage: { criterionId: string; taskIds: string[] }[]; optionCoverage?: PlanOptionCoverage[] };
 export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; type?: string; criterionIds?: string[]; dependsOn?: string[]; ownedAreas?: string[]; verification?: string[]; wave?: number; launchStatus?: string; deliveryStatus?: string; completionReport?: CompletionReport | null; evidenceStatus?: string | null; evidenceError?: string | null; changedFiles?: string[]; scopeWarnings?: string[]; workspaceId?: string | null; worktreePath?: string | null };
 export type PlanImage = { path: string; name: string };
 export type PlanRun = { planId: string; kind: string; phase: "running" | "done" | "failed"; step: string; error: string; startedAt: number; finishedAt: number | null };
@@ -31,12 +41,18 @@ export type GoalBoardPrState = "OPEN" | "CLOSED" | "MERGED";
 // and the other fields are the structured evidence behind it.
 export type GoalBoardFields = { boardState?: GoalBoardStateId | null; boardStatus?: GoalBoardStatus | null; boardChangedAt?: string | null; boardPrNumber?: number | null; boardPrUrl?: string | null; boardPrState?: GoalBoardPrState | null; boardPrObservedAt?: string | null; runStage?: string | null };
 export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; issueNumbers?: number[]; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; mergeStatus?: string | null; mergeWorkspaceId?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; readyCount?: number; failedCount?: number; skippedCount?: number; queuedCount?: number; agentSplit?: { claude: number; codex: number }; workspaceIds?: string[]; health?: GoalHealth | null; healthReason?: string | null; stuckCount?: number | null; createdAt: string; updatedAt: string; launchedAt: string | null } & GoalBoardFields;
-export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] } & GoalBoardFields;
+export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; specOptions?: SpecOptions; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] } & GoalBoardFields;
 type DeliveryResult = { planId: string; deliveryMode: "combined"; deliveryStatus: string; integrationBranch?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null };
 type PlannerRepository = { id: string; name: string };
 
 const LOST_SESSION = "The planner lost its session";
 const AGENTS: PlanAgent[] = ["codex", "claude"];
+// One typed view of the shared catalog. The module is plain JavaScript, so the
+// cast happens once here rather than at every use.
+const SPEC_OPTION_CATALOG = SPEC_OPTIONS.options as readonly SpecOptionCatalogEntry[];
+const SPEC_OPTION_DEFAULTS = SPEC_OPTIONS.defaults as SpecOptions;
+const SPEC_OPTION_LABELS: Record<SpecOptionId, string> = SPEC_OPTION_CATALOG.reduce((labels, option) => ({ ...labels, [option.id]: option.label }), {} as Record<SpecOptionId, string>);
+const COVERAGE_LABELS: Record<string, string> = { covered: "Covered", not_applicable: "Not applicable", missing: "Missing" };
 
 function agentLabel(agent: string) { return agent === "claude" ? "Claude" : "Codex"; }
 function modelLabel(provider: PlannerProvider, model: string) { return PLANNER_ENGINES.providers[provider].models.find((option) => option.id === model)?.label || model; }
@@ -122,6 +138,10 @@ function GoalPassport({ draft }: { draft: PlanDraft }) {
   if (!spec) return null;
   const readiness = draft.readiness;
   const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave || 0))].sort().map((wave) => draft.tasks.filter((task) => (task.wave || 0) === wave).map((task) => task.id));
+  // The server already decided each status. Reading the warning strings here
+  // would produce a second, drifting source of truth.
+  const requestedCoverage = (readiness?.optionCoverage || []).filter((entry) => entry?.requested === true);
+  const artifacts = spec.designArtifacts || [];
   return <section className="goal-passport" aria-label="Goal passport">
     <header><div><small>DELIVERY CONTRACT</small><strong>{spec.outcome}</strong></div><em className={readiness?.ready === false ? "blocked" : "ready"}>{readiness?.ready === false ? "Needs work" : "Ready to code"}</em></header>
     {(readiness?.errors?.length || readiness?.warnings?.length) ? <div className="goal-passport-readiness">
@@ -135,6 +155,12 @@ function GoalPassport({ draft }: { draft: PlanDraft }) {
       <PassportList title="Assumptions" items={spec.assumptions} empty="None" />
     </div>
     {spec.risks?.length > 0 && <div className="goal-passport-block"><strong>Risks and mitigations</strong><ul className="goal-passport-risks">{spec.risks.map((risk, index) => <li key={`${index}-${risk.text}-${risk.mitigation}`}><em>{risk.level}</em><div><span>{risk.text}</span><small>{risk.mitigation || "No mitigation recorded"}</small></div></li>)}</ul></div>}
+    {requestedCoverage.length > 0 && <div className="goal-passport-block"><strong>Specification coverage</strong><ul className="goal-passport-options">{requestedCoverage.map((entry) => <li key={entry.id} className={`coverage-${entry.status}`}>
+      <span>{SPEC_OPTION_LABELS[entry.id] || entry.id}</span>
+      <small>{entry.message || "No detail recorded"}</small>
+      <em className={`coverage-${entry.status}`}>{COVERAGE_LABELS[entry.status] || entry.status}</em>
+    </li>)}</ul></div>}
+    {artifacts.length > 0 && <div className="goal-passport-block"><strong>Design artifacts</strong><DesignArtifacts artifacts={artifacts} /></div>}
     <div className="goal-passport-block"><strong>Acceptance evidence</strong><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
       const tasks = draft.tasks.filter((task) => task.criterionIds?.includes(criterion.id));
       const state = criterionState(tasks);
@@ -184,6 +210,9 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   const [model, setModel] = useState<string>(PLANNER_ENGINES.defaultModel);
   const [effort, setEffort] = useState<string>(PLANNER_ENGINES.defaultEffort);
   const [reviewer, setReviewer] = useState(false);
+  // All six requests live in one object so the POST body, the reset and the
+  // checkbox row can never disagree about which keys exist.
+  const [specOptions, setSpecOptions] = useState<SpecOptions>(() => ({ ...SPEC_OPTION_DEFAULTS }));
   const [draft, setDraft] = useState<PlanDraft | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "assemble" | "feedback">("");
@@ -243,7 +272,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
 
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
-    setGoal(""); setDraft(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false);
+    setGoal(""); setDraft(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); setSpecOptions({ ...SPEC_OPTION_DEFAULTS });
   }
 
   // The round runs in the background, so this answers as soon as the plan row
@@ -254,7 +283,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     event.preventDefault();
     setBusy("plan"); setError(""); setSteps([]);
     try {
-      receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, background: true }) }));
+      receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions, background: true }) }));
       onNotice(`Planning this goal on ${repository.name}. It appears in Writing Spec.`);
       onClose();
     }
@@ -421,6 +450,15 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
         </div>
         <label className="planner-reviewer-toggle"><input type="checkbox" aria-label="Add a reviewer pass" checked={reviewer} onChange={(event) => setReviewer(event.target.checked)} /><span>Add a reviewer pass</span></label>
         {reviewer && <p className="planner-reviewer-identity">Reviewer: {reviewerOptions.label} ({reviewerOptions.family}) · {modelLabel(reviewerProvider, reviewerConfig.model)} · {reviewerConfig.effort} effort</p>}
+      </section>
+      <section className="planner-spec-options" aria-label="Spec depth">
+        <header><strong>Spec depth</strong><span>Each request becomes a written requirement in every planning round and task brief.</span></header>
+        <ul>{SPEC_OPTION_CATALOG.map((option) => <li key={option.id}>
+          <label>
+            <input type="checkbox" aria-label={option.label} checked={specOptions[option.id]} onChange={(event) => setSpecOptions((current) => ({ ...current, [option.id]: event.target.checked }))} />
+            <span><b>{option.label}</b><small>{option.hint}</small></span>
+          </label>
+        </li>)}</ul>
       </section>
       {error && <p className="worktree-action-error">{error}</p>}
       {busy === "plan" && <p className="planner-waiting">Starting the round…</p>}
