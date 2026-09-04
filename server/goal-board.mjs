@@ -15,8 +15,8 @@ export const GOAL_BOARD_COLUMNS = Object.freeze([
   Object.freeze({ id: "dev_in_progress", label: "Dev in progress", description: "Agents are working on the launched tasks." }),
   Object.freeze({ id: "waiting_for_merge", label: "Waiting for merge", description: "The work waits for the goal pull request to merge." }),
   Object.freeze({ id: "blocked", label: "Blocked", description: "The goal stopped and needs a person before it can continue." }),
-  Object.freeze({ id: "merged", label: "Merged", description: "The goal pull request is merged." }),
-  Object.freeze({ id: "aborted", label: "Aborted", description: "The goal was stopped and no more work is expected." }),
+  Object.freeze({ id: "merged", label: "Merged", description: "The goal pull request is merged.", collapsedByDefault: true }),
+  Object.freeze({ id: "aborted", label: "Aborted", description: "The goal was stopped and no more work is expected.", collapsedByDefault: true }),
 ]);
 
 const COLUMN_IDS = Object.freeze(GOAL_BOARD_COLUMNS.map((column) => column.id));

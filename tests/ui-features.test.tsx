@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
@@ -1200,6 +1200,8 @@ describe("worktree goal planner", () => {
 });
 
 describe("goals board", () => {
+  const columnPreferenceKey = "cmux-companion-goal-board-column-expansion";
+  beforeEach(() => localStorage.removeItem(columnPreferenceKey));
   const now = new Date().toISOString();
   const repository = (id: string, name: string, root: string) => ({ id, name, root, path: `/repo/${name}`, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [{ id: `${id}-primary-worktree`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }] });
   const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 2, worktrees: 2, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repo-karven", "trust-layer", "karven"), repository("repo-rekord", "recorder", "rekord")] };
@@ -1260,14 +1262,18 @@ describe("goals board", () => {
     return screen.getByRole("region", { name: "Goals board" });
   }
 
-  test("renders eight ordered columns with counts, descriptions, empty notes, and one card per state", async () => {
+  async function expandColumn(board: HTMLElement, label: string) {
+    await userEvent.click(within(board).getByRole("button", { name: `Expand ${label}` }));
+  }
+
+  test("renders ordered columns with terminal defaults collapsed and accurate counts", async () => {
     mountBoard();
     const board = await openBoard();
     assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("9"), true);
     const headings = within(board).getAllByRole("heading", { level: 3 }).map((item) => item.textContent);
     // GitHub Issues is the leftmost column, ahead of the eight goal columns.
     assert.deepEqual(headings, ["GitHub Issues", ...COLUMNS.map(([label]) => label)]);
-    for (const [label, description] of COLUMNS) assert.ok(within(board).getByText(description), `${label} description`);
+    for (const [label, description] of COLUMNS.slice(0, 6)) assert.ok(within(board).getByText(description), `${label} description`);
 
     const column = (label: string) => within(board).getByRole("region", { name: label });
     assert.ok(within(column("Writing Spec")).getByText("Write the spec"));
@@ -1276,19 +1282,57 @@ describe("goals board", () => {
     assert.ok(within(column("Dev in progress")).getByText("Agents are coding"));
     assert.ok(within(column("Waiting for merge")).getByText("Waiting on the PR"));
     assert.ok(within(column("Blocked")).getByText("Its agent died"));
-    assert.ok(within(column("Merged")).getByText("Merged already"));
-    assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
     assert.ok(within(column("Waiting for dev")).getByLabelText("2 goals in Waiting for dev"));
     assert.ok(within(column("Merged")).getByLabelText("1 goal in Merged"));
     assert.ok(within(column("Waiting for dev")).getByRole("list", { name: "Waiting for dev goals" }));
+    assert.equal(within(column("Merged")).queryByText("Merged already"), null);
+    assert.equal(within(column("Merged")).queryByText(COLUMNS[6][1]), null);
+    assert.equal(within(column("Aborted")).queryByText("Stopped on purpose"), null);
+    assert.equal(within(column("Aborted")).queryByText(COLUMNS[7][1]), null);
+    assert.equal(within(column("Merged")).getByRole("button", { name: "Expand Merged" }).getAttribute("aria-expanded"), "false");
+    assert.equal(within(column("Aborted")).getByRole("button", { name: "Expand Aborted" }).getAttribute("aria-expanded"), "false");
+    assert.equal(within(board).getAllByRole("button", { name: /^Collapse / }).length, 7);
+
+    await expandColumn(board, "Merged");
+    await expandColumn(board, "Aborted");
+    assert.ok(within(column("Merged")).getByText("Merged already"));
+    assert.ok(within(column("Merged")).getByText(COLUMNS[6][1]));
+    assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
+    assert.ok(within(column("Aborted")).getByText(COLUMNS[7][1]));
+    assert.equal(within(column("Merged")).getByRole("button", { name: "Collapse Merged" }).getAttribute("aria-expanded"), "true");
     // Every column renders, so an empty one carries a note instead of nothing.
     assert.equal(within(board).queryAllByText("No goal here yet.").length, 0);
 
     cleanup();
+    localStorage.removeItem(columnPreferenceKey);
     mountBoard([]);
     const emptyBoard = await openBoard();
     assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 9);
-    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 8);
+    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 6);
+  });
+
+  test("toggles any column and restores each choice from localStorage", async () => {
+    mountBoard();
+    let board = await openBoard();
+    await expandColumn(board, "Merged");
+    assert.ok(within(board).getByText("Merged already"));
+
+    cleanup();
+    mountBoard();
+    board = await openBoard();
+    assert.ok(within(board).getByText("Merged already"));
+    await userEvent.click(within(board).getByRole("button", { name: "Collapse Merged" }));
+    assert.equal(within(board).queryByText("Merged already"), null);
+
+    cleanup();
+    mountBoard();
+    board = await openBoard();
+    assert.equal(within(board).queryByText("Merged already"), null);
+    const waitingToggle = within(board).getByRole("button", { name: "Collapse Waiting for dev" });
+    assert.equal(waitingToggle.getAttribute("aria-expanded"), "true");
+    await userEvent.click(waitingToggle);
+    assert.equal(within(board).queryByText("Ready to launch work"), null);
+    assert.equal(within(board).getByRole("button", { name: "Expand Waiting for dev" }).getAttribute("aria-expanded"), "false");
   });
 
   test("falls back to the shared derivation when a plan carries no usable board state", async () => {
@@ -1343,6 +1387,7 @@ describe("goals board", () => {
     await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
 
     const searchBox = screen.getByRole("searchbox", { name: "Search projects" });
+    await expandColumn(screen.getByRole("region", { name: "Goals board" }), "Merged");
     await userEvent.type(searchBox, "Merged already");
     const filtered = screen.getByRole("region", { name: "Goals board" });
     assert.ok(within(filtered).getByText("Merged already"));
@@ -1461,6 +1506,8 @@ describe("goals board", () => {
   test("shows card metadata, lifecycle evidence, and pull-request links", async () => {
     mountBoard();
     const board = await openBoard();
+    await expandColumn(board, "Merged");
+    await expandColumn(board, "Aborted");
     const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
 
     const dev = card("Ready to launch work");
@@ -1581,6 +1628,8 @@ describe("goals board", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
     const board = await openBoard();
+    await expandColumn(board, "Merged");
+    await expandColumn(board, "Aborted");
     const card = (goal: string) => within(screen.getByRole("region", { name: "Goals board" })).getByText(goal).closest("article") as HTMLElement;
 
     // Terminal cards never offer Abort.

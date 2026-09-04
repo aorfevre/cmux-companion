@@ -63,9 +63,26 @@ type BoardProjectKey = ProjectKey | "all";
 type DashboardFilter = "active" | "inactive" | "archived" | "draft-goals" | "launched-goals" | "goals-board";
 type AbortResult = { planId: string; aborted: boolean; alreadyAborted: boolean; closedSessionIds: string[]; failedSessionIds: string[] };
 const GOAL_FILTERS = new Set<DashboardFilter>(["draft-goals", "launched-goals", "goals-board"]);
-type GoalBoardColumn = { id: GoalBoardStateId; label: string; description: string };
+type GoalBoardColumn = { id: GoalBoardStateId; label: string; description: string; collapsedByDefault?: boolean };
 const BOARD_COLUMNS = GOAL_BOARD_COLUMNS as readonly GoalBoardColumn[];
 const BOARD_COLUMN_IDS = new Set<string>(BOARD_COLUMNS.map((column) => column.id));
+const BOARD_COLUMN_PREFERENCE_KEY = "cmux-companion-goal-board-column-expansion";
+const ALL_BOARD_COLUMN_IDS = [GITHUB_ISSUE_COLUMN.id, ...BOARD_COLUMNS.map((column) => column.id)];
+const DEFAULT_COLLAPSED_BOARD_COLUMNS = new Set<string>(BOARD_COLUMNS.filter((column) => column.collapsedByDefault).map((column) => column.id));
+
+function initialCollapsedBoardColumns() {
+  const collapsed = new Set(DEFAULT_COLLAPSED_BOARD_COLUMNS);
+  if (typeof window === "undefined") return collapsed;
+  try {
+    const stored = JSON.parse(localStorage.getItem(BOARD_COLUMN_PREFERENCE_KEY) || "{}");
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) return collapsed;
+    for (const id of ALL_BOARD_COLUMN_IDS) {
+      if (stored[id] === true) collapsed.delete(id);
+      if (stored[id] === false) collapsed.add(id);
+    }
+  } catch { /* An invalid or unavailable preference falls back to the shared defaults. */ }
+  return collapsed;
+}
 
 // The server derives the state and sends it as `boardState`. An older payload
 // or an unknown word falls back to the same derivation running locally, so a
@@ -257,6 +274,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const [planTarget, setPlanTarget] = useState<{ repository: DashboardRepository; planId?: string } | null>(null);
   const [issuePlanTarget, setIssuePlanTarget] = useState<DashboardRepository | null>(null);
   const [search, setSearch] = useState("");
+  const [collapsedBoardColumns, setCollapsedBoardColumns] = useState<Set<string>>(initialCollapsedBoardColumns);
   // The counts line points at the rail rather than repeating its rows, so
   // "3 stuck" is a way to reach the three tasks instead of a second number.
   const attentionRef = useRef<HTMLElement | null>(null);
@@ -731,6 +749,16 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   // A count that names a problem must lead to it. Scrolling the rail into view
   // and focusing its heading works for a mouse and for a screen reader alike.
   const focusAttentionRail = () => { const rail = attentionRef.current; if (!rail) return; rail.scrollIntoView({ behavior: "smooth", block: "start" }); rail.focus(); };
+  const toggleBoardColumn = (id: string) => {
+    setCollapsedBoardColumns((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      try {
+        localStorage.setItem(BOARD_COLUMN_PREFERENCE_KEY, JSON.stringify(Object.fromEntries(ALL_BOARD_COLUMN_IDS.map((columnId) => [columnId, !next.has(columnId)]))));
+      } catch { /* The toggle still works when storage is unavailable. */ }
+      return next;
+    });
+  };
   return <>
     {/* The board is a working screen, not a landing page: its own header is one
         bar, so the first Kanban card is visible without scrolling. Every other
@@ -772,11 +800,11 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
         onSkip={(goal, task) => { void skipTask(goal, task); }}
         onFocus={(workspaceId, label) => { void focusWorkspace(workspaceId, label); }}
       />}
-      {isBoardView && dashboard && <section className="goal-board" aria-label="Goals board"><section className="goal-board-column github-issue-column" aria-labelledby={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>
+      {isBoardView && dashboard && <section className="goal-board" aria-label="Goals board"><section className={`goal-board-column github-issue-column${collapsedBoardColumns.has(GITHUB_ISSUE_COLUMN.id) ? " collapsed" : ""}`} aria-labelledby={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>
         {/* The count comes from the same array the list renders, so the header
             number and the cards can never disagree. */}
-        <header><h3 id={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>{GITHUB_ISSUE_COLUMN.label}</h3><b aria-label={`${visibleIssueCards.length} issue${visibleIssueCards.length === 1 ? "" : "s"} in ${GITHUB_ISSUE_COLUMN.label}`}>{visibleIssueCards.length}</b><p>{GITHUB_ISSUE_COLUMN.description}</p></header>
-        {visibleIssueCards.length === 0
+        <header><h3 id={`goal-board-${GITHUB_ISSUE_COLUMN.id}`}>{GITHUB_ISSUE_COLUMN.label}</h3><button type="button" className="goal-board-column-toggle" aria-label={`${collapsedBoardColumns.has(GITHUB_ISSUE_COLUMN.id) ? "Expand" : "Collapse"} ${GITHUB_ISSUE_COLUMN.label}`} aria-expanded={!collapsedBoardColumns.has(GITHUB_ISSUE_COLUMN.id)} onClick={() => toggleBoardColumn(GITHUB_ISSUE_COLUMN.id)}>{collapsedBoardColumns.has(GITHUB_ISSUE_COLUMN.id) ? "›" : "‹"}</button><b aria-label={`${visibleIssueCards.length} issue${visibleIssueCards.length === 1 ? "" : "s"} in ${GITHUB_ISSUE_COLUMN.label}`}>{visibleIssueCards.length}</b>{!collapsedBoardColumns.has(GITHUB_ISSUE_COLUMN.id) && <p>{GITHUB_ISSUE_COLUMN.description}</p>}</header>
+        {!collapsedBoardColumns.has(GITHUB_ISSUE_COLUMN.id) && (visibleIssueCards.length === 0
           ? (unstartedIssueCards.length > 0
             // The column is empty because of the search, not because of the
             // sync. It says which, and offers the way back.
@@ -788,10 +816,10 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
               issue={issue}
               starting={boardBusy[githubIssueCardId(issue)] === true}
               onStart={() => { void startIssueGoal(issue); }}
-            /></li>)}</ul>}
-      </section>{BOARD_COLUMNS.map((column) => { const cards = boardGroups[column.id]; return <section className="goal-board-column" aria-labelledby={`goal-board-${column.id}`} key={column.id}>
-        <header><h3 id={`goal-board-${column.id}`}>{column.label}</h3><b aria-label={`${cards.length} goal${cards.length === 1 ? "" : "s"} in ${column.label}`}>{cards.length}</b><p>{column.description}</p></header>
-        {cards.length === 0
+            /></li>)}</ul>)}
+      </section>{BOARD_COLUMNS.map((column) => { const cards = boardGroups[column.id]; const collapsed = collapsedBoardColumns.has(column.id); return <section className={`goal-board-column${collapsed ? " collapsed" : ""}`} aria-labelledby={`goal-board-${column.id}`} key={column.id}>
+        <header><h3 id={`goal-board-${column.id}`}>{column.label}</h3><button type="button" className="goal-board-column-toggle" aria-label={`${collapsed ? "Expand" : "Collapse"} ${column.label}`} aria-expanded={!collapsed} onClick={() => toggleBoardColumn(column.id)}>{collapsed ? "›" : "‹"}</button><b aria-label={`${cards.length} goal${cards.length === 1 ? "" : "s"} in ${column.label}`}>{cards.length}</b>{!collapsed && <p>{column.description}</p>}</header>
+        {!collapsed && (cards.length === 0
           ? <p className="goal-board-empty">No goal here yet.</p>
           : <ul className="goal-board-cards" aria-label={`${column.label} goals`}>{cards.map((plan) => { const goalHealth = healthByPlanId.get(plan.planId); const focusSessionId = liveGoalSessionId(column.id, goalHealth); return <li key={plan.planId}><GoalBoardCard
               plan={plan}
@@ -809,7 +837,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
               onCheckMerge={() => { void checkMerge(plan); }}
               focusing={focusSessionId ? boardBusy[`focus:${focusSessionId}`] === true : false}
               onFocusWorkspace={() => { if (focusSessionId) void focusWorkspace(focusSessionId, plan.goal); }}
-            /></li>; })}</ul>}
+            /></li>; })}</ul>)}
       </section>; })}</section>}
       {visibleOrphans.length > 0 && <section className="orphan-workstreams"><header><strong>Other sessions</strong><span>Not inside a catalogued Git worktree</span></header>{visibleOrphans.map((session) => <div className="orphan-session" key={session.id}><button className="session-open" onClick={() => onOpenWorkspace(session.id)}><span className={`status-orb ${session.state.tone}`} /><div><strong>{session.title}</strong><small>{session.preview}</small></div><b>›</b></button><button className="session-close" aria-label={`Close session ${session.title}`} disabled={busy === `session:${session.id}`} onClick={() => closeSession(session)}>×</button></div>)}</section>}
     </section>
