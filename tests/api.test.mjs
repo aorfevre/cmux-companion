@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { buildApp, normalizeInbox, withDeadline } from "../server/app.mjs";
 import { CmuxCommandError } from "../server/cmux-client.mjs";
 import { deploymentStatus, launchAgentIsRunning } from "../server/deployment-health.mjs";
+import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
 
 const TOKEN = "test-token-that-is-deliberately-long-and-private";
 const WS_ID = "11111111-2222-4333-8444-555555555555";
@@ -357,6 +358,12 @@ test("serves the worktree dashboard and creates worktrees and sessions", async (
   const created = await app.inject({ method: "POST", url: "/api/worktree-dashboard/repositories/repository12345678/worktrees", headers, payload: { branch: "feature/mobile", base: "main" } });
   assert.equal(created.statusCode, 201);
   assert.equal(created.json().worktree.path, target.path);
+  assert.deepEqual(calls[1], ["create-worktree", "repository12345678", {
+    branch: "feature/mobile",
+    base: "main",
+    workspaces: (await cmux.workspaceList()).workspaces,
+    workspacesAvailable: true,
+  }]);
   const launched = await app.inject({ method: "POST", url: `/api/worktree-dashboard/${target.id}/launch`, headers, payload: { agent: "claude", prompt: "Review mobile UX" } });
   assert.equal(launched.statusCode, 201);
   assert.deepEqual(cmux.calls.at(-1), ["create", { cwd: target.path, title: "safe: feature/mobile", agent: "claude", prompt: "Review mobile UX" }]);
@@ -370,6 +377,28 @@ test("serves the worktree dashboard and creates worktrees and sessions", async (
   assert.equal(favorited.statusCode, 200);
   assert.equal(favorited.json().repository.favorite, true);
   assert.deepEqual(calls.map((call) => call[0]), ["snapshot", "create-worktree", "resolve", "invalidate", "remove", "archive", "favorite"]);
+});
+
+test("exposes recognized worktree reasons without changing the TypeError response contract", async (t) => {
+  const worktreeDashboard = {
+    create: async () => { throw worktreeStateError("That branch already exists locally", WORKTREE_REASONS.BRANCH_EXISTS); },
+    invalidate: () => {},
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreeDashboard });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-dashboard/repositories/repository12345678/worktrees",
+    headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { branch: "feature/existing", base: "main" },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.json(), {
+    error: "That branch already exists locally",
+    code: "INVALID_REQUEST",
+    reason: WORKTREE_REASONS.BRANCH_EXISTS,
+  });
 });
 
 test("analyzes, prepares, and bulk-launches GitHub issue topics through authenticated routes", async (t) => {
