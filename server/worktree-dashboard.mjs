@@ -57,6 +57,11 @@ export class WorktreeDashboard {
     this.pullRequestPending = new Map();
     this.githubCheckedAt = null;
     this.targets = new Map();
+    // A directory of repository id to name and primary path, written by every
+    // snapshot. It is not a state cache: nothing here goes stale except the
+    // path itself, and resolveRepository() re-derives the id from disk before
+    // it trusts an entry. `invalidate()` therefore leaves it alone.
+    this.repositoriesById = new Map();
   }
 
   async snapshot({ workspaces = [], refresh = false, refreshGitHub = false, refreshGitHubRepositoryId = null, refreshGitHubRepositoryIds = null } = {}) {
@@ -134,8 +139,39 @@ export class WorktreeDashboard {
       orphanSessions,
     };
     this.targets = targets;
+    for (const repository of repositories) {
+      const primary = repository.worktrees.find((item) => item.isPrimary) || repository.worktrees[0];
+      this.repositoriesById.set(repository.id, { id: repository.id, name: repository.name, primaryPath: primary?.path || repository.path });
+    }
     this.cache = { at: Date.now(), workspaceSignature, value };
     return value;
+  }
+
+  // The planner and the issue planner need three fields about one repository:
+  // its id, its name, and its primary path. A full snapshot to read them costs
+  // ten seconds on a machine with many worktrees, and it blocks the submit that
+  // a person is waiting on. This answers from the directory instead, and only
+  // scans when the directory cannot be trusted.
+  async resolveRepository(repositoryId) {
+    if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
+    const known = this.repositoriesById.get(repositoryId);
+    // A repository that moved, was deleted, or was replaced by another checkout
+    // must not answer from the directory. Re-deriving the id from disk is one
+    // git call, and it is the same derivation the snapshot itself uses.
+    if (known && await this.#stillTheSameRepository(known)) return { ...known };
+    await this.snapshot({ refresh: true });
+    const found = this.repositoriesById.get(repositoryId);
+    if (!found) throw new TypeError("Unknown repository");
+    return { ...found };
+  }
+
+  async #stillTheSameRepository({ id, primaryPath }) {
+    try {
+      const output = await this.repoCatalog.git(primaryPath, ["rev-parse", "--git-common-dir"]);
+      return repositoryKey(resolve(primaryPath, output.trim())) === id;
+    } catch {
+      return false;
+    }
   }
 
   async #uniqueRepositoryCandidates(repos) {
