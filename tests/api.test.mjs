@@ -1216,12 +1216,171 @@ test("reports which provider takes the next task and why", async (t) => {
   assert.equal(capacity.json().providers[0].headroom, 90);
 });
 
+// --- retiring finished goal sessions --------------------------------------
+
+// A store holding one combined goal whose delivery pull request is open. Every
+// task's work is inside it, so only the merge session has anything left to do.
+function reapableStore() {
+  const closedAt = new Map();
+  const plan = () => ({
+    planId: "plan-1",
+    repositoryId: "repository12345678",
+    deliveryMode: "combined",
+    boardPrState: "OPEN",
+    boardStatus: null,
+    mergeStatus: null,
+    mergeWorkspaceId: "workspace-merge",
+    mergeSessionClosedAt: null,
+    supersededMergeWorkspaces: [],
+    tasks: [
+      { id: "t1", title: "Billing API", workspaceId: "workspace-0", deliveryStatus: "ready", sessionClosedAt: closedAt.get("workspace-0") || null },
+      { id: "t2", title: "Billing UI", workspaceId: "workspace-1", deliveryStatus: "ready", sessionClosedAt: closedAt.get("workspace-1") || null },
+    ],
+  });
+  return {
+    recorded: [],
+    closedAt,
+    list: () => [{ planId: "plan-1", boardStatus: null, workspaceIds: ["workspace-0", "workspace-1"] }],
+    get: (planId) => (planId === "plan-1" ? plan() : null),
+    recordSessionsRetired(planId, entries) {
+      this.recorded.push([planId, entries.map((entry) => entry.workspaceId)]);
+      for (const entry of entries) closedAt.set(entry.workspaceId, "2026-09-04T00:00:00.000Z");
+    },
+  };
+}
+
+function reapableCmux() {
+  const cmux = fakeCmux();
+  cmux.workspaceListDetailed = async () => ({
+    workspaces: ["workspace-0", "workspace-1", "workspace-merge"].map((id) => ({ id, title: id, status: { effective: "idle", signals: {} } })),
+  });
+  return cmux;
+}
+
+test("closes the finished sessions of a delivered goal on demand and reports what it did", async (t) => {
+  const store = reapableStore();
+  const cmux = reapableCmux();
+  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const reaped = await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: {} });
+  assert.equal(reaped.statusCode, 200);
+  const report = reaped.json();
+  assert.equal(report.sessionsAvailable, true);
+  assert.ok(report.checkedAt);
+  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+  // The one session that still owns the open pull request stays, with a reason
+  // the board can show rather than a bare exclusion.
+  assert.deepEqual(report.kept.map((entry) => entry.workspaceId), ["workspace-merge"]);
+  assert.match(report.kept[0].reason, /open pull request/);
+  assert.deepEqual(report.failed, []);
+  assert.deepEqual(cmux.calls.filter((call) => call[0] === "close").map((call) => call[1]).sort(), ["workspace-0", "workspace-1"]);
+  assert.equal(store.recorded.length, 1);
+});
+
+// The board asks what would be closed before it asks the user to act, so the
+// dry run must answer with the same shape and touch nothing.
+test("the dry run reports the same sessions without closing or recording any", async (t) => {
+  const store = reapableStore();
+  const cmux = reapableCmux();
+  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const dry = await app.inject({ method: "GET", url: "/api/goals/sessions/retirable", headers });
+  assert.equal(dry.statusCode, 200);
+  const report = dry.json();
+  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+  assert.deepEqual(report.kept.map((entry) => entry.workspaceId), ["workspace-merge"]);
+  assert.equal(cmux.calls.filter((call) => call[0] === "close").length, 0, "a dry run closes nothing");
+  assert.deepEqual(store.recorded, [], "and records nothing, so the real pass still has work to do");
+
+  // Proof that it changed nothing: the real pass afterwards still closes both.
+  const real = await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: {} });
+  assert.deepEqual(real.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+});
+
+test("both session routes answer 503 when there is no plan store", async (t) => {
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  assert.equal((await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: {} })).statusCode, 503);
+  assert.equal((await app.inject({ method: "GET", url: "/api/goals/sessions/retirable", headers })).statusCode, 503);
+});
+
+// A plan id that is present but unusable must not widen the pass to every goal.
+test("an invalid plan id is a 400 rather than a pass over every goal", async (t) => {
+  const store = reapableStore();
+  const app = await buildApp({ cmux: reapableCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const bad = await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: { planId: 17 } });
+  assert.equal(bad.statusCode, 400);
+  assert.equal(bad.json().code, "INVALID_REQUEST");
+  const blank = await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: { planId: "   " } });
+  assert.equal(blank.statusCode, 400);
+  assert.deepEqual(store.recorded, [], "nothing was closed on the way to the rejection");
+});
+
+// The kill switch is about the timer, not about the rule. An operator who sets
+// it keeps every workspace open until they ask for a pass themselves.
+test("the kill switch stops the timer pass and leaves the on-demand route working", async (t) => {
+  const previous = process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS;
+  process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS = "off";
+  t.after(() => {
+    if (previous === undefined) delete process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS;
+    else process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS = previous;
+  });
+
+  const store = reapableStore();
+  const cmux = reapableCmux();
+  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalHealthSweep: fakeHealth() });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  // The watchdog's own pass, driven through its route: it reports, and it
+  // closes nothing.
+  const swept = await app.inject({ method: "POST", url: "/api/goals/health/check", headers, payload: {} });
+  assert.equal(swept.statusCode, 200);
+  assert.equal(swept.json().sessions, null);
+  assert.equal(cmux.calls.filter((call) => call[0] === "close").length, 0);
+
+  // The user asking is not what the switch protects them from.
+  const asked = await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: {} });
+  assert.equal(asked.statusCode, 200);
+  assert.deepEqual(asked.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+});
+
+// And with the switch unset, the same timer pass does retire them.
+test("the supervision pass retires finished sessions when the switch is unset", async (t) => {
+  const previous = process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS;
+  delete process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS;
+  t.after(() => { if (previous !== undefined) process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS = previous; });
+
+  const store = reapableStore();
+  const cmux = reapableCmux();
+  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalHealthSweep: fakeHealth() });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const swept = await app.inject({ method: "POST", url: "/api/goals/health/check", headers, payload: {} });
+  assert.equal(swept.statusCode, 200);
+  assert.deepEqual(swept.json().sessions.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+  // The dead agent is still reported: tidying the sidebar costs no alert.
+  assert.equal(swept.json().alerts.length, 1);
+});
+
 test("every supervision route requires pairing", async (t) => {
   const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: fakeHealth() });
   t.after(() => app.close());
   for (const [method, url] of [
     ["GET", "/api/goals/health"],
     ["POST", "/api/goals/health/check"],
+    ["POST", "/api/goals/sessions/reap"],
+    ["GET", "/api/goals/sessions/retirable"],
     ["GET", "/api/worktree-plans/plan-1/health"],
     ["POST", "/api/worktree-plans/plan-1/tasks/t1/relaunch"],
     ["POST", "/api/worktree-plans/plan-1/tasks/t1/skip"],

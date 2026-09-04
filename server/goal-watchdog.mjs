@@ -5,9 +5,16 @@
 // goals sit stranded for days. This runs the sweep on a timer and pushes one
 // alert when a goal's health gets worse.
 //
-// It writes no plan state. Moving a goal on a timer would let a slow agent be
-// declared dead and its worktree rebuilt under it, so the watchdog only ever
-// reports. Every recovery stays an explicit decision.
+// It moves no goal. Declaring a slow agent dead on a timer would let its
+// worktree be rebuilt under it, so every recovery stays an explicit decision.
+//
+// The one thing it does act on is session retirement. After the sweep, and only
+// when the sweep could reach cmux, it runs the goal session reaper. That is safe
+// because the reaper closes a session only when the plan itself records it and
+// the goal's own work is delivered, and never when the live workspace shows an
+// agent that is running or waiting for an answer. It closes no worktree and
+// loses no work; it only takes finished workspaces out of the sidebar. The pass
+// is best-effort, so a failure is logged and the health alerts are still sent.
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1_000;
 // A goal that has just launched has no session yet on the first tick. Waiting
@@ -30,10 +37,13 @@ export const ALERTING = new Map([
 ]);
 
 export class GoalWatchdog {
-  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
+  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, sessionReaper = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
     if (!health) throw new TypeError("A goal health sweep is required");
     this.health = health;
     this.pushService = pushService;
+    // Optional. With no reaper the watchdog behaves exactly as it did before:
+    // it reports, and it closes nothing.
+    this.sessionReaper = sessionReaper;
     // Reconciling before the sweep is what stops a finished goal being reported
     // as broken: without it, a goal whose agent opened its pull request and
     // stopped keeps a stale board state, and the sweep calls it idle.
@@ -79,8 +89,12 @@ export class GoalWatchdog {
     // would tell the user their agents died every time they closed cmux, so the
     // pass is skipped entirely and no memory is cleared: the goals are exactly
     // as they were before the check could not run.
-    if (swept?.sessionsAvailable !== true) return { checked: false, alerts: [] };
+    if (swept?.sessionsAvailable !== true) return { checked: false, alerts: [], sessions: null };
 
+    // Retire finished sessions before the alerts are built. The same reason the
+    // sweep is skipped above applies here: an unreachable cmux proves nothing
+    // about any agent, so nothing is closed on the strength of it.
+    const sessions = await this.#reap();
     const alerts = [];
     const seen = new Set();
     for (const goal of swept.goals || []) {
@@ -103,7 +117,25 @@ export class GoalWatchdog {
     // A goal that left the sweep is terminal or deleted. Dropping it keeps the
     // map bounded by the number of live goals rather than by uptime.
     for (const planId of [...this.alerted.keys()]) if (!seen.has(planId)) this.alerted.delete(planId);
-    return { checked: true, checkedAt: swept.checkedAt, alerts, summary: swept.summary };
+    return { checked: true, checkedAt: swept.checkedAt, alerts, summary: swept.summary, sessions };
+  }
+
+  // Best-effort, and deliberately before the alerts rather than instead of
+  // them. A reaper that throws must never cost the user the one thing this
+  // pass exists for, which is being told that a goal stopped.
+  async #reap() {
+    if (!this.sessionReaper?.reap) return null;
+    try {
+      const report = await this.sessionReaper.reap();
+      return {
+        closed: report?.closed || [],
+        kept: report?.kept || [],
+        failed: report?.failed || [],
+      };
+    } catch (cause) {
+      this.log?.warn?.({ err: cause }, "goal watchdog could not retire finished sessions");
+      return null;
+    }
   }
 
   // Returns true only when a device actually received the alert. With no push
