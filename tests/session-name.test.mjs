@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MAX_TITLE, goalSegment, mergeSessionTitle, partCode, projectCode, sessionEnv, sessionTitle, taskCode } from "../server/session-name.mjs";
+import { MAX_TITLE, followupSessionTitle, goalSegment, mergeSessionTitle, partCode, projectCode, sessionEnv, sessionTitle, taskCode } from "../server/session-name.mjs";
 
 // --- project code --------------------------------------------------------
 
@@ -308,6 +308,20 @@ test("keeps a merge title inside MAX_TITLE and clips the goal, not the codes", (
   assert.ok(title.length <= MAX_TITLE, `got ${title.length} characters`);
   assert.ok(title.startsWith("CC · "), `the project code was cut: ${title}`);
   assert.ok(title.endsWith("(plan) · MERGE"), `the fragment or the marker was cut: ${title}`);
+});
+
+// --- follow-up session title ---------------------------------------------
+
+test("clips a long follow-up goal and never clips its ASK code", () => {
+  const title = followupSessionTitle({ ...PLAN, spec: { outcome: "z".repeat(500) } }, ["question", "review"]);
+  assert.equal(title.length, MAX_TITLE);
+  assert.ok(title.startsWith("CC-ASK · "), `the follow-up code was cut: ${title}`);
+  assert.ok(title.endsWith("…"), "a clipped follow-up title must say it was clipped");
+});
+
+test("gives a follow-up with no goal text a readable fallback", () => {
+  assert.equal(followupSessionTitle({ repositoryName: "karven" }, ["tests"]), "KRV-ASK · More unit and e2e tests");
+  assert.equal(followupSessionTitle(null, []), "GOAL-ASK · Goal follow-up");
 });
 
 // --- session env ---------------------------------------------------------

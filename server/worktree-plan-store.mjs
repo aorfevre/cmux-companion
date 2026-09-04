@@ -18,7 +18,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
   "session_retired", "board_merged", "board_aborted", "board_pull_request",
-  "task_relaunched", "task_skipped",
+  "task_relaunched", "task_skipped", "followup_launched",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS plans (
   merge_status TEXT,
   merge_session_closed_at TEXT,
   superseded_merge_workspaces TEXT NOT NULL DEFAULT '[]',
+  followups TEXT NOT NULL DEFAULT '[]',
   board_status TEXT,
   board_changed_at TEXT,
   board_pr_number INTEGER,
@@ -393,6 +394,29 @@ export class WorktreePlanStore {
           delivery_status = 'assembling', delivery_error = NULL, updated_at = ? WHERE plan_id = ?
       `).run(text(workspaceId), at, String(planId));
       this.#insertEvent(String(planId), null, "merge_launched", { workspaceId }, at);
+    });
+    return this.get(planId);
+  }
+
+  recordFollowupLaunched(planId, { workspaceId, actions, agent, branch, worktreePath, briefPath }) {
+    const at = this.#stamp();
+    const id = String(planId);
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT followups FROM plans WHERE plan_id = ?").get(id);
+      const followups = parse(row?.followups, []);
+      const entry = {
+        workspaceId: text(workspaceId),
+        actions: Array.isArray(actions) ? actions.map(String) : [],
+        agent: text(agent),
+        branch: text(branch),
+        worktreePath: text(worktreePath),
+        briefPath: text(briefPath),
+        launchedAt: at,
+      };
+      followups.push(entry);
+      this.db.prepare("UPDATE plans SET followups = ?, updated_at = ? WHERE plan_id = ?")
+        .run(json(followups), at, id);
+      this.#insertEvent(id, null, "followup_launched", entry, at);
     });
     return this.get(planId);
   }
@@ -753,6 +777,7 @@ export class WorktreePlanStore {
       boardPrUrl: row.board_pr_url ?? null,
       boardPrState: boardPrState(row.board_pr_state),
       boardPrObservedAt: row.board_pr_observed_at ?? null,
+      followupCount: parse(row.followups, []).length,
       taskCount: row.task_count,
       launchedCount: row.launched_count,
       readyCount: row.ready_count,
@@ -843,6 +868,7 @@ export class WorktreePlanStore {
     ensure("plans", "merge_status", "TEXT");
     ensure("plans", "merge_session_closed_at", "TEXT");
     ensure("plans", "superseded_merge_workspaces", "TEXT NOT NULL DEFAULT '[]'");
+    ensure("plans", "followups", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plans", "board_status", "TEXT");
     ensure("plans", "board_changed_at", "TEXT");
     ensure("plans", "board_pr_number", "INTEGER");
@@ -939,6 +965,7 @@ function readPlan(row) {
     mergeStatus: row.merge_status,
     mergeSessionClosedAt: row.merge_session_closed_at ?? null,
     supersededMergeWorkspaces: parse(row.superseded_merge_workspaces, []),
+    followups: parse(row.followups, []),
     boardStatus: boardStatus(row.board_status),
     boardChangedAt: row.board_changed_at ?? null,
     boardPrNumber: Number.isInteger(row.board_pr_number) ? row.board_pr_number : null,
