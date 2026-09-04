@@ -118,6 +118,77 @@ test("refreshes the registered inventory before resolving a launch target", asyn
   await assert.rejects(() => dashboard.resolve(id), /Unknown worktree/);
 });
 
+// A person waits on this call inside the goal submit. Scanning every repository
+// to read three fields cost ten seconds on a machine with many worktrees.
+function resolverDashboard({ commonDir = (cwd) => `${cwd}/.git\n` } = {}) {
+  const listed = [];
+  const repoCatalog = {
+    list: async () => { listed.push(true); return [REPO]; },
+    git: async (cwd, args) => {
+      if (args[0] === "worktree") return `worktree ${cwd}\0HEAD aaaaaaaa\0branch refs/heads/main\0\0`;
+      if (args[1] === "--git-common-dir") return commonDir(cwd);
+      if (args[1] === "--show-toplevel") return `${cwd}\n`;
+      if (args[0] === "status") return "# branch.head main\n";
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  return { listed, dashboard: new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path }) };
+}
+
+test("resolves a repository from its directory without scanning again", async () => {
+  const { listed, dashboard } = resolverDashboard();
+  const id = (await dashboard.snapshot()).repositories[0].id;
+  const scans = listed.length;
+  assert.deepEqual(await dashboard.resolveRepository(id), { id, name: "sample", primaryPath: "/repo/sample" });
+  assert.equal(listed.length, scans, "a directory hit must not scan the roots again");
+});
+
+test("an explicit refresh never drops the repository directory", async () => {
+  const { listed, dashboard } = resolverDashboard();
+  const id = (await dashboard.snapshot()).repositories[0].id;
+  dashboard.invalidate();
+  const scans = listed.length;
+  assert.equal((await dashboard.resolveRepository(id)).id, id);
+  assert.equal(listed.length, scans, "invalidate() clears the snapshot cache, not the directory");
+});
+
+test("a repository that no longer answers for its id is scanned again", async () => {
+  let moved = false;
+  const { listed, dashboard } = resolverDashboard({ commonDir: (cwd) => moved ? "/repo/elsewhere/.git\n" : `${cwd}/.git\n` });
+  const id = (await dashboard.snapshot()).repositories[0].id;
+  const scans = listed.length;
+  moved = true;
+  // The directory still holds the path, but the id no longer derives from it,
+  // so a stale path must never be returned.
+  await assert.rejects(() => dashboard.resolveRepository(id), /Unknown repository/);
+  assert.ok(listed.length > scans, "a failed check must fall back to a full scan");
+});
+
+test("an unreadable repository path is scanned again rather than trusted", async () => {
+  let readable = true;
+  const { listed, dashboard } = resolverDashboard({ commonDir: (cwd) => { if (!readable) throw new Error("not a git repository"); return `${cwd}/.git\n`; } });
+  const id = (await dashboard.snapshot()).repositories[0].id;
+  const scans = listed.length;
+  readable = false;
+  // A git call that fails does not prove the repository is gone, so the scan
+  // decides. The scan tolerates the same failure and derives the id from the
+  // path, which is why this resolves rather than refuses. What matters here is
+  // that the directory entry was never returned unchecked.
+  assert.equal((await dashboard.resolveRepository(id)).id, id);
+  assert.ok(listed.length > scans, "an unverifiable entry must fall back to a full scan");
+});
+
+test("resolving an unknown repository scans once and then refuses", async () => {
+  const { listed, dashboard } = resolverDashboard();
+  await dashboard.snapshot();
+  const scans = listed.length;
+  await assert.rejects(() => dashboard.resolveRepository("absent1234567890ab"), /Unknown repository/);
+  assert.ok(listed.length > scans);
+  await assert.rejects(() => dashboard.resolveRepository("short"), /Invalid repository/);
+});
+
 test("creates a sibling worktree from a validated branch and base revision", async () => {
   const calls = [];
   const targetPath = "/repo/sample-feature-safe-name";

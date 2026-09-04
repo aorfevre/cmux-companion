@@ -159,6 +159,10 @@ export class WorktreeDashboard {
     // must not answer from the directory. Re-deriving the id from disk is one
     // git call, and it is the same derivation the snapshot itself uses.
     if (known && await this.#stillTheSameRepository(known)) return { ...known };
+    // The entry failed its check, so it is wrong until a scan says otherwise.
+    // Dropping it first is what makes a moved repository refuse: the scan below
+    // writes the entry again only if the id still derives from a path on disk.
+    if (known) this.repositoriesById.delete(repositoryId);
     await this.snapshot({ refresh: true });
     const found = this.repositoriesById.get(repositoryId);
     if (!found) throw new TypeError("Unknown repository");

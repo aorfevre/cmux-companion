@@ -9,7 +9,7 @@ const issues = [
   { number: 57, title: "Correction diagnostics", body: "Add observability", labels: [{ name: "backend" }], url: "https://github.com/acme/app/issues/57", updatedAt: "2026-09-01T08:20:00Z" },
 ];
 
-function harness({ refreshedIssues = issues, existingPlans = [] } = {}) {
+function harness({ refreshedIssues = issues, existingPlans = [], worktrees: injected = null } = {}) {
   const starts = [];
   const launches = [];
   const calls = [];
@@ -23,8 +23,8 @@ function harness({ refreshedIssues = issues, existingPlans = [] } = {}) {
     },
     launch: async (planId) => { launches.push(planId); return { planId, launched: 2, deliveryMode: "combined", results: [{}, {}] }; },
   };
-  const execute = async (bin, args) => {
-    calls.push([bin, args]);
+  const execute = async (bin, args, options) => {
+    calls.push([bin, args, options]);
     if (bin === "gh" && args[0] === "repo") return { stdout: JSON.stringify({ nameWithOwner: "acme/app", url: "https://github.com/acme/app" }) };
     if (bin === "gh" && args[0] === "issue") {
       issueLoads += 1;
@@ -36,7 +36,7 @@ function harness({ refreshedIssues = issues, existingPlans = [] } = {}) {
     ] }) }) };
     throw new Error(`Unexpected ${bin} ${args.join(" ")}`);
   };
-  const worktrees = { snapshot: async () => ({ repositories: [{ id: REPOSITORY_ID, name: "app", path: "/repo/app" }] }) };
+  const worktrees = injected || { snapshot: async () => ({ repositories: [{ id: REPOSITORY_ID, name: "app", path: "/repo/app" }] }) };
   return { service: new GitHubIssuePlanner({ worktrees, planner, execute }), starts, launches, calls };
 }
 
@@ -111,4 +111,28 @@ test("launches prepared topic plans in order and reports parallel worktree count
   assert.deepEqual(launches, ["plan-a", "plan-b"]);
   assert.equal(result.launchedTopics, 2);
   assert.equal(result.launchedWorktrees, 4);
+});
+
+// Analysing a repository's issues used to scan every repository under both
+// roots before it read three fields. The dashboard resolver answers instead.
+test("analysis resolves its repository without scanning every repository", async () => {
+  let snapshots = 0;
+  const worktrees = {
+    snapshot: async () => { snapshots += 1; return { repositories: [] }; },
+    resolveRepository: async (id) => ({ id, name: "app", primaryPath: "/repo/app" }),
+  };
+  const { service, calls } = harness({ worktrees });
+  const analysis = await service.analyze({ repositoryId: REPOSITORY_ID });
+  assert.equal(snapshots, 0, "the analysis must not scan the repository roots");
+  assert.equal(analysis.repository.nameWithOwner, "acme/app");
+  // The resolver names the checkout `primaryPath`. Every `gh` call still has to
+  // run inside it, so it must reach them as `path`.
+  const issueCall = calls.find(([bin, args]) => bin === "gh" && args[0] === "issue");
+  assert.equal(issueCall[2].cwd, "/repo/app");
+});
+
+test("a dashboard without a resolver still analyses through its snapshot", async () => {
+  const { service } = harness();
+  const analysis = await service.analyze({ repositoryId: REPOSITORY_ID });
+  assert.equal(analysis.repository.nameWithOwner, "acme/app");
 });
