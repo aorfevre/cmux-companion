@@ -168,19 +168,59 @@ test("a repository whose commit is already known runs no git log", async (t) => 
   assert.equal(spawned.filter((call) => call === "log -1").length, 0, "the second scan must read the stored answer");
 });
 
-// The anti-staleness test. A stored time that outlived its commit would show a
-// repository as untouched while a person is committing to it.
-test("a new commit moves the reported activity even with a warm store", async (t) => {
+// The bound on how stale a card can be. A repository's status and its activity
+// time are read together and served together, so both lag by at most the status
+// window and never by more. Beyond it, a new commit must be visible.
+test("a new commit is reported once the status window has passed", async (t) => {
   const { repo, catalog } = await fixture(t);
-  catalog.identityStore = new RepoIdentityStore({ path: ":memory:" });
+  let clock = 1_000_000;
+  catalog.identityStore = new RepoIdentityStore({ path: ":memory:", statusTtlMs: 30_000, now: () => clock });
   t.after(() => catalog.identityStore.close());
 
   const [before] = await catalog.list({ refresh: true });
   await new Promise((resolve) => setTimeout(resolve, 1_100));
   await git(repo, "commit", "-qm", "second", "--allow-empty");
 
+  // Inside the window the card deliberately shows the moment it last read.
+  const [during] = await catalog.list({ refresh: true });
+  assert.equal(during.lastActivity, before.lastActivity, "inside the window a card shows one consistent moment");
+
+  clock += 30_001;
   const [after] = await catalog.list({ refresh: true });
   assert.ok(after.lastActivity > before.lastActivity, `${after.lastActivity} must be later than ${before.lastActivity}`);
+});
+
+// The same guarantee for the half a person acts on. A card may say "Clean" for
+// up to the window, but it must never say so afterwards.
+test("a file written into a clean worktree is reported once the window has passed", async (t) => {
+  const { repo, catalog } = await fixture(t);
+  let clock = 1_000_000;
+  catalog.identityStore = new RepoIdentityStore({ path: ":memory:", statusTtlMs: 30_000, now: () => clock });
+  t.after(() => catalog.identityStore.close());
+
+  const [before] = await catalog.list({ refresh: true });
+  assert.equal(before.dirty, false, "the fixture starts clean");
+
+  await writeFile(join(repo, "tracked.txt"), "changed by an agent\n");
+  const [during] = await catalog.list({ refresh: true });
+  assert.equal(during.dirty, false, "inside the window the card is deliberately behind");
+
+  clock += 30_001;
+  const [after] = await catalog.list({ refresh: true });
+  assert.equal(after.dirty, true, "past the window the card must tell the truth");
+});
+
+// A cache that never expires is the failure this whole design guards against.
+test("a store with no window configured always reads git", async (t) => {
+  const { repo, catalog } = await fixture(t);
+  catalog.identityStore = new RepoIdentityStore({ path: ":memory:", statusTtlMs: 0 });
+  t.after(() => catalog.identityStore.close());
+
+  const [before] = await catalog.list({ refresh: true });
+  assert.equal(before.dirty, false);
+  await writeFile(join(repo, "tracked.txt"), "changed by an agent\n");
+  const [after] = await catalog.list({ refresh: true });
+  assert.equal(after.dirty, true);
 });
 
 test("a repository with no commit yet still reports an activity of zero", async (t) => {

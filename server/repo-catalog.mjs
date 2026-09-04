@@ -86,13 +86,13 @@ export class RepoCatalog {
     const canonicalTop = await realpath(topLevel);
     if (canonicalTop !== canonicalPath) return null;
 
-    const [statusResult, scripts, remotes] = await Promise.all([
-      this.git(canonicalPath, ["status", "--porcelain=v2", "--branch"]).catch(() => ""),
+    const [read, scripts, remotes] = await Promise.all([
+      this.statusAndActivity(canonicalPath),
       readScripts(canonicalPath),
       this.git(canonicalPath, ["config", "--get-regexp", "^remote\\..*\\.url$"]).catch(() => ""),
     ]);
-    const status = parsePorcelainV2(statusResult);
-    const lastActivity = await this.#commitTime(canonicalPath, status.oid);
+    const status = parsePorcelainV2(read.output);
+    const lastActivity = read.lastActivity;
     return {
       id: repoId(canonicalPath),
       name: basename(canonicalPath),
@@ -114,6 +114,27 @@ export class RepoCatalog {
     };
   }
 
+  // The status a person reads on a card. A working tree changes with no signal,
+  // so this is a real cache with a real window, and it is display only. Nothing
+  // that deletes anything may call it: WorktreeDashboard.assertStillClean reads
+  // git directly, with its own arguments, for exactly that reason.
+  //
+  // The activity time is stored with the status rather than derived from it.
+  // That output also carries `# branch.oid`, and keying the commit-time memo on
+  // a sha the checkout has moved past would report a repository as untouched
+  // while a person commits to it. A served row therefore carries both halves
+  // from one instant, so a card never mixes a status from now with a timestamp
+  // from a minute ago. The staleness test in tests/repo-catalog.test.mjs is
+  // what caught this.
+  async statusAndActivity(path) {
+    const stored = this.identityStore?.status(path);
+    if (stored) return stored;
+    const output = await this.git(path, ["status", "--porcelain=v2", "--branch"]).catch(() => "");
+    const lastActivity = await this.#commitTime(path, parsePorcelainV2(output).oid);
+    if (output) this.identityStore?.rememberStatuses([{ path, output, lastActivity }]);
+    return { output, lastActivity };
+  }
+
   // A commit's time is part of what its sha hashes, so a stored answer for a
   // known sha cannot be wrong. Without a usable sha — an unborn branch, or a
   // status read that failed — this is exactly the previous behaviour.
@@ -124,6 +145,14 @@ export class RepoCatalog {
     const commitTime = Number(String(output).trim()) || 0;
     if (sha && commitTime > 0) this.identityStore?.rememberCommitTimes([{ sha, commitTime }]);
     return commitTime;
+  }
+
+  // Every caller that changes a working tree — a worktree created, removed, or
+  // handed to an agent — must reach this. Six of them used to assign
+  // `catalog.cache = null` directly, which now leaves a stored status behind.
+  invalidate() {
+    this.cache = null;
+    this.identityStore?.forgetStatuses();
   }
 
   async get(id) {

@@ -20,6 +20,17 @@ CREATE TABLE IF NOT EXISTS commit_times (
   updated_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS commit_times_updated ON commit_times (updated_at);
+
+CREATE TABLE IF NOT EXISTS worktree_status (
+  path         TEXT PRIMARY KEY,
+  output       TEXT NOT NULL,
+  -- The activity time read in the same instant as the status above. Storing it
+  -- here keeps a served row internally consistent: the card shows one moment,
+  -- not a status from now beside a timestamp from a minute ago.
+  last_activity INTEGER NOT NULL DEFAULT 0,
+  read_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS worktree_status_read ON worktree_status (read_at);
 `;
 
 // A commit time is part of what its sha hashes, so a row here cannot become
@@ -28,9 +39,18 @@ CREATE INDEX IF NOT EXISTS commit_times_updated ON commit_times (updated_at);
 const MAX_COMMIT_TIMES = 5_000;
 const SHA = /^[0-9a-f]{40}$/;
 
+// Unlike a commit time, a working tree changes with no signal at all: an agent
+// writes a file and nothing observable moves. So this half is a real cache with
+// a real staleness window, and it serves the display path only. Every path that
+// deletes anything reads git directly, with different arguments, through
+// repoCatalog.git — see WorktreeDashboard.assertStillClean.
+const DEFAULT_STATUS_TTL_MS = 30_000;
+
 export class RepoIdentityStore {
-  constructor({ path = process.env.CMUX_COMPANION_REPO_DB || DEFAULT_PATH } = {}) {
+  constructor({ path = process.env.CMUX_COMPANION_REPO_DB || DEFAULT_PATH, statusTtlMs = Number(process.env.CMUX_COMPANION_STATUS_TTL_MS) || DEFAULT_STATUS_TTL_MS, now = Date.now } = {}) {
     this.path = path;
+    this.statusTtlMs = Math.max(0, Number(statusTtlMs) || 0);
+    this.now = now;
     // One throw from sqlite disables the store for the life of the process. A
     // broken file must not cost a try/catch and a log line per row forever.
     this.disabled = false;
@@ -75,6 +95,45 @@ export class RepoIdentityStore {
     });
   }
 
+  // The display copy of one worktree's status. Never call this before deleting
+  // anything: a value up to the TTL old would say a worktree is clean while an
+  // agent writes to it.
+  status(path) {
+    if (this.disabled || !path || this.statusTtlMs === 0) return null;
+    return this.#read(() => {
+      const row = this.db.prepare("SELECT output, last_activity, read_at FROM worktree_status WHERE path = ?").get(String(path));
+      if (!row) return null;
+      if (this.now() - Number(row.read_at) >= this.statusTtlMs) return null;
+      return { output: String(row.output), lastActivity: Number(row.last_activity) || 0 };
+    });
+  }
+
+  rememberStatuses(entries) {
+    if (this.disabled || this.statusTtlMs === 0) return;
+    const rows = (entries || []).filter(({ path, output }) => path && typeof output === "string");
+    if (!rows.length) return;
+    this.#write(() => {
+      const at = this.now();
+      const insert = this.db.prepare("INSERT OR REPLACE INTO worktree_status (path, output, last_activity, read_at) VALUES (?, ?, ?, ?)");
+      this.db.exec("BEGIN");
+      try {
+        for (const { path, output, lastActivity } of rows) insert.run(String(path), output, Math.trunc(Number(lastActivity)) || 0, at);
+        this.db.exec("COMMIT");
+      } catch (cause) {
+        this.db.exec("ROLLBACK");
+        throw cause;
+      }
+    });
+  }
+
+  // Every place that used to null the catalog's in-memory cache must reach this
+  // too, or a stored status outlives the invalidation those callers exist to
+  // perform — a removed worktree would keep reporting its old state.
+  forgetStatuses() {
+    if (this.disabled) return;
+    this.#write(() => { this.db.prepare("DELETE FROM worktree_status").run(); });
+  }
+
   // Bounded by row count rather than by age, because age says nothing about
   // whether a commit is still checked out somewhere.
   prune() {
@@ -85,6 +144,9 @@ export class RepoIdentityStore {
           SELECT sha FROM commit_times ORDER BY updated_at DESC, sha DESC LIMIT ?
         )
       `).run(MAX_COMMIT_TIMES);
+      // An expired status row is dead weight, not a fallback: the reader
+      // already refuses it. Age is the right measure here, unlike above.
+      this.db.prepare("DELETE FROM worktree_status WHERE read_at < ?").run(this.now() - this.statusTtlMs);
     });
   }
 

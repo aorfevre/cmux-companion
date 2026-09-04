@@ -504,6 +504,53 @@ test("removes only clean, idle, non-primary worktrees while preserving their bra
   assert.deepEqual(removalOptions, { timeout: 120_000 });
 });
 
+// The safety rule of the status cache. A card may say "Clean" for up to the
+// window, but a delete must never act on that word. This is the test that
+// stands between a cached status and a person's uncommitted work.
+test("a removal reads the working tree live even with a warm status cache", async () => {
+  const store = new RepoIdentityStore({ path: ":memory:", statusTtlMs: 60_000 });
+  const statusReads = [];
+  let dirty = false;
+  const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature\0\0";
+  const repoCatalog = {
+    cache: null,
+    identityStore: store,
+    list: async () => [{ id: "repo-safe", name: "sample", root: "repo", path: "/repo/sample", branch: "main" }],
+    git: async (cwd, args) => {
+      if (args[0] === "status") statusReads.push(args.join(" "));
+      if (args[0] === "worktree" && args[1] === "list") return inventory;
+      if (args[0] === "worktree" && args[1] === "remove") return "";
+      if (args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd.endsWith("feature") ? "feature" : "main"}\n${dirty ? "? written-by-an-agent.ts\n" : ""}`;
+      if (args[0] === "log") return "1\n";
+      return "";
+    },
+    statusAndActivity: async (path) => {
+      const stored = store.status(path);
+      if (stored) return stored;
+      const output = await repoCatalog.git(path, ["status", "--porcelain=v2", "--branch"]);
+      store.rememberStatuses([{ path, output, lastActivity: 1 }]);
+      return { output, lastActivity: 1 };
+    },
+    execute: async () => { throw new Error("gh unavailable"); },
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+
+  const snapshot = await dashboard.snapshot({ workspaces: [] });
+  const feature = snapshot.repositories[0].worktrees.find((item) => !item.isPrimary);
+  assert.equal(feature.dirty, false);
+
+  // An agent writes into the worktree. The cache still says clean, and it is
+  // deliberately still inside its window.
+  dirty = true;
+  statusReads.length = 0;
+  await assert.rejects(() => dashboard.remove(feature.id), /worktree changed/);
+  assert.ok(statusReads.some((call) => call.includes("--untracked-files=all")),
+    "the delete gate must read the working tree itself, not a stored answer");
+  store.close();
+});
+
 // A release checkout under ~/.local/share/cmux-companion/releases/<sha> is
 // detached, and the updater drops release-manifest.json into it after checkout.
 // Git reports that as untracked, so the card read "1 changed" forever.

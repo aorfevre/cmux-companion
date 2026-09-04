@@ -295,12 +295,20 @@ export class WorktreeDashboard {
         const topLevel = resolve((await this.repoCatalog.git(path, ["rev-parse", "--show-toplevel"])).trim());
         if (topLevel !== path) return null;
       }
-      const statusOutput = await this.repoCatalog.git(path, ["status", "--porcelain=v2", "--branch"]).catch(() => "");
+      // The display read, which the catalog may serve from its short-lived
+      // cache. assertStillClean does not come through here.
+      const read = this.repoCatalog.statusAndActivity
+        ? await this.repoCatalog.statusAndActivity(path)
+        : { output: await this.repoCatalog.git(path, ["status", "--porcelain=v2", "--branch"]).catch(() => ""), lastActivity: null };
+      const statusOutput = read.output;
       const status = parsePorcelainV2(statusOutput);
-      // `git worktree list` already reported this checkout's commit, and the
-      // status read above reports it too. A commit's time is part of what its
-      // sha hashes, so a stored answer for a known sha cannot be wrong.
-      const lastActivity = await this.#commitTime(path, status.oid || record.head);
+      // `worktree list` is always read live and reports this checkout's commit,
+      // so it takes precedence: it is the one sha that cannot have moved on.
+      // The catalog's paired activity time is the fallback for a record without
+      // one, and the live git read is the fallback for a catalog without either.
+      const lastActivity = record.head
+        ? await this.#commitTime(path, record.head)
+        : read.lastActivity ?? await this.#commitTime(path, status.oid);
       const detached = record.detached || status.branch === "HEAD";
       const updaterArtifacts = detached ? countUpdaterArtifacts(statusOutput) : 0;
       const changedFiles = Math.max(0, status.changedFiles - updaterArtifacts);
@@ -432,10 +440,25 @@ export class WorktreeDashboard {
     const worktree = dashboard.repositories.flatMap((repository) => [...repository.worktrees, ...repository.releases]).find((item) => item.id === id);
     const target = this.targets.get(id);
     if (!worktree || !target) throw new TypeError("Unknown worktree");
+    // The snapshot's dirty flag may be served from the short-lived status
+    // cache, so the gates below must not decide on it alone. Reading the
+    // working tree once here makes every branch of this method act on the
+    // state that exists now, including the discard branch, which skips
+    // assertStillClean by design and would otherwise be the one path where a
+    // cached "clean" could destroy work.
+    const live = await this.readLiveWorktreeState(worktree, target);
+    // The snapshot's own flags decide the ordinary refusals, so their wording
+    // is unchanged. The live state is added only for the discard branch, which
+    // skips assertStillClean by design.
     assertRemovable(worktree, { discardChanges: discardChanges === true });
-    if (discardChanges !== true) await this.assertStillClean(worktree, target);
+    if (discardChanges !== true && live.changedFiles > 0) {
+      throw new TypeError("This worktree changed. Commit or stash its changes before removing it");
+    }
+    // Discarding is the destructive branch. It must act on what is on disk now,
+    // not on a status that may have been served from the display cache.
+    if (discardChanges === true) assertRemovable({ ...worktree, ...live }, { discardChanges: true });
     await this.runWorktreeRemoval(target);
-    this.repoCatalog.cache = null;
+    if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     return {
       removed: true,
@@ -468,7 +491,7 @@ export class WorktreeDashboard {
       results.push(entry);
     }
     if (results.some((entry) => entry.removed)) {
-      this.repoCatalog.cache = null;
+      if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
       this.invalidate();
     }
     return {
@@ -483,6 +506,20 @@ export class WorktreeDashboard {
 
   // A worktree can change between the snapshot and the removal, so re-read its
   // status. Untracked files count here, minus the updater's own artifacts.
+  // One live read of a working tree, for the paths that are about to change or
+  // destroy it. It never consults the status cache: the argv differs, and it
+  // goes straight to git rather than through the catalog's display read.
+  async readLiveWorktreeState(worktree, target) {
+    const output = await this.repoCatalog.git(target.path, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]).catch(() => null);
+    // A status that cannot be read tells us nothing, so the snapshot's own
+    // values stand. Refusing here would block a removal on a transient failure.
+    if (output === null) return { changedFiles: worktree.changedFiles, dirty: worktree.dirty };
+    const latest = parsePorcelainV2(output);
+    const artifacts = worktree.detached ? countUpdaterArtifacts(output) : 0;
+    const changedFiles = Math.max(0, latest.changedFiles - artifacts);
+    return { changedFiles, dirty: changedFiles > 0 };
+  }
+
   async assertStillClean(worktree, target) {
     const output = await this.repoCatalog.git(target.path, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]);
     const latest = parsePorcelainV2(output);
@@ -534,7 +571,7 @@ export class WorktreeDashboard {
     // `-D`, not `-d`: the whole point is to drop commits no base contains.
     // A branch that is already gone is not a failure.
     await this.repoCatalog.git(repository.path, ["branch", "-D", name]).catch(() => {});
-    this.repoCatalog.cache = null;
+    if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     return { removed: Boolean(worktree), branch: name, path: worktree?.path || null };
   }
@@ -585,7 +622,7 @@ export class WorktreeDashboard {
       throw new TypeError(detail ? `Git could not create this worktree: ${detail}` : "Git could not create this worktree");
     }
 
-    this.repoCatalog.cache = null;
+    if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     const refreshed = await this.snapshot({ refresh: true });
     const created = refreshed.repositories.flatMap((item) => item.worktrees).find((item) => item.path === targetPath);
@@ -645,7 +682,7 @@ export class WorktreeDashboard {
     // more. Deleting it loses nothing: every commit on it is already in the
     // base. `-D` is needed because the branch has no upstream to compare with.
     await this.repoCatalog.git(repository.path, ["branch", "-D", worktree.branch]).catch(() => {});
-    this.repoCatalog.cache = null;
+    if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     return null;
   }
