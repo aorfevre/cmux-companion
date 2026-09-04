@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { normalizePullRequest, parseGitHubRepository, parseNameStatus, RepoCatalog } from "../server/repo-catalog.mjs";
+import { RepoIdentityStore } from "../server/repo-identity-store.mjs";
 
 const exec = promisify(execFile);
 
@@ -146,4 +147,59 @@ test("a linked worktree reports the shared common directory of its repository", 
   // Both are separate checkouts, and both must resolve to one shared Git
   // directory. That is exactly what lets the dashboard collapse the alias.
   assert.equal(worktree.commonDir, primary.commonDir);
+});
+
+// `git status --porcelain=v2 --branch` already prints the commit this checkout
+// points at. A commit's time is part of what its sha hashes, so storing that
+// pair removes a whole `git log` process per repository and cannot go stale.
+test("a repository whose commit is already known runs no git log", async (t) => {
+  const { catalog } = await fixture(t);
+  catalog.identityStore = new RepoIdentityStore({ path: ":memory:" });
+  t.after(() => catalog.identityStore.close());
+  const spawned = [];
+  const run = catalog.git.bind(catalog);
+  catalog.git = async (cwd, args, options) => { spawned.push(args.slice(0, 2).join(" ")); return run(cwd, args, options); };
+
+  await catalog.list({ refresh: true });
+  assert.equal(spawned.filter((call) => call === "log -1").length, 1, "the first scan has to read it once");
+
+  spawned.length = 0;
+  await catalog.list({ refresh: true });
+  assert.equal(spawned.filter((call) => call === "log -1").length, 0, "the second scan must read the stored answer");
+});
+
+// The anti-staleness test. A stored time that outlived its commit would show a
+// repository as untouched while a person is committing to it.
+test("a new commit moves the reported activity even with a warm store", async (t) => {
+  const { repo, catalog } = await fixture(t);
+  catalog.identityStore = new RepoIdentityStore({ path: ":memory:" });
+  t.after(() => catalog.identityStore.close());
+
+  const [before] = await catalog.list({ refresh: true });
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  await git(repo, "commit", "-qm", "second", "--allow-empty");
+
+  const [after] = await catalog.list({ refresh: true });
+  assert.ok(after.lastActivity > before.lastActivity, `${after.lastActivity} must be later than ${before.lastActivity}`);
+});
+
+test("a repository with no commit yet still reports an activity of zero", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "cmux-repos-unborn-"));
+  t.after(() => exec("rm", ["-rf", root]));
+  const repo = join(root, "fresh");
+  await mkdir(repo);
+  await git(repo, "init", "-q");
+  // An unborn branch has no sha at all: git prints "# branch.oid (initial)".
+  // The store must refuse that rather than key anything on it.
+  const catalog = new RepoCatalog({ roots: [root], cacheMs: 0, identityStore: new RepoIdentityStore({ path: ":memory:" }) });
+  t.after(() => catalog.identityStore.close());
+  const [record] = await catalog.list();
+  assert.equal(record.lastActivity, 0);
+});
+
+test("a catalog with no store behaves exactly as one that never had one", async (t) => {
+  const { catalog } = await fixture(t);
+  assert.equal(catalog.identityStore, null, "the default must stay fully live");
+  const [record] = await catalog.list();
+  assert.ok(record.lastActivity > 0);
 });

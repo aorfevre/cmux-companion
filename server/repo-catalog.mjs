@@ -16,11 +16,15 @@ export class RepoCatalog {
     execute = execFileAsync,
     cacheMs = 10_000,
     inspectConcurrency = 8,
+    // Null by default, which is fully live behaviour. Only server/index.mjs
+    // opts in, so a test that builds an app never opens the real database.
+    identityStore = null,
   } = {}) {
     this.roots = roots.map((root) => resolve(root));
     this.execute = execute;
     this.cacheMs = cacheMs;
     this.inspectConcurrency = Math.max(1, Number(inspectConcurrency) || 8);
+    this.identityStore = identityStore;
     this.cache = null;
     this.prCache = new Map();
   }
@@ -56,6 +60,9 @@ export class RepoCatalog {
         return left.name.localeCompare(right.name);
       });
     this.cache = { at: Date.now(), repos };
+    // Bounded here rather than on a timer: a scan is the only thing that adds
+    // rows, so it is the only thing that can make the file grow.
+    this.identityStore?.prune();
     return repos;
   }
 
@@ -79,13 +86,13 @@ export class RepoCatalog {
     const canonicalTop = await realpath(topLevel);
     if (canonicalTop !== canonicalPath) return null;
 
-    const [statusResult, lastActivityResult, scripts, remotes] = await Promise.all([
+    const [statusResult, scripts, remotes] = await Promise.all([
       this.git(canonicalPath, ["status", "--porcelain=v2", "--branch"]).catch(() => ""),
-      this.git(canonicalPath, ["log", "-1", "--format=%ct"]).catch(() => "0"),
       readScripts(canonicalPath),
       this.git(canonicalPath, ["config", "--get-regexp", "^remote\\..*\\.url$"]).catch(() => ""),
     ]);
     const status = parsePorcelainV2(statusResult);
+    const lastActivity = await this.#commitTime(canonicalPath, status.oid);
     return {
       id: repoId(canonicalPath),
       name: basename(canonicalPath),
@@ -101,10 +108,22 @@ export class RepoCatalog {
       behind: status.behind,
       changedFiles: status.changedFiles,
       dirty: status.changedFiles > 0,
-      lastActivity: Number(lastActivityResult.trim()) || 0,
+      lastActivity,
       githubRepository: parseGitHubRepository(remotes),
       scripts,
     };
+  }
+
+  // A commit's time is part of what its sha hashes, so a stored answer for a
+  // known sha cannot be wrong. Without a usable sha — an unborn branch, or a
+  // status read that failed — this is exactly the previous behaviour.
+  async #commitTime(path, sha) {
+    const stored = sha ? this.identityStore?.commitTime(sha) : null;
+    if (stored) return stored;
+    const output = await this.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0");
+    const commitTime = Number(String(output).trim()) || 0;
+    if (sha && commitTime > 0) this.identityStore?.rememberCommitTimes([{ sha, commitTime }]);
+    return commitTime;
   }
 
   async get(id) {
@@ -268,8 +287,15 @@ export function parsePorcelainV2(output) {
   let ahead = 0;
   let behind = 0;
   let changedFiles = 0;
+  // The commit this checkout points at. Porcelain v2 prints it for free, and a
+  // commit's time is part of what its sha hashes, so it is a key that cannot go
+  // stale. On an unborn branch git prints "(initial)", which is not a sha.
+  let oid = null;
   for (const line of String(output).split("\n")) {
-    if (line.startsWith("# branch.head ")) branch = line.slice(14).trim();
+    if (line.startsWith("# branch.oid ")) {
+      const value = line.slice(13).trim();
+      oid = /^[0-9a-f]{40}$/.test(value) ? value : null;
+    } else if (line.startsWith("# branch.head ")) branch = line.slice(14).trim();
     else if (line.startsWith("# branch.ab ")) {
       const match = line.match(/\+(\d+) -(\d+)/);
       if (match) {
@@ -278,7 +304,7 @@ export function parsePorcelainV2(output) {
       }
     } else if (line && !line.startsWith("#")) changedFiles += 1;
   }
-  return { branch, ahead, behind, changedFiles };
+  return { branch, ahead, behind, changedFiles, oid };
 }
 
 export function normalizePullRequest(value) {
