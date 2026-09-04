@@ -163,6 +163,67 @@ test("a session whose rendered state changes still rescans", async () => {
 
 // A scan takes seconds and the poll runs on a fixed clock, so callers overlap.
 // Each used to spawn its own git child per repository.
+// One scan spawns a git child per command per path. It used to ask git twice
+// for facts it already held, which on a machine with many worktrees is hundreds
+// of processes for nothing.
+function countingDashboard({ repos = [REPO], worktrees = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0" } = {}) {
+  const calls = [];
+  const repoCatalog = {
+    list: async () => repos,
+    git: async (cwd, args) => {
+      calls.push(`${args.slice(0, 2).join(" ")} @ ${cwd}`);
+      if (args[0] === "worktree") return worktrees;
+      if (args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[1] === "--show-toplevel") return `${cwd}\n`;
+      if (args[0] === "status") return "# branch.head main\n";
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  return { calls, dashboard: new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path }) };
+}
+
+test("one scan never asks git the same question about the same path twice", async () => {
+  const { calls, dashboard } = countingDashboard();
+  await dashboard.snapshot();
+  const repeated = [...calls.reduce((tally, call) => tally.set(call, (tally.get(call) || 0) + 1), new Map())]
+    .filter(([, count]) => count > 1);
+  assert.deepEqual(repeated, [], "every (command, path) pair must run at most once per scan");
+});
+
+test("a path the catalog already confirmed is not re-checked as a toplevel", async () => {
+  const { calls, dashboard } = countingDashboard();
+  await dashboard.snapshot();
+  // The catalog returns only paths it proved are repository toplevels. Asking
+  // git to prove it again spawns a process to learn what the caller handed us.
+  assert.equal(calls.filter((call) => call === "rev-parse --show-toplevel @ /repo/sample").length, 0);
+});
+
+// The alias collapse means one repository inspects worktrees the catalog listed
+// under a different alias. Those paths are still catalogued, so they are still
+// known toplevels — a set holding only the inspecting repository's own path
+// would miss every one of them.
+test("a worktree catalogued under another alias is also treated as known", async () => {
+  const alias = { ...REPO, id: "repo-alias-12345678", path: "/repo/sample-feature", name: "sample-feature" };
+  const { calls, dashboard } = countingDashboard({
+    repos: [REPO, alias],
+    worktrees: "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature\0\0",
+  });
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call === "rev-parse --show-toplevel @ /repo/sample-feature").length, 0);
+});
+
+test("a path the catalog never listed is still checked before it is trusted", async () => {
+  const { calls, dashboard } = countingDashboard({
+    // Git reports a worktree the catalog never returned. It is unproven, so it
+    // must be verified rather than assumed to be a repository toplevel.
+    worktrees: "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /elsewhere/stray\0HEAD cccccccc\0branch refs/heads/stray\0\0",
+  });
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call === "rev-parse --show-toplevel @ /elsewhere/stray").length, 1);
+});
+
 test("callers that overlap one scan share it instead of starting their own", async () => {
   let release = () => {};
   const gate = { promise: new Promise((resolve) => { release = resolve; }) };

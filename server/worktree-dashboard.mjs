@@ -113,10 +113,19 @@ export class WorktreeDashboard {
     const scopedRepositoryIds = Array.isArray(refreshGitHubRepositoryIds)
       ? new Set(refreshGitHubRepositoryIds.map(String))
       : refreshGitHubRepositoryId ? new Set([String(refreshGitHubRepositoryId)]) : null;
-    const inspected = await mapWithConcurrency(uniqueRepos, this.repositoryConcurrency, (repo) => this.inspectRepository(repo, {
+    // The catalog proved every path it returned is a repository toplevel, and
+    // #uniqueRepositoryCandidates already resolved each common directory. Both
+    // facts are passed down rather than asked of git a second time. The set
+    // holds every catalogued path, not just this repository's own, because the
+    // alias collapse above means one repository inspects worktrees that the
+    // catalog listed under a different alias.
+    const knownToplevels = new Set(repos.map((repo) => repo.path));
+    const inspected = await mapWithConcurrency(uniqueRepos, this.repositoryConcurrency, ({ repo, commonDir }) => this.inspectRepository(repo, {
       refreshGitHub,
       refreshGitHubRepositoryIds: scopedRepositoryIds,
       targets,
+      commonDir,
+      knownToplevels,
     }));
     const repositories = dedupeRepositories(inspected.filter(Boolean));
     if (refreshGitHub) this.githubCheckedAt = new Date().toISOString();
@@ -214,12 +223,17 @@ export class WorktreeDashboard {
     for (const candidate of identified) {
       const current = unique.get(candidate.commonDir);
       const primaryPath = dirname(candidate.commonDir);
-      if (!current || candidate.repo.path === primaryPath) unique.set(candidate.commonDir, candidate.repo);
+      // The common directory is kept with the repository it identifies, so
+      // inspectRepository never has to resolve the same path again.
+      if (!current || candidate.repo.path === primaryPath) unique.set(candidate.commonDir, candidate);
     }
     return [...unique.values()];
   }
 
-  async inspectRepository(repo, { refreshGitHub = false, refreshGitHubRepositoryIds = null, targets = this.targets } = {}) {
+  // `commonDir` and `knownToplevels` are what the caller already learned. Both
+  // default to nothing, so a direct caller and the tests still work: the values
+  // are resolved from git exactly as before when they are absent.
+  async inspectRepository(repo, { refreshGitHub = false, refreshGitHubRepositoryIds = null, targets = this.targets, commonDir: knownCommonDir = null, knownToplevels = null } = {}) {
     let records;
     try {
       records = parseWorktreeList(await this.repoCatalog.git(repo.path, ["worktree", "list", "--porcelain", "-z"]));
@@ -227,13 +241,13 @@ export class WorktreeDashboard {
       records = [{ path: repo.path, head: null, branch: repo.branch, detached: false, locked: null, prunable: null }];
     }
     const primaryPath = await this.canonicalize(records[0]?.path || repo.path).catch(() => resolve(records[0]?.path || repo.path));
-    const commonDir = await this.repoCatalog.git(repo.path, ["rev-parse", "--git-common-dir"])
+    const commonDir = knownCommonDir || await this.repoCatalog.git(repo.path, ["rev-parse", "--git-common-dir"])
       .then((output) => resolve(repo.path, output.trim()))
       .catch(() => resolve(primaryPath, ".git"));
     const repositoryId = repositoryKey(commonDir);
     const shouldRefreshGitHub = refreshGitHub && (!refreshGitHubRepositoryIds || refreshGitHubRepositoryIds.has(repositoryId));
     const [worktrees, pullRequests] = await Promise.all([
-      mapWithConcurrency(records, this.repositoryConcurrency, (record) => this.inspectWorktree(repo, record, { primaryPath, repositoryId, targets })),
+      mapWithConcurrency(records, this.repositoryConcurrency, (record) => this.inspectWorktree(repo, record, { primaryPath, repositoryId, targets, knownToplevels })),
       this.loadPullRequests(repo, { refresh: shouldRefreshGitHub, cacheKey: repositoryId }),
     ]);
     const valid = worktrees.filter(Boolean);
@@ -254,11 +268,17 @@ export class WorktreeDashboard {
     };
   }
 
-  async inspectWorktree(repo, record, { primaryPath = resolve(repo.path), repositoryId = repo.id, targets = this.targets } = {}) {
+  async inspectWorktree(repo, record, { primaryPath = resolve(repo.path), repositoryId = repo.id, targets = this.targets, knownToplevels = null } = {}) {
     try {
       const path = await this.canonicalize(record.path);
-      const topLevel = resolve((await this.repoCatalog.git(path, ["rev-parse", "--show-toplevel"])).trim());
-      if (topLevel !== path) return null;
+      // The check is that this path is its own repository toplevel, which is
+      // how a directory inside a repository is rejected. The catalog already
+      // proved that for the paths it returned, so asking git again spawns a
+      // process to learn something the caller handed us.
+      if (!knownToplevels?.has(path)) {
+        const topLevel = resolve((await this.repoCatalog.git(path, ["rev-parse", "--show-toplevel"])).trim());
+        if (topLevel !== path) return null;
+      }
       const [statusOutput, lastActivityOutput] = await Promise.all([
         this.repoCatalog.git(path, ["status", "--porcelain=v2", "--branch"]).catch(() => ""),
         this.repoCatalog.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0"),
