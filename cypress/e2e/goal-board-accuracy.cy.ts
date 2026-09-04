@@ -115,6 +115,7 @@ describe("goal board matches live cmux evidence", () => {
 
     const merged = { ...waitingMerge, health: null, boardStatus: "merged", boardPrState: "MERGED", boardState: "merged" };
     advance(merged);
+    cy.findByRole("button", { name: "Expand Merged" }).click();
     expectColumn("Merged");
     cy.findAllByText(goal).should("have.length", 1);
   });
