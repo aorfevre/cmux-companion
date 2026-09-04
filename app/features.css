@@ -353,6 +353,7 @@
 .board-bar .board-new-goal{margin-left:auto}
 .board-bar .text-button{flex:none;color:#8c959f;font-size:10px}
 .board-bar .text-button:hover:not(:disabled),.board-bar .text-button:focus-visible:not(:disabled){color:var(--lime)}
+.board-bar .board-reap-button:disabled{opacity:.5}
 
 /* The capacity verdict as one chip. The full strip opens beneath it and keeps
    every number; this only says which provider is next and how much is left. */
