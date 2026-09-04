@@ -55,6 +55,9 @@ export class WorktreeDashboard {
     this.cache = null;
     this.pullRequestCache = new Map();
     this.pullRequestPending = new Map();
+    // One scan per distinct set of inputs, shared by every caller that arrives
+    // while it runs. Entries are deleted the moment their scan settles.
+    this.pendingSnapshots = new Map();
     this.githubCheckedAt = null;
     this.targets = new Map();
     // A directory of repository id to name and primary path, written by every
@@ -64,11 +67,19 @@ export class WorktreeDashboard {
     this.repositoriesById = new Map();
   }
 
-  async snapshot({ workspaces = [], refresh = false, refreshGitHub = false, refreshGitHubRepositoryId = null, refreshGitHubRepositoryIds = null } = {}) {
+  async snapshot(options = {}) {
+    const { workspaces = [], refresh = false, refreshGitHub = false } = options;
+    // `last_activity_at` is deliberately absent. A running agent rewrites that
+    // stamp every few seconds, so including it made the signature differ on
+    // every poll, the cache never hit, and each ten-second poll ran a full scan
+    // that took longer than the interval. The scans then piled up and saturated
+    // the machine. Every other field here still changes a rendered state — the
+    // pill, the orb, the attention count — so a session that actually changes
+    // still busts the cache at once. The cost is that a relative time may be up
+    // to `cacheMs` old, which is below the granularity this dashboard renders.
     const workspaceSignature = (workspaces || []).map((workspace) => [
       workspace.id,
       workspace.current_directory,
-      workspace.last_activity_at,
       workspace.has_unread,
       workspace.status?.effective,
       workspace.status?.signals?.any_agent_needs_input,
@@ -77,7 +88,21 @@ export class WorktreeDashboard {
     if (!refresh && !refreshGitHub && this.cache && Date.now() - this.cache.at < this.cacheMs && this.cache.workspaceSignature === workspaceSignature) {
       return this.cache.value;
     }
+    // A scan takes seconds and the dashboard polls on a fixed clock, so a second
+    // caller arrives while the first is still running. Without this, each one
+    // spawned its own git child per repository and the machine saturated. They
+    // now share one scan. The key holds every input that changes the result, so
+    // two callers never share a scan that answers only one of them.
+    const pendingKey = JSON.stringify([workspaceSignature, refresh, refreshGitHub, options.refreshGitHubRepositoryId ?? null, options.refreshGitHubRepositoryIds ?? null]);
+    const inFlight = this.pendingSnapshots.get(pendingKey);
+    if (inFlight) return inFlight;
+    const scan = this.#scan(options, workspaceSignature);
+    this.pendingSnapshots.set(pendingKey, scan);
+    try { return await scan; }
+    finally { this.pendingSnapshots.delete(pendingKey); }
+  }
 
+  async #scan({ workspaces = [], refresh = false, refreshGitHub = false, refreshGitHubRepositoryId = null, refreshGitHubRepositoryIds = null } = {}, workspaceSignature = "") {
     const repos = await this.repoCatalog.list({ refresh });
     // RepoCatalog intentionally sees each top-level linked worktree. Expanding
     // `git worktree list` from every one of those aliases multiplies the same
