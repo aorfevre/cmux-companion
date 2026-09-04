@@ -113,10 +113,19 @@ export class WorktreeDashboard {
     const scopedRepositoryIds = Array.isArray(refreshGitHubRepositoryIds)
       ? new Set(refreshGitHubRepositoryIds.map(String))
       : refreshGitHubRepositoryId ? new Set([String(refreshGitHubRepositoryId)]) : null;
-    const inspected = await mapWithConcurrency(uniqueRepos, this.repositoryConcurrency, (repo) => this.inspectRepository(repo, {
+    // The catalog proved every path it returned is a repository toplevel, and
+    // #uniqueRepositoryCandidates already resolved each common directory. Both
+    // facts are passed down rather than asked of git a second time. The set
+    // holds every catalogued path, not just this repository's own, because the
+    // alias collapse above means one repository inspects worktrees that the
+    // catalog listed under a different alias.
+    const knownToplevels = new Set(repos.map((repo) => repo.path));
+    const inspected = await mapWithConcurrency(uniqueRepos, this.repositoryConcurrency, ({ repo, commonDir }) => this.inspectRepository(repo, {
       refreshGitHub,
       refreshGitHubRepositoryIds: scopedRepositoryIds,
       targets,
+      commonDir,
+      knownToplevels,
     }));
     const repositories = dedupeRepositories(inspected.filter(Boolean));
     if (refreshGitHub) this.githubCheckedAt = new Date().toISOString();
@@ -203,9 +212,25 @@ export class WorktreeDashboard {
     }
   }
 
+  // The same memo the catalog uses, reached through the catalog rather than
+  // injected separately, so one store serves both and a catalog without one is
+  // fully live on both sides.
+  async #commitTime(path, sha) {
+    const store = this.repoCatalog.identityStore;
+    const stored = sha ? store?.commitTime(sha) : null;
+    if (stored) return stored;
+    const output = await this.repoCatalog.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0");
+    const commitTime = Number(String(output).trim()) || 0;
+    if (sha && commitTime > 0) store?.rememberCommitTimes([{ sha, commitTime }]);
+    return commitTime;
+  }
+
   async #uniqueRepositoryCandidates(repos) {
     const identified = await mapWithConcurrency(repos, this.repositoryConcurrency, async (repo) => {
-      const commonDir = await this.repoCatalog.git(repo.path, ["rev-parse", "--git-common-dir"])
+      // The catalog resolves this while it inspects each candidate. The git
+      // call below is the fallback for a catalog that does not report it,
+      // which every injected test double is.
+      const commonDir = repo.commonDir || await this.repoCatalog.git(repo.path, ["rev-parse", "--git-common-dir"])
         .then((output) => resolve(repo.path, output.trim()))
         .catch(() => resolve(repo.path, ".git"));
       return { repo, commonDir };
@@ -214,12 +239,17 @@ export class WorktreeDashboard {
     for (const candidate of identified) {
       const current = unique.get(candidate.commonDir);
       const primaryPath = dirname(candidate.commonDir);
-      if (!current || candidate.repo.path === primaryPath) unique.set(candidate.commonDir, candidate.repo);
+      // The common directory is kept with the repository it identifies, so
+      // inspectRepository never has to resolve the same path again.
+      if (!current || candidate.repo.path === primaryPath) unique.set(candidate.commonDir, candidate);
     }
     return [...unique.values()];
   }
 
-  async inspectRepository(repo, { refreshGitHub = false, refreshGitHubRepositoryIds = null, targets = this.targets } = {}) {
+  // `commonDir` and `knownToplevels` are what the caller already learned. Both
+  // default to nothing, so a direct caller and the tests still work: the values
+  // are resolved from git exactly as before when they are absent.
+  async inspectRepository(repo, { refreshGitHub = false, refreshGitHubRepositoryIds = null, targets = this.targets, commonDir: knownCommonDir = null, knownToplevels = null } = {}) {
     let records;
     try {
       records = parseWorktreeList(await this.repoCatalog.git(repo.path, ["worktree", "list", "--porcelain", "-z"]));
@@ -227,13 +257,13 @@ export class WorktreeDashboard {
       records = [{ path: repo.path, head: null, branch: repo.branch, detached: false, locked: null, prunable: null }];
     }
     const primaryPath = await this.canonicalize(records[0]?.path || repo.path).catch(() => resolve(records[0]?.path || repo.path));
-    const commonDir = await this.repoCatalog.git(repo.path, ["rev-parse", "--git-common-dir"])
+    const commonDir = knownCommonDir || await this.repoCatalog.git(repo.path, ["rev-parse", "--git-common-dir"])
       .then((output) => resolve(repo.path, output.trim()))
       .catch(() => resolve(primaryPath, ".git"));
     const repositoryId = repositoryKey(commonDir);
     const shouldRefreshGitHub = refreshGitHub && (!refreshGitHubRepositoryIds || refreshGitHubRepositoryIds.has(repositoryId));
     const [worktrees, pullRequests] = await Promise.all([
-      mapWithConcurrency(records, this.repositoryConcurrency, (record) => this.inspectWorktree(repo, record, { primaryPath, repositoryId, targets })),
+      mapWithConcurrency(records, this.repositoryConcurrency, (record) => this.inspectWorktree(repo, record, { primaryPath, repositoryId, targets, knownToplevels })),
       this.loadPullRequests(repo, { refresh: shouldRefreshGitHub, cacheKey: repositoryId }),
     ]);
     const valid = worktrees.filter(Boolean);
@@ -254,16 +284,31 @@ export class WorktreeDashboard {
     };
   }
 
-  async inspectWorktree(repo, record, { primaryPath = resolve(repo.path), repositoryId = repo.id, targets = this.targets } = {}) {
+  async inspectWorktree(repo, record, { primaryPath = resolve(repo.path), repositoryId = repo.id, targets = this.targets, knownToplevels = null } = {}) {
     try {
       const path = await this.canonicalize(record.path);
-      const topLevel = resolve((await this.repoCatalog.git(path, ["rev-parse", "--show-toplevel"])).trim());
-      if (topLevel !== path) return null;
-      const [statusOutput, lastActivityOutput] = await Promise.all([
-        this.repoCatalog.git(path, ["status", "--porcelain=v2", "--branch"]).catch(() => ""),
-        this.repoCatalog.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0"),
-      ]);
+      // The check is that this path is its own repository toplevel, which is
+      // how a directory inside a repository is rejected. The catalog already
+      // proved that for the paths it returned, so asking git again spawns a
+      // process to learn something the caller handed us.
+      if (!knownToplevels?.has(path)) {
+        const topLevel = resolve((await this.repoCatalog.git(path, ["rev-parse", "--show-toplevel"])).trim());
+        if (topLevel !== path) return null;
+      }
+      // The display read, which the catalog may serve from its short-lived
+      // cache. assertStillClean does not come through here.
+      const read = this.repoCatalog.statusAndActivity
+        ? await this.repoCatalog.statusAndActivity(path)
+        : { output: await this.repoCatalog.git(path, ["status", "--porcelain=v2", "--branch"]).catch(() => ""), lastActivity: null };
+      const statusOutput = read.output;
       const status = parsePorcelainV2(statusOutput);
+      // `worktree list` is always read live and reports this checkout's commit,
+      // so it takes precedence: it is the one sha that cannot have moved on.
+      // The catalog's paired activity time is the fallback for a record without
+      // one, and the live git read is the fallback for a catalog without either.
+      const lastActivity = record.head
+        ? await this.#commitTime(path, record.head)
+        : read.lastActivity ?? await this.#commitTime(path, status.oid);
       const detached = record.detached || status.branch === "HEAD";
       const updaterArtifacts = detached ? countUpdaterArtifacts(statusOutput) : 0;
       const changedFiles = Math.max(0, status.changedFiles - updaterArtifacts);
@@ -287,7 +332,7 @@ export class WorktreeDashboard {
         updaterArtifacts,
         shortSha: managedRelease ? basename(path).slice(0, 7) : undefined,
         dirty: changedFiles > 0,
-        lastActivity: Number(lastActivityOutput.trim()) || 0,
+        lastActivity,
         pullRequest: null,
         sessions: [],
         state: { label: "No session", tone: "ready" },
@@ -395,10 +440,25 @@ export class WorktreeDashboard {
     const worktree = dashboard.repositories.flatMap((repository) => [...repository.worktrees, ...repository.releases]).find((item) => item.id === id);
     const target = this.targets.get(id);
     if (!worktree || !target) throw new TypeError("Unknown worktree");
+    // The snapshot's dirty flag may be served from the short-lived status
+    // cache, so the gates below must not decide on it alone. Reading the
+    // working tree once here makes every branch of this method act on the
+    // state that exists now, including the discard branch, which skips
+    // assertStillClean by design and would otherwise be the one path where a
+    // cached "clean" could destroy work.
+    const live = await this.readLiveWorktreeState(worktree, target);
+    // The snapshot's own flags decide the ordinary refusals, so their wording
+    // is unchanged. The live state is added only for the discard branch, which
+    // skips assertStillClean by design.
     assertRemovable(worktree, { discardChanges: discardChanges === true });
-    if (discardChanges !== true) await this.assertStillClean(worktree, target);
+    if (discardChanges !== true && live.changedFiles > 0) {
+      throw new TypeError("This worktree changed. Commit or stash its changes before removing it");
+    }
+    // Discarding is the destructive branch. It must act on what is on disk now,
+    // not on a status that may have been served from the display cache.
+    if (discardChanges === true) assertRemovable({ ...worktree, ...live }, { discardChanges: true });
     await this.runWorktreeRemoval(target);
-    this.repoCatalog.cache = null;
+    if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     return {
       removed: true,
@@ -431,7 +491,7 @@ export class WorktreeDashboard {
       results.push(entry);
     }
     if (results.some((entry) => entry.removed)) {
-      this.repoCatalog.cache = null;
+      if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
       this.invalidate();
     }
     return {
@@ -446,6 +506,20 @@ export class WorktreeDashboard {
 
   // A worktree can change between the snapshot and the removal, so re-read its
   // status. Untracked files count here, minus the updater's own artifacts.
+  // One live read of a working tree, for the paths that are about to change or
+  // destroy it. It never consults the status cache: the argv differs, and it
+  // goes straight to git rather than through the catalog's display read.
+  async readLiveWorktreeState(worktree, target) {
+    const output = await this.repoCatalog.git(target.path, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]).catch(() => null);
+    // A status that cannot be read tells us nothing, so the snapshot's own
+    // values stand. Refusing here would block a removal on a transient failure.
+    if (output === null) return { changedFiles: worktree.changedFiles, dirty: worktree.dirty };
+    const latest = parsePorcelainV2(output);
+    const artifacts = worktree.detached ? countUpdaterArtifacts(output) : 0;
+    const changedFiles = Math.max(0, latest.changedFiles - artifacts);
+    return { changedFiles, dirty: changedFiles > 0 };
+  }
+
   async assertStillClean(worktree, target) {
     const output = await this.repoCatalog.git(target.path, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]);
     const latest = parsePorcelainV2(output);
@@ -497,7 +571,7 @@ export class WorktreeDashboard {
     // `-D`, not `-d`: the whole point is to drop commits no base contains.
     // A branch that is already gone is not a failure.
     await this.repoCatalog.git(repository.path, ["branch", "-D", name]).catch(() => {});
-    this.repoCatalog.cache = null;
+    if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     return { removed: Boolean(worktree), branch: name, path: worktree?.path || null };
   }
@@ -548,7 +622,7 @@ export class WorktreeDashboard {
       throw new TypeError(detail ? `Git could not create this worktree: ${detail}` : "Git could not create this worktree");
     }
 
-    this.repoCatalog.cache = null;
+    if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     const refreshed = await this.snapshot({ refresh: true });
     const created = refreshed.repositories.flatMap((item) => item.worktrees).find((item) => item.path === targetPath);
@@ -608,7 +682,7 @@ export class WorktreeDashboard {
     // more. Deleting it loses nothing: every commit on it is already in the
     // base. `-D` is needed because the branch has no upstream to compare with.
     await this.repoCatalog.git(repository.path, ["branch", "-D", worktree.branch]).catch(() => {});
-    this.repoCatalog.cache = null;
+    if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     return null;
   }

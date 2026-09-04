@@ -340,7 +340,9 @@ export async function buildApp({
       prompt,
       script,
     });
-    repoCatalog.cache = null;
+    // Launching an agent into a repository changes its working tree, so the
+    // cached status must go with the cached listing.
+    if (repoCatalog.invalidate) repoCatalog.invalidate(); else repoCatalog.cache = null;
     return reply.code(201).send({ workspace: created, repo: { id: repo.id, name: repo.name } });
   });
 
