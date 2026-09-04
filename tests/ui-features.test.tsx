@@ -1210,7 +1210,7 @@ describe("goals board", () => {
   const review = plan({ planId: "plan-review", goal: "Review the spec", running: true, runPhase: "running", runStage: "review_spec", runStep: "Anything at all", boardState: "review_spec" });
   const waitingDev = plan({ planId: "plan-waiting-dev", goal: "Ready to launch work", taskCount: 3, boardState: "waiting_for_dev", sourceType: "github_issues", issueNumbers: [42] });
   const devInProgress = plan({ planId: "plan-dev", goal: "Agents are coding", status: "launched", taskCount: 2, deliveryStatus: "planning", launchedAt: now, boardState: "dev_in_progress" });
-  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "waiting_for_merge", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
+  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, followupCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "waiting_for_merge", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
   const merged = plan({ planId: "plan-merged", goal: "Merged already", status: "launched", taskCount: 4, launchedAt: now, boardState: "merged", boardStatus: "merged", boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12" });
   const aborted = plan({ planId: "plan-aborted", goal: "Stopped on purpose", taskCount: 1, boardState: "aborted", boardStatus: "aborted", boardChangedAt: now });
   // A launched goal whose agents died. It used to read as "Dev in progress",
@@ -1485,6 +1485,71 @@ describe("goals board", () => {
     assert.ok(within(card("Agents are coding")).getByRole("button", { name: "View Agents are coding" }));
     assert.ok(within(card("Merged already")).getByRole("button", { name: "View Merged already" }));
     assert.ok(within(card("Stopped on purpose")).getByRole("button", { name: "View Stopped on purpose" }));
+    assert.ok(within(card("Waiting on the PR")).getByText("2 follow-ups"));
+  });
+
+  test("offers follow-up actions only on Waiting for merge and submits several actions in one request", async () => {
+    const issue = { repositoryId: "repo-karven", repositoryName: "trust-layer", number: 91, title: "Issue without follow-ups", labels: [], url: "https://github.test/issues/91", updatedAt: now, syncedAt: now, planId: null };
+    let planReads = 0;
+    const fetchMock = mountBoard(allPlans, (url, init) => {
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: now, issues: [issue] }), { status: 200 });
+      if (url === "/api/worktree-plans/plan-merge/followups" && init?.method === "POST") return new Response(JSON.stringify({ planId: "plan-merge", workspaceId: "followup-workspace", agent: "codex", actions: ["question", "review"], branch: "goal/merge", worktreePath: "/repo/goal-merge", pullRequest: { number: 77, url: "https://github.test/pr/77" }, title: "Follow up" }), { status: 200 });
+      if (url.startsWith("/api/worktree-plans") && (!init?.method || init.method === "GET")) { planReads += 1; return new Response(JSON.stringify({ plans: allPlans }), { status: 200 }); }
+      return null;
+    });
+    const board = await openBoard();
+    await within(board).findByText(issue.title);
+    const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
+
+    assert.ok(within(card("Waiting on the PR")).getByRole("button", { name: "More actions for Waiting on the PR" }));
+    for (const goal of ["Its agent died", "Agents are coding", "Merged already", "Stopped on purpose"]) {
+      assert.equal(within(card(goal)).queryByRole("button", { name: /More actions/ }), null, goal);
+    }
+    const issueCard = within(board).getByText(issue.title).closest("article") as HTMLElement;
+    assert.equal(within(issueCard).queryByRole("button", { name: /More actions/ }), null);
+
+    await userEvent.click(within(card("Waiting on the PR")).getByRole("button", { name: "More actions for Waiting on the PR" }));
+    const sheet = screen.getByRole("dialog", { name: "More actions for Waiting on the PR" });
+    for (const label of ["Ask a question", "More unit and e2e tests", "Complete code review", "Something else"]) assert.ok(within(sheet).getByText(label));
+    assert.equal((within(sheet).getByRole("radio", { name: "Claude" }) as HTMLInputElement).checked, true);
+
+    const postCount = () => fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/followups") && init?.method === "POST").length;
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+    assert.ok(await within(sheet).findByText("Pick at least one follow-up action"));
+    assert.equal(postCount(), 0);
+
+    await userEvent.click(within(sheet).getByRole("checkbox", { name: /^Ask a question/ }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+    assert.ok(await within(sheet).findByText("Write the question you want answered"));
+    assert.equal(postCount(), 0);
+
+    await userEvent.type(within(sheet).getByRole("textbox", { name: "Ask a question details" }), "Which edge cases remain?");
+    await userEvent.click(within(sheet).getByRole("checkbox", { name: /^Complete code review/ }));
+    await userEvent.click(within(sheet).getByRole("radio", { name: "Codex" }));
+    const readsBeforeSubmit = planReads;
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+
+    await waitFor(() => assert.equal(postCount(), 1));
+    const post = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/followups") && init?.method === "POST");
+    assert.equal(String(post?.[0]), "/api/worktree-plans/plan-merge/followups");
+    assert.deepEqual(JSON.parse(String(post?.[1]?.body)), { actions: ["question", "review"], question: "Which edge cases remain?", agent: "codex" });
+    await waitFor(() => assert.equal(screen.queryByRole("dialog", { name: "More actions for Waiting on the PR" }), null));
+    await waitFor(() => assert.ok(planReads > readsBeforeSubmit));
+  });
+
+  test("keeps the follow-up sheet open when the server refuses the request", async () => {
+    const fetchMock = mountBoard(allPlans, (url, init) => url === "/api/worktree-plans/plan-merge/followups" && init?.method === "POST"
+      ? new Response(JSON.stringify({ error: "The pull request branch is no longer available", code: "FOLLOWUP_BRANCH_MISSING" }), { status: 400 })
+      : null);
+    const board = await openBoard();
+    await userEvent.click(within(board).getByRole("button", { name: "More actions for Waiting on the PR" }));
+    const sheet = screen.getByRole("dialog", { name: "More actions for Waiting on the PR" });
+    await userEvent.click(within(sheet).getByRole("checkbox", { name: /^More unit and e2e tests/ }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+
+    assert.ok(await within(sheet).findByText("The pull request branch is no longer available"));
+    assert.ok(screen.getByRole("dialog", { name: "More actions for Waiting on the PR" }));
+    assert.equal(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/followups") && init?.method === "POST").length, 1);
   });
 
   test("makes a blocked merge agree with cmux evidence, counters, and focus actions", async () => {

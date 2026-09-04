@@ -251,6 +251,7 @@
 .goal-board-card>footer button{min-height:32px;border:1px solid var(--line);border-radius:8px;background:#20252c;color:#b8c0c8;padding:6px 8px;font-size:8px}
 .goal-board-card>footer .goal-board-open{border-color:#52632f;background:#18200f;color:var(--lime);font-weight:800}
 .goal-board-card>footer .goal-board-abort,.goal-board-card>footer .confirm-abort{border-color:rgba(255,109,120,.3);background:rgba(255,109,120,.06);color:#f08c95}
+.goal-board-card>footer .goal-board-more{grid-column:1/-1;border-color:#394652;background:#171d23;color:#b7c2cc}
 .goal-board-card>footer button:disabled{opacity:.5}
 .goal-board-abort-confirm{display:flex;flex-direction:column;gap:7px}
 .goal-board-abort-confirm>span{color:#ffb2b9;font-size:7px;line-height:1.55}
@@ -271,12 +272,36 @@
 .goal-board-ready{position:relative;display:flex;align-items:center;margin:0;border-radius:6px;background:#1b2127;padding:4px 6px;overflow:hidden}
 .goal-board-ready i{position:absolute;top:0;bottom:0;left:0;background:rgba(201,255,80,.14)}
 .goal-board-ready span{position:relative;color:#b6ca8d;font-size:7px;font-weight:800}
-.goal-board-agents{margin:0;color:#8b96a1;font-size:7px;font-weight:700}
+.goal-board-agents,.goal-board-followups{margin:0;color:#8b96a1;font-size:7px;font-weight:700}
 .goal-board-task-codes{display:flex;flex-wrap:wrap;gap:4px;margin:0}
 .goal-board-task-codes code{border:1px solid rgba(159,196,255,.28);border-radius:6px;background:rgba(159,196,255,.07);color:#9fc4ff;padding:2px 5px;font-size:7px;font-weight:800}
 .goal-board-issues{display:flex;flex-wrap:wrap;gap:4px;margin:0}
 .goal-board-issues a,.goal-board-issues span{border:1px solid #34404a;border-radius:6px;background:#1b2127;color:#9fc4ff;padding:2px 5px;font-size:7px;font-weight:700;text-decoration:none}
 .goal-board-issues span{color:#8b96a1}
+
+/* One follow-up request may carry several actions, so the sheet keeps the
+   choices together and has one submit row. It inherits the standard dialog
+   shell and backdrop used by the other worktree planners. */
+.goal-followup-sheet{width:min(100%,620px)}
+.goal-followup-options{display:flex;flex-direction:column;gap:7px;margin-bottom:12px}
+.goal-followup-options>div{border:1px solid #29323a;border-radius:11px;background:#151a20;padding:9px}
+.goal-followup-options>div.selected{border-color:#465463;background:#182028}
+.goal-followup-option{display:grid!important;grid-template-columns:18px minmax(0,1fr);align-items:start;gap:8px!important;margin:0!important;cursor:pointer}
+.goal-followup-option input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--lime)}
+.goal-followup-option>span{display:flex;min-width:0;flex-direction:column;gap:3px}
+.goal-followup-option strong{color:#e3e8ec;font-size:9px;line-height:1.4}
+.goal-followup-option small{color:#838e98;font-size:7px;line-height:1.45}
+.goal-followup-text{margin:9px 0 0 26px!important}
+.goal-followup-text>span{font-size:7px}
+.goal-followup-text textarea{min-height:70px;font-size:11px}
+.worktree-launcher .goal-followup-agents{grid-template-columns:repeat(2,minmax(0,1fr))}
+.goal-followup-agents label{display:flex!important;min-height:38px;align-items:center;justify-content:center;gap:7px!important;margin:0!important;border:1px solid var(--line);border-radius:9px;background:#191e24;color:#b8c0c8;font-size:9px;cursor:pointer}
+.goal-followup-agents label.selected{border-color:#586d31;background:#18200f;color:var(--lime)}
+.goal-followup-agents input{accent-color:var(--lime)}
+.goal-followup-submit{display:grid;grid-template-columns:1fr 2fr;gap:7px}
+.goal-followup-submit button{min-height:42px;border:1px solid var(--line);border-radius:10px;background:#20252c;color:#b8c0c8;font-size:9px}
+.goal-followup-submit .primary-button{border-color:var(--lime);background:var(--lime);color:#10150b}
+.goal-followup-submit button:disabled{opacity:.5}
 
 /* The GitHub Issues column. It reuses .goal-board-column and
    .goal-board-card wholesale; only the issue-specific parts are new. */
@@ -430,12 +455,26 @@
   .goal-board-empty{font-size:11px}
   .goal-board-card>strong{font-size:13px}
   .goal-board-card-meta,.goal-board-card-evidence{font-size:11px}
-  .goal-board-health b,.goal-board-health span,.goal-board-ready span,.goal-board-agents,.goal-board-task-codes code{font-size:11px}
+  .goal-board-health b,.goal-board-health span,.goal-board-ready span,.goal-board-agents,.goal-board-followups,.goal-board-task-codes code{font-size:11px}
   .goal-board-issues a,.goal-board-issues span{font-size:11px}
   .github-issue-repository,.github-issue-number,.github-issue-labels span,.github-issue-link{font-size:11px}
   .github-issue-card>footer .github-issue-start{min-height:36px;font-size:11px}
   .goal-board-pr{font-size:11px}
   .goal-board-card>footer button{min-height:36px;font-size:11px}
+  .goal-followup-sheet>header strong{font-size:17px}
+  .goal-followup-sheet>header span{font-size:11px}
+  .goal-followup-options{gap:9px;margin-bottom:14px}
+  .goal-followup-options>div{padding:12px}
+  .goal-followup-option{grid-template-columns:20px minmax(0,1fr);gap:10px!important}
+  .goal-followup-option input{width:18px;height:18px}
+  .goal-followup-option strong{font-size:13px}
+  .goal-followup-option small,.goal-followup-text>span{font-size:11px}
+  .goal-followup-text{margin-left:30px!important}
+  .goal-followup-text textarea{min-height:82px;font-size:13px}
+  .goal-followup-agents legend{font-size:11px}
+  .goal-followup-agents label{min-height:44px;font-size:12px}
+  .goal-followup-submit{gap:9px}
+  .goal-followup-submit button{min-height:46px;font-size:12px}
   .goal-board-abort-confirm>span{font-size:11px}
   .agent-capacity h3{font-size:13px}
   .agent-capacity-verdict,.agent-capacity-reason,.agent-capacity-note{font-size:12px}
