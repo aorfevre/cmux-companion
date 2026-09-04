@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { RepoIdentityStore } from "../server/repo-identity-store.mjs";
 import { RepositoryArchive } from "../server/repository-archive.mjs";
 import { RepositoryFavorites } from "../server/repository-favorites.mjs";
 import { WorktreeDashboard, countUpdaterArtifacts, isManagedReleasePath, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
@@ -166,7 +167,11 @@ test("a session whose rendered state changes still rescans", async () => {
 // One scan spawns a git child per command per path. It used to ask git twice
 // for facts it already held, which on a machine with many worktrees is hundreds
 // of processes for nothing.
-function countingDashboard({ repos = [REPO], worktrees = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0" } = {}) {
+// A real forty-character sha, because that is what the commit-time memo keys on
+// and an eight-character stand-in would be refused for the wrong reason.
+const HEAD_SHA = "a".repeat(40);
+
+function countingDashboard({ repos = [REPO], worktrees = `worktree /repo/sample\0HEAD ${HEAD_SHA}\0branch refs/heads/main\0\0` } = {}) {
   const calls = [];
   const repoCatalog = {
     list: async () => repos,
@@ -222,6 +227,42 @@ test("a path the catalog never listed is still checked before it is trusted", as
   });
   await dashboard.snapshot();
   assert.equal(calls.filter((call) => call === "rev-parse --show-toplevel @ /elsewhere/stray").length, 1);
+});
+
+// A worktree's commit time is keyed on the commit itself, so a second scan of
+// an unchanged checkout needs no git log at all.
+test("a worktree whose commit is already known runs no git log", async () => {
+  const store = new RepoIdentityStore({ path: ":memory:" });
+  const { calls, dashboard } = countingDashboard();
+  dashboard.repoCatalog.identityStore = store;
+
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call.startsWith("log -1")).length, 1);
+  calls.length = 0;
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call.startsWith("log -1")).length, 0);
+  store.close();
+});
+
+test("a worktree with no readable commit still asks git", async () => {
+  const store = new RepoIdentityStore({ path: ":memory:" });
+  // Neither the status output nor the worktree record carries a usable sha, so
+  // there is nothing to key on and the live command must run every time.
+  const { calls, dashboard } = countingDashboard({ worktrees: "worktree /repo/sample\0branch refs/heads/main\0\0" });
+  dashboard.repoCatalog.identityStore = store;
+
+  await dashboard.snapshot();
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call.startsWith("log -1")).length, 2);
+  store.close();
+});
+
+test("a dashboard whose catalog has no store reads git every time", async () => {
+  const { calls, dashboard } = countingDashboard();
+  assert.equal(dashboard.repoCatalog.identityStore, undefined);
+  await dashboard.snapshot();
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call.startsWith("log -1")).length, 2);
 });
 
 test("callers that overlap one scan share it instead of starting their own", async () => {

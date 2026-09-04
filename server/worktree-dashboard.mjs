@@ -212,6 +212,19 @@ export class WorktreeDashboard {
     }
   }
 
+  // The same memo the catalog uses, reached through the catalog rather than
+  // injected separately, so one store serves both and a catalog without one is
+  // fully live on both sides.
+  async #commitTime(path, sha) {
+    const store = this.repoCatalog.identityStore;
+    const stored = sha ? store?.commitTime(sha) : null;
+    if (stored) return stored;
+    const output = await this.repoCatalog.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0");
+    const commitTime = Number(String(output).trim()) || 0;
+    if (sha && commitTime > 0) store?.rememberCommitTimes([{ sha, commitTime }]);
+    return commitTime;
+  }
+
   async #uniqueRepositoryCandidates(repos) {
     const identified = await mapWithConcurrency(repos, this.repositoryConcurrency, async (repo) => {
       // The catalog resolves this while it inspects each candidate. The git
@@ -282,11 +295,12 @@ export class WorktreeDashboard {
         const topLevel = resolve((await this.repoCatalog.git(path, ["rev-parse", "--show-toplevel"])).trim());
         if (topLevel !== path) return null;
       }
-      const [statusOutput, lastActivityOutput] = await Promise.all([
-        this.repoCatalog.git(path, ["status", "--porcelain=v2", "--branch"]).catch(() => ""),
-        this.repoCatalog.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0"),
-      ]);
+      const statusOutput = await this.repoCatalog.git(path, ["status", "--porcelain=v2", "--branch"]).catch(() => "");
       const status = parsePorcelainV2(statusOutput);
+      // `git worktree list` already reported this checkout's commit, and the
+      // status read above reports it too. A commit's time is part of what its
+      // sha hashes, so a stored answer for a known sha cannot be wrong.
+      const lastActivity = await this.#commitTime(path, status.oid || record.head);
       const detached = record.detached || status.branch === "HEAD";
       const updaterArtifacts = detached ? countUpdaterArtifacts(statusOutput) : 0;
       const changedFiles = Math.max(0, status.changedFiles - updaterArtifacts);
@@ -310,7 +324,7 @@ export class WorktreeDashboard {
         updaterArtifacts,
         shortSha: managedRelease ? basename(path).slice(0, 7) : undefined,
         dirty: changedFiles > 0,
-        lastActivity: Number(lastActivityOutput.trim()) || 0,
+        lastActivity,
         pullRequest: null,
         sessions: [],
         state: { label: "No session", tone: "ready" },
