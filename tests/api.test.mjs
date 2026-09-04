@@ -786,7 +786,7 @@ test("drives a worktree plan from goal to launch", async (t) => {
   const started = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", engine } });
   assert.equal(started.statusCode, 201);
   assert.equal(started.json().planId, "plan-1");
-  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing", images: undefined, engine, onEvent: null });
+  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing", images: undefined, engine, specOptions: undefined, onEvent: null });
 
   const answered = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/answers", headers, payload: { answers: [{ id: "q1", text: "Postgres" }] } });
   assert.equal(answered.statusCode, 200);
@@ -917,6 +917,39 @@ test("passes attached images through to the planner", async (t) => {
   });
   assert.equal(response.statusCode, 201);
   assert.deepEqual(planner.calls[0][1].images, images);
+});
+
+test("forwards the specification options on both plan routes", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const specOptions = { unitTests: true, e2eTests: false, edgeCases: true, refactorPass: false, screenMocks: true, flowcharts: true };
+
+  const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", specOptions } });
+  assert.equal(awaited.statusCode, 201);
+  assert.equal(planner.calls[0][0], "start");
+  assert.deepEqual(planner.calls[0][1].specOptions, specOptions);
+
+  const background = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", specOptions, background: true } });
+  assert.equal(background.statusCode, 202);
+  assert.equal(planner.calls[1][0], "startBackground");
+  assert.deepEqual(planner.calls[1][1].specOptions, specOptions);
+});
+
+test("turns an unknown specification option into a readable 400", async (t) => {
+  const planner = fakePlanner();
+  planner.start = async () => { throw new TypeError("Unknown specification option sketches"); };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-plans",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { repositoryId: "repository12345678", goal: "Add billing", specOptions: { sketches: true } },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().error, "Unknown specification option sketches");
 });
 
 test("turns a bad images value into a 400", async (t) => {
