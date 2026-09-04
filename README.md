@@ -333,6 +333,7 @@ Open **Settings → Deployments** to see the running Companion release and the d
 | `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
 | `CMUX_COMPANION_QUEUE_FILE` | `~/.config/cmux-companion/prompt-queue.json` | Persistent follow-up prompt queue |
 | `CMUX_COMPANION_PLANS_DB` | `~/.config/cmux-companion/goal-plans.db` | SQLite database of saved goal plans |
+| `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` | on | Automatic retirement of finished goal sessions on the supervision timer. Set `0`, `off` or `false` to stop the timer pass; `POST /api/goals/sessions/reap` stays available |
 | `CMUX_PLANNER_IDLE_TIMEOUT_MS` | `240000` | How long a planner round may print nothing before it is killed |
 | `CMUX_PLANNER_CEILING_MS` | `1800000` | Absolute limit on one planner round, whatever it prints |
 | `CMUX_COMPANION_CHROME_BIN` | Google Chrome, Chromium, or Edge in `/Applications` | Browser executable used for private preview capture |
