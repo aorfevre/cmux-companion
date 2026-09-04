@@ -81,6 +81,41 @@ function visitBoard() {
 }
 
 describe("goal board matches live cmux evidence", () => {
+  it("launches one multi-action follow-up from a Waiting for merge card", () => {
+    const goal = "Review the open delivery";
+    const waitingMerge = plan("goal-followup", goal, 1, {
+      readyCount: 1,
+      health: "ready",
+      deliveryStatus: "pr_open",
+      boardPrState: "OPEN",
+      boardPrNumber: 19,
+      boardPrUrl: "https://github.test/pull/19",
+      boardState: "waiting_for_merge",
+    });
+    const state: Scenario = { plans: [waitingMerge], goals: [], liveSessions: 0 };
+    installScenario(state);
+    cy.intercept("POST", "**/api/worktree-plans/goal-followup/followups", (request) => {
+      expect(request.body).to.deep.equal({ actions: ["question", "review"], question: "Which edge cases remain?", agent: "codex" });
+      request.reply({ planId: "goal-followup", workspaceId: "ws-followup", agent: "codex", actions: ["question", "review"], branch: "goal/open-delivery", worktreePath: "/Users/test/goal-open-delivery", pullRequest: { number: 19, url: "https://github.test/pull/19" }, title: "Follow up" });
+    }).as("followup");
+    visitBoard();
+
+    cy.findByRole("region", { name: "Waiting for merge" }).within(() => {
+      cy.findByRole("button", { name: `More actions for ${goal}` }).click();
+    });
+    cy.findByRole("dialog", { name: `More actions for ${goal}` }).within(() => {
+      for (const label of ["Ask a question", "More unit and e2e tests", "Complete code review", "Something else"]) cy.contains(label);
+      cy.findByRole("checkbox", { name: /^Ask a question/ }).click();
+      cy.findByRole("textbox", { name: "Ask a question details" }).type("Which edge cases remain?");
+      cy.findByRole("checkbox", { name: /^Complete code review/ }).click();
+      cy.findByRole("radio", { name: "Codex" }).click();
+      cy.findByRole("button", { name: "Submit follow-up" }).click();
+    });
+    cy.wait("@followup");
+    cy.findByRole("dialog", { name: `More actions for ${goal}` }).should("not.exist");
+    cy.get("@followup.all").should("have.length", 1);
+  });
+
   it("moves one goal through every successful Kanban column", () => {
     const goal = "Kanban lifecycle fixture";
     const writing = plan("goal-kanban", goal, 0, { status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, running: true, runStage: "writing_spec", runStep: "Reading the repository…", boardState: "writing_spec" });

@@ -14,6 +14,7 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
+import { GoalFollowups } from "./goal-followup.mjs";
 import { agentCapacity } from "./agent-capacity.mjs";
 import { GoalHealthSweep } from "./goal-health.mjs";
 import { GoalWatchdog } from "./goal-watchdog.mjs";
@@ -55,6 +56,7 @@ export async function buildApp({
   worktreePlanner = null,
   worktreePlanStore = null,
   goalIntegrator = null,
+  goalFollowups = null,
   goalMergeWatch = null,
   goalHealthSweep = null,
   goalSessionReaper = null,
@@ -109,6 +111,8 @@ export async function buildApp({
     || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
   const integrator = goalIntegrator
     || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs }) : null);
+  const followups = goalFollowups
+    || (planStore ? new GoalFollowups({ store: planStore, cmux, log: app.log, briefs }) : null);
   // The watcher never runs `gh`. It reads what the dashboard already cached
   // during the one Refresh GitHub command per repository.
   const mergeWatch = goalMergeWatch
@@ -640,6 +644,14 @@ export async function buildApp({
       // agent never pushed, or it opened its pull request from another branch.
       checked: true,
     };
+  });
+
+  app.post("/api/worktree-plans/:planId/followups", async (request) => {
+    if (!followups) throw serviceUnavailable("Goal follow-ups are unavailable");
+    const result = await followups.launch(request.params.planId, request.body);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
   });
 
   app.post("/api/goals/health/check", async () => {
