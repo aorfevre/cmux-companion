@@ -2,8 +2,8 @@ import { agentBusyState } from "./goal-health.mjs";
 
 // Companion opens one cmux session per task and one per merge attempt, and
 // almost nothing closed them again. A goal whose pull request merged weeks ago
-// still filled the sidebar with `KRV-T2-api` and `*-MERGE` workspaces, and a
-// person had to close every one of them by hand.
+// still filled the sidebar with `KRV · … · T2-api` and `… · MERGE`
+// workspaces, and a person had to close every one of them by hand.
 //
 // This module holds the one rule that says which of a plan's recorded sessions
 // are finished. `retirableSessions` is pure: it reads a plan row and a live
