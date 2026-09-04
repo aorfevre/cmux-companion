@@ -91,6 +91,10 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
     return { stdout: "" };
   };
   const cmux = {
+    // The retirement policy refuses to close anything while cmux is
+    // unreachable, so the fake answers the liveness read. An empty list is the
+    // honest answer here: these fakes open no real workspace.
+    workspaceListDetailed: async () => ({ workspaces: [] }),
     workspaceCreate: async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge" }; },
     rpc: async (method, params) => { calls.push(["rpc", method, params]); return {}; },
     sendWorkspacePrompt: async (workspaceId, text) => { calls.push(["sendWorkspacePrompt", workspaceId, text]); },

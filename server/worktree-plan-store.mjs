@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS plans (
   cmux_notice_key TEXT,
   merge_workspace_id TEXT,
   merge_status TEXT,
+  merge_session_closed_at TEXT,
   superseded_merge_workspaces TEXT NOT NULL DEFAULT '[]',
   board_status TEXT,
   board_changed_at TEXT,
@@ -443,10 +444,21 @@ export class WorktreePlanStore {
 
   // Retirement is durable so a restart never closes the same session twice and
   // never keeps asking cmux about a session that is already gone.
+  //
+  // Three kinds of session reach this method: a task session, the live merge
+  // session, and a merge session a newer merge agent replaced. Each lives in a
+  // different column, so the kind decides where the stamp is written. A caller
+  // that names no kind is read the way the only caller used to be read: a
+  // taskId means a task, and everything else means a superseded merge.
   recordSessionsRetired(planId, entries = []) {
     const id = String(planId || "");
+    const liveMerge = text(this.db.prepare("SELECT merge_workspace_id FROM plans WHERE plan_id = ?").get(id)?.merge_workspace_id);
     const wanted = (Array.isArray(entries) ? entries : [])
-      .map((entry) => ({ workspaceId: text(entry?.workspaceId), taskId: text(entry?.taskId) }))
+      .map((entry) => {
+        const workspaceIdValue = text(entry?.workspaceId);
+        const taskId = text(entry?.taskId);
+        return { workspaceId: workspaceIdValue, taskId, kind: sessionKind(entry?.kind, taskId, workspaceIdValue, liveMerge) };
+      })
       .filter((entry) => entry.workspaceId);
     if (!wanted.length) return this.get(id);
     const at = this.#stamp();
@@ -454,15 +466,23 @@ export class WorktreePlanStore {
       const close = this.db.prepare(
         "UPDATE plan_tasks SET session_closed_at = ? WHERE plan_id = ? AND task_id = ? AND session_closed_at IS NULL",
       );
-      for (const entry of wanted) if (entry.taskId) close.run(at, id, entry.taskId);
-      const retired = new Set(wanted.filter((entry) => !entry.taskId).map((entry) => entry.workspaceId));
+      for (const entry of wanted) if (entry.kind === "task" && entry.taskId) close.run(at, id, entry.taskId);
+      // The live merge session has no row of its own, so the plan carries its
+      // stamp. Only the id the plan currently points at may claim that column.
+      if (wanted.some((entry) => entry.kind === "merge" && entry.workspaceId === liveMerge)) {
+        this.db.prepare("UPDATE plans SET merge_session_closed_at = COALESCE(merge_session_closed_at, ?) WHERE plan_id = ?").run(at, id);
+      }
+      const retired = new Set(wanted.filter((entry) => entry.kind === "superseded").map((entry) => entry.workspaceId));
       if (retired.size) {
         const merges = this.#superseded(id)
           .map((entry) => (retired.has(entry.workspaceId) && !entry.retiredAt ? { ...entry, retiredAt: at } : entry));
         this.db.prepare("UPDATE plans SET superseded_merge_workspaces = ? WHERE plan_id = ?").run(json(merges), id);
       }
       this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
-      this.#insertEvent(id, null, "session_retired", { sessions: wanted }, at);
+      // The event keeps the shape it has always had. The kind decides which
+      // column moves, and every column it can move is already readable on the
+      // plan row, so repeating it here would only break older readers.
+      this.#insertEvent(id, null, "session_retired", { sessions: wanted.map(({ workspaceId: id_, taskId }) => ({ workspaceId: id_, taskId })) }, at);
     });
     return this.get(id);
   }
@@ -821,6 +841,7 @@ export class WorktreePlanStore {
     ensure("plans", "cmux_notice_key", "TEXT");
     ensure("plans", "merge_workspace_id", "TEXT");
     ensure("plans", "merge_status", "TEXT");
+    ensure("plans", "merge_session_closed_at", "TEXT");
     ensure("plans", "superseded_merge_workspaces", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plans", "board_status", "TEXT");
     ensure("plans", "board_changed_at", "TEXT");
@@ -916,6 +937,7 @@ function readPlan(row) {
     cmuxNoticeKey: row.cmux_notice_key ?? null,
     mergeWorkspaceId: row.merge_workspace_id,
     mergeStatus: row.merge_status,
+    mergeSessionClosedAt: row.merge_session_closed_at ?? null,
     supersededMergeWorkspaces: parse(row.superseded_merge_workspaces, []),
     boardStatus: boardStatus(row.board_status),
     boardChangedAt: row.board_changed_at ?? null,
@@ -978,6 +1000,15 @@ function splitIds(joined, mergeWorkspaceId) {
   const merge = text(mergeWorkspaceId);
   if (merge && !ids.includes(merge)) ids.push(merge);
   return ids;
+}
+
+// A retirement entry names its own kind, because a workspace id alone cannot
+// say which column holds its stamp. An entry with no kind is read the old way,
+// so the relaunch caller keeps working unchanged.
+function sessionKind(value, taskId, workspaceIdValue, liveMergeWorkspaceId) {
+  if (value === "task" || value === "merge" || value === "superseded") return value;
+  if (taskId) return "task";
+  return workspaceIdValue && workspaceIdValue === liveMergeWorkspaceId ? "merge" : "superseded";
 }
 
 function boardStatus(value) {

@@ -178,19 +178,14 @@ export class GoalHealthSweep {
     if (!workspace) return { health: "dead", reason: `This ${label} session is no longer open in cmux`, session: null };
 
     const session = sessionSnapshot(workspace);
-    const signals = workspace.status?.signals || {};
-    // Only an explicit input signal means the agent asked something. cmux also
-    // sets `has_unread` whenever a turn ends with nobody watching, so an agent
-    // that crashed to a shell prompt in a still-open workspace carries it too.
-    // Treating that as "waiting for an answer" would label every silent crash
-    // as a question, and would keep it out of the idle clock for ever.
-    if (signals.any_agent_needs_input === true) {
+    const busy = agentBusyState(workspace);
+    if (busy === "needs_input") {
       const reason = workspace.companionAgentEvidence === "terminal_screen_needs_input"
         ? `This ${label} agent is showing an approval prompt that cmux status did not report`
         : `This ${label} agent is waiting for an answer`;
       return { health: "needs_you", reason, session };
     }
-    if (signals.any_agent_running === true || workspace.status?.effective === "working") {
+    if (busy === "running") {
       const reason = workspace.companionAgentEvidence === "terminal_screen_working"
         ? `This ${label} agent is visibly working although cmux status did not report it`
         : `This ${label} agent is running`;
@@ -293,6 +288,22 @@ export class GoalHealthSweep {
     this.screenStateCache.set(surfaceId, { at: this.now(), value });
     return value;
   }
+}
+
+// The one reading of cmux's liveness signals. The health sweep classifies a
+// session with it, and the session reaper refuses to close a session with it,
+// so "this agent is still busy" means the same thing in both places.
+//
+// Only an explicit input signal means the agent asked something. cmux also sets
+// `has_unread` whenever a turn ends with nobody watching, so an agent that
+// crashed to a shell prompt in a still-open workspace carries it too. Treating
+// that as "waiting for an answer" would label every silent crash as a question,
+// and would keep it out of the idle clock for ever.
+export function agentBusyState(workspace) {
+  const signals = workspace?.status?.signals || {};
+  if (signals.any_agent_needs_input === true) return "needs_input";
+  if (signals.any_agent_running === true || workspace?.status?.effective === "working") return "running";
+  return null;
 }
 
 // Exported so the board and the tests read the same ranking.

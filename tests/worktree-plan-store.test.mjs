@@ -487,6 +487,103 @@ test("offers no session for a task that is not integrated or for the live merge"
   assert.deepEqual(store.pendingSessionClosures("plan-1"), []);
 });
 
+// The retirement of the live merge session is plan-level state: it has no task
+// row to stamp. A caller that names the kind decides which column moves.
+test("records the live merge session and a superseded merge as retired", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.recordLaunch("plan-1", {
+    base: "origin/main", baseSha: "a".repeat(40),
+    results: TASKS.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/task-${index}`, workspace: { workspace_id: `workspace-${index}` } })),
+  });
+  store.recordMergeLaunched("plan-1", "workspace-merge");
+  store.recordMergeLaunched("plan-1", "workspace-merge-2");
+  assert.equal(store.get("plan-1").mergeSessionClosedAt, null);
+
+  // A task whose delivery status is still pending is retired all the same: the
+  // reaper decides what is finished, and the store only records it.
+  store.recordSessionsRetired("plan-1", [
+    { workspaceId: "workspace-0", taskId: "t1", kind: "task" },
+    { workspaceId: "workspace-merge", kind: "superseded" },
+    { workspaceId: "workspace-merge-2", kind: "merge" },
+  ]);
+
+  const plan = store.get("plan-1");
+  assert.equal(plan.tasks[0].deliveryStatus, "pending");
+  assert.ok(plan.tasks[0].sessionClosedAt);
+  assert.equal(plan.tasks[1].sessionClosedAt, null);
+  assert.ok(plan.mergeSessionClosedAt);
+  assert.deepEqual(plan.supersededMergeWorkspaces.map((entry) => Boolean(entry.retiredAt)), [true]);
+  // The event keeps the shape every existing reader expects.
+  const retired = store.events("plan-1").at(-1);
+  assert.equal(retired.kind, "session_retired");
+  assert.deepEqual(retired.payload.sessions, [
+    { workspaceId: "workspace-0", taskId: "t1" },
+    { workspaceId: "workspace-merge", taskId: null },
+    { workspaceId: "workspace-merge-2", taskId: null },
+  ]);
+});
+
+// A second retirement of the same merge session must not move the stamp. The
+// first time it was closed is the durable answer.
+test("keeps the first merge retirement stamp when the same session is recorded twice", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.recordMergeLaunched("plan-1", "workspace-merge");
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "workspace-merge", kind: "merge" }]);
+  const first = store.get("plan-1").mergeSessionClosedAt;
+  assert.ok(first);
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "workspace-merge", kind: "merge" }]);
+  assert.equal(store.get("plan-1").mergeSessionClosedAt, first);
+});
+
+// An entry that names no kind is the shape the relaunch caller writes. A taskId
+// still means a task, so that caller keeps working unchanged.
+test("reads a retirement entry with no kind the way its original caller wrote it", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.recordLaunch("plan-1", {
+    base: "origin/main", baseSha: "a".repeat(40),
+    results: TASKS.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/task-${index}`, workspace: { workspace_id: `workspace-${index}` } })),
+  });
+  store.recordMergeLaunched("plan-1", "workspace-merge");
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "workspace-0", taskId: "t1" }]);
+  assert.ok(store.get("plan-1").tasks[0].sessionClosedAt);
+  assert.equal(store.get("plan-1").mergeSessionClosedAt, null);
+});
+
+// The merge retirement column arrived after goals were already on disk. A
+// database that predates it must open and read the field as null.
+test("migrates a database that predates the merge retirement column", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "merge-retire-plan-store-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "goal-plans.db");
+  const first = new WorktreePlanStore({ path });
+  seed(first);
+  first.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  first.recordMergeLaunched("plan-1", "workspace-merge");
+  first.close();
+
+  const legacy = new DatabaseSync(path);
+  legacy.exec("ALTER TABLE plans DROP COLUMN merge_session_closed_at");
+  legacy.close();
+
+  const migrated = new WorktreePlanStore({ path });
+  t.after(() => migrated.close());
+  const plan = migrated.get("plan-1");
+  assert.equal(plan.goal, "Add billing");
+  assert.equal(plan.mergeWorkspaceId, "workspace-merge");
+  assert.equal(plan.mergeSessionClosedAt, null);
+  assert.deepEqual(plan.tasks.map((task) => task.id), ["t1", "t2"]);
+
+  // And the migrated database still accepts the write the column exists for.
+  migrated.recordSessionsRetired("plan-1", [{ workspaceId: "workspace-merge", kind: "merge" }]);
+  assert.ok(migrated.get("plan-1").mergeSessionClosedAt);
+});
+
 // The board columns arrived after goals were already on disk. A database that
 // predates them must open, keep its plan, its tasks and its events, and read
 // every new field as null.
