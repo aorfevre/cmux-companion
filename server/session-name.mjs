@@ -1,3 +1,5 @@
+import { followupActionLabels } from "./goal-followup-actions.mjs";
+
 // Every cmux session Companion opens used to be titled with the bare task
 // title. Twelve parallel sessions then read as twelve unrelated sentences, and
 // nothing said which goal, which task, or which part of the work a session was.
@@ -128,6 +130,19 @@ export function sessionTitle(plan, task, { suffix = "" } = {}) {
 // The goal text lives inside the segment, so it is not repeated after it.
 export function mergeSessionTitle(plan) {
   return [projectCode(plan?.repositoryName), goalSegment(plan), "MERGE"].join(SEPARATOR).slice(0, MAX_TITLE);
+}
+
+// A follow-up belongs to the goal branch rather than to one task. Its code is
+// therefore project-scoped, while the readable half says both which goal and
+// which catalogue actions opened it. The code is never clipped.
+export function followupSessionTitle(plan, actions) {
+  const code = `${projectCode(plan?.repositoryName)}-ASK`;
+  const label = goalText(plan?.spec?.outcome)
+    || goalText(plan?.goal)
+    || followupActionLabels(actions).join(", ")
+    || "Goal follow-up";
+  const room = MAX_TITLE - code.length - SEPARATOR.length;
+  return `${code}${SEPARATOR}${clip(label, room)}`;
 }
 
 // Environment stamps that survive a rename. A title is what a person reads; a

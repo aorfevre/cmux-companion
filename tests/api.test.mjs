@@ -1232,6 +1232,73 @@ test("a goal GitHub knows nothing about reports no change rather than an error",
   assert.equal(checked.json().pullRequest, null);
 });
 
+test("launches one goal follow-up and returns its delivery target", async (t) => {
+  const calls = [];
+  const worktreeDashboard = { invalidate: () => calls.push(["invalidate"]) };
+  const goalFollowups = {
+    launch: async (planId, body) => {
+      calls.push(["launch", planId, body]);
+      return {
+        planId,
+        workspaceId: "workspace-followup",
+        agent: body.agent,
+        actions: body.actions,
+        branch: "goal/billing",
+        worktreePath: "/repo/goal",
+        pullRequest: { number: 34, url: "https://github.test/pr/34" },
+        title: "CC-ASK · Add billing · review",
+      };
+    },
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups, worktreeDashboard });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const payload = { actions: ["review"], agent: "codex" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/followups", headers, payload });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    planId: "plan-1", workspaceId: "workspace-followup", agent: "codex", actions: ["review"],
+    branch: "goal/billing", worktreePath: "/repo/goal",
+    pullRequest: { number: 34, url: "https://github.test/pr/34" },
+    title: "CC-ASK · Add billing · review",
+  });
+  assert.deepEqual(calls, [["launch", "plan-1", payload], ["invalidate"]]);
+});
+
+test("returns a fixed follow-up refusal as INVALID_REQUEST", async (t) => {
+  const cmux = fakeCmux();
+  const goalFollowups = {
+    launch: async () => { throw new TypeError("Only a goal waiting for merge can take a follow-up action"); },
+  };
+  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/followups", headers, payload: { actions: ["tests"] } });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.json(), {
+    error: "Only a goal waiting for merge can take a follow-up action",
+    code: "INVALID_REQUEST",
+  });
+  assert.equal(cmux.calls.filter((call) => call[0] === "create").length, 0);
+});
+
+test("rejects a goal follow-up from a foreign origin", async (t) => {
+  const calls = [];
+  const goalFollowups = { launch: async () => { calls.push("launch"); return {}; } };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-plans/plan-1/followups",
+    headers: { cookie, host: "mac.tail.test", origin: "https://evil.test" },
+    payload: { actions: ["tests"] },
+  });
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(response.json(), { error: "Origin rejected", code: "BAD_ORIGIN" });
+  assert.deepEqual(calls, []);
+});
+
 test("reports which provider takes the next task and why", async (t) => {
   const accountUsage = {
     snapshot: async () => ({
@@ -1421,6 +1488,7 @@ test("every supervision route requires pairing", async (t) => {
     ["POST", "/api/worktree-plans/plan-1/tasks/t1/relaunch"],
     ["POST", "/api/worktree-plans/plan-1/tasks/t1/skip"],
     ["POST", "/api/worktree-plans/plan-1/check-merge"],
+    ["POST", "/api/worktree-plans/plan-1/followups"],
     ["GET", "/api/goals/capacity"],
   ]) {
     const response = await app.inject({ method, url, payload: method === "POST" ? {} : undefined });
