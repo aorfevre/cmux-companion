@@ -635,6 +635,35 @@ describe("worktree goal planner", () => {
     return fetchMock;
   }
 
+  // Submitting a goal is fire and forget. The companion answers as soon as the
+  // plan row exists, so the sheet has nothing left to show and the board takes
+  // the goal from there.
+  test("a submitted goal closes the sheet and announces itself", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...readyDraft, running: true }), { status: 202 })));
+    const close = vi.fn();
+    const notice = vi.fn();
+    render(<WorktreePlannerSheet repository={repository} onClose={close} onLaunched={async () => {}} onNotice={notice} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    await waitFor(() => assert.equal(close.mock.calls.length, 1));
+    assert.match(String(notice.mock.calls[0][0]), /Planning this goal on companion/);
+  });
+
+  // The submit fails before any plan row exists, so this sheet is the only
+  // place the reason can be read. Closing it would throw the goal text away.
+  test("a refused goal keeps the sheet open with its reason", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "Unknown repository" }), { status: 400 })));
+    const close = vi.fn();
+    render(<WorktreePlannerSheet repository={repository} onClose={close} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    assert.ok(await screen.findByText("Unknown repository"));
+    assert.equal(close.mock.calls.length, 0);
+    assert.equal((screen.getByRole("textbox", { name: "Goal" }) as HTMLTextAreaElement).value, "Ship the planner");
+  });
+
   test("shows, changes, and submits the planner engine and derived reviewer", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

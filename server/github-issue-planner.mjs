@@ -113,8 +113,17 @@ export class GitHubIssuePlanner {
     };
   }
 
+  // Only three fields of the repository are read after this: `id`, `name` and
+  // `path`. The dashboard resolver returns them without scanning every
+  // repository on disk, which that snapshot below does. It names the primary
+  // checkout `primaryPath`, so it is mapped onto `path` here and nothing
+  // downstream changes shape.
   async #repository(repositoryId) {
     if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
+    if (this.worktrees.resolveRepository) {
+      const resolved = await this.worktrees.resolveRepository(repositoryId);
+      return { ...resolved, path: resolved.primaryPath };
+    }
     const dashboard = await this.worktrees.snapshot({ refresh: true });
     const repository = dashboard.repositories.find((item) => item.id === repositoryId);
     if (!repository) throw new TypeError("Unknown repository");

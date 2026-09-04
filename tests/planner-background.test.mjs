@@ -77,6 +77,43 @@ test("a background round answers before it runs and finishes on its own", async 
   assert.equal(resumed.round, 1);
 });
 
+// The submit that creates the plan row is what a person waits on. It must read
+// the repository through the dashboard's cheap resolver, never through a scan
+// of every repository on disk.
+test("a goal submit resolves its repository without scanning every repository", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  let snapshots = 0;
+  const scanning = deps.worktrees.snapshot;
+  deps.worktrees.snapshot = async (...args) => { snapshots += 1; return scanning(...args); };
+  deps.worktrees.resolveRepository = async (id) => ({ id, name: "sample", primaryPath: "/repo/sample" });
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
+  assert.equal(snapshots, 0, "the submit must not scan the repository roots");
+  // The resolved name and path are not part of the public draft. They reach the
+  // round through the internal one, which is what the ccs child runs against.
+  assert.equal(planner.drafts.get(draft.planId).repositoryName, "sample");
+  assert.equal(planner.drafts.get(draft.planId).cwd, "/repo/sample");
+  await settled(planner, draft.planId);
+});
+
+// Several suites inject a dashboard that only has `snapshot`. The planner must
+// keep working against one.
+test("a dashboard without a resolver still plans through its snapshot", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  assert.equal(deps.worktrees.resolveRepository, undefined);
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
+  assert.equal(planner.drafts.get(draft.planId).cwd, "/repo/sample");
+  await settled(planner, draft.planId);
+});
+
+test("a resolver that refuses an unknown repository still refuses the submit", async () => {
+  const deps = fakeDeps({ replies: [] });
+  deps.worktrees.resolveRepository = async () => { throw new TypeError("Unknown repository"); };
+  const planner = new WorktreePlanner(deps);
+  await assert.rejects(() => planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" }), /Unknown repository/);
+});
+
 test("two goals plan at the same time and both finish", async () => {
   const first = gatedDeps(envelope('{"questions":[{"text":"One?"}]}', "sess-a"));
   const second = gatedDeps(envelope('{"questions":[{"text":"Two?"}]}', "sess-b"));

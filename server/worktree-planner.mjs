@@ -1140,8 +1140,13 @@ export class WorktreePlanner {
     }
   }
 
+  // A person waits on this: it runs inside the submit that creates the plan row.
+  // The dashboard resolver answers it from its repository directory in
+  // milliseconds. The snapshot below is the fallback for an injected dashboard
+  // that has no resolver.
   async #repository(repositoryId) {
     if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
+    if (this.worktrees.resolveRepository) return this.worktrees.resolveRepository(repositoryId);
     const dashboard = await this.worktrees.snapshot({ refresh: true });
     const repository = dashboard.repositories.find((item) => item.id === repositoryId);
     if (!repository) throw new TypeError("Unknown repository");
