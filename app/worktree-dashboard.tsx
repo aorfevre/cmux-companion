@@ -6,6 +6,7 @@ import { GoalBoardStateId, GoalHealth, goalPrLink, PlanSummary, terminalStatus, 
 // The board reads its columns and its placement from the one shared module, so
 // the dashboard can never invent a column the server does not know.
 import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../server/goal-board.mjs";
+import { DEFAULT_FOLLOWUP_AGENT, GOAL_FOLLOWUP_ACTIONS, GOAL_FOLLOWUP_AGENTS, MAX_FOLLOWUP_TEXT, normalizeFollowupRequest } from "../server/goal-followup-actions.mjs";
 // The GitHub Issues column shares its identity with the server, exactly like
 // the goal columns above. One label, one id, one empty hint, in one file.
 import { GITHUB_ISSUE_ALL_STARTED_HINT, GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_HINT, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, visibleGithubIssues } from "../server/github-issue-board.mjs";
@@ -54,6 +55,9 @@ type GitHubIssueColumnPayload = { syncedAt: string | null; issues: GitHubIssueCa
 type GitHubIssueSyncRepository = { repositoryId: string; name: string; status: string; issueCount: number; truncated: boolean; error: string | null };
 type GitHubIssueSyncResult = { syncedAt: string; status: string; message: string | null; repositories: GitHubIssueSyncRepository[]; issues: GitHubIssueCard[] };
 type GitHubIssueGoalResult = { issue: GitHubIssueCard; plan: { planId: string }; created: boolean };
+type FollowupAgent = "claude" | "codex";
+type FollowupSubmission = { actions: string[]; question?: string; custom?: string; agent: FollowupAgent };
+type FollowupResult = { planId: string; workspaceId: string; agent: FollowupAgent; actions: string[]; branch: string; worktreePath: string; pullRequest: { number: number; url: string } | null; title: string };
 // The four verdicts that mean a person is needed. Everything else is either
 // progress or a state with nothing to act on, so the rail never lists it.
 const ATTENTION_HEALTH = new Set<GoalHealth>(["dead", "idle", "failed", "needs_you"]);
@@ -256,6 +260,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const [createTarget, setCreateTarget] = useState<DashboardRepository | null>(null);
   const [planTarget, setPlanTarget] = useState<{ repository: DashboardRepository; planId?: string } | null>(null);
   const [issuePlanTarget, setIssuePlanTarget] = useState<DashboardRepository | null>(null);
+  const [followupTarget, setFollowupTarget] = useState<PlanSummary | null>(null);
   const [search, setSearch] = useState("");
   // The counts line points at the rail rather than repeating its rows, so
   // "3 stuck" is a way to reach the three tasks instead of a second number.
@@ -521,6 +526,16 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
         else if (result.pullRequest) onNotice(`${plan.goal} is still open on GitHub (PR #${result.pullRequest.number}). Nothing moved.`);
         else onNotice(`GitHub knows no pull request for this goal's branch. It may never have been pushed.`);
       } catch (cause) { onNotice(cause instanceof Error ? cause.message : `Could not check ${plan.goal} against GitHub`); }
+    });
+  }
+
+  async function launchFollowup(plan: PlanSummary, submission: FollowupSubmission) {
+    await runBoardAction(`followup:${plan.planId}`, async () => {
+      const result = await request<FollowupResult>(`/api/worktree-plans/${encodeURIComponent(plan.planId)}/followups`, { method: "POST", body: JSON.stringify(submission) });
+      setFollowupTarget(null);
+      await loadGoalPlans();
+      const agent = result.agent.slice(0, 1).toUpperCase() + result.agent.slice(1);
+      onNotice(`Started ${result.actions.length} follow-up action${result.actions.length === 1 ? "" : "s"} for ${plan.goal} with ${agent}.`);
     });
   }
 
@@ -807,6 +822,8 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
               onConfirmAbort={() => { void abortGoal(plan); }}
               checking={boardBusy[`checkmerge:${plan.planId}`] === true}
               onCheckMerge={() => { void checkMerge(plan); }}
+              followupBusy={boardBusy[`followup:${plan.planId}`] === true}
+              onMoreActions={() => setFollowupTarget(plan)}
               focusing={focusSessionId ? boardBusy[`focus:${focusSessionId}`] === true : false}
               onFocusWorkspace={() => { if (focusSessionId) void focusWorkspace(focusSessionId, plan.goal); }}
             /></li>; })}</ul>}
@@ -818,6 +835,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     {createTarget && <CreateWorktreeSheet repo={createTarget} onClose={() => setCreateTarget(null)} onCreated={async (workspaceId) => { setCreateTarget(null); await load(true); if (workspaceId) await onLaunched(workspaceId); }} onNotice={onNotice} />}
     {planTarget && <WorktreePlannerSheet repository={planTarget.repository} initialPlanId={planTarget.planId} onClose={() => { setPlanTarget(null); void loadGoalPlans(); }} onNotice={onNotice} />}
     {issuePlanTarget && <GitHubIssuePlannerSheet repository={issuePlanTarget} onClose={() => { setIssuePlanTarget(null); void loadGoalPlans(); }} onLaunched={async () => { await load(true); await loadGoalPlans(); }} onNotice={onNotice} />}
+    {followupTarget && <FollowupSheet plan={followupTarget} busy={boardBusy[`followup:${followupTarget.planId}`] === true} onClose={() => setFollowupTarget(null)} onSubmit={(submission) => launchFollowup(followupTarget, submission)} />}
   </>;
 }
 
@@ -844,7 +862,7 @@ function GitHubIssueBoardCard({ issue, starting, onStart }: { issue: GitHubIssue
   </article>;
 }
 
-function GoalBoardCard({ plan, state, repositoryName, tasks, focusSessionId, confirming, aborting, focusing, checking, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; tasks: HealthTask[]; focusSessionId: string | null; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void }) {
+function GoalBoardCard({ plan, state, repositoryName, tasks, focusSessionId, confirming, aborting, focusing, checking, followupBusy, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge, onMoreActions }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; tasks: HealthTask[]; focusSessionId: string | null; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; followupBusy: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void; onMoreActions: () => void }) {
   const closed = state === "merged" || state === "aborted";
   const link = goalPrLink(plan);
   const openLabel = goalOpenLabel(plan);
@@ -868,6 +886,7 @@ function GoalBoardCard({ plan, state, repositoryName, tasks, focusSessionId, con
     {health && <p className={`goal-board-health ${health}`}><b>{HEALTH_LABELS[health]}</b><span>{plan.healthReason || "This goal needs a person"}</span></p>}
     {launched > 0 && <p className="goal-board-ready" aria-label={`${plan.readyCount || 0} of ${launched} launched tasks ready`}><i style={{ width: `${Math.round(Math.min(1, (plan.readyCount || 0) / launched) * 100)}%` }} /><span>{plan.readyCount || 0}/{launched} ready</span></p>}
     {split && (split.claude > 0 || split.codex > 0) && <p className="goal-board-agents">{[split.claude ? `${split.claude} Claude` : "", split.codex ? `${split.codex} Codex` : ""].filter(Boolean).join(" · ")}</p>}
+    {typeof plan.followupCount === "number" && plan.followupCount > 0 && <p className="goal-board-followups">{plan.followupCount} follow-up{plan.followupCount === 1 ? "" : "s"}</p>}
     {plan.issueNumbers && plan.issueNumbers.length > 0 && <p className="goal-board-issues">{plan.issueNumbers.map((number) => issueBase
       ? <a key={number} href={`${issueBase}/issues/${number}`} target="_blank" rel="noreferrer" aria-label={`Open issue #${number} on GitHub`}>#{number}</a>
       : <span key={number}>#{number}</span>)}</p>}
@@ -875,8 +894,46 @@ function GoalBoardCard({ plan, state, repositoryName, tasks, focusSessionId, con
     {link && (state === "waiting_for_merge" || state === "merged") && <a className="goal-board-pr" href={link.url} target="_blank" rel="noreferrer">{link.label}</a>}
     {confirming
       ? <footer className="goal-board-abort-confirm"><span>Abort this goal? Active specification work and live cmux sessions are cancelled. Its worktrees and branches are kept.</span><div><button type="button" aria-label={`Cancel aborting ${plan.goal}`} disabled={aborting} onClick={onCancelAbort}>Cancel</button><button type="button" className="confirm-abort" aria-label={`Confirm abort ${plan.goal}`} disabled={aborting} onClick={onConfirmAbort}>{aborting ? "Aborting…" : "Confirm abort"}</button></div></footer>
-      : <footer><button type="button" className="goal-board-open" aria-label={`${openLabel} ${plan.goal}`} onClick={onOpen}>{openLabel}</button>{!closed && <button type="button" className="goal-board-abort" aria-label={`Abort ${plan.goal}`} onClick={onRequestAbort}>Abort</button>}{checkable && <button type="button" className="goal-board-check" aria-label={`Check if ${plan.goal} is merged`} disabled={checking} onClick={onCheckMerge}>{checking ? "Checking GitHub…" : "Check if merged"}</button>}{focusSessionId && <button type="button" className="goal-board-focus" aria-label={`Open ${plan.goal} in cmux`} disabled={focusing} onClick={onFocusWorkspace}>{focusing ? "Opening…" : "Open in cmux"}</button>}</footer>}
+      : <footer><button type="button" className="goal-board-open" aria-label={`${openLabel} ${plan.goal}`} onClick={onOpen}>{openLabel}</button>{!closed && <button type="button" className="goal-board-abort" aria-label={`Abort ${plan.goal}`} onClick={onRequestAbort}>Abort</button>}{state === "waiting_for_merge" && <button type="button" className="goal-board-more" aria-label={`More actions for ${plan.goal}`} disabled={followupBusy} onClick={onMoreActions}>{followupBusy ? "Starting follow-up…" : "More actions"}</button>}{checkable && <button type="button" className="goal-board-check" aria-label={`Check if ${plan.goal} is merged`} disabled={checking} onClick={onCheckMerge}>{checking ? "Checking GitHub…" : "Check if merged"}</button>}{focusSessionId && <button type="button" className="goal-board-focus" aria-label={`Open ${plan.goal} in cmux`} disabled={focusing} onClick={onFocusWorkspace}>{focusing ? "Opening…" : "Open in cmux"}</button>}</footer>}
   </article>;
+}
+
+function FollowupSheet({ plan, busy, onClose, onSubmit }: { plan: PlanSummary; busy: boolean; onClose: () => void; onSubmit: (submission: FollowupSubmission) => Promise<void> }) {
+  const [actions, setActions] = useState<string[]>([]);
+  const [question, setQuestion] = useState("");
+  const [custom, setCustom] = useState("");
+  const [agent, setAgent] = useState<FollowupAgent>(DEFAULT_FOLLOWUP_AGENT as FollowupAgent);
+  const [error, setError] = useState("");
+
+  function toggleAction(id: string, checked: boolean) {
+    setActions((current) => checked ? [...current, id] : current.filter((action) => action !== id));
+    setError("");
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    try {
+      const normalized = normalizeFollowupRequest({ actions, question, custom, agent }) as { actions: string[]; question: string; custom: string; agent: FollowupAgent };
+      await onSubmit({ actions: normalized.actions, ...(normalized.question ? { question: normalized.question } : {}), ...(normalized.custom ? { custom: normalized.custom } : {}), agent: normalized.agent });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not start this follow-up");
+    }
+  }
+
+  return <><button type="button" className="session-menu-backdrop" aria-label="Close follow-up actions" disabled={busy} onClick={onClose} /><form className="worktree-launcher goal-followup-sheet" role="dialog" aria-modal="true" aria-label={`More actions for ${plan.goal}`} onSubmit={submit}>
+    <header><div><strong>More actions</strong><span>{plan.goal}</span></div><button type="button" aria-label="Close follow-up actions" disabled={busy} onClick={onClose}>×</button></header>
+    <div className="goal-followup-options">{GOAL_FOLLOWUP_ACTIONS.map((action) => {
+      const checked = actions.includes(action.id);
+      return <div className={checked ? "selected" : ""} key={action.id}>
+        <label className="goal-followup-option" aria-label={`${action.label}: ${action.description}`}><input type="checkbox" checked={checked} onChange={(event) => toggleAction(action.id, event.target.checked)} /><span><strong>{action.label}</strong><small>{action.description}</small></span></label>
+        {checked && action.requiresText && <label className="goal-followup-text"><span>{action.label}</span><textarea aria-label={`${action.label} details`} value={action.textKey === "question" ? question : custom} maxLength={MAX_FOLLOWUP_TEXT} rows={4} onChange={(event) => { if (action.textKey === "question") setQuestion(event.target.value); else setCustom(event.target.value); setError(""); }} /></label>}
+      </div>;
+    })}</div>
+    <fieldset className="goal-followup-agents"><legend>Agent</legend>{GOAL_FOLLOWUP_AGENTS.map((option) => <label className={agent === option ? "selected" : ""} key={option}><input type="radio" name="followup-agent" value={option} checked={agent === option} onChange={() => { setAgent(option as FollowupAgent); setError(""); }} /><span>{option.slice(0, 1).toUpperCase() + option.slice(1)}</span></label>)}</fieldset>
+    {error && <p className="worktree-action-error" role="alert">{error}</p>}
+    <div className="goal-followup-submit"><button type="button" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" className="primary-button" disabled={busy}>{busy ? "Starting follow-up…" : "Submit follow-up"}</button></div>
+  </form></>;
 }
 
 // Which provider takes the next task, and what would change that answer. The
