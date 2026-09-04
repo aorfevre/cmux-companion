@@ -251,11 +251,17 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   }
 
   // The round runs in the background, so this answers as soon as the plan row
-  // exists. From that point the sheet may close, and the goal keeps planning.
+  // exists. Submitting a goal is therefore fire and forget: the sheet closes,
+  // a notice says the goal is planning, and the board carries it from there. A
+  // failed submit keeps the sheet open, because only this sheet can show it.
   async function plan(event: FormEvent) {
     event.preventDefault();
     setBusy("plan"); setError(""); setSteps([]);
-    try { receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, background: true }) })); }
+    try {
+      receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, background: true }) }));
+      onNotice(`Planning this goal on ${repository.name}. It appears in Writing Spec.`);
+      onClose();
+    }
     catch (cause) { fail(cause, "Could not plan this goal"); }
     finally { setBusy(""); }
   }
