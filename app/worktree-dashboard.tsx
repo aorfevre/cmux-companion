@@ -39,6 +39,13 @@ type AgentCapacity = { providers: CapacityProvider[]; next: "claude" | "codex" |
 // that says the board moved; the rest explains why it did not.
 type MergeCheck = { planId: string; changed: boolean; state: "OPEN" | "CLOSED" | "MERGED" | null; boardStatus: "merged" | "aborted" | null; pullRequest: { number: number; url: string } | null; checked: true };
 type GoalHealthSweep = { checkedAt: string; sessionsAvailable: boolean; goals: HealthGoal[]; summary: HealthSummary };
+// POST /api/goals/sessions/reap and GET /api/goals/sessions/retirable. Both
+// answer with this one shape, so the dry run and the real pass are read by the
+// same code and can never disagree about what a pass would do.
+type SessionReapClosed = { planId: string; workspaceId: string; taskId: string | null; kind: string; title: string; reason: string };
+type SessionReapKept = { planId: string; workspaceId: string; kind: string; reason: string };
+type SessionReapFailed = { planId: string; workspaceId: string; error: string };
+type SessionReapReport = { checkedAt: string; sessionsAvailable: boolean; closed: SessionReapClosed[]; kept: SessionReapKept[]; failed: SessionReapFailed[] };
 // GET /api/github-issues and POST /api/github-issues/sync. Every field here is
 // repository content that any GitHub user can write, so the column renders it
 // as plain text and never as markup or as an instruction.
@@ -90,6 +97,23 @@ function boardEvidence(plan: PlanSummary, state: GoalBoardStateId) {
   if (plan.runPhase === "failed") return plan.runError || plan.lastError || "The last round failed";
   if (plan.round === 0) return "Planning stopped before it produced anything";
   return plan.stage === "questions" ? `Round ${plan.round} · waiting for answers` : `Round ${plan.round}`;
+}
+
+// What one retirement pass did, in one sentence. An unreachable cmux proves
+// nothing about any agent, so it is never reported as "0 finished sessions":
+// it says liveness is unknown, exactly as the attention rail already does.
+export function sessionReapNotice(report: SessionReapReport) {
+  const kept = report.kept.length;
+  const kepts = `${kept} kept`;
+  if (!report.sessionsAvailable) return "cmux could not be reached, so agent liveness is unknown. No session was closed.";
+  const closed = report.closed.length;
+  const head = `Closed ${closed} finished session${closed === 1 ? "" : "s"}, ${kepts}.`;
+  // A kept session always carries its reason, and the first one is the answer
+  // to "why is that session still open?". Naming one beats naming none.
+  const why = kept > 0 ? ` ${report.kept[0].reason}.` : "";
+  if (!report.failed.length) return `${head}${why}`;
+  const names = report.failed.map((entry) => `${entry.workspaceId} (${entry.error || "unknown error"})`).join("; ");
+  return `${head}${why} cmux refused to close ${report.failed.length} session${report.failed.length === 1 ? "" : "s"}: ${names}`;
 }
 
 function deliveryEvidence(status?: string) {
@@ -168,6 +192,9 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const [goalPlans, setGoalPlans] = useState<PlanSummary[]>([]);
   const [health, setHealth] = useState<GoalHealthSweep | null>(null);
   const [healthError, setHealthError] = useState("");
+  // What a retirement pass would close right now, read on the board poll. The
+  // button is labelled with this count, so it is honest before it is pressed.
+  const [retirable, setRetirable] = useState<SessionReapReport | null>(null);
   const [capacity, setCapacity] = useState<AgentCapacity | null>(null);
   const [capacityError, setCapacityError] = useState("");
   // The board bar carries capacity as one chip. The full strip is still the
@@ -232,6 +259,12 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
       setHealthError("");
     } catch (cause) { setHealthError(cause instanceof Error ? cause.message : "Goal supervision unavailable"); }
   }, []);
+  // The dry run. It closes nothing, so a failure leaves the last count on
+  // screen rather than claiming that nothing is finished.
+  const loadRetirable = useCallback(async () => {
+    try { setRetirable(await request<SessionReapReport>("/api/goals/sessions/retirable")); }
+    catch { /* The last honest count stays. A zero here would invite a pass that closes sessions. */ }
+  }, []);
   // Which provider takes the next task. `refresh=1` re-reads CCS itself, which
   // is slow, so only the explicit GitHub refresh asks for it.
   const loadCapacity = useCallback(async (refresh = false) => {
@@ -275,10 +308,10 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     if (!boardView) return;
     // The issue column is read once per board mount. It is deliberately not on
     // the ten-second poll: only an explicit GitHub Sync changes it.
-    const kickoff = setTimeout(() => { void loadHealth(); void loadCapacity(); void loadIssues(); }, 0);
-    const poll = setInterval(() => { if (document.visibilityState === "visible") { void loadHealth(); void loadCapacity(); } }, 10_000);
+    const kickoff = setTimeout(() => { void loadHealth(); void loadCapacity(); void loadRetirable(); void loadIssues(); }, 0);
+    const poll = setInterval(() => { if (document.visibilityState === "visible") { void loadHealth(); void loadCapacity(); void loadRetirable(); } }, 10_000);
     return () => { clearTimeout(kickoff); clearInterval(poll); };
-  }, [boardView, loadCapacity, loadHealth, loadIssues]);
+  }, [boardView, loadCapacity, loadHealth, loadRetirable, loadIssues]);
   // One second, and only while the strip is on screen. A reset countdown that
   // moves in ten-second jumps reads as broken.
   useEffect(() => {
@@ -477,6 +510,20 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     });
   }
 
+  // "Close the sessions that are finished", forced. The server owns the rule
+  // about which session may close; this only runs the pass and reports it. The
+  // refresh afterwards matches Refresh GitHub's order, because closing a
+  // session changes the dashboard, the plan rows and the sweep alike.
+  async function closeFinishedSessions() {
+    await runBoardAction("reap", async () => {
+      try {
+        const report = await request<SessionReapReport>("/api/goals/sessions/reap", { method: "POST", body: "{}" });
+        await load(true); await loadGoalPlans(); await loadHealth(); await loadRetirable();
+        onNotice(sessionReapNotice(report));
+      } catch (cause) { onNotice(cause instanceof Error ? cause.message : "Could not close the finished goal sessions"); }
+    });
+  }
+
   // GitHub Sync. It reads every starred repository through `gh`, which is slow,
   // so it is its own button with its own busy label and never joins the
   // ten-second dashboard poll behind Refresh GitHub.
@@ -614,6 +661,10 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const boardLiveSessions = boardProject === "all"
     ? dashboard?.summary.sessions || 0
     : projectRepositories.reduce((total, repository) => total + repository.summary.sessions, 0);
+  // The dry run counts every plan the server supervises, exactly like the pass
+  // the button runs. An unreachable cmux closes nothing, so it counts as zero
+  // and the button is disabled rather than hidden.
+  const retirableCount = retirable?.sessionsAvailable ? retirable.closed.length : 0;
   const visibleRepositories = isGoalView ? [] : projectRepositories
     .filter((repo) => dashboardFilter === "archived" ? repo.archived : dashboardFilter === "active" ? isActiveRepository(repo) : !repo.archived && repo.favorite !== true && repo.summary.sessions === 0)
     .filter(repositoryMatchesQuery)
@@ -652,7 +703,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     <section className="content-section worktree-content">
       {!isBoardView && <div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={project === "karven"} className={project === "karven" ? "active" : ""} onClick={() => setProject("karven")}><span>K</span>Karven</button><button role="tab" aria-selected={project === "rekord"} className={project === "rekord" ? "active" : ""} onClick={() => setProject("rekord")}><span>R</span>Rekord</button></div>}
       {isBoardView && <div className="board-bar"><div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={boardProject === "all"} className={boardProject === "all" ? "active" : ""} onClick={() => setBoardProject("all")}><span aria-hidden="true">∞</span>All</button><button role="tab" aria-selected={boardProject === "karven"} className={boardProject === "karven" ? "active" : ""} onClick={() => setBoardProject("karven")}><span aria-hidden="true">K</span>Karven</button><button role="tab" aria-selected={boardProject === "rekord"} className={boardProject === "rekord" ? "active" : ""} onClick={() => setBoardProject("rekord")}><span aria-hidden="true">R</span>Rekord</button></div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div><AgentCapacityChip capacity={capacity} error={capacityError} now={nowTick} open={capacityOpen} onToggle={() => setCapacityOpen((open) => !open)} />{goalRepositories.length > 0 && <div className="board-new-goal"><button type="button" className="board-new-goal-button" aria-label={goalRepositories.length === 1 ? `Plan a goal for ${goalRepositories[0].name}` : "Plan a new goal"} aria-expanded={goalRepositories.length === 1 ? undefined : newGoalOpen} aria-haspopup={goalRepositories.length === 1 ? undefined : "menu"} onClick={() => { if (goalRepositories.length === 1) setPlanTarget({ repository: goalRepositories[0] }); else setNewGoalOpen((open) => !open); }}>＋ New goal</button>{newGoalOpen && goalRepositories.length > 1 && <><button type="button" className="board-new-goal-backdrop" aria-label="Close the repository picker" onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); }} /><div className="board-new-goal-menu" aria-label="Pick a repository for the new goal">{/* eslint-disable-next-line jsx-a11y/no-autofocus -- the picker opens for typing: a search box nobody can type into is the problem this replaced */}
-        <input type="search" autoFocus aria-label="Find a repository" placeholder="Find a repository…" value={newGoalQuery} onChange={(event) => setNewGoalQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setNewGoalOpen(false); setNewGoalQuery(""); } if (event.key === "Enter" && newGoalMatches.length > 0) { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: newGoalMatches[0] }); } }} />{newGoalMatches.length === 0 ? <p className="board-new-goal-empty">No repository matches that.</p> : <div role="menu">{newGoalMatches.map((repo) => <button type="button" role="menuitem" aria-label={`Plan a goal for ${repo.name}`} onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: repo }); }} key={repo.id}><RepoChip name={repo.name} />{repo.summary.sessions > 0 && <em>{repo.summary.sessions} session{repo.summary.sessions === 1 ? "" : "s"}</em>}</button>)}</div>}{newGoalQuery === "" && goalRepositories.length > newGoalMatches.length && <p className="board-new-goal-empty">Type to reach the other {goalRepositories.length - newGoalMatches.length}.</p>}</div></>}</div>}<button className="text-button" disabled={issueSyncing} onClick={() => { void syncGitHubIssues(); }}>{issueSyncing ? "Syncing GitHub issues…" : "GitHub Sync"}</button><button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button></div>}
+        <input type="search" autoFocus aria-label="Find a repository" placeholder="Find a repository…" value={newGoalQuery} onChange={(event) => setNewGoalQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setNewGoalOpen(false); setNewGoalQuery(""); } if (event.key === "Enter" && newGoalMatches.length > 0) { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: newGoalMatches[0] }); } }} />{newGoalMatches.length === 0 ? <p className="board-new-goal-empty">No repository matches that.</p> : <div role="menu">{newGoalMatches.map((repo) => <button type="button" role="menuitem" aria-label={`Plan a goal for ${repo.name}`} onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); setPlanTarget({ repository: repo }); }} key={repo.id}><RepoChip name={repo.name} />{repo.summary.sessions > 0 && <em>{repo.summary.sessions} session{repo.summary.sessions === 1 ? "" : "s"}</em>}</button>)}</div>}{newGoalQuery === "" && goalRepositories.length > newGoalMatches.length && <p className="board-new-goal-empty">Type to reach the other {goalRepositories.length - newGoalMatches.length}.</p>}</div></>}</div>}<button className="text-button" disabled={issueSyncing} onClick={() => { void syncGitHubIssues(); }}>{issueSyncing ? "Syncing GitHub issues…" : "GitHub Sync"}</button><button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button><button type="button" className="text-button board-reap-button" disabled={boardBusy.reap === true || retirableCount === 0} aria-label={retirableCount === 0 ? "Close finished sessions. No session is finished." : `Close ${retirableCount} finished session${retirableCount === 1 ? "" : "s"}`} onClick={() => { void closeFinishedSessions(); }}>{boardBusy.reap === true ? "Closing finished sessions…" : `Close finished sessions (${retirableCount})`}</button></div>}
       {/* Stuck and needs-you are the only two numbers here a person acts on, so
           they are the two that reach the rail. The rest are read-only totals. */}
       {isBoardView && <div className="board-counts">{healthSummary.stuck > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.stuck} stuck goals. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.stuck}</b>stuck</button> : <span aria-label="0 stuck goals"><b>0</b>stuck</span>}{healthSummary.needsYou > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.needsYou} goals need you. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.needsYou}</b>needs you</button> : <span aria-label="0 goals need you"><b>0</b>needs you</span>}<span aria-label={`${healthSummary.working} goals working`}><b>{healthSummary.working}</b>working</span><span aria-label={`${boardLiveSessions} live cmux sessions`}><b>{boardLiveSessions}</b>sessions</span>{dashboard && <small>{visiblePlans.length} shown · {projectPlans.length} total · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</small>}</div>}

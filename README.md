@@ -179,6 +179,30 @@ The verdict comes from the dispatcher's own rule rather than a second copy of
 it, so the panel and the behaviour cannot disagree. When both providers are
 exhausted it leads with the reset countdown.
 
+Companion also **retires the cmux sessions it opened for a goal** once their
+work is provably finished. When a goal's delivery pull request is open, every
+task session is closed and one session stays: the merge session, or, for a
+single-task goal that has no merge session, that one task's own session. When
+the goal is observed merged or aborted, that last session is closed too. A
+merge session a newer merge agent replaced is closed as soon as it is replaced.
+
+The pass never closes a session whose agent is running or waiting for an
+answer, never closes anything while a goal's merge is blocked, never closes
+anything at all when cmux cannot be reached, and never touches a session
+Companion did not open for a goal. Every session that stays open is reported
+with the reason it stayed, so a kept session can always be explained.
+
+The supervision timer runs this pass on its own schedule. Set
+`CMUX_COMPANION_AUTO_CLOSE_SESSIONS` to `0`, `off` or `false` to stop the
+timer pass; the on-demand route stays available. **Close finished sessions** in
+the board header runs the same pass now. Its label carries the number of
+sessions a pass would close, read from the dry-run route on the board's own
+poll, so the button is honest before it is pressed and disables itself when
+nothing is finished. It reports how many sessions were closed, how many were
+kept and why, and names any session cmux refused to close. An unreachable cmux
+is reported as unknown liveness with nothing closed, never as zero finished
+sessions.
+
 **Check if merged** on a card in Waiting for merge or Blocked asks GitHub about
 that one goal, instead of waiting for the next reconciliation pass. It reports
 three outcomes differently: the goal moved to Merged, its pull request is still
@@ -236,6 +260,8 @@ CMUX_COMPANION_LIVE_E2E=I_UNDERSTAND npm run test:e2e:live-agent -- --tasks=2
 | `POST /api/worktree-plans/:planId/check-merge` | Ask GitHub about one goal's pull request now. |
 | `POST /api/worktree-plans/:planId/tasks/:taskId/relaunch` | Start one task again. `mode` is `continue` or `restart`. |
 | `POST /api/worktree-plans/:planId/tasks/:taskId/skip` | Drop one task so it stops blocking the merge. |
+| `POST /api/goals/sessions/reap` | Run the finished-session retirement pass now. Reports every session closed, kept and refused. |
+| `GET /api/goals/sessions/retirable` | What that pass would close, without closing it. |
 
 The server chooses Codex or Claude per task from live CCS quota, not the model. It takes the lower of each provider's 5-hour and weekly remaining percent, sends the work to the provider with more headroom, and alternates when the two are within ten points. Every task keeps a toggle, so you can override the choice.
 
@@ -266,7 +292,8 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
 - The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
-- The goal health sweep and its watchdog only read. They never move a goal, never close a session, and never touch a worktree, so an automatic check cannot destroy work.
+- The goal health sweep and its watchdog only read. They never move a goal and never touch a worktree, so an automatic check cannot destroy work.
+- The supervision timer may close one thing: a cmux session Companion itself opened for a goal, recorded on that goal's plan row, after that session's work is delivered. It may never close a session whose agent is running or waiting for an answer, a session of a goal whose merge is blocked, any session while cmux is unreachable, or any session Companion did not open for a goal. It deletes no branch and no worktree. Set `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` to `0`, `off` or `false` to stop the timer pass.
 - Restarting a task deletes its branch and its worktree, so it is refused for the primary checkout and for a managed release checkout, and the phone confirms before it runs.
 - Relaunching a task is refused while its cmux session is still open, because a second agent in one worktree would fight the first over the same files.
 - Session identity is exported with a strict variable-name pattern and shell-quoted values, so neither a goal nor a task title can become a command.
