@@ -283,3 +283,5 @@ describe("goal board matches live cmux evidence", () => {
       .and("contain.text", "The companion could not reach that repository");
   });
 });
+
+export {};
