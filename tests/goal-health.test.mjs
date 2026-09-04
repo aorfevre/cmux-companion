@@ -32,6 +32,7 @@ function task(overrides = {}) {
     wave: 0,
     launchStatus: "launched",
     launchError: null,
+    launchReason: null,
     deliveryStatus: "pending",
     evidenceStatus: null,
     evidenceError: null,
@@ -209,7 +210,7 @@ test("an unreachable cmux reports unknown instead of declaring live agents dead"
 
 test("a failed launch is stuck without needing a session, and a queued task is not", async () => {
   const tasks = [
-    task({ id: "T1", launchStatus: "failed", launchError: "Branch already exists", workspaceId: null }),
+    task({ id: "T1", launchStatus: "failed", launchError: "Branch already exists", launchReason: "branch-exists", workspaceId: null }),
     task({ id: "T2", launchStatus: "queued", wave: 1, workspaceId: null }),
   ];
   const sweep = new GoalHealthSweep({ store: store(plan({ tasks })), cmux: cmux([]), now });
@@ -217,6 +218,7 @@ test("a failed launch is stuck without needing a session, and a queued task is n
 
   assert.equal(result.goals[0].tasks[0].health, "failed");
   assert.equal(result.goals[0].tasks[0].reason, "Branch already exists");
+  assert.equal(result.goals[0].tasks[0].launchReason, "branch-exists");
   assert.equal(result.goals[0].tasks[1].health, "queued");
   assert.match(result.goals[0].tasks[1].reason, /wave 1/);
   assert.equal(result.summary.failedTasks, 1);
