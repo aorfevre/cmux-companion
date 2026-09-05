@@ -4,11 +4,14 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import {
   completionReportInstruction,
+  formatDesignArtifacts,
+  formatOptionEvidence,
   normalizeContractTask,
   normalizeDeliveryContract,
   taskWave,
   validateDeliveryContract,
 } from "./delivery-contract.mjs";
+import { normalizeSpecOptions, specOptionsBriefLines, specOptionsPromptLines } from "./spec-options.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
 import { LaunchRuns } from "./launch-runs.mjs";
@@ -150,7 +153,7 @@ const ABORTED_ROUND = "This goal was aborted, so its planner round stopped";
 const ABORTED_PLAN = "This goal was aborted. Start a new goal";
 const MERGED_PLAN = "This goal is already merged. Start a new goal";
 
-export function parsePlannerReply(stdout) {
+export function parsePlannerReply(stdout, specOptions = undefined) {
   const envelope = extractJson(String(stdout));
   if (!envelope) throw new TypeError(UNUSABLE);
   const sessionId = typeof envelope.session_id === "string" ? envelope.session_id : null;
@@ -191,7 +194,11 @@ export function parsePlannerReply(stdout) {
     ownedAreas: ["**/*"],
     verification: ["Run the repository verification appropriate for this task"],
   }));
-  const readiness = validateDeliveryContract(spec, tasks);
+  // The requested options are part of what makes a reply usable, so they are
+  // validated here rather than after the retry decision. An oversized brief
+  // caused by the extra option text then follows the same retry path as any
+  // other unusable answer.
+  const readiness = validateDeliveryContract(spec, tasks, specOptions);
   if (!readiness.ready) throw new TypeError(`${UNUSABLE}: ${readiness.errors[0]}`);
   return { sessionId, status: "ready", questions: [], spec, tasks, readiness, legacy };
 }
@@ -449,15 +456,15 @@ export class WorktreePlanner {
     this.controllers = new Map();
   }
 
-  async start({ repositoryId, goal, images, engine, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
-    const draft = await this.#createDraft({ repositoryId, goal, images, engine, issueNumbers, issueUrls, deliveryPolicy });
+  async start({ repositoryId, goal, images, engine, specOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
+    const draft = await this.#createDraft({ repositoryId, goal, images, engine, specOptions, issueNumbers, issueUrls, deliveryPolicy });
     return this.#round(draft, openingPrompt(draft), onEvent);
   }
 
   // The row is written before the round runs, so a plan id exists the moment a
   // goal is submitted. That id is what the progress stream, the goal card and
   // the notification all key on.
-  async #createDraft({ repositoryId, goal, images, engine, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
+  async #createDraft({ repositoryId, goal, images, engine, specOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
     const text = String(goal || "").trim();
     if (!text) throw new TypeError("Describe the goal for this repository");
     if (text.length > 4_000) throw new TypeError("That goal is too long");
@@ -466,6 +473,9 @@ export class WorktreePlanner {
     const linkedIssueUrls = normalizeIssueUrls(issueUrls);
     const normalizedDeliveryPolicy = deliveryPolicy === "combined" ? "combined" : "auto";
     const normalizedEngine = normalizePlannerEngine(engine);
+    // Normalized before the repository scan, so an unknown option id refuses
+    // the goal instead of leaving an unusable plan row behind.
+    const normalizedSpecOptions = normalizeSpecOptions(specOptions);
     const repository = await this.#repository(repositoryId);
     const draft = {
       planId: randomUUID(),
@@ -479,6 +489,7 @@ export class WorktreePlanner {
       issueUrls: linkedIssueUrls,
       deliveryPolicy: normalizedDeliveryPolicy,
       engine: normalizedEngine,
+      specOptions: normalizedSpecOptions,
       sessionId: null,
       round: 0,
       at: Date.now(),
@@ -506,6 +517,7 @@ export class WorktreePlanner {
       issueUrls: draft.issueUrls,
       deliveryPolicy: draft.deliveryPolicy,
       engine: draft.engine,
+      specOptions: draft.specOptions,
     }), draft.planId, "create");
     return draft;
   }
@@ -513,8 +525,8 @@ export class WorktreePlanner {
   // The background entry point. It answers as soon as the row exists, and the
   // round runs on after the request has ended. The caller gets a plan id it can
   // watch, resume and delete, so the sheet is free to close.
-  async startBackground({ repositoryId, goal, images, engine, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
-    const draft = await this.#createDraft({ repositoryId, goal, images, engine, issueNumbers, issueUrls, deliveryPolicy });
+  async startBackground({ repositoryId, goal, images, engine, specOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
+    const draft = await this.#createDraft({ repositoryId, goal, images, engine, specOptions, issueNumbers, issueUrls, deliveryPolicy });
     this.#detach(draft, openingPrompt(draft), "plan");
     return { ...publicDraft(draft), running: true };
   }
@@ -826,7 +838,7 @@ export class WorktreePlanner {
       const brief = await this.briefs.write({
         planId: plan.planId,
         taskId: task.id,
-        markdown: taskPrompt(task, plan.spec, plan.images, task.branch, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers),
+        markdown: taskPrompt(task, plan.spec, plan.images, task.branch, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions),
       });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
@@ -861,7 +873,7 @@ export class WorktreePlanner {
       const brief = await this.briefs.write({
         planId: plan.planId,
         taskId: task.id,
-        markdown: taskPrompt(task, plan.spec, plan.images, base, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers),
+        markdown: taskPrompt(task, plan.spec, plan.images, base, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions),
       });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
@@ -950,7 +962,7 @@ export class WorktreePlanner {
     });
     const branches = new Set(next.map((task) => task.branch));
     if (branches.size !== next.length) throw new TypeError("Two tasks share a branch name");
-    const readiness = validateDeliveryContract(draft.spec, next);
+    const readiness = validateDeliveryContract(draft.spec, next, draft.specOptions);
     if (!readiness.ready) throw new TypeError(readiness.errors[0]);
     draft.tasks = next.map((task) => ({ ...task, wave: taskWave(task.id, readiness) }));
     draft.readiness = readiness;
@@ -1000,7 +1012,7 @@ export class WorktreePlanner {
     this.#assertIdle(draft.planId);
     if (this.launches.isLaunching(draft.planId)) throw new TypeError(LAUNCHING);
     if (draft.status !== "ready" || !draft.tasks.length) throw new TypeError("This plan is not ready to launch yet");
-    const readiness = validateDeliveryContract(draft.spec, draft.tasks);
+    const readiness = validateDeliveryContract(draft.spec, draft.tasks, draft.specOptions);
     if (!readiness.ready) throw new TypeError(`This delivery contract is not ready: ${readiness.errors[0]}`);
     draft.readiness = readiness;
     return draft;
@@ -1058,7 +1070,7 @@ export class WorktreePlanner {
       const brief = await this.briefs.write({
         planId: draft.planId,
         taskId: task.id,
-        markdown: taskPrompt(task, draft.spec, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers),
+        markdown: taskPrompt(task, draft.spec, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers, draft.specOptions),
       });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
@@ -1158,7 +1170,7 @@ export class WorktreePlanner {
       }
     }
     draft.spec = reply.status === "ready" ? spec : null;
-    draft.readiness = reply.status === "ready" ? validateDeliveryContract(spec, tasks) : null;
+    draft.readiness = reply.status === "ready" ? validateDeliveryContract(spec, tasks, draft.specOptions) : null;
     draft.tasks = reply.status === "ready"
       ? assignAgents(tasks.map((task) => ({ ...task, wave: taskWave(task.id, draft.readiness) })), await this.#usage())
       : [];
@@ -1179,7 +1191,7 @@ export class WorktreePlanner {
 
   async #reply(draft, prompt, engine, sessionId, onEvent, tasksOnly = false, signal = null) {
     const read = async () => {
-      const reply = parsePlannerReply(await this.#spawn(draft, prompt, engine, sessionId, onEvent, signal));
+      const reply = parsePlannerReply(await this.#spawn(draft, prompt, engine, sessionId, onEvent, signal), draft.specOptions);
       if (tasksOnly && reply.status !== "ready") throw new TypeError("The reviewer did not return an improved plan");
       return reply;
     };
@@ -1442,6 +1454,7 @@ function publicDraft(draft) {
     issueUrls: draft.issueUrls || [],
     deliveryPolicy: draft.deliveryPolicy || "auto",
     engine: draft.engine || normalizePlannerEngine(),
+    specOptions: safeSpecOptions(draft.specOptions),
     round: draft.round,
     status: draft.status,
     questions: draft.questions,
@@ -1470,6 +1483,7 @@ function draftFromStore(stored) {
     issueUrls: Array.isArray(stored.issueUrls) ? stored.issueUrls : [],
     deliveryPolicy: stored.deliveryPolicy === "combined" ? "combined" : "auto",
     engine: normalizePlannerEngine(stored.engine),
+    specOptions: safeSpecOptions(stored.specOptions),
     sessionId: stored.sessionId || null,
     round: Number(stored.round) || 0,
     at: Date.now(),
@@ -1492,10 +1506,11 @@ function draftFromStore(stored) {
 // provide the full structured contract and never pass through this path.
 function storedContract(stored) {
   const rawTasks = Array.isArray(stored.tasks) ? stored.tasks : [];
+  const specOptions = safeSpecOptions(stored.specOptions);
   if (stored.spec?.acceptanceCriteria?.length) {
     const spec = normalizeDeliveryContract(stored.spec, stored.goal);
     const tasks = rawTasks.map((task, index) => ({ ...normalizeContractTask(task, index), ...task }));
-    return { spec, tasks, readiness: stored.readiness || validateDeliveryContract(spec, tasks) };
+    return { spec, tasks, readiness: stored.readiness || validateDeliveryContract(spec, tasks, specOptions) };
   }
   const spec = normalizeDeliveryContract({
     outcome: stored.goal,
@@ -1517,7 +1532,7 @@ function storedContract(stored) {
     agent: task.agent,
     agentReason: task.agentReason,
   }));
-  return { spec, tasks, readiness: validateDeliveryContract(spec, tasks) };
+  return { spec, tasks, readiness: validateDeliveryContract(spec, tasks, specOptions) };
 }
 
 function planDeliveryMode(draft) {
@@ -1536,10 +1551,22 @@ function answeredPairs(draft, answers) {
 
 const SKIP_PROMPT = "Stop asking questions. Decide the remaining details yourself and reply now with the delivery-contract JSON object.";
 
-const CONTRACT = [
+const SPEC_HEAD = '{"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}]';
+const SPEC_TAIL = '},"tasks":[{"id":"T1","title":"...","branch":"feature/...","prompt":"...","type":"feature|bugfix|ui|backend|docs|test|migration|investigation|refactor","criterionIds":["AC-1"],"dependsOn":[],"ownedAreas":["path/or/glob/**"],"verification":["specific command or manual check"]}]}';
+const EVIDENCE_SHAPE = ',"optionEvidence":{"unitTests":{"status":"planned|not_applicable","rationale":"...","taskIds":["T1"],"criterionIds":["AC-1"]}}';
+const ARTIFACT_SHAPE = ',"designArtifacts":[{"id":"F1","kind":"flow|screen","title":"...","summary":"...","nodes":[],"edges":[],"screen":{"name":"...","elements":[]}}]';
+
+// The schema line grows only for the options the user actually asked for, so
+// a goal with no requests reads exactly the contract it always read.
+function specShape(options) {
+  const requested = Object.values(options).some(Boolean);
+  const artifacts = options.screenMocks || options.flowcharts;
+  return `${SPEC_HEAD}${requested ? EVIDENCE_SHAPE : ""}${artifacts ? ARTIFACT_SHAPE : ""}${SPEC_TAIL}`;
+}
+
+const CONTRACT_LINES = [
   "Reply with exactly one JSON object and no other prose.",
   'It holds either {"questions":[{"text":"...","options":["..."]}]} or the Delivery Contract shape below.',
-  '{"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}]},"tasks":[{"id":"T1","title":"...","branch":"feature/...","prompt":"...","type":"feature|bugfix|ui|backend|docs|test|migration|investigation|refactor","criterionIds":["AC-1"],"dependsOn":[],"ownedAreas":["path/or/glob/**"],"verification":["specific command or manual check"]}]}',
   "It never holds both keys.",
   "Ask questions only while a real ambiguity would change the split. Otherwise return the tasks.",
   "The spec states the user-visible outcome, explicit scope boundaries, constraints, visible assumptions, observable acceptance criteria, and material risks.",
@@ -1550,7 +1577,36 @@ const CONTRACT = [
   "Return one task when the goal is a single unit of work. That is a valid answer.",
   "Do not include an agent field. The server assigns the agent.",
   "Do not tell a task to commit, push, or open a pull request. The server appends the correct single-task or combined-delivery finish step.",
-].join("\n");
+];
+
+// Every prompt path shares this builder, so a round can never demand less than
+// the round before it. With no option requested it returns exactly the text
+// the planner used before specification options existed.
+function contractText(specOptions) {
+  const options = safeSpecOptions(specOptions);
+  const demands = specOptionsPromptLines(options);
+  const lines = [...CONTRACT_LINES];
+  lines.splice(2, 0, specShape(options));
+  return [...lines, ...demands].join("\n");
+}
+
+// A prompt builder must never throw: the option value on a rebuilt draft comes
+// from storage, and a corrupted row must still plan.
+function safeSpecOptions(value) {
+  try {
+    return normalizeSpecOptions(value ?? undefined);
+  } catch {
+    return normalizeSpecOptions();
+  }
+}
+
+// A skipped round on a live session sends one sentence and nothing else. That
+// sentence cannot carry the requested rigor, so the demands travel with it.
+// With no option requested the prompt stays exactly as it was.
+function skipPrompt(specOptions) {
+  const demands = specOptionsPromptLines(safeSpecOptions(specOptions));
+  return demands.length ? [SKIP_PROMPT, "", contractText(specOptions)].join("\n") : SKIP_PROMPT;
+}
 
 const OVERRIDES = [
   "Overrides for this run, which take priority over any skill instruction:",
@@ -1602,7 +1658,7 @@ function firstStuckReason(goal) {
   return tasks.find((task) => task.health === goal?.health)?.reason || null;
 }
 
-export function taskPrompt(task, spec, images, base, deliveryMode = "single", readyToken = "", issueNumbers = []) {
+export function taskPrompt(task, spec, images, base, deliveryMode = "single", readyToken = "", issueNumbers = [], specOptions = undefined) {
   const criteria = (spec?.acceptanceCriteria || []).filter((criterion) => task.criterionIds?.includes(criterion.id));
   const contract = [
     "Delivery contract for this task:",
@@ -1617,7 +1673,15 @@ export function taskPrompt(task, spec, images, base, deliveryMode = "single", re
     "Keep changes inside the owned areas unless a necessary adjacent change is required. Report every such exception in the completion limitations.",
   ].join("\n");
   const finish = deliveryMode === "combined" ? combinedBranchStep(readyToken) : pullRequestStep(base, issueNumbers);
-  return [withImages(task.prompt, images), contract, completionReportInstruction(task), finish].join("\n\n");
+  // The requested rigor, the evidence that answers it and the artifacts the
+  // planner drew sit between the contract and the finish steps, so an agent
+  // reads what was asked for before it reads how to close the branch.
+  const rigor = [
+    specOptionsBriefLines(safeSpecOptions(specOptions)).join("\n"),
+    formatOptionEvidence(spec?.optionEvidence),
+    formatDesignArtifacts(spec?.designArtifacts),
+  ].filter(Boolean);
+  return [withImages(task.prompt, images), contract, ...rigor, completionReportInstruction(task), finish].join("\n\n");
 }
 
 function normalizeImages(images) {
@@ -1657,7 +1721,7 @@ function openingPrompt(draft) {
     "",
     OVERRIDES,
     "",
-    CONTRACT,
+    contractText(draft.specOptions),
   ].join("\n");
 }
 
@@ -1673,7 +1737,7 @@ function reviewerPrompt(draft, spec, tasks) {
     "",
     OVERRIDES,
     "",
-    CONTRACT,
+    contractText(draft.specOptions),
     "",
     "Return a spec and tasks, not questions.",
   ].join("\n");
@@ -1699,7 +1763,7 @@ function restartPrompt(draft, pairs, skip) {
 // context, so a resumed plan answers the real goal.
 function answerRound(draft, answers, skip) {
   const pairs = skip ? [] : answeredPairs(draft, answers);
-  const prompt = draft.sessionId ? (skip ? SKIP_PROMPT : answerPrompt(draft, answers)) : restartPrompt(draft, pairs, skip);
+  const prompt = draft.sessionId ? (skip ? skipPrompt(draft.specOptions) : answerPrompt(draft, answers)) : restartPrompt(draft, pairs, skip);
   return { prompt, pairs };
 }
 
@@ -1744,7 +1808,7 @@ function feedbackRound(draft, note) {
     "",
     "Do not defend the previous split. Change it to answer this feedback: merge, split, drop or reword tasks as the feedback requires.",
   ].join("\n");
-  if (draft.sessionId) return [rejection, "", CONTRACT].join("\n");
+  if (draft.sessionId) return [rejection, "", contractText(draft.specOptions)].join("\n");
   return [
     openingPrompt(draft),
     "",
@@ -1766,5 +1830,5 @@ function answerPrompt(draft, answers) {
     if (!question) throw new TypeError("That answer no longer matches the question. Reload the plan");
     return `Q: ${question.text}\nA: ${text}`;
   }).filter(Boolean);
-  return [lines.length ? lines.join("\n\n") : "No answers were given.", "", CONTRACT].join("\n");
+  return [lines.length ? lines.join("\n\n") : "No answers were given.", "", contractText(draft.specOptions)].join("\n");
 }

@@ -49,3 +49,26 @@ export function reviewerEngine(provider) {
     reviewer: false,
   };
 }
+
+// The six specification-rigor requests share this catalog for the same reason
+// as the engines above: the planner sheet, the prompt builders and the
+// contract validator must agree on the exact ids, order and wording. The
+// entries stay data-only so the browser bundle can import them.
+export const SPEC_OPTIONS = Object.freeze({
+  options: Object.freeze([
+    Object.freeze({ id: "unitTests", label: "Unit tests", hint: "Cover the new logic with unit tests." }),
+    Object.freeze({ id: "e2eTests", label: "End-to-end tests", hint: "Cover the user-visible flow with end-to-end tests." }),
+    Object.freeze({ id: "edgeCases", label: "Edge cases", hint: "Name the edge cases and cover each one." }),
+    Object.freeze({ id: "refactorPass", label: "Refactor review", hint: "Add a refactor task that reviews and cleans the touched code." }),
+    Object.freeze({ id: "screenMocks", label: "Screen wireframes", hint: "Return a screen wireframe for each new or changed screen." }),
+    Object.freeze({ id: "flowcharts", label: "Flowcharts", hint: "Return a flowchart for each new or changed flow." }),
+  ]),
+  defaults: Object.freeze({
+    unitTests: false,
+    e2eTests: false,
+    edgeCases: false,
+    refactorPass: false,
+    screenMocks: false,
+    flowcharts: false,
+  }),
+});

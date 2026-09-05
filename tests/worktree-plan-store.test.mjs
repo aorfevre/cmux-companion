@@ -44,6 +44,40 @@ test("stores the opening goal with its images and a goal event", (t) => {
   assert.equal(events[0].payload.goal, "Add billing");
 });
 
+const ALL_FALSE = { unitTests: false, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: false, flowcharts: false };
+const ALL_TRUE = { unitTests: true, e2eTests: true, edgeCases: true, refactorPass: true, screenMocks: true, flowcharts: true };
+
+test("round trips the six specification options through detail, list and the goal event", (t) => {
+  const store = memoryStore(t);
+  const plan = store.createPlan({
+    planId: "rigor-plan",
+    repositoryId: "repository12345678",
+    goal: "Add billing",
+    specOptions: ALL_TRUE,
+  });
+  assert.deepEqual(plan.specOptions, ALL_TRUE);
+  assert.deepEqual(store.get("rigor-plan").specOptions, ALL_TRUE);
+  assert.deepEqual(store.events("rigor-plan")[0].payload.specOptions, ALL_TRUE);
+  assert.deepEqual(store.list().find((item) => item.planId === "rigor-plan").specOptions, ALL_TRUE);
+});
+
+test("stores a goal without specification options as all false", (t) => {
+  const store = memoryStore(t);
+  assert.deepEqual(seed(store).specOptions, ALL_FALSE);
+  assert.deepEqual(store.events("plan-1")[0].payload.specOptions, ALL_FALSE);
+  assert.deepEqual(store.list()[0].specOptions, ALL_FALSE);
+});
+
+test("reads malformed stored specification options as all false", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  for (const stored of ["", "not json", "[]", '{"unknown":true}', '{"unitTests":"yes"}']) {
+    store.db.prepare("UPDATE plans SET spec_options = ? WHERE plan_id = ?").run(stored, "plan-1");
+    assert.deepEqual(store.get("plan-1").specOptions, ALL_FALSE, `stored value ${stored}`);
+    assert.deepEqual(store.list()[0].specOptions, ALL_FALSE, `stored value ${stored}`);
+  }
+});
+
 test("persists the planner engine for a resumed round", (t) => {
   const store = memoryStore(t);
   const plan = store.createPlan({
@@ -363,7 +397,7 @@ test("migrates a pre-contract database without losing legacy plans", (t) => {
   first.close();
 
   const legacy = new DatabaseSync(path);
-  for (const column of ["contract_version", "spec", "readiness", "last_error", "last_error_at"]) legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
+  for (const column of ["contract_version", "spec", "readiness", "last_error", "last_error_at", "spec_options"]) legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
   for (const column of ["task_type", "criterion_ids", "depends_on", "owned_areas", "verification", "wave", "start_sha", "completion_report", "evidence_status", "evidence_error", "changed_files", "scope_warnings"]) {
     legacy.exec(`ALTER TABLE plan_tasks DROP COLUMN ${column}`);
   }
@@ -376,6 +410,9 @@ test("migrates a pre-contract database without losing legacy plans", (t) => {
   assert.equal(plan.sessionId, "legacy-session");
   assert.equal(plan.contractVersion, 1);
   assert.equal(plan.spec, null);
+  // A database that predates the column reads as no request at all, rather
+  // than making every saved plan unreadable.
+  assert.deepEqual(plan.specOptions, ALL_FALSE);
   assert.equal(plan.tasks[0].title, "Billing");
   assert.equal(plan.tasks[0].type, "feature");
   assert.deepEqual(plan.tasks[0].criterionIds, []);

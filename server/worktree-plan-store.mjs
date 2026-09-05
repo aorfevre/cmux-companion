@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { normalizeSpecOptions } from "./spec-options.mjs";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db");
 
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS plans (
   engine_model TEXT NOT NULL DEFAULT 'default',
   engine_effort TEXT NOT NULL DEFAULT 'default',
   engine_reviewer INTEGER NOT NULL DEFAULT 0,
+  spec_options TEXT NOT NULL DEFAULT '{}',
   session_id TEXT,
   round INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -149,14 +151,15 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {} }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {} }) {
     const at = this.#stamp();
+    const options = safeSpecOptions(specOptions);
     this.#transaction(() => {
       this.db.prepare(`
-        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, at, at);
-      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true } }, at);
+        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), at, at);
+      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options }, at);
     });
     this.#prune();
     return this.get(planId);
@@ -769,6 +772,7 @@ export class WorktreePlanStore {
       issueNumbers: parse(row.issue_numbers, []),
       deliveryPolicy: row.delivery_policy || "auto",
       engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
+      specOptions: safeSpecOptions(parse(row.spec_options, null)),
       lastError: row.last_error ?? null,
       lastErrorAt: row.last_error_at ?? null,
       boardStatus: boardStatus(row.board_status),
@@ -854,6 +858,7 @@ export class WorktreePlanStore {
     ensure("plans", "engine_model", "TEXT NOT NULL DEFAULT 'default'");
     ensure("plans", "engine_effort", "TEXT NOT NULL DEFAULT 'default'");
     ensure("plans", "engine_reviewer", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plans", "spec_options", "TEXT NOT NULL DEFAULT '{}'");
     ensure("plans", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'");
     ensure("plans", "delivery_status", "TEXT NOT NULL DEFAULT 'planning'");
     ensure("plans", "integration_branch", "TEXT");
@@ -939,6 +944,7 @@ function readPlan(row) {
     issueUrls: parse(row.issue_urls, []),
     deliveryPolicy: row.delivery_policy || "auto",
     engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
+    specOptions: safeSpecOptions(parse(row.spec_options, null)),
     sessionId: row.session_id,
     round: row.round,
     status: row.status,
@@ -1015,6 +1021,17 @@ function deliveryMode(tasks) {
 
 function policy(value) {
   return value === "combined" ? "combined" : "auto";
+}
+
+// A plan row must stay readable. A blank column, a legacy row, hand-edited
+// JSON or an unknown key therefore reads as all options off instead of
+// throwing and hiding the whole plan.
+function safeSpecOptions(value) {
+  try {
+    return normalizeSpecOptions(value ?? undefined);
+  } catch {
+    return normalizeSpecOptions();
+  }
 }
 
 // A stored lifecycle value that is neither terminal state reads as unset. A

@@ -709,6 +709,132 @@ describe("worktree goal planner", () => {
     assert.deepEqual(body.engine, { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: true });
   });
 
+  // AC-1. The six requests are goal-wide, so they must reach the server as one
+  // complete object: a missing key would let the contract validator believe a
+  // request was never made.
+  test("offers six Spec depth requests, sends all six keys, and resets them on New goal", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
+      return new Response(JSON.stringify(readyDraft), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+
+    const names = ["Unit tests", "End-to-end tests", "Edge cases", "Refactor review", "Screen wireframes", "Flowcharts"];
+    const depth = screen.getByRole("region", { name: "Spec depth" });
+    for (const name of names) assert.equal((within(depth).getByRole("checkbox", { name }) as HTMLInputElement).checked, false);
+    assert.ok(within(depth).getByText("Cover the new logic with unit tests."));
+    assert.ok(within(depth).getByText("Return a flowchart for each new or changed flow."));
+
+    await userEvent.click(within(depth).getByRole("checkbox", { name: "Unit tests" }));
+    await userEvent.click(within(depth).getByRole("checkbox", { name: "Screen wireframes" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
+    assert.deepEqual(body.specOptions, { unitTests: true, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: true, flowcharts: false });
+
+    await userEvent.click(await screen.findByRole("button", { name: "← New goal" }));
+    const reset = await screen.findByRole("region", { name: "Spec depth" });
+    for (const name of names) assert.equal((within(reset).getByRole("checkbox", { name }) as HTMLInputElement).checked, false);
+  });
+
+  // AC-7. The coverage rows come from the server. The artifacts come from a
+  // model, so this also asserts that a label which looks like markup or a link
+  // stays literal text.
+  test("shows requested option coverage and safely renders flow and screen artifacts", async () => {
+    const hostileNode = "<img src=x onerror=alert(1)> step";
+    const hostileElement = "Visit https://evil.test/login now";
+    const artifactDraft = {
+      ...readyDraft,
+      contractVersion: 2,
+      spec: {
+        version: 2, outcome: "Operators can ship billing safely", inScope: [], nonGoals: [], constraints: [], assumptions: [], risks: [],
+        acceptanceCriteria: [{ id: "AC-1", text: "API creates invoices", verification: "API tests pass" }],
+        optionEvidence: { unitTests: { status: "planned", rationale: "", taskIds: ["task-1"], criterionIds: ["AC-1"] } },
+        designArtifacts: [
+          {
+            id: "F1", kind: "flow", title: "Invoice flow",
+            nodes: [
+              { id: "n1", label: "Start", kind: "start" },
+              { id: "n2", label: hostileNode, kind: "step" },
+              { id: "n3", label: "Retry", kind: "decision" },
+              { id: "n4", label: "A very long node label that must wrap onto more than one line and then stop", kind: "end" },
+              { id: "n5", label: "Detached note", kind: "step" },
+            ],
+            // n2 → n3 → n2 is a cycle, and n5 is disconnected.
+            edges: [{ from: "n1", to: "n2", label: "submit" }, { from: "n2", to: "n3", label: "" }, { from: "n3", to: "n2", label: "retry" }, { from: "n3", to: "n4", label: "" }],
+          },
+          {
+            id: "S1", kind: "screen", title: "Invoice screen", summary: "The invoice screen gains a total and drops the legacy line.",
+            screen: {
+              name: "Invoice detail",
+              elements: [
+                { id: "e1", label: "Invoice header", kind: "header", change: "added" },
+                { id: "e2", label: hostileElement, kind: "text", change: "changed", note: "Copy review pending" },
+                { id: "e3", label: "Legacy total", kind: "text", change: "removed" },
+                { id: "e4", label: "Footer", kind: "note", change: "unchanged" },
+              ],
+            },
+          },
+        ],
+      },
+      readiness: {
+        ready: true, errors: [], warnings: [], waves: [["task-1"], ["task-2"]], coverage: [],
+        optionCoverage: [
+          { id: "unitTests", requested: true, status: "covered", message: "task-1 · AC-1" },
+          { id: "e2eTests", requested: false, status: "not_requested", message: "" },
+          { id: "edgeCases", requested: true, status: "not_applicable", message: "The endpoint takes no input." },
+          { id: "refactorPass", requested: true, status: "missing", message: "no linked task has the refactor type" },
+          { id: "screenMocks", requested: false, status: "not_requested", message: "" },
+          { id: "flowcharts", requested: false, status: "not_requested", message: "" },
+        ],
+      },
+      tasks: [{ ...tasks[0], criterionIds: ["AC-1"], wave: 0 }, { ...tasks[1], wave: 1 }],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(artifactDraft), { status: 201 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship billing safely");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const passport = await screen.findByRole("region", { name: "Goal passport" });
+    // Only requested options appear, each with the server's own status word.
+    assert.ok(within(passport).getByText("Unit tests"));
+    assert.ok(within(passport).getByText("Covered"));
+    assert.ok(within(passport).getByText("Not applicable"));
+    assert.ok(within(passport).getByText("Missing"));
+    assert.ok(within(passport).getByText("The endpoint takes no input."));
+    assert.ok(within(passport).getByText("no linked task has the refactor type"));
+    assert.equal(within(passport).queryByText("End-to-end tests"), null);
+
+    // The cyclic and disconnected flow renders, and its diagram is named.
+    const diagram = within(passport).getByRole("img", { name: "Flow diagram: Invoice flow" });
+    assert.equal(diagram.tagName.toLowerCase(), "svg");
+    assert.ok(diagram.closest(".spec-flow-scroll"));
+    assert.ok(within(passport).getByText("Detached note"));
+    assert.ok(within(passport).getByText("retry"));
+
+    // Every element carries a readable change marker.
+    assert.ok(within(passport).getByText("Added"));
+    assert.ok(within(passport).getByText("Changed"));
+    assert.ok(within(passport).getByText("Removed"));
+    assert.ok(within(passport).getByText("Unchanged"));
+    assert.ok(within(passport).getByText("Invoice header"));
+
+    // The screen names itself, and both artifacts show their summary.
+    assert.ok(within(passport).getByText("Invoice detail"));
+    assert.ok(within(passport).getByText("The invoice screen gains a total and drops the legacy line."));
+
+    // Hostile-looking strings stay text: no element was injected and no link
+    // was created from artifact content.
+    assert.equal(passport.querySelector("img"), null);
+    assert.equal(within(passport).queryByRole("link"), null);
+    assert.ok(within(passport).getByText(hostileElement));
+    assert.ok(diagram.textContent?.includes("<img"));
+    assert.equal(diagram.querySelector("script"), null);
+    assert.equal(diagram.querySelector("foreignObject"), null);
+  });
+
   test("renders a Markdown prompt and still shows its exact text on demand", async () => {
     const markdown = "## Step one\n\n- Touch `server/app.mjs`\n- See https://example.test/issue for the report\n- Do not touch [the store](../store.mjs)\n\nFinish with a pull request.";
     const markdownDraft = { ...readyDraft, tasks: [{ ...tasks[0], prompt: markdown }] };
@@ -1546,6 +1672,11 @@ describe("goals board", () => {
     });
     const board = await openBoard();
     await within(board).findByText(issue.title);
+    // Merged and Aborted start collapsed, so their cards render only once the
+    // column is expanded. The point of this test is that a terminal goal
+    // offers no follow-up button, which needs the card on the page to prove.
+    await userEvent.click(within(board).getByRole("button", { name: "Expand Merged" }));
+    await userEvent.click(within(board).getByRole("button", { name: "Expand Aborted" }));
     const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
 
     assert.ok(within(card("Waiting on the PR")).getByRole("button", { name: "More actions for Waiting on the PR" }));
