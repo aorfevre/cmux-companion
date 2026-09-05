@@ -23,13 +23,16 @@ export const PLAN_EVENT_KINDS = new Set([
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
   "session_retired", "board_merged", "board_aborted", "board_pull_request",
   "task_relaunched", "task_skipped", "followup_launched", "task_associated",
-  "review_claimed", "review_launched",
+  "review_claimed", "review_launched", "discussion",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
 const BOARD_STATUSES = new Set(["merged", "aborted"]);
 // The pull-request states GitHub reports. A different word is a caller mistake.
 const BOARD_PR_STATES = new Set(["OPEN", "CLOSED", "MERGED"]);
+// The two verdicts a discussion can reach. `revision_suggested` carries the
+// text the user can hand to the rejection flow; `none` carries nothing.
+const DISCUSSION_IMPACTS = new Set(["none", "revision_suggested"]);
 // A round either asked questions or returned the split. Any other stage is a
 // caller mistake, and storing it would make a reloaded plan unreadable.
 const PLAN_STAGES = new Set(["questions", "ready"]);
@@ -214,6 +217,21 @@ export class WorktreePlanStore {
     const message = String(error || "The planner round failed").slice(0, 2_000);
     this.db.prepare("UPDATE plans SET last_error = ?, last_error_at = ?, updated_at = ? WHERE plan_id = ?")
       .run(message, at, at, String(planId));
+    return this.get(planId);
+  }
+
+  // One question about a Delivery Contract and the planner's answer to it. It is
+  // deliberately the narrowest write in this store: one event at the round it
+  // examined, and the modification stamp. The contract it questions must read
+  // back exactly as it did before, so no other plan column and no task row is
+  // touched here.
+  recordDiscussion(planId, { question, answer, contractImpact, suggestion = "", round = null }) {
+    if (!DISCUSSION_IMPACTS.has(contractImpact)) throw new TypeError(`Unknown discussion impact ${contractImpact}`);
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, String(planId));
+      this.#insertEvent(planId, round, "discussion", { question, answer, contractImpact, suggestion }, at);
+    });
     return this.get(planId);
   }
 
@@ -856,6 +874,26 @@ export class WorktreePlanStore {
         payload: parse(row.payload, {}),
         createdAt: row.created_at,
       }));
+  }
+
+  // Every discussion on a plan, oldest first. It is a query of its own rather
+  // than a filter over events(): that reader is capped at 200 rows, so a busy
+  // plan would silently drop the older half of its discussion history.
+  discussions(planId) {
+    return this.db
+      .prepare("SELECT round, payload, created_at FROM plan_events WHERE plan_id = ? AND kind = 'discussion' ORDER BY id")
+      .all(String(planId || ""))
+      .map((row) => {
+        const payload = parse(row.payload, {});
+        return {
+          question: typeof payload.question === "string" ? payload.question : "",
+          answer: typeof payload.answer === "string" ? payload.answer : "",
+          contractImpact: payload.contractImpact === "revision_suggested" ? "revision_suggested" : "none",
+          suggestion: typeof payload.suggestion === "string" ? payload.suggestion : "",
+          round: row.round,
+          createdAt: row.created_at,
+        };
+      });
   }
 
   // The list view never needs the prompts, so it reads a summary row and one

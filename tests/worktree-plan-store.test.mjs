@@ -1224,3 +1224,78 @@ test("association repairs only a still-unassociated failed task and records an a
   assert.equal(store.events("plan-1").at(-1).kind, "task_associated");
   assert.throws(() => store.recordTaskAssociation("plan-1", "t2", candidate), /changed/);
 });
+
+// --- delivery contract discussions ----------------------------------------
+
+test("a discussion writes one event and touches nothing else on the plan or its tasks", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 2, stage: "ready", sessionId: "sess-a", tasks: TASKS, spec: { outcome: "Ship billing" } });
+  const before = store.get("plan-1");
+  const eventsBefore = store.events("plan-1").length;
+
+  const after = store.recordDiscussion("plan-1", {
+    question: "Why does t2 wait for t1?",
+    answer: "They share the invoice model, so the order is real.",
+    contractImpact: "none",
+    round: 2,
+  });
+
+  assert.deepEqual(after.tasks, before.tasks);
+  for (const field of ["round", "stage", "sessionId", "spec", "readiness", "questions", "status", "lastError", "lastErrorAt"]) {
+    assert.deepEqual(after[field], before[field], `${field} must not change`);
+  }
+  assert.notEqual(after.updatedAt, undefined);
+  assert.equal(store.events("plan-1").length, eventsBefore + 1);
+  const event = store.events("plan-1").at(-1);
+  assert.equal(event.kind, "discussion");
+  assert.equal(event.round, 2);
+  assert.deepEqual(event.payload, {
+    question: "Why does t2 wait for t1?",
+    answer: "They share the invoice model, so the order is real.",
+    contractImpact: "none",
+    suggestion: "",
+  });
+});
+
+test("the discussion query keeps its order and round across contract rounds", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", tasks: TASKS });
+  store.recordDiscussion("plan-1", { question: "First?", answer: "First answer.", contractImpact: "none", round: 1 });
+  store.recordRound("plan-1", { round: 2, stage: "ready", tasks: TASKS });
+  store.recordDiscussion("plan-1", { question: "Second?", answer: "Second answer.", contractImpact: "revision_suggested", suggestion: "Split t1.", round: 2 });
+
+  const discussions = store.discussions("plan-1");
+  assert.deepEqual(discussions.map((entry) => entry.question), ["First?", "Second?"]);
+  assert.deepEqual(discussions.map((entry) => entry.round), [1, 2]);
+  assert.deepEqual(discussions.map((entry) => entry.contractImpact), ["none", "revision_suggested"]);
+  assert.deepEqual(discussions.map((entry) => entry.suggestion), ["", "Split t1."]);
+  assert.equal(typeof discussions[0].createdAt, "string");
+});
+
+// events() is capped at 200 rows, so a filter over it would silently drop the
+// older half of a busy plan's discussion history.
+test("the discussion query stays complete beyond the generic event limit", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", tasks: TASKS });
+  store.recordDiscussion("plan-1", { question: "Oldest?", answer: "Oldest answer.", contractImpact: "none", round: 1 });
+  for (let index = 0; index < 260; index += 1) store.recordEdit("plan-1", TASKS);
+  store.recordDiscussion("plan-1", { question: "Newest?", answer: "Newest answer.", contractImpact: "none", round: 1 });
+
+  const events = store.events("plan-1");
+  assert.equal(events.length, 200, "the generic reader stays capped");
+  assert.equal(events.some((event) => event.kind === "discussion" && event.payload.question === "Newest?"), false);
+  assert.deepEqual(store.discussions("plan-1").map((entry) => entry.question), ["Oldest?", "Newest?"]);
+});
+
+test("the store refuses a discussion verdict it does not define and writes nothing", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", tasks: TASKS });
+  const before = store.get("plan-1").updatedAt;
+  assert.throws(() => store.recordDiscussion("plan-1", { question: "Q?", answer: "A.", contractImpact: "rewrite", round: 1 }), /Unknown discussion impact/);
+  assert.deepEqual(store.discussions("plan-1"), []);
+  assert.equal(store.get("plan-1").updatedAt, before);
+});

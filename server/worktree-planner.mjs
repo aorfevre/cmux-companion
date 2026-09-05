@@ -154,6 +154,14 @@ const ABORTED_ROUND = "This goal was aborted, so its planner round stopped";
 // shows, rather than failing with a generic message the user cannot act on.
 const ABORTED_PLAN = "This goal was aborted. Start a new goal";
 const MERGED_PLAN = "This goal is already merged. Start a new goal";
+// A discussion questions a contract that already exists, so it refuses the same
+// plans a rejection refuses, in its own voice. The cap stops a sheet becoming a
+// chat window: past it, the honest move is to reject the plan and re-plan.
+const DISCUSSION_CAP = 12;
+const NO_CONTRACT_TO_QUESTION = "This goal has no plan to question yet. Answer its questions first";
+const EMPTY_QUESTION = "Ask a question about this plan";
+const LONG_QUESTION = "That question is too long";
+const DISCUSSION_EXHAUSTED = `This plan has been questioned ${DISCUSSION_CAP} times. Reject it and re-plan instead`;
 
 export function parsePlannerReply(stdout, specOptions = undefined) {
   const envelope = extractJson(String(stdout));
@@ -203,6 +211,42 @@ export function parsePlannerReply(stdout, specOptions = undefined) {
   const readiness = validateDeliveryContract(spec, tasks, specOptions);
   if (!readiness.ready) throw new TypeError(`${UNUSABLE}: ${readiness.errors[0]}`);
   return { sessionId, status: "ready", questions: [], spec, tasks, readiness, legacy };
+}
+
+// The only three keys a discussion answer may hold. A reply that also carries
+// `questions` or `tasks` is a planning answer, not an explanation, so it is
+// refused here rather than allowed to look like a contract the user can accept.
+const DISCUSSION_KEYS = new Set(["answer", "contractImpact", "suggestion"]);
+const MAX_DISCUSSION_ANSWER = 4_000;
+const MAX_DISCUSSION_SUGGESTION = 2_000;
+
+// A discussion reply is parsed strictly and separately from a planning reply.
+// It shares only the envelope and JSON extraction: the round it belongs to
+// writes no spec and no task, so nothing here may normalize a half-usable
+// answer into one.
+export function parseDiscussionReply(stdout) {
+  const envelope = extractJson(String(stdout));
+  if (!envelope) throw new TypeError(UNUSABLE);
+  const payload = extractJson(String(envelope.result || ""));
+  if (!payload) throw new TypeError(UNUSABLE);
+  for (const key of Object.keys(payload)) if (!DISCUSSION_KEYS.has(key)) throw new TypeError(UNUSABLE);
+
+  const answer = typeof payload.answer === "string" ? payload.answer.trim() : "";
+  if (!answer || answer.length > MAX_DISCUSSION_ANSWER) throw new TypeError(UNUSABLE);
+  if (payload.contractImpact !== "none" && payload.contractImpact !== "revision_suggested") throw new TypeError(UNUSABLE);
+
+  const raw = payload.suggestion;
+  if (raw !== undefined && raw !== null && typeof raw !== "string") throw new TypeError(UNUSABLE);
+  const suggestion = typeof raw === "string" ? raw.trim() : "";
+  // A verdict of `none` that still carries a revision is contradictory. The
+  // sheet offers a handoff control on the suggestion alone, so an accepted
+  // contradiction would put that control on an answer that asked for nothing.
+  if (payload.contractImpact === "none") {
+    if (suggestion) throw new TypeError(UNUSABLE);
+    return { answer, contractImpact: "none", suggestion: "" };
+  }
+  if (!suggestion || suggestion.length > MAX_DISCUSSION_SUGGESTION) throw new TypeError(UNUSABLE);
+  return { answer, contractImpact: "revision_suggested", suggestion };
 }
 
 const MAX_SCAN_BYTES = 256 * 1024;
@@ -580,6 +624,82 @@ export class WorktreePlanner {
     return { draft, note: feedbackNote(draft, text) };
   }
 
+  // A question about the Delivery Contract that is on screen right now. It is
+  // not a round: it writes no spec, no task and no session id, and it does not
+  // consume maxRounds. The planner reads the repository and explains the
+  // contract, so the user can decide whether to launch it or reject it.
+  async discuss(planId, { text, onEvent = null } = {}) {
+    const { draft, question, round } = await this.#discussable(planId, text);
+    return this.#controlled(draft.planId, null, (signal) => this.#discussionWork(draft, question, round, onEvent, signal));
+  }
+
+  // The background twin. It answers as soon as the discussion is registered, so
+  // the sheet is free to close while the planner reads the repository.
+  async discussBackground(planId, { text } = {}) {
+    const { draft, question, round } = await this.#discussable(planId, text);
+    this.#detached(draft, "discuss", "discussing", (controller, onEvent) => (
+      this.#controlled(draft.planId, controller, (signal) => this.#discussionWork(draft, question, round, onEvent, signal))
+    ), {
+      done: () => this.#notifyDiscussion(draft),
+      failed: (message) => this.#notifyFailure(draft, message),
+    });
+    return { ...publicDraft(draft), running: true, runStage: "discussing" };
+  }
+
+  // Both discussion paths refuse the same things, and they must refuse them
+  // identically: the sheet shows whichever sentence comes back.
+  async #discussable(planId, text) {
+    // #draft carries the durable unknown, terminal and launched guards, so a
+    // discussion refuses those plans in the sentences they already use.
+    const draft = await this.#draft(planId);
+    this.#assertIdle(draft.planId);
+    if (draft.status !== "ready" || !draft.tasks.length) throw new TypeError(NO_CONTRACT_TO_QUESTION);
+    const question = String(text || "").trim();
+    if (!question) throw new TypeError(EMPTY_QUESTION);
+    if (question.length > 2_000) throw new TypeError(LONG_QUESTION);
+    // Only answered questions count. A failed or aborted attempt wrote nothing,
+    // so it must not spend one of the twelve.
+    const asked = this.#read(() => this.store?.discussions(draft.planId))?.length || 0;
+    if (asked >= DISCUSSION_CAP) throw new TypeError(DISCUSSION_EXHAUSTED);
+    // The round is captured before the answer, so the stored discussion names
+    // the contract round it examined rather than a later one.
+    return { draft, question, round: draft.round };
+  }
+
+  async #discussionWork(draft, question, round, onEvent, signal) {
+    const reply = await this.#discussionReply(draft, question, onEvent, signal);
+    this.#persist(() => this.store?.recordDiscussion(draft.planId, { question, ...reply, round }), draft.planId, "discussion");
+    return { planId: draft.planId, round, question, ...reply };
+  }
+
+  // One retry, exactly like a planning round: a second sample often parses. The
+  // reply is never allowed to change the draft, so the session id it carries is
+  // read and discarded.
+  async #discussionReply(draft, question, onEvent, signal) {
+    const read = async () => parseDiscussionReply(
+      await this.#spawn(draft, discussionPrompt(draft, question), draft.engine, draft.sessionId, onEvent, signal),
+    );
+    try {
+      return await read();
+    } catch (cause) {
+      if (cause instanceof PlannerRunError || !(cause instanceof TypeError)) throw cause;
+      emit(onEvent, { k: "text", t: "Retrying…" });
+      return read();
+    }
+  }
+
+  // Neutral by design. The answer may say the contract is wrong, so a
+  // notification that claimed a plan was ready would be a lie, and the answer
+  // text itself belongs in the sheet rather than on a lock screen.
+  #notifyDiscussion(draft) {
+    void this.#push({
+      title: "A goal answered your question",
+      body: `An answer about “${shortGoal(draft.goal)}” is ready to read`,
+      kind: "attention",
+      planId: draft.planId,
+    });
+  }
+
   // A companion restart kills the ccs child, so a plan can be left at round 0
   // with no questions and no tasks. This runs its opening prompt again.
   async run(planId) {
@@ -599,29 +719,52 @@ export class WorktreePlanner {
     // plan's state the moment the new round starts.
     draft.lastError = null;
     draft.lastErrorAt = null;
-    this.runs.begin(planId, kind);
-    const onEvent = (event) => {
-      this.progress?.publish(planId, event);
-      if (event?.t) this.runs.step(planId, event.t);
-    };
-    Promise.resolve()
-      .then(() => this.#round(draft, prompt, onEvent, submitted))
-      .then((result) => {
-        this.progress?.publish(planId, { k: "done" });
-        this.runs.finish(planId, { phase: "done" });
-        this.#notifyRound(draft, result);
-      })
-      .catch((cause) => {
-        const message = cause?.message || "The planner round failed";
-        this.log?.warn?.({ err: cause, planId }, "background planner round failed");
-        this.progress?.publish(planId, { k: "error", t: message });
-        this.runs.finish(planId, { phase: "failed", error: message });
+    this.#detached(draft, kind, "writing_spec", (controller, onEvent) => this.#round(draft, prompt, onEvent, submitted, controller), {
+      done: (result) => this.#notifyRound(draft, result),
+      failed: (message) => {
         // The stream is closed and the run registry expires within a minute, so
         // a sheet reopened later has no other way to learn what went wrong.
         draft.lastError = message;
         draft.lastErrorAt = new Date().toISOString();
         this.#persist(() => this.store?.recordRoundFailure(planId, message), planId, "round-failed");
         this.#notifyFailure(draft, message);
+      },
+    });
+  }
+
+  // Everything every detached round shares: the run registry entry, the
+  // progress stream, the log line and the abort race. What one kind of round
+  // records on top of that is the caller's, so a discussion never reaches the
+  // task-plan notification or the task-plan failure write.
+  #detached(draft, kind, stage, work, { done = null, failed = null } = {}) {
+    const planId = draft.planId;
+    const controller = new AbortController();
+    // Registered before the work starts. An abort in the same tick would
+    // otherwise find no controller and leave the child running.
+    this.controllers.set(planId, controller);
+    this.runs.begin(planId, kind, { stage });
+    const onEvent = (event) => {
+      this.progress?.publish(planId, event);
+      if (event?.t) this.runs.step(planId, event.t);
+    };
+    Promise.resolve()
+      .then(() => work(controller, onEvent))
+      .then((result) => {
+        // Abort already published the outcome and finished the run as aborted.
+        // The settlement below arrives after it, so it must add nothing: a
+        // second publish would overwrite a phase the user asked for.
+        if (controller.signal.aborted) return;
+        this.progress?.publish(planId, { k: "done" });
+        this.runs.finish(planId, { phase: "done" });
+        done?.(result);
+      })
+      .catch((cause) => {
+        const message = cause?.message || "The planner round failed";
+        this.log?.warn?.({ err: cause, planId }, "background planner round failed");
+        if (controller.signal.aborted) return;
+        this.progress?.publish(planId, { k: "error", t: message });
+        this.runs.finish(planId, { phase: "failed", error: message });
+        failed?.(message);
       });
   }
 
@@ -1233,15 +1376,23 @@ export class WorktreePlanner {
     }
   }
 
-  async #round(draft, prompt, onEvent = null, submitted = null) {
-    const controller = new AbortController();
-    this.controllers.set(draft.planId, controller);
+  async #round(draft, prompt, onEvent = null, submitted = null, controller = null) {
+    return this.#controlled(draft.planId, controller, (signal) => this.#roundWork(draft, prompt, onEvent, submitted, signal));
+  }
+
+  // Every kind of round reaches its ccs child through the same map, so abort
+  // has one owner to look up rather than one per round type. A detached round
+  // supplies its own controller, because it must be abortable from the moment
+  // it is registered, before its first microtask runs.
+  async #controlled(planId, controller, work) {
+    const owned = controller || new AbortController();
+    this.controllers.set(planId, owned);
     try {
-      return await this.#roundWork(draft, prompt, onEvent, submitted, controller.signal);
+      return await work(owned.signal);
     } finally {
       // Success, failure, timeout and cancellation all land here, so the map
       // never holds a controller for a round that is over.
-      if (this.controllers.get(draft.planId) === controller) this.controllers.delete(draft.planId);
+      if (this.controllers.get(planId) === owned) this.controllers.delete(planId);
     }
   }
 
@@ -1422,6 +1573,9 @@ export class WorktreePlanner {
     const detail = {
       ...stored,
       events: this.#read(() => this.store?.events(stored.planId)) || [],
+      // Its own query, not a filter over `events`: that reader is capped, so a
+      // busy plan would lose its older discussions from the sheet.
+      discussion: this.#read(() => this.store?.discussions(stored.planId)) || [],
       running: this.runs.isRunning(stored.planId),
       // A launching goal is neither planning nor launched yet. The marker is
       // its own field, so the board reads it without mistaking it for a
@@ -1922,6 +2076,66 @@ function feedbackRound(draft, note) {
     ...rejectedTasks(draft),
     "",
     rejection,
+  ].join("\n");
+}
+
+// The contract exactly as the sheet shows it, field by field. It is rebuilt for
+// every discussion rather than trusted to the live ccs session: a task edit and
+// a reviewer-produced task never entered that session, so a resumed
+// conversation holds a contract the user is no longer looking at.
+function contractSnapshot(draft) {
+  return [
+    "Current specification:",
+    JSON.stringify(draft.spec),
+    "",
+    "Current readiness:",
+    JSON.stringify(draft.readiness),
+    "",
+    "Current tasks:",
+    ...draft.tasks.map((task) => [
+      `- ${task.id} · ${task.title}`,
+      `  branch: ${task.branch}`,
+      `  agent: ${task.agent || "unassigned"}`,
+      `  criteria: ${(task.criterionIds || []).join(", ") || "none"}`,
+      `  depends on: ${(task.dependsOn || []).join(", ") || "none"}`,
+      `  owns: ${(task.ownedAreas || []).join(", ") || "none"}`,
+      `  verification: ${(task.verification || []).join("; ") || "none"}`,
+      `  wave: ${Number(task.wave) || 0}`,
+      `  prompt: ${task.prompt}`,
+    ].join("\n")),
+  ].join("\n");
+}
+
+const DISCUSSION_SHAPE = '{"answer":"...","contractImpact":"none|revision_suggested","suggestion":"..."}';
+
+const DISCUSSION_RULES = [
+  "You are explaining this delivery contract, not changing it.",
+  "Read the repository to answer accurately. Answer only the question asked.",
+  "Do not return questions. Do not return tasks. Do not rewrite the specification, the tasks, or any part of the contract.",
+  `Reply with exactly one JSON object and no other prose: ${DISCUSSION_SHAPE}`,
+  "`answer` explains the contract in plain language and is at most 4000 characters.",
+  '`contractImpact` is "none" when the contract needs no change, and "revision_suggested" when your answer identifies a change the contract needs.',
+  'With "none", leave `suggestion` empty. With "revision_suggested", `suggestion` states the one revision to request, in at most 2000 characters.',
+  "Add no other key.",
+].join("\n");
+
+// A discussion prompt is always self-contained, session or no session. The
+// contract in the session may be older than the contract on screen, and an
+// answer about the wrong contract is worse than no answer at all.
+function discussionPrompt(draft, question) {
+  return [
+    `Repository: ${draft.repositoryName} at ${draft.cwd}`,
+    `Goal: ${draft.goal}`,
+    ...(imageBlock(draft.images) ? ["", imageBlock(draft.images), "Read each image with the Read tool. It shows what the user means."] : []),
+    "",
+    contractSnapshot(draft),
+    "",
+    "The user is looking at exactly this contract and asks:",
+    question,
+    "",
+    DISCUSSION_RULES,
+    "",
+    OVERRIDES,
   ].join("\n");
 }
 
