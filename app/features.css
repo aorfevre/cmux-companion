@@ -151,6 +151,42 @@
 .worktree-planner-sheet .planner-reject label>span{color:#cfd5db;font-size:9px}
 .worktree-planner-sheet .planner-reject textarea{border:1px solid #2c343d;border-radius:10px;background:#12161b;color:#d5dade;padding:9px;resize:vertical;font:9px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .worktree-planner-sheet .planner-reject>p{margin:0;color:var(--muted);font-size:8px;line-height:1.45}
+/* Questioning a plan is the non-destructive counterpart of rejecting one: it
+   asks about the contract without replacing it. So it sits above the rejection
+   panel and borrows its shape, in the neutral blue rather than the warning red.
+   Question, answer and suggestion are told apart by their own label, border and
+   indent, never by colour alone. */
+.worktree-planner-sheet .planner-discussion{display:flex;flex-direction:column;gap:9px;margin:0 0 11px;border:1px solid rgba(159,196,255,.2);border-radius:11px;background:rgba(89,139,207,.05);padding:11px}
+.worktree-planner-sheet .planner-discussion>header{display:flex;flex-direction:column;gap:4px}
+.worktree-planner-sheet .planner-discussion>header strong{color:#c6dcff;font-size:10px}
+.worktree-planner-sheet .planner-discussion>header span{color:#93a2b2;white-space:normal;font:8px/1.5 -apple-system,sans-serif}
+.worktree-planner-sheet .planner-discussion-empty{margin:0;color:var(--muted);font-size:8px;line-height:1.45}
+.worktree-planner-sheet .planner-discussion-list{display:flex;flex-direction:column;gap:8px;margin:0;padding:0;list-style:none}
+.worktree-planner-sheet .planner-discussion-entry{display:flex;flex-direction:column;gap:5px;border:1px solid #2c343d;border-left-width:3px;border-radius:9px;background:#12161b;padding:8px}
+.worktree-planner-sheet .planner-discussion-entry.current{border-left-color:#9fc4ff}
+/* An earlier round is dimmer, dashed and labelled: three cues, so the state
+   still reads without colour. */
+.worktree-planner-sheet .planner-discussion-entry.historical{border-left-style:dashed;border-left-color:#4a5561;opacity:.75}
+.worktree-planner-sheet .planner-discussion-entry>header{display:flex;flex-wrap:wrap;gap:6px;align-items:baseline}
+.worktree-planner-sheet .planner-discussion-round{color:#8ca760;font:7px ui-monospace,monospace;letter-spacing:.08em}
+.worktree-planner-sheet .planner-discussion-historical{border-radius:6px;background:#252c32;color:#929da6;padding:2px 5px;font-size:7px;font-style:normal}
+.worktree-planner-sheet .planner-discussion-question,.worktree-planner-sheet .planner-discussion-answer{display:flex;flex-direction:column;gap:2px;margin:0}
+.worktree-planner-sheet .planner-discussion-question b,.worktree-planner-sheet .planner-discussion-answer b,.worktree-planner-sheet .planner-discussion-suggestion b{color:#aab7c1;font-size:7px;font-weight:700}
+/* Model prose keeps its own paragraphs. `pre-wrap` preserves them as written,
+   without running a line of it as Markdown or as markup. */
+.worktree-planner-sheet .planner-discussion-question span,.worktree-planner-sheet .planner-discussion-answer span,.worktree-planner-sheet .planner-discussion-suggestion span{color:#d5dade;white-space:pre-wrap;font-size:8px;line-height:1.5;overflow-wrap:anywhere}
+.worktree-planner-sheet .planner-discussion-question span{color:#c9d2db}
+.worktree-planner-sheet .planner-discussion-suggestion{display:flex;flex-direction:column;gap:4px;border:1px solid rgba(255,179,92,.28);border-radius:8px;background:rgba(255,179,92,.05);padding:7px}
+.worktree-planner-sheet .planner-discussion-suggestion b{color:#d7ad7c}
+.worktree-planner-sheet .planner-discussion-suggestion small{color:var(--muted);font-size:7px;line-height:1.45}
+.worktree-planner-sheet .planner-discussion-use{min-height:32px;border:1px solid rgba(255,179,92,.36);border-radius:8px;background:rgba(255,179,92,.09);color:#d7ad7c;padding:6px 9px;font-size:8px;font-weight:700}
+.worktree-planner-sheet .planner-discussion-use:disabled{opacity:.45}
+.worktree-planner-sheet .planner-discussion-composer{display:flex;flex-direction:column;gap:7px}
+.worktree-planner-sheet .planner-discussion-composer label{display:flex;flex-direction:column;gap:5px}
+.worktree-planner-sheet .planner-discussion-composer label>span{color:#cfd5db;font-size:9px}
+.worktree-planner-sheet .planner-discussion-composer textarea{border:1px solid #2c343d;border-radius:10px;background:#12161b;color:#d5dade;padding:9px;resize:vertical;font:9px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.worktree-planner-sheet .planner-discussion-composer textarea:disabled{opacity:.5}
+.worktree-planner-sheet .planner-discussion-cap{margin:0;color:#d7ad7c;white-space:normal;font-size:8px;line-height:1.45}
 .worktree-planner-sheet .planner-result.failed{border-color:rgba(255,109,120,.3)}
 .worktree-planner-sheet .planner-result>header em{flex:none;border-radius:8px;background:rgba(201,255,80,.1);color:var(--lime);padding:4px 7px;font-size:7px;font-style:normal}
 .worktree-planner-sheet .planner-result.failed>header em{background:rgba(255,109,120,.1);color:#ff9ca5}
@@ -641,6 +677,18 @@
 .worktree-planner-sheet .planner-reject label>span{font-size:13px}
 .worktree-planner-sheet .planner-reject textarea{padding:11px;font-size:13px;line-height:1.6}
 .worktree-planner-sheet .planner-reject>p{font-size:12px;line-height:1.6}
+.worktree-planner-sheet .planner-discussion{gap:12px;margin:0 0 15px;border-radius:12px;padding:14px}
+.worktree-planner-sheet .planner-discussion>header strong{font-size:14px}
+.worktree-planner-sheet .planner-discussion>header span,.worktree-planner-sheet .planner-discussion-empty{font-size:12px;line-height:1.6}
+.worktree-planner-sheet .planner-discussion-entry{gap:7px;padding:11px}
+.worktree-planner-sheet .planner-discussion-round,.worktree-planner-sheet .planner-discussion-historical{font-size:10px}
+.worktree-planner-sheet .planner-discussion-question b,.worktree-planner-sheet .planner-discussion-answer b,.worktree-planner-sheet .planner-discussion-suggestion b{font-size:10px}
+.worktree-planner-sheet .planner-discussion-question span,.worktree-planner-sheet .planner-discussion-answer span,.worktree-planner-sheet .planner-discussion-suggestion span{font-size:12px;line-height:1.65}
+.worktree-planner-sheet .planner-discussion-suggestion small{font-size:11px}
+.worktree-planner-sheet .planner-discussion-use{min-height:38px;font-size:12px}
+.worktree-planner-sheet .planner-discussion-composer label>span{font-size:13px}
+.worktree-planner-sheet .planner-discussion-composer textarea{padding:11px;font-size:13px;line-height:1.6}
+.worktree-planner-sheet .planner-discussion-cap{font-size:12px;line-height:1.6}
 
 /* The generated prompt at the sheet type scale, with its own scroll so a long
    prompt never pushes the launch button off the sheet. */
