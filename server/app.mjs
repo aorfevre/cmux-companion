@@ -19,6 +19,8 @@ import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
 import { GoalFollowups } from "./goal-followup.mjs";
+import { GitHubReviewToken } from "./github-review-token.mjs";
+import { normalizeReviewOptions } from "./review-options.mjs";
 import { agentCapacity } from "./agent-capacity.mjs";
 import { GoalHealthSweep } from "./goal-health.mjs";
 import { GoalWatchdog } from "./goal-watchdog.mjs";
@@ -62,6 +64,7 @@ export async function buildApp({
   worktreePlanStore = null,
   goalIntegrator = null,
   goalFollowups = null,
+  githubReviewToken = null,
   goalMergeWatch = null,
   goalHealthSweep = null,
   goalSessionReaper = null,
@@ -131,6 +134,11 @@ export async function buildApp({
     || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector }) : null);
   const followups = goalFollowups
     || (planStore ? new GoalFollowups({ store: planStore, cmux, log: app.log, briefs }) : null);
+  // The identity a goal code review posts under. It is separate from the
+  // machine's own gh credential on purpose: GitHub refuses a verdict on your
+  // own pull request, and the goal pull request is opened with that credential.
+  const reviewToken = githubReviewToken
+    || new GitHubReviewToken({ execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // The watcher never runs `gh`. It reads what the dashboard already cached
   // during the one Refresh GitHub command per repository.
   const mergeWatch = goalMergeWatch
@@ -523,7 +531,13 @@ export async function buildApp({
   // free to close and the next goal can start at once. The round then streams on
   // its own plan id. The synchronous path stays for callers that want the round.
   app.post("/api/worktree-plans", async (request, reply) => {
-    const goal = { repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, engine: request.body?.engine, specOptions: request.body?.specOptions };
+    const goal = { repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, engine: request.body?.engine, specOptions: request.body?.specOptions, reviewOptions: request.body?.reviewOptions };
+    // A disabled checkbox is a courtesy. This is the enforcement: a review the
+    // companion cannot post is refused now, not silently skipped later on a
+    // goal the user believed was being reviewed.
+    if (normalizeReviewOptions(goal.reviewOptions).codeReview && !reviewToken.status().configured) {
+      throw new TypeError("Add a GitHub review token in Settings before asking for a code review");
+    }
     if (request.body?.background === true) return reply.code(202).send(await planner.startBackground(goal));
     return reply.code(201).send(await reportRound(request.body?.traceId, (onEvent) => planner.start({ ...goal, onEvent })));
   });
@@ -898,6 +912,14 @@ export async function buildApp({
     if (!pushService) return { supported: false, subscribed: false };
     return pushService.status(typeof request.query?.endpoint === "string" ? request.query.endpoint : null);
   });
+
+  // The token itself is never returned. `status()` omits it by construction,
+  // so no future edit here can leak it by spreading that object.
+  app.get("/api/github/review-token", async () => reviewToken.status());
+
+  app.post("/api/github/review-token", async (request) => reviewToken.save(request.body?.token));
+
+  app.delete("/api/github/review-token", async () => reviewToken.clear());
 
   app.post("/api/push/subscribe", async (request) => {
     if (!pushService) throw serviceUnavailable("Push alerts are unavailable");

@@ -786,7 +786,7 @@ test("drives a worktree plan from goal to launch", async (t) => {
   const started = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", engine } });
   assert.equal(started.statusCode, 201);
   assert.equal(started.json().planId, "plan-1");
-  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing", images: undefined, engine, specOptions: undefined, onEvent: null });
+  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing", images: undefined, engine, specOptions: undefined, reviewOptions: undefined, onEvent: null });
 
   const answered = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/answers", headers, payload: { answers: [{ id: "q1", text: "Postgres" }] } });
   assert.equal(answered.statusCode, 200);
@@ -950,6 +950,92 @@ test("turns an unknown specification option into a readable 400", async (t) => {
   });
   assert.equal(response.statusCode, 400);
   assert.equal(response.json().error, "Unknown specification option sketches");
+});
+
+function fakeReviewToken({ configured = false, login = null } = {}) {
+  const calls = [];
+  return {
+    calls,
+    status: () => ({ configured, login, verifiedAt: configured ? "2026-01-01T00:00:00.000Z" : null }),
+    save: async (token) => { calls.push(["save", token]); configured = true; login = "octo-bot"; return { configured, login, verifiedAt: "2026-01-01T00:00:00.000Z" }; },
+    clear: () => { calls.push(["clear"]); configured = false; login = null; return { configured: false, login: null, verifiedAt: null }; },
+  };
+}
+
+test("forwards the review request on both plan routes when a token is configured", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({
+    cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner,
+    githubReviewToken: fakeReviewToken({ configured: true, login: "octo-bot" }),
+  });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const reviewOptions = { codeReview: true, reviewer: "codex" };
+
+  const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions } });
+  assert.equal(awaited.statusCode, 201);
+  assert.deepEqual(planner.calls[0][1].reviewOptions, reviewOptions);
+
+  const background = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions, background: true } });
+  assert.equal(background.statusCode, 202);
+  assert.deepEqual(planner.calls[1][1].reviewOptions, reviewOptions);
+});
+
+test("refuses a code review when no review token is configured", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({
+    cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner,
+    githubReviewToken: fakeReviewToken({ configured: false }),
+  });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const refused = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions: { codeReview: true } } });
+  assert.equal(refused.statusCode, 400);
+  assert.match(refused.json().error, /Add a GitHub review token in Settings/);
+  // Refused before the planner ran, so no unusable plan row is left behind.
+  assert.equal(planner.calls.length, 0);
+
+  // A goal that asks for no review is unaffected by a missing token.
+  const allowed = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing" } });
+  assert.equal(allowed.statusCode, 201);
+});
+
+test("turns an unknown review option into a readable 400", async (t) => {
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-plans",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions: { deepReview: true } },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().error, "Unknown review option deepReview");
+});
+
+test("the review token routes never return the token itself", async (t) => {
+  const store = fakeReviewToken({ configured: false });
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, githubReviewToken: store });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const empty = await app.inject({ method: "GET", url: "/api/github/review-token", headers });
+  assert.equal(empty.statusCode, 200);
+  assert.deepEqual(empty.json(), { configured: false, login: null, verifiedAt: null });
+
+  const saved = await app.inject({ method: "POST", url: "/api/github/review-token", headers, payload: { token: "ghp_0123456789abcdefghijklmnop" } });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().configured, true);
+  assert.equal(saved.json().login, "octo-bot");
+  // The secret must never reach the browser, in any field.
+  assert.equal(saved.payload.includes("ghp_0123456789abcdefghijklmnop"), false);
+  assert.equal(Object.hasOwn(saved.json(), "token"), false);
+  assert.deepEqual(store.calls[0], ["save", "ghp_0123456789abcdefghijklmnop"]);
+
+  const cleared = await app.inject({ method: "DELETE", url: "/api/github/review-token", headers });
+  assert.equal(cleared.statusCode, 200);
+  assert.deepEqual(cleared.json(), { configured: false, login: null, verifiedAt: null });
 });
 
 test("turns a bad images value into a 400", async (t) => {

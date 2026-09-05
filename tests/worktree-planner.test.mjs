@@ -408,6 +408,29 @@ test("the reviewer round demands the same options as the round it reviews", asyn
   assert.match(prompt, /"optionEvidence"/);
 });
 
+test("the review request never reaches a planner prompt or a task brief", async () => {
+  // A code review happens after the pull request exists. The planner can
+  // neither plan for it nor evidence it, so asking would only invite a task
+  // and an acceptance criterion for work that is not part of the delivery.
+  const reviewOptions = { codeReview: true, reviewer: "codex" };
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", reviewOptions });
+
+  const prompts = deps.calls.filter((call) => call[0] === "ccs").map((call) => String(call[1].at(-1)));
+  for (const prompt of prompts) {
+    assert.equal(/codeReview|reviewOptions/i.test(prompt), false, "planner prompt names the review request");
+  }
+
+  await planner.launch(draft.planId);
+  const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
+  assert.equal(/codeReview|reviewOptions/i.test(brief), false, "task brief names the review request");
+
+  // It is still carried on the draft, because the integrator reads it once
+  // the pull request exists.
+  assert.deepEqual(draft.reviewOptions, reviewOptions);
+});
+
 test("parsePlannerReply applies the option-aware contract limits", () => {
   const spec = {
     outcome: "Ship billing",
