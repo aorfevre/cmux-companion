@@ -68,6 +68,91 @@ test("stores a goal without specification options as all false", (t) => {
   assert.deepEqual(store.list()[0].specOptions, ALL_FALSE);
 });
 
+const NO_REVIEW = { codeReview: false, reviewer: "claude" };
+const WANTS_REVIEW = { codeReview: true, reviewer: "codex" };
+
+test("round trips the review request through detail, list and the goal event", (t) => {
+  const store = memoryStore(t);
+  const plan = store.createPlan({
+    planId: "review-plan",
+    repositoryId: "repository12345678",
+    goal: "Add billing",
+    reviewOptions: WANTS_REVIEW,
+  });
+  assert.deepEqual(plan.reviewOptions, WANTS_REVIEW);
+  assert.deepEqual(store.get("review-plan").reviewOptions, WANTS_REVIEW);
+  assert.deepEqual(store.events("review-plan")[0].payload.reviewOptions, WANTS_REVIEW);
+  assert.deepEqual(store.list().find((item) => item.planId === "review-plan").reviewOptions, WANTS_REVIEW);
+});
+
+test("stores a goal without a review request as no review", (t) => {
+  const store = memoryStore(t);
+  assert.deepEqual(seed(store).reviewOptions, NO_REVIEW);
+  assert.deepEqual(store.events("plan-1")[0].payload.reviewOptions, NO_REVIEW);
+  assert.deepEqual(store.list()[0].reviewOptions, NO_REVIEW);
+});
+
+test("reads a malformed stored review request as no review", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  for (const stored of ["", "not json", "[]", '{"unknown":true}', '{"codeReview":"yes"}', '{"reviewer":"gemini"}']) {
+    store.db.prepare("UPDATE plans SET review_options = ? WHERE plan_id = ?").run(stored, "plan-1");
+    assert.deepEqual(store.get("plan-1").reviewOptions, NO_REVIEW, `stored value ${stored}`);
+    assert.deepEqual(store.list()[0].reviewOptions, NO_REVIEW, `stored value ${stored}`);
+  }
+});
+
+test("only the first caller claims a goal review", (t) => {
+  const store = memoryStore(t);
+  store.createPlan({ planId: "plan-1", repositoryId: "repository12345678", goal: "Add billing", reviewOptions: WANTS_REVIEW });
+
+  // Two callers race for this: the integrator settling a combined goal, and
+  // the merge watcher observing a single-task goal's pull request.
+  const claimed = store.claimGoalReview("plan-1", { agent: "codex" });
+  assert.equal(claimed.reviewStatus, "claiming");
+  assert.equal(store.claimGoalReview("plan-1", { agent: "codex" }), null);
+  assert.equal(store.events("plan-1").filter((event) => event.kind === "review_claimed").length, 1);
+
+  const launched = store.recordReviewLaunched("plan-1", { workspaceId: "ws-9", agent: "codex", briefPath: "/tmp/review.md" });
+  assert.equal(launched.reviewStatus, "running");
+  assert.equal(launched.reviewWorkspaceId, "ws-9");
+  assert.equal(launched.reviewBriefPath, "/tmp/review.md");
+  assert.ok(launched.reviewLaunchedAt);
+  assert.equal(store.list()[0].reviewStatus, "running");
+
+  // A launched review is the terminal claim: no later pass may start a second.
+  assert.equal(store.claimGoalReview("plan-1", { agent: "claude" }), null);
+  const events = store.events("plan-1").filter((event) => event.kind === "review_launched");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].payload.workspaceId, "ws-9");
+  assert.equal(events[0].payload.agent, "codex");
+});
+
+test("a claim that never became a session is released and can be retried", (t) => {
+  const store = memoryStore(t);
+  store.createPlan({ planId: "plan-1", repositoryId: "repository12345678", goal: "Add billing", reviewOptions: WANTS_REVIEW });
+  store.claimGoalReview("plan-1", { agent: "codex" });
+
+  assert.equal(store.releaseGoalReview("plan-1").reviewStatus, null);
+  assert.ok(store.claimGoalReview("plan-1", { agent: "codex" }));
+
+  // Releasing must never undo a review that really launched, or a crash in a
+  // later pass would start a second reviewer on the same pull request.
+  store.recordReviewLaunched("plan-1", { workspaceId: "ws-9", agent: "codex", briefPath: "/tmp/review.md" });
+  const kept = store.releaseGoalReview("plan-1");
+  assert.equal(kept.reviewStatus, "running");
+  assert.equal(kept.reviewWorkspaceId, "ws-9");
+});
+
+test("records when the review session is closed", (t) => {
+  const store = memoryStore(t);
+  store.createPlan({ planId: "plan-1", repositoryId: "repository12345678", goal: "Add billing", reviewOptions: WANTS_REVIEW });
+  store.claimGoalReview("plan-1", { agent: "claude" });
+  store.recordReviewLaunched("plan-1", { workspaceId: "ws-9", agent: "claude", briefPath: "/tmp/review.md" });
+  assert.equal(store.get("plan-1").reviewSessionClosedAt, null);
+  assert.ok(store.recordReviewSessionClosed("plan-1").reviewSessionClosedAt);
+});
+
 test("reads malformed stored specification options as all false", (t) => {
   const store = memoryStore(t);
   seed(store);
@@ -397,7 +482,7 @@ test("migrates a pre-contract database without losing legacy plans", (t) => {
   first.close();
 
   const legacy = new DatabaseSync(path);
-  for (const column of ["contract_version", "spec", "readiness", "last_error", "last_error_at", "spec_options"]) legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
+  for (const column of ["contract_version", "spec", "readiness", "last_error", "last_error_at", "spec_options", "review_options", "review_workspace_id", "review_status", "review_brief_path", "review_launched_at", "review_session_closed_at"]) legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
   for (const column of ["task_type", "criterion_ids", "depends_on", "owned_areas", "verification", "wave", "start_sha", "completion_report", "evidence_status", "evidence_error", "changed_files", "scope_warnings"]) {
     legacy.exec(`ALTER TABLE plan_tasks DROP COLUMN ${column}`);
   }
@@ -413,6 +498,8 @@ test("migrates a pre-contract database without losing legacy plans", (t) => {
   // A database that predates the column reads as no request at all, rather
   // than making every saved plan unreadable.
   assert.deepEqual(plan.specOptions, ALL_FALSE);
+  assert.deepEqual(plan.reviewOptions, NO_REVIEW);
+  assert.equal(plan.reviewStatus, null);
   assert.equal(plan.tasks[0].title, "Billing");
   assert.equal(plan.tasks[0].type, "feature");
   assert.deepEqual(plan.tasks[0].criterionIds, []);

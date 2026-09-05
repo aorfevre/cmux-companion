@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { normalizeSpecOptions } from "./spec-options.mjs";
+import { safeReviewOptions } from "./review-options.mjs";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db");
 
@@ -20,6 +21,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
   "session_retired", "board_merged", "board_aborted", "board_pull_request",
   "task_relaunched", "task_skipped", "followup_launched",
+  "review_claimed", "review_launched",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -47,6 +49,12 @@ CREATE TABLE IF NOT EXISTS plans (
   engine_effort TEXT NOT NULL DEFAULT 'default',
   engine_reviewer INTEGER NOT NULL DEFAULT 0,
   spec_options TEXT NOT NULL DEFAULT '{}',
+  review_options TEXT NOT NULL DEFAULT '{}',
+  review_workspace_id TEXT,
+  review_status TEXT,
+  review_brief_path TEXT,
+  review_launched_at TEXT,
+  review_session_closed_at TEXT,
   session_id TEXT,
   round INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -151,15 +159,16 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {} }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {} }) {
     const at = this.#stamp();
     const options = safeSpecOptions(specOptions);
+    const review = safeReviewOptions(reviewOptions);
     this.#transaction(() => {
       this.db.prepare(`
-        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), at, at);
-      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options }, at);
+        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), json(review), at, at);
+      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review }, at);
     });
     this.#prune();
     return this.get(planId);
@@ -422,6 +431,72 @@ export class WorktreePlanStore {
       this.#insertEvent(id, null, "followup_launched", entry, at);
     });
     return this.get(planId);
+  }
+
+  // The single-launch lock for a goal code review. Two callers race for it: the
+  // integrator settling a combined goal, and the merge watcher observing a
+  // single-task goal's pull request. The WHERE clause is the lock, so the
+  // loser gets null and launches nothing.
+  //
+  // The claim is written before cmux is called, because a workspace id only
+  // exists afterwards. A crash in between leaves 'claiming', which still
+  // blocks a second launch and is visible to a person reading the row.
+  claimGoalReview(planId, { agent } = {}) {
+    const at = this.#stamp();
+    const id = String(planId);
+    let claimed = false;
+    this.#transaction(() => {
+      const result = this.db.prepare(`
+        UPDATE plans SET review_status = 'claiming', review_launched_at = ?, updated_at = ?
+        WHERE plan_id = ? AND review_status IS NULL AND review_workspace_id IS NULL
+      `).run(at, at, id);
+      claimed = result.changes === 1;
+      if (claimed) this.#insertEvent(id, null, "review_claimed", { agent: text(agent) }, at);
+    });
+    return claimed ? this.get(id) : null;
+  }
+
+  recordReviewLaunched(planId, { workspaceId, agent, briefPath }) {
+    const at = this.#stamp();
+    const id = String(planId);
+    const entry = {
+      workspaceId: text(workspaceId),
+      agent: text(agent),
+      briefPath: text(briefPath),
+      launchedAt: at,
+    };
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET review_workspace_id = ?, review_status = 'running',
+          review_brief_path = ?, review_launched_at = ?, updated_at = ? WHERE plan_id = ?
+      `).run(entry.workspaceId, entry.briefPath, at, at, id);
+      this.#insertEvent(id, null, "review_launched", entry, at);
+    });
+    return this.get(id);
+  }
+
+  // A claim that never became a session must not strand the goal. Releasing it
+  // returns the row to its unclaimed state so a later pass can try again.
+  releaseGoalReview(planId) {
+    const at = this.#stamp();
+    const id = String(planId);
+    this.#transaction(() => {
+      this.db.prepare(`
+        UPDATE plans SET review_status = NULL, review_launched_at = NULL, updated_at = ?
+        WHERE plan_id = ? AND review_workspace_id IS NULL
+      `).run(at, id);
+    });
+    return this.get(id);
+  }
+
+  recordReviewSessionClosed(planId) {
+    const at = this.#stamp();
+    const id = String(planId);
+    this.#transaction(() => {
+      this.db.prepare("UPDATE plans SET review_session_closed_at = ?, updated_at = ? WHERE plan_id = ?")
+        .run(at, at, id);
+    });
+    return this.get(id);
   }
 
   // The merge agent stopped without a pull request. The worktree and the live
@@ -773,6 +848,8 @@ export class WorktreePlanStore {
       deliveryPolicy: row.delivery_policy || "auto",
       engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
       specOptions: safeSpecOptions(parse(row.spec_options, null)),
+      reviewOptions: safeReviewOptions(parse(row.review_options, null)),
+      reviewStatus: row.review_status ?? null,
       lastError: row.last_error ?? null,
       lastErrorAt: row.last_error_at ?? null,
       boardStatus: boardStatus(row.board_status),
@@ -859,6 +936,12 @@ export class WorktreePlanStore {
     ensure("plans", "engine_effort", "TEXT NOT NULL DEFAULT 'default'");
     ensure("plans", "engine_reviewer", "INTEGER NOT NULL DEFAULT 0");
     ensure("plans", "spec_options", "TEXT NOT NULL DEFAULT '{}'");
+    ensure("plans", "review_options", "TEXT NOT NULL DEFAULT '{}'");
+    ensure("plans", "review_workspace_id", "TEXT");
+    ensure("plans", "review_status", "TEXT");
+    ensure("plans", "review_brief_path", "TEXT");
+    ensure("plans", "review_launched_at", "TEXT");
+    ensure("plans", "review_session_closed_at", "TEXT");
     ensure("plans", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'");
     ensure("plans", "delivery_status", "TEXT NOT NULL DEFAULT 'planning'");
     ensure("plans", "integration_branch", "TEXT");
@@ -945,6 +1028,12 @@ function readPlan(row) {
     deliveryPolicy: row.delivery_policy || "auto",
     engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
     specOptions: safeSpecOptions(parse(row.spec_options, null)),
+    reviewOptions: safeReviewOptions(parse(row.review_options, null)),
+    reviewWorkspaceId: row.review_workspace_id ?? null,
+    reviewStatus: row.review_status ?? null,
+    reviewBriefPath: row.review_brief_path ?? null,
+    reviewLaunchedAt: row.review_launched_at ?? null,
+    reviewSessionClosedAt: row.review_session_closed_at ?? null,
     sessionId: row.session_id,
     round: row.round,
     status: row.status,

@@ -12,6 +12,7 @@ import {
   validateDeliveryContract,
 } from "./delivery-contract.mjs";
 import { normalizeSpecOptions, specOptionsBriefLines, specOptionsPromptLines } from "./spec-options.mjs";
+import { normalizeReviewOptions, safeReviewOptions } from "./review-options.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
 import { LaunchRuns } from "./launch-runs.mjs";
@@ -456,15 +457,15 @@ export class WorktreePlanner {
     this.controllers = new Map();
   }
 
-  async start({ repositoryId, goal, images, engine, specOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
-    const draft = await this.#createDraft({ repositoryId, goal, images, engine, specOptions, issueNumbers, issueUrls, deliveryPolicy });
+  async start({ repositoryId, goal, images, engine, specOptions, reviewOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
+    const draft = await this.#createDraft({ repositoryId, goal, images, engine, specOptions, reviewOptions, issueNumbers, issueUrls, deliveryPolicy });
     return this.#round(draft, openingPrompt(draft), onEvent);
   }
 
   // The row is written before the round runs, so a plan id exists the moment a
   // goal is submitted. That id is what the progress stream, the goal card and
   // the notification all key on.
-  async #createDraft({ repositoryId, goal, images, engine, specOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
+  async #createDraft({ repositoryId, goal, images, engine, specOptions, reviewOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
     const text = String(goal || "").trim();
     if (!text) throw new TypeError("Describe the goal for this repository");
     if (text.length > 4_000) throw new TypeError("That goal is too long");
@@ -476,6 +477,10 @@ export class WorktreePlanner {
     // Normalized before the repository scan, so an unknown option id refuses
     // the goal instead of leaving an unusable plan row behind.
     const normalizedSpecOptions = normalizeSpecOptions(specOptions);
+    // The review request never reaches the planner prompt or a task brief. It
+    // describes what happens after the pull request exists, which is nothing
+    // the planner can plan for or evidence.
+    const normalizedReviewOptions = normalizeReviewOptions(reviewOptions);
     const repository = await this.#repository(repositoryId);
     const draft = {
       planId: randomUUID(),
@@ -490,6 +495,7 @@ export class WorktreePlanner {
       deliveryPolicy: normalizedDeliveryPolicy,
       engine: normalizedEngine,
       specOptions: normalizedSpecOptions,
+      reviewOptions: normalizedReviewOptions,
       sessionId: null,
       round: 0,
       at: Date.now(),
@@ -518,6 +524,7 @@ export class WorktreePlanner {
       deliveryPolicy: draft.deliveryPolicy,
       engine: draft.engine,
       specOptions: draft.specOptions,
+      reviewOptions: draft.reviewOptions,
     }), draft.planId, "create");
     return draft;
   }
@@ -525,8 +532,8 @@ export class WorktreePlanner {
   // The background entry point. It answers as soon as the row exists, and the
   // round runs on after the request has ended. The caller gets a plan id it can
   // watch, resume and delete, so the sheet is free to close.
-  async startBackground({ repositoryId, goal, images, engine, specOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
-    const draft = await this.#createDraft({ repositoryId, goal, images, engine, specOptions, issueNumbers, issueUrls, deliveryPolicy });
+  async startBackground({ repositoryId, goal, images, engine, specOptions, reviewOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto" }) {
+    const draft = await this.#createDraft({ repositoryId, goal, images, engine, specOptions, reviewOptions, issueNumbers, issueUrls, deliveryPolicy });
     this.#detach(draft, openingPrompt(draft), "plan");
     return { ...publicDraft(draft), running: true };
   }
@@ -1455,6 +1462,7 @@ function publicDraft(draft) {
     deliveryPolicy: draft.deliveryPolicy || "auto",
     engine: draft.engine || normalizePlannerEngine(),
     specOptions: safeSpecOptions(draft.specOptions),
+    reviewOptions: safeReviewOptions(draft.reviewOptions),
     round: draft.round,
     status: draft.status,
     questions: draft.questions,
@@ -1484,6 +1492,7 @@ function draftFromStore(stored) {
     deliveryPolicy: stored.deliveryPolicy === "combined" ? "combined" : "auto",
     engine: normalizePlannerEngine(stored.engine),
     specOptions: safeSpecOptions(stored.specOptions),
+    reviewOptions: safeReviewOptions(stored.reviewOptions),
     sessionId: stored.sessionId || null,
     round: Number(stored.round) || 0,
     at: Date.now(),
