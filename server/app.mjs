@@ -18,13 +18,16 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
+import { GoalFollowups } from "./goal-followup.mjs";
 import { agentCapacity } from "./agent-capacity.mjs";
 import { GoalHealthSweep } from "./goal-health.mjs";
 import { GoalWatchdog } from "./goal-watchdog.mjs";
+import { GoalSessionReaper } from "./goal-session-reaper.mjs";
 import { GoalMergeWatch } from "./goal-merge-watch.mjs";
 import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
 import { GitHubIssueStore } from "./github-issue-store.mjs";
 import { GitHubIssueSync } from "./github-issue-sync.mjs";
+import { GitHubIssueSyncScheduler } from "./github-issue-sync-scheduler.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import { deploymentStatus, updaterLaunchAgentRunning } from "./deployment-health.mjs";
@@ -42,6 +45,9 @@ const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // The dashboard sends this sentence itself, so the board can tell an overloaded
 // Mac apart from a broken companion. Both sides compare against this constant.
 const DASHBOARD_TIMEOUT_MESSAGE = "The worktree scan did not finish in time. This Mac may be overloaded.";
+// `CMUX_COMPANION_AUTO_CLOSE_SESSIONS`. Automatic retirement is on by default;
+// these three words turn the timer pass off.
+const AUTO_CLOSE_OFF = new Set(["0", "off", "false"]);
 
 export async function buildApp({
   cmux = new CmuxClient(),
@@ -55,8 +61,10 @@ export async function buildApp({
   worktreePlanner = null,
   worktreePlanStore = null,
   goalIntegrator = null,
+  goalFollowups = null,
   goalMergeWatch = null,
   goalHealthSweep = null,
+  goalSessionReaper = null,
   goalWatchdog = null,
   // Accepted but deliberately unused: see the header of cmux-groups.mjs for why
   // cmux workspace grouping is inert. The option stays in the signature so
@@ -65,6 +73,7 @@ export async function buildApp({
   cmuxGroups = null,
   githubIssuePlanner = null,
   githubIssueSync = null,
+  githubIssueSyncScheduler = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
   previewManager = null,
@@ -107,9 +116,21 @@ export async function buildApp({
   const briefs = new AgentBriefs();
   const planner = worktreePlanner
     || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
-  const sessionCollector = planStore ? new GoalSessionCollector({ store: planStore, cmux, log: app.log }) : null;
+  // The one writer in the supervision path. It closes a cmux session only when
+  // the plan records it and its work is delivered, so it is always safe to call
+  // it; the switch below is about the timer, not about the rule.
+  const reaper = goalSessionReaper
+    || (planStore ? new GoalSessionReaper({ store: planStore, cmux, log: app.log }) : null);
+  // The kill switch. An operator who wants to keep every workspace open sets
+  // it, and the supervision timer stops retiring sessions. The on-demand routes
+  // stay available either way: an explicit request is the user asking, which is
+  // exactly what the switch does not need to protect them from.
+  const autoCloseSessions = !AUTO_CLOSE_OFF.has(String(process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS ?? "").trim().toLowerCase());
+  const sessionCollector = planStore ? new GoalSessionCollector({ store: planStore, cmux, reaper, enabled: autoCloseSessions, log: app.log }) : null;
   const integrator = goalIntegrator
     || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector }) : null);
+  const followups = goalFollowups
+    || (planStore ? new GoalFollowups({ store: planStore, cmux, log: app.log, briefs }) : null);
   // The watcher never runs `gh`. It reads what the dashboard already cached
   // during the one Refresh GitHub command per repository.
   const mergeWatch = goalMergeWatch
@@ -125,18 +146,38 @@ export async function buildApp({
   // service never opens the production file, exactly like the planner above.
   const issueSync = githubIssueSync
     || new GitHubIssueSync({ worktrees, planner, store: new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+  // The timer that keeps the issue column current without anyone pressing
+  // GitHub Sync. The interval is read here rather than inside the class, so the
+  // class stays purely injected and a test never depends on the environment.
+  const issueSyncScheduler = githubIssueSyncScheduler
+    || new GitHubIssueSyncScheduler({
+      sync: issueSync,
+      log: app.log,
+      ...(Number(process.env.CMUX_COMPANION_GITHUB_ISSUE_SYNC_INTERVAL_MS) > 0
+        ? { intervalMs: Number(process.env.CMUX_COMPANION_GITHUB_ISSUE_SYNC_INTERVAL_MS) }
+        : {}),
+    });
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
   let bootstrapPending = null;
   let inboxSnapshot = null;
   let inboxPending = null;
+  // A background launch creates the worktrees after its request has ended, so
+  // the dashboard caches only go stale once that launch settles. The hook is
+  // assigned rather than passed to the constructor, so an injected planner gets
+  // it too, and it is declared here because it closes over the caches above.
+  planner.onLaunchSettled = () => {
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+  };
   // The sweep answers when asked. This asks, on a timer, and pushes once when a
   // goal's health gets worse — so a dead agent reaches the user instead of
-  // waiting to be noticed. It also retires delivered sessions; agent recovery
-  // stays explicit.
-  const watchdog = goalWatchdog || (health ? new GoalWatchdog({ health, pushService, mergeWatch, worktrees, sessionCollector, log: app.log }) : null);
+  // waiting to be noticed. It moves no goal: every recovery stays explicit.
+  const watchdog = goalWatchdog
+    || (health ? new GoalWatchdog({ health, pushService, mergeWatch, worktrees, sessionReaper: autoCloseSessions ? reaper : null, log: app.log }) : null);
   const detachWatchdog = watchdog?.start() || null;
+  const detachIssueSyncScheduler = issueSyncScheduler?.start() || null;
   const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
   const detachQueue = promptQueue?.attach({ hub, cmux }) || null;
   // Production already keeps the event stream alive for push/queue handling.
@@ -347,7 +388,9 @@ export async function buildApp({
       prompt,
       script,
     });
-    repoCatalog.cache = null;
+    // Launching an agent into a repository changes its working tree, so the
+    // cached status must go with the cached listing.
+    if (repoCatalog.invalidate) repoCatalog.invalidate(); else repoCatalog.cache = null;
     return reply.code(201).send({ workspace: created, repo: { id: repo.id, name: repo.name } });
   });
 
@@ -480,7 +523,7 @@ export async function buildApp({
   // free to close and the next goal can start at once. The round then streams on
   // its own plan id. The synchronous path stays for callers that want the round.
   app.post("/api/worktree-plans", async (request, reply) => {
-    const goal = { repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, engine: request.body?.engine };
+    const goal = { repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, engine: request.body?.engine, specOptions: request.body?.specOptions };
     if (request.body?.background === true) return reply.code(202).send(await planner.startBackground(goal));
     return reply.code(201).send(await reportRound(request.body?.traceId, (onEvent) => planner.start({ ...goal, onEvent })));
   });
@@ -557,7 +600,13 @@ export async function buildApp({
     planner.update(request.params.planId, { tasks: request.body?.tasks })
   ));
 
-  app.post("/api/worktree-plans/:planId/launch", async (request) => {
+  // A launch creates a worktree and a cmux session per task, which takes long
+  // enough that the sheet used to sit on a blocking screen. The background
+  // branch answers 202 as soon as the launch is registered and reports the
+  // outcome by push notification. The caches are invalidated by the settled
+  // hook above, because nothing exists to invalidate when the 202 is sent.
+  app.post("/api/worktree-plans/:planId/launch", async (request, reply) => {
+    if (request.body?.background === true) return reply.code(202).send(await planner.launchBackground(request.params.planId));
     const result = await planner.launch(request.params.planId);
     bootstrapSnapshot = null;
     worktrees.invalidate();
@@ -619,9 +668,41 @@ export async function buildApp({
     };
   });
 
+  app.post("/api/worktree-plans/:planId/followups", async (request) => {
+    if (!followups) throw serviceUnavailable("Goal follow-ups are unavailable");
+    const result = await followups.launch(request.params.planId, request.body);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
+  });
+
   app.post("/api/goals/health/check", async () => {
     if (!watchdog) throw serviceUnavailable("Goal supervision is unavailable");
     return watchdog.check();
+  });
+
+  // The same retirement pass the watchdog runs on its timer, forced. "Close the
+  // sessions that are finished": one action, and it reports every session it
+  // closed, kept and failed to close, so a kept session can always be explained.
+  app.post("/api/goals/sessions/reap", async (request) => {
+    if (!reaper) throw serviceUnavailable("Goal session retirement is unavailable");
+    const planId = readPlanId(request.body?.planId);
+    const report = await reaper.reap(planId ? { planId } : {});
+    // Closing a session changes what the board and the sidebar show, so the
+    // cached snapshots are dropped rather than served stale.
+    if (report.closed.length) {
+      bootstrapSnapshot = null;
+      worktrees.invalidate();
+    }
+    return report;
+  });
+
+  // What the pass would close, without closing it. The UI shows this before it
+  // asks the user to act, so nobody has to run the real pass to find out.
+  app.get("/api/goals/sessions/retirable", async (request) => {
+    if (!reaper) throw serviceUnavailable("Goal session retirement is unavailable");
+    const planId = readPlanId(request.query?.planId);
+    return dryRun(reaper).reap(planId ? { planId } : {});
   });
 
   app.get("/api/worktree-plans/:planId/health", async (request) => {
@@ -687,7 +768,12 @@ export async function buildApp({
   // last sync without touching GitHub again.
   app.get("/api/github-issues", async () => issueSync.read());
 
-  app.post("/api/github-issues/sync", async () => issueSync.sync());
+  // Delegated to the scheduler so a manual press and a scheduled pass share one
+  // in-flight guard. The response is whatever GitHubIssueSync.sync() returns,
+  // unchanged: a caller that joins a running pass gets that pass's own result.
+  app.post("/api/github-issues/sync", async () => (
+    issueSyncScheduler ? issueSyncScheduler.syncNow() : issueSync.sync()
+  ));
 
   // One issue becomes one goal plan. The plan then appears in Writing Spec
   // like every other draft, so the caches that feed the board are dropped.
@@ -969,6 +1055,7 @@ export async function buildApp({
     detachQueue?.();
     detachIntegrator?.();
     detachWatchdog?.();
+    detachIssueSyncScheduler?.();
     hub.stop();
     if (!worktreePlanStore && planStore) planStore.close();
   });
@@ -1058,6 +1145,38 @@ export function withDeadline(promise, ms, message) {
       (cause) => { clearTimeout(timer); reject(cause); },
     );
   });
+}
+
+// An optional plan id. An empty body means every plan, which is what the timer
+// pass does; anything that is present but not a usable id is a mistake worth
+// reporting rather than silently widening the pass to every goal.
+function readPlanId(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || !value.trim()) throw new TypeError("Invalid plan id");
+  return value.trim();
+}
+
+// The dry run. It is the real reaper, over a store that records nothing and a
+// cmux that closes nothing, so the answer comes from the one policy rather than
+// from a second copy of it that could drift away from what really happens.
+//
+// The two adapters forward only the reads. Wrapping the objects themselves
+// would carry every other method along, and one of them closing a session is
+// exactly what a dry run must not be able to do.
+function dryRun(reaper) {
+  const store = {
+    ...(reaper.store.sessionCleanupPlanIds ? { sessionCleanupPlanIds: () => reaper.store.sessionCleanupPlanIds() } : {}),
+    list: (options) => reaper.store.list(options),
+    get: (planId) => reaper.store.get(planId),
+    recordSessionsRetired: () => {},
+  };
+  const cmux = reaper.cmux?.workspaceListDetailed
+    ? {
+      workspaceListDetailed: () => reaper.cmux.workspaceListDetailed(),
+      workspaceClose: async () => ({ ok: true }),
+    }
+    : reaper.cmux;
+  return new GoalSessionReaper({ store, cmux, log: reaper.log, enabled: reaper.enabled });
 }
 
 function serviceUnavailable(message) {

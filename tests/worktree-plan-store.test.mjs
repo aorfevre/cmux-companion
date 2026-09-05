@@ -44,6 +44,40 @@ test("stores the opening goal with its images and a goal event", (t) => {
   assert.equal(events[0].payload.goal, "Add billing");
 });
 
+const ALL_FALSE = { unitTests: false, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: false, flowcharts: false };
+const ALL_TRUE = { unitTests: true, e2eTests: true, edgeCases: true, refactorPass: true, screenMocks: true, flowcharts: true };
+
+test("round trips the six specification options through detail, list and the goal event", (t) => {
+  const store = memoryStore(t);
+  const plan = store.createPlan({
+    planId: "rigor-plan",
+    repositoryId: "repository12345678",
+    goal: "Add billing",
+    specOptions: ALL_TRUE,
+  });
+  assert.deepEqual(plan.specOptions, ALL_TRUE);
+  assert.deepEqual(store.get("rigor-plan").specOptions, ALL_TRUE);
+  assert.deepEqual(store.events("rigor-plan")[0].payload.specOptions, ALL_TRUE);
+  assert.deepEqual(store.list().find((item) => item.planId === "rigor-plan").specOptions, ALL_TRUE);
+});
+
+test("stores a goal without specification options as all false", (t) => {
+  const store = memoryStore(t);
+  assert.deepEqual(seed(store).specOptions, ALL_FALSE);
+  assert.deepEqual(store.events("plan-1")[0].payload.specOptions, ALL_FALSE);
+  assert.deepEqual(store.list()[0].specOptions, ALL_FALSE);
+});
+
+test("reads malformed stored specification options as all false", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  for (const stored of ["", "not json", "[]", '{"unknown":true}', '{"unitTests":"yes"}']) {
+    store.db.prepare("UPDATE plans SET spec_options = ? WHERE plan_id = ?").run(stored, "plan-1");
+    assert.deepEqual(store.get("plan-1").specOptions, ALL_FALSE, `stored value ${stored}`);
+    assert.deepEqual(store.list()[0].specOptions, ALL_FALSE, `stored value ${stored}`);
+  }
+});
+
 test("persists the planner engine for a resumed round", (t) => {
   const store = memoryStore(t);
   const plan = store.createPlan({
@@ -275,6 +309,29 @@ test("the list carries a task count but no prompt", (t) => {
   assert.equal(plan.tasks, undefined);
 });
 
+test("keeps follow-up launches in order and reports their count", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordFollowupLaunched("plan-1", {
+    workspaceId: "followup-1", actions: ["question"], agent: "claude",
+    branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-1.md",
+  });
+  store.recordFollowupLaunched("plan-1", {
+    workspaceId: "followup-2", actions: ["tests", "review"], agent: "codex",
+    branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-2.md",
+  });
+
+  const plan = store.get("plan-1");
+  assert.deepEqual(plan.followups.map((followup) => followup.workspaceId), ["followup-1", "followup-2"]);
+  assert.deepEqual(plan.followups[1].actions, ["tests", "review"]);
+  assert.equal(plan.followups[0].agent, "claude");
+  assert.ok(plan.followups.every((followup) => followup.launchedAt));
+  assert.equal(store.list()[0].followupCount, 2);
+  const events = store.events("plan-1").filter((event) => event.kind === "followup_launched");
+  assert.equal(events.length, 2);
+  assert.deepEqual(events.map((event) => event.payload.workspaceId), ["followup-1", "followup-2"]);
+});
+
 test("filters the list by status", (t) => {
   const store = memoryStore(t);
   seed(store, "plan-1");
@@ -340,7 +397,7 @@ test("migrates a pre-contract database without losing legacy plans", (t) => {
   first.close();
 
   const legacy = new DatabaseSync(path);
-  for (const column of ["contract_version", "spec", "readiness", "last_error", "last_error_at"]) legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
+  for (const column of ["contract_version", "spec", "readiness", "last_error", "last_error_at", "spec_options"]) legacy.exec(`ALTER TABLE plans DROP COLUMN ${column}`);
   for (const column of ["task_type", "criterion_ids", "depends_on", "owned_areas", "verification", "wave", "start_sha", "completion_report", "evidence_status", "evidence_error", "changed_files", "scope_warnings"]) {
     legacy.exec(`ALTER TABLE plan_tasks DROP COLUMN ${column}`);
   }
@@ -353,6 +410,9 @@ test("migrates a pre-contract database without losing legacy plans", (t) => {
   assert.equal(plan.sessionId, "legacy-session");
   assert.equal(plan.contractVersion, 1);
   assert.equal(plan.spec, null);
+  // A database that predates the column reads as no request at all, rather
+  // than making every saved plan unreadable.
+  assert.deepEqual(plan.specOptions, ALL_FALSE);
   assert.equal(plan.tasks[0].title, "Billing");
   assert.equal(plan.tasks[0].type, "feature");
   assert.deepEqual(plan.tasks[0].criterionIds, []);
@@ -487,6 +547,103 @@ test("offers no session for a task that is not integrated or for the live merge"
   assert.deepEqual(store.pendingSessionClosures("plan-1"), []);
 });
 
+// The retirement of the live merge session is plan-level state: it has no task
+// row to stamp. A caller that names the kind decides which column moves.
+test("records the live merge session and a superseded merge as retired", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.recordLaunch("plan-1", {
+    base: "origin/main", baseSha: "a".repeat(40),
+    results: TASKS.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/task-${index}`, workspace: { workspace_id: `workspace-${index}` } })),
+  });
+  store.recordMergeLaunched("plan-1", "workspace-merge");
+  store.recordMergeLaunched("plan-1", "workspace-merge-2");
+  assert.equal(store.get("plan-1").mergeSessionClosedAt, null);
+
+  // A task whose delivery status is still pending is retired all the same: the
+  // reaper decides what is finished, and the store only records it.
+  store.recordSessionsRetired("plan-1", [
+    { workspaceId: "workspace-0", taskId: "t1", kind: "task" },
+    { workspaceId: "workspace-merge", kind: "superseded" },
+    { workspaceId: "workspace-merge-2", kind: "merge" },
+  ]);
+
+  const plan = store.get("plan-1");
+  assert.equal(plan.tasks[0].deliveryStatus, "pending");
+  assert.ok(plan.tasks[0].sessionClosedAt);
+  assert.equal(plan.tasks[1].sessionClosedAt, null);
+  assert.ok(plan.mergeSessionClosedAt);
+  assert.deepEqual(plan.supersededMergeWorkspaces.map((entry) => Boolean(entry.retiredAt)), [true]);
+  // The event keeps the shape every existing reader expects.
+  const retired = store.events("plan-1").at(-1);
+  assert.equal(retired.kind, "session_retired");
+  assert.deepEqual(retired.payload.sessions, [
+    { workspaceId: "workspace-0", taskId: "t1" },
+    { workspaceId: "workspace-merge", taskId: null },
+    { workspaceId: "workspace-merge-2", taskId: null },
+  ]);
+});
+
+// A second retirement of the same merge session must not move the stamp. The
+// first time it was closed is the durable answer.
+test("keeps the first merge retirement stamp when the same session is recorded twice", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.recordMergeLaunched("plan-1", "workspace-merge");
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "workspace-merge", kind: "merge" }]);
+  const first = store.get("plan-1").mergeSessionClosedAt;
+  assert.ok(first);
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "workspace-merge", kind: "merge" }]);
+  assert.equal(store.get("plan-1").mergeSessionClosedAt, first);
+});
+
+// An entry that names no kind is the shape the relaunch caller writes. A taskId
+// still means a task, so that caller keeps working unchanged.
+test("reads a retirement entry with no kind the way its original caller wrote it", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.recordLaunch("plan-1", {
+    base: "origin/main", baseSha: "a".repeat(40),
+    results: TASKS.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/task-${index}`, workspace: { workspace_id: `workspace-${index}` } })),
+  });
+  store.recordMergeLaunched("plan-1", "workspace-merge");
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "workspace-0", taskId: "t1" }]);
+  assert.ok(store.get("plan-1").tasks[0].sessionClosedAt);
+  assert.equal(store.get("plan-1").mergeSessionClosedAt, null);
+});
+
+// The merge retirement column arrived after goals were already on disk. A
+// database that predates it must open and read the field as null.
+test("migrates a database that predates the merge retirement column", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "merge-retire-plan-store-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "goal-plans.db");
+  const first = new WorktreePlanStore({ path });
+  seed(first);
+  first.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  first.recordMergeLaunched("plan-1", "workspace-merge");
+  first.close();
+
+  const legacy = new DatabaseSync(path);
+  legacy.exec("ALTER TABLE plans DROP COLUMN merge_session_closed_at");
+  legacy.close();
+
+  const migrated = new WorktreePlanStore({ path });
+  t.after(() => migrated.close());
+  const plan = migrated.get("plan-1");
+  assert.equal(plan.goal, "Add billing");
+  assert.equal(plan.mergeWorkspaceId, "workspace-merge");
+  assert.equal(plan.mergeSessionClosedAt, null);
+  assert.deepEqual(plan.tasks.map((task) => task.id), ["t1", "t2"]);
+
+  // And the migrated database still accepts the write the column exists for.
+  migrated.recordSessionsRetired("plan-1", [{ workspaceId: "workspace-merge", kind: "merge" }]);
+  assert.ok(migrated.get("plan-1").mergeSessionClosedAt);
+});
+
 // The board columns arrived after goals were already on disk. A database that
 // predates them must open, keep its plan, its tasks and its events, and read
 // every new field as null.
@@ -521,6 +678,29 @@ test("migrates a database that predates the board columns", (t) => {
   const [summary] = migrated.list();
   assert.equal(summary.boardStatus, null);
   assert.equal(summary.boardPrState, null);
+});
+
+test("migrates a database that predates durable follow-ups and records one", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "followup-plan-store-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "goal-plans.db");
+  const first = new WorktreePlanStore({ path });
+  seed(first);
+  first.close();
+
+  const legacy = new DatabaseSync(path);
+  legacy.exec("ALTER TABLE plans DROP COLUMN followups");
+  legacy.close();
+
+  const migrated = new WorktreePlanStore({ path });
+  t.after(() => migrated.close());
+  assert.deepEqual(migrated.get("plan-1").followups, []);
+  const recorded = migrated.recordFollowupLaunched("plan-1", {
+    workspaceId: "followup-1", actions: ["custom"], agent: "codex",
+    branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-1.md",
+  });
+  assert.equal(recorded.followups[0].workspaceId, "followup-1");
+  assert.equal(migrated.list()[0].followupCount, 1);
 });
 
 test("records an open pull request and only re-records a changed one", (t) => {

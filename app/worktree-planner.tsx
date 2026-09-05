@@ -1,19 +1,29 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { PLANNER_ENGINES, reviewerEngine } from "../server/worktree-planner-options.mjs";
+import { PLANNER_ENGINES, reviewerEngine, SPEC_OPTIONS } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 // One shared predicate: two copies had already drifted, so the sheet read
 // "1 of 2 ready" while the group read 1/1.
 import { readyCount } from "../server/delivery-contract.mjs";
 import { PromptDisclosure } from "./prompt-markdown";
+import { DesignArtifacts, DesignArtifact } from "./spec-artifacts";
 
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
 export type CompletionReport = { criteria: string[]; verification: { check: string; status: "passed" | "failed" | "not_run" }[]; limitations: string[] };
 export type PlanCriterion = { id: string; text: string; verification: string };
-export type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[] };
-export type PlanReadiness = { ready: boolean; errors: string[]; warnings: string[]; waves: string[][]; coverage: { criterionId: string; taskIds: string[] }[] };
+// The six specification-rigor requests. The keys and their order come from
+// SPEC_OPTIONS, so the sheet cannot offer a request the server refuses.
+export type SpecOptionId = "unitTests" | "e2eTests" | "edgeCases" | "refactorPass" | "screenMocks" | "flowcharts";
+export type SpecOptions = Record<SpecOptionId, boolean>;
+export type SpecOptionCatalogEntry = { id: SpecOptionId; label: string; hint: string };
+export type PlanOptionEvidence = { status: "planned" | "not_applicable"; rationale: string; taskIds: string[]; criterionIds: string[] };
+// The server derives this. The sheet only displays it, so a status here is
+// never re-computed from readiness warning prose.
+export type PlanOptionCoverage = { id: SpecOptionId; requested: boolean; status: "not_requested" | "covered" | "not_applicable" | "missing"; message: string };
+export type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[]; optionEvidence?: Partial<Record<SpecOptionId, PlanOptionEvidence>>; designArtifacts?: DesignArtifact[] };
+export type PlanReadiness = { ready: boolean; errors: string[]; warnings: string[]; waves: string[][]; coverage: { criterionId: string; taskIds: string[] }[]; optionCoverage?: PlanOptionCoverage[] };
 export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; type?: string; criterionIds?: string[]; dependsOn?: string[]; ownedAreas?: string[]; verification?: string[]; wave?: number; launchStatus?: string; deliveryStatus?: string; completionReport?: CompletionReport | null; evidenceStatus?: string | null; evidenceError?: string | null; changedFiles?: string[]; scopeWarnings?: string[]; workspaceId?: string | null; worktreePath?: string | null };
 export type PlanImage = { path: string; name: string };
 export type PlanRun = { planId: string; kind: string; phase: "running" | "done" | "failed"; step: string; error: string; startedAt: number; finishedAt: number | null };
@@ -30,15 +40,19 @@ export type GoalBoardPrState = "OPEN" | "CLOSED" | "MERGED";
 // Every plan payload carries these. `boardState` is the server's derivation,
 // and the other fields are the structured evidence behind it.
 export type GoalBoardFields = { boardState?: GoalBoardStateId | null; boardStatus?: GoalBoardStatus | null; boardChangedAt?: string | null; boardPrNumber?: number | null; boardPrUrl?: string | null; boardPrState?: GoalBoardPrState | null; boardPrObservedAt?: string | null; runStage?: string | null };
-export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; issueNumbers?: number[]; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; mergeStatus?: string | null; mergeWorkspaceId?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; readyCount?: number; failedCount?: number; skippedCount?: number; queuedCount?: number; agentSplit?: { claude: number; codex: number }; workspaceIds?: string[]; health?: GoalHealth | null; healthReason?: string | null; stuckCount?: number | null; createdAt: string; updatedAt: string; launchedAt: string | null } & GoalBoardFields;
-export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] } & GoalBoardFields;
-export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed" | "queued"; wave?: number; path?: string | null; workspace?: unknown; error?: string };
-export type PlanLaunchResult = { planId: string; base: string; deliveryMode?: "single" | "combined"; launched: number; results: PlanLaunchRow[] };
+export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; issueNumbers?: number[]; followupCount?: number; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; mergeStatus?: string | null; mergeWorkspaceId?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; readyCount?: number; failedCount?: number; skippedCount?: number; queuedCount?: number; agentSplit?: { claude: number; codex: number }; workspaceIds?: string[]; health?: GoalHealth | null; healthReason?: string | null; stuckCount?: number | null; createdAt: string; updatedAt: string; launchedAt: string | null } & GoalBoardFields;
+export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; specOptions?: SpecOptions; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] } & GoalBoardFields;
 type DeliveryResult = { planId: string; deliveryMode: "combined"; deliveryStatus: string; integrationBranch?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null };
 type PlannerRepository = { id: string; name: string };
 
 const LOST_SESSION = "The planner lost its session";
 const AGENTS: PlanAgent[] = ["codex", "claude"];
+// One typed view of the shared catalog. The module is plain JavaScript, so the
+// cast happens once here rather than at every use.
+const SPEC_OPTION_CATALOG = SPEC_OPTIONS.options as readonly SpecOptionCatalogEntry[];
+const SPEC_OPTION_DEFAULTS = SPEC_OPTIONS.defaults as SpecOptions;
+const SPEC_OPTION_LABELS: Record<SpecOptionId, string> = SPEC_OPTION_CATALOG.reduce((labels, option) => ({ ...labels, [option.id]: option.label }), {} as Record<SpecOptionId, string>);
+const COVERAGE_LABELS: Record<string, string> = { covered: "Covered", not_applicable: "Not applicable", missing: "Missing" };
 
 function agentLabel(agent: string) { return agent === "claude" ? "Claude" : "Codex"; }
 function modelLabel(provider: PlannerProvider, model: string) { return PLANNER_ENGINES.providers[provider].models.find((option) => option.id === model)?.label || model; }
@@ -124,6 +138,10 @@ function GoalPassport({ draft }: { draft: PlanDraft }) {
   if (!spec) return null;
   const readiness = draft.readiness;
   const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave || 0))].sort().map((wave) => draft.tasks.filter((task) => (task.wave || 0) === wave).map((task) => task.id));
+  // The server already decided each status. Reading the warning strings here
+  // would produce a second, drifting source of truth.
+  const requestedCoverage = (readiness?.optionCoverage || []).filter((entry) => entry?.requested === true);
+  const artifacts = spec.designArtifacts || [];
   return <section className="goal-passport" aria-label="Goal passport">
     <header><div><small>DELIVERY CONTRACT</small><strong>{spec.outcome}</strong></div><em className={readiness?.ready === false ? "blocked" : "ready"}>{readiness?.ready === false ? "Needs work" : "Ready to code"}</em></header>
     {(readiness?.errors?.length || readiness?.warnings?.length) ? <div className="goal-passport-readiness">
@@ -137,6 +155,12 @@ function GoalPassport({ draft }: { draft: PlanDraft }) {
       <PassportList title="Assumptions" items={spec.assumptions} empty="None" />
     </div>
     {spec.risks?.length > 0 && <div className="goal-passport-block"><strong>Risks and mitigations</strong><ul className="goal-passport-risks">{spec.risks.map((risk, index) => <li key={`${index}-${risk.text}-${risk.mitigation}`}><em>{risk.level}</em><div><span>{risk.text}</span><small>{risk.mitigation || "No mitigation recorded"}</small></div></li>)}</ul></div>}
+    {requestedCoverage.length > 0 && <div className="goal-passport-block"><strong>Specification coverage</strong><ul className="goal-passport-options">{requestedCoverage.map((entry) => <li key={entry.id} className={`coverage-${entry.status}`}>
+      <span>{SPEC_OPTION_LABELS[entry.id] || entry.id}</span>
+      <small>{entry.message || "No detail recorded"}</small>
+      <em className={`coverage-${entry.status}`}>{COVERAGE_LABELS[entry.status] || entry.status}</em>
+    </li>)}</ul></div>}
+    {artifacts.length > 0 && <div className="goal-passport-block"><strong>Design artifacts</strong><DesignArtifacts artifacts={artifacts} /></div>}
     <div className="goal-passport-block"><strong>Acceptance evidence</strong><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
       const tasks = draft.tasks.filter((task) => task.criterionIds?.includes(criterion.id));
       const state = criterionState(tasks);
@@ -158,7 +182,6 @@ function criterionState(tasks: PlanTask[]) {
   return "planned";
 }
 
-function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
 function relativeTime(timestamp?: string) { const value = timestamp ? Date.parse(timestamp) : NaN; if (!Number.isFinite(value)) return "now"; const seconds = Math.max(0, Math.round((Date.now() - value) / 1000)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
 
 function normalizedDraft(draft: PlanDraft): PlanDraft {
@@ -181,16 +204,18 @@ function TerminalGoalBanner({ status, plan }: { status: GoalBoardStatus; plan: P
   </section>;
 }
 
-export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, onLaunched, onNotice }: { repository: PlannerRepository; initialPlanId?: string; onClose: () => void; onLaunched: () => Promise<void>; onNotice: (message: string) => void }) {
+export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, onNotice }: { repository: PlannerRepository; initialPlanId?: string; onClose: () => void; onNotice: (message: string) => void }) {
   const [goal, setGoal] = useState("");
   const [provider, setProvider] = useState<PlannerProvider>(PLANNER_ENGINES.defaultProvider as PlannerProvider);
   const [model, setModel] = useState<string>(PLANNER_ENGINES.defaultModel);
   const [effort, setEffort] = useState<string>(PLANNER_ENGINES.defaultEffort);
   const [reviewer, setReviewer] = useState(false);
+  // All six requests live in one object so the POST body, the reset and the
+  // checkbox row can never disagree about which keys exist.
+  const [specOptions, setSpecOptions] = useState<SpecOptions>(() => ({ ...SPEC_OPTION_DEFAULTS }));
   const [draft, setDraft] = useState<PlanDraft | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [result, setResult] = useState<PlanLaunchResult | null>(null);
-  const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "launch" | "assemble" | "feedback">("");
+  const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "assemble" | "feedback">("");
   // Keyed per task, not one shared string: one task relaunching must not
   // disable the recovery buttons of every other task on the sheet.
   const [taskBusy, setTaskBusy] = useState<Record<string, boolean>>({});
@@ -203,7 +228,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   const [rejecting, setRejecting] = useState(false);
   const { attachments, uploading, inputRef, addImages, pasteImages, removeImage } = useImageAttachments(onNotice);
 
-  const receive = useCallback((next: PlanDraft) => { setDraft(normalizedDraft(next)); setResult(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); }, []);
+  const receive = useCallback((next: PlanDraft) => { setDraft(normalizedDraft(next)); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); }, []);
 
   // The round is no longer awaited, so the sheet reloads the plan when its
   // progress stream closes. That is what turns the live steps into a question
@@ -227,7 +252,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
 
   const fail = useCallback((cause: unknown, fallback: string) => {
     const message = cause instanceof Error ? cause.message : fallback;
-    if (message.startsWith(LOST_SESSION)) { setDraft(null); setAnswers({}); setResult(null); }
+    if (message.startsWith(LOST_SESSION)) { setDraft(null); setAnswers({}); }
     setError(message);
   }, []);
 
@@ -247,7 +272,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
 
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
-    setGoal(""); setDraft(null); setResult(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false);
+    setGoal(""); setDraft(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); setSpecOptions({ ...SPEC_OPTION_DEFAULTS });
   }
 
   // The round runs in the background, so this answers as soon as the plan row
@@ -258,7 +283,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     event.preventDefault();
     setBusy("plan"); setError(""); setSteps([]);
     try {
-      receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, background: true }) }));
+      receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions, background: true }) }));
       onNotice(`Planning this goal on ${repository.name}. It appears in Writing Spec.`);
       onClose();
     }
@@ -302,16 +327,18 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     finally { setBusy(""); }
   }
 
+  // Launching is fire and forget, exactly like submitting a goal. The companion
+  // answers as soon as it accepts the launch, so this sheet has nothing left to
+  // watch: it closes, and a push notification reports the outcome. A refused
+  // launch keeps the sheet open, because only this sheet can show the reason.
   async function launch() {
-    if (!draft || busy) return;
-    setBusy("launch"); setError("");
+    if (!draft || locked) return;
+    setError("");
     try {
-      const response = await request<Omit<PlanLaunchResult, "launched"> & { launched?: number }>(`/api/worktree-plans/${draft.planId}/launch`, { method: "POST", body: "{}" });
-      const launchResult = { ...response, launched: response.launched ?? response.results.filter((row) => row.status === "launched").length };
-      setResult(launchResult);
-      if (launchResult.launched > 0) { onNotice(`Launched ${launchResult.launched} session${launchResult.launched === 1 ? "" : "s"} from ${launchResult.base}`); await onLaunched(); }
+      await request(`/api/worktree-plans/${draft.planId}/launch`, { method: "POST", body: JSON.stringify({ background: true }) });
+      onNotice("Launching this goal. A notification reports the result.");
+      onClose();
     } catch (cause) { fail(cause, "Could not launch this plan"); }
-    finally { setBusy(""); }
   }
 
   async function assemble() {
@@ -384,8 +411,6 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   // over the draft's paths for as long as this sheet is open.
   const reviewImages = attachments.length ? attachments : draft?.images || [];
   const reviewGoal = draft?.goal || goal;
-  const failed = result?.results.filter((row) => row.status === "failed") || [];
-  const canRetry = Boolean(result) && result?.launched === 0;
   const launchedPlan = draft?.planStatus === "launched";
   // Merged and aborted goals stay readable and deletable. Every mutating
   // control is suppressed, and the state comes from the persisted lifecycle
@@ -398,7 +423,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   // failed and expires within a minute; lastError is the copy the plan row
   // keeps. Without either, a restart really is the likeliest cause.
   const stalledReason = draft?.runError || draft?.lastError || "";
-  const heading = result ? "Launch result" : terminal ? terminal === "merged" ? "Merged goal" : "Aborted goal" : running ? "Planning this goal" : stalled ? "Planning stopped" : launchedPlan ? "Launched goal" : draft?.status === "ready" ? "Review the plan" : draft ? "A few questions" : "Plan a goal";
+  const heading = terminal ? terminal === "merged" ? "Merged goal" : "Aborted goal" : running ? "Planning this goal" : stalled ? "Planning stopped" : launchedPlan ? "Launched goal" : draft?.status === "ready" ? "Review the plan" : draft ? "A few questions" : "Plan a goal";
   // Every action on a plan needs its ccs session, and one round already owns it.
   const locked = running || busy !== "" || terminal !== null;
   const providerOptions = PLANNER_ENGINES.providers[provider];
@@ -407,13 +432,13 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   const reviewerOptions = PLANNER_ENGINES.providers[reviewerProvider];
 
   // A goal takes minutes to write and a round takes minutes to answer, so a
-  // mis-tap outside the sheet must not throw both away. The header button and
-  // the Done button are the ways out.
+  // mis-tap outside the sheet must not throw both away. The header button is
+  // the way out.
   return <><div className="session-menu-backdrop" /><form className="worktree-launcher worktree-planner-sheet" role="dialog" aria-modal="true" aria-label="Plan a goal" onSubmit={(event) => event.preventDefault()}>
     <header><div><strong>{heading}</strong><span>{repository.name}</span></div><button type="button" aria-label="Close goal planner sheet" onClick={onClose}>×</button></header>
-    {(draft || result) && <button type="button" className="planner-new-goal" disabled={busy !== ""} onClick={newGoal}>← New goal</button>}
-    {draft && !result && terminal && <TerminalGoalBanner status={terminal} plan={draft} />}
-    {!draft && !result && <>
+    {draft && <button type="button" className="planner-new-goal" disabled={busy !== ""} onClick={newGoal}>← New goal</button>}
+    {draft && terminal && <TerminalGoalBanner status={terminal} plan={draft} />}
+    {!draft && <>
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       <section className="planner-engine-config" aria-label="Planner configuration">
@@ -426,24 +451,33 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
         <label className="planner-reviewer-toggle"><input type="checkbox" aria-label="Add a reviewer pass" checked={reviewer} onChange={(event) => setReviewer(event.target.checked)} /><span>Add a reviewer pass</span></label>
         {reviewer && <p className="planner-reviewer-identity">Reviewer: {reviewerOptions.label} ({reviewerOptions.family}) · {modelLabel(reviewerProvider, reviewerConfig.model)} · {reviewerConfig.effort} effort</p>}
       </section>
+      <section className="planner-spec-options" aria-label="Spec depth">
+        <header><strong>Spec depth</strong><span>Each request becomes a written requirement in every planning round and task brief.</span></header>
+        <ul>{SPEC_OPTION_CATALOG.map((option) => <li key={option.id}>
+          <label>
+            <input type="checkbox" aria-label={option.label} checked={specOptions[option.id]} onChange={(event) => setSpecOptions((current) => ({ ...current, [option.id]: event.target.checked }))} />
+            <span><b>{option.label}</b><small>{option.hint}</small></span>
+          </label>
+        </li>)}</ul>
+      </section>
       {error && <p className="worktree-action-error">{error}</p>}
       {busy === "plan" && <p className="planner-waiting">Starting the round…</p>}
       <div className="worktree-launch-actions"><ImagePickerButton attachments={attachments} disabled={busy === "plan" || uploading > 0} inputRef={inputRef} label="Choose goal images" onFiles={(files) => { void addImages(files); }} /><button type="button" className="primary-button" disabled={busy === "plan" || uploading > 0 || !goal.trim()} onClick={plan}>{busy === "plan" ? "Planning…" : uploading ? `Uploading ${uploading}…` : "Plan this goal"}</button></div>
     </>}
-    {draft && !result && running && <section className="planner-running" aria-label="Planning in progress">
+    {draft && running && <section className="planner-running" aria-label="Planning in progress">
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <ProgressSteps steps={steps} waiting={draft.round === 0 ? "Reading the repository. The first round is the slowest, because it starts a fresh session." : "Thinking about your answers."} />
       <p className="planner-background-note">This round runs on the companion, not in this sheet. Close it and plan another goal. A notification arrives when this one is ready.</p>
       <div className="planner-actions"><button type="button" onClick={onClose}>Close and keep planning</button></div>
     </section>}
-    {draft && !result && stalled && <section className="planner-stalled" aria-label="Planning stopped">
+    {draft && stalled && <section className="planner-stalled" aria-label="Planning stopped">
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <p className="planner-background-note">This round stopped before it produced anything.{stalledReason ? "" : " A companion restart does this."} The goal is saved, so it can run again.</p>
       {stalledReason && <p className="planner-stalled-reason">{stalledReason}{draft.lastErrorAt ? <span> · {relativeTime(draft.lastErrorAt)} ago</span> : null}</p>}
       {error && <p className="worktree-action-error">{error}</p>}
       <div className="planner-actions"><button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void rerun(); }}>{busy === "plan" ? "Starting…" : "Plan this goal again"}</button></div>
     </section>}
-    {draft && !result && !running && !stalled && draft.status === "questions" && <>
+    {draft && !running && !stalled && draft.status === "questions" && <>
       <p className="planner-round">Round {draft.round}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <div className="planner-questions">{draft.questions.map((question) => <div className="planner-question" key={question.id}>
@@ -453,7 +487,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
       {error && <p className="worktree-action-error">{error}</p>}
       {launchedPlan || terminal ? <p className="planner-launched-note">{terminal ? "This goal is closed. Its questions and answers are read-only." : "This goal was already launched. Its questions and answers are read-only."}</p> : <div className="planner-actions"><button type="button" disabled={locked} onClick={() => answer({ skip: true })}>Skip questions</button><button type="button" className="primary-button" disabled={locked} onClick={() => answer({ answers: draft.questions.map((question) => ({ id: question.id, text: answers[question.id] || "" })).filter((entry) => entry.text.trim()) })}>{busy === "answer" ? "Sending…" : "Answer"}</button></div>}
     </>}
-    {draft && !result && !running && !stalled && draft.status === "ready" && <>
+    {draft && !running && !stalled && draft.status === "ready" && <>
       <p className="planner-round">Round {draft.round} · {draft.tasks.length} task{draft.tasks.length === 1 ? "" : "s"}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <GoalPassport draft={draft} />
@@ -465,7 +499,6 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
         <small className="planner-agent-reason">{task.agentReason}</small>
         <PromptDisclosure label={`Prompt for ${task.title}`} summary="Prompt" text={task.prompt} />
       </article>)}</div>
-      {busy === "launch" && <p className="planner-waiting">Creating worktrees and starting sessions. This can take a minute.</p>}
       {!launchedPlan && !terminal && <section className="planner-reject" aria-label="Reject this plan">
         {rejecting ? <>
           <label><span>What is wrong with this split?</span><textarea aria-label="What is wrong with this split?" value={feedback} onChange={(event) => setFeedback(event.target.value)} rows={3} maxLength={2_000} placeholder="Tasks 2 and 3 touch the same file, so they cannot run in parallel…" /></label>
@@ -476,22 +509,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
       {error && <p className="worktree-action-error">{error}</p>}
       {terminal ? <section className="planner-delivery-status" aria-label="Recorded delivery status"><strong>{terminal === "merged" ? "Merged" : "Aborted"}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}</section>
         : launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p>
-        : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{busy === "launch" ? "Launching…" : launchLabel(draft)}</button>}
-    </>}
-    {result && <>
-      <p className="planner-round">Branched from <code>{result.base}</code> · {result.launched} of {result.results.length} started</p>
-      {result.deliveryMode === "combined" && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Each agent will commit and push its task branch without opening a PR. When every branch is ready, a merge agent will resolve conflicts and open one pull request.</p></section>}
-      <ContextReview goal={reviewGoal} images={reviewImages} />
-      <div className="planner-results">{result.results.map((row) => <div className={`planner-result ${row.status}`} key={row.id}>
-        <header><strong>{row.title}</strong><em>{row.status === "launched" ? "Launched" : row.status === "queued" ? `Queued · wave ${(row.wave || 0) + 1}` : "Failed"}</em></header>
-        <code className="planner-branch">{row.branch}</code><small>{agentLabel(row.agent)}</small>
-        {row.status === "failed" && row.error && <small className="planner-result-error">{row.error}</small>}
-        {row.status === "failed" && row.path && <small className="planner-result-leftover">Its worktree is still on disk at <code>{compactPath(row.path)}</code>, with no session. Remove it from the dashboard before reusing this branch.</small>}
-      </div>)}</div>
-      {busy === "launch" && <p className="planner-waiting">Creating worktrees and starting sessions. This can take a minute.</p>}
-      {error && <p className="worktree-action-error">{error}</p>}
-      {failed.length > 0 && !canRetry && <p className="planner-no-retry">This plan is spent because part of it started. Finish the rest from the dashboard by creating those worktrees yourself.</p>}
-      <div className="planner-actions">{canRetry && <button type="button" className="primary-button" disabled={busy === "launch"} onClick={launch}>{busy === "launch" ? "Launching…" : "Try again"}</button>}<button type="button" onClick={onClose}>Done</button></div>
+        : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{launchLabel(draft)}</button>}
     </>}
   </form></>;
 }

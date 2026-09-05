@@ -16,7 +16,10 @@ Bare repositories and unreadable Git metadata are protected.
 
 ## Goal lifecycle and defaults
 
-- A goal PR being created closes its recorded cmux task and merge sessions.
+- A goal PR being created retires its recorded cmux task and merge sessions
+  once their agents are no longer running or waiting for input. Follow-up sessions
+  are separate. `CMUX_COMPANION_AUTO_CLOSE_SESSIONS=0` disables automatic session
+  retirement; the existing manual session-cleanup action stays available.
 - A **merged goal PR** makes the associated worktrees eligible immediately,
   without a seven-day wait, only when their exact HEADs match the delivered work.
   The watcher requests a cleanup pass after observing a merge. Its normal GitHub

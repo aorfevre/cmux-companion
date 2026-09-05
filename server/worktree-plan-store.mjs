@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { normalizeSpecOptions } from "./spec-options.mjs";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db");
 
@@ -19,7 +20,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
   "session_retired", "board_merged", "board_aborted", "board_pull_request",
-  "task_relaunched", "task_skipped",
+  "task_relaunched", "task_skipped", "followup_launched",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS plans (
   engine_model TEXT NOT NULL DEFAULT 'default',
   engine_effort TEXT NOT NULL DEFAULT 'default',
   engine_reviewer INTEGER NOT NULL DEFAULT 0,
+  spec_options TEXT NOT NULL DEFAULT '{}',
   session_id TEXT,
   round INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -71,7 +73,9 @@ CREATE TABLE IF NOT EXISTS plans (
   cmux_notice_key TEXT,
   merge_workspace_id TEXT,
   merge_status TEXT,
+  merge_session_closed_at TEXT,
   superseded_merge_workspaces TEXT NOT NULL DEFAULT '[]',
+  followups TEXT NOT NULL DEFAULT '[]',
   board_status TEXT,
   board_changed_at TEXT,
   board_pr_number INTEGER,
@@ -150,14 +154,15 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {} }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {} }) {
     const at = this.#stamp();
+    const options = safeSpecOptions(specOptions);
     this.#transaction(() => {
       this.db.prepare(`
-        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, at, at);
-      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true } }, at);
+        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), at, at);
+      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options }, at);
     });
     this.#prune();
     return this.get(planId);
@@ -399,6 +404,29 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  recordFollowupLaunched(planId, { workspaceId, actions, agent, branch, worktreePath, briefPath }) {
+    const at = this.#stamp();
+    const id = String(planId);
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT followups FROM plans WHERE plan_id = ?").get(id);
+      const followups = parse(row?.followups, []);
+      const entry = {
+        workspaceId: text(workspaceId),
+        actions: Array.isArray(actions) ? actions.map(String) : [],
+        agent: text(agent),
+        branch: text(branch),
+        worktreePath: text(worktreePath),
+        briefPath: text(briefPath),
+        launchedAt: at,
+      };
+      followups.push(entry);
+      this.db.prepare("UPDATE plans SET followups = ?, updated_at = ? WHERE plan_id = ?")
+        .run(json(followups), at, id);
+      this.#insertEvent(id, null, "followup_launched", entry, at);
+    });
+    return this.get(planId);
+  }
+
   // The merge agent stopped without a pull request. The worktree and the live
   // session are both kept, because a retry continues them rather than restarting.
   recordMergeBlocked(planId, reason) {
@@ -455,7 +483,7 @@ export class WorktreePlanStore {
     const merges = this.#superseded(id)
       .filter((entry) => !entry.retiredAt)
       .map((entry) => ({ workspaceId: entry.workspaceId, taskId: null }));
-    if (delivered && plan.mergeWorkspaceId && !merges.some((entry) => entry.workspaceId === plan.mergeWorkspaceId)) {
+    if (delivered && plan.mergeWorkspaceId && !plan.mergeSessionClosedAt && !merges.some((entry) => entry.workspaceId === plan.mergeWorkspaceId)) {
       merges.push({ workspaceId: plan.mergeWorkspaceId, taskId: null });
     }
     return [...tasks, ...merges];
@@ -463,10 +491,21 @@ export class WorktreePlanStore {
 
   // Retirement is durable so a restart never closes the same session twice and
   // never keeps asking cmux about a session that is already gone.
+  //
+  // Three kinds of session reach this method: a task session, the live merge
+  // session, and a merge session a newer merge agent replaced. Each lives in a
+  // different column, so the kind decides where the stamp is written. A caller
+  // that names no kind is read the way the only caller used to be read: a
+  // taskId means a task, and everything else means a superseded merge.
   recordSessionsRetired(planId, entries = []) {
     const id = String(planId || "");
+    const liveMerge = text(this.db.prepare("SELECT merge_workspace_id FROM plans WHERE plan_id = ?").get(id)?.merge_workspace_id);
     const wanted = (Array.isArray(entries) ? entries : [])
-      .map((entry) => ({ workspaceId: text(entry?.workspaceId), taskId: text(entry?.taskId) }))
+      .map((entry) => {
+        const workspaceIdValue = text(entry?.workspaceId);
+        const taskId = text(entry?.taskId);
+        return { workspaceId: workspaceIdValue, taskId, kind: sessionKind(entry?.kind, taskId, workspaceIdValue, liveMerge) };
+      })
       .filter((entry) => entry.workspaceId);
     if (!wanted.length) return this.get(id);
     const at = this.#stamp();
@@ -474,8 +513,13 @@ export class WorktreePlanStore {
       const close = this.db.prepare(
         "UPDATE plan_tasks SET session_closed_at = ? WHERE plan_id = ? AND task_id = ? AND session_closed_at IS NULL",
       );
-      for (const entry of wanted) if (entry.taskId) close.run(at, id, entry.taskId);
-      const retired = new Set(wanted.filter((entry) => !entry.taskId).map((entry) => entry.workspaceId));
+      for (const entry of wanted) if (entry.kind === "task" && entry.taskId) close.run(at, id, entry.taskId);
+      // The live merge session has no row of its own, so the plan carries its
+      // stamp. Only the id the plan currently points at may claim that column.
+      if (wanted.some((entry) => entry.kind === "merge" && entry.workspaceId === liveMerge)) {
+        this.db.prepare("UPDATE plans SET merge_session_closed_at = COALESCE(merge_session_closed_at, ?) WHERE plan_id = ?").run(at, id);
+      }
+      const retired = new Set(wanted.filter((entry) => entry.kind === "superseded").map((entry) => entry.workspaceId));
       if (retired.size) {
         const current = this.db.prepare("SELECT merge_workspace_id FROM plans WHERE plan_id = ?").get(id)?.merge_workspace_id;
         if (current && retired.has(current)) {
@@ -487,7 +531,10 @@ export class WorktreePlanStore {
         this.db.prepare("UPDATE plans SET superseded_merge_workspaces = ? WHERE plan_id = ?").run(json(merges), id);
       }
       this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
-      this.#insertEvent(id, null, "session_retired", { sessions: wanted }, at);
+      // The event keeps the shape it has always had. The kind decides which
+      // column moves, and every column it can move is already readable on the
+      // plan row, so repeating it here would only break older readers.
+      this.#insertEvent(id, null, "session_retired", { sessions: wanted.map(({ workspaceId: id_, taskId }) => ({ workspaceId: id_, taskId })) }, at);
     });
     return this.get(id);
   }
@@ -750,6 +797,7 @@ export class WorktreePlanStore {
       issueNumbers: parse(row.issue_numbers, []),
       deliveryPolicy: row.delivery_policy || "auto",
       engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
+      specOptions: safeSpecOptions(parse(row.spec_options, null)),
       lastError: row.last_error ?? null,
       lastErrorAt: row.last_error_at ?? null,
       boardStatus: boardStatus(row.board_status),
@@ -758,6 +806,7 @@ export class WorktreePlanStore {
       boardPrUrl: row.board_pr_url ?? null,
       boardPrState: boardPrState(row.board_pr_state),
       boardPrObservedAt: row.board_pr_observed_at ?? null,
+      followupCount: parse(row.followups, []).length,
       taskCount: row.task_count,
       launchedCount: row.launched_count,
       readyCount: row.ready_count,
@@ -834,6 +883,7 @@ export class WorktreePlanStore {
     ensure("plans", "engine_model", "TEXT NOT NULL DEFAULT 'default'");
     ensure("plans", "engine_effort", "TEXT NOT NULL DEFAULT 'default'");
     ensure("plans", "engine_reviewer", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plans", "spec_options", "TEXT NOT NULL DEFAULT '{}'");
     ensure("plans", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'");
     ensure("plans", "delivery_status", "TEXT NOT NULL DEFAULT 'planning'");
     ensure("plans", "integration_branch", "TEXT");
@@ -848,7 +898,9 @@ export class WorktreePlanStore {
     ensure("plans", "merge_status", "TEXT");
     ensure("plans", "integration_worktree_removed_at", "TEXT");
     ensure("plan_tasks", "worktree_removed_at", "TEXT");
+    ensure("plans", "merge_session_closed_at", "TEXT");
     ensure("plans", "superseded_merge_workspaces", "TEXT NOT NULL DEFAULT '[]'");
+    ensure("plans", "followups", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plans", "board_status", "TEXT");
     ensure("plans", "board_changed_at", "TEXT");
     ensure("plans", "board_pr_number", "INTEGER");
@@ -898,7 +950,7 @@ export class WorktreePlanStore {
       DELETE FROM plans WHERE plan_id IN (
         SELECT plan_id FROM plans ORDER BY updated_at DESC, plan_id DESC LIMIT -1 OFFSET ?
       )
-      AND merge_workspace_id IS NULL
+      AND (merge_workspace_id IS NULL OR merge_session_closed_at IS NOT NULL)
       AND (integration_worktree_path IS NULL OR integration_worktree_removed_at IS NOT NULL)
       AND NOT EXISTS (
         SELECT 1 FROM plan_tasks t WHERE t.plan_id = plans.plan_id
@@ -930,6 +982,7 @@ function readPlan(row) {
     issueUrls: parse(row.issue_urls, []),
     deliveryPolicy: row.delivery_policy || "auto",
     engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
+    specOptions: safeSpecOptions(parse(row.spec_options, null)),
     sessionId: row.session_id,
     round: row.round,
     status: row.status,
@@ -954,7 +1007,9 @@ function readPlan(row) {
     cmuxNoticeKey: row.cmux_notice_key ?? null,
     mergeWorkspaceId: row.merge_workspace_id,
     mergeStatus: row.merge_status,
+    mergeSessionClosedAt: row.merge_session_closed_at ?? null,
     supersededMergeWorkspaces: parse(row.superseded_merge_workspaces, []),
+    followups: parse(row.followups, []),
     boardStatus: boardStatus(row.board_status),
     boardChangedAt: row.board_changed_at ?? null,
     boardPrNumber: Number.isInteger(row.board_pr_number) ? row.board_pr_number : null,
@@ -1006,6 +1061,17 @@ function policy(value) {
   return value === "combined" ? "combined" : "auto";
 }
 
+// A plan row must stay readable. A blank column, a legacy row, hand-edited
+// JSON or an unknown key therefore reads as all options off instead of
+// throwing and hiding the whole plan.
+function safeSpecOptions(value) {
+  try {
+    return normalizeSpecOptions(value ?? undefined);
+  } catch {
+    return normalizeSpecOptions();
+  }
+}
+
 // A stored lifecycle value that is neither terminal state reads as unset. A
 // database edited by hand must not put an unknown word on the board.
 // `group_concat` returns one comma-joined string, or null when a plan has no
@@ -1016,6 +1082,15 @@ function splitIds(joined, mergeWorkspaceId) {
   const merge = text(mergeWorkspaceId);
   if (merge && !ids.includes(merge)) ids.push(merge);
   return ids;
+}
+
+// A retirement entry names its own kind, because a workspace id alone cannot
+// say which column holds its stamp. An entry with no kind is read the old way,
+// so the relaunch caller keeps working unchanged.
+function sessionKind(value, taskId, workspaceIdValue, liveMergeWorkspaceId) {
+  if (value === "task" || value === "merge" || value === "superseded") return value;
+  if (taskId) return "task";
+  return workspaceIdValue && workspaceIdValue === liveMergeWorkspaceId ? "merge" : "superseded";
 }
 
 function boardStatus(value) {

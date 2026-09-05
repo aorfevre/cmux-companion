@@ -222,11 +222,12 @@ describe("GitHub Sync covers the starred projects end to end", () => {
       .should("contain.text", `Resolve GitHub issue #${caretIssue.number}: ${caretIssue.title}`);
 
     cy.findByRole("region", { name: "GitHub Issues" }).within(() => {
-      // The started card offers no second start, and links to its goal instead.
+      // The started issue left the column: its goal card carries it now.
       cy.findByRole("button", { name: `Start a goal for #${caretIssue.number} ${caretIssue.title}` }).should("not.exist");
-      cy.findByRole("link", { name: `Goal started for #${caretIssue.number}` }).should("exist");
+      cy.contains(caretIssue.title).should("not.exist");
       // The other card is untouched and still startable.
       cy.findByRole("button", { name: `Start a goal for #${scrollIssue.number} ${scrollIssue.title}` }).should("exist");
+      cy.findByLabelText("1 issue in GitHub Issues").should("exist");
     });
     // Exactly one goal was created for that one issue.
     cy.then(() => expect(goalCalls).to.equal(1));
@@ -243,17 +244,17 @@ describe("GitHub Sync covers the starred projects end to end", () => {
     }).as("sync");
     visitBoard();
 
-    cy.findByRole("region", { name: "GitHub Issues" }).should("contain.text", caretIssue.title);
+    cy.findByRole("region", { name: "GitHub Issues" }).should("contain.text", scrollIssue.title);
 
     // A plain reload. Nothing presses GitHub Sync.
     cy.reload();
     cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
     cy.findByRole("region", { name: "GitHub Issues" }).within(() => {
-      cy.findByLabelText("2 issues in GitHub Issues").should("exist");
-      cy.contains(caretIssue.title).should("be.visible");
+      // Only the issue that still needs a goal is here, and the header agrees.
+      cy.findByLabelText("1 issue in GitHub Issues").should("exist");
       cy.contains(scrollIssue.title).should("be.visible");
       // The started state survives the reload, because it is stored.
-      cy.findByRole("link", { name: `Goal started for #${caretIssue.number}` }).should("exist");
+      cy.contains(caretIssue.title).should("not.exist");
       cy.findByRole("button", { name: `Start a goal for #${caretIssue.number} ${caretIssue.title}` }).should("not.exist");
     });
     cy.findByRole("region", { name: "Writing Spec" }).should("contain.text", `Resolve GitHub issue #${caretIssue.number}: ${caretIssue.title}`);

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { RepoIdentityStore } from "../server/repo-identity-store.mjs";
 import { RepositoryArchive } from "../server/repository-archive.mjs";
 import { RepositoryFavorites } from "../server/repository-favorites.mjs";
 import { WorktreeDashboard, countUpdaterArtifacts, isManagedReleasePath, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
@@ -120,10 +121,10 @@ test("refreshes the registered inventory before resolving a launch target", asyn
 
 // A person waits on this call inside the goal submit. Scanning every repository
 // to read three fields cost ten seconds on a machine with many worktrees.
-function resolverDashboard({ commonDir = (cwd) => `${cwd}/.git\n` } = {}) {
+function resolverDashboard({ commonDir = (cwd) => `${cwd}/.git\n`, cacheMs = 0, gate = null } = {}) {
   const listed = [];
   const repoCatalog = {
-    list: async () => { listed.push(true); return [REPO]; },
+    list: async () => { listed.push(true); if (gate) await gate.promise; return [REPO]; },
     git: async (cwd, args) => {
       if (args[0] === "worktree") return `worktree ${cwd}\0HEAD aaaaaaaa\0branch refs/heads/main\0\0`;
       if (args[1] === "--git-common-dir") return commonDir(cwd);
@@ -134,8 +135,182 @@ function resolverDashboard({ commonDir = (cwd) => `${cwd}/.git\n` } = {}) {
     },
     execute: async () => ({ stdout: "[]" }),
   };
-  return { listed, dashboard: new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path }) };
+  return { listed, dashboard: new WorktreeDashboard({ repoCatalog, cacheMs, canonicalize: async (path) => path }) };
 }
+
+// A session whose agent is running rewrites `last_activity_at` every few
+// seconds. While that stamp was part of the cache key, the ten-second dashboard
+// poll never hit the cache and ran a full scan every time.
+test("a session heartbeat alone does not rescan every repository", async () => {
+  const { listed, dashboard } = resolverDashboard({ cacheMs: 60_000 });
+  const workspace = (at) => [{ id: "ws-1", current_directory: "/repo/sample", last_activity_at: at, status: { effective: "working" } }];
+  await dashboard.snapshot({ workspaces: workspace(1) });
+  const scans = listed.length;
+  for (const at of [2, 3, 4]) await dashboard.snapshot({ workspaces: workspace(at) });
+  assert.equal(listed.length, scans, "a moving activity stamp alone must reuse the cache");
+});
+
+test("a session whose rendered state changes still rescans", async () => {
+  const { listed, dashboard } = resolverDashboard({ cacheMs: 60_000 });
+  await dashboard.snapshot({ workspaces: [{ id: "ws-1", current_directory: "/repo/sample", status: { effective: "working" } }] });
+  const scans = listed.length;
+  // Every remaining field in the key drives something a person reads: the state
+  // pill, the status orb, the "needs you" count.
+  await dashboard.snapshot({ workspaces: [{ id: "ws-1", current_directory: "/repo/sample", status: { effective: "done" } }] });
+  assert.equal(listed.length, scans + 1);
+  await dashboard.snapshot({ workspaces: [{ id: "ws-1", current_directory: "/repo/sample", has_unread: true, status: { effective: "done" } }] });
+  assert.equal(listed.length, scans + 2);
+});
+
+// A scan takes seconds and the poll runs on a fixed clock, so callers overlap.
+// Each used to spawn its own git child per repository.
+// One scan spawns a git child per command per path. It used to ask git twice
+// for facts it already held, which on a machine with many worktrees is hundreds
+// of processes for nothing.
+// A real forty-character sha, because that is what the commit-time memo keys on
+// and an eight-character stand-in would be refused for the wrong reason.
+const HEAD_SHA = "a".repeat(40);
+
+function countingDashboard({ repos = [REPO], worktrees = `worktree /repo/sample\0HEAD ${HEAD_SHA}\0branch refs/heads/main\0\0` } = {}) {
+  const calls = [];
+  const repoCatalog = {
+    list: async () => repos,
+    git: async (cwd, args) => {
+      calls.push(`${args.slice(0, 2).join(" ")} @ ${cwd}`);
+      if (args[0] === "worktree") return worktrees;
+      if (args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[1] === "--show-toplevel") return `${cwd}\n`;
+      if (args[0] === "status") return "# branch.head main\n";
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  return { calls, dashboard: new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path }) };
+}
+
+test("one scan never asks git the same question about the same path twice", async () => {
+  const { calls, dashboard } = countingDashboard();
+  await dashboard.snapshot();
+  const repeated = [...calls.reduce((tally, call) => tally.set(call, (tally.get(call) || 0) + 1), new Map())]
+    .filter(([, count]) => count > 1);
+  assert.deepEqual(repeated, [], "every (command, path) pair must run at most once per scan");
+});
+
+test("a path the catalog already confirmed is not re-checked as a toplevel", async () => {
+  const { calls, dashboard } = countingDashboard();
+  await dashboard.snapshot();
+  // The catalog returns only paths it proved are repository toplevels. Asking
+  // git to prove it again spawns a process to learn what the caller handed us.
+  assert.equal(calls.filter((call) => call === "rev-parse --show-toplevel @ /repo/sample").length, 0);
+});
+
+// The alias collapse means one repository inspects worktrees the catalog listed
+// under a different alias. Those paths are still catalogued, so they are still
+// known toplevels — a set holding only the inspecting repository's own path
+// would miss every one of them.
+test("a worktree catalogued under another alias is also treated as known", async () => {
+  const alias = { ...REPO, id: "repo-alias-12345678", path: "/repo/sample-feature", name: "sample-feature" };
+  const { calls, dashboard } = countingDashboard({
+    repos: [REPO, alias],
+    worktrees: "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature\0\0",
+  });
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call === "rev-parse --show-toplevel @ /repo/sample-feature").length, 0);
+});
+
+test("a path the catalog never listed is still checked before it is trusted", async () => {
+  const { calls, dashboard } = countingDashboard({
+    // Git reports a worktree the catalog never returned. It is unproven, so it
+    // must be verified rather than assumed to be a repository toplevel.
+    worktrees: "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /elsewhere/stray\0HEAD cccccccc\0branch refs/heads/stray\0\0",
+  });
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call === "rev-parse --show-toplevel @ /elsewhere/stray").length, 1);
+});
+
+// A worktree's commit time is keyed on the commit itself, so a second scan of
+// an unchanged checkout needs no git log at all.
+test("a worktree whose commit is already known runs no git log", async () => {
+  const store = new RepoIdentityStore({ path: ":memory:" });
+  const { calls, dashboard } = countingDashboard();
+  dashboard.repoCatalog.identityStore = store;
+
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call.startsWith("log -1")).length, 1);
+  calls.length = 0;
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call.startsWith("log -1")).length, 0);
+  store.close();
+});
+
+test("a worktree with no readable commit still asks git", async () => {
+  const store = new RepoIdentityStore({ path: ":memory:" });
+  // Neither the status output nor the worktree record carries a usable sha, so
+  // there is nothing to key on and the live command must run every time.
+  const { calls, dashboard } = countingDashboard({ worktrees: "worktree /repo/sample\0branch refs/heads/main\0\0" });
+  dashboard.repoCatalog.identityStore = store;
+
+  await dashboard.snapshot();
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call.startsWith("log -1")).length, 2);
+  store.close();
+});
+
+test("a dashboard whose catalog has no store reads git every time", async () => {
+  const { calls, dashboard } = countingDashboard();
+  assert.equal(dashboard.repoCatalog.identityStore, undefined);
+  await dashboard.snapshot();
+  await dashboard.snapshot();
+  assert.equal(calls.filter((call) => call.startsWith("log -1")).length, 2);
+});
+
+test("callers that overlap one scan share it instead of starting their own", async () => {
+  let release = () => {};
+  const gate = { promise: new Promise((resolve) => { release = resolve; }) };
+  const { listed, dashboard } = resolverDashboard({ gate });
+  const pending = [dashboard.snapshot(), dashboard.snapshot(), dashboard.snapshot()];
+  assert.equal(dashboard.pendingSnapshots.size, 1);
+  release();
+  const [first, second, third] = await Promise.all(pending);
+  assert.equal(listed.length, 1, "three overlapping callers must walk the roots once");
+  assert.equal(first, second);
+  assert.equal(second, third);
+  assert.equal(dashboard.pendingSnapshots.size, 0, "a settled scan must leave nothing behind");
+});
+
+test("two scans that would answer differently are never shared", async () => {
+  let release = () => {};
+  const gate = { promise: new Promise((resolve) => { release = resolve; }) };
+  const { listed, dashboard } = resolverDashboard({ gate });
+  const pending = [dashboard.snapshot(), dashboard.snapshot({ refreshGitHub: true })];
+  assert.equal(dashboard.pendingSnapshots.size, 2);
+  release();
+  await Promise.all(pending);
+  assert.equal(listed.length, 2);
+});
+
+test("a failed scan is not left behind for the next caller", async () => {
+  let fail = true;
+  const repoCatalog = {
+    list: async () => { if (fail) throw new Error("git is unavailable"); return [REPO]; },
+    git: async (cwd, args) => {
+      if (args[0] === "worktree") return `worktree ${cwd}\0HEAD aaaaaaaa\0branch refs/heads/main\0\0`;
+      if (args[1] === "--git-common-dir") return `${cwd}/.git\n`;
+      if (args[1] === "--show-toplevel") return `${cwd}\n`;
+      if (args[0] === "status") return "# branch.head main\n";
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  await assert.rejects(() => dashboard.snapshot(), /git is unavailable/);
+  assert.equal(dashboard.pendingSnapshots.size, 0);
+  // A rejected scan must not become the answer every later caller waits on.
+  fail = false;
+  assert.equal((await dashboard.snapshot()).repositories.length, 1);
+});
 
 test("resolves a repository from its directory without scanning again", async () => {
   const { listed, dashboard } = resolverDashboard();
@@ -327,6 +502,53 @@ test("removes only clean, idle, non-primary worktrees while preserving their bra
   assert.equal(result.branchPreserved, true);
   assert.deepEqual(calls.at(-1), ["/repo/sample", "worktree", "remove", "--force", "/repo/sample-feature"]);
   assert.deepEqual(removalOptions, { timeout: 120_000 });
+});
+
+// The safety rule of the status cache. A card may say "Clean" for up to the
+// window, but a delete must never act on that word. This is the test that
+// stands between a cached status and a person's uncommitted work.
+test("a removal reads the working tree live even with a warm status cache", async () => {
+  const store = new RepoIdentityStore({ path: ":memory:", statusTtlMs: 60_000 });
+  const statusReads = [];
+  let dirty = false;
+  const inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0worktree /repo/sample-feature\0HEAD bbbbbbbb\0branch refs/heads/feature\0\0";
+  const repoCatalog = {
+    cache: null,
+    identityStore: store,
+    list: async () => [{ id: "repo-safe", name: "sample", root: "repo", path: "/repo/sample", branch: "main" }],
+    git: async (cwd, args) => {
+      if (args[0] === "status") statusReads.push(args.join(" "));
+      if (args[0] === "worktree" && args[1] === "list") return inventory;
+      if (args[0] === "worktree" && args[1] === "remove") return "";
+      if (args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd.endsWith("feature") ? "feature" : "main"}\n${dirty ? "? written-by-an-agent.ts\n" : ""}`;
+      if (args[0] === "log") return "1\n";
+      return "";
+    },
+    statusAndActivity: async (path) => {
+      const stored = store.status(path);
+      if (stored) return stored;
+      const output = await repoCatalog.git(path, ["status", "--porcelain=v2", "--branch"]);
+      store.rememberStatuses([{ path, output, lastActivity: 1 }]);
+      return { output, lastActivity: 1 };
+    },
+    execute: async () => { throw new Error("gh unavailable"); },
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+
+  const snapshot = await dashboard.snapshot({ workspaces: [] });
+  const feature = snapshot.repositories[0].worktrees.find((item) => !item.isPrimary);
+  assert.equal(feature.dirty, false);
+
+  // An agent writes into the worktree. The cache still says clean, and it is
+  // deliberately still inside its window.
+  dirty = true;
+  statusReads.length = 0;
+  await assert.rejects(() => dashboard.remove(feature.id), /worktree changed/);
+  assert.ok(statusReads.some((call) => call.includes("--untracked-files=all")),
+    "the delete gate must read the working tree itself, not a stored answer");
+  store.close();
 });
 
 // A release checkout under ~/.local/share/cmux-companion/releases/<sha> is

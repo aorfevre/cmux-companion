@@ -16,11 +16,15 @@ export class RepoCatalog {
     execute = execFileAsync,
     cacheMs = 10_000,
     inspectConcurrency = 8,
+    // Null by default, which is fully live behaviour. Only server/index.mjs
+    // opts in, so a test that builds an app never opens the real database.
+    identityStore = null,
   } = {}) {
     this.roots = roots.map((root) => resolve(root));
     this.execute = execute;
     this.cacheMs = cacheMs;
     this.inspectConcurrency = Math.max(1, Number(inspectConcurrency) || 8);
+    this.identityStore = identityStore;
     this.cache = null;
     this.prCache = new Map();
   }
@@ -56,6 +60,9 @@ export class RepoCatalog {
         return left.name.localeCompare(right.name);
       });
     this.cache = { at: Date.now(), repos };
+    // Bounded here rather than on a timer: a scan is the only thing that adds
+    // rows, so it is the only thing that can make the file grow.
+    this.identityStore?.prune();
     return repos;
   }
 
@@ -64,38 +71,88 @@ export class RepoCatalog {
     const canonicalPath = await realpath(path);
     assertInside(canonicalRoot, canonicalPath);
 
+    // One rev-parse answers both questions. Asking them separately spawned a
+    // second process per candidate directory for no extra information.
     let topLevel;
+    let commonDir;
     try {
-      topLevel = (await this.git(canonicalPath, ["rev-parse", "--show-toplevel"])).trim();
+      const [topLevelLine, commonDirLine] = (await this.git(canonicalPath, ["rev-parse", "--show-toplevel", "--git-common-dir"])).split("\n");
+      topLevel = String(topLevelLine || "").trim();
+      if (!topLevel) return null;
+      commonDir = resolve(canonicalPath, String(commonDirLine || ".git").trim());
     } catch {
       return null;
     }
     const canonicalTop = await realpath(topLevel);
     if (canonicalTop !== canonicalPath) return null;
 
-    const [statusResult, lastActivityResult, scripts, remotes] = await Promise.all([
-      this.git(canonicalPath, ["status", "--porcelain=v2", "--branch"]).catch(() => ""),
-      this.git(canonicalPath, ["log", "-1", "--format=%ct"]).catch(() => "0"),
+    const [read, scripts, remotes] = await Promise.all([
+      this.statusAndActivity(canonicalPath),
       readScripts(canonicalPath),
       this.git(canonicalPath, ["config", "--get-regexp", "^remote\\..*\\.url$"]).catch(() => ""),
     ]);
-    const status = parsePorcelainV2(statusResult);
+    const status = parsePorcelainV2(read.output);
+    const lastActivity = read.lastActivity;
     return {
       id: repoId(canonicalPath),
       name: basename(canonicalPath),
       root: basename(canonicalRoot),
       rootPath: canonicalRoot,
       path: canonicalPath,
+      // The dashboard groups aliases of one repository by this directory. It
+      // costs nothing here, and it saves the dashboard a process per candidate.
+      commonDir,
       relativePath: relative(canonicalRoot, canonicalPath),
       branch: status.branch,
       ahead: status.ahead,
       behind: status.behind,
       changedFiles: status.changedFiles,
       dirty: status.changedFiles > 0,
-      lastActivity: Number(lastActivityResult.trim()) || 0,
+      lastActivity,
       githubRepository: parseGitHubRepository(remotes),
       scripts,
     };
+  }
+
+  // The status a person reads on a card. A working tree changes with no signal,
+  // so this is a real cache with a real window, and it is display only. Nothing
+  // that deletes anything may call it: WorktreeDashboard.assertStillClean reads
+  // git directly, with its own arguments, for exactly that reason.
+  //
+  // The activity time is stored with the status rather than derived from it.
+  // That output also carries `# branch.oid`, and keying the commit-time memo on
+  // a sha the checkout has moved past would report a repository as untouched
+  // while a person commits to it. A served row therefore carries both halves
+  // from one instant, so a card never mixes a status from now with a timestamp
+  // from a minute ago. The staleness test in tests/repo-catalog.test.mjs is
+  // what caught this.
+  async statusAndActivity(path) {
+    const stored = this.identityStore?.status(path);
+    if (stored) return stored;
+    const output = await this.git(path, ["status", "--porcelain=v2", "--branch"]).catch(() => "");
+    const lastActivity = await this.#commitTime(path, parsePorcelainV2(output).oid);
+    if (output) this.identityStore?.rememberStatuses([{ path, output, lastActivity }]);
+    return { output, lastActivity };
+  }
+
+  // A commit's time is part of what its sha hashes, so a stored answer for a
+  // known sha cannot be wrong. Without a usable sha — an unborn branch, or a
+  // status read that failed — this is exactly the previous behaviour.
+  async #commitTime(path, sha) {
+    const stored = sha ? this.identityStore?.commitTime(sha) : null;
+    if (stored) return stored;
+    const output = await this.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0");
+    const commitTime = Number(String(output).trim()) || 0;
+    if (sha && commitTime > 0) this.identityStore?.rememberCommitTimes([{ sha, commitTime }]);
+    return commitTime;
+  }
+
+  // Every caller that changes a working tree — a worktree created, removed, or
+  // handed to an agent — must reach this. Six of them used to assign
+  // `catalog.cache = null` directly, which now leaves a stored status behind.
+  invalidate() {
+    this.cache = null;
+    this.identityStore?.forgetStatuses();
   }
 
   async get(id) {
@@ -259,8 +316,15 @@ export function parsePorcelainV2(output) {
   let ahead = 0;
   let behind = 0;
   let changedFiles = 0;
+  // The commit this checkout points at. Porcelain v2 prints it for free, and a
+  // commit's time is part of what its sha hashes, so it is a key that cannot go
+  // stale. On an unborn branch git prints "(initial)", which is not a sha.
+  let oid = null;
   for (const line of String(output).split("\n")) {
-    if (line.startsWith("# branch.head ")) branch = line.slice(14).trim();
+    if (line.startsWith("# branch.oid ")) {
+      const value = line.slice(13).trim();
+      oid = /^[0-9a-f]{40}$/.test(value) ? value : null;
+    } else if (line.startsWith("# branch.head ")) branch = line.slice(14).trim();
     else if (line.startsWith("# branch.ab ")) {
       const match = line.match(/\+(\d+) -(\d+)/);
       if (match) {
@@ -269,7 +333,7 @@ export function parsePorcelainV2(output) {
       }
     } else if (line && !line.startsWith("#")) changedFiles += 1;
   }
-  return { branch, ahead, behind, changedFiles };
+  return { branch, ahead, behind, changedFiles, oid };
 }
 
 export function normalizePullRequest(value) {

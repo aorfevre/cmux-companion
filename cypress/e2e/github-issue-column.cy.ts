@@ -118,10 +118,12 @@ describe("GitHub Sync and the GitHub Issues column", () => {
     cy.wait("@startGoal").its("request.url").should("match", new RegExp(`/api/github-issues/${starred.id}/12/goal$`));
 
     cy.findByRole("region", { name: "Writing Spec" }).should("contain.text", "Resolve GitHub issue #12: Restore the caret");
-    // The card no longer offers to start the same issue a second time.
+    // The issue leaves its column live, with no reload: the work is on the
+    // board once, as the goal card that now represents it.
     cy.findByRole("region", { name: "GitHub Issues" }).within(() => {
       cy.findByRole("button", { name: /^Start a goal/ }).should("not.exist");
-      cy.findByRole("link", { name: "Goal started for #12" }).should("exist");
+      cy.contains(starredIssue.title).should("not.exist");
+      cy.findByLabelText("0 issues in GitHub Issues").should("exist");
     });
     cy.then(() => expect(goalCalls).to.equal(1));
   });

@@ -29,10 +29,13 @@ export const ALERTING = new Map([
 ]);
 
 export class GoalWatchdog {
-  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, sessionCollector = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
+  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, sessionCollector = null, sessionReaper = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
     if (!health) throw new TypeError("A goal health sweep is required");
     this.health = health;
     this.pushService = pushService;
+    // Optional. With no reaper the watchdog behaves exactly as it did before:
+    // it reports, and it closes nothing.
+    this.sessionReaper = sessionReaper;
     // Reconciling before the sweep is what stops a finished goal being reported
     // as broken: without it, a goal whose agent opened its pull request and
     // stopped keeps a stale board state, and the sweep calls it idle.
@@ -80,8 +83,12 @@ export class GoalWatchdog {
     // would tell the user their agents died every time they closed cmux, so the
     // pass is skipped entirely and no memory is cleared: the goals are exactly
     // as they were before the check could not run.
-    if (swept?.sessionsAvailable !== true) return { checked: false, alerts: [] };
+    if (swept?.sessionsAvailable !== true) return { checked: false, alerts: [], sessions: null };
 
+    // Retire finished sessions before the alerts are built. The same reason the
+    // sweep is skipped above applies here: an unreachable cmux proves nothing
+    // about any agent, so nothing is closed on the strength of it.
+    const sessions = await this.#reap();
     const alerts = [];
     const seen = new Set();
     for (const goal of swept.goals || []) {
@@ -104,7 +111,25 @@ export class GoalWatchdog {
     // A goal that left the sweep is terminal or deleted. Dropping it keeps the
     // map bounded by the number of live goals rather than by uptime.
     for (const planId of [...this.alerted.keys()]) if (!seen.has(planId)) this.alerted.delete(planId);
-    return { checked: true, checkedAt: swept.checkedAt, alerts, summary: swept.summary };
+    return { checked: true, checkedAt: swept.checkedAt, alerts, summary: swept.summary, sessions };
+  }
+
+  // Best-effort, and deliberately before the alerts rather than instead of
+  // them. A reaper that throws must never cost the user the one thing this
+  // pass exists for, which is being told that a goal stopped.
+  async #reap() {
+    if (!this.sessionReaper?.reap) return null;
+    try {
+      const report = await this.sessionReaper.reap();
+      return {
+        closed: report?.closed || [],
+        kept: report?.kept || [],
+        failed: report?.failed || [],
+      };
+    } catch (cause) {
+      this.log?.warn?.({ err: cause }, "goal watchdog could not retire finished sessions");
+      return null;
+    }
   }
 
   // Returns true only when a device actually received the alert. With no push

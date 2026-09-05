@@ -6,6 +6,8 @@ import { CmuxClient } from "./cmux-client.mjs";
 import { PushService } from "./push-service.mjs";
 import { PreviewManager } from "./preview-manager.mjs";
 import { PromptQueue } from "./prompt-queue.mjs";
+import { RepoCatalog } from "./repo-catalog.mjs";
+import { openRepoIdentityStore } from "./repo-identity-store.mjs";
 import { ensureToken } from "./security.mjs";
 
 const DEFAULT_TOKEN_PATH = join(homedir(), ".config", "cmux-companion", "token");
@@ -21,9 +23,14 @@ export async function startServer({
   const pushService = new PushService();
   const previewManager = new PreviewManager();
   const promptQueue = new PromptQueue();
+  // Only the running companion opts into the identity cache. buildApp defaults
+  // its catalog to a live one, so no test that builds an app ever touches the
+  // real database file.
+  const repoCatalog = new RepoCatalog({ identityStore: openRepoIdentityStore() });
   const app = await buildApp({
     cmux,
     token,
+    repoCatalog,
     pushService,
     previewManager,
     promptQueue,

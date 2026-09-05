@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitHubIssueStore } from "../server/github-issue-store.mjs";
 import { GitHubIssueSync } from "../server/github-issue-sync.mjs";
-import { GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, isGithubIssueStarted } from "../server/github-issue-board.mjs";
+import { GITHUB_ISSUE_ALL_STARTED_HINT, GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_HINT, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, isGithubIssueOnBoard, isGithubIssueStarted, visibleGithubIssues } from "../server/github-issue-board.mjs";
 
 const STARRED = "starredRepoABCDEFG";
 const OTHER = "plainRepoABCDEFGHI";
@@ -63,6 +63,54 @@ test("the issue column identity is frozen and keys one card per repository issue
   assert.equal(githubIssueCardId({ repositoryId: STARRED, number: 0 }), "");
   assert.equal(isGithubIssueStarted({ planId: "plan-1" }), true);
   assert.equal(isGithubIssueStarted({ planId: null }), false);
+});
+
+test("the column hides a started issue only while its goal is on the board", () => {
+  const known = ["plan-1", "plan-2"];
+  // Started, and its goal is a plan the board loaded: the goal card represents
+  // it now, so the issue leaves the column.
+  assert.equal(isGithubIssueOnBoard({ planId: "plan-1" }, known), false);
+  assert.equal(isGithubIssueOnBoard({ planId: "plan-1" }, new Set(known)), false);
+  // Started, but the goal was deleted. The issue comes back rather than being
+  // stranded off the board with no way to start it again.
+  assert.equal(isGithubIssueOnBoard({ planId: "plan-gone" }, known), true);
+  assert.equal(isGithubIssueOnBoard({ planId: "plan-1" }, []), true);
+  // Never started: always visible.
+  assert.equal(isGithubIssueOnBoard({ planId: null }, known), true);
+  assert.equal(isGithubIssueOnBoard({ planId: "   " }, known), true);
+  assert.equal(isGithubIssueOnBoard({}, known), true);
+});
+
+test("untrusted input keeps the issue visible and never throws", () => {
+  for (const bad of [null, undefined, 0, "issue", [], { planId: 7 }, { planId: {} }]) {
+    assert.equal(isGithubIssueOnBoard(bad, ["plan-1"]), true);
+  }
+  for (const badIds of [null, undefined, "plan-1", 7, {}, [null, 7, {}]]) {
+    assert.equal(isGithubIssueOnBoard({ planId: "plan-1" }, badIds), true);
+  }
+  // A malformed issue list is an empty column, not a crash.
+  for (const bad of [null, undefined, "issues", 7, {}]) {
+    assert.deepEqual(visibleGithubIssues(bad, ["plan-1"]), []);
+  }
+});
+
+test("the visible list drops started issues and keeps the rest, in order", () => {
+  const rows = [
+    { number: 1, planId: "plan-1" },
+    { number: 2, planId: null },
+    { number: 3, planId: "plan-gone" },
+    { number: 4, planId: "plan-2" },
+    null,
+  ];
+  assert.deepEqual(visibleGithubIssues(rows, ["plan-1", "plan-2"]).map((row) => (row ? row.number : null)), [2, 3, null]);
+  // With no plan loaded, nothing is hidden.
+  assert.equal(visibleGithubIssues(rows, []).length, rows.length);
+});
+
+test("the two empty-column messages are distinct", () => {
+  assert.equal(typeof GITHUB_ISSUE_ALL_STARTED_HINT, "string");
+  assert.notEqual(GITHUB_ISSUE_ALL_STARTED_HINT, GITHUB_ISSUE_EMPTY_HINT);
+  assert.match(GITHUB_ISSUE_ALL_STARTED_HINT, /goal/);
 });
 
 test("syncs starred repositories only", async (t) => {

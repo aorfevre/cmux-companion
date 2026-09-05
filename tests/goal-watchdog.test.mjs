@@ -269,3 +269,121 @@ test("runs with no merge watcher at all", async () => {
 test("requires a health sweep", () => {
   assert.throws(() => new GoalWatchdog({}), /health sweep is required/);
 });
+
+// --- retiring finished sessions -------------------------------------------
+
+// The reason this exists: a person had to close dozens of finished
+// `KRV · … · T2-api` and `… · MERGE` workspaces by hand. The supervision
+// timer already looks at every launched goal, so it is the one pass that can
+// do it for them.
+test("a driven tick retires the finished sessions of a goal whose work is delivered", async () => {
+  const reaped = [];
+  const reaper = {
+    reap: async (options) => {
+      reaped.push(options);
+      return {
+        checkedAt: "2026-09-03T12:00:00.000Z",
+        sessionsAvailable: true,
+        closed: [{ planId: "plan-1", workspaceId: "workspace-0", kind: "task" }],
+        kept: [{ planId: "plan-1", workspaceId: "workspace-merge", kind: "merge", reason: "This session owns the goal's open pull request" }],
+        failed: [],
+      };
+    },
+  };
+  const watchdog = new GoalWatchdog({ health: sweep([goal()]), pushService: push(), sessionReaper: reaper });
+  const result = await watchdog.check();
+
+  assert.equal(result.checked, true);
+  assert.deepEqual(result.sessions.closed.map((entry) => entry.workspaceId), ["workspace-0"]);
+  assert.deepEqual(result.sessions.kept.map((entry) => entry.workspaceId), ["workspace-merge"]);
+  assert.deepEqual(result.sessions.failed, []);
+  assert.equal(reaped.length, 1);
+  // The timer pass is never scoped to one goal: it is the pass that runs when
+  // nobody asked, so it must cover every goal that owns a session.
+  assert.equal(reaped[0]?.planId, undefined);
+});
+
+// The same tick over the real reaper and a real store, so the wiring is proven
+// against the policy rather than against a fake that agrees with it.
+test("a driven tick closes a finished goal's task sessions through the real reaper", async (t) => {
+  const { GoalSessionReaper } = await import("../server/goal-session-reaper.mjs");
+  const { WorktreePlanStore } = await import("../server/worktree-plan-store.mjs");
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const tasks = [
+    { id: "t1", title: "Billing API", branch: "feature/billing-api", prompt: "Build it", agent: "codex" },
+    { id: "t2", title: "Billing UI", branch: "feature/billing-ui", prompt: "Build it", agent: "claude" },
+  ];
+  store.createPlan({ planId: "plan-1", repositoryId: "repository12345678", repositoryName: "sample", cwd: "/repo/sample", goal: "Ship billing" });
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks });
+  store.recordLaunch("plan-1", {
+    base: "origin/main",
+    baseSha: "a".repeat(40),
+    results: tasks.map((task, index) => ({ id: task.id, status: "launched", path: `/repo/task-${index}`, workspace: { workspace_id: `workspace-${index}` } })),
+  });
+  store.recordMergeLaunched("plan-1", "workspace-merge");
+  store.recordGoalPullRequest("plan-1", { number: 7, url: "https://github.test/pr/7", state: "OPEN" });
+
+  const closed = [];
+  const cmux = {
+    workspaceListDetailed: async () => ({
+      workspaces: ["workspace-0", "workspace-1", "workspace-merge"].map((id) => ({ id, title: id, status: { effective: "idle", signals: {} } })),
+    }),
+    workspaceClose: async (workspaceId) => { closed.push(workspaceId); return { ok: true }; },
+  };
+  const watchdog = new GoalWatchdog({
+    health: sweep([]),
+    sessionReaper: new GoalSessionReaper({ store, cmux }),
+  });
+  const result = await watchdog.check();
+
+  assert.deepEqual(closed.sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(result.sessions.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(result.sessions.kept, []);
+  // Recorded durably, so a second pass never closes the same session twice.
+  const plan = store.get("plan-1");
+  assert.ok(plan.tasks.every((task) => task.sessionClosedAt));
+  assert.ok(plan.mergeSessionClosedAt);
+  assert.deepEqual((await watchdog.check()).sessions.closed, []);
+  assert.equal(closed.length, 3);
+});
+
+// An unreachable cmux proves nothing about any agent, so a pass that cannot see
+// the workspaces must not act on the plan rows alone.
+test("nothing is retired on a tick where the sweep could not reach cmux", async () => {
+  let reaps = 0;
+  const reaper = { reap: async () => { reaps += 1; return { closed: [], kept: [], failed: [] }; } };
+  const watchdog = new GoalWatchdog({ health: sweep([goal()], { sessionsAvailable: false }), sessionReaper: reaper });
+  const result = await watchdog.check();
+
+  assert.equal(result.checked, false);
+  assert.equal(result.sessions, null);
+  assert.equal(reaps, 0);
+});
+
+// Tidying the sidebar must never cost the user the alert that a goal stopped.
+test("a reaper that throws is logged and the health alerts are still sent", async () => {
+  const warnings = [];
+  const pushService = push();
+  const watchdog = new GoalWatchdog({
+    health: sweep([goal()]),
+    pushService,
+    sessionReaper: { reap: async () => { throw new Error("cmux is not running"); } },
+    log: { warn: (_details, message) => warnings.push(message) },
+  });
+  const result = await watchdog.check();
+
+  assert.equal(result.checked, true);
+  assert.equal(result.sessions, null);
+  assert.equal(result.alerts.length, 1);
+  assert.equal(pushService.sent.length, 1, "the dead agent still reaches the user");
+  assert.deepEqual(warnings, ["goal watchdog could not retire finished sessions"]);
+});
+
+// Without a reaper the watchdog is exactly what it was: it reports, and it
+// closes nothing.
+test("a watchdog with no reaper closes nothing and still reports", async () => {
+  const result = await new GoalWatchdog({ health: sweep([goal()]) }).check();
+  assert.equal(result.checked, true);
+  assert.equal(result.sessions, null);
+});

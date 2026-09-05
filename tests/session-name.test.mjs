@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MAX_TITLE, mergeSessionTitle, partCode, projectCode, sessionEnv, sessionTitle, taskCode } from "../server/session-name.mjs";
+import { MAX_TITLE, followupSessionTitle, goalSegment, mergeSessionTitle, partCode, projectCode, sessionEnv, sessionTitle, taskCode } from "../server/session-name.mjs";
 
 // --- project code --------------------------------------------------------
 
@@ -124,9 +124,79 @@ const PLAN = {
   tasks: [{ id: "t1" }, { id: "t2" }],
 };
 
-test("joins the project, task and part codes before the title", () => {
-  assert.equal(sessionTitle(PLAN, { id: "t2", type: "backend", title: "Wire the health sweep" }), "CC-T2-api · Wire the health sweep");
+test("orders the name as project, goal, task-part, then title", () => {
+  assert.equal(
+    sessionTitle(PLAN, { id: "t2", type: "backend", title: "Wire the health sweep" }),
+    "CC · Every goal is visible on the board (plan) · T2-api · Wire the health sweep",
+  );
 });
+
+// --- goal segment --------------------------------------------------------
+
+// The spec outcome is the reviewed sentence. The raw goal is what the user
+// typed before the planner refined it, so it is the fallback and not the
+// first choice.
+test("prefers the spec outcome over the raw goal", () => {
+  assert.equal(goalSegment(PLAN), "Every goal is visible on the board (plan)");
+});
+
+test("falls back to the raw goal when there is no usable spec outcome", () => {
+  const base = { planId: "plan-1", goal: "only goal" };
+  assert.equal(goalSegment(base), "only goal (plan)");
+  assert.equal(goalSegment({ ...base, spec: { outcome: null } }), "only goal (plan)");
+  assert.equal(goalSegment({ ...base, spec: { outcome: "" } }), "only goal (plan)");
+  // A whitespace-only outcome is truthy. Both sides are trimmed before the
+  // choice, so it does not win and then collapse to nothing.
+  assert.equal(goalSegment({ ...base, spec: { outcome: "   " } }), "only goal (plan)");
+});
+
+// A plan with no goal text at all still needs a segment, because the name is
+// four segments and the board parser slices on them.
+test("degrades to the id fragment alone when there is no goal text", () => {
+  assert.equal(goalSegment({ planId: "plan-1" }), "(plan)");
+  assert.equal(goalSegment({ planId: "plan-1", goal: "  ", spec: { outcome: "  " } }), "(plan)");
+  assert.equal(
+    sessionTitle({ planId: "plan-1", repositoryName: "karven" }, { id: "T1", type: "ui", title: "Board column" }),
+    "KRV · (plan) · T1-ui · Board column",
+  );
+});
+
+// The fragment is what keeps two goals in one repository apart when they open
+// with the same words, so it is derived and never omitted.
+test("gives two identically worded goals different titles", () => {
+  const task = { id: "T1", type: "ui", title: "Board column" };
+  const one = sessionTitle({ planId: "aaaa1111", repositoryName: "karven", goal: "Ship the board" }, task);
+  const two = sessionTitle({ planId: "bbbb2222", repositoryName: "karven", goal: "Ship the board" }, task);
+  assert.notEqual(one, two);
+  assert.equal(one, "KRV · Ship the board (aaaa) · T1-ui · Board column");
+  assert.equal(two, "KRV · Ship the board (bbbb) · T1-ui · Board column");
+});
+
+// An unusable id must not produce an empty pair of parentheses: that says
+// nothing and still costs three characters of the budget.
+test("uses a readable fragment for an id that carries no alphanumerics", () => {
+  assert.equal(goalSegment({ goal: "Ship it" }), "Ship it (goal)");
+  assert.equal(goalSegment({ planId: "", goal: "Ship it" }), "Ship it (goal)");
+  assert.equal(goalSegment({ planId: "   ", goal: "Ship it" }), "Ship it (goal)");
+  assert.equal(goalSegment({ planId: 12345, goal: "Ship it" }), "Ship it (goal)");
+  assert.equal(goalSegment({ planId: "---___", goal: "Ship it" }), "Ship it (goal)");
+});
+
+test("takes the first four alphanumerics of the plan id, lowercased", () => {
+  assert.equal(goalSegment({ planId: "PLAN-12345678", goal: "Ship it" }), "Ship it (plan)");
+  assert.equal(goalSegment({ planId: "3f2b9c1e-1c4a-4d33", goal: "Ship it" }), "Ship it (3f2b)");
+});
+
+// A person types the goal, so it can carry the separator itself. An embedded
+// separator would make the name read as five segments and the board parser
+// would slice it wrongly.
+test("strips a separator and parentheses out of user-typed goal text", () => {
+  assert.equal(goalSegment({ planId: "plan-1", goal: "Ship A · then B" }), "Ship A - then B (plan)");
+  assert.equal(goalSegment({ planId: "plan-1", goal: "Ship (the) board" }), "Ship the board (plan)");
+  assert.equal(sessionTitle({ planId: "plan-1", repositoryName: "karven", goal: "A · B" }, { id: "T1", type: "ui", title: "Col" }).split(" · ").length, 4);
+});
+
+// --- budgets -------------------------------------------------------------
 
 // cmux refuses a title over 100 characters, so the bound is the module's job
 // and not the caller's.
@@ -136,34 +206,49 @@ test("never exceeds MAX_TITLE, however long the task title is", () => {
   assert.ok(title.length <= MAX_TITLE, `got ${title.length} characters`);
 });
 
-// The code half is what identifies the session in a narrow sidebar, so the
-// title loses characters and the code never does.
-test("truncates the title and leaves the code half whole", () => {
+// The task-part code identifies the session, so the title loses characters and
+// the segments before it never do.
+test("truncates the title and leaves every earlier segment whole", () => {
   const title = sessionTitle(PLAN, { id: "t2", type: "backend", title: "x".repeat(500) });
-  assert.ok(title.startsWith("CC-T2-api · "), `code half was cut: ${title}`);
+  assert.ok(title.startsWith("CC · Every goal is visible on the board (plan) · T2-api · "), `an earlier segment was cut: ${title}`);
   assert.ok(title.endsWith("…"), "a clipped title must say it was clipped");
 });
 
-// A title long enough to need clipping must still be clipped to the budget,
-// not merely to the ellipsis: the ellipsis replaces a character.
+// A long goal clips inside its own budget. The fragment and the task-part code
+// both survive, because they are what identify the session.
+test("clips a 500-character goal inside its own budget and keeps the fragment", () => {
+  const title = sessionTitle({ ...PLAN, spec: { outcome: "z".repeat(500) } }, { id: "t2", type: "backend", title: "y".repeat(500) });
+  assert.ok(title.length <= MAX_TITLE, `got ${title.length} characters`);
+  assert.ok(title.includes("(plan)"), `the id fragment was clipped away: ${title}`);
+  assert.ok(title.includes(" · T2-api · "), `the task-part segment was cut: ${title}`);
+  assert.ok(title.endsWith("…"), "a clipped title must say it was clipped");
+  assert.deepEqual(title.split(" · ").length, 4);
+});
+
+// A title long enough to need clipping must be clipped to the budget, not
+// merely to the ellipsis: the ellipsis replaces a character.
 test("clips a long title to exactly the remaining budget", () => {
-  const label = "CC-T2-api";
+  const label = "CC · Every goal is visible on the board (plan) · T2-api";
   const title = sessionTitle(PLAN, { id: "t2", type: "backend", title: "y".repeat(500) });
   assert.equal(title.length, MAX_TITLE);
   assert.equal(title.slice(label.length + 3).length, MAX_TITLE - label.length - 3);
 });
 
 // A title made only of whitespace is not a title. Emitting the separator with
-// nothing after it would leave a session named "CC-T1-ui · ".
-test("returns the bare code for a title that is only whitespace", () => {
-  assert.equal(sessionTitle(PLAN, { id: "t1", type: "ui", title: "   \n\t  " }), "CC-T1-ui");
-  assert.equal(sessionTitle(PLAN, { id: "t1", type: "ui", title: "" }), "CC-T1-ui");
-  assert.equal(sessionTitle(PLAN, { id: "t1", type: "ui" }), "CC-T1-ui");
+// nothing after it would leave a session named "… T1-ui · ".
+test("returns the name without a trailing empty segment for a blank title", () => {
+  const expected = "CC · Every goal is visible on the board (plan) · T1-ui";
+  assert.equal(sessionTitle(PLAN, { id: "t1", type: "ui", title: "   \n\t  " }), expected);
+  assert.equal(sessionTitle(PLAN, { id: "t1", type: "ui", title: "" }), expected);
+  assert.equal(sessionTitle(PLAN, { id: "t1", type: "ui" }), expected);
 });
 
 // A multi-line title would break the one-line display cmux renders.
 test("folds a multi-line title onto one line", () => {
-  assert.equal(sessionTitle(PLAN, { id: "t1", type: "ui", title: "Add the\n  board\tcolumn" }), "CC-T1-ui · Add the board column");
+  assert.equal(
+    sessionTitle(PLAN, { id: "t1", type: "ui", title: "Add the\n  board\tcolumn" }),
+    "CC · Every goal is visible on the board (plan) · T1-ui · Add the board column",
+  );
 });
 
 // A suffix that eats the whole budget leaves no usable room for a title, so
@@ -174,57 +259,69 @@ test("drops the title when a long suffix leaves no room for it", () => {
   assert.ok(!title.includes("Board column"), `the title should have been dropped: ${title}`);
 });
 
-test("appends a suffix between the code and the title when it fits", () => {
-  assert.equal(sessionTitle(PLAN, { id: "t1", type: "ui", title: "Board column" }, { suffix: "retry" }), "CC-T1-ui · retry · Board column");
+test("appends a suffix between the codes and the title when it fits", () => {
+  assert.equal(
+    sessionTitle(PLAN, { id: "t1", type: "ui", title: "Board column" }, { suffix: "retry" }),
+    "CC · Every goal is visible on the board (plan) · T1-ui · retry · Board column",
+  );
 });
 
 // A missing plan or task is a programming error upstream, but a thrown name
 // would take down a launch that has already created a worktree.
 test("names a session even with no plan and no task", () => {
-  assert.equal(sessionTitle(null, null), "GOAL-T1-dev");
-  assert.equal(sessionTitle(undefined, undefined), "GOAL-T1-dev");
+  assert.equal(sessionTitle(null, null), "GOAL · (goal) · T1-dev");
+  assert.equal(sessionTitle(undefined, undefined), "GOAL · (goal) · T1-dev");
 });
 
 // A task that is not in the plan's list has no position, so it falls back to
 // the first slot instead of producing T0.
 test("uses the first position for a task the plan does not list", () => {
-  assert.equal(sessionTitle(PLAN, { id: "stranger", type: "docs", title: "Notes" }), "CC-T1-docs · Notes");
+  assert.equal(
+    sessionTitle(PLAN, { id: "stranger", type: "docs", title: "Notes" }),
+    "CC · Every goal is visible on the board (plan) · T1-docs · Notes",
+  );
 });
 
 // --- merge session title -------------------------------------------------
 
-// The merge session belongs to the goal, and the spec outcome is the reviewed
-// sentence. The raw goal is what the user typed before the planner refined it.
-test("prefers the spec outcome over the raw goal", () => {
-  assert.equal(mergeSessionTitle(PLAN), "CC-MERGE · Every goal is visible on the board");
+// The goal text lives in the segment now, so the merge name does not repeat it
+// after the MERGE marker.
+test("names a merge session project, goal and MERGE", () => {
+  assert.equal(mergeSessionTitle(PLAN), "CC · Every goal is visible on the board (plan) · MERGE");
 });
 
-test("falls back to the raw goal when there is no spec outcome", () => {
-  assert.equal(mergeSessionTitle({ repositoryName: "karven", goal: "only goal" }), "KRV-MERGE · only goal");
-  assert.equal(mergeSessionTitle({ repositoryName: "karven", goal: "only goal", spec: { outcome: null } }), "KRV-MERGE · only goal");
-  assert.equal(mergeSessionTitle({ repositoryName: "karven", goal: "only goal", spec: { outcome: "" } }), "KRV-MERGE · only goal");
+test("falls back to the raw goal for a merge session with no spec outcome", () => {
+  const base = { planId: "plan-1", repositoryName: "karven", goal: "only goal" };
+  assert.equal(mergeSessionTitle(base), "KRV · only goal (plan) · MERGE");
+  assert.equal(mergeSessionTitle({ ...base, spec: { outcome: null } }), "KRV · only goal (plan) · MERGE");
+  assert.equal(mergeSessionTitle({ ...base, spec: { outcome: "" } }), "KRV · only goal (plan) · MERGE");
+  assert.equal(mergeSessionTitle({ ...base, spec: { outcome: "   " } }), "KRV · only goal (plan) · MERGE");
 });
 
-// A blank-but-present outcome wins the `||` before it is trimmed, so the goal
-// is not reached and the merge session gets the bare code. Recorded as the
-// behaviour it is: no caller writes a whitespace-only outcome today, and a
-// bare code is a legal name, so this is a sharp edge rather than a failure.
-// Both sides are trimmed before the choice, so an outcome that is only spaces
-// is not treated as a real outcome and the goal text still reaches the title.
-test("a whitespace-only spec outcome falls back to the goal", () => {
-  assert.equal(mergeSessionTitle({ repositoryName: "karven", goal: "only goal", spec: { outcome: "   " } }), "KRV-MERGE \u00b7 only goal");
+test("names a merge session with no goal and a merge session with no plan", () => {
+  assert.equal(mergeSessionTitle({ planId: "plan-1", repositoryName: "karven" }), "KRV · (plan) · MERGE");
+  assert.equal(mergeSessionTitle(null), "GOAL · (goal) · MERGE");
 });
 
-test("returns the bare merge code when the goal is missing", () => {
-  assert.equal(mergeSessionTitle({ repositoryName: "karven" }), "KRV-MERGE");
-  assert.equal(mergeSessionTitle(null), "GOAL-MERGE");
-});
-
-test("keeps a merge title inside MAX_TITLE and clips the goal, not the code", () => {
-  const title = mergeSessionTitle({ repositoryName: "cmux-companion", goal: "z".repeat(500) });
+test("keeps a merge title inside MAX_TITLE and clips the goal, not the codes", () => {
+  const title = mergeSessionTitle({ planId: "plan-1", repositoryName: "cmux-companion", goal: "z".repeat(500) });
   assert.ok(title.length <= MAX_TITLE, `got ${title.length} characters`);
-  assert.ok(title.startsWith("CC-MERGE · "), `code half was cut: ${title}`);
-  assert.ok(title.endsWith("…"));
+  assert.ok(title.startsWith("CC · "), `the project code was cut: ${title}`);
+  assert.ok(title.endsWith("(plan) · MERGE"), `the fragment or the marker was cut: ${title}`);
+});
+
+// --- follow-up session title ---------------------------------------------
+
+test("clips a long follow-up goal and never clips its ASK code", () => {
+  const title = followupSessionTitle({ ...PLAN, spec: { outcome: "z".repeat(500) } }, ["question", "review"]);
+  assert.equal(title.length, MAX_TITLE);
+  assert.ok(title.startsWith("CC-ASK · "), `the follow-up code was cut: ${title}`);
+  assert.ok(title.endsWith("…"), "a clipped follow-up title must say it was clipped");
+});
+
+test("gives a follow-up with no goal text a readable fallback", () => {
+  assert.equal(followupSessionTitle({ repositoryName: "karven" }, ["tests"]), "KRV-ASK · More unit and e2e tests");
+  assert.equal(followupSessionTitle(null, []), "GOAL-ASK · Goal follow-up");
 });
 
 // --- session env ---------------------------------------------------------
@@ -232,10 +329,11 @@ test("keeps a merge title inside MAX_TITLE and clips the goal, not the code", ()
 // These stamps are the machine-readable identity. A user can rename a title;
 // they cannot rename an exported variable, so a later sweep still resolves the
 // session back to its goal and task.
-test("stamps the project, plan, task and part for a task session", () => {
+test("stamps the project, plan, goal, task and part for a task session", () => {
   assert.deepEqual(sessionEnv(PLAN, { id: "t2", type: "backend" }), {
     COMPANION_PROJECT: "CC",
     COMPANION_PLAN: "plan-1",
+    COMPANION_GOAL: "plan",
     COMPANION_TASK: "T2",
     COMPANION_PART: "api",
   });
@@ -245,11 +343,18 @@ test("stamps the project, plan, task and part for a task session", () => {
 // present and empty: an exported empty value reads as a real task id of "".
 test("omits the task keys entirely when there is no task", () => {
   const env = sessionEnv(PLAN, null);
-  assert.deepEqual(env, { COMPANION_PROJECT: "CC", COMPANION_PLAN: "plan-1" });
+  assert.deepEqual(env, { COMPANION_PROJECT: "CC", COMPANION_PLAN: "plan-1", COMPANION_GOAL: "plan" });
   assert.equal("COMPANION_TASK" in env, false);
   assert.equal("COMPANION_PART" in env, false);
 });
 
+// COMPANION_GOAL carries the same fragment the title shows, so a sweep can
+// match a session to its goal without parsing the name.
+test("stamps the goal fragment the title uses", () => {
+  assert.equal(sessionEnv({ planId: "3f2b9c1e-1c4a" }, null).COMPANION_GOAL, "3f2b");
+  assert.ok(sessionTitle({ planId: "3f2b9c1e-1c4a", goal: "Ship it" }, null).includes("(3f2b)"));
+});
+
 test("keeps the plan key present but empty when the plan has no id", () => {
-  assert.deepEqual(sessionEnv({ repositoryName: "karven" }, null), { COMPANION_PROJECT: "KRV", COMPANION_PLAN: "" });
+  assert.deepEqual(sessionEnv({ repositoryName: "karven" }, null), { COMPANION_PROJECT: "KRV", COMPANION_PLAN: "", COMPANION_GOAL: "goal" });
 });
