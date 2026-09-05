@@ -59,6 +59,7 @@ export class WorktreeDashboard {
     // One scan per distinct set of inputs, shared by every caller that arrives
     // while it runs. Entries are deleted the moment their scan settles.
     this.pendingSnapshots = new Map();
+    this.scanChain = Promise.resolve();
     this.githubCheckedAt = null;
     this.targets = new Map();
     // A directory of repository id to name and primary path, written by every
@@ -97,7 +98,8 @@ export class WorktreeDashboard {
     const pendingKey = JSON.stringify([workspaceSignature, refresh, refreshGitHub, options.refreshGitHubRepositoryId ?? null, options.refreshGitHubRepositoryIds ?? null]);
     const inFlight = this.pendingSnapshots.get(pendingKey);
     if (inFlight) return inFlight;
-    const scan = this.#scan(options, workspaceSignature);
+    const scan = this.scanChain.then(() => this.#scan(options, workspaceSignature));
+    this.scanChain = scan.catch(() => {});
     this.pendingSnapshots.set(pendingKey, scan);
     try { return await scan; }
     finally { this.pendingSnapshots.delete(pendingKey); }

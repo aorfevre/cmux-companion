@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentBriefs } from "../server/agent-brief.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { WorktreePlanner, describeTimeout, streamExecFile } from "../server/worktree-planner.mjs";
+
+// Each launch test writes its briefs to its own directory, and the whole set is
+// removed when the process exits.
+const briefRoots = [];
+process.on("exit", () => { for (const root of briefRoots) rmSync(root, { recursive: true, force: true }); });
 
 const REPO_ID = "repository12345678";
 
@@ -413,4 +422,194 @@ test("a finished round removes its abort listener from a shared controller", asy
   // A listener left behind would keep the finished round reachable from the
   // controller, and would try to kill a child that no longer exists.
   assert.doesNotThrow(() => controller.abort());
+});
+
+// --- background launch ---------------------------------------------------
+
+const TASKS_REPLY = '{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."},{"title":"Invoices","branch":"feature/invoices","prompt":"Add invoices."}]}';
+
+// A launch that is held open on purpose. `gate` blocks the very first worktree
+// creation, so the test can act while the launch is still in flight.
+function gatedLaunchDeps({ reply = TASKS_REPLY, gitFails = false } = {}) {
+  const deps = fakeDeps({ replies: [envelope(reply, "sess-a")] });
+  const root = mkdtempSync(join(tmpdir(), "launch-briefs-"));
+  briefRoots.push(root);
+  deps.briefs = new AgentBriefs({ directory: join(root, "briefs") });
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  deps.created = [];
+  deps.sessions = [];
+  deps.worktrees.create = async (repositoryId, options) => {
+    await gate;
+    deps.created.push(options.branch);
+    return { created: true, worktree: { id: "w1", branch: options.branch, path: `/repo/sample-${options.branch.replace(/\W+/g, "-")}` } };
+  };
+  deps.cmux = {
+    workspaceCreate: async (options) => { deps.sessions.push(options.cwd); return { workspace_id: `ws-${deps.sessions.length}` }; },
+    workspaceListDetailed: async () => ({ workspaces: [] }),
+  };
+  deps.git = async (cwd, args) => {
+    if (args[0] === "symbolic-ref") return "origin/main\n";
+    if (args[0] === "fetch" && gitFails) throw Object.assign(new Error("fetch failed"), { stderr: "fatal: could not resolve host: github.com" });
+    return "";
+  };
+  return { deps, release, gate };
+}
+
+// A background launch runs after the request ends, so a test waits on the
+// launch registry rather than on a promise no caller holds.
+async function launchSettled(planner, planId, attempts = 500) {
+  for (let index = 0; index < attempts; index += 1) {
+    if (!planner.isLaunching(planId)) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`the launch for ${planId} never finished`);
+}
+
+async function readyPlan(planner) {
+  return planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+}
+
+test("a background launch answers before any worktree or session is created", async () => {
+  const { deps, release } = gatedLaunchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyPlan(planner);
+
+  const answer = await planner.launchBackground(draft.planId);
+  assert.equal(answer.planId, draft.planId);
+  assert.equal(answer.launching, true);
+  // The gate is still closed, so nothing may have been created yet.
+  assert.deepEqual(deps.created, []);
+  assert.deepEqual(deps.sessions, []);
+
+  release();
+  await launchSettled(planner, draft.planId);
+  assert.deepEqual(deps.created, ["feature/billing", "feature/invoices"]);
+  assert.equal(deps.sessions.length, 2);
+});
+
+test("a second launch while one is in flight is refused and launches nothing twice", async () => {
+  const { deps, release } = gatedLaunchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyPlan(planner);
+  await planner.launchBackground(draft.planId);
+
+  await assert.rejects(() => planner.launchBackground(draft.planId), /launching right now/);
+  await assert.rejects(() => planner.launch(draft.planId), /launching right now/);
+
+  release();
+  await launchSettled(planner, draft.planId);
+  assert.deepEqual(deps.created, ["feature/billing", "feature/invoices"]);
+  assert.equal(deps.sessions.length, 2);
+});
+
+test("a finished background launch notifies with the number of sessions started", async () => {
+  const { deps, release } = gatedLaunchDeps();
+  const sent = [];
+  const planner = new WorktreePlanner({ ...deps, pushService: { send: async (payload) => { sent.push(payload); } } });
+  const draft = await readyPlan(planner);
+  await planner.launchBackground(draft.planId);
+  release();
+  await launchSettled(planner, draft.planId);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].kind, "completion");
+  assert.equal(sent[0].planId, draft.planId);
+  assert.equal(sent[0].tag, `cmux-plan-${draft.planId}`);
+  assert.match(sent[0].body, /2 sessions started/);
+});
+
+// The fetch runs before the per-task try/catch, so it is the failure that used
+// to leave a plan with no launch rows and no reason at all.
+test("a background launch that throws before any task notifies and stores its reason", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const { deps, release } = gatedLaunchDeps({ gitFails: true });
+  const sent = [];
+  const planner = new WorktreePlanner({ ...deps, store, pushService: { send: async (payload) => { sent.push(payload); } } });
+  const draft = await readyPlan(planner);
+  await planner.launchBackground(draft.planId);
+  release();
+  await launchSettled(planner, draft.planId);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].kind, "failure");
+  assert.match(sent[0].body, /could not fetch/i);
+
+  const stored = store.get(draft.planId);
+  assert.match(stored.lastError, /could not fetch/i);
+  assert.deepEqual(stored.tasks.map((task) => task.launchStatus), ["failed", "failed"]);
+  assert.match(stored.tasks[0].launchError, /could not fetch/i);
+
+  const reopened = await planner.detail(draft.planId);
+  assert.match(reopened.lastError, /could not fetch/i);
+  assert.equal(reopened.launching, false);
+});
+
+test("a background launch where every task fails reports a failure, not a success", async () => {
+  const { deps, release } = gatedLaunchDeps();
+  deps.worktrees.create = async () => { throw new TypeError("That branch already has a worktree"); };
+  const sent = [];
+  const planner = new WorktreePlanner({ ...deps, pushService: { send: async (payload) => { sent.push(payload); } } });
+  const draft = await readyPlan(planner);
+  await planner.launchBackground(draft.planId);
+  release();
+  await launchSettled(planner, draft.planId);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].kind, "failure");
+  assert.match(sent[0].body, /already has a worktree/);
+});
+
+test("a push service that throws never fails a background launch", async () => {
+  const { deps, release } = gatedLaunchDeps();
+  const planner = new WorktreePlanner({ ...deps, pushService: { send: async () => { throw new Error("no subscriptions"); } } });
+  const draft = await readyPlan(planner);
+  await planner.launchBackground(draft.planId);
+  release();
+  await launchSettled(planner, draft.planId);
+  assert.equal(deps.sessions.length, 2);
+});
+
+test("the launching marker is reported while the launch runs and dropped once it settles", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const { deps, release } = gatedLaunchDeps();
+  const planner = new WorktreePlanner({ ...deps, store });
+  const draft = await readyPlan(planner);
+  await planner.launchBackground(draft.planId);
+
+  const listed = (await planner.list({ status: "all" })).plans[0];
+  assert.equal(listed.launching, true);
+  // A launch is not a specification round, so it must carry no run stage and
+  // must not read as a plan that is being written.
+  assert.equal(listed.running, false);
+  assert.equal(listed.runStage, null);
+  assert.notEqual(listed.boardState, "writing_spec");
+  assert.equal((await planner.detail(draft.planId)).launching, true);
+
+  release();
+  await launchSettled(planner, draft.planId);
+  assert.equal((await planner.list({ status: "all" })).plans[0].launching, false);
+  assert.equal((await planner.detail(draft.planId)).launching, false);
+});
+
+test("a background launch invalidates the dashboard caches only after it settles", async () => {
+  const { deps, release } = gatedLaunchDeps();
+  const settledIds = [];
+  const planner = new WorktreePlanner({ ...deps, onLaunchSettled: (planId) => settledIds.push(planId) });
+  const draft = await readyPlan(planner);
+  await planner.launchBackground(draft.planId);
+  assert.deepEqual(settledIds, []);
+  release();
+  await launchSettled(planner, draft.planId);
+  assert.deepEqual(settledIds, [draft.planId]);
+});
+
+test("a background launch refuses a plan that is not ready in the caller's hand", async () => {
+  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
+  const planner = new WorktreePlanner(deps);
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await assert.rejects(() => planner.launchBackground(draft.planId), /not ready to launch/);
+  assert.equal(planner.isLaunching(draft.planId), false);
 });

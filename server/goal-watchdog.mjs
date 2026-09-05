@@ -5,16 +5,8 @@
 // goals sit stranded for days. This runs the sweep on a timer and pushes one
 // alert when a goal's health gets worse.
 //
-// It moves no goal. Declaring a slow agent dead on a timer would let its
-// worktree be rebuilt under it, so every recovery stays an explicit decision.
-//
-// The one thing it does act on is session retirement. After the sweep, and only
-// when the sweep could reach cmux, it runs the goal session reaper. That is safe
-// because the reaper closes a session only when the plan itself records it and
-// the goal's own work is delivered, and never when the live workspace shows an
-// agent that is running or waiting for an answer. It closes no worktree and
-// loses no work; it only takes finished workspaces out of the sidebar. The pass
-// is best-effort, so a failure is logged and the health alerts are still sent.
+// GitHub reconciliation records delivered goals, then session collection
+// retires their workspaces. Agent recovery remains an explicit decision.
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1_000;
 // A goal that has just launched has no session yet on the first tick. Waiting
@@ -37,7 +29,7 @@ export const ALERTING = new Map([
 ]);
 
 export class GoalWatchdog {
-  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, sessionReaper = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
+  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, sessionCollector = null, sessionReaper = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
     if (!health) throw new TypeError("A goal health sweep is required");
     this.health = health;
     this.pushService = pushService;
@@ -49,6 +41,7 @@ export class GoalWatchdog {
     // stopped keeps a stale board state, and the sweep calls it idle.
     this.mergeWatch = mergeWatch;
     this.worktrees = worktrees;
+    this.sessionCollector = sessionCollector;
     this.log = log;
     this.intervalMs = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : DEFAULT_INTERVAL_MS;
     this.startDelayMs = Number.isFinite(startDelayMs) && startDelayMs >= 0 ? startDelayMs : DEFAULT_START_DELAY_MS;
@@ -84,6 +77,7 @@ export class GoalWatchdog {
   // can share the dedupe.
   async check() {
     await this.#reconcile();
+    await this.sessionCollector?.sweep();
     const swept = await this.health.sweep();
     // An unreachable cmux reports every session as `unknown`. Alerting on that
     // would tell the user their agents died every time they closed cmux, so the

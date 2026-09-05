@@ -1,3 +1,7 @@
+import { releaseRetention } from "./release-retention.mjs";
+import { WorktreeCleanup } from "./worktree-cleanup.mjs";
+import { WorktreeInventory, processActivity } from "./worktree-inventory.mjs";
+import { GoalSessionCollector } from "./goal-session-collector.mjs";
 import Fastify from "fastify";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -15,6 +19,9 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
+import { GoalFollowups } from "./goal-followup.mjs";
+import { GitHubReviewToken } from "./github-review-token.mjs";
+import { normalizeReviewOptions } from "./review-options.mjs";
 import { agentCapacity } from "./agent-capacity.mjs";
 import { GoalHealthSweep } from "./goal-health.mjs";
 import { GoalWatchdog } from "./goal-watchdog.mjs";
@@ -53,9 +60,12 @@ export async function buildApp({
   eventHub = null,
   repoCatalog = new RepoCatalog(),
   worktreeDashboard = null,
+  worktreeCleanup = null,
   worktreePlanner = null,
   worktreePlanStore = null,
   goalIntegrator = null,
+  goalFollowups = null,
+  githubReviewToken = null,
   goalMergeWatch = null,
   goalHealthSweep = null,
   goalSessionReaper = null,
@@ -100,6 +110,8 @@ export async function buildApp({
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
   const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog, log: app.log });
+  const cleanup = worktreeCleanup || new WorktreeCleanup({ inventory: new WorktreeInventory({ roots: repoCatalog.roots || [], activity: () => processActivity(cmux), goalPlans: () => planStore?.sessionCleanupPlanIds?.().map((id) => planStore.get(id)) || [] }), onRemoved: (path) => planStore?.recordWorktreeRemoved(path), log: app.log });
+  const detachCleanup = cleanup.start();
   // The planner and delivery controller share one durable goal record. Tests
   // that inject a whole planner do not open the production database implicitly.
   const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
@@ -108,17 +120,6 @@ export async function buildApp({
   const briefs = new AgentBriefs();
   const planner = worktreePlanner
     || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
-  const integrator = goalIntegrator
-    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs }) : null);
-  // The watcher never runs `gh`. It reads what the dashboard already cached
-  // during the one Refresh GitHub command per repository.
-  const mergeWatch = goalMergeWatch
-    || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, log: app.log }) : null);
-  // The one thing no other module does: ask cmux whether each launched task's
-  // agent is still alive. It writes nothing, so a sweep can never move a goal
-  // on its own.
-  const health = goalHealthSweep
-    || (planStore ? new GoalHealthSweep({ store: planStore, cmux, log: app.log }) : null);
   // The one writer in the supervision path. It closes a cmux session only when
   // the plan records it and its work is delivered, so it is always safe to call
   // it; the switch below is about the timer, not about the rule.
@@ -129,6 +130,25 @@ export async function buildApp({
   // stay available either way: an explicit request is the user asking, which is
   // exactly what the switch does not need to protect them from.
   const autoCloseSessions = !AUTO_CLOSE_OFF.has(String(process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS ?? "").trim().toLowerCase());
+  const sessionCollector = planStore ? new GoalSessionCollector({ store: planStore, cmux, reaper, enabled: autoCloseSessions, log: app.log }) : null;
+  const integrator = goalIntegrator
+    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector }) : null);
+  const followups = goalFollowups
+    || (planStore ? new GoalFollowups({ store: planStore, cmux, log: app.log, briefs }) : null);
+  // The identity a goal code review posts under. It is separate from the
+  // machine's own gh credential on purpose: GitHub refuses a verdict on your
+  // own pull request, and the goal pull request is opened with that credential.
+  const reviewToken = githubReviewToken
+    || new GitHubReviewToken({ execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+  // The watcher never runs `gh`. It reads what the dashboard already cached
+  // during the one Refresh GitHub command per repository.
+  const mergeWatch = goalMergeWatch
+    || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, sessionCollector, worktreeCleanup: cleanup, log: app.log }) : null);
+  // The one thing no other module does: ask cmux whether each launched task's
+  // agent is still alive. It writes nothing, so a sweep can never move a goal
+  // on its own.
+  const health = goalHealthSweep
+    || (planStore ? new GoalHealthSweep({ store: planStore, cmux, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
     || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // GitHub Sync owns its own durable store. A test that injects the whole
@@ -152,6 +172,14 @@ export async function buildApp({
   let bootstrapPending = null;
   let inboxSnapshot = null;
   let inboxPending = null;
+  // A background launch creates the worktrees after its request has ended, so
+  // the dashboard caches only go stale once that launch settles. The hook is
+  // assigned rather than passed to the constructor, so an injected planner gets
+  // it too, and it is declared here because it closes over the caches above.
+  planner.onLaunchSettled = () => {
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+  };
   // The sweep answers when asked. This asks, on a timer, and pushes once when a
   // goal's health gets worse — so a dead agent reaches the user instead of
   // waiting to be noticed. It moves no goal: every recovery stays explicit.
@@ -346,6 +374,20 @@ export async function buildApp({
 
   app.delete("/api/account-usage/reconnect/:sessionId", async (request) => reconnect.cancel(request.params.sessionId));
 
+  app.get("/api/worktree-cleanup/releases", async () => releaseRetention("status"));
+  app.patch("/api/worktree-cleanup/releases", async (request) => releaseRetention("configure", request.body));
+  app.post("/api/worktree-cleanup/releases/preview", async () => releaseRetention("preview"));
+  app.post("/api/worktree-cleanup/releases/run", async (request) => releaseRetention("run", { previewId: request.body?.previewId, ids: request.body?.ids }));
+
+  app.get("/api/worktree-cleanup", async () => cleanup.status());
+  app.patch("/api/worktree-cleanup", async (request) => cleanup.configure(request.body));
+  app.post("/api/worktree-cleanup/preview", async () => cleanup.preview());
+  app.post("/api/worktree-cleanup/run", async (request) => {
+    const result = await cleanup.run({ previewId: request.body?.previewId, ids: request.body?.ids, prune: request.body?.prune });
+    worktrees.invalidate();
+    return result;
+  });
+
   app.get("/api/workspaces", async () => cmux.workspaceList());
 
   app.post("/api/workspaces", async (request, reply) => {
@@ -499,7 +541,13 @@ export async function buildApp({
   // free to close and the next goal can start at once. The round then streams on
   // its own plan id. The synchronous path stays for callers that want the round.
   app.post("/api/worktree-plans", async (request, reply) => {
-    const goal = { repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, engine: request.body?.engine };
+    const goal = { repositoryId: request.body?.repositoryId, goal: request.body?.goal, images: request.body?.images, engine: request.body?.engine, specOptions: request.body?.specOptions, reviewOptions: request.body?.reviewOptions };
+    // A disabled checkbox is a courtesy. This is the enforcement: a review the
+    // companion cannot post is refused now, not silently skipped later on a
+    // goal the user believed was being reviewed.
+    if (normalizeReviewOptions(goal.reviewOptions).codeReview && !reviewToken.status().configured) {
+      throw new TypeError("Add a GitHub review token in Settings before asking for a code review");
+    }
     if (request.body?.background === true) return reply.code(202).send(await planner.startBackground(goal));
     return reply.code(201).send(await reportRound(request.body?.traceId, (onEvent) => planner.start({ ...goal, onEvent })));
   });
@@ -576,7 +624,13 @@ export async function buildApp({
     planner.update(request.params.planId, { tasks: request.body?.tasks })
   ));
 
-  app.post("/api/worktree-plans/:planId/launch", async (request) => {
+  // A launch creates a worktree and a cmux session per task, which takes long
+  // enough that the sheet used to sit on a blocking screen. The background
+  // branch answers 202 as soon as the launch is registered and reports the
+  // outcome by push notification. The caches are invalidated by the settled
+  // hook above, because nothing exists to invalidate when the 202 is sent.
+  app.post("/api/worktree-plans/:planId/launch", async (request, reply) => {
+    if (request.body?.background === true) return reply.code(202).send(await planner.launchBackground(request.params.planId));
     const result = await planner.launch(request.params.planId);
     bootstrapSnapshot = null;
     worktrees.invalidate();
@@ -636,6 +690,14 @@ export async function buildApp({
       // agent never pushed, or it opened its pull request from another branch.
       checked: true,
     };
+  });
+
+  app.post("/api/worktree-plans/:planId/followups", async (request) => {
+    if (!followups) throw serviceUnavailable("Goal follow-ups are unavailable");
+    const result = await followups.launch(request.params.planId, request.body);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return result;
   });
 
   app.post("/api/goals/health/check", async () => {
@@ -861,6 +923,14 @@ export async function buildApp({
     return pushService.status(typeof request.query?.endpoint === "string" ? request.query.endpoint : null);
   });
 
+  // The token itself is never returned. `status()` omits it by construction,
+  // so no future edit here can leak it by spreading that object.
+  app.get("/api/github/review-token", async () => reviewToken.status());
+
+  app.post("/api/github/review-token", async (request) => reviewToken.save(request.body?.token));
+
+  app.delete("/api/github/review-token", async () => reviewToken.clear());
+
   app.post("/api/push/subscribe", async (request) => {
     if (!pushService) throw serviceUnavailable("Push alerts are unavailable");
     return pushService.subscribe(request.body?.subscription, request.body?.settings);
@@ -1006,6 +1076,7 @@ export async function buildApp({
   });
 
   app.addHook("onClose", async () => {
+    detachCleanup?.();
     const leases = [...viewportLeases.values()];
     viewportLeases.clear();
     await Promise.allSettled(leases.map((lease) => {
@@ -1126,6 +1197,7 @@ function readPlanId(value) {
 // exactly what a dry run must not be able to do.
 function dryRun(reaper) {
   const store = {
+    ...(reaper.store.sessionCleanupPlanIds ? { sessionCleanupPlanIds: () => reaper.store.sessionCleanupPlanIds() } : {}),
     list: (options) => reaper.store.list(options),
     get: (planId) => reaper.store.get(planId),
     recordSessionsRetired: () => {},
@@ -1133,6 +1205,8 @@ function dryRun(reaper) {
   const cmux = reaper.cmux?.workspaceListDetailed
     ? {
       workspaceListDetailed: () => reaper.cmux.workspaceListDetailed(),
+      ...(reaper.cmux.loadWorkspaceListDetailed ? { loadWorkspaceListDetailed: () => reaper.cmux.loadWorkspaceListDetailed() } : {}),
+      ...(reaper.cmux.workspaceStatus ? { workspaceStatus: (id) => reaper.cmux.workspaceStatus(id) } : {}),
       workspaceClose: async () => ({ ok: true }),
     }
     : reaper.cmux;

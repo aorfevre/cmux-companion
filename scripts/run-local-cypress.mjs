@@ -51,6 +51,7 @@ process.once("SIGTERM", () => { stopFrontend(); process.exit(143); });
 try {
   await waitUntilReady();
   const args = ["cypress", open ? "open" : "run", "--config-file", "cypress.config.ts"];
+  if (process.env.CMUX_COMPANION_CYPRESS_BROWSER) args.push("--browser", process.env.CMUX_COMPANION_CYPRESS_BROWSER);
   const cypress = spawn("npx", args, { cwd: process.cwd(), env: environment, stdio: "inherit" });
   const code = await new Promise((resolve, reject) => {
     cypress.once("error", reject);

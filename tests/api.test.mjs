@@ -681,6 +681,7 @@ function fakePlanner() {
     detail: async (planId) => { calls.push(["detail", planId]); return { ...draft, events: [{ round: 0, kind: "goal", payload: { goal: "Add billing" }, createdAt: "2026-09-01T00:00:00.000Z" }] }; },
     resume: async (planId) => { calls.push(["resume", planId]); return draft; },
     remove: async (planId) => { calls.push(["remove", planId]); return { planId, deleted: true }; },
+    launchBackground: async (planId) => { calls.push(["launchBackground", planId]); return { planId, launching: true }; },
     startBackground: async (options) => { calls.push(["startBackground", options]); return { ...draft, round: 0, status: "questions", tasks: [], running: true }; },
     answerBackground: async (planId, options) => { calls.push(["answerBackground", planId, options]); return { ...draft, running: true }; },
     run: async (planId) => { calls.push(["run", planId]); return { ...draft, round: 0, running: true }; },
@@ -814,7 +815,7 @@ test("drives a worktree plan from goal to launch", async (t) => {
   const started = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", engine } });
   assert.equal(started.statusCode, 201);
   assert.equal(started.json().planId, "plan-1");
-  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing", images: undefined, engine, onEvent: null });
+  assert.deepEqual(planner.calls[0][1], { repositoryId: "repository12345678", goal: "Add billing", images: undefined, engine, specOptions: undefined, reviewOptions: undefined, onEvent: null });
 
   const answered = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/answers", headers, payload: { answers: [{ id: "q1", text: "Postgres" }] } });
   assert.equal(answered.statusCode, 200);
@@ -834,6 +835,41 @@ test("drives a worktree plan from goal to launch", async (t) => {
   assert.equal(launched.json().base, "origin/main");
   assert.equal(launched.json().launched, 1);
   assert.deepEqual(planner.calls.map((call) => call[0]), ["start", "answer", "answer", "update", "launch"]);
+});
+
+// The launch route answers 202 without waiting for a worktree, and the caches
+// it used to clear are cleared by the planner's settled hook instead.
+test("answers a background launch with 202 and leaves the caches to the settled hook", async (t) => {
+  const planner = fakePlanner();
+  let settled = null;
+  planner.launchBackground = async (planId) => {
+    planner.calls.push(["launchBackground", planId]);
+    settled = planner.onLaunchSettled;
+    return { planId, launching: true };
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/launch", headers, payload: { background: true } });
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(response.json(), { planId: "plan-1", launching: true });
+  assert.deepEqual(planner.calls.map((call) => call[0]), ["launchBackground"]);
+  // The app owns the invalidation, and it hands it to the planner rather than
+  // running it when the 202 is sent.
+  assert.equal(typeof settled, "function");
+  assert.doesNotThrow(() => settled("plan-1"));
+});
+
+test("still launches a plan synchronously when no background flag is sent", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/launch", headers, payload: { background: false } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().launched, 1);
+  assert.deepEqual(planner.calls.map((call) => call[0]), ["launch"]);
 });
 
 test("builds the single combined pull request through the goal integrator", async (t) => {
@@ -910,6 +946,125 @@ test("passes attached images through to the planner", async (t) => {
   });
   assert.equal(response.statusCode, 201);
   assert.deepEqual(planner.calls[0][1].images, images);
+});
+
+test("forwards the specification options on both plan routes", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const specOptions = { unitTests: true, e2eTests: false, edgeCases: true, refactorPass: false, screenMocks: true, flowcharts: true };
+
+  const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", specOptions } });
+  assert.equal(awaited.statusCode, 201);
+  assert.equal(planner.calls[0][0], "start");
+  assert.deepEqual(planner.calls[0][1].specOptions, specOptions);
+
+  const background = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", specOptions, background: true } });
+  assert.equal(background.statusCode, 202);
+  assert.equal(planner.calls[1][0], "startBackground");
+  assert.deepEqual(planner.calls[1][1].specOptions, specOptions);
+});
+
+test("turns an unknown specification option into a readable 400", async (t) => {
+  const planner = fakePlanner();
+  planner.start = async () => { throw new TypeError("Unknown specification option sketches"); };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-plans",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { repositoryId: "repository12345678", goal: "Add billing", specOptions: { sketches: true } },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().error, "Unknown specification option sketches");
+});
+
+function fakeReviewToken({ configured = false, login = null } = {}) {
+  const calls = [];
+  return {
+    calls,
+    status: () => ({ configured, login, verifiedAt: configured ? "2026-01-01T00:00:00.000Z" : null }),
+    save: async (token) => { calls.push(["save", token]); configured = true; login = "octo-bot"; return { configured, login, verifiedAt: "2026-01-01T00:00:00.000Z" }; },
+    clear: () => { calls.push(["clear"]); configured = false; login = null; return { configured: false, login: null, verifiedAt: null }; },
+  };
+}
+
+test("forwards the review request on both plan routes when a token is configured", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({
+    cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner,
+    githubReviewToken: fakeReviewToken({ configured: true, login: "octo-bot" }),
+  });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const reviewOptions = { codeReview: true, reviewer: "codex" };
+
+  const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions } });
+  assert.equal(awaited.statusCode, 201);
+  assert.deepEqual(planner.calls[0][1].reviewOptions, reviewOptions);
+
+  const background = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions, background: true } });
+  assert.equal(background.statusCode, 202);
+  assert.deepEqual(planner.calls[1][1].reviewOptions, reviewOptions);
+});
+
+test("refuses a code review when no review token is configured", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({
+    cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner,
+    githubReviewToken: fakeReviewToken({ configured: false }),
+  });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const refused = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions: { codeReview: true } } });
+  assert.equal(refused.statusCode, 400);
+  assert.match(refused.json().error, /Add a GitHub review token in Settings/);
+  // Refused before the planner ran, so no unusable plan row is left behind.
+  assert.equal(planner.calls.length, 0);
+
+  // A goal that asks for no review is unaffected by a missing token.
+  const allowed = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing" } });
+  assert.equal(allowed.statusCode, 201);
+});
+
+test("turns an unknown review option into a readable 400", async (t) => {
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  t.after(() => app.close());
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-plans",
+    headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions: { deepReview: true } },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().error, "Unknown review option deepReview");
+});
+
+test("the review token routes never return the token itself", async (t) => {
+  const store = fakeReviewToken({ configured: false });
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, githubReviewToken: store });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const empty = await app.inject({ method: "GET", url: "/api/github/review-token", headers });
+  assert.equal(empty.statusCode, 200);
+  assert.deepEqual(empty.json(), { configured: false, login: null, verifiedAt: null });
+
+  const saved = await app.inject({ method: "POST", url: "/api/github/review-token", headers, payload: { token: "ghp_0123456789abcdefghijklmnop" } });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().configured, true);
+  assert.equal(saved.json().login, "octo-bot");
+  // The secret must never reach the browser, in any field.
+  assert.equal(saved.payload.includes("ghp_0123456789abcdefghijklmnop"), false);
+  assert.equal(Object.hasOwn(saved.json(), "token"), false);
+  assert.deepEqual(store.calls[0], ["save", "ghp_0123456789abcdefghijklmnop"]);
+
+  const cleared = await app.inject({ method: "DELETE", url: "/api/github/review-token", headers });
+  assert.equal(cleared.statusCode, 200);
+  assert.deepEqual(cleared.json(), { configured: false, login: null, verifiedAt: null });
 });
 
 test("turns a bad images value into a 400", async (t) => {
@@ -1225,6 +1380,73 @@ test("a goal GitHub knows nothing about reports no change rather than an error",
   assert.equal(checked.json().pullRequest, null);
 });
 
+test("launches one goal follow-up and returns its delivery target", async (t) => {
+  const calls = [];
+  const worktreeDashboard = { invalidate: () => calls.push(["invalidate"]) };
+  const goalFollowups = {
+    launch: async (planId, body) => {
+      calls.push(["launch", planId, body]);
+      return {
+        planId,
+        workspaceId: "workspace-followup",
+        agent: body.agent,
+        actions: body.actions,
+        branch: "goal/billing",
+        worktreePath: "/repo/goal",
+        pullRequest: { number: 34, url: "https://github.test/pr/34" },
+        title: "CC-ASK · Add billing · review",
+      };
+    },
+  };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups, worktreeDashboard });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const payload = { actions: ["review"], agent: "codex" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/followups", headers, payload });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    planId: "plan-1", workspaceId: "workspace-followup", agent: "codex", actions: ["review"],
+    branch: "goal/billing", worktreePath: "/repo/goal",
+    pullRequest: { number: 34, url: "https://github.test/pr/34" },
+    title: "CC-ASK · Add billing · review",
+  });
+  assert.deepEqual(calls, [["launch", "plan-1", payload], ["invalidate"]]);
+});
+
+test("returns a fixed follow-up refusal as INVALID_REQUEST", async (t) => {
+  const cmux = fakeCmux();
+  const goalFollowups = {
+    launch: async () => { throw new TypeError("Only a goal waiting for merge can take a follow-up action"); },
+  };
+  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/followups", headers, payload: { actions: ["tests"] } });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.json(), {
+    error: "Only a goal waiting for merge can take a follow-up action",
+    code: "INVALID_REQUEST",
+  });
+  assert.equal(cmux.calls.filter((call) => call[0] === "create").length, 0);
+});
+
+test("rejects a goal follow-up from a foreign origin", async (t) => {
+  const calls = [];
+  const goalFollowups = { launch: async () => { calls.push("launch"); return {}; } };
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/worktree-plans/plan-1/followups",
+    headers: { cookie, host: "mac.tail.test", origin: "https://evil.test" },
+    payload: { actions: ["tests"] },
+  });
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(response.json(), { error: "Origin rejected", code: "BAD_ORIGIN" });
+  assert.deepEqual(calls, []);
+});
+
 test("reports which provider takes the next task and why", async (t) => {
   const accountUsage = {
     snapshot: async () => ({
@@ -1298,13 +1520,10 @@ test("closes the finished sessions of a delivered goal on demand and reports wha
   const report = reaped.json();
   assert.equal(report.sessionsAvailable, true);
   assert.ok(report.checkedAt);
-  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
-  // The one session that still owns the open pull request stays, with a reason
-  // the board can show rather than a bare exclusion.
-  assert.deepEqual(report.kept.map((entry) => entry.workspaceId), ["workspace-merge"]);
-  assert.match(report.kept[0].reason, /open pull request/);
+  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(report.kept, []);
   assert.deepEqual(report.failed, []);
-  assert.deepEqual(cmux.calls.filter((call) => call[0] === "close").map((call) => call[1]).sort(), ["workspace-0", "workspace-1"]);
+  assert.deepEqual(cmux.calls.filter((call) => call[0] === "close").map((call) => call[1]).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
   assert.equal(store.recorded.length, 1);
 });
 
@@ -1320,14 +1539,14 @@ test("the dry run reports the same sessions without closing or recording any", a
   const dry = await app.inject({ method: "GET", url: "/api/goals/sessions/retirable", headers });
   assert.equal(dry.statusCode, 200);
   const report = dry.json();
-  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
-  assert.deepEqual(report.kept.map((entry) => entry.workspaceId), ["workspace-merge"]);
+  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(report.kept, []);
   assert.equal(cmux.calls.filter((call) => call[0] === "close").length, 0, "a dry run closes nothing");
   assert.deepEqual(store.recorded, [], "and records nothing, so the real pass still has work to do");
 
   // Proof that it changed nothing: the real pass afterwards still closes both.
   const real = await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: {} });
-  assert.deepEqual(real.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+  assert.deepEqual(real.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
 });
 
 test("both session routes answer 503 when there is no plan store", async (t) => {
@@ -1380,7 +1599,7 @@ test("the kill switch stops the timer pass and leaves the on-demand route workin
   // The user asking is not what the switch protects them from.
   const asked = await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: {} });
   assert.equal(asked.statusCode, 200);
-  assert.deepEqual(asked.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+  assert.deepEqual(asked.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
 });
 
 // And with the switch unset, the same timer pass does retire them.
@@ -1397,7 +1616,7 @@ test("the supervision pass retires finished sessions when the switch is unset", 
 
   const swept = await app.inject({ method: "POST", url: "/api/goals/health/check", headers, payload: {} });
   assert.equal(swept.statusCode, 200);
-  assert.deepEqual(swept.json().sessions.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+  assert.deepEqual(swept.json().sessions.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
   // The dead agent is still reported: tidying the sidebar costs no alert.
   assert.equal(swept.json().alerts.length, 1);
 });
@@ -1414,6 +1633,7 @@ test("every supervision route requires pairing", async (t) => {
     ["POST", "/api/worktree-plans/plan-1/tasks/t1/relaunch"],
     ["POST", "/api/worktree-plans/plan-1/tasks/t1/skip"],
     ["POST", "/api/worktree-plans/plan-1/check-merge"],
+    ["POST", "/api/worktree-plans/plan-1/followups"],
     ["GET", "/api/goals/capacity"],
   ]) {
     const response = await app.inject({ method, url, payload: method === "POST" ? {} : undefined });

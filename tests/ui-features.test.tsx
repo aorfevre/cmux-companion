@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
@@ -620,17 +621,23 @@ describe("worktree goal planner", () => {
   ];
   const readyDraft = { planId: "plan-1", repositoryId: "repo-1", goal: "Ship the planner", round: 2, status: "ready", questions: [], tasks };
 
-  async function launchReadyPlan(launchResult: unknown) {
+  // Opens a saved ready plan and presses Launch. The sheet lives inside a
+  // harness that unmounts it on close, exactly as the dashboard does, so a
+  // closed sheet is observable as a dialog that is gone. The launch route
+  // answers like the real one: 202 with the plan id and the in-flight marker.
+  async function launchReadyPlan(launchResponse: { status: number; body: unknown }, notice: (message: string) => void = () => {}) {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       void init;
-      if (url.endsWith("/launch")) return new Response(JSON.stringify(launchResult), { status: 200 });
-      return new Response(JSON.stringify(readyDraft), { status: 201 });
+      if (url.endsWith("/launch")) return new Response(JSON.stringify(launchResponse.body), { status: launchResponse.status });
+      return new Response(JSON.stringify(readyDraft), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
-    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      return open ? <WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => setOpen(false)} onNotice={notice} /> : null;
+    }
+    render(<Harness />);
     await userEvent.click(await screen.findByRole("button", { name: "Launch 2 sessions" }));
     return fetchMock;
   }
@@ -642,7 +649,7 @@ describe("worktree goal planner", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...readyDraft, running: true }), { status: 202 })));
     const close = vi.fn();
     const notice = vi.fn();
-    render(<WorktreePlannerSheet repository={repository} onClose={close} onLaunched={async () => {}} onNotice={notice} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={close} onNotice={notice} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
@@ -655,7 +662,7 @@ describe("worktree goal planner", () => {
   test("a refused goal keeps the sheet open with its reason", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "Unknown repository" }), { status: 400 })));
     const close = vi.fn();
-    render(<WorktreePlannerSheet repository={repository} onClose={close} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={close} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
@@ -672,7 +679,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
 
     const engine = screen.getByRole("combobox", { name: "Planner engine" }) as HTMLSelectElement;
     const model = screen.getByRole("combobox", { name: "Planner model" }) as HTMLSelectElement;
@@ -702,11 +709,137 @@ describe("worktree goal planner", () => {
     assert.deepEqual(body.engine, { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: true });
   });
 
+  // AC-1. The six requests are goal-wide, so they must reach the server as one
+  // complete object: a missing key would let the contract validator believe a
+  // request was never made.
+  test("offers six Spec depth requests, sends all six keys, and resets them on New goal", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
+      return new Response(JSON.stringify(readyDraft), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+
+    const names = ["Unit tests", "End-to-end tests", "Edge cases", "Refactor review", "Screen wireframes", "Flowcharts"];
+    const depth = screen.getByRole("region", { name: "Spec depth" });
+    for (const name of names) assert.equal((within(depth).getByRole("checkbox", { name }) as HTMLInputElement).checked, false);
+    assert.ok(within(depth).getByText("Cover the new logic with unit tests."));
+    assert.ok(within(depth).getByText("Return a flowchart for each new or changed flow."));
+
+    await userEvent.click(within(depth).getByRole("checkbox", { name: "Unit tests" }));
+    await userEvent.click(within(depth).getByRole("checkbox", { name: "Screen wireframes" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
+    assert.deepEqual(body.specOptions, { unitTests: true, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: true, flowcharts: false });
+
+    await userEvent.click(await screen.findByRole("button", { name: "← New goal" }));
+    const reset = await screen.findByRole("region", { name: "Spec depth" });
+    for (const name of names) assert.equal((within(reset).getByRole("checkbox", { name }) as HTMLInputElement).checked, false);
+  });
+
+  // AC-7. The coverage rows come from the server. The artifacts come from a
+  // model, so this also asserts that a label which looks like markup or a link
+  // stays literal text.
+  test("shows requested option coverage and safely renders flow and screen artifacts", async () => {
+    const hostileNode = "<img src=x onerror=alert(1)> step";
+    const hostileElement = "Visit https://evil.test/login now";
+    const artifactDraft = {
+      ...readyDraft,
+      contractVersion: 2,
+      spec: {
+        version: 2, outcome: "Operators can ship billing safely", inScope: [], nonGoals: [], constraints: [], assumptions: [], risks: [],
+        acceptanceCriteria: [{ id: "AC-1", text: "API creates invoices", verification: "API tests pass" }],
+        optionEvidence: { unitTests: { status: "planned", rationale: "", taskIds: ["task-1"], criterionIds: ["AC-1"] } },
+        designArtifacts: [
+          {
+            id: "F1", kind: "flow", title: "Invoice flow",
+            nodes: [
+              { id: "n1", label: "Start", kind: "start" },
+              { id: "n2", label: hostileNode, kind: "step" },
+              { id: "n3", label: "Retry", kind: "decision" },
+              { id: "n4", label: "A very long node label that must wrap onto more than one line and then stop", kind: "end" },
+              { id: "n5", label: "Detached note", kind: "step" },
+            ],
+            // n2 → n3 → n2 is a cycle, and n5 is disconnected.
+            edges: [{ from: "n1", to: "n2", label: "submit" }, { from: "n2", to: "n3", label: "" }, { from: "n3", to: "n2", label: "retry" }, { from: "n3", to: "n4", label: "" }],
+          },
+          {
+            id: "S1", kind: "screen", title: "Invoice screen", summary: "The invoice screen gains a total and drops the legacy line.",
+            screen: {
+              name: "Invoice detail",
+              elements: [
+                { id: "e1", label: "Invoice header", kind: "header", change: "added" },
+                { id: "e2", label: hostileElement, kind: "text", change: "changed", note: "Copy review pending" },
+                { id: "e3", label: "Legacy total", kind: "text", change: "removed" },
+                { id: "e4", label: "Footer", kind: "note", change: "unchanged" },
+              ],
+            },
+          },
+        ],
+      },
+      readiness: {
+        ready: true, errors: [], warnings: [], waves: [["task-1"], ["task-2"]], coverage: [],
+        optionCoverage: [
+          { id: "unitTests", requested: true, status: "covered", message: "task-1 · AC-1" },
+          { id: "e2eTests", requested: false, status: "not_requested", message: "" },
+          { id: "edgeCases", requested: true, status: "not_applicable", message: "The endpoint takes no input." },
+          { id: "refactorPass", requested: true, status: "missing", message: "no linked task has the refactor type" },
+          { id: "screenMocks", requested: false, status: "not_requested", message: "" },
+          { id: "flowcharts", requested: false, status: "not_requested", message: "" },
+        ],
+      },
+      tasks: [{ ...tasks[0], criterionIds: ["AC-1"], wave: 0 }, { ...tasks[1], wave: 1 }],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(artifactDraft), { status: 201 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship billing safely");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const passport = await screen.findByRole("region", { name: "Goal passport" });
+    // Only requested options appear, each with the server's own status word.
+    assert.ok(within(passport).getByText("Unit tests"));
+    assert.ok(within(passport).getByText("Covered"));
+    assert.ok(within(passport).getByText("Not applicable"));
+    assert.ok(within(passport).getByText("Missing"));
+    assert.ok(within(passport).getByText("The endpoint takes no input."));
+    assert.ok(within(passport).getByText("no linked task has the refactor type"));
+    assert.equal(within(passport).queryByText("End-to-end tests"), null);
+
+    // The cyclic and disconnected flow renders, and its diagram is named.
+    const diagram = within(passport).getByRole("img", { name: "Flow diagram: Invoice flow" });
+    assert.equal(diagram.tagName.toLowerCase(), "svg");
+    assert.ok(diagram.closest(".spec-flow-scroll"));
+    assert.ok(within(passport).getByText("Detached note"));
+    assert.ok(within(passport).getByText("retry"));
+
+    // Every element carries a readable change marker.
+    assert.ok(within(passport).getByText("Added"));
+    assert.ok(within(passport).getByText("Changed"));
+    assert.ok(within(passport).getByText("Removed"));
+    assert.ok(within(passport).getByText("Unchanged"));
+    assert.ok(within(passport).getByText("Invoice header"));
+
+    // The screen names itself, and both artifacts show their summary.
+    assert.ok(within(passport).getByText("Invoice detail"));
+    assert.ok(within(passport).getByText("The invoice screen gains a total and drops the legacy line."));
+
+    // Hostile-looking strings stay text: no element was injected and no link
+    // was created from artifact content.
+    assert.equal(passport.querySelector("img"), null);
+    assert.equal(within(passport).queryByRole("link"), null);
+    assert.ok(within(passport).getByText(hostileElement));
+    assert.ok(diagram.textContent?.includes("<img"));
+    assert.equal(diagram.querySelector("script"), null);
+    assert.equal(diagram.querySelector("foreignObject"), null);
+  });
+
   test("renders a Markdown prompt and still shows its exact text on demand", async () => {
     const markdown = "## Step one\n\n- Touch `server/app.mjs`\n- See https://example.test/issue for the report\n- Do not touch [the store](../store.mjs)\n\nFinish with a pull request.";
     const markdownDraft = { ...readyDraft, tasks: [{ ...tasks[0], prompt: markdown }] };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(markdownDraft), { status: 201 })));
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
@@ -751,7 +884,7 @@ describe("worktree goal planner", () => {
       ],
     };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(passportDraft), { status: 201 })));
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship billing safely");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
@@ -781,7 +914,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify(readyDraft), { status: 201 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
@@ -810,7 +943,7 @@ describe("worktree goal planner", () => {
       if (url.endsWith("/plan-launched")) return new Response(JSON.stringify(launchedDraft), { status: 200 });
       return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
     }));
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-launched" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-launched" onClose={() => {}} onNotice={() => {}} />);
 
     assert.ok(await screen.findByText("This goal was already launched. The saved plan is read-only."));
     assert.equal(screen.queryByRole("button", { name: "Launch 2 sessions" }), null);
@@ -833,7 +966,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-combined" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-combined" onClose={() => {}} onNotice={() => {}} />);
 
     assert.ok(await screen.findByRole("region", { name: "Combined delivery status" }));
     assert.ok(screen.getByText("Combined delivery needs attention"));
@@ -865,7 +998,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-count" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-count" onClose={() => {}} onNotice={() => {}} />);
 
     assert.ok(await screen.findByText("2 of 3 branches ready"));
     const rows = screen.getByRole("list", { name: "Task delivery" });
@@ -897,7 +1030,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-nostatus" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-nostatus" onClose={() => {}} onNotice={() => {}} />);
 
     assert.ok(await screen.findByText("1 of 2 branches ready"));
     const rows = screen.getByRole("list", { name: "Task delivery" });
@@ -908,21 +1041,17 @@ describe("worktree goal planner", () => {
   test("walks a goal through questions into a plan and launches every task", async () => {
     const questionDraft = { planId: "plan-1", repositoryId: "repo-1", goal: "Ship the planner", round: 1, status: "questions", questions: [{ id: "question-1", text: "Which surface comes first?", options: ["Mobile", "Desktop"] }], tasks: [] };
     const toggled = { ...readyDraft, tasks: [{ ...tasks[0], agent: "claude", agentReason: "You picked Claude" }, tasks[1]] };
-    const launchResult = { planId: "plan-1", base: "main", launched: 2, results: [
-      { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "claude", status: "launched", path: "/repo/companion-planner-sheet" },
-      { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", agent: "claude", status: "launched", path: "/repo/companion-planner-routes" },
-    ] };
-    const launched = vi.fn(async () => {});
+    const close = vi.fn();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(questionDraft), { status: 201 });
       if (url === "/api/worktree-plans/plan-1/answers") return new Response(JSON.stringify(readyDraft), { status: 200 });
       if (url === "/api/worktree-plans/plan-1" && init?.method === "PATCH") return new Response(JSON.stringify(toggled), { status: 200 });
-      if (url === "/api/worktree-plans/plan-1/launch") return new Response(JSON.stringify(launchResult), { status: 200 });
+      if (url === "/api/worktree-plans/plan-1/launch") return new Response(JSON.stringify({ planId: "plan-1", launching: true }), { status: 202 });
       return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={launched} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={close} onNotice={() => {}} />);
     const goal = screen.getByRole("textbox", { name: "Goal" });
     assert.equal(goal.getAttribute("maxlength"), "4000");
     assert.equal((screen.getByRole("button", { name: "Plan this goal" }) as HTMLButtonElement).disabled, true);
@@ -939,9 +1068,7 @@ describe("worktree goal planner", () => {
     await userEvent.click(screen.getByRole("button", { name: "Use Claude for Build the sheet" }));
     assert.ok(await screen.findByText("You picked Claude"));
     await userEvent.click(screen.getByRole("button", { name: "Launch 2 sessions" }));
-    assert.ok(await screen.findByText("main"));
-    assert.equal(screen.getAllByText("Launched").length, 2);
-    await waitFor(() => assert.equal(launched.mock.calls.length, 1));
+    await waitFor(() => assert.equal(close.mock.calls.length, 2));
     const answerCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/answers"));
     assert.match(String(answerCall?.[1]?.body), /"id":"question-1"/);
     assert.match(String(answerCall?.[1]?.body), /"text":"Mobile"/);
@@ -951,22 +1078,30 @@ describe("worktree goal planner", () => {
     assert.deepEqual(posts, ["/api/worktree-plans", "/api/worktree-plans/plan-1/answers", "/api/worktree-plans/plan-1/launch"]);
   });
 
-  test("offers a retry only when nothing launched", async () => {
-    await launchReadyPlan({ planId: "plan-1", base: "main", launched: 1, results: [
-      { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "codex", status: "launched", path: "/repo/companion-planner-sheet" },
-      { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", agent: "claude", status: "failed", error: "Branch already exists" },
-    ] });
-    assert.ok(await screen.findByText("Branch already exists"));
-    assert.equal(screen.queryByRole("button", { name: "Try again" }), null);
-    assert.ok(screen.getByText(/finish the rest from the dashboard/i));
-    cleanup();
-    const fetchMock = await launchReadyPlan({ planId: "plan-1", base: "main", launched: 0, results: [
-      { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "codex", status: "failed", error: "Could not read the repository" },
-      { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", agent: "claude", status: "failed", error: "Could not read the repository" },
-    ] });
-    const retry = await screen.findByRole("button", { name: "Try again" });
-    await userEvent.click(retry);
-    await waitFor(() => assert.equal(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/launch")).length, 2));
+  // Launching is fire and forget: the companion answers 202 as soon as it
+  // accepts the work, so the sheet closes and a push notification reports the
+  // outcome. No progress paragraph and no launch-result screen belong here.
+  test("a launched goal closes the sheet at once with a notice", async () => {
+    const notice = vi.fn();
+    const fetchMock = await launchReadyPlan({ status: 202, body: { planId: "plan-1", launching: true } }, notice);
+
+    await waitFor(() => assert.equal(screen.queryByRole("dialog", { name: "Plan a goal" }), null));
+    assert.match(String(notice.mock.calls[0][0]), /Launching this goal/);
+    const launchCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/launch"));
+    assert.deepEqual(JSON.parse(String(launchCall?.[1]?.body)), { background: true });
+    assert.equal(screen.queryByText(/Creating worktrees and starting sessions/), null);
+    assert.equal(screen.queryByText("Launch result"), null);
+    assert.equal(screen.queryByRole("button", { name: "Launching…" }), null);
+  });
+
+  // The launch is refused before any worktree exists, so this sheet is the only
+  // place that reason can be read. Closing it would hide it.
+  test("a refused launch keeps the sheet open with its reason", async () => {
+    await launchReadyPlan({ status: 409, body: { error: "This goal is launching right now" } });
+
+    assert.ok(await screen.findByText("This goal is launching right now"));
+    assert.ok(screen.getByRole("dialog", { name: "Plan a goal" }));
+    assert.ok(screen.getByRole("button", { name: "Launch 2 sessions" }));
   });
 
   // jsdom has no EventSource, so the sheet gets a fake it can drive by hand.
@@ -995,7 +1130,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify(readyDraft), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
@@ -1025,7 +1160,7 @@ describe("worktree goal planner", () => {
       if (String(input) === "/api/worktree-plans") return new Response(JSON.stringify(runningDraft), { status: 202 });
       return new Response(JSON.stringify(runningDraft), { status: 200 });
     }));
-    const view = render(<WorktreePlannerSheet repository={repository} onClose={() => { closed = true; }} onLaunched={async () => {}} onNotice={() => {}} />);
+    const view = render(<WorktreePlannerSheet repository={repository} onClose={() => { closed = true; }} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
@@ -1053,7 +1188,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify(stalledDraft), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
 
     const panel = await screen.findByRole("region", { name: "Planning stopped" });
     assert.ok(within(panel).getByText(/A companion restart does this/));
@@ -1074,7 +1209,7 @@ describe("worktree goal planner", () => {
       if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [stalledSummary] }), { status: 200 });
       return new Response(JSON.stringify(stalledDraft), { status: 200 });
     }));
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
 
     const panel = await screen.findByRole("region", { name: "Planning stopped" });
     assert.ok(within(panel).getByText(/no output for 4 minutes/));
@@ -1096,7 +1231,7 @@ describe("worktree goal planner", () => {
       if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [stalledSummary] }), { status: 200 });
       return new Response(JSON.stringify(stalledDraft), { status: 200 });
     }));
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
 
     const panel = await screen.findByRole("region", { name: "Planning stopped" });
     assert.ok(within(panel).getByText(/needs the ccs CLI/));
@@ -1110,7 +1245,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify(readyDraft), { status: 201 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     const goal = screen.getByRole("textbox", { name: "Goal" });
     await userEvent.type(goal, "Ship the planner");
     const pasted = new File(["image"], "goal.png", { type: "image/png" });
@@ -1128,7 +1263,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify(readyDraft), { status: 201 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     const goal = screen.getByRole("textbox", { name: "Goal" });
     await userEvent.type(goal, "Ship the planner");
     const pasted = new File(["image"], "goal.png", { type: "image/png" });
@@ -1148,7 +1283,7 @@ describe("worktree goal planner", () => {
       return new Response(JSON.stringify({ ...readyDraft, images: [{ path: "/attachments/goal.png", name: "goal.png" }] }), { status: 201 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     const goal = screen.getByRole("textbox", { name: "Goal" });
     await userEvent.type(goal, "Ship the planner");
     fireEvent.paste(goal, { clipboardData: { items: [{ type: "image/png", getAsFile: () => new File(["image"], "goal.png", { type: "image/png" }) }] } });
@@ -1165,7 +1300,7 @@ describe("worktree goal planner", () => {
 
   test("names an image it cannot preview instead of showing a broken one", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...readyDraft, images: [{ path: "/attachments/old.png", name: "old.png" }] }), { status: 201 })));
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
     const panel = (await screen.findByLabelText("Your goal and attachments")).closest("details") as HTMLElement;
@@ -1177,7 +1312,7 @@ describe("worktree goal planner", () => {
   test("a click on the backdrop leaves the planner open", async () => {
     const closed = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(readyDraft), { status: 201 })));
-    const { container } = render(<WorktreePlannerSheet repository={repository} onClose={closed} onLaunched={async () => {}} onNotice={() => {}} />);
+    const { container } = render(<WorktreePlannerSheet repository={repository} onClose={closed} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     const backdrop = container.querySelector(".session-menu-backdrop");
     assert.ok(backdrop);
@@ -1188,17 +1323,11 @@ describe("worktree goal planner", () => {
     assert.equal(closed.mock.calls.length, 1);
   });
 
-  test("names the worktree a failed task left behind", async () => {
-    await launchReadyPlan({ planId: "plan-1", base: "main", launched: 0, results: [
-      { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", agent: "codex", status: "failed", path: "/Users/sample/repo/companion-planner-sheet", error: "The session did not start" },
-      { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", agent: "claude", status: "failed", error: "The session did not start" },
-    ] });
-    assert.ok(await screen.findByText(/~\/repo\/companion-planner-sheet/));
-    assert.equal(screen.getAllByText(/Remove it from the dashboard/).length, 1);
-  });
 });
 
 describe("goals board", () => {
+  const columnPreferenceKey = "cmux-companion-goal-board-column-expansion";
+  beforeEach(() => localStorage.removeItem(columnPreferenceKey));
   const now = new Date().toISOString();
   const repository = (id: string, name: string, root: string) => ({ id, name, root, path: `/repo/${name}`, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [{ id: `${id}-primary-worktree`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }] });
   const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 2, worktrees: 2, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repo-karven", "trust-layer", "karven"), repository("repo-rekord", "recorder", "rekord")] };
@@ -1209,7 +1338,7 @@ describe("goals board", () => {
   const review = plan({ planId: "plan-review", goal: "Review the spec", running: true, runPhase: "running", runStage: "review_spec", runStep: "Anything at all", boardState: "review_spec" });
   const waitingDev = plan({ planId: "plan-waiting-dev", goal: "Ready to launch work", taskCount: 3, boardState: "waiting_for_dev", sourceType: "github_issues", issueNumbers: [42] });
   const devInProgress = plan({ planId: "plan-dev", goal: "Agents are coding", status: "launched", taskCount: 2, deliveryStatus: "planning", launchedAt: now, boardState: "dev_in_progress" });
-  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "waiting_for_merge", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
+  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, followupCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "waiting_for_merge", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
   const merged = plan({ planId: "plan-merged", goal: "Merged already", status: "launched", taskCount: 4, launchedAt: now, boardState: "merged", boardStatus: "merged", boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12" });
   const aborted = plan({ planId: "plan-aborted", goal: "Stopped on purpose", taskCount: 1, boardState: "aborted", boardStatus: "aborted", boardChangedAt: now });
   // A launched goal whose agents died. It used to read as "Dev in progress",
@@ -1221,7 +1350,7 @@ describe("goals board", () => {
     checkedAt: now, sessionsAvailable: true,
     summary: { goals: 2, tasks: 2, stuck: 0, needsYou: 0, working: 2, deadTasks: 0, idleTasks: 0, failedTasks: 0 },
     goals: [
-      { planId: "plan-dev", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Agents are coding", health: "working", stuckCount: 0, readyCount: 0, launchedCount: 1, taskCount: 1, tasks: [{ id: "T2", title: "Build the board UI", branch: "feature/board-ui", agent: "codex", wave: 1, launchStatus: "launched", launchError: null, deliveryStatus: "pending", workspaceId: "ws-dev", health: "working", reason: "This task agent is running", session: { id: "ws-dev", title: "TL-T2-ui · Build the board UI", lastActivityAt: Date.now(), effective: "working" } }] },
+      { planId: "plan-dev", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Agents are coding", health: "working", stuckCount: 0, readyCount: 0, launchedCount: 1, taskCount: 1, tasks: [{ id: "T2", title: "Build the board UI", branch: "feature/board-ui", agent: "codex", wave: 1, launchStatus: "launched", launchError: null, deliveryStatus: "pending", workspaceId: "ws-dev", health: "working", reason: "This task agent is running", session: { id: "ws-dev", title: "TL · Agents are coding (pdev) · T2-ui · Build the board UI", lastActivityAt: Date.now(), effective: "working" } }] },
       { planId: "plan-rekord", repositoryId: "repo-rekord", repositoryName: "recorder", goal: "Improve recording search", health: "working", stuckCount: 0, readyCount: 0, launchedCount: 1, taskCount: 1, tasks: [{ id: "T1", title: "Index recording transcripts", branch: "feature/search-index", agent: "claude", wave: 1, launchStatus: "launched", launchError: null, deliveryStatus: "pending", workspaceId: "ws-rekord", health: "working", reason: "This task agent is running", session: { id: "ws-rekord", title: "RCR-T1-api · Index recording transcripts", lastActivityAt: Date.now(), effective: "working" } }] },
     ],
   };
@@ -1259,14 +1388,18 @@ describe("goals board", () => {
     return screen.getByRole("region", { name: "Goals board" });
   }
 
-  test("renders eight ordered columns with counts, descriptions, empty notes, and one card per state", async () => {
+  async function expandColumn(board: HTMLElement, label: string) {
+    await userEvent.click(within(board).getByRole("button", { name: `Expand ${label}` }));
+  }
+
+  test("renders ordered columns with terminal defaults collapsed and accurate counts", async () => {
     mountBoard();
     const board = await openBoard();
     assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("9"), true);
     const headings = within(board).getAllByRole("heading", { level: 3 }).map((item) => item.textContent);
     // GitHub Issues is the leftmost column, ahead of the eight goal columns.
     assert.deepEqual(headings, ["GitHub Issues", ...COLUMNS.map(([label]) => label)]);
-    for (const [label, description] of COLUMNS) assert.ok(within(board).getByText(description), `${label} description`);
+    for (const [label, description] of COLUMNS.slice(0, 6)) assert.ok(within(board).getByText(description), `${label} description`);
 
     const column = (label: string) => within(board).getByRole("region", { name: label });
     assert.ok(within(column("Writing Spec")).getByText("Write the spec"));
@@ -1275,19 +1408,57 @@ describe("goals board", () => {
     assert.ok(within(column("Dev in progress")).getByText("Agents are coding"));
     assert.ok(within(column("Waiting for merge")).getByText("Waiting on the PR"));
     assert.ok(within(column("Blocked")).getByText("Its agent died"));
-    assert.ok(within(column("Merged")).getByText("Merged already"));
-    assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
     assert.ok(within(column("Waiting for dev")).getByLabelText("2 goals in Waiting for dev"));
     assert.ok(within(column("Merged")).getByLabelText("1 goal in Merged"));
     assert.ok(within(column("Waiting for dev")).getByRole("list", { name: "Waiting for dev goals" }));
+    assert.equal(within(column("Merged")).queryByText("Merged already"), null);
+    assert.equal(within(column("Merged")).queryByText(COLUMNS[6][1]), null);
+    assert.equal(within(column("Aborted")).queryByText("Stopped on purpose"), null);
+    assert.equal(within(column("Aborted")).queryByText(COLUMNS[7][1]), null);
+    assert.equal(within(column("Merged")).getByRole("button", { name: "Expand Merged" }).getAttribute("aria-expanded"), "false");
+    assert.equal(within(column("Aborted")).getByRole("button", { name: "Expand Aborted" }).getAttribute("aria-expanded"), "false");
+    assert.equal(within(board).getAllByRole("button", { name: /^Collapse / }).length, 7);
+
+    await expandColumn(board, "Merged");
+    await expandColumn(board, "Aborted");
+    assert.ok(within(column("Merged")).getByText("Merged already"));
+    assert.ok(within(column("Merged")).getByText(COLUMNS[6][1]));
+    assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
+    assert.ok(within(column("Aborted")).getByText(COLUMNS[7][1]));
+    assert.equal(within(column("Merged")).getByRole("button", { name: "Collapse Merged" }).getAttribute("aria-expanded"), "true");
     // Every column renders, so an empty one carries a note instead of nothing.
     assert.equal(within(board).queryAllByText("No goal here yet.").length, 0);
 
     cleanup();
+    localStorage.removeItem(columnPreferenceKey);
     mountBoard([]);
     const emptyBoard = await openBoard();
     assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 9);
-    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 8);
+    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 6);
+  });
+
+  test("toggles any column and restores each choice from localStorage", async () => {
+    mountBoard();
+    let board = await openBoard();
+    await expandColumn(board, "Merged");
+    assert.ok(within(board).getByText("Merged already"));
+
+    cleanup();
+    mountBoard();
+    board = await openBoard();
+    assert.ok(within(board).getByText("Merged already"));
+    await userEvent.click(within(board).getByRole("button", { name: "Collapse Merged" }));
+    assert.equal(within(board).queryByText("Merged already"), null);
+
+    cleanup();
+    mountBoard();
+    board = await openBoard();
+    assert.equal(within(board).queryByText("Merged already"), null);
+    const waitingToggle = within(board).getByRole("button", { name: "Collapse Waiting for dev" });
+    assert.equal(waitingToggle.getAttribute("aria-expanded"), "true");
+    await userEvent.click(waitingToggle);
+    assert.equal(within(board).queryByText("Ready to launch work"), null);
+    assert.equal(within(board).getByRole("button", { name: "Expand Waiting for dev" }).getAttribute("aria-expanded"), "false");
   });
 
   test("falls back to the shared derivation when a plan carries no usable board state", async () => {
@@ -1300,6 +1471,26 @@ describe("goals board", () => {
     assert.ok(within(within(board).getByRole("region", { name: "Waiting for dev" })).getByText("An unknown board state"));
     // Review Spec comes from runStage, so the wording of runStep cannot move it.
     assert.ok(within(within(board).getByRole("region", { name: "Review Spec" })).getByText("Derived reviewer pass"));
+  });
+
+  // The launch runs on the companion after its request has ended. A goal in
+  // that gap is neither idle nor launched, so its card must not repeat "Ready
+  // to launch" for the whole minute the worktrees take.
+  test("a goal whose launch is in flight reads as launching, not as ready", async () => {
+    const launching = plan({ planId: "plan-launching", goal: "Its launch is running", taskCount: 2, boardState: "waiting_for_dev", launching: true });
+    mountBoard([launching]);
+    const board = await openBoard();
+    const column = within(board).getByRole("region", { name: "Waiting for dev" });
+    assert.ok(within(column).getByText("Its launch is running"));
+    assert.ok(within(column).getByText("Creating worktrees and starting sessions…"));
+    assert.equal(within(column).queryByText("Ready to launch"), null);
+
+    // Once the launch settles the marker is gone, so the card stops saying it.
+    cleanup();
+    mountBoard([{ ...launching, launching: false }]);
+    const settled = within(await openBoard()).getByRole("region", { name: "Waiting for dev" });
+    assert.ok(within(settled).getByText("Ready to launch"));
+    assert.equal(within(settled).queryByText("Creating worktrees and starting sessions…"), null);
   });
 
   test("filters by project and search without changing the status-based goal lists", async () => {
@@ -1322,6 +1513,7 @@ describe("goals board", () => {
     await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
 
     const searchBox = screen.getByRole("searchbox", { name: "Search projects" });
+    await expandColumn(screen.getByRole("region", { name: "Goals board" }), "Merged");
     await userEvent.type(searchBox, "Merged already");
     const filtered = screen.getByRole("region", { name: "Goals board" });
     assert.ok(within(filtered).getByText("Merged already"));
@@ -1398,9 +1590,50 @@ describe("goals board", () => {
     assert.ok(within(board).getByText("Write the spec"));
   });
 
+  // A cmux session is never renamed after it is opened, so both title shapes
+  // sit on the same board while the fleet turns over. The card must resolve a
+  // readable code from each one, and must not invent a code from goal words.
+  test("resolves a task code from the new segmented title, a legacy prefix title, and neither", async () => {
+    const session = (id: string, title: string) => ({ id, title, lastActivityAt: Date.now(), effective: "working" });
+    const codedTask = (id: string, title: string, workspaceId: string, sessionTitle: string) => ({
+      id, title, branch: `feature/${id.toLowerCase()}`, agent: "codex", wave: 1, launchStatus: "launched", launchError: null,
+      deliveryStatus: "pending", workspaceId, health: "working", reason: "This task agent is running",
+      session: session(workspaceId, sessionTitle),
+    });
+    // The goal text is clipped by the generator's own budget, so the parser is
+    // exercised against a realistic long title rather than a short one.
+    const longGoal = "TL · Recover every completed goal wave before the mer… (7a2b) · T2-ui · Wire the health sweep";
+    const sweep = {
+      checkedAt: now, sessionsAvailable: true,
+      summary: { goals: 1, tasks: 3, stuck: 0, needsYou: 0, working: 3, deadTasks: 0, idleTasks: 0, failedTasks: 0 },
+      goals: [{
+        planId: "plan-dev", repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "Agents are coding",
+        health: "working", stuckCount: 0, readyCount: 0, launchedCount: 3, taskCount: 3,
+        tasks: [
+          codedTask("T2", "Wire the health sweep", "ws-new", longGoal),
+          codedTask("T5", "Carry the legacy title", "ws-legacy", "TL-T5-api · Carry the legacy title"),
+          codedTask("T9", "Ship T7-api parity", "ws-bare", "Ship T7-api parity"),
+        ],
+      }],
+    };
+    mountBoard(allPlans, (url) => (url === "/api/goals/health" ? new Response(JSON.stringify(sweep), { status: 200 }) : null));
+    const board = await openBoard();
+    const card = within(board).getByText("Agents are coding").closest("article") as HTMLElement;
+
+    // The new shape: the task-part segment, taken from the middle of the title.
+    assert.ok(within(card).getByLabelText("T2-ui: Wire the health sweep"));
+    // The legacy shape: the leading prefix still resolves to a code.
+    assert.ok(within(card).getByLabelText("TL-T5-api: Carry the legacy title"));
+    // No code segment at all: the raw task id, never a word from the goal text.
+    assert.ok(within(card).getByLabelText("T9: Ship T7-api parity"));
+    assert.equal(within(card).queryByLabelText("T7-api: Ship T7-api parity"), null);
+  });
+
   test("shows card metadata, lifecycle evidence, and pull-request links", async () => {
     mountBoard();
     const board = await openBoard();
+    await expandColumn(board, "Merged");
+    await expandColumn(board, "Aborted");
     const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
 
     const dev = card("Ready to launch work");
@@ -1411,7 +1644,7 @@ describe("goals board", () => {
 
     assert.ok(within(card("Write the spec")).getByText("Reading app/page.tsx"));
     assert.ok(within(card("Agents are coding")).getByText("Agents are working on the launched tasks"));
-    assert.ok(within(card("Agents are coding")).getByLabelText("TL-T2-ui: Build the board UI"));
+    assert.ok(within(card("Agents are coding")).getByLabelText("T2-ui: Build the board UI"));
     assert.ok(within(card("Stopped on purpose")).getByText("Stopped. Branches and worktrees were kept."));
     assert.ok(within(card("Merged already")).getByText("4 tasks"));
 
@@ -1425,6 +1658,76 @@ describe("goals board", () => {
     assert.ok(within(card("Agents are coding")).getByRole("button", { name: "View Agents are coding" }));
     assert.ok(within(card("Merged already")).getByRole("button", { name: "View Merged already" }));
     assert.ok(within(card("Stopped on purpose")).getByRole("button", { name: "View Stopped on purpose" }));
+    assert.ok(within(card("Waiting on the PR")).getByText("2 follow-ups"));
+  });
+
+  test("offers follow-up actions only on Waiting for merge and submits several actions in one request", async () => {
+    const issue = { repositoryId: "repo-karven", repositoryName: "trust-layer", number: 91, title: "Issue without follow-ups", labels: [], url: "https://github.test/issues/91", updatedAt: now, syncedAt: now, planId: null };
+    let planReads = 0;
+    const fetchMock = mountBoard(allPlans, (url, init) => {
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: now, issues: [issue] }), { status: 200 });
+      if (url === "/api/worktree-plans/plan-merge/followups" && init?.method === "POST") return new Response(JSON.stringify({ planId: "plan-merge", workspaceId: "followup-workspace", agent: "codex", actions: ["question", "review"], branch: "goal/merge", worktreePath: "/repo/goal-merge", pullRequest: { number: 77, url: "https://github.test/pr/77" }, title: "Follow up" }), { status: 200 });
+      if (url.startsWith("/api/worktree-plans") && (!init?.method || init.method === "GET")) { planReads += 1; return new Response(JSON.stringify({ plans: allPlans }), { status: 200 }); }
+      return null;
+    });
+    const board = await openBoard();
+    await within(board).findByText(issue.title);
+    // Merged and Aborted start collapsed, so their cards render only once the
+    // column is expanded. The point of this test is that a terminal goal
+    // offers no follow-up button, which needs the card on the page to prove.
+    await userEvent.click(within(board).getByRole("button", { name: "Expand Merged" }));
+    await userEvent.click(within(board).getByRole("button", { name: "Expand Aborted" }));
+    const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
+
+    assert.ok(within(card("Waiting on the PR")).getByRole("button", { name: "More actions for Waiting on the PR" }));
+    for (const goal of ["Its agent died", "Agents are coding", "Merged already", "Stopped on purpose"]) {
+      assert.equal(within(card(goal)).queryByRole("button", { name: /More actions/ }), null, goal);
+    }
+    const issueCard = within(board).getByText(issue.title).closest("article") as HTMLElement;
+    assert.equal(within(issueCard).queryByRole("button", { name: /More actions/ }), null);
+
+    await userEvent.click(within(card("Waiting on the PR")).getByRole("button", { name: "More actions for Waiting on the PR" }));
+    const sheet = screen.getByRole("dialog", { name: "More actions for Waiting on the PR" });
+    for (const label of ["Ask a question", "More unit and e2e tests", "Complete code review", "Something else"]) assert.ok(within(sheet).getByText(label));
+    assert.equal((within(sheet).getByRole("radio", { name: "Claude" }) as HTMLInputElement).checked, true);
+
+    const postCount = () => fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/followups") && init?.method === "POST").length;
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+    assert.ok(await within(sheet).findByText("Pick at least one follow-up action"));
+    assert.equal(postCount(), 0);
+
+    await userEvent.click(within(sheet).getByRole("checkbox", { name: /^Ask a question/ }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+    assert.ok(await within(sheet).findByText("Write the question you want answered"));
+    assert.equal(postCount(), 0);
+
+    await userEvent.type(within(sheet).getByRole("textbox", { name: "Ask a question details" }), "Which edge cases remain?");
+    await userEvent.click(within(sheet).getByRole("checkbox", { name: /^Complete code review/ }));
+    await userEvent.click(within(sheet).getByRole("radio", { name: "Codex" }));
+    const readsBeforeSubmit = planReads;
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+
+    await waitFor(() => assert.equal(postCount(), 1));
+    const post = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/followups") && init?.method === "POST");
+    assert.equal(String(post?.[0]), "/api/worktree-plans/plan-merge/followups");
+    assert.deepEqual(JSON.parse(String(post?.[1]?.body)), { actions: ["question", "review"], question: "Which edge cases remain?", agent: "codex" });
+    await waitFor(() => assert.equal(screen.queryByRole("dialog", { name: "More actions for Waiting on the PR" }), null));
+    await waitFor(() => assert.ok(planReads > readsBeforeSubmit));
+  });
+
+  test("keeps the follow-up sheet open when the server refuses the request", async () => {
+    const fetchMock = mountBoard(allPlans, (url, init) => url === "/api/worktree-plans/plan-merge/followups" && init?.method === "POST"
+      ? new Response(JSON.stringify({ error: "The pull request branch is no longer available", code: "FOLLOWUP_BRANCH_MISSING" }), { status: 400 })
+      : null);
+    const board = await openBoard();
+    await userEvent.click(within(board).getByRole("button", { name: "More actions for Waiting on the PR" }));
+    const sheet = screen.getByRole("dialog", { name: "More actions for Waiting on the PR" });
+    await userEvent.click(within(sheet).getByRole("checkbox", { name: /^More unit and e2e tests/ }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+
+    assert.ok(await within(sheet).findByText("The pull request branch is no longer available"));
+    assert.ok(screen.getByRole("dialog", { name: "More actions for Waiting on the PR" }));
+    assert.equal(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/followups") && init?.method === "POST").length, 1);
   });
 
   test("makes a blocked merge agree with cmux evidence, counters, and focus actions", async () => {
@@ -1521,6 +1824,8 @@ describe("goals board", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
     const board = await openBoard();
+    await expandColumn(board, "Merged");
+    await expandColumn(board, "Aborted");
     const card = (goal: string) => within(screen.getByRole("region", { name: "Goals board" })).getByText(goal).closest("article") as HTMLElement;
 
     // Terminal cards never offer Abort.
@@ -1605,7 +1910,7 @@ describe("goals board", () => {
       if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
       return new Response(JSON.stringify(mergedDetail), { status: 200 });
     }));
-    render(<WorktreePlannerSheet repository={{ id: "repo-1", name: "companion" }} initialPlanId="plan-merged" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={{ id: "repo-1", name: "companion" }} initialPlanId="plan-merged" onClose={() => {}} onNotice={() => {}} />);
     const sheet = await screen.findByRole("dialog", { name: "Plan a goal" });
     assert.ok(await within(sheet).findByRole("region", { name: "Merged goal" }));
     assert.ok(within(sheet).getByText("This goal is merged"));
@@ -1627,7 +1932,7 @@ describe("goals board", () => {
       if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
       return new Response(JSON.stringify(abortedDetail), { status: 200 });
     }));
-    render(<WorktreePlannerSheet repository={{ id: "repo-1", name: "companion" }} initialPlanId="plan-aborted" onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    render(<WorktreePlannerSheet repository={{ id: "repo-1", name: "companion" }} initialPlanId="plan-aborted" onClose={() => {}} onNotice={() => {}} />);
     const abortedSheet = await screen.findByRole("dialog", { name: "Plan a goal" });
     assert.ok(await within(abortedSheet).findByRole("region", { name: "Aborted goal" }));
     assert.ok(within(abortedSheet).getByText("This goal is closed. Its questions and answers are read-only."));
@@ -1793,21 +2098,67 @@ describe("GitHub Issues board column", () => {
       await Promise.resolve();
     });
 
-    // The new goal lands in Writing Spec, and the card no longer offers to
-    // start the same issue again.
+    // The new goal lands in Writing Spec, and the issue leaves the issue column
+    // in the same render: the work is on the board once, not twice.
     await waitFor(() => assert.ok(within(within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "Writing Spec" })).getByText("Resolve GitHub issue #12: Restore the caret")));
     await waitFor(() => assert.equal(screen.queryByRole("button", { name: "Start a goal for #12 Restore the caret" }), null));
-    assert.ok(screen.getByRole("link", { name: "Goal started for #12" }));
+    const issueColumn = within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "GitHub Issues" });
+    assert.equal(within(issueColumn).queryByText("Restore the caret"), null);
+    assert.equal(within(issueColumn).queryAllByRole("article").length, 0);
+    assert.ok(within(issueColumn).getByLabelText("0 issues in GitHub Issues"));
     assert.equal(goalCalls.length, 1);
   });
 
-  test("an issue that already carries a plan id shows the started state and offers no start button", async () => {
+  test("an issue whose goal is on the board renders no card and is not counted", async () => {
     mountIssues({ issues: [issue({ planId: "plan-issue-12" })], plans: [startedPlan] });
     const board = await openBoard();
     const column = await within(board).findByRole("region", { name: "GitHub Issues" });
+    // The issue is gone from its own column…
+    assert.equal(within(column).queryAllByRole("article").length, 0);
+    assert.equal(within(column).queryByText("Restore the caret"), null);
     assert.equal(within(column).queryByRole("button", { name: /^Start a goal/ }), null);
-    const started = within(column).getByRole("link", { name: "Goal started for #12" }) as HTMLAnchorElement;
-    assert.equal(started.getAttribute("href"), "?plan=plan-issue-12");
+    // …the header agrees with what is rendered…
+    assert.ok(within(column).getByLabelText("0 issues in GitHub Issues"));
+    // …and the work is still on the board, as its goal card.
+    assert.ok(within(within(board).getByRole("region", { name: "Writing Spec" })).getByText("Resolve GitHub issue #12: Restore the caret"));
+  });
+
+  test("an issue whose goal was deleted comes back with a working Start a goal button", async () => {
+    // The stored issue still carries the plan id, but the board loaded no such
+    // plan. A stale id must never strand an issue off the board.
+    mountIssues({ issues: [issue({ planId: "plan-gone" })], plans: [] });
+    const board = await openBoard();
+    const column = await within(board).findByRole("region", { name: "GitHub Issues" });
+    assert.equal(within(column).getAllByRole("article").length, 1);
+    assert.ok(within(column).getByText("Restore the caret"));
+    assert.ok(within(column).getByLabelText("1 issue in GitHub Issues"));
+    const start = within(column).getByRole("button", { name: "Start a goal for #12 Restore the caret" }) as HTMLButtonElement;
+    assert.equal(start.disabled, false);
+  });
+
+  test("a column emptied only by started goals says so instead of the star-a-repository hint", async () => {
+    mountIssues({ issues: [issue({ planId: "plan-issue-12" })], plans: [startedPlan] });
+    const board = await openBoard();
+    const column = await within(board).findByRole("region", { name: "GitHub Issues" });
+    assert.ok(within(column).getByText("Every synced GitHub issue already has a goal. Each one is on the board in its lifecycle column."));
+    assert.equal(within(column).queryByText("No GitHub issues yet. Star a repository, then choose GitHub Sync to pull its open issues."), null);
+  });
+
+  test("the goal filter runs before the search, so the column never blames the search for a hidden goal", async () => {
+    // Two issues, one already a goal. A search that matches only the started
+    // one leaves an empty column that reports the search, and a count of 0.
+    const startedIssue = issue({ planId: "plan-issue-12" });
+    const openIssue = issue({ number: 31, title: "Speed up the indexer", labels: [], url: "https://github.test/acme/trust-layer/issues/31" });
+    mountIssues({ issues: [startedIssue, openIssue], plans: [startedPlan] });
+    const board = await openBoard();
+    const column = () => within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "GitHub Issues" });
+    await within(column()).findByText("Speed up the indexer");
+    assert.ok(within(column()).getByLabelText("1 issue in GitHub Issues"));
+    assert.equal(within(board).queryByText("Restore the caret"), null);
+
+    await userEvent.type(screen.getByRole("searchbox", { name: "Search projects" }), "caret");
+    await waitFor(() => assert.ok(within(column()).getByText(/No issue matches/)));
+    assert.ok(within(column()).getByLabelText("0 issues in GitHub Issues"));
   });
 
   test("a board left open re-reads the column on its slow clock, and stops when the board is not the active view", async () => {
@@ -1974,7 +2325,7 @@ describe("fresh branch recovery", () => {
         const notice = vi.fn();
         render(surface === "rail"
           ? <WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={async () => {}} onNotice={notice} />
-          : <WorktreePlannerSheet repository={repository} initialPlanId={planId} onClose={vi.fn()} onLaunched={async () => {}} onNotice={notice} />);
+          : <WorktreePlannerSheet repository={repository} initialPlanId={planId} onClose={vi.fn()} onNotice={notice} />);
         const retry = await screen.findByRole("button", { name: "Retry on new branch for Blocked task" });
         assert.equal(screen.queryByRole("button", { name: "Retry on new branch for Sync failure" }), null);
         assert.equal(screen.queryByRole("button", { name: "Retry on new branch for Dead task" }), null);

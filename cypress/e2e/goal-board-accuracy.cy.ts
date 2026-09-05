@@ -81,6 +81,145 @@ function visitBoard() {
 }
 
 describe("goal board matches live cmux evidence", () => {
+  for (const entry of ["dashboard", "settings"] as const) {
+    it(`reviews worktree cleanup from ${entry}, protects unsafe rows, and records a manual run without enabling automation`, () => {
+      const state: Scenario = { plans: [], goals: [], liveSessions: 0 };
+      installScenario(state);
+      const policy = { enabled: false, intervalHours: 24, graceDays: 7, pruneEnabled: false, pruneGraceDays: 30 };
+      const history: Array<Record<string, unknown>> = [];
+      cy.intercept("GET", "**/api/worktree-cleanup", (request) => request.reply({ policy, history })).as("cleanupStatus");
+      cy.intercept("PATCH", "**/api/worktree-cleanup", (request) => { Object.assign(policy, request.body); request.reply({ policy }); }).as("cleanupConfig");
+      cy.intercept("POST", "**/api/worktree-cleanup/preview", {
+        previewId: "reviewed", summary: { candidates: 1, protected: 2, estimatedBytes: 1024 ** 3 }, errors: [], prune: [],
+        entries: [
+          { id: "done", path: "/fixture/merged-goal", branch: "goal/done", classification: "development", eligible: true, reasons: ["Goal PR #12 is merged; this exact work is delivered"], estimatedBytes: 1024 ** 3 },
+          { id: "dirty", path: "/fixture/dirty", branch: "feature/dirty", classification: "development", eligible: false, reasons: ["Tracked changes or untracked files would be lost"], estimatedBytes: null },
+          { id: "release", path: "/fixture/releases/current", branch: null, classification: "managed-release", eligible: false, reasons: ["Managed release: retention belongs to the updater"], estimatedBytes: null },
+        ],
+      }).as("cleanupPreview");
+      cy.intercept("POST", "**/api/worktree-cleanup/run", (request) => {
+        expect(request.body).to.deep.equal({ previewId: "reviewed", ids: ["done"], prune: [] });
+        const result = { at: now, estimatedReclaimedBytes: 1024 ** 3, results: [{ path: "/fixture/merged-goal", outcome: "removed" }] };
+        history.unshift(result); request.reply(result);
+      }).as("cleanupRun");
+      if (entry === "settings") {
+        cy.visit("/?view=settings");
+        cy.findByRole("heading", { name: /^Settings$/ }).should("be.visible");
+      } else {
+        visitBoard();
+      }
+      cy.findByRole("button", { name: "Worktree cleanup" }).click();
+      cy.wait("@cleanupStatus");
+      cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).should("not.be.checked");
+      cy.findByRole("button", { name: "Preview cleanup" }).click();
+      cy.wait("@cleanupPreview");
+      cy.findByRole("region", { name: "Worktree cleanup" }).within(() => {
+        cy.contains("1 eligible · 2 protected");
+        cy.contains("Goal PR #12 is merged");
+        cy.findByRole("button", { name: "Run cleanup" }).should("be.disabled");
+        cy.findByRole("checkbox", { name: "Select /fixture/dirty" }).should("be.disabled");
+        cy.findByRole("checkbox", { name: "Select /fixture/releases/current" }).should("be.disabled");
+        cy.findByRole("checkbox", { name: "Select /fixture/merged-goal" }).check();
+        cy.findByRole("button", { name: "Run cleanup" }).click();
+      });
+      cy.wait("@cleanupRun");
+      cy.contains("1 worktrees removed; 0 skipped or failed.").should("be.visible");
+      cy.contains("Cleanup history (1)").click();
+      cy.contains("removed: /fixture/merged-goal").should("be.visible");
+      cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).should("not.be.checked");
+      cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).check();
+      cy.wait("@cleanupConfig").its("request.body").should("deep.equal", { enabled: true });
+      cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).uncheck();
+      cy.wait("@cleanupConfig").its("request.body").should("deep.equal", { enabled: false });
+    });
+
+  }
+
+  it("shows updater release retention separately with current and rollback protected", () => {
+    installScenario({ plans: [], goals: [], liveSessions: 0 });
+    cy.intercept("GET", "**/api/worktree-cleanup", { policy: { enabled: false, intervalHours: 24, graceDays: 7, pruneEnabled: false, pruneGraceDays: 30 }, history: [] });
+    cy.intercept("GET", "**/api/worktree-cleanup/releases", { policy: { enabled: false, intervalHours: 24 }, history: [] });
+    cy.intercept("POST", "**/api/worktree-cleanup/releases/preview", { previewId: "releases", errors: [], entries: [
+      { path: "/fixture/release-current", target: "companion", sha: "current-sha", eligible: false, reasons: ["Current release"], estimatedBytes: null },
+      { path: "/fixture/release-old", target: "companion", sha: "old-sha", eligible: true, reasons: ["Verified updater-owned release exceeds retention"], estimatedBytes: 1024 ** 3 },
+    ] });
+    cy.intercept("POST", "**/api/worktree-cleanup/releases/run", (request) => { expect(request.body).to.deep.equal({ previewId: "releases", ids: ["/fixture/release-old"] }); request.reply({ results: [] }); }).as("releaseRun");
+    visitBoard();
+    cy.findByRole("button", { name: /^Settings$/ }).click();
+    cy.findByRole("heading", { name: /^Settings$/ }).should("be.visible");
+    cy.findByRole("button", { name: "Worktree cleanup" }).click();
+    cy.contains("Managed release retention (updater)").click();
+    cy.findByRole("checkbox", { name: "Enable automatic release deletion" }).should("not.be.checked");
+    cy.findByRole("button", { name: "Preview release retention" }).click();
+    cy.findByRole("checkbox", { name: "Select release current-sha" }).should("be.disabled");
+    cy.findByRole("checkbox", { name: "Select release old-sha" }).check();
+    cy.findByRole("button", { name: "Run release cleanup" }).click();
+    cy.wait("@releaseRun");
+    cy.findByRole("checkbox", { name: "Enable automatic release deletion" }).should("not.be.checked");
+  });
+
+  it("removes a repaired launch failure when the recovered goal resumes integration", () => {
+    const source = plan("goal-recovered", "Recover existing task work", 1, {
+      launchedCount: 0, health: "failed", boardState: "blocked", stuckCount: 1,
+      healthReason: "That branch already has a worktree with a running session",
+    });
+    const state: Scenario = { plans: [source], goals: [healthGoal(source, [
+      task("T1", "failed", null, { launchStatus: "failed", reason: "That branch already has a worktree with a running session" }),
+    ], { health: "failed", stuckCount: 1 })], liveSessions: 1 };
+    installScenario(state);
+    visitBoard();
+    cy.findByRole("region", { name: "Blocked" }).should("contain.text", "Recover existing task work");
+    const recovered = { ...source, launchedCount: 1, readyCount: 1, health: "working", boardState: "dev_in_progress", stuckCount: 0,
+      healthReason: "The merge agent is running", deliveryStatus: "assembling", mergeStatus: "running", mergeWorkspaceId: "merge-recovered" };
+    cy.then(() => {
+      state.plans = [recovered];
+      state.goals = [healthGoal(recovered, [task("T1", "ready", { id: "existing-task", title: "Existing task", effective: "todo" })],
+        { health: "working", stuckCount: 0, merge: { id: "merge", kind: "merge", workspaceId: "merge-recovered", health: "working",
+          reason: "The merge agent is running", session: { id: "merge-recovered", title: "Goal merge", effective: "working" } } })];
+      state.liveSessions = 2;
+    });
+    cy.findByRole("button", { name: "Refresh GitHub" }).click();
+    cy.wait("@plans");
+    cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", "Recover existing task work");
+    cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", "Recover existing task work");
+    cy.contains("That branch already has a worktree with a running session").should("not.exist");
+  });
+
+  it("launches one multi-action follow-up from a Waiting for merge card", () => {
+    const goal = "Review the open delivery";
+    const waitingMerge = plan("goal-followup", goal, 1, {
+      readyCount: 1,
+      health: "ready",
+      deliveryStatus: "pr_open",
+      boardPrState: "OPEN",
+      boardPrNumber: 19,
+      boardPrUrl: "https://github.test/pull/19",
+      boardState: "waiting_for_merge",
+    });
+    const state: Scenario = { plans: [waitingMerge], goals: [], liveSessions: 0 };
+    installScenario(state);
+    cy.intercept("POST", "**/api/worktree-plans/goal-followup/followups", (request) => {
+      expect(request.body).to.deep.equal({ actions: ["question", "review"], question: "Which edge cases remain?", agent: "codex" });
+      request.reply({ planId: "goal-followup", workspaceId: "ws-followup", agent: "codex", actions: ["question", "review"], branch: "goal/open-delivery", worktreePath: "/Users/test/goal-open-delivery", pullRequest: { number: 19, url: "https://github.test/pull/19" }, title: "Follow up" });
+    }).as("followup");
+    visitBoard();
+
+    cy.findByRole("region", { name: "Waiting for merge" }).within(() => {
+      cy.findByRole("button", { name: `More actions for ${goal}` }).click();
+    });
+    cy.findByRole("dialog", { name: `More actions for ${goal}` }).within(() => {
+      for (const label of ["Ask a question", "More unit and e2e tests", "Complete code review", "Something else"]) cy.contains(label);
+      cy.findByRole("checkbox", { name: /^Ask a question/ }).click();
+      cy.findByRole("textbox", { name: "Ask a question details" }).type("Which edge cases remain?");
+      cy.findByRole("checkbox", { name: /^Complete code review/ }).click();
+      cy.findByRole("radio", { name: "Codex" }).click();
+      cy.findByRole("button", { name: "Submit follow-up" }).click();
+    });
+    cy.wait("@followup");
+    cy.findByRole("dialog", { name: `More actions for ${goal}` }).should("not.exist");
+    cy.get("@followup.all").should("have.length", 1);
+  });
+
   it("moves one goal through every successful Kanban column", () => {
     const goal = "Kanban lifecycle fixture";
     const writing = plan("goal-kanban", goal, 0, { status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, running: true, runStage: "writing_spec", runStep: "Reading the repository…", boardState: "writing_spec" });
@@ -104,23 +243,28 @@ describe("goal board matches live cmux evidence", () => {
     advance(waiting);
     expectColumn("Waiting for dev");
 
-    const session = { id: "ws-kanban", title: "E2E-T1-code · Implement fixture", effective: "working" };
+    const session = { id: "ws-kanban", title: "E2E · Kanban lifecycle (kanb) · T1-code · Implement fixture", effective: "working" };
     const developing = plan("goal-kanban", goal, 1, { workspaceIds: [session.id], health: "working", boardState: "dev_in_progress" });
     advance(developing, [healthGoal(developing, [task("T1", "working", session)])], 1);
     expectColumn("Dev in progress");
 
-    const waitingMerge = plan("goal-kanban", goal, 1, { workspaceIds: [session.id], readyCount: 1, health: "ready", deliveryStatus: "pr_open", boardPrState: "OPEN", boardPrNumber: 7, boardPrUrl: "https://github.test/pull/7", boardState: "waiting_for_merge" });
-    advance(waitingMerge, [healthGoal(waitingMerge, [task("T1", "ready", session)], { health: "ready", readyCount: 1 })], 1);
+    const waitingMerge = plan("goal-kanban", goal, 1, { workspaceIds: [], mergeWorkspaceId: null, readyCount: 1, health: "ready", deliveryStatus: "pr_open", boardPrState: "OPEN", boardPrNumber: 7, boardPrUrl: "https://github.test/pull/7", boardState: "waiting_for_merge" });
+    advance(waitingMerge, [healthGoal(waitingMerge, [task("T1", "ready", null)], { health: "ready", readyCount: 1 })], 0);
     expectColumn("Waiting for merge");
+    cy.findByLabelText("0 live cmux sessions").should("exist");
+    cy.findByRole("button", { name: `Open ${goal} in cmux` }).should("not.exist");
 
     const merged = { ...waitingMerge, health: null, boardStatus: "merged", boardPrState: "MERGED", boardState: "merged" };
     advance(merged);
+    cy.findByRole("button", { name: "Expand Merged" }).click();
     expectColumn("Merged");
     cy.findAllByText(goal).should("have.length", 1);
   });
 
   it("moves a one-task goal from working to blocked on the next local poll", () => {
-    const live = { id: "ws-one", title: "E2E-T1-code · Implement the fixture", effective: "working" };
+    // A goal text long enough to be clipped by the generator's own budget, so
+    // the parser meets a realistic title rather than a short one.
+    const live = { id: "ws-one", title: "E2E · One task lifecycle across the whole boa… (one) · T1-code · Implement the fixture", effective: "working" };
     const source = plan("goal-one", "One task lifecycle", 1, { workspaceIds: [live.id], health: "working" });
     const state: Scenario = { plans: [source], goals: [healthGoal(source, [task("T1", "working", live)])], liveSessions: 1 };
     installScenario(state);
@@ -128,7 +272,7 @@ describe("goal board matches live cmux evidence", () => {
 
     cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", "One task lifecycle");
     cy.findByLabelText("1 live cmux sessions").should("exist");
-    cy.findByLabelText("E2E-T1-code: Implement the fixture").should("exist");
+    cy.findByLabelText("T1-code: Implement the fixture").should("exist");
 
     cy.then(() => {
       state.liveSessions = 0;
@@ -144,8 +288,9 @@ describe("goal board matches live cmux evidence", () => {
   });
 
   it("shows a two-task blocked merge as stuck and opens the real merge workspace", () => {
+    // Another legacy-shape session, kept to prove the two shapes coexist.
     const taskSession = { id: "ws-task", title: "E2E-T1-code · Implement the fixture", effective: "todo" };
-    const mergeSession = { id: "ws-merge", title: "E2E-MERGE · Assemble goal", effective: "todo" };
+    const mergeSession = { id: "ws-merge", title: "E2E · Two task merge lifecycle (two) · MERGE", effective: "todo" };
     const source = plan("goal-two", "Two task merge lifecycle", 2, {
       deliveryStatus: "blocked", deliveryError: "The merge agent stopped before opening the pull request", mergeStatus: "blocked", mergeWorkspaceId: mergeSession.id,
       readyCount: 2, workspaceIds: [taskSession.id, mergeSession.id], health: "failed", healthReason: "The merge agent stopped before opening the pull request", boardState: "blocked", stuckCount: 1,
@@ -173,7 +318,7 @@ describe("goal board matches live cmux evidence", () => {
   });
 
   it("shows the next dependency wave launching automatically after integration", () => {
-    const mergeSession = { id: "ws-wave-merge", title: "E2E-MERGE · Integrate wave 1", effective: "working" };
+    const mergeSession = { id: "ws-wave-merge", title: "E2E · Automatic dependency waves (wave) · MERGE", effective: "working" };
     const source = plan("goal-waves", "Automatic dependency waves", 4, {
       launchedCount: 2, readyCount: 2, deliveryStatus: "assembling", mergeStatus: "running", mergeWorkspaceId: mergeSession.id,
       workspaceIds: [mergeSession.id], health: "working", boardState: "dev_in_progress",
@@ -198,7 +343,10 @@ describe("goal board matches live cmux evidence", () => {
       cy.contains("Agents are working on the launched tasks");
     });
 
-    const waveTwoCodex = { id: "ws-wave-t3", title: "E2E-T3-code · Continue workflow", effective: "working" };
+    const waveTwoCodex = { id: "ws-wave-t3", title: "E2E · Automatic dependency waves (wave) · T3-code · Continue workflow", effective: "working" };
+    // Kept on the legacy leading-prefix shape on purpose. A cmux session is
+    // never renamed, so a board carries both shapes at once during the
+    // migration, and the card must still show a code for this one.
     const waveTwoClaude = { id: "ws-wave-t4", title: "E2E-T4-test · Verify workflow", effective: "working" };
     const advanced = { ...source, launchedCount: 4, deliveryStatus: "implementing", mergeStatus: null, mergeWorkspaceId: null, workspaceIds: [waveTwoCodex.id, waveTwoClaude.id] };
     const activeTasks = [
@@ -218,15 +366,20 @@ describe("goal board matches live cmux evidence", () => {
     cy.findByRole("region", { name: "Dev in progress" }).within(() => {
       cy.contains("Automatic dependency waves");
       cy.findByLabelText("2 of 4 launched tasks ready").should("exist");
-      cy.findByLabelText("E2E-T3-code: Continue workflow").should("exist");
-      cy.findByLabelText("E2E-T4-test: Verify workflow").should("exist");
+      // New shape: the mid-string task-part segment. Legacy shape: the
+      // leading prefix. Neither card falls back to the raw task id (T3 / T4).
+      cy.findByLabelText("T3-code: Continue workflow").should("have.text", "T3-code");
+      cy.findByLabelText("E2E-T4-test: Verify workflow").should("have.text", "E2E-T4-test");
+      // The bare task id is the fallback. Neither card is allowed to show it.
+      cy.findByLabelText("T3: Continue workflow").should("not.exist");
+      cy.findByLabelText("T4: Verify workflow").should("not.exist");
     });
     cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", "Automatic dependency waves");
     cy.findByLabelText("2 live cmux sessions").should("exist");
   });
 
   it("keeps a two-task goal in development while making an agent question visible", () => {
-    const asking = { id: "ws-two", title: "E2E-T2-test · Verify the fixture", effective: "waiting" };
+    const asking = { id: "ws-two", title: "E2E · Two task question lifecycle (ques) · T2-test · Verify the fixture", effective: "waiting" };
     const source = plan("goal-question", "Two task question lifecycle", 2, { readyCount: 1, workspaceIds: [asking.id], health: "needs_you" });
     const tasks = [task("T1", "ready", null), task("T2", "needs_you", asking)];
     const state = { plans: [source], goals: [healthGoal(source, tasks)], liveSessions: 1 };

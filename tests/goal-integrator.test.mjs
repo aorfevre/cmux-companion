@@ -95,7 +95,7 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
     // The retirement policy refuses to close anything while cmux is
     // unreachable, so the fake answers the liveness read. An empty list is the
     // honest answer here: these fakes open no real workspace.
-    workspaceListDetailed: async () => ({ workspaces: [] }),
+    workspaceListDetailed: async () => ({ workspaces: ["workspace-one", "workspace-two", "workspace-merge"].map((id) => ({ id })) }),
     workspaceCreate: async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge" }; },
     rpc: async (method, params) => { calls.push(["rpc", method, params]); return {}; },
     sendWorkspacePrompt: async (workspaceId, text) => { calls.push(["sendWorkspacePrompt", workspaceId, text]); },
@@ -339,9 +339,10 @@ test("a restart advances queued work when the previous wave was already recorded
   assert.equal(result.deliveryStatus, "implementing");
   assert.equal(store.get("plan-12345678").tasks[1].startSha, integratedSha);
   const workspace = calls.find((call) => call[0] === "workspaceCreate");
-  // The session name carries the project, task and part codes before the
-  // title, so a sidebar of parallel sessions is readable at a glance.
-  assert.equal(workspace[1].title, "SMP-T2-ui \u00b7 Billing UI");
+  // The session name leads with the project and the goal, then the task-part
+  // code, so a sidebar of parallel sessions groups by goal at a glance.
+  assert.equal(workspace[1].title, "SMP \u00b7 Ship combined billing (plan) \u00b7 T2-ui \u00b7 Billing UI");
+  assert.equal(workspace[1].env.COMPANION_GOAL, "plan");
   assert.equal(workspace[1].cwd.endsWith("task-two"), true);
 });
 
@@ -701,13 +702,13 @@ test("a wave retry launches a task whose worktree a failed launch left behind", 
   assert.equal(saved.tasks[1].startSha, integratedSha);
   const waveCreate = calls.filter((call) => call[0] === "create" && call[2].branch === "feature/billing-ui").at(-1);
   assert.equal(waveCreate[2].reuseIfAtBase, true);
-  assert.deepEqual(waveCreate[2].workspaces, []);
+  assert.deepEqual(waveCreate[2].workspaces.map((workspace) => workspace.id), ["workspace-one", "workspace-two", "workspace-merge"]);
 });
 
 
 // A finished goal used to leave every session it opened in the cmux sidebar:
 // one per task, plus one per merge attempt. Each is closed the moment its work
-// is integrated, so only the session that opened the pull request stays.
+// is integrated; the final merge session closes once the goal has a PR.
 function integrateBoth(integrator, integrationPath) {
   const git = integrator.repoCatalog.git;
   integrator.repoCatalog.git = async (cwd, args) => {
@@ -725,7 +726,7 @@ test("closes each task session once its branch is integrated", async (t) => {
   await integrator.assemble("plan-12345678");
   integrateBoth(integrator, integrationPath);
   await integrator.settle("plan-12345678");
-  assert.deepEqual(closedWorkspaces(calls).sort(), ["workspace-one", "workspace-two"]);
+  assert.deepEqual(closedWorkspaces(calls).sort(), ["workspace-merge", "workspace-one", "workspace-two"]);
   const saved = store.get("plan-12345678");
   assert.ok(saved.tasks.every((task) => task.sessionClosedAt));
 });
@@ -755,15 +756,15 @@ test("closes a wave merge session once its wave is integrated", async (t) => {
   assert.deepEqual(closedWorkspaces(calls).sort(), ["workspace-merge", "workspace-one"]);
 });
 
-test("keeps the session that opened the pull request and closes the rest", async (t) => {
+test("closes the session that opened the pull request along with the tasks", async (t) => {
   const { store, integrator, calls, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
   await integrator.assemble("plan-12345678");
   integrateBoth(integrator, integrationPath);
   const result = await integrator.settle("plan-12345678");
   assert.equal(result.deliveryStatus, "pr_open");
   const closed = closedWorkspaces(calls);
-  assert.deepEqual(closed.sort(), ["workspace-one", "workspace-two"]);
-  assert.equal(closed.includes(store.get("plan-12345678").mergeWorkspaceId), false);
+  assert.deepEqual(closed.sort(), ["workspace-merge", "workspace-one", "workspace-two"]);
+  assert.ok(store.get("plan-12345678").mergeSessionClosedAt);
 });
 
 test("a cmux client with no workspaceClose still delivers the pull request", async (t) => {
@@ -795,14 +796,14 @@ test("no session is closed twice across a second settle or a restart", async (t)
   await integrator.assemble("plan-12345678");
   integrateBoth(integrator, integrationPath);
   await integrator.settle("plan-12345678");
-  assert.equal(closedWorkspaces(calls).length, 2);
+  assert.equal(closedWorkspaces(calls).length, 3);
   await integrator.settle("plan-12345678");
   const restarted = new GoalIntegrator({
     store, worktrees: integrator.worktrees, repoCatalog: integrator.repoCatalog,
     cmux: integrator.cmux, execute: integrator.execute, settleMs: 1, briefs: integrator.briefs,
   });
   await restarted.settle("plan-12345678");
-  assert.equal(closedWorkspaces(calls).length, 2);
+  assert.equal(closedWorkspaces(calls).length, 3);
 });
 
 test("closes nothing while a task branch is still unpushed", async (t) => {

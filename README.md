@@ -98,6 +98,41 @@ Worktrees Beta discovers Git's registered worktrees for the configured repositor
 
 **Plan a goal** on a repository sends one goal to a read-only headless planner. The planner may ask clarifying questions first; answer them, or skip and keep its assumptions visible. A ready plan is a Delivery Contract: outcome, scope and non-goals, constraints, assumptions, risks, observable acceptance criteria, task ownership, expected verification, and explicit dependencies. The Goal Passport shows that contract, readiness warnings, workflow waves, and criterion evidence before and after launch. You can still switch a task's agent, edit it, reject the split with written feedback, or drop it before confirming.
 
+### Spec depth
+
+**Spec depth** on the Plan a goal sheet holds six independent requests. All six are off by default. Each request you enable becomes a written requirement in every planning round and in every task brief. The six are:
+
+- **Unit tests** — cover the new logic with unit tests.
+- **End-to-end tests** — cover the user-visible flow with end-to-end tests.
+- **Edge cases** — name the edge cases and cover each one.
+- **Refactor review** — add a refactor task that reviews and cleans the touched code.
+- **Screen wireframes** — return a screen wireframe for each new or changed screen.
+- **Flowcharts** — return a flowchart for each new or changed flow.
+
+A request is not a keyword search over the plan text. The planner must record structured evidence for each enabled request: a status, a rationale, the task ids and the acceptance criterion ids that carry it. Companion then derives one status per request from that evidence and from the contract itself.
+
+**Planner Effort** is the existing extended-thinking control. It stays the only control for reasoning depth. Effort accepts Default, Low, Medium, High and Xhigh. Default sends no effort flag to the CLI; any other value is passed as `--effort`. Spec depth adds no second reasoning toggle, on purpose: the six requests state what the plan must contain, and Effort states how hard the planner thinks about it.
+
+### Coverage states
+
+The Goal Passport shows one line for each request you enabled. A request you left off is absent from the list, rather than reported as clean. Each line carries one of three states:
+
+1. **Covered** — the evidence names at least one real task id and at least one real acceptance criterion id from the same contract. A covered **Refactor review** must also name a task whose type is `refactor`. A covered **Screen wireframes** must carry a screen artifact, and a covered **Flowcharts** must carry a flow artifact.
+2. **Not applicable** — the planner declared the request does not apply and gave a rationale. The rationale is shown in place of the task and criterion links.
+3. **Missing** — the request was made and the evidence does not hold up. The line states why: no evidence entry, a not-applicable entry with no rationale, no known task, no known acceptance criterion, no refactor-type task, or no artifact of the required kind.
+
+Missing coverage is a readiness warning, not an error. It does not block the launch. A plan can read **Ready to code** and still warn that one requested kind of coverage is missing, so you decide whether to launch, ask another round, or reject the split.
+
+### Design artifacts
+
+**Screen wireframes** and **Flowcharts** ask the planner to return structured design artifacts with the contract. They are text descriptions of structure. They are not generated screenshots, not images, and not running UI.
+
+Every artifact carries an id, a kind, a title and a summary. A flow artifact adds a list of nodes and a list of edges. Each node has a label and one kind: `start`, `step`, `decision` or `end`. Each edge names a source node, a target node and an optional label. Companion computes the layout from the edges alone, so the same artifact always draws the same picture. An edge whose source or target is unknown is dropped rather than re-targeted.
+
+A screen artifact adds one screen, which has a name and a list of elements. Each element has a label, one kind of `header`, `text`, `input`, `button`, `list`, `image` or `note`, an optional note, and one change marker of `added`, `changed`, `removed` or `unchanged`. The passport renders those markers as **Added**, **Changed**, **Removed** and **Unchanged**. A screen with no name, or with no surviving element, is dropped rather than repaired.
+
+Every string in an artifact comes from a model, so all of it is capped and treated as untrusted text. One contract keeps at most 6 artifacts. One flow keeps at most 24 nodes and 40 edges. One screen keeps at most 24 elements. An artifact id and a node id are cut at 40 characters. A title is cut at 200 characters, a summary at 600, a label or a screen name at 120, an element note at 240, and an evidence rationale at 500. All retained artifact text shares one aggregate budget of 16000 characters; text beyond that budget is dropped, and the rest of the plan stays readable. Artifact text reaches the page as React children only. No artifact supplies a link, a style, a coordinate or any raw HTML.
+
 Tasks with no dependencies launch together from the freshly fetched default remote branch. Dependent tasks wait. Once a wave is clean, pushed, and carries valid completion evidence, the merge agent composes its pinned commits on the goal branch; Companion then creates the next wave's worktrees from that exact integrated commit. Downstream agents therefore see their dependencies without duplicating their work.
 
 **GitHub Issues** loads up to 100 open tickets from the repository selected by the local checkout's `origin`, then asks an isolated Claude analyzer to group every ticket exactly once into delivery-sized master topics. Select the topics to deliver, answer topic-level clarifications, and create the saved goal plans. Any repository-planner follow-up questions stay in the same sheet. Once every selected plan is ready, one action launches all topic worktrees; their agents then run in parallel.
@@ -108,7 +143,7 @@ This workflow requires the GitHub CLI to be authenticated for the repository (`g
 
 A planner round is bounded by silence, not by total time. Reading a large repository for a long goal is legitimate work, so the round is killed only after four minutes with no output, or at a thirty-minute ceiling. Whichever limit fires is stored on the plan, so a sheet reopened later names the real reason instead of guessing.
 
-Every step is written to a local SQLite database at `~/.config/cmux-companion/goal-plans.db`, which the companion creates with mode 0600. It holds the goal, planner session, contract and readiness result, question rounds, answers, workflow tasks, edits, launch state, completion reports, changed files, ownership warnings, and integration evidence. A plan therefore survives a companion restart and an interrupted question round: reload it, and the next answer resumes the same planner session instead of starting the goal again.
+Every step is written to a local SQLite database at `~/.config/cmux-companion/goal-plans.db`, which the companion creates with mode 0600. It holds the goal, planner session, engine choice, the six Spec depth requests, contract and readiness result, option evidence, design artifacts, question rounds, answers, workflow tasks, edits, launch state, completion reports, changed files, ownership warnings, and integration evidence. A plan therefore survives a companion restart and an interrupted question round: reload it, and the next answer resumes the same planner session instead of starting the goal again.
 
 The Worktrees view surfaces those saved plans beside the repository filters. **Draft Goals** collects resumable plans and **Launched Goals** keeps a read-only launch history for the selected Karven or Rekord project group. Each card opens the exact saved plan and can delete it after confirmation.
 
@@ -155,11 +190,34 @@ A crashed agent usually leaves its cmux workspace open at a shell prompt, so
 task stuck. A session that is still working, or one that is waiting for an
 answer, is never closed by Continue.
 
-Each cmux session Companion opens is named `KRV-T2-api · <task title>`: the
-project code, the task code within its goal, and the part of the work, before
-the title. The same identity is exported into the session's own shell as
-`COMPANION_PROJECT`, `COMPANION_TASK` and `COMPANION_PART`, so it survives a
-rename.
+Each cmux session Companion opens is named
+`CC · Recover completed goal waves (7a2b) · T2-api · Wire the health sweep`:
+the project code, then the goal, then the task code and the part of the work,
+then the title. A merge session belongs to the goal rather than to one task, so
+it reads `CC · Recover completed goal waves (7a2b) · MERGE`. The goal leads
+because that is the order a person asks the questions in. In a sidebar of
+twelve parallel sessions you look for which goal a session belongs to before
+you look for which task it is, so the goal groups the list by eye. The goal
+segment is the goal's own text plus a short fragment of the plan id, which is
+what keeps two goals in one repository apart when they open with the same
+words.
+
+The reorder has a cost. The identifying code no longer leads, so it no longer
+survives sidebar truncation for free. Fixed budgets pay that cost. The project
+code takes at most 4 characters, the task-part code at most 10, and the goal
+text is clipped to 36 characters before the plan-id fragment. That fragment is
+4 characters in parentheses, and it is never the part that clips, so `T2-api`
+stays at a near-fixed offset in cmux's narrow sidebar. Only the task title
+loses characters. The same identity is exported into the session's own shell
+as `COMPANION_PROJECT`, `COMPANION_PLAN`, `COMPANION_GOAL`, `COMPANION_TASK`
+and `COMPANION_PART`, so it survives a rename.
+
+Two limits are honest ones. A 4-character plan-id fragment can collide between
+two goals. That stays cosmetic, because `COMPANION_GOAL` is only the readable
+short form and `COMPANION_PLAN` carries the full plan id for every lookup. The
+format also applies to newly opened sessions only. Companion does not rename
+sessions that already exist, so a board can show both the old shape and the new
+one until the last old session closes.
 
 On a screen 1280 pixels wide or wider the board takes the whole window, its
 lanes keep a readable minimum width, and the row scrolls sideways when eight of
@@ -180,14 +238,15 @@ it, so the panel and the behaviour cannot disagree. When both providers are
 exhausted it leads with the reset countdown.
 
 Companion also **retires the cmux sessions it opened for a goal** once their
-work is provably finished. When a goal's delivery pull request is open, every
-task session is closed and one session stays: the merge session, or, for a
-single-task goal that has no merge session, that one task's own session. When
-the goal is observed merged or aborted, that last session is closed too. A
-merge session a newer merge agent replaced is closed as soon as it is replaced.
+work is provably finished. A goal PR being created makes its original task and
+merge sessions eligible for retirement, including the single-task session that
+opened the PR. Running agents and agents waiting for input finish first; the
+next pass retries them. Follow-up sessions have separate identities. Goal
+worktrees remain until the goal PR is merged and worktree cleanup is enabled.
+A merge session a newer merge agent replaced is retired when idle.
 
 The pass never closes a session whose agent is running or waiting for an
-answer, never closes anything while a goal's merge is blocked, never closes
+answer, never closes anything while an undelivered goal's merge is blocked, never closes
 anything at all when cmux cannot be reached, and never touches a session
 Companion did not open for a goal. Every session that stays open is reported
 with the reason it stayed, so a kept session can always be explained.
@@ -208,12 +267,22 @@ that one goal, instead of waiting for the next reconciliation pass. It reports
 three outcomes differently: the goal moved to Merged, its pull request is still
 open, or GitHub knows no pull request for its branch.
 
+**More actions** on every goal card in Waiting for merge opens a follow-up
+popup. Choose one or several actions: ask a question, add more unit and e2e
+tests, run a complete code review, or give a free-form instruction, then choose
+Claude or Codex. One submission opens exactly one cmux session in that goal's
+delivery worktree. Any code it produces is committed and pushed on the same
+branch, updating the existing pull request rather than opening another one.
+The follow-up session is left open for you to read and close.
+
 ## Local end-to-end checks
 
 The Cypress suite is intentionally excluded from `npm test`, `npm run verify`,
 and CI. It starts an isolated frontend on port 3221 and stubs the application
 API with one- and two-task goal fixtures, including a task that dies, an agent
-waiting for input, and a blocked merge whose cmux workspace remains open:
+waiting for input, a blocked merge whose cmux workspace remains open, and a
+spec-rigor goal that submits its six requests and renders their coverage
+evidence:
 
 ```bash
 npm run test:e2e:local
@@ -292,8 +361,8 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
 - The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
-- The goal health sweep and its watchdog only read. They never move a goal and never touch a worktree, so an automatic check cannot destroy work.
-- The supervision timer may close one thing: a cmux session Companion itself opened for a goal, recorded on that goal's plan row, after that session's work is delivered. It may never close a session whose agent is running or waiting for an answer, a session of a goal whose merge is blocked, any session while cmux is unreachable, or any session Companion did not open for a goal. It deletes no branch and no worktree. Set `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` to `0`, `off` or `false` to stop the timer pass.
+- The goal health sweep is read-only. The watchdog reconciles GitHub state and collects finished goal sessions; it never deletes branches or worktrees or restarts agents.
+- The supervision timer may close one thing: a cmux session Companion itself opened for a goal, recorded on that goal's plan row, after that session's work is delivered. It may never close a session whose agent is running or waiting for an answer, a session of a goal whose merge is blocked and has no delivery PR, any session while cmux is unreachable, or any session Companion did not open for a goal. It deletes no branch and no worktree. Set `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` to `0`, `off` or `false` to stop the timer pass.
 - Restarting a task deletes its branch and its worktree, so it is refused for the primary checkout and for a managed release checkout, and the phone confirms before it runs.
 - Relaunching a task is refused while its cmux session is still open, because a second agent in one worktree would fight the first over the same files.
 - Session identity is exported with a strict variable-name pattern and shell-quoted values, so neither a goal nor a task title can become a command.
@@ -379,3 +448,55 @@ Open **Settings → Deployments** to see the running Companion release and the d
 ## License
 
 MIT
+
+### Automatic goal session cleanup
+
+Once Companion records a goal pull request, it closes the goal's recorded task
+sessions and final merge session, including for single-task goals and PRs already
+closed or merged. A combined goal's intermediate task and superseded merge
+sessions still close when their work is integrated. Blocked goals without a goal
+PR retain their sessions; a task PR within a combined goal does not finish it.
+
+Cleanup runs when a combined delivery settles or GitHub reconciliation observes
+the goal PR. The watchdog also sweeps durable records one minute after startup
+and every five minutes afterward, including old merged goals, to retry failed
+closes and collect leftovers. Plan retention preserves records with unretired
+sessions so cleanup cannot lose their identities. Already-missing sessions count as retired; connection
+failures remain retryable. Only workspace IDs recorded by Companion are closed.
+Untracked sessions are not inferred from their titles or directories. Branches,
+worktrees, and goal history remain available after sessions close.
+
+Local validation combines backend tests of real SQLite lifecycle records and a
+fake cmux adapter with Cypress coverage of the board retaining its PR state after
+session counts reach zero. The deterministic Cypress suite does not operate real
+cmux sessions.
+
+### Automatic worktree inventory and garbage collection
+
+**Worktree cleanup** provides a central dry-run inventory across Karven and Rekord,
+including nested repositories and external registrations. Sessions close when a
+goal PR is created; verified goal worktrees become eligible immediately when that
+PR is **merged**, subject to clean/unlocked/inactive and exact-commit checks.
+Other proven merged worktrees use a configurable seven-day grace period.
+Automatic development deletion, Git pruning, and updater release deletion all
+start **disabled**. The UI offers separate enable controls, schedules, reviewed
+manual runs, protected-item reasons, space estimates, and history. Branches are
+preserved; checkout folders and approved ignored build artifacts are deleted.
+
+See [cleanup policy, limitations and recovery](docs-worktree-cleanup.md).
+
+### Responsiveness under load
+
+Concurrent catalogue reads share one scan. Dashboard scans with different inputs
+run sequentially, and catalogue Git commands share a limit of 12 concurrent
+processes. Browser polls reuse an unfinished read; writes invalidate that shared
+read so the following refresh can fetch updated state.
+
+If Electron cannot start reliably on a busy Mac, run the same local Cypress suite
+in an installed Chrome using:
+
+```bash
+CMUX_COMPANION_CYPRESS_BROWSER=chrome npm run test:e2e:local
+```
+
+This still uses deterministic local fixtures and refuses CI execution.

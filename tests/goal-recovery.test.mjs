@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,10 +74,10 @@ const TASKS = [
 // A launched plan sitting in the store, exactly as a real launch left it. The
 // recovery paths read the durable row and never the draft cache, so the tests
 // build the row instead of driving a launch.
-function launched(t, { worktreePath = "/repo/sample-feature-billing", deps = recoveryDeps(), planId = "plan-1" } = {}) {
+function launched(t, { worktreePath = "/repo/sample-feature-billing", deps = recoveryDeps(), planId = "plan-1", specOptions } = {}) {
   const store = new WorktreePlanStore({ path: ":memory:" });
   t.after(() => store.close());
-  store.createPlan({ planId, repositoryId: REPO_ID, repositoryName: "sample", cwd: "/repo/sample", goal: "Add billing" });
+  store.createPlan({ planId, repositoryId: REPO_ID, repositoryName: "sample", cwd: "/repo/sample", goal: "Add billing", specOptions });
   store.recordRound(planId, {
     round: 1, stage: "ready", sessionId: "sess-a",
     spec: { outcome: "Customers can pay invoices", acceptanceCriteria: [{ id: "AC-1", text: "Payment works", verification: "npm test" }] },
@@ -247,7 +247,7 @@ test("continue reuses the existing worktree and creates none", async (t) => {
   const workspace = deps.calls.find((call) => call[0] === "workspace")[1];
   assert.equal(workspace.cwd, path);
   assert.equal(workspace.agent, "claude");
-  assert.equal(workspace.title, "SMP-T1-api · Billing");
+  assert.equal(workspace.title, "SMP · Customers can pay invoices (plan) · T1-api · Billing");
   assert.equal(store.get("plan-1").tasks[0].worktreePath, path);
 });
 
@@ -355,9 +355,12 @@ test("restart rebuilds from the integration branch once a combined goal has one"
 
 test("rebranch leaves the old branch and worktree untouched and persists the derived branch", async (t) => {
   const oldPath = await realWorktree();
-  const { store, deps, planner } = launched(t, { worktreePath: oldPath });
+  const { store, deps, planner } = launched(t, { worktreePath: oldPath, specOptions: { unitTests: true } });
   const result = await planner.relaunchTask("plan-1", "t1", { mode: "rebranch" });
 
+  const brief = readFileSync(join(deps.briefs.directory, "plan-1-t1.md"), "utf8");
+  assert.match(brief, /Requested specification rigor for this goal:/);
+  assert.match(brief, /Unit tests: Cover the new logic with unit tests/);
   assert.equal(result.branch, "feature/billing-2");
   assert.equal(result.path, "/repo/sample-feature-billing-2");
   assert.equal(existsSync(oldPath), true);

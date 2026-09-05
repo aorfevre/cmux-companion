@@ -12,7 +12,7 @@ const repository = {
 };
 
 // One launched goal whose pull request is open: two finished task sessions and
-// the merge session that owns the pull request.
+// a merge session whose agent is still running.
 const plan = {
   planId: "goal-cleanup", repositoryId: "repo-e2e", repositoryName: "cmux-e2e-cypress",
   goal: "Retire the finished goal sessions", status: "launched", stage: "ready", round: 1,
@@ -28,7 +28,7 @@ const closedTask = (id: string, taskId: string, title: string) => ({
 });
 const keptMerge = {
   planId: plan.planId, workspaceId: "ws-merge", kind: "merge",
-  reason: "This session owns the goal's open pull request",
+  reason: "This session's agent is running",
 };
 
 // The dry run and the real pass answer with the same shape, so one builder
@@ -87,6 +87,20 @@ function visitBoard() {
 }
 
 describe("the board reports finished goal session cleanup", () => {
+  it("includes restored workspaces in the review and reports their closure", () => {
+    const restored = { ...closedTask("restored-uuid", "", "Restored goal merge"), kind: "restored",
+      reason: "Restored workspace matches a delivered goal by checkout path and Companion title" };
+    const state: Scenario = { retirable: report({ closed: [restored] }), reap: report({ closed: [restored] }), liveSessions: 2 };
+    installScenario(state);
+    visitBoard();
+    cy.findByRole("button", { name: "Close 1 finished session" }).should("be.enabled");
+    cy.then(() => { state.liveSessions = 1; state.retirable = report({ closed: [] }); });
+    cy.findByRole("button", { name: "Close 1 finished session" }).click();
+    cy.wait("@reap");
+    cy.contains("Closed 1 finished session, 1 kept.").should("be.visible");
+    cy.findByRole("button", { name: "Close finished sessions. No sessions currently qualify for safe cleanup." }).should("be.disabled");
+  });
+
   it("closes two finished task sessions and explains the merge session it kept", () => {
     const state: Scenario = { retirable: report(), reap: report(), liveSessions: 3 };
     installScenario(state);
@@ -104,10 +118,10 @@ describe("the board reports finished goal session cleanup", () => {
     cy.wait(["@dashboard", "@plans", "@health", "@retirable"]);
 
     cy.contains("Closed 2 finished sessions, 1 kept.").should("be.visible");
-    cy.contains("This session owns the goal's open pull request").should("be.visible");
+    cy.contains("This session's agent is running").should("be.visible");
     // Nothing is finished after the pass, so the button disables rather than
     // disappearing: the action is still there, it just has nothing to do.
-    cy.findByRole("button", { name: "Close finished sessions. No session is finished." }).should("be.disabled");
+    cy.findByRole("button", { name: "Close finished sessions. No sessions currently qualify for safe cleanup." }).should("be.disabled");
     cy.findByLabelText("1 live cmux sessions").should("exist");
   });
 
@@ -128,7 +142,7 @@ describe("the board reports finished goal session cleanup", () => {
 
     cy.contains("cmux could not be reached, so agent liveness is unknown. No session was closed.").should("be.visible");
     cy.contains("Closed 0 finished sessions").should("not.exist");
-    cy.findByRole("button", { name: "Close finished sessions. No session is finished." }).should("be.disabled");
+    cy.findByRole("button", { name: "Close finished sessions. No sessions currently qualify for safe cleanup." }).should("be.disabled");
   });
 
   it("names the session cmux refused to close", () => {
