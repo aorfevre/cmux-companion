@@ -1,8 +1,9 @@
 "use client";
 
+import { canRetryOnFreshBranch } from "../server/worktree-errors.mjs";
 import { FormEvent, RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { AttachmentStrip, composedPrompt, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
-import { GoalBoardStateId, GoalHealth, goalPrLink, PlanSummary, terminalStatus, WorktreePlannerSheet } from "./worktree-planner";
+import { GoalBoardStateId, GoalHealth, goalPrLink, PlanDraft, PlanSummary, TaskRelaunchResult, terminalStatus, WorktreePlannerSheet } from "./worktree-planner";
 // The board reads its columns and its placement from the one shared module, so
 // the dashboard can never invent a column the server does not know.
 import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../server/goal-board.mjs";
@@ -25,7 +26,7 @@ type BulkRemoval = { requested: number; removed: number; failed: number; results
 // The sweep payload from GET /api/goals/health. It is read-only evidence: the
 // rail acts through the relaunch and skip routes, never through this shape.
 type HealthSession = { id: string; title: string | null; lastActivityAt: number; effective: string | null; inputEvidence?: string | null; workingEvidence?: string | null };
-type HealthTask = { id: string; title: string; branch: string; agent: string | null; wave: number; launchStatus: string | null; launchError: string | null; deliveryStatus: string; workspaceId: string | null; health: GoalHealth; reason: string; session: HealthSession | null };
+type HealthTask = { id: string; title: string; branch: string; agent: string | null; wave: number; launchStatus: string | null; launchError: string | null; launchReason?: string | null; deliveryStatus: string; workspaceId: string | null; health: GoalHealth; reason: string; session: HealthSession | null };
 type HealthMerge = { id: "merge"; kind: "merge"; title: string; workspaceId: string | null; health: GoalHealth; reason: string; session: HealthSession | null; observedHealth?: GoalHealth };
 type HealthGoal = { planId: string; goal: string; repositoryId: string; repositoryName: string; health: GoalHealth; stuckCount: number; readyCount: number; launchedCount: number; taskCount: number; deliveryStatus?: string; merge?: HealthMerge | null; tasks: HealthTask[] };
 type HealthSummary = { goals: number; tasks: number; stuck: number; needsYou: number; working: number; deadTasks: number; idleTasks: number; failedTasks: number };
@@ -209,6 +210,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   const [newGoalQuery, setNewGoalQuery] = useState("");
   // One key per operation. A shared busy string would disable every Continue
   // button on the rail while a single task was relaunching.
+  const [relaunchModes, setRelaunchModes] = useState<Record<string, string>>({});
   const [boardBusy, setBoardBusy] = useState<Record<string, boolean>>({});
   // The synced GitHub issue column. It is stored server side, so the board
   // reads it on mount and a reload shows the last sync without a new one.
@@ -468,7 +470,8 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
 
   // `continue` keeps the worktree and everything the agent already wrote.
   // `restart` discards the branch and the worktree, so its button confirms.
-  async function relaunchTask(goal: HealthGoal, task: HealthTask, mode: "continue" | "restart") {
+  async function relaunchTask(goal: HealthGoal, task: HealthTask, mode: "continue" | "restart" | "rebranch") {
+    setRelaunchModes((current) => ({ ...current, [`relaunch:${goal.planId}:${task.id}`]: mode }));
     await runBoardAction(`relaunch:${goal.planId}:${task.id}`, async () => {
       try {
         // A crashed agent usually leaves its workspace open at a shell prompt.
@@ -476,10 +479,11 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
         // the sweep has already judged stuck: a session that is still working
         // must never be killed by a button labelled Continue.
         const closeLive = Boolean(task.session) && task.health !== "working" && task.health !== "needs_you";
-        await request(`/api/worktree-plans/${encodeURIComponent(goal.planId)}/tasks/${encodeURIComponent(task.id)}/relaunch`, { method: "POST", body: JSON.stringify({ mode, closeLive }) });
+        const result = await request<TaskRelaunchResult>(`/api/worktree-plans/${encodeURIComponent(goal.planId)}/tasks/${encodeURIComponent(task.id)}/relaunch`, { method: "POST", body: JSON.stringify({ mode, closeLive }) });
         setConfirmTaskAction("");
+        await request<PlanDraft>(`/api/worktree-plans/${encodeURIComponent(goal.planId)}`);
         await loadHealth(); await loadGoalPlans();
-        onNotice(mode === "restart" ? `Restarted ${task.title} from its base branch` : `Continued ${task.title} in its existing worktree`);
+        onNotice(mode === "rebranch" ? (result.branch ? `Retried ${task.title} on ${result.branch}` : `Retried ${task.title} on a fresh branch`) : mode === "restart" ? `Restarted ${task.title} from its base branch` : `Continued ${task.title} in its existing worktree`);
       } catch (cause) { onNotice(cause instanceof Error ? cause.message : `Could not relaunch ${task.title}`); }
     });
   }
@@ -734,6 +738,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
         confirming={confirmTaskAction}
         onRetry={() => { void loadHealth(); }}
         onRequestConfirm={setConfirmTaskAction}
+        relaunchModes={relaunchModes}
         onRelaunch={(goal, task, mode) => { void relaunchTask(goal, task, mode); }}
         onSkip={(goal, task) => { void skipTask(goal, task); }}
         onFocus={(workspaceId, label) => { void focusWorkspace(workspaceId, label); }}
@@ -918,7 +923,7 @@ function AgentCapacityChip({ capacity, error, now, open, onToggle }: { capacity:
 
 // Every task a person must answer for, across every repository, on one screen.
 // Restart and Skip both destroy something, so each confirms inline first.
-function AttentionRail({ railRef, rows, sessionsAvailable, loaded, error, busy, confirming, onRetry, onRequestConfirm, onRelaunch, onSkip, onFocus }: { railRef: RefObject<HTMLElement | null>; rows: { goal: HealthGoal; item: HealthTask | HealthMerge; kind: "task" | "merge" }[]; sessionsAvailable: boolean; loaded: boolean; error: string; busy: Record<string, boolean>; confirming: string; onRetry: () => void; onRequestConfirm: (key: string) => void; onRelaunch: (goal: HealthGoal, task: HealthTask, mode: "continue" | "restart") => void; onSkip: (goal: HealthGoal, task: HealthTask) => void; onFocus: (workspaceId: string, label: string) => void }) {
+function AttentionRail({ relaunchModes, railRef, rows, sessionsAvailable, loaded, error, busy, confirming, onRetry, onRequestConfirm, onRelaunch, onSkip, onFocus }: { relaunchModes: Record<string, string>; railRef: RefObject<HTMLElement | null>; rows: { goal: HealthGoal; item: HealthTask | HealthMerge; kind: "task" | "merge" }[]; sessionsAvailable: boolean; loaded: boolean; error: string; busy: Record<string, boolean>; confirming: string; onRetry: () => void; onRequestConfirm: (key: string) => void; onRelaunch: (goal: HealthGoal, task: HealthTask, mode: "continue" | "restart" | "rebranch") => void; onSkip: (goal: HealthGoal, task: HealthTask) => void; onFocus: (workspaceId: string, label: string) => void }) {
   return <section className="goal-attention" ref={railRef} tabIndex={-1} aria-label="Goals needing attention">
     <header><h3>Needs you</h3><b aria-label={`${rows.length} task${rows.length === 1 ? "" : "s"} need you`}>{rows.length}</b>{error && <button type="button" className="text-button" aria-label="Retry the goal health check" onClick={onRetry}>Retry</button>}</header>
     {error && <p className="goal-attention-note">{error}</p>}
@@ -932,6 +937,7 @@ function AttentionRail({ railRef, rows, sessionsAvailable, loaded, error, busy, 
         const relaunchKey = `relaunch:${goal.planId}:${task.id}`;
         const skipKey = `skip:${goal.planId}:${task.id}`;
         const working = busy[relaunchKey] === true || busy[skipKey] === true;
+        const rebranchable = kind === "task" && task.launchStatus === "failed" && canRetryOnFreshBranch(task.launchReason);
         const confirmRestart = confirming === `restart:${goal.planId}:${task.id}`;
         const confirmSkip = confirming === `skip:${goal.planId}:${task.id}`;
         return <li key={`${goal.planId}:${kind}:${item.id}`}>
@@ -939,7 +945,9 @@ function AttentionRail({ railRef, rows, sessionsAvailable, loaded, error, busy, 
             <RepoChip name={goal.repositoryName} />
             <strong>{item.title}</strong>
             <small>{goal.goal}{kind === "task" && task.agent ? ` · ${task.agent === "claude" ? "Claude" : "Codex"}` : ""}</small>
+            {kind === "task" && <code>{task.branch}</code>}
             <p><span className={`goal-attention-badge ${item.health}`}>{HEALTH_LABELS[item.health]}</span>{item.reason}</p>
+            {rebranchable && <p>Retrying starts from the task’s base on a fresh branch and leaves the blocked branch untouched.</p>}
           </div>
           {kind === "merge"
             ? <div className="goal-attention-actions">{item.session?.id && <button type="button" aria-label={`Open ${item.title} in cmux`} disabled={busy[`focus:${item.session.id}`] === true} onClick={() => onFocus(String(item.session?.id), item.title)}>Open in cmux</button>}</div>
@@ -948,10 +956,11 @@ function AttentionRail({ railRef, rows, sessionsAvailable, loaded, error, busy, 
             : confirmSkip
               ? <div className="goal-attention-confirm"><span>Skipping drops this task from the goal, so the merge no longer waits for it.</span><div><button type="button" aria-label={`Cancel skipping ${task.title}`} onClick={() => onRequestConfirm("")}>Cancel</button><button type="button" className="confirm-skip" aria-label={`Confirm skip ${task.title}`} disabled={working} onClick={() => onSkip(goal, task)}>{busy[skipKey] ? "Skipping…" : "Confirm skip"}</button></div></div>
               : <div className="goal-attention-actions">
-                <button type="button" aria-label={`Continue ${task.title}`} disabled={working} onClick={() => onRelaunch(goal, task, "continue")}>{busy[relaunchKey] ? "Continuing…" : "Continue"}</button>
+                {rebranchable && <button type="button" aria-label={`Retry on new branch for ${task.title}`} disabled={working} onClick={() => onRelaunch(goal, task, "rebranch")}>{busy[relaunchKey] && relaunchModes[relaunchKey] === "rebranch" ? "Retrying on new branch…" : "Retry on new branch"}</button>}
+                <button type="button" aria-label={`Continue ${task.title}`} disabled={working} onClick={() => onRelaunch(goal, task, "continue")}>{busy[relaunchKey] && relaunchModes[relaunchKey] === "continue" ? "Continuing…" : "Continue"}</button>
                 <button type="button" aria-label={`Restart ${task.title}`} disabled={working} onClick={() => onRequestConfirm(`restart:${goal.planId}:${task.id}`)}>Restart</button>
                 <button type="button" aria-label={`Skip ${task.title}`} disabled={working} onClick={() => onRequestConfirm(`skip:${goal.planId}:${task.id}`)}>Skip</button>
-                {task.session?.id && <button type="button" aria-label={`Open ${task.title} in cmux`} disabled={busy[`focus:${task.session.id}`] === true} onClick={() => onFocus(String(task.session?.id), task.title)}>Open in cmux</button>}
+                {task.session?.id && <button type="button" aria-label={`Open ${task.title} in cmux`} disabled={working || busy[`focus:${task.session.id}`] === true} onClick={() => onFocus(String(task.session?.id), task.title)}>Open in cmux</button>}
               </div>}
         </li>;
       })}</ul>}
