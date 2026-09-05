@@ -1,6 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
+import { request } from "./api-request";
 import { useCallback, useRef, useState } from "react";
 
 export type ImageAttachment = { path: string; name: string; mime: string; size: number; preview: string };
@@ -10,12 +11,7 @@ export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const MAX_IMAGE_COUNT = 4;
 const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, headers: { ...(init?.body != null ? { "Content-Type": "application/json" } : {}), ...init?.headers } });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body as T;
-}
+export { request } from "./api-request";
 
 export function imageDataUrl(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("Could not read that image")); reader.readAsDataURL(file); }); }
 

@@ -1,6 +1,7 @@
 "use client";
 /* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/label-has-associated-control, @next/next/no-img-element */
 
+import { request as api } from "./api-request";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountUsageView } from "./account-usage";
 import { AppsView, type Preview } from "./apps-view";
@@ -32,12 +33,7 @@ type View = "sessions" | "inbox" | "launch" | "apps" | "settings" | "usage";
 type DetailTab = "terminal" | "tasks" | "changes";
 type HomeMode = "sessions" | "worktrees";
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body as T;
-}
+
 
 function compactPath(path?: string | null) { return path ? path.replace(/^\/Users\/[^/]+/, "~") : "Directory unavailable"; }
 function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }

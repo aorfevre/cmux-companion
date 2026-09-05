@@ -484,3 +484,19 @@ manual runs, protected-item reasons, space estimates, and history. Branches are
 preserved; checkout folders and approved ignored build artifacts are deleted.
 
 See [cleanup policy, limitations and recovery](docs-worktree-cleanup.md).
+
+### Responsiveness under load
+
+Concurrent catalogue reads share one scan. Dashboard scans with different inputs
+run sequentially, and catalogue Git commands share a limit of 12 concurrent
+processes. Browser polls reuse an unfinished read; writes invalidate that shared
+read so the following refresh can fetch updated state.
+
+If Electron cannot start reliably on a busy Mac, run the same local Cypress suite
+in an installed Chrome using:
+
+```bash
+CMUX_COMPANION_CYPRESS_BROWSER=chrome npm run test:e2e:local
+```
+
+This still uses deterministic local fixtures and refuses CI execution.

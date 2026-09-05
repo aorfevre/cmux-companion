@@ -54,6 +54,16 @@ function visitBoard() {
 }
 
 describe("the board survives an overloaded Mac", () => {
+  it("keeps one dashboard read in flight when a scan exceeds the polling interval", () => {
+    installBaseFixtures();
+    cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "E2E Mac" }, workspaces: [], error: null, refreshedAt: now });
+    cy.intercept("GET", "**/api/worktree-dashboard*", { delay: 12000, body: dashboardBody(1) }).as("slowDashboard");
+    visitBoard();
+    cy.wait("@slowDashboard", { responseTimeout: 20000 });
+    cy.get("@slowDashboard.all").should("have.length", 1);
+    cy.findByRole("region", { name: "Goals board" }).should("contain.text", "Survive an overloaded Mac");
+  });
+
   it("names the overload instead of showing an empty board for ever", () => {
     installBaseFixtures();
     cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "E2E Mac" }, workspaces: [], error: null, refreshedAt: now });
