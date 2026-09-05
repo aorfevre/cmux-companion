@@ -21,7 +21,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
   "session_retired", "board_merged", "board_aborted", "board_pull_request",
-  "task_relaunched", "task_skipped", "followup_launched",
+  "task_relaunched", "task_skipped", "followup_launched", "task_associated",
   "review_claimed", "review_launched",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
@@ -271,15 +271,16 @@ export class WorktreePlanStore {
       const update = this.db.prepare(`
         UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?,
           start_sha = ?, delivery_status = 'pending'
-        WHERE plan_id = ? AND task_id = ?
+        WHERE plan_id = ? AND task_id = ? AND launch_status IN ('queued', 'failed')
       `);
+      let changed = 0;
       for (const result of results) {
-        update.run(
+        changed += Number(update.run(
           text(result?.status), text(result?.error), text(result?.path), workspaceId(result?.workspace),
           text(result?.startSha) || text(startSha), String(planId), String(result?.id || ""),
-        );
+        ).changes);
       }
-      this.db.prepare(`
+      if (changed) this.db.prepare(`
         UPDATE plans SET delivery_status = 'implementing', merge_status = NULL, merge_workspace_id = NULL,
           delivery_error = NULL, updated_at = ? WHERE plan_id = ?
       `).run(at, String(planId));
@@ -680,6 +681,29 @@ export class WorktreePlanStore {
       this.#insertEvent(id, null, "task_relaunched", { taskId: task, result }, at);
     });
     return this.get(id);
+  }
+
+  // Called only after external Git and live-session evidence has been verified.
+  // Compare-and-set prevents an audit from replacing a concurrently relaunched task.
+  recordTaskAssociation(planId, taskId, { branch, path, workspaceId: sessionId, headSha }) {
+    this.#transaction(() => {
+      const plan = this.get(planId);
+      const task = plan?.tasks.find((item) => item.id === taskId);
+      if (!plan || plan.status !== "launched" || plan.boardStatus || plan.finalPrUrl ||
+          !task || task.launchStatus !== "failed" || task.workspaceId || task.worktreePath ||
+          task.branch !== branch || !path || !sessionId || !/^[a-f0-9]{40}$/.test(headSha || "")) {
+        throw new Error("Task changed or is not an unassociated failed task");
+      }
+      if (this.db.prepare("SELECT 1 FROM plan_tasks WHERE workspace_id = ? OR worktree_path = ? LIMIT 1").get(sessionId, path)) {
+        throw new Error("Workspace or checkout is already associated with a task");
+      }
+      const at = this.#stamp();
+      this.db.prepare("UPDATE plan_tasks SET launch_status = 'launched', launch_error = NULL, workspace_id = ?, worktree_path = ?, session_closed_at = NULL, worktree_removed_at = NULL WHERE plan_id = ? AND task_id = ?")
+        .run(sessionId, path, planId, taskId);
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, planId);
+      this.#insertEvent(planId, null, "task_associated", { taskId, branch, path, workspaceId: sessionId, headSha, reason: "Verified pushed goal-ready commit and live checkout" }, at);
+    });
+    return this.get(planId);
   }
 
   // A task the goal no longer needs. `skipped` is deliberately not `failed`:

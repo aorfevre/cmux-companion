@@ -1130,3 +1130,42 @@ test("a relaunch or a skip of an unknown task changes no task row", (t) => {
   const skipped = store.recordTaskSkipped("plan-1", "nope", "ghost");
   assert.deepEqual(skipped.tasks, before);
 });
+
+test("a duplicate failed wave cannot erase a launched task or reset its ready evidence and merge", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", tasks: TASKS });
+  store.recordLaunch("plan-1", { base: "origin/main", baseSha: "a".repeat(40), results: [
+    { id: "t1", status: "launched", path: "/repo/t1", workspace: { workspace_id: "ws1" } },
+    { id: "t2", status: "queued" },
+  ] });
+  store.recordWaveLaunch("plan-1", { wave: 1, startSha: "a".repeat(40), results: [{ id: "t2", status: "launched", path: "/repo/t2", workspace: { workspace_id: "ws2" } }] });
+  store.recordTaskReady("plan-1", "t2", "b".repeat(40));
+  store.recordMergeLaunched("plan-1", "merge-session");
+  const before = store.get("plan-1");
+  const after = store.recordWaveLaunch("plan-1", { wave: 1, startSha: "a".repeat(40), results: [{ id: "t2", status: "failed", path: null, error: "already exists" }] });
+  assert.deepEqual(after.tasks, before.tasks);
+  assert.equal(after.mergeWorkspaceId, "merge-session");
+  assert.equal(after.mergeStatus, "running");
+  assert.equal(store.events("plan-1").at(-1).kind, "wave_launched");
+});
+
+test("association repairs only a still-unassociated failed task and records an audit event", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", tasks: TASKS });
+  store.recordLaunch("plan-1", { base: "origin/main", baseSha: "a".repeat(40), results: [
+    { id: "t1", status: "launched", path: "/repo/t1", workspace: { workspace_id: "ws1" } },
+    { id: "t2", status: "failed", error: "already exists" },
+  ] });
+  const candidate = { branch: TASKS[1].branch, path: "/repo/t2", workspaceId: "ws2", headSha: "b".repeat(40) };
+  assert.throws(() => store.recordTaskAssociation("plan-1", "t2", { ...candidate, workspaceId: "ws1" }), /already associated/);
+  assert.throws(() => store.recordTaskAssociation("plan-1", "t2", { ...candidate, branch: "wrong" }), /changed/);
+  const plan = store.recordTaskAssociation("plan-1", "t2", candidate);
+  assert.equal(plan.tasks[1].workspaceId, "ws2");
+  assert.equal(plan.tasks[1].launchStatus, "launched");
+  assert.equal(plan.tasks[1].launchError, null);
+  assert.equal(plan.tasks[1].deliveryStatus, "pending");
+  assert.equal(store.events("plan-1").at(-1).kind, "task_associated");
+  assert.throws(() => store.recordTaskAssociation("plan-1", "t2", candidate), /changed/);
+});
