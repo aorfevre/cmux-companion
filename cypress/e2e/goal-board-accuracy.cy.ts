@@ -158,6 +158,33 @@ describe("goal board matches live cmux evidence", () => {
     cy.findByRole("checkbox", { name: "Enable automatic release deletion" }).should("not.be.checked");
   });
 
+  it("removes a repaired launch failure when the recovered goal resumes integration", () => {
+    const source = plan("goal-recovered", "Recover existing task work", 1, {
+      launchedCount: 0, health: "failed", boardState: "blocked", stuckCount: 1,
+      healthReason: "That branch already has a worktree with a running session",
+    });
+    const state: Scenario = { plans: [source], goals: [healthGoal(source, [
+      task("T1", "failed", null, { launchStatus: "failed", reason: "That branch already has a worktree with a running session" }),
+    ], { health: "failed", stuckCount: 1 })], liveSessions: 1 };
+    installScenario(state);
+    visitBoard();
+    cy.findByRole("region", { name: "Blocked" }).should("contain.text", "Recover existing task work");
+    const recovered = { ...source, launchedCount: 1, readyCount: 1, health: "working", boardState: "dev_in_progress", stuckCount: 0,
+      healthReason: "The merge agent is running", deliveryStatus: "assembling", mergeStatus: "running", mergeWorkspaceId: "merge-recovered" };
+    cy.then(() => {
+      state.plans = [recovered];
+      state.goals = [healthGoal(recovered, [task("T1", "ready", { id: "existing-task", title: "Existing task", effective: "todo" })],
+        { health: "working", stuckCount: 0, merge: { id: "merge", kind: "merge", workspaceId: "merge-recovered", health: "working",
+          reason: "The merge agent is running", session: { id: "merge-recovered", title: "Goal merge", effective: "working" } } })];
+      state.liveSessions = 2;
+    });
+    cy.findByRole("button", { name: "Refresh GitHub" }).click();
+    cy.wait("@plans");
+    cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", "Recover existing task work");
+    cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", "Recover existing task work");
+    cy.contains("That branch already has a worktree with a running session").should("not.exist");
+  });
+
   it("launches one multi-action follow-up from a Waiting for merge card", () => {
     const goal = "Review the open delivery";
     const waitingMerge = plan("goal-followup", goal, 1, {

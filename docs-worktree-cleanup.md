@@ -175,3 +175,31 @@ Unknown activity, ambiguous ownership, and missing delivery evidence preserve
 the workspace. A zero count means no sessions currently qualify; it does not
 mean every open workspace is useful. Closing a workspace leaves its worktree
 and Git branches intact. Restored UUIDs never overwrite stored task ownership.
+
+### Recover failed task associations before cleanup
+
+A failed duplicate wave launch must not replace a successful task's workspace,
+checkout, completion evidence, or an active merge. Duplicate outcomes remain in
+the event history for diagnosis.
+
+For an existing failed task whose workspace/path fields are empty, an operator
+can preview and then apply a verified association:
+
+```sh
+node scripts/recover-task-association.mjs PLAN_ID TASK_ID WORKSPACE_UUID
+node scripts/recover-task-association.mjs PLAN_ID TASK_ID WORKSPACE_UUID --apply
+```
+
+This requires an idle live workspace, the same Git common directory as the goal,
+the exact task branch, a clean checkout, a pushed HEAD with the exact
+`Cmux-Goal-Ready: PLAN_ID/TASK_ID` trailer, and a valid completion report where
+required. It rejects symlink paths, stale candidates and already-associated tasks.
+Application revalidates under the repository operation lock and records a
+`task_associated` event. It changes association/launch metadata only; the normal
+goal integration action still checks readiness and performs integration.
+Back up the plans database with SQLite's backup API before a bulk repair.
+Do not restore an old whole-database backup over newer goal activity; use the
+audit event and backup to repair only the affected fields if necessary.
+
+The operator CLI is tested against temporary Git repositories; Cypress covers
+the board moving a recovered goal out of Blocked when integration resumes.
