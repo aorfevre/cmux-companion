@@ -243,3 +243,43 @@ test("a catalog with no store behaves exactly as one that never had one", async 
   const [record] = await catalog.list();
   assert.ok(record.lastActivity > 0);
 });
+
+test("concurrent cold and forced catalog reads share one scan; invalidation survives an active scan", async (t) => {
+  const { catalog } = await fixture(t);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let scans = 0;
+  const original = catalog.scan.bind(catalog);
+  catalog.scan = async (generation) => { scans++; await gate; return original(generation); };
+  const reads = [catalog.list(), catalog.list(), catalog.list({ refresh: true })];
+  release();
+  const results = await Promise.all(reads);
+  assert.equal(scans, 1);
+  assert.equal(results[0], results[2]);
+  let unblock;
+  const blocked = new Promise((resolve) => { unblock = resolve; });
+  catalog.scan = async (generation) => { scans++; await blocked; return original(generation); };
+  const pending = catalog.list({ refresh: true });
+  catalog.invalidate();
+  unblock();
+  await pending;
+  assert.equal(catalog.cache, null);
+  await catalog.list();
+  assert.equal(scans, 3);
+});
+
+test("Git process limit is shared across callers and releases slots after failures", async () => {
+  let active = 0, maximum = 0;
+  const catalog = new RepoCatalog({ roots: [], gitConcurrency: 2, execute: async (_cmd, args) => {
+    active++; maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active--;
+    if (args.includes("fail")) throw new Error("Git failed");
+    return { stdout: "ok" };
+  } });
+  const results = await Promise.allSettled(Array.from({ length: 12 }, (_, index) => catalog.git("/fixture", [index === 0 ? "fail" : "status"])));
+  assert.equal(maximum, 2);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 11);
+  assert.equal(catalog.gitActive, 0);
+  assert.equal(catalog.gitQueue.length, 0);
+});

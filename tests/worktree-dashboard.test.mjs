@@ -285,6 +285,8 @@ test("two scans that would answer differently are never shared", async () => {
   const { listed, dashboard } = resolverDashboard({ gate });
   const pending = [dashboard.snapshot(), dashboard.snapshot({ refreshGitHub: true })];
   assert.equal(dashboard.pendingSnapshots.size, 2);
+  await Promise.resolve();
+  assert.equal(listed.length, 1, "different snapshots wait their turn instead of multiplying Git scans");
   release();
   await Promise.all(pending);
   assert.equal(listed.length, 2);

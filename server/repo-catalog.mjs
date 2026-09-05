@@ -16,6 +16,7 @@ export class RepoCatalog {
     execute = execFileAsync,
     cacheMs = 10_000,
     inspectConcurrency = 8,
+    gitConcurrency = 12,
     // Null by default, which is fully live behaviour. Only server/index.mjs
     // opts in, so a test that builds an app never opens the real database.
     identityStore = null,
@@ -25,6 +26,11 @@ export class RepoCatalog {
     this.cacheMs = cacheMs;
     this.inspectConcurrency = Math.max(1, Number(inspectConcurrency) || 8);
     this.identityStore = identityStore;
+    this.gitConcurrency = Math.max(1, Number(gitConcurrency) || 12);
+    this.gitActive = 0;
+    this.gitQueue = [];
+    this.pendingList = null;
+    this.generation = 0;
     this.cache = null;
     this.prCache = new Map();
   }
@@ -34,6 +40,19 @@ export class RepoCatalog {
       return this.cache.repos;
     }
 
+    if (this.pendingList) {
+      const generation = this.generation;
+      const repos = await this.pendingList;
+      if (generation === this.generation && this.cache) return repos;
+      return this.list({ refresh });
+    }
+    const scan = this.scan(this.generation);
+    this.pendingList = scan;
+    try { return await scan; }
+    finally { if (this.pendingList === scan) this.pendingList = null; }
+  }
+
+  async scan(generation) {
     const candidates = [];
     for (const root of this.roots) {
       let entries = [];
@@ -59,7 +78,7 @@ export class RepoCatalog {
         if (right.lastActivity !== left.lastActivity) return right.lastActivity - left.lastActivity;
         return left.name.localeCompare(right.name);
       });
-    this.cache = { at: Date.now(), repos };
+    if (generation === this.generation) this.cache = { at: Date.now(), repos };
     // Bounded here rather than on a timer: a scan is the only thing that adds
     // rows, so it is the only thing that can make the file grow.
     this.identityStore?.prune();
@@ -151,6 +170,7 @@ export class RepoCatalog {
   // handed to an agent — must reach this. Six of them used to assign
   // `catalog.cache = null` directly, which now leaves a stored status behind.
   invalidate() {
+    this.generation += 1;
     this.cache = null;
     this.identityStore?.forgetStatuses();
   }
@@ -287,13 +307,21 @@ export class RepoCatalog {
   }
 
   async git(cwd, args, options = {}) {
-    const { stdout = "" } = await this.execute("git", ["-C", cwd, ...args], {
-      encoding: "utf8",
-      timeout: options.timeout || 8_000,
-      maxBuffer: options.maxBuffer || 1024 * 1024,
-      env: process.env,
-    });
-    return stdout;
+    if (this.gitActive >= this.gitConcurrency) await new Promise((resolve) => this.gitQueue.push(resolve));
+    else this.gitActive += 1;
+    try {
+      const { stdout = "" } = await this.execute("git", ["-C", cwd, ...args], {
+        encoding: "utf8",
+        timeout: options.timeout || 8_000,
+        maxBuffer: options.maxBuffer || 1024 * 1024,
+        env: process.env,
+      });
+      return stdout;
+    } finally {
+      const next = this.gitQueue.shift();
+      if (next) next();
+      else this.gitActive -= 1;
+    }
   }
 }
 
