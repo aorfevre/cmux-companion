@@ -11,12 +11,20 @@
 const PREFERENCE = { MERGED: 3, OPEN: 2, CLOSED: 1 };
 
 export class GoalMergeWatch {
-  constructor({ store, worktrees, log = null } = {}) {
+  constructor({ store, worktrees, sessionCollector = null, worktreeCleanup = null, log = null } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     this.store = store;
     this.worktrees = worktrees;
     this.log = log;
+    this.sessionCollector = sessionCollector;
+    this.worktreeCleanup = worktreeCleanup;
+  }
+
+  #plans() {
+    return this.store.sessionCleanupPlanIds
+      ? this.store.sessionCleanupPlanIds().map((planId) => ({ planId }))
+      : this.store.list({ status: "launched", limit: 200 }) || [];
   }
 
   // The watchdog only needs GitHub state for repositories that still own a
@@ -25,7 +33,7 @@ export class GoalMergeWatch {
   activeRepositoryIds() {
     const ids = new Set();
     let plans;
-    try { plans = this.store.list({ status: "launched", limit: 200 }) || []; }
+    try { plans = this.#plans(); }
     catch (cause) {
       this.log?.warn?.({ err: cause }, "goal merge watch could not read the plan list");
       return [];
@@ -49,7 +57,7 @@ export class GoalMergeWatch {
     const recorded = [];
     let plans;
     try {
-      plans = this.store.list({ status: "launched", limit: 200 }) || [];
+      plans = this.#plans();
     } catch (cause) {
       this.log?.warn?.({ err: cause }, "goal merge watch could not read the plan list");
       return { recorded };
@@ -73,7 +81,11 @@ export class GoalMergeWatch {
       const match = selectGoalPullRequest(plan, observations);
       if (!match) continue;
       const written = this.#record(plan, match);
-      if (written) recorded.push(written);
+      if (written) {
+        recorded.push(written);
+        await this.sessionCollector?.collect(plan.planId);
+        if (written.state === "MERGED") this.worktreeCleanup?.schedule();
+      }
     }
     return { recorded };
   }

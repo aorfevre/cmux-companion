@@ -701,3 +701,15 @@
   .core-window small{font-size:10px}
   .quota-track{height:7px}
 }
+
+.cleanup-panel { margin: 12px 0; }
+.cleanup-content { padding: 16px; border: 1px solid var(--border, #444); border-radius: 12px; }
+.cleanup-content p { margin: 12px 0; line-height: 1.5; }
+.cleanup-content fieldset { display: flex; flex-wrap: wrap; gap: 14px; padding: 12px; margin: 12px 0; }
+.cleanup-content label { display: flex; gap: 8px; align-items: center; }
+.cleanup-content input[type="number"] { width: 72px; }
+.cleanup-content button { padding: 8px 12px; }
+.cleanup-inventory { overflow: auto; max-height: 480px; margin: 12px 0; }
+.cleanup-inventory table { width: 100%; border-collapse: collapse; }
+.cleanup-inventory th, .cleanup-inventory td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border, #444); vertical-align: top; }
+.cleanup-inventory small { display: block; overflow-wrap: anywhere; min-width: 160px; }

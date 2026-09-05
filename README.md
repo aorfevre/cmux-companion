@@ -266,7 +266,7 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
 - The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
-- The goal health sweep and its watchdog only read. They never move a goal, never close a session, and never touch a worktree, so an automatic check cannot destroy work.
+- The goal health sweep is read-only. The watchdog reconciles GitHub state and collects finished goal sessions; it never deletes branches or worktrees or restarts agents.
 - Restarting a task deletes its branch and its worktree, so it is refused for the primary checkout and for a managed release checkout, and the phone confirms before it runs.
 - Relaunching a task is refused while its cmux session is still open, because a second agent in one worktree would fight the first over the same files.
 - Session identity is exported with a strict variable-name pattern and shell-quoted values, so neither a goal nor a task title can become a command.
@@ -351,3 +351,39 @@ Open **Settings → Deployments** to see the running Companion release and the d
 ## License
 
 MIT
+
+### Automatic goal session cleanup
+
+Once Companion records a goal pull request, it closes the goal's recorded task
+sessions and final merge session, including for single-task goals and PRs already
+closed or merged. A combined goal's intermediate task and superseded merge
+sessions still close when their work is integrated. Blocked goals without a goal
+PR retain their sessions; a task PR within a combined goal does not finish it.
+
+Cleanup runs when a combined delivery settles or GitHub reconciliation observes
+the goal PR. The watchdog also sweeps durable records one minute after startup
+and every five minutes afterward, including old merged goals, to retry failed
+closes and collect leftovers. Plan retention preserves records with unretired
+sessions so cleanup cannot lose their identities. Already-missing sessions count as retired; connection
+failures remain retryable. Only workspace IDs recorded by Companion are closed.
+Untracked sessions are not inferred from their titles or directories. Branches,
+worktrees, and goal history remain available after sessions close.
+
+Local validation combines backend tests of real SQLite lifecycle records and a
+fake cmux adapter with Cypress coverage of the board retaining its PR state after
+session counts reach zero. The deterministic Cypress suite does not operate real
+cmux sessions.
+
+### Automatic worktree inventory and garbage collection
+
+**Worktree cleanup** provides a central dry-run inventory across Karven and Rekord,
+including nested repositories and external registrations. Sessions close when a
+goal PR is created; verified goal worktrees become eligible immediately when that
+PR is **merged**, subject to clean/unlocked/inactive and exact-commit checks.
+Other proven merged worktrees use a configurable seven-day grace period.
+Automatic development deletion, Git pruning, and updater release deletion all
+start **disabled**. The UI offers separate enable controls, schedules, reviewed
+manual runs, protected-item reasons, space estimates, and history. Branches are
+preserved; checkout folders and approved ignored build artifacts are deleted.
+
+See [cleanup policy, limitations and recovery](docs-worktree-cleanup.md).

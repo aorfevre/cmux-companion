@@ -608,7 +608,7 @@ test("a wave retry launches a task whose worktree a failed launch left behind", 
 
 // A finished goal used to leave every session it opened in the cmux sidebar:
 // one per task, plus one per merge attempt. Each is closed the moment its work
-// is integrated, so only the session that opened the pull request stays.
+// is integrated; the final merge session closes once the goal has a PR.
 function integrateBoth(integrator, integrationPath) {
   const git = integrator.repoCatalog.git;
   integrator.repoCatalog.git = async (cwd, args) => {
@@ -626,7 +626,7 @@ test("closes each task session once its branch is integrated", async (t) => {
   await integrator.assemble("plan-12345678");
   integrateBoth(integrator, integrationPath);
   await integrator.settle("plan-12345678");
-  assert.deepEqual(closedWorkspaces(calls).sort(), ["workspace-one", "workspace-two"]);
+  assert.deepEqual(closedWorkspaces(calls).sort(), ["workspace-merge", "workspace-one", "workspace-two"]);
   const saved = store.get("plan-12345678");
   assert.ok(saved.tasks.every((task) => task.sessionClosedAt));
 });
@@ -656,14 +656,14 @@ test("closes a wave merge session once its wave is integrated", async (t) => {
   assert.deepEqual(closedWorkspaces(calls).sort(), ["workspace-merge", "workspace-one"]);
 });
 
-test("keeps the session that opened the pull request and closes the rest", async (t) => {
+test("closes the session that opened the pull request along with the tasks", async (t) => {
   const { store, integrator, calls, integrationPath } = fixture(t, { pullRequest: { number: 42, url: "https://github.test/pr/42" } });
   await integrator.assemble("plan-12345678");
   integrateBoth(integrator, integrationPath);
   const result = await integrator.settle("plan-12345678");
   assert.equal(result.deliveryStatus, "pr_open");
   const closed = closedWorkspaces(calls);
-  assert.deepEqual(closed.sort(), ["workspace-one", "workspace-two"]);
+  assert.deepEqual(closed.sort(), ["workspace-merge", "workspace-one", "workspace-two"]);
   assert.equal(closed.includes(store.get("plan-12345678").mergeWorkspaceId), false);
 });
 
@@ -696,14 +696,14 @@ test("no session is closed twice across a second settle or a restart", async (t)
   await integrator.assemble("plan-12345678");
   integrateBoth(integrator, integrationPath);
   await integrator.settle("plan-12345678");
-  assert.equal(closedWorkspaces(calls).length, 2);
+  assert.equal(closedWorkspaces(calls).length, 3);
   await integrator.settle("plan-12345678");
   const restarted = new GoalIntegrator({
     store, worktrees: integrator.worktrees, repoCatalog: integrator.repoCatalog,
     cmux: integrator.cmux, execute: integrator.execute, settleMs: 1, briefs: integrator.briefs,
   });
   await restarted.settle("plan-12345678");
-  assert.equal(closedWorkspaces(calls).length, 2);
+  assert.equal(closedWorkspaces(calls).length, 3);
 });
 
 test("closes nothing while a task branch is still unpushed", async (t) => {

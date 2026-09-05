@@ -5,9 +5,8 @@
 // goals sit stranded for days. This runs the sweep on a timer and pushes one
 // alert when a goal's health gets worse.
 //
-// It writes no plan state. Moving a goal on a timer would let a slow agent be
-// declared dead and its worktree rebuilt under it, so the watchdog only ever
-// reports. Every recovery stays an explicit decision.
+// GitHub reconciliation records delivered goals, then session collection
+// retires their workspaces. Agent recovery remains an explicit decision.
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1_000;
 // A goal that has just launched has no session yet on the first tick. Waiting
@@ -30,7 +29,7 @@ export const ALERTING = new Map([
 ]);
 
 export class GoalWatchdog {
-  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
+  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, sessionCollector = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
     if (!health) throw new TypeError("A goal health sweep is required");
     this.health = health;
     this.pushService = pushService;
@@ -39,6 +38,7 @@ export class GoalWatchdog {
     // stopped keeps a stale board state, and the sweep calls it idle.
     this.mergeWatch = mergeWatch;
     this.worktrees = worktrees;
+    this.sessionCollector = sessionCollector;
     this.log = log;
     this.intervalMs = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : DEFAULT_INTERVAL_MS;
     this.startDelayMs = Number.isFinite(startDelayMs) && startDelayMs >= 0 ? startDelayMs : DEFAULT_START_DELAY_MS;
@@ -74,6 +74,7 @@ export class GoalWatchdog {
   // can share the dedupe.
   async check() {
     await this.#reconcile();
+    await this.sessionCollector?.sweep();
     const swept = await this.health.sweep();
     // An unreachable cmux reports every session as `unknown`. Alerting on that
     // would tell the user their agents died every time they closed cmux, so the
