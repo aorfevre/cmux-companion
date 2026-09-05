@@ -2358,3 +2358,230 @@ describe("fresh branch recovery", () => {
     }
   }
 });
+
+// T2 · AC-1, AC-3, AC-9, AC-10. Questioning a Delivery Contract is the one
+// planner action that must leave the contract alone. Every test here therefore
+// asserts the contract and the task titles as well as the thread.
+describe("questioning a delivery contract", () => {
+  const repository = { id: "repo-1", name: "companion" };
+  const at = "2026-09-05T09:00:00.000Z";
+  const tasks = [
+    { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", prompt: "Build the planner sheet.", agent: "codex", agentReason: "UI work suits Codex", criterionIds: ["AC-1"] },
+    { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", prompt: "Wire the planner routes.", agent: "claude", agentReason: "Server work suits Claude", criterionIds: ["AC-1"] },
+  ];
+  const spec = {
+    version: 2, outcome: "A questioned contract stays the same contract",
+    inScope: ["The goal sheet"], nonGoals: [], constraints: [], assumptions: [], risks: [],
+    acceptanceCriteria: [{ id: "AC-1", text: "The thread is durable", verification: "npm run test:ui" }],
+  };
+  const readiness = { ready: true, errors: [], warnings: [], waves: [["task-1"], ["task-2"]], coverage: [{ criterionId: "AC-1", taskIds: ["task-1", "task-2"] }] };
+  const answered = { question: "Does task 2 cover the migration?", answer: "Yes.\nIt owns server/migrate.mjs.", contractImpact: "none", suggestion: "", round: 2, createdAt: at };
+
+  function readyDetail(extra: Record<string, unknown> = {}) {
+    return { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", round: 2, status: "ready", stage: "ready", planStatus: "draft", boardState: "waiting_for_dev", questions: [], tasks, spec, readiness, contractVersion: 2, createdAt: at, updatedAt: at, launchedAt: null, ...extra };
+  }
+
+  // jsdom has no EventSource. The sheet gets one it can drive by hand, so the
+  // "done" frame that ends the discussion round is a deliberate step.
+  function fakeEventSource() {
+    const opened: { url: string; closed: boolean; emit: (data: unknown) => void }[] = [];
+    class FakeEventSource {
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      index: number;
+      constructor(public url: string) {
+        opened.push({ url, closed: false, emit: (data) => this.onmessage?.({ data: JSON.stringify(data) }) });
+        this.index = opened.length - 1;
+      }
+      close() { opened[this.index].closed = true; }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    return opened;
+  }
+
+  // AC-1. The whole arc: an existing thread, an asked question, the running
+  // 202 that carries no answer, the streamed end, and the reloaded answer. The
+  // contract outcome and both task titles must survive every step.
+  test("asks a question and shows the answer without changing the contract", async () => {
+    const streams = fakeEventSource();
+    const asked = { question: "Which task owns the CSS?", answer: "", contractImpact: "none", suggestion: "", round: 2, createdAt: at };
+    let answeredYet = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/discuss") && init?.method === "POST") {
+        answeredYet = true;
+        // The real route answers 202 with the public draft and no discussion
+        // field, because no answer exists yet.
+        return new Response(JSON.stringify(readyDetail({ running: true, runStage: "discussing" })), { status: 202 });
+      }
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(readyDetail({ discussion: answeredYet ? [answered, { ...asked, answer: "app/features.css belongs to task 1." }] : [answered] })), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
+
+    const region = await screen.findByRole("region", { name: "Question this plan" });
+    assert.ok(within(region).getByText("Does task 2 cover the migration?"));
+    assert.ok(within(region).getByText(/It owns server\/migrate.mjs/));
+
+    await userEvent.type(within(region).getByRole("textbox", { name: "Question about this plan" }), "Which task owns the CSS?");
+    await userEvent.click(within(region).getByRole("button", { name: "Ask" }));
+
+    const post = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/discuss") && init?.method === "POST");
+    assert.ok(post);
+    assert.equal(String(post?.[0]), "/api/worktree-plans/plan-1/discuss");
+    assert.deepEqual(JSON.parse(String(post?.[1]?.body)), { text: "Which task owns the CSS?", background: true });
+
+    // The 202 omits the discussion, so the loaded thread must not disappear.
+    assert.ok(await screen.findByText("A questioned contract stays the same contract"));
+    assert.ok(screen.getByText("Does task 2 cover the migration?"));
+    for (const title of ["Build the sheet", "Wire the routes"]) assert.ok(screen.getAllByText(title).length > 0);
+    // A discussion is not a planning round, so the full-page view stays away.
+    assert.equal(screen.queryByRole("region", { name: "Planning in progress" }), null);
+
+    await waitFor(() => assert.equal(streams.length, 1));
+    streams[0].emit({ k: "done" });
+
+    assert.ok(await screen.findByText("app/features.css belongs to task 1."));
+    assert.ok(screen.getByText("A questioned contract stays the same contract"));
+    for (const title of ["Build the sheet", "Wire the routes"]) assert.ok(screen.getAllByText(title).length > 0);
+    // The composer empties only once the question is stored.
+    assert.equal((screen.getByRole("textbox", { name: "Question about this plan" }) as HTMLTextAreaElement).value, "");
+  });
+
+  test("refuses whitespace and caps the question at 2000 characters", async () => {
+    fakeEventSource();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(readyDetail({ discussion: [] })), { status: 200 });
+    }));
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
+
+    const region = await screen.findByRole("region", { name: "Question this plan" });
+    const box = within(region).getByRole("textbox", { name: "Question about this plan" }) as HTMLTextAreaElement;
+    const ask = within(region).getByRole("button", { name: "Ask" }) as HTMLButtonElement;
+    assert.equal(box.maxLength, 2_000);
+    assert.equal(ask.disabled, true);
+    await userEvent.type(box, "   ");
+    assert.equal(ask.disabled, true);
+    await userEvent.type(box, "Why?");
+    assert.equal(ask.disabled, false);
+  });
+
+  // AC-3. A suggestion written against round 1 describes a split that no
+  // longer exists, so acting on it would re-plan against stale advice.
+  test("offers a handoff for the current round only", async () => {
+    fakeEventSource();
+    const stale = { question: "Split task 1?", answer: "It is too large.", contractImpact: "revision_suggested", suggestion: "Split task 1 into CSS and markup.", round: 1, createdAt: at };
+    const fresh = { question: "Is the migration covered?", answer: "No task owns it.", contractImpact: "revision_suggested", suggestion: "Add a task that owns server/migrate.mjs.", round: 2, createdAt: at };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(readyDetail({ discussion: [stale, fresh] })), { status: 200 });
+    }));
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
+
+    const region = await screen.findByRole("region", { name: "Question this plan" });
+    const entries = within(region).getAllByRole("listitem");
+    // Oldest first, so the stale round is read before the current one.
+    assert.match(entries[0].textContent || "", /Round 1/);
+    assert.match(entries[1].textContent || "", /Round 2/);
+    assert.match(entries[0].className, /historical/);
+    assert.match(entries[1].className, /current/);
+    assert.ok(within(entries[0]).getByText("Split task 1 into CSS and markup."));
+    assert.equal(within(region).getAllByRole("button", { name: "Use this suggestion" }).length, 1);
+    assert.equal(within(entries[0]).queryByRole("button", { name: "Use this suggestion" }), null);
+    assert.ok(within(entries[1]).getByRole("button", { name: "Use this suggestion" }));
+  });
+
+  // AC-9. The handoff fills the existing box and nothing more. Only the
+  // existing re-plan button may post to /feedback, with its body unchanged.
+  test("copies a suggestion into the rejection panel without posting it", async () => {
+    fakeEventSource();
+    const suggestion = "Add a task that owns server/migrate.mjs.";
+    const fresh = { question: "Is the migration covered?", answer: "No task owns it.", contractImpact: "revision_suggested", suggestion, round: 2, createdAt: at };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/feedback") && init?.method === "POST") return new Response(JSON.stringify(readyDetail({ round: 3, running: true, tasks: [] })), { status: 202 });
+      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(readyDetail({ discussion: [fresh] })), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
+
+    const region = await screen.findByRole("region", { name: "Question this plan" });
+    await userEvent.click(within(region).getByRole("button", { name: "Use this suggestion" }));
+
+    const box = await screen.findByRole("textbox", { name: "What is wrong with this split?" });
+    assert.equal((box as HTMLTextAreaElement).value, suggestion);
+    assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/feedback")), false);
+
+    await userEvent.click(screen.getByRole("button", { name: "Analyse this goal again" }));
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/feedback"));
+    assert.ok(call);
+    assert.deepEqual(JSON.parse(String(call?.[1]?.body)), { text: suggestion, background: true });
+  });
+
+  // AC-10. A discussion locks the sheet without hiding it: the contract is the
+  // subject of the question, so it must stay on screen while the answer runs.
+  test("keeps the ready view and disables every mutation while discussing", async () => {
+    fakeEventSource();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(readyDetail({ running: true, runStage: "discussing", discussion: [answered] })), { status: 200 });
+    }));
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
+
+    const region = await screen.findByRole("region", { name: "Question this plan" });
+    assert.equal(screen.queryByRole("region", { name: "Planning in progress" }), null);
+    assert.ok(screen.getByText("A questioned contract stays the same contract"));
+    for (const title of ["Build the sheet", "Wire the routes"]) assert.ok(screen.getAllByText(title).length > 0);
+    assert.ok(within(region).getByText("Does task 2 cover the migration?"));
+    // The progress lives inside the thread, not in a page that replaced it.
+    assert.ok(within(region).getByText(/Answering your question against the repository/));
+
+    assert.equal((within(region).getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled, true);
+    assert.equal((screen.getByRole("button", { name: /^Start workflow|^Launch / }) as HTMLButtonElement).disabled, true);
+    assert.equal((screen.getByRole("button", { name: "Remove Build the sheet" }) as HTMLButtonElement).disabled, true);
+    assert.equal((screen.getByRole("button", { name: "Use Claude for Build the sheet" }) as HTMLButtonElement).disabled, true);
+    assert.equal((screen.getByRole("button", { name: "This plan is wrong" }) as HTMLButtonElement).disabled, true);
+  });
+
+  // AC-3. The record outlives the draft. A launched or closed goal keeps every
+  // question it was asked, and offers no way to ask or act on another.
+  test("shows the thread read-only on a launched or terminal goal", async () => {
+    for (const extra of [{ planStatus: "launched", status: "ready", launchedAt: at }, { boardStatus: "merged", boardState: "merged", planStatus: "launched" }]) {
+      fakeEventSource();
+      const suggested = { question: "Is the migration covered?", answer: "No task owns it.", contractImpact: "revision_suggested", suggestion: "Add a migration task.", round: 2, createdAt: at };
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+        return new Response(JSON.stringify(readyDetail({ discussion: [answered, suggested], ...extra })), { status: 200 });
+      }));
+      render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
+
+      const region = await screen.findByRole("region", { name: "Question this plan" });
+      assert.ok(within(region).getByText("Does task 2 cover the migration?"));
+      assert.ok(within(region).getByText("Add a migration task."));
+      assert.equal(within(region).queryByRole("textbox", { name: "Question about this plan" }), null);
+      assert.equal(within(region).queryByRole("button", { name: "Ask" }), null);
+      assert.equal(within(region).queryByRole("button", { name: "Use this suggestion" }), null);
+      cleanup();
+    }
+  });
+
+  // The server refuses the thirteenth question. The sheet says so first,
+  // rather than letting the user write one and collect a 400.
+  test("stops offering a question at the stored cap", async () => {
+    fakeEventSource();
+    const many = Array.from({ length: 12 }, (_, index) => ({ ...answered, question: `Question ${index + 1}`, createdAt: at }));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify(readyDetail({ discussion: many })), { status: 200 });
+    }));
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
+
+    const region = await screen.findByRole("region", { name: "Question this plan" });
+    assert.ok(within(region).getByText("This plan has been questioned 12 times. Reject it and re-plan instead"));
+    assert.equal((within(region).getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled, true);
+    assert.equal((within(region).getByRole("textbox", { name: "Question about this plan" }) as HTMLTextAreaElement).disabled, true);
+  });
+});
