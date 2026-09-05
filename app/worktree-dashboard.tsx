@@ -83,6 +83,9 @@ function initialCollapsedBoardColumns() {
     const stored = JSON.parse(localStorage.getItem(BOARD_COLUMN_PREFERENCE_KEY) || "{}");
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) return collapsed;
     for (const id of ALL_BOARD_COLUMN_IDS) {
+      // Older preferences saved every default as a choice. Apply the new
+      // Blocked default once, while preserving other column preferences.
+      if (id === "blocked" && stored.version !== 2) continue;
       if (stored[id] === true) collapsed.delete(id);
       if (stored[id] === false) collapsed.add(id);
     }
@@ -774,7 +777,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
       const next = new Set(current);
       if (next.has(id)) next.delete(id); else next.add(id);
       try {
-        localStorage.setItem(BOARD_COLUMN_PREFERENCE_KEY, JSON.stringify(Object.fromEntries(ALL_BOARD_COLUMN_IDS.map((columnId) => [columnId, !next.has(columnId)]))));
+        localStorage.setItem(BOARD_COLUMN_PREFERENCE_KEY, JSON.stringify({ ...Object.fromEntries(ALL_BOARD_COLUMN_IDS.map((columnId) => [columnId, !next.has(columnId)])), version: 2 }));
       } catch { /* The toggle still works when storage is unavailable. */ }
       return next;
     });

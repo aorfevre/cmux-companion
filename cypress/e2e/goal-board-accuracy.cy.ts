@@ -78,6 +78,7 @@ function visitBoard() {
   cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
   cy.wait(["@dashboard", "@plans", "@health"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
+  cy.findByRole("button", { name: "Expand Blocked" }).click();
 }
 
 describe("goal board matches live cmux evidence", () => {

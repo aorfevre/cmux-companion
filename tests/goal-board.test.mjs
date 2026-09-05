@@ -14,7 +14,7 @@ test("exports the eight ordered columns with labels and descriptions", () => {
     "Writing Spec", "Review Spec", "Waiting for dev", "Dev in progress", "Waiting for merge", "Blocked", "Merged", "Aborted",
   ]);
   assert.equal(GOAL_BOARD_COLUMNS.every((column) => typeof column.description === "string" && column.description.length > 0), true);
-  assert.deepEqual(GOAL_BOARD_COLUMNS.filter((column) => column.collapsedByDefault).map((column) => column.id), ["merged", "aborted"]);
+  assert.deepEqual(GOAL_BOARD_COLUMNS.filter((column) => column.collapsedByDefault).map((column) => column.id), ["blocked", "merged", "aborted"]);
   assert.equal(Object.isFrozen(GOAL_BOARD_COLUMNS), true);
   assert.equal(GOAL_BOARD_COLUMNS.every((column) => Object.isFrozen(column)), true);
 });

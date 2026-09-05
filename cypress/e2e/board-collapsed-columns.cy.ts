@@ -68,7 +68,7 @@ const column = (name: string) => cy.findByRole("region", { name });
 describe("collapsible goal board columns", () => {
   beforeEach(() => installBoard());
 
-  it("starts terminal columns collapsed, keeps their counts query-aware, and toggles every lane accessibly", () => {
+  it("starts Blocked and terminal columns collapsed, keeps their counts query-aware, and toggles every lane accessibly", () => {
     visitBoard();
 
     column("Merged").within(() => {
@@ -84,6 +84,15 @@ describe("collapsible goal board columns", () => {
       cy.contains("The goal was stopped and no more work is expected.").should("not.exist");
     });
 
+    column("Blocked").within(() => {
+      cy.findByLabelText("1 goal in Blocked").should("be.visible");
+      cy.findByRole("button", { name: "Expand Blocked" }).should("have.attr", "aria-expanded", "false");
+      cy.contains("Repair the blocked implementation").should("not.exist");
+    });
+    cy.findByRole("button", { name: "Expand Blocked" }).click();
+    column("Blocked").should("contain.text", "Repair the blocked implementation");
+    cy.findByRole("button", { name: "Collapse Blocked" }).click();
+
     const expandedCards = [
       ["GitHub Issues", "Keep the issue lane expanded"],
       ["Writing Spec", "Draft the resilient spec"],
@@ -91,7 +100,6 @@ describe("collapsible goal board columns", () => {
       ["Waiting for dev", "Prepare the implementation"],
       ["Dev in progress", "Build the implementation"],
       ["Waiting for merge", "Land the implementation"],
-      ["Blocked", "Repair the blocked implementation"],
     ];
     for (const [name, card] of expandedCards) column(name).should("contain.text", card);
     cy.findAllByRole("button", { name: /^(Expand|Collapse) / }).should("have.length", 9);
@@ -106,13 +114,17 @@ describe("collapsible goal board columns", () => {
   it("persists expansion, re-collapse, and a working-column choice across reloads", () => {
     visitBoard();
     cy.findByRole("button", { name: "Expand Merged" }).click();
+    cy.findByRole("button", { name: "Expand Blocked" }).click();
     cy.reload();
     cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
+    column("Blocked").should("contain.text", "Repair the blocked implementation");
+    cy.findByRole("button", { name: "Collapse Blocked" }).click();
     column("Merged").should("contain.text", "Merged terminal one");
     cy.findByRole("button", { name: "Collapse Merged" }).should("have.attr", "aria-expanded", "true").click();
 
     cy.reload();
     cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
+    column("Blocked").should("not.contain.text", "Repair the blocked implementation");
     column("Merged").should("not.contain.text", "Merged terminal one");
     cy.findByRole("button", { name: "Expand Merged" }).should("have.attr", "aria-expanded", "false");
 
@@ -122,6 +134,20 @@ describe("collapsible goal board columns", () => {
     cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
     cy.findByRole("button", { name: "Expand Waiting for dev" }).should("have.attr", "aria-expanded", "false");
     column("Waiting for dev").should("not.contain.text", "Prepare the implementation");
+  });
+
+  it("applies the Blocked default to older saved preferences without resetting other columns", () => {
+    cy.visit("/?mode=worktrees", { onBeforeLoad(window) {
+      window.localStorage.setItem(preferenceKey, JSON.stringify({ blocked: true, merged: true, waiting_for_dev: false }));
+    } });
+    cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
+    cy.findByRole("button", { name: "Expand Blocked" }).should("have.attr", "aria-expanded", "false");
+    column("Merged").should("contain.text", "Merged terminal one");
+    cy.findByRole("button", { name: "Expand Waiting for dev" }).should("exist");
+    cy.findByRole("button", { name: "Expand Blocked" }).click();
+    cy.reload();
+    cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
+    column("Blocked").should("contain.text", "Repair the blocked implementation");
   });
 
   it("uses a materially narrower strip at desktop and mobile widths", () => {
