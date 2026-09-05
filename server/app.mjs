@@ -567,6 +567,15 @@ export async function buildApp({
     return reportRound(request.body?.traceId, (onEvent) => planner.feedback(request.params.planId, { ...submitted, onEvent }));
   });
 
+  // A question about the contract that is on screen. It is not a round: it
+  // changes nothing, so it takes the PATCH body limit only because the prompt
+  // it builds quotes the whole contract back to the model.
+  app.post("/api/worktree-plans/:planId/discuss", { bodyLimit: 64 * 1024 }, async (request, reply) => {
+    const submitted = { text: request.body?.text };
+    if (request.body?.background === true) return reply.code(202).send(await planner.discussBackground(request.params.planId, submitted));
+    return reportRound(request.body?.traceId, (onEvent) => planner.discuss(request.params.planId, { ...submitted, onEvent }));
+  });
+
   // Every round this process owns, so the dashboard can badge a running goal
   // without opening its sheet.
   app.get("/api/worktree-plans/runs", async () => planner.activeRuns());

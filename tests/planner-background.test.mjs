@@ -613,3 +613,185 @@ test("a background launch refuses a plan that is not ready in the caller's hand"
   await assert.rejects(() => planner.launchBackground(draft.planId), /not ready to launch/);
   assert.equal(planner.isLaunching(draft.planId), false);
 });
+
+// --- delivery contract discussions ----------------------------------------
+
+const READY_REPLY = envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a");
+
+function discussionEnvelope(payload, sessionId = "discussion-session") {
+  return envelope(JSON.stringify(payload), sessionId);
+}
+
+const GOOD_ANSWER = { answer: "T1 owns the whole billing module.", contractImpact: "none" };
+
+// A ready plan whose next execute call is held open, so a test can inspect a
+// live discussion and act while it runs.
+async function readyThenGated(store, notes = {}) {
+  const deps = fakeDeps({ replies: [] });
+  let release = () => {};
+  let started = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  const running = new Promise((resolve) => { started = resolve; });
+  let first = true;
+  deps.execute = async (bin, args, options) => {
+    if (first) { first = false; return { stdout: READY_REPLY }; }
+    started();
+    if (notes.abortable) {
+      await new Promise((resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(Object.assign(new Error("Command failed"), { killed: true, reason: "aborted" })), { once: true });
+      });
+    }
+    await gate;
+    return { stdout: notes.reply ?? discussionEnvelope(GOOD_ANSWER) };
+  };
+  const planner = new WorktreePlanner({ ...deps, store, ...notes.planner });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  return { deps, planner, draft, release, running };
+}
+
+test("a live discussion is a discuss run at the discussing stage and stays waiting for dev", async () => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const { planner, draft, release } = await readyThenGated(store);
+  const started = await planner.discussBackground(draft.planId, { text: "Why one task?" });
+  assert.equal(started.running, true);
+  assert.equal(started.runStage, "discussing");
+
+  const run = planner.runs.get(draft.planId);
+  assert.equal(run.kind, "discuss");
+  assert.equal(run.stage, "discussing");
+  assert.equal(run.phase, "running");
+  assert.equal((await planner.list()).plans[0].runStage, "discussing");
+  assert.equal((await planner.list()).plans[0].boardState, "waiting_for_dev");
+  assert.equal((await planner.detail(draft.planId)).boardState, "waiting_for_dev");
+
+  release();
+  await settled(planner, draft.planId);
+  assert.equal(planner.runs.get(draft.planId).phase, "done");
+  assert.equal(store.discussions(draft.planId).length, 1);
+  store.close();
+});
+
+test("a live discussion blocks every other mutation but not abort", async () => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const { planner, draft, release } = await readyThenGated(store);
+  await planner.discussBackground(draft.planId, { text: "Why one task?" });
+  const busy = /This goal is planning right now\. Wait for the round to finish/;
+
+  await assert.rejects(() => planner.discuss(draft.planId, { text: "And again?" }), busy);
+  await assert.rejects(() => planner.discussBackground(draft.planId, { text: "And again?" }), busy);
+  await assert.rejects(() => planner.answer(draft.planId, { skip: true }), busy);
+  await assert.rejects(() => planner.feedback(draft.planId, { text: "Wrong split." }), busy);
+  await assert.rejects(() => planner.update(draft.planId, { tasks: draft.tasks }), busy);
+  await assert.rejects(() => planner.launch(draft.planId), busy);
+  await assert.rejects(() => planner.run(draft.planId), busy);
+  await assert.rejects(() => planner.remove(draft.planId), busy);
+
+  release();
+  await settled(planner, draft.planId);
+  store.close();
+});
+
+test("a background discussion notifies neutrally and never claims a new plan", async () => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const sent = [];
+  const { planner, draft, release } = await readyThenGated(store, {
+    reply: discussionEnvelope({ answer: "T1 is too wide.", contractImpact: "revision_suggested", suggestion: "Split T1 into schema and API." }),
+    planner: { pushService: { send: async (payload) => { sent.push(payload); } } },
+  });
+  await planner.discussBackground(draft.planId, { text: "Is T1 too wide?" });
+  release();
+  await settled(planner, draft.planId);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].kind, "attention");
+  assert.match(sent[0].title, /answered your question/);
+  assert.equal(/Split T1 into schema and API/.test(sent[0].body), false, "the suggestion text must stay in the sheet");
+  assert.equal(/ready to launch/.test(sent[0].body), false, "a discussion never announces a plan");
+  assert.equal(store.discussions(draft.planId)[0].suggestion, "Split T1 into schema and API.");
+  store.close();
+});
+
+test("a failed discussion finishes as failed without a last error or an event", async () => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const events = [];
+  const sent = [];
+  const { planner, draft, release } = await readyThenGated(store, {
+    reply: envelope('{"answer":"Fine.","contractImpact":"maybe"}', "discussion-session"),
+    planner: {
+      progress: { publish: (planId, event) => events.push([planId, event]) },
+      pushService: { send: async (payload) => { sent.push(payload); } },
+    },
+  });
+  const before = store.get(draft.planId);
+  await planner.discussBackground(draft.planId, { text: "Is this right?" });
+  release();
+  await settled(planner, draft.planId);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(planner.runs.get(draft.planId).phase, "failed");
+  assert.match(planner.runs.get(draft.planId).error, /unusable answer/);
+  assert.ok(events.some(([, event]) => event.k === "error" && /unusable answer/.test(event.t)));
+  const after = store.get(draft.planId);
+  assert.equal(after.lastError, null, "a discussion failure is not plan state");
+  assert.equal(after.lastErrorAt, null);
+  assert.equal(after.updatedAt, before.updatedAt);
+  assert.deepEqual(store.discussions(draft.planId), []);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].kind, "failure");
+  store.close();
+});
+
+test("aborting a live discussion stays aborted after its detached promise settles", async () => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const events = [];
+  const { planner, draft, running } = await readyThenGated(store, {
+    abortable: true,
+    planner: { progress: { publish: (planId, event) => events.push([planId, event]) } },
+  });
+  await planner.discussBackground(draft.planId, { text: "Why one task?" });
+  await running;
+  await planner.abort(draft.planId);
+  assert.equal(planner.runs.get(draft.planId).phase, "aborted");
+  await settled(planner, draft.planId);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // The detached rejection lands after the abort. It must add nothing.
+  assert.equal(planner.runs.get(draft.planId).phase, "aborted");
+  assert.match(planner.runs.get(draft.planId).error, /aborted/);
+  assert.equal(events.filter(([, event]) => event.k === "error").length, 1, "one failure line, not two");
+  assert.match(events.filter(([, event]) => event.k === "error")[0][1].t, /aborted/);
+  assert.equal(store.get(draft.planId).lastError, null);
+  assert.deepEqual(store.discussions(draft.planId), []);
+  assert.equal(planner.controllers.size, 0);
+  store.close();
+});
+
+// The same race exists on a planning round, where the detached rejection used
+// to overwrite the aborted phase and persist a failure the user did not cause.
+test("an aborted planning round keeps its phase after the detached promise settles", async () => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const deps = fakeDeps({ replies: [] });
+  const events = [];
+  let started = () => {};
+  const running = new Promise((resolve) => { started = resolve; });
+  deps.execute = async (bin, args, options) => {
+    started();
+    await new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(Object.assign(new Error("Command failed"), { killed: true, reason: "aborted" })), { once: true });
+    });
+    return { stdout: "" };
+  };
+  const planner = new WorktreePlanner({ ...deps, store, progress: { publish: (planId, event) => events.push([planId, event]) } });
+  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
+  await running;
+  await planner.abort(draft.planId);
+  await settled(planner, draft.planId);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(planner.runs.get(draft.planId).phase, "aborted");
+  assert.equal(events.filter(([, event]) => event.k === "error").length, 1);
+  assert.equal(store.get(draft.planId).lastError, null, "an abort is not a round failure");
+  assert.equal(store.get(draft.planId).lastErrorAt, null);
+  store.close();
+});

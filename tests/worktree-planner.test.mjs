@@ -8,7 +8,7 @@ import { selectTaskBranchCandidate, taskBranchCandidates } from "../server/task-
 import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
 import { LaunchRuns } from "../server/launch-runs.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
-import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, describeTimeout, finalEnvelope, normalizePlannerEngine, parsePlannerReply, progressEvent, reviewerEngine, streamExecFile } from "../server/worktree-planner.mjs";
+import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, describeTimeout, finalEnvelope, normalizePlannerEngine, parseDiscussionReply, parsePlannerReply, progressEvent, reviewerEngine, streamExecFile } from "../server/worktree-planner.mjs";
 
 function envelope(text, sessionId = "session-1") {
   return `[i] Preparing CLIProxy...\n[OK] CLIProxy binary ready\n${JSON.stringify({ session_id: sessionId, result: text })}\n`;
@@ -2079,4 +2079,215 @@ test("the launch registry refuses an empty plan id", () => {
   const launches = new LaunchRuns();
   assert.equal(launches.begin(""), false);
   assert.equal(launches.isLaunching(""), false);
+});
+
+// --- delivery contract discussions ----------------------------------------
+
+function discussionEnvelope(payload, sessionId = "discussion-session") {
+  return envelope(typeof payload === "string" ? payload : JSON.stringify(payload), sessionId);
+}
+
+const GOOD_ANSWER = { answer: "T2 waits for T1 because both write the invoice model.", contractImpact: "none" };
+
+// A ready plan on a durable store, which every discussion test needs before it
+// can ask anything.
+async function readyPlan(t, planner, store) {
+  t.after(() => store.close());
+  return planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+}
+
+function discussPlanner(replies) {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  const deps = fakeDeps({ replies: [TASKS_REPLY, ...replies] });
+  const planner = new WorktreePlanner({ ...deps, store });
+  return { store, deps, planner };
+}
+
+test("parses a valid discussion answer and normalizes an absent suggestion", () => {
+  const reply = parseDiscussionReply(discussionEnvelope(GOOD_ANSWER));
+  assert.deepEqual(reply, { answer: GOOD_ANSWER.answer, contractImpact: "none", suggestion: "" });
+});
+
+test("keeps the suggestion of a revision verdict", () => {
+  const reply = parseDiscussionReply(discussionEnvelope({ answer: "T1 owns two areas.", contractImpact: "revision_suggested", suggestion: "Split T1 into schema and API." }));
+  assert.deepEqual(reply, { answer: "T1 owns two areas.", contractImpact: "revision_suggested", suggestion: "Split T1 into schema and API." });
+});
+
+test("refuses every unusable discussion payload", () => {
+  const refused = [
+    ["no answer", { answer: "", contractImpact: "none" }],
+    ["a missing answer", { contractImpact: "none" }],
+    ["an oversized answer", { answer: "x".repeat(4_001), contractImpact: "none" }],
+    ["a non-string answer", { answer: 12, contractImpact: "none" }],
+    ["a missing verdict", { answer: "Fine." }],
+    ["an unknown verdict", { answer: "Fine.", contractImpact: "maybe" }],
+    ["a suggestion on a none verdict", { answer: "Fine.", contractImpact: "none", suggestion: "Split T1." }],
+    ["a revision with no suggestion", { answer: "Wrong.", contractImpact: "revision_suggested" }],
+    ["a revision with an empty suggestion", { answer: "Wrong.", contractImpact: "revision_suggested", suggestion: "   " }],
+    ["an oversized suggestion", { answer: "Wrong.", contractImpact: "revision_suggested", suggestion: "y".repeat(2_001) }],
+    ["a non-string suggestion", { answer: "Fine.", contractImpact: "none", suggestion: 5 }],
+    ["an additional key", { answer: "Fine.", contractImpact: "none", suggestion: "", notes: "extra" }],
+    ["questions", { answer: "Fine.", contractImpact: "none", questions: [{ text: "Which?" }] }],
+    ["tasks", { answer: "Fine.", contractImpact: "none", tasks: [{ title: "A", branch: "feature/a", prompt: "Do it." }] }],
+  ];
+  for (const [label, payload] of refused) {
+    assert.throws(() => parseDiscussionReply(discussionEnvelope(payload)), /unusable answer/, label);
+  }
+  assert.throws(() => parseDiscussionReply("no json at all"), /unusable answer/);
+});
+
+test("a discussion answers, stores one event, and changes nothing else", async (t) => {
+  const { store, planner } = discussPlanner([discussionEnvelope(GOOD_ANSWER)]);
+  const draft = await readyPlan(t, planner, store);
+  const before = store.get(draft.planId);
+  const eventsBefore = store.events(draft.planId).length;
+
+  const result = await planner.discuss(draft.planId, { text: "Why does T2 wait for T1?" });
+  assert.equal(result.answer, GOOD_ANSWER.answer);
+  assert.equal(result.contractImpact, "none");
+  assert.equal(result.suggestion, "");
+  assert.equal(result.round, before.round);
+
+  const after = store.get(draft.planId);
+  assert.deepEqual(after.tasks, before.tasks);
+  for (const field of ["round", "stage", "sessionId", "spec", "readiness", "questions", "status", "lastError", "lastErrorAt"]) {
+    assert.deepEqual(after[field], before[field], `${field} must not change`);
+  }
+  assert.equal(store.events(draft.planId).length, eventsBefore + 1);
+  assert.equal(store.events(draft.planId).at(-1).kind, "discussion");
+  // The reply's own session id must never replace the plan's.
+  assert.equal(after.sessionId, "sess-a");
+  assert.deepEqual(store.discussions(draft.planId).map((entry) => entry.question), ["Why does T2 wait for T1?"]);
+});
+
+// A live session holds the contract of the round that created it. A task edit
+// and a reviewer-produced task never entered that session, so the prompt has to
+// carry the contract the user is actually looking at.
+test("a discussion prompt carries the current contract even on a resumed session", async (t) => {
+  const { store, deps, planner } = discussPlanner([discussionEnvelope(GOOD_ANSWER)]);
+  const draft = await readyPlan(t, planner, store);
+  await planner.update(draft.planId, { tasks: [{ ...draft.tasks[0], title: "Edited billing", prompt: "Add edited billing." }] });
+
+  await planner.discuss(draft.planId, { text: "Does the edit still cover AC-1?" });
+  const args = deps.calls.filter((call) => call[0] === "ccs").at(-1)[1];
+  const prompt = args.at(-1);
+  assert.equal(args[args.indexOf("--resume") + 1], "sess-a", "a live session must still be resumed");
+  assert.match(prompt, /Edited billing/);
+  assert.match(prompt, /Add edited billing\./);
+  assert.match(prompt, /branch: feature\/billing/);
+  assert.match(prompt, /Current specification:/);
+  assert.match(prompt, /Current readiness:/);
+  assert.match(prompt, /criteria: AC-1/);
+  assert.match(prompt, /Does the edit still cover AC-1\?/);
+  assert.match(prompt, /"answer":"\.\.\.","contractImpact":"none\|revision_suggested","suggestion":"\.\.\."/);
+  assert.match(prompt, /Add billing/, "the goal travels with the question");
+});
+
+test("an unusable discussion answer is retried once and then refused without a write", async (t) => {
+  const { store, deps, planner } = discussPlanner([
+    discussionEnvelope({ answer: "Fine.", contractImpact: "maybe" }),
+    discussionEnvelope({ answer: "Fine.", contractImpact: "none", tasks: [] }),
+  ]);
+  const draft = await readyPlan(t, planner, store);
+  const before = store.get(draft.planId);
+
+  await assert.rejects(() => planner.discuss(draft.planId, { text: "Is this right?" }), /unusable answer/);
+  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 3, "one opening round plus exactly two discussion attempts");
+  assert.deepEqual(store.discussions(draft.planId), []);
+  assert.equal(store.get(draft.planId).updatedAt, before.updatedAt);
+  assert.equal(store.get(draft.planId).lastError, null);
+});
+
+test("a second discussion attempt that parses is accepted", async (t) => {
+  const { store, deps, planner } = discussPlanner([
+    discussionEnvelope({ answer: "Fine.", contractImpact: "maybe" }),
+    discussionEnvelope(GOOD_ANSWER),
+  ]);
+  const draft = await readyPlan(t, planner, store);
+  const result = await planner.discuss(draft.planId, { text: "Is this right?" });
+  assert.equal(result.contractImpact, "none");
+  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 3);
+  assert.equal(store.discussions(draft.planId).length, 1);
+});
+
+test("a discussion refuses every boundary in its own sentence and writes nothing", async (t) => {
+  const { store, deps, planner } = discussPlanner([]);
+  const draft = await readyPlan(t, planner, store);
+  const before = store.get(draft.planId);
+  const spawns = deps.calls.filter((call) => call[0] === "ccs").length;
+
+  await assert.rejects(() => planner.discuss(draft.planId, { text: "   " }), /^TypeError: Ask a question about this plan$/);
+  await assert.rejects(() => planner.discuss(draft.planId, { text: "q".repeat(2_001) }), /^TypeError: That question is too long$/);
+  await assert.rejects(() => planner.discuss("no-such-plan", { text: "Why?" }), /Unknown plan\. Start a new goal/);
+
+  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, spawns, "no refusal may reach ccs");
+  assert.deepEqual(store.discussions(draft.planId), []);
+  assert.equal(store.get(draft.planId).updatedAt, before.updatedAt);
+});
+
+test("a plan with no task split cannot be questioned yet", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const deps = fakeDeps({ replies: [QUESTIONS_REPLY] });
+  const planner = new WorktreePlanner({ ...deps, store });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  await assert.rejects(() => planner.discuss(draft.planId, { text: "Why?" }), /^TypeError: This goal has no plan to question yet\. Answer its questions first$/);
+  assert.deepEqual(store.discussions(draft.planId), []);
+});
+
+test("a launched, an aborted and a merged plan keep their own refusal sentences", async (t) => {
+  const { store, planner } = discussPlanner([TASKS_REPLY]);
+  const draft = await readyPlan(t, planner, store);
+  store.recordLaunch(draft.planId, { base: "origin/main", results: [{ id: draft.tasks[0].id, status: "launched" }] });
+  planner.drafts.delete(draft.planId);
+  await assert.rejects(() => planner.discuss(draft.planId, { text: "Why?" }), /This plan is already launched\. Start a new goal/);
+
+  store.recordGoalAborted(draft.planId);
+  await assert.rejects(() => planner.discuss(draft.planId, { text: "Why?" }), /This goal was aborted\. Start a new goal/);
+
+  const other = await planner.start({ repositoryId: REPO_ID, goal: "Add invoices" });
+  store.recordGoalMerged(other.planId, { url: "https://github.test/pr/1" });
+  await assert.rejects(() => planner.discuss(other.planId, { text: "Why?" }), /This goal is already merged\. Start a new goal/);
+});
+
+test("the twelfth answered discussion is the last one", async (t) => {
+  const { store, planner } = discussPlanner([]);
+  const draft = await readyPlan(t, planner, store);
+  for (let index = 0; index < 12; index += 1) {
+    store.recordDiscussion(draft.planId, { question: `Q${index}?`, answer: "A.", contractImpact: "none", round: draft.round });
+  }
+  await assert.rejects(() => planner.discuss(draft.planId, { text: "One more?" }), /^TypeError: This plan has been questioned 12 times\. Reject it and re-plan instead$/);
+  assert.equal(store.discussions(draft.planId).length, 12);
+});
+
+// A failed attempt costs the planner a round but writes nothing, so it must not
+// spend one of the twelve either.
+test("a failed discussion does not consume the cap and does not consume maxRounds", async (t) => {
+  const { store, planner } = discussPlanner([
+    discussionEnvelope({ answer: "Fine.", contractImpact: "maybe" }),
+    discussionEnvelope({ answer: "Fine.", contractImpact: "maybe" }),
+    discussionEnvelope(GOOD_ANSWER),
+  ]);
+  const draft = await readyPlan(t, planner, store);
+  await assert.rejects(() => planner.discuss(draft.planId, { text: "First try?" }), /unusable answer/);
+  assert.deepEqual(store.discussions(draft.planId), []);
+  await planner.discuss(draft.planId, { text: "Second try?" });
+  assert.equal(store.discussions(draft.planId).length, 1);
+  assert.equal(store.get(draft.planId).round, 1, "a discussion never advances the round");
+});
+
+test("detail returns every discussion oldest first beside the generic events", async (t) => {
+  const { store, planner } = discussPlanner([discussionEnvelope(GOOD_ANSWER)]);
+  const draft = await readyPlan(t, planner, store);
+  store.recordDiscussion(draft.planId, { question: "Older?", answer: "Older answer.", contractImpact: "revision_suggested", suggestion: "Split T1.", round: 1 });
+  await planner.discuss(draft.planId, { text: "Newer?" });
+
+  const detail = await planner.detail(draft.planId);
+  assert.deepEqual(detail.discussion.map((entry) => entry.question), ["Older?", "Newer?"]);
+  assert.deepEqual(detail.discussion.map((entry) => entry.contractImpact), ["revision_suggested", "none"]);
+  assert.deepEqual(detail.discussion.map((entry) => entry.suggestion), ["Split T1.", ""]);
+  assert.deepEqual(detail.discussion.map((entry) => entry.round), [1, 1]);
+  assert.equal(detail.discussion.every((entry) => typeof entry.createdAt === "string"), true);
+  assert.equal(detail.events.filter((event) => event.kind === "discussion").length, 2);
+  assert.equal(detail.boardState, "waiting_for_dev");
 });

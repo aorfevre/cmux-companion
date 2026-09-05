@@ -9,9 +9,13 @@
 const RUN_TTL_MS = 60_000;
 const MAX_RUNS = 200;
 
-// The specification phases a live round can be in. The board reads this value,
-// never the display text in `step`, so a wording change cannot move a card.
-export const RUN_STAGES = Object.freeze(["writing_spec", "review_spec"]);
+// The phases a live round can be in. The board reads this value, never the
+// display text in `step`, so a wording change cannot move a card. `discussing`
+// is a question about a finished contract rather than a step towards one, so
+// the board keeps that goal in "Waiting for dev".
+export const RUN_STAGES = Object.freeze(["writing_spec", "review_spec", "discussing"]);
+
+const DEFAULT_STAGE = "writing_spec";
 
 export class PlannerRuns {
   constructor({ ttlMs = RUN_TTL_MS, now = Date.now } = {}) {
@@ -22,7 +26,12 @@ export class PlannerRuns {
 
   // `kind` says which round this is, so a card can tell a first plan apart from
   // an answered round without reading the plan row.
-  begin(planId, kind = "plan") {
+  //
+  // `stage` is supplied and validated here, not set by a second call, so a run
+  // is never observable in a stage it was never meant to start in. A round that
+  // does not say otherwise starts where every specification round starts.
+  begin(planId, kind = "plan", { stage = DEFAULT_STAGE } = {}) {
+    if (!RUN_STAGES.includes(stage)) throw new TypeError(`Unknown planner run stage ${stage}`);
     const id = String(planId || "");
     if (!id) return;
     this.#sweep();
@@ -30,7 +39,7 @@ export class PlannerRuns {
       const oldest = [...this.runs.entries()].filter(([, run]) => run.finishedAt !== null).sort((left, right) => left[1].at - right[1].at)[0];
       if (oldest) this.runs.delete(oldest[0]);
     }
-    this.runs.set(id, { planId: id, kind, phase: "running", stage: "writing_spec", step: "", error: "", startedAt: this.now(), finishedAt: null, at: this.now() });
+    this.runs.set(id, { planId: id, kind, phase: "running", stage, step: "", error: "", startedAt: this.now(), finishedAt: null, at: this.now() });
   }
 
   // The one structured lifecycle move a live round makes. It is validated here
