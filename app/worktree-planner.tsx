@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { canRetryOnFreshBranch } from "../server/worktree-errors.mjs";
 import { PLANNER_ENGINES, reviewerEngine, SPEC_OPTIONS } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 // One shared predicate: two copies had already drifted, so the sheet read
@@ -24,7 +25,7 @@ export type PlanOptionEvidence = { status: "planned" | "not_applicable"; rationa
 export type PlanOptionCoverage = { id: SpecOptionId; requested: boolean; status: "not_requested" | "covered" | "not_applicable" | "missing"; message: string };
 export type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[]; optionEvidence?: Partial<Record<SpecOptionId, PlanOptionEvidence>>; designArtifacts?: DesignArtifact[] };
 export type PlanReadiness = { ready: boolean; errors: string[]; warnings: string[]; waves: string[][]; coverage: { criterionId: string; taskIds: string[] }[]; optionCoverage?: PlanOptionCoverage[] };
-export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; type?: string; criterionIds?: string[]; dependsOn?: string[]; ownedAreas?: string[]; verification?: string[]; wave?: number; launchStatus?: string; deliveryStatus?: string; completionReport?: CompletionReport | null; evidenceStatus?: string | null; evidenceError?: string | null; changedFiles?: string[]; scopeWarnings?: string[]; workspaceId?: string | null; worktreePath?: string | null };
+export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; type?: string; criterionIds?: string[]; dependsOn?: string[]; ownedAreas?: string[]; verification?: string[]; wave?: number; launchStatus?: string; launchReason?: string | null; launchError?: string | null; deliveryStatus?: string; completionReport?: CompletionReport | null; evidenceStatus?: string | null; evidenceError?: string | null; changedFiles?: string[]; scopeWarnings?: string[]; workspaceId?: string | null; worktreePath?: string | null };
 export type PlanImage = { path: string; name: string };
 export type PlanRun = { planId: string; kind: string; phase: "running" | "done" | "failed"; step: string; error: string; startedAt: number; finishedAt: number | null };
 export type PlannerProvider = "claude" | "codex";
@@ -42,6 +43,9 @@ export type GoalBoardPrState = "OPEN" | "CLOSED" | "MERGED";
 export type GoalBoardFields = { boardState?: GoalBoardStateId | null; boardStatus?: GoalBoardStatus | null; boardChangedAt?: string | null; boardPrNumber?: number | null; boardPrUrl?: string | null; boardPrState?: GoalBoardPrState | null; boardPrObservedAt?: string | null; runStage?: string | null };
 export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; issueNumbers?: number[]; followupCount?: number; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; mergeStatus?: string | null; mergeWorkspaceId?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; readyCount?: number; failedCount?: number; skippedCount?: number; queuedCount?: number; agentSplit?: { claude: number; codex: number }; workspaceIds?: string[]; health?: GoalHealth | null; healthReason?: string | null; stuckCount?: number | null; createdAt: string; updatedAt: string; launchedAt: string | null } & GoalBoardFields;
 export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; images?: PlanImage[]; issueNumbers?: number[]; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; specOptions?: SpecOptions; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[] } & GoalBoardFields;
+export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed" | "queued"; wave?: number; path?: string | null; workspace?: unknown; error?: string };
+export type PlanLaunchResult = { planId: string; base: string; deliveryMode?: "single" | "combined"; launched: number; results: PlanLaunchRow[] };
+export type TaskRelaunchResult = { branch?: string; launchReason?: string | null };
 type DeliveryResult = { planId: string; deliveryMode: "combined"; deliveryStatus: string; integrationBranch?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null };
 type PlannerRepository = { id: string; name: string };
 
@@ -106,7 +110,7 @@ function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string })
 // still working from one that died an hour ago.
 function DeliveryTasks({ tasks, planId, health, busy, confirming, onRelaunch, onSkip, onConfirm }: {
   tasks: PlanTask[]; planId: string; health: Record<string, TaskHealth>; busy: Record<string, boolean>;
-  confirming: string; onRelaunch: (taskId: string, mode: "continue" | "restart") => void; onSkip: (taskId: string) => void; onConfirm: (key: string) => void;
+  confirming: string; onRelaunch: (taskId: string, mode: "continue" | "restart" | "rebranch") => void; onSkip: (taskId: string) => void; onConfirm: (key: string) => void;
 }) {
   if (tasks.length === 0) return null;
   const { ready, total } = readyCount(tasks);
@@ -116,6 +120,7 @@ function DeliveryTasks({ tasks, planId, health, busy, confirming, onRelaunch, on
     // Only a launched task that has not delivered can be recovered. A ready or
     // integrated task has nothing to redo, and a queued one has not started.
     const recoverable = task.launchStatus === "launched" && task.deliveryStatus !== "ready" && task.deliveryStatus !== "integrated";
+    const rebranchable = task.launchStatus === "failed" && canRetryOnFreshBranch(verdict?.launchReason ?? task.launchReason);
     const relaunchKey = `relaunch:${task.id}`;
     const skipKey = `skip:${task.id}`;
     const working = busy[relaunchKey] === true || busy[skipKey] === true;
@@ -124,6 +129,7 @@ function DeliveryTasks({ tasks, planId, health, busy, confirming, onRelaunch, on
       <code>{task.branch}</code>
       <em className={`delivery-${state.tone}`}>{state.label}</em>
       {verdict && <p className={`planner-delivery-health health-${verdict.health}`}>{verdict.reason}</p>}
+      {rebranchable && <><p>Retry from this task&rsquo;s base on a fresh branch; the blocked branch stays untouched.</p><div className="planner-delivery-actions"><button type="button" aria-label={`Retry on new branch for ${task.title}`} disabled={working} onClick={() => onRelaunch(task.id, "rebranch")}>{busy[relaunchKey] ? "Retrying on new branch…" : "Retry on new branch"}</button></div></>}
       {recoverable && (confirming === `${planId}:${task.id}`
         ? <div className="planner-delivery-confirm"><span>Restart discards this task&rsquo;s branch and worktree, and everything its agent wrote. Continue keeps them.</span><div><button type="button" aria-label={`Cancel recovering ${task.title}`} onClick={() => onConfirm("")}>Cancel</button><button type="button" className="confirm-restart" aria-label={`Confirm restart ${task.title}`} disabled={working} onClick={() => onRelaunch(task.id, "restart")}>{busy[relaunchKey] ? "Restarting…" : "Confirm restart"}</button><button type="button" className="confirm-skip" aria-label={`Confirm skip ${task.title}`} disabled={working} onClick={() => onSkip(task.id)}>{busy[skipKey] ? "Skipping…" : "Skip this task"}</button></div></div>
         : <div className="planner-delivery-actions"><button type="button" aria-label={`Continue ${task.title}`} disabled={working} onClick={() => onRelaunch(task.id, "continue")}>{busy[relaunchKey] ? "Continuing…" : "Continue"}</button><button type="button" aria-label={`Restart or skip ${task.title}`} disabled={working} onClick={() => onConfirm(`${planId}:${task.id}`)}>Restart or skip…</button></div>)}
@@ -131,7 +137,7 @@ function DeliveryTasks({ tasks, planId, health, busy, confirming, onRelaunch, on
   })}</ul></>;
 }
 
-type TaskHealth = { health: string; reason: string };
+type TaskHealth = { health: string; reason: string; launchReason?: string | null; branch?: string; session?: { id: string } | null };
 
 function GoalPassport({ draft }: { draft: PlanDraft }) {
   const spec = draft.spec;
@@ -358,8 +364,8 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
   // recovery: it costs a cmux round trip, so it does not poll here.
   const loadTaskHealth = useCallback(async (planId: string) => {
     try {
-      const report = await request<{ tasks: { id: string; health: string; reason: string }[] }>(`/api/worktree-plans/${encodeURIComponent(planId)}/health`);
-      setTaskHealth(Object.fromEntries((report.tasks || []).map((task) => [task.id, { health: task.health, reason: task.reason }])));
+      const report = await request<{ tasks: (TaskHealth & { id: string })[] }>(`/api/worktree-plans/${encodeURIComponent(planId)}/health`);
+      setTaskHealth(Object.fromEntries((report.tasks || []).map((task) => [task.id, task])));
     } catch { setTaskHealth({}); }
   }, []);
 
@@ -374,7 +380,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
 
   // One task starts again without abandoning the goal. `continue` keeps the
   // worktree and its work; `restart` discards both, so it confirms first.
-  async function relaunchTask(taskId: string, mode: "continue" | "restart") {
+  async function relaunchTask(taskId: string, mode: "continue" | "restart" | "rebranch") {
     if (!draft) return;
     const key = `relaunch:${taskId}`;
     setTaskBusy((current) => ({ ...current, [key]: true })); setError("");
@@ -383,12 +389,12 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
       // closing it here saves a trip to cmux. A task the sweep still reports as
       // working is never closed by a button labelled Continue.
       const verdict = taskHealth[taskId]?.health;
-      const closeLive = verdict !== undefined && verdict !== "working" && verdict !== "needs_you";
-      await request(`/api/worktree-plans/${draft.planId}/tasks/${encodeURIComponent(taskId)}/relaunch`, { method: "POST", body: JSON.stringify({ mode, closeLive }) });
+      const closeLive = (mode !== "rebranch" || Boolean(taskHealth[taskId]?.session?.id)) && verdict !== undefined && verdict !== "working" && verdict !== "needs_you";
+      const result = await request<TaskRelaunchResult>(`/api/worktree-plans/${encodeURIComponent(draft.planId)}/tasks/${encodeURIComponent(taskId)}/relaunch`, { method: "POST", body: JSON.stringify({ mode, closeLive }) });
       setConfirmTask("");
-      receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}`));
+      receive(await request<PlanDraft>(`/api/worktree-plans/${encodeURIComponent(draft.planId)}`));
       await loadTaskHealth(draft.planId);
-      onNotice(mode === "restart" ? "Restarted the task from its base branch" : "Continued the task in its existing worktree");
+      onNotice(mode === "rebranch" ? (result.branch ? `Retried the task on ${result.branch}` : "Retried the task on a fresh branch") : mode === "restart" ? "Restarted the task from its base branch" : "Continued the task in its existing worktree");
     } catch (cause) { fail(cause, "Could not relaunch this task"); }
     finally { setTaskBusy((current) => ({ ...current, [key]: false })); }
   }
@@ -400,7 +406,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     try {
       await request(`/api/worktree-plans/${draft.planId}/tasks/${encodeURIComponent(taskId)}/skip`, { method: "POST", body: JSON.stringify({ reason: "Skipped from the goal sheet" }) });
       setConfirmTask("");
-      receive(await request<PlanDraft>(`/api/worktree-plans/${draft.planId}`));
+      receive(await request<PlanDraft>(`/api/worktree-plans/${encodeURIComponent(draft.planId)}`));
       await loadTaskHealth(draft.planId);
       onNotice("Skipped the task, so the goal can assemble without it");
     } catch (cause) { fail(cause, "Could not skip this task"); }

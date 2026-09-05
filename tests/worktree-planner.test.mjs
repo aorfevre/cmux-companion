@@ -4,6 +4,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentBriefs } from "../server/agent-brief.mjs";
+import { selectTaskBranchCandidate, taskBranchCandidates } from "../server/task-branch.mjs";
+import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
 import { LaunchRuns } from "../server/launch-runs.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, describeTimeout, finalEnvelope, normalizePlannerEngine, parsePlannerReply, progressEvent, reviewerEngine, streamExecFile } from "../server/worktree-planner.mjs";
@@ -891,7 +893,10 @@ test("creates one worktree and one session per task", async () => {
   assert.equal(result.base, "origin/main");
   assert.deepEqual(result.results.map((item) => item.status), ["launched"]);
   const create = deps.calls.find((call) => call[0] === "create");
-  assert.deepEqual(create[2], { branch: "feature/billing", base: "origin/main", reuseIfAtBase: true, workspaces: [] });
+  assert.deepEqual(create[2], {
+    branch: "feature/billing", base: "origin/main", reuseIfAtBase: true,
+    requireFreshAtBase: true, workspaces: [], workspacesAvailable: false,
+  });
   const workspace = deps.calls.find((call) => call[0] === "workspace");
   assert.equal(workspace[1].agent, "claude");
   // The session name is the scheme, not the bare task title: project code,
@@ -911,6 +916,110 @@ test("creates one worktree and one session per task", async () => {
   assert.match(brief, /^Add billing\.\n\nDelivery contract for this task:/);
   assert.match(brief, /Cmux-Goal-Report:/);
   assert.match(brief, /Finish with a pull request:/);
+});
+
+test("retries an eligible initial acquisition once on the first fresh branch and persists it", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const deps = launchDeps();
+  let first = true;
+  deps.worktrees.create = async (repositoryId, options) => {
+    deps.calls.push(["create", repositoryId, options]);
+    if (first) {
+      first = false;
+      throw worktreeStateError("That branch already has a worktree with a running session", WORKTREE_REASONS.RUNNING_SESSION);
+    }
+    return { created: true, branchCreated: true, worktree: { id: "w2", branch: options.branch, path: "/repo/sample-feature-billing-2" } };
+  };
+  const planner = new WorktreePlanner({ ...deps, store });
+  const draft = await readyDraft(planner);
+  const result = await planner.launch(draft.planId);
+
+  assert.deepEqual(deps.calls.filter((call) => call[0] === "create").map((call) => call[2].branch), ["feature/billing", "feature/billing-2"]);
+  assert.equal(result.results[0].branch, "feature/billing-2");
+  assert.equal(result.results[0].launchReason, null);
+  assert.equal(store.get(draft.planId).tasks[0].branch, "feature/billing-2");
+  assert.equal(store.get(draft.planId).tasks[0].launchReason, null);
+});
+
+test("does not retry an initial acquisition for a generic Git add failure", async () => {
+  const deps = launchDeps();
+  deps.worktrees.create = async (repositoryId, options) => {
+    deps.calls.push(["create", repositoryId, options]);
+    throw worktreeStateError("Git could not create this worktree", WORKTREE_REASONS.ADD_FAILURE);
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  const result = await planner.launch(draft.planId);
+
+  assert.equal(deps.calls.filter((call) => call[0] === "create").length, 1);
+  assert.equal(result.results[0].branch, "feature/billing");
+  assert.equal(result.results[0].launchReason, WORKTREE_REASONS.ADD_FAILURE);
+});
+
+test("persists the effective branch and path when workspace creation fails after fallback", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const deps = launchDeps();
+  let originalAttempts = 0;
+  deps.worktrees.create = async (repositoryId, options) => {
+    deps.calls.push(["create", repositoryId, options]);
+    if (options.branch === "feature/billing" && originalAttempts++ === 0) {
+      throw worktreeStateError("That branch already has a worktree", WORKTREE_REASONS.REGISTERED_WORKTREE);
+    }
+    return { created: true, branchCreated: true, worktree: { id: "w2", branch: options.branch, path: "/repo/sample-feature-billing-2" } };
+  };
+  let workspaceAttempts = 0;
+  deps.cmux.workspaceCreate = async () => {
+    workspaceAttempts += 1;
+    if (workspaceAttempts === 1) throw new Error("cmux is not running");
+    return { workspace_id: "ws-2" };
+  };
+  const planner = new WorktreePlanner({ ...deps, store });
+  const draft = await readyDraft(planner);
+  const failed = await planner.launch(draft.planId);
+
+  assert.equal(failed.results[0].branch, "feature/billing-2");
+  assert.equal(failed.results[0].path, "/repo/sample-feature-billing-2");
+  assert.equal(store.get(draft.planId).tasks[0].branch, "feature/billing-2");
+  await planner.launch(draft.planId);
+  assert.deepEqual(deps.calls.filter((call) => call[0] === "create").map((call) => call[2].branch), [
+    "feature/billing", "feature/billing-2", "feature/billing-2",
+  ]);
+});
+
+test("branch candidates continue suffixes, truncate long stems, and stay bounded", async () => {
+  assert.deepEqual(taskBranchCandidates("feature/payments-2").slice(0, 2), ["feature/payments-3", "feature/payments-4"]);
+  const long = `feature/${"x".repeat(73)}`;
+  const candidate = taskBranchCandidates(long)[0];
+  assert.equal(candidate.length, 81);
+  assert.equal(candidate.endsWith("-2"), true);
+  assert.equal(candidate.includes(".."), false);
+
+  const occupied = Array.from({ length: 19 }, (_, index) => `feature/payments-${index + 2}`).join("\n");
+  await assert.rejects(
+    () => selectTaskBranchCandidate({
+      branch: "feature/payments",
+      cwd: "/repo/sample",
+      git: async (cwd, args) => args[0] === "for-each-ref" ? occupied : "",
+    }),
+    /exhausted through -20/,
+  );
+});
+
+test("branch selection skips local and registered candidates without mutating Git", async () => {
+  const calls = [];
+  const selected = await selectTaskBranchCandidate({
+    branch: "feature/payments",
+    cwd: "/repo/sample",
+    registeredBranches: ["feature/payments-3"],
+    git: async (cwd, args) => {
+      calls.push(args);
+      return args[0] === "for-each-ref" ? "feature/payments-2\n" : "";
+    },
+  });
+  assert.equal(selected, "feature/payments-4");
+  assert.deepEqual(calls.map((args) => args[0]), ["for-each-ref", "check-ref-format"]);
 });
 
 test("launches only the first dependency wave and queues downstream tasks", async () => {

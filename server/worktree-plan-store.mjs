@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { classifyLegacyWorktreeError } from "./worktree-errors.mjs";
 import { normalizeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
 
@@ -111,6 +112,7 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
   wave INTEGER NOT NULL DEFAULT 0,
   launch_status TEXT,
   launch_error TEXT,
+  launch_reason TEXT,
   worktree_path TEXT,
   workspace_id TEXT,
   start_sha TEXT,
@@ -246,13 +248,16 @@ export class WorktreePlanStore {
         planId,
       );
       const update = this.db.prepare(`
-        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?, start_sha = ?
+        UPDATE plan_tasks SET branch = COALESCE(?, branch), launch_status = ?, launch_error = ?, launch_reason = ?,
+          worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?, start_sha = ?
         WHERE plan_id = ? AND task_id = ?
       `);
       for (const result of results) {
         update.run(
+          text(result?.branch),
           text(result?.status),
           text(result?.error),
+          result?.status === "launched" ? null : text(result?.launchReason),
           text(result?.path),
           workspaceId(result?.workspace),
           result?.status === "queued" ? null : text(result?.startSha) || text(baseSha),
@@ -269,14 +274,15 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       const update = this.db.prepare(`
-        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?,
-          start_sha = ?, delivery_status = 'pending'
+        UPDATE plan_tasks SET branch = COALESCE(?, branch), launch_status = ?, launch_error = ?, launch_reason = ?,
+          worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?, start_sha = ?, delivery_status = 'pending'
         WHERE plan_id = ? AND task_id = ? AND launch_status IN ('queued', 'failed')
       `);
       let changed = 0;
       for (const result of results) {
         changed += Number(update.run(
-          text(result?.status), text(result?.error), text(result?.path), workspaceId(result?.workspace),
+          text(result?.branch), text(result?.status), text(result?.error),
+          result?.status === "launched" ? null : text(result?.launchReason), text(result?.path), workspaceId(result?.workspace),
           text(result?.startSha) || text(startSha), String(planId), String(result?.id || ""),
         ).changes);
       }
@@ -665,13 +671,14 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare(`
-        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?,
-          start_sha = ?, head_sha = NULL, delivery_status = 'pending', evidence_status = NULL,
+        UPDATE plan_tasks SET branch = COALESCE(?, branch), launch_status = ?, launch_error = ?, launch_reason = ?,
+          worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?, start_sha = ?, head_sha = NULL, delivery_status = 'pending', evidence_status = NULL,
           evidence_error = NULL, completion_report = NULL, changed_files = '[]', scope_warnings = '[]',
           integrated_commit_sha = NULL, session_closed_at = NULL
         WHERE plan_id = ? AND task_id = ?
       `).run(
-        text(result?.status) || "launched", text(result?.error), text(result?.path),
+        text(result?.branch), text(result?.status) || "launched", text(result?.error),
+        result?.status === "failed" ? text(result?.launchReason) : null, text(result?.path),
         workspaceId(result?.workspace), text(result?.startSha), id, task,
       );
       this.db.prepare(`
@@ -1031,6 +1038,7 @@ export class WorktreePlanStore {
     ensure("plan_tasks", "owned_areas", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plan_tasks", "verification", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plan_tasks", "wave", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plan_tasks", "launch_reason", "TEXT");
     ensure("plan_tasks", "start_sha", "TEXT");
     ensure("plan_tasks", "head_sha", "TEXT");
     ensure("plan_tasks", "completion_report", "TEXT");
@@ -1157,6 +1165,7 @@ function readTask(row) {
     wave: Number(row.wave) || 0,
     launchStatus: row.launch_status,
     launchError: row.launch_error,
+    launchReason: row.launch_reason || classifyLegacyWorktreeError(row.launch_error),
     worktreePath: row.worktree_path,
     workspaceId: row.workspace_id,
     startSha: row.start_sha,

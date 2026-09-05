@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { AgentBriefs } from "../server/agent-brief.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { WorktreePlanner } from "../server/worktree-planner.mjs";
+import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
 
 const REPO_ID = "repository12345678";
 
@@ -45,8 +46,8 @@ function recoveryDeps() {
           worktrees: [{ id: "worktree1234567890", branch: "main", path: "/repo/sample", isPrimary: true }],
         }],
       }),
-      removeBranchWorktree: async (repositoryId, branch) => {
-        calls.push(["remove", repositoryId, branch]);
+      removeBranchWorktree: async (repositoryId, branch, options) => {
+        calls.push(["remove", repositoryId, branch, options]);
         return { removed: true, branch, path: `/repo/sample-${branch.replace(/\W+/g, "-")}` };
       },
       create: async (repositoryId, options) => {
@@ -73,10 +74,10 @@ const TASKS = [
 // A launched plan sitting in the store, exactly as a real launch left it. The
 // recovery paths read the durable row and never the draft cache, so the tests
 // build the row instead of driving a launch.
-function launched(t, { worktreePath = "/repo/sample-feature-billing", deps = recoveryDeps(), planId = "plan-1" } = {}) {
+function launched(t, { worktreePath = "/repo/sample-feature-billing", deps = recoveryDeps(), planId = "plan-1", specOptions } = {}) {
   const store = new WorktreePlanStore({ path: ":memory:" });
   t.after(() => store.close());
-  store.createPlan({ planId, repositoryId: REPO_ID, repositoryName: "sample", cwd: "/repo/sample", goal: "Add billing" });
+  store.createPlan({ planId, repositoryId: REPO_ID, repositoryName: "sample", cwd: "/repo/sample", goal: "Add billing", specOptions });
   store.recordRound(planId, {
     round: 1, stage: "ready", sessionId: "sess-a",
     spec: { outcome: "Customers can pay invoices", acceptanceCriteria: [{ id: "AC-1", text: "Payment works", verification: "npm test" }] },
@@ -131,12 +132,12 @@ test("refuses to relaunch or skip a task that is already integrated", async (t) 
   await assert.rejects(() => planner.skipTask("plan-1", "t1"), /already merged, so it cannot be skipped/);
 });
 
-// Two modes only. A typo must not fall through to whichever branch the code
+// Three modes only. A typo must not fall through to whichever branch the code
 // happens to default to, because they do opposite things to the working tree.
-test("refuses a mode that is neither continue nor restart", async (t) => {
+test("refuses a mode that is neither continue, restart, nor rebranch", async (t) => {
   const { planner, deps } = launched(t);
   for (const mode of ["clean", "CONTINUE", "", null, "restart "]) {
-    await assert.rejects(() => planner.relaunchTask("plan-1", "t1", { mode }), /must be continue or restart/i);
+    await assert.rejects(() => planner.relaunchTask("plan-1", "t1", { mode }), /must be continue, restart, or rebranch/i);
   }
   assert.deepEqual(deps.calls.filter((call) => call[0] === "remove"), [], "a rejected mode must touch nothing");
 });
@@ -199,16 +200,15 @@ test("another task's live session does not block a relaunch", async (t) => {
   assert.equal(result.status, "launched");
 });
 
-// Refusing every recovery while cmux is down would rebuild the lock this whole
-// path exists to remove, so an unreachable list is treated as "not live".
-test("an unreachable cmux workspace list still lets a relaunch run", async (t) => {
+// Unknown inventory cannot prove the recorded workspace is gone. Opening a
+// second agent would risk two writers in the same task worktree.
+test("an unreachable cmux workspace list blocks a recorded task workspace", async (t) => {
   const path = await realWorktree();
   const deps = recoveryDeps();
   deps.cmux.workspaceListDetailed = async () => { throw new Error("cmux is not running"); };
-  const { planner, store } = launched(t, { deps, worktreePath: path });
-  const result = await planner.relaunchTask("plan-1", "t1");
-  assert.equal(result.status, "launched");
-  assert.equal(store.get("plan-1").tasks[0].workspaceId, "ws-new");
+  const { planner } = launched(t, { deps, worktreePath: path });
+  await assert.rejects(() => planner.relaunchTask("plan-1", "t1"), /could not be checked/i);
+  assert.deepEqual(deps.calls.filter((call) => call[0] === "workspace"), []);
 });
 
 // A task whose launch failed has no workspace id at all. The liveness probe
@@ -334,7 +334,10 @@ test("restart removes the branch and its worktree before it creates a new one", 
   assert.ok(removeAt !== -1, "it must remove the branch");
   assert.ok(createAt !== -1, "it must create the worktree");
   assert.ok(removeAt < createAt, "the removal must come first");
-  assert.deepEqual(deps.calls[removeAt].slice(1), [REPO_ID, "feature/billing"]);
+  assert.deepEqual(deps.calls[removeAt].slice(1, 3), [REPO_ID, "feature/billing"]);
+  assert.deepEqual(deps.calls[removeAt][3], {
+    workspaces: [], workspacesAvailable: true, allowedWorkspaceIds: ["ws-old"],
+  });
   assert.equal(deps.calls[createAt][2].branch, "feature/billing");
   assert.equal(deps.calls[createAt][2].base, "origin/main");
 });
@@ -346,6 +349,107 @@ test("restart rebuilds from the integration branch once a combined goal has one"
   store.recordIntegrationStarted("plan-1", { branch: "goal/billing-plan1", path: "/repo/goal" });
   await planner.relaunchTask("plan-1", "t1", { mode: "restart" });
   assert.equal(deps.calls.find((call) => call[0] === "create")[2].base, "goal/billing-plan1");
+});
+
+// --- rebranch mode -------------------------------------------------------
+
+test("rebranch leaves the old branch and worktree untouched and persists the derived branch", async (t) => {
+  const oldPath = await realWorktree();
+  const { store, deps, planner } = launched(t, { worktreePath: oldPath, specOptions: { unitTests: true } });
+  const result = await planner.relaunchTask("plan-1", "t1", { mode: "rebranch" });
+
+  const brief = readFileSync(join(deps.briefs.directory, "plan-1-t1.md"), "utf8");
+  assert.match(brief, /Requested specification rigor for this goal:/);
+  assert.match(brief, /Unit tests: Cover the new logic with unit tests/);
+  assert.equal(result.branch, "feature/billing-2");
+  assert.equal(result.path, "/repo/sample-feature-billing-2");
+  assert.equal(existsSync(oldPath), true);
+  assert.deepEqual(deps.calls.filter((call) => call[0] === "remove"), []);
+  assert.deepEqual(deps.calls.filter((call) => call[0] === "create").map((call) => call[2].branch), ["feature/billing-2"]);
+  assert.equal(store.get("plan-1").tasks[0].branch, "feature/billing-2");
+});
+
+test("rebranch persists its effective branch and path when workspace creation fails", async (t) => {
+  const deps = recoveryDeps();
+  deps.cmux.workspaceCreate = async () => { throw new Error("cmux is not running"); };
+  const { store, planner } = launched(t, { deps });
+  await assert.rejects(() => planner.relaunchTask("plan-1", "t1", { mode: "rebranch" }), /cmux is not running/);
+  const task = store.get("plan-1").tasks[0];
+  assert.equal(task.branch, "feature/billing-2");
+  assert.equal(task.worktreePath, "/repo/sample-feature-billing-2");
+  assert.equal(task.launchStatus, "failed");
+});
+
+test("clean restart also retries one eligible acquisition on a fresh branch", async (t) => {
+  const deps = recoveryDeps();
+  let first = true;
+  const create = deps.worktrees.create;
+  deps.worktrees.create = async (repositoryId, options) => {
+    if (first) {
+      first = false;
+      deps.calls.push(["create", repositoryId, options]);
+      throw worktreeStateError("That branch already exists locally", WORKTREE_REASONS.BRANCH_EXISTS);
+    }
+    return create(repositoryId, options);
+  };
+  const { store, planner } = launched(t, { deps });
+  const result = await planner.relaunchTask("plan-1", "t1", { mode: "restart" });
+  assert.deepEqual(deps.calls.filter((call) => call[0] === "create").map((call) => call[2].branch), ["feature/billing", "feature/billing-2"]);
+  assert.equal(result.branch, "feature/billing-2");
+  assert.equal(store.get("plan-1").tasks[0].branch, "feature/billing-2");
+});
+
+test("rebranch continues from a stored fallback suffix instead of appending another suffix", async (t) => {
+  const { store, deps, planner } = launched(t);
+  store.recordTaskRelaunch("plan-1", "t1", {
+    branch: "feature/billing-2", status: "failed", launchReason: WORKTREE_REASONS.BRANCH_EXISTS, error: "owned",
+  });
+  const result = await planner.relaunchTask("plan-1", "t1", { mode: "rebranch" });
+  assert.equal(result.branch, "feature/billing-3");
+  assert.equal(deps.calls.find((call) => call[0] === "create")[2].branch, "feature/billing-3");
+});
+
+test("unavailable inventory still permits rebranch when no workspace was ever recorded", async (t) => {
+  const deps = recoveryDeps();
+  deps.cmux.workspaceListDetailed = async () => { throw new Error("cmux is down"); };
+  const { store, planner } = launched(t, { deps });
+  store.recordTaskRelaunch("plan-1", "t1", {
+    branch: "feature/billing", status: "failed", launchReason: WORKTREE_REASONS.PATH_OCCUPIED, error: "occupied",
+  });
+
+  const result = await planner.relaunchTask("plan-1", "t1", { mode: "rebranch" });
+  assert.equal(result.status, "launched");
+  assert.equal(result.branch, "feature/billing-2");
+  assert.equal(deps.calls.find((call) => call[0] === "create")[2].workspacesAvailable, false);
+});
+
+test("clean restart passes the live inventory and allows only its old workspace", async (t) => {
+  const deps = recoveryDeps();
+  deps.cmux.workspaceListDetailed = async () => ({ workspaces: [
+    { id: "ws-old", current_directory: "/repo/sample-feature-billing" },
+  ] });
+  const { planner } = launched(t, { deps });
+  await planner.relaunchTask("plan-1", "t1", { mode: "restart", closeLive: true });
+  const remove = deps.calls.find((call) => call[0] === "remove");
+  assert.equal(remove[3].workspacesAvailable, true);
+  assert.deepEqual(remove[3].workspaces.map((workspace) => workspace.id), ["ws-old"]);
+  assert.deepEqual(remove[3].allowedWorkspaceIds, ["ws-old"]);
+});
+
+test("a foreign live session blocks clean restart before branch replacement", async (t) => {
+  const deps = recoveryDeps();
+  deps.cmux.workspaceListDetailed = async () => ({ workspaces: [
+    { id: "ws-foreign", title: "Other work", current_directory: "/repo/sample-feature-billing" },
+  ] });
+  deps.worktrees.removeBranchWorktree = async (repositoryId, branch, options) => {
+    deps.calls.push(["remove", repositoryId, branch, options]);
+    const foreign = options.workspaces.find((workspace) => !options.allowedWorkspaceIds.includes(workspace.id));
+    if (foreign) throw worktreeStateError(`Close workspace ${foreign.id} (${foreign.title}) before removing this task worktree`, WORKTREE_REASONS.RUNNING_SESSION);
+  };
+  const { planner } = launched(t, { deps });
+
+  await assert.rejects(() => planner.relaunchTask("plan-1", "t1", { mode: "restart" }), /ws-foreign \(Other work\)/);
+  assert.deepEqual(deps.calls.filter((call) => call[0] === "create"), []);
 });
 
 // A failed removal is a failed relaunch, not a half-rebuilt worktree the next

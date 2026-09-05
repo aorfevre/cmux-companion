@@ -2291,3 +2291,70 @@ describe("deployment health", () => {
     assert.ok(screen.getByText("Paused"));
   });
 });
+
+describe("fresh branch recovery", () => {
+  for (const surface of ["rail", "sheet"] as const) {
+    for (const outcome of ["success", "generic", "failure"] as const) {
+      test(`${surface} retries structured acquisition failures immediately (${outcome})`, async () => {
+        const planId = "goal / retry"; const taskId = "T1 / blocked";
+        const detailUrl = `/api/worktree-plans/${encodeURIComponent(planId)}`;
+        const tasks = [
+          { id: taskId, title: "Blocked task", branch: "feature/blocked", agent: "codex", prompt: "Build", agentReason: "", wave: 1, launchStatus: "failed", launchReason: "running-session", launchError: "That branch already has a worktree with a running session", deliveryStatus: "pending", health: "failed", reason: "Branch is occupied", session: null, workspaceId: null },
+          { id: "T2", title: "Sync failure", branch: "feature/sync", agent: "codex", prompt: "Build", agentReason: "", wave: 1, launchStatus: "failed", launchReason: "add-failure", launchError: "That branch already has a worktree with a running session", deliveryStatus: "pending", health: "failed", reason: "Sync unavailable", session: null, workspaceId: null },
+          { id: "T3", title: "Dead task", branch: "feature/dead", agent: "codex", prompt: "Build", agentReason: "", wave: 1, launchStatus: "launched", launchReason: null, deliveryStatus: "pending", health: "dead", reason: "Agent stopped", session: null, workspaceId: null },
+        ];
+        const now = new Date().toISOString();
+        const plan = { planId, repositoryId: "repo-retry", repositoryName: "companion", goal: "Recover blocked work", status: "launched", planStatus: "launched", stage: "ready", deliveryMode: "combined", deliveryStatus: "blocked", boardState: "blocked", round: 1, taskCount: 3, launchedCount: 1, createdAt: now, updatedAt: now, launchedAt: now, tasks, questions: [] };
+        const repository = { id: "repo-retry", name: "companion", root: "karven", path: "/repo", summary: {}, worktrees: [], releases: [] };
+        let release: (value: Response) => void = () => {};
+        let refreshed = false;
+        const currentTasks = () => tasks.map((task, index) => refreshed && index === 0 ? { ...task, branch: "feature/retry-2", launchStatus: "launched", launchReason: null, health: "idle" } : task);
+        const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          if (url === `${detailUrl}/tasks/${encodeURIComponent(taskId)}/relaunch`) return new Promise<Response>((resolve) => { release = resolve; });
+          if (url === detailUrl) return Response.json({ ...plan, tasks: currentTasks().map((task) => ({ ...task, launchReason: undefined })) });
+          if (url === `${detailUrl}/health`) return Response.json({ tasks: currentTasks() });
+          if (url.startsWith("/api/worktree-plans?")) return Response.json({ plans: [plan] });
+          if (url === "/api/goals/health") return Response.json({ sessionsAvailable: true, goals: [{ ...plan, tasks: currentTasks(), health: "failed", stuckCount: 3 }], summary: { goals: 1, tasks: 3, stuck: 1, needsYou: 0, working: 0 } });
+          if (url.startsWith("/api/worktree-dashboard")) return Response.json({ generatedAt: now, summary: {}, repositories: [repository], orphanSessions: [] });
+          void init;
+          return Response.json({ providers: [], closed: [], kept: [], failed: [], items: [] });
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        const confirm = vi.fn(); vi.stubGlobal("confirm", confirm);
+        const notice = vi.fn();
+        render(surface === "rail"
+          ? <WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={async () => {}} onNotice={notice} />
+          : <WorktreePlannerSheet repository={repository} initialPlanId={planId} onClose={vi.fn()} onNotice={notice} />);
+        const retry = await screen.findByRole("button", { name: "Retry on new branch for Blocked task" });
+        assert.equal(screen.queryByRole("button", { name: "Retry on new branch for Sync failure" }), null);
+        assert.equal(screen.queryByRole("button", { name: "Retry on new branch for Dead task" }), null);
+        assert.ok(screen.getByRole("button", { name: "Continue Dead task" }));
+        assert.ok(screen.getByText(/blocked branch.*untouched/));
+        await userEvent.click(retry);
+        assert.equal((retry as HTMLButtonElement).disabled, true);
+        assert.equal(retry.textContent, "Retrying on new branch…");
+        if (surface === "rail") for (const name of ["Continue Blocked task", "Restart Blocked task", "Skip Blocked task"]) assert.equal((screen.getByRole("button", { name }) as HTMLButtonElement).disabled, true);
+        assert.equal(screen.queryByRole("button", { name: /Confirm restart/ }), null);
+        assert.equal(confirm.mock.calls.length, 0);
+        const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/relaunch"));
+        assert.equal(call?.[0], `${detailUrl}/tasks/${encodeURIComponent(taskId)}/relaunch`);
+        assert.equal(call?.[1]?.method, "POST");
+        assert.deepEqual(JSON.parse(String(call?.[1]?.body)), { mode: "rebranch", closeLive: false });
+        if (outcome === "failure") {
+          await act(async () => release(Response.json({ error: "Retry unavailable" }, { status: 409 })));
+          await waitFor(() => assert.equal((retry as HTMLButtonElement).disabled, false));
+          if (surface === "rail") assert.equal(notice.mock.calls.at(-1)?.[0], "Retry unavailable");
+          else assert.ok(screen.getByText("Retry unavailable"));
+        } else {
+          refreshed = true;
+          await act(async () => release(Response.json(outcome === "generic" ? {} : { branch: "feature/retry-2" })));
+          assert.ok((await screen.findAllByText("feature/retry-2")).length);
+          await waitFor(() => assert.match(notice.mock.calls.at(-1)?.[0], outcome === "generic" ? /on a fresh branch/ : /feature\/retry-2/));
+          assert.ok(fetchMock.mock.calls.some(([url]) => url === detailUrl));
+          assert.ok(fetchMock.mock.calls.filter(([url]) => url === (surface === "rail" ? "/api/goals/health" : `${detailUrl}/health`)).length >= 2);
+        }
+      });
+    }
+  }
+});
