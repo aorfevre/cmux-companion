@@ -337,16 +337,15 @@ test("a driven tick closes a finished goal's task sessions through the real reap
   });
   const result = await watchdog.check();
 
-  assert.deepEqual(closed.sort(), ["workspace-0", "workspace-1"]);
-  assert.deepEqual(result.sessions.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
-  // The merge session still owns the open pull request, so it stays.
-  assert.deepEqual(result.sessions.kept.map((entry) => entry.workspaceId), ["workspace-merge"]);
+  assert.deepEqual(closed.sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(result.sessions.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(result.sessions.kept, []);
   // Recorded durably, so a second pass never closes the same session twice.
   const plan = store.get("plan-1");
   assert.ok(plan.tasks.every((task) => task.sessionClosedAt));
-  assert.equal(plan.mergeSessionClosedAt, null);
+  assert.ok(plan.mergeSessionClosedAt);
   assert.deepEqual((await watchdog.check()).sessions.closed, []);
-  assert.equal(closed.length, 2);
+  assert.equal(closed.length, 3);
 });
 
 // An unreachable cmux proves nothing about any agent, so a pass that cannot see

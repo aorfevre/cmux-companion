@@ -1,7 +1,7 @@
+import { GoalSessionCollector } from "./goal-session-collector.mjs";
 import { existsSync } from "node:fs";
 import { parseCompletionReport, readyCount, scopeDrift, validateCompletionReport } from "./delivery-contract.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
-import { missingWorkspace, retirableSessions } from "./goal-session-reaper.mjs";
 import { mergeSessionTitle, sessionEnv, sessionTitle } from "./session-name.mjs";
 import { taskPrompt } from "./worktree-planner.mjs";
 
@@ -21,7 +21,7 @@ class TerminalGoalError extends TypeError {}
 // branch is ready by reading git, then hands the merge itself to one cmux agent:
 // a conflict needs judgement, which no subprocess can supply.
 export class GoalIntegrator {
-  constructor({ store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS, briefs = new AgentBriefs() } = {}) {
+  constructor({ store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS, briefs = new AgentBriefs(), sessionCollector = null } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
@@ -29,6 +29,7 @@ export class GoalIntegrator {
     this.worktrees = worktrees;
     this.repoCatalog = repoCatalog;
     this.cmux = cmux;
+    this.sessionCollector = sessionCollector || new GoalSessionCollector({ store, cmux, log });
     // The full brief goes to a file. cmux caps a prompt at 8,000 characters, so
     // every agent session gets a short pointer to that file instead.
     this.briefs = briefs;
@@ -520,58 +521,8 @@ export class GoalIntegrator {
     return this.store.recordWaveLaunch(plan.planId, { wave, startSha, results });
   }
 
-  // A goal leaves one session per task plus one per merge attempt behind. Each
-  // stops being useful the moment its work is integrated, and cmux shows every
-  // one of them until something closes it. This runs after the store has
-  // committed the transition, and it swallows everything: a session left open
-  // is untidy, while a throw here would blame a delivery that already
-  // succeeded.
   async #retireSessions(planId) {
-    try {
-      const plan = this.store.get(planId);
-      if (!plan || plan.deliveryMode !== "combined") return;
-      if (!this.store.recordSessionsRetired || !this.cmux?.workspaceClose) return;
-      // The one rule lives in the reaper, so a session the supervision pass
-      // would keep is never closed here instead. The blocked merge, the live
-      // agent and the unreachable cmux are all decided there.
-      const { close } = retirableSessions(plan, await this.#liveWorkspaces());
-      // The live merge session is the one the user is watching, and after the
-      // pull request it is the session that opened it. The integrator never
-      // closes it: only the supervision pass, which sees the merged goal, may.
-      const pending = close.filter((entry) => entry.kind !== "merge");
-      const retired = [];
-      for (const entry of pending) {
-        const closed = await this.cmux.workspaceClose(entry.workspaceId).then(() => true, (cause) => {
-          // A session the user already closed rejects exactly like one that was
-          // never opened. Both are retired, or the same dead id would be
-          // retried on every settle for the life of the plan.
-          this.log?.warn?.({ err: cause, planId: plan.planId, workspaceId: entry.workspaceId }, "closing a finished goal session failed");
-          return missingWorkspace(cause);
-        });
-        if (closed) retired.push({ workspaceId: entry.workspaceId, taskId: entry.taskId, kind: entry.kind });
-      }
-      if (retired.length) this.store.recordSessionsRetired(plan.planId, retired);
-    } catch (cause) {
-      this.log?.warn?.({ err: cause, planId }, "goal session cleanup failed");
-    }
-  }
-
-  // The same view the reaper builds, so both read one liveness rule. An
-  // unreachable cmux answers "unavailable", which the policy reads as a refusal
-  // to close anything at all.
-  async #liveWorkspaces() {
-    if (!this.cmux?.workspaceListDetailed) return { available: false, byId: new Map() };
-    try {
-      const payload = await this.cmux.workspaceListDetailed();
-      const byId = new Map();
-      for (const workspace of Array.isArray(payload?.workspaces) ? payload.workspaces : []) {
-        if (typeof workspace?.id === "string" && workspace.id) byId.set(workspace.id, workspace);
-      }
-      return { available: true, byId };
-    } catch (cause) {
-      this.log?.warn?.({ err: cause }, "goal session cleanup could not read the workspace list");
-      return { available: false, byId: new Map() };
-    }
+    await this.sessionCollector.collect(planId);
   }
 
   // The list feeds the worktree reuse check only. An empty list makes that
