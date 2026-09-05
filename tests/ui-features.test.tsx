@@ -1672,6 +1672,11 @@ describe("goals board", () => {
     });
     const board = await openBoard();
     await within(board).findByText(issue.title);
+    // Merged and Aborted start collapsed, so their cards render only once the
+    // column is expanded. The point of this test is that a terminal goal
+    // offers no follow-up button, which needs the card on the page to prove.
+    await userEvent.click(within(board).getByRole("button", { name: "Expand Merged" }));
+    await userEvent.click(within(board).getByRole("button", { name: "Expand Aborted" }));
     const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
 
     assert.ok(within(card("Waiting on the PR")).getByRole("button", { name: "More actions for Waiting on the PR" }));
