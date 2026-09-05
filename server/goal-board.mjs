@@ -68,7 +68,13 @@ export function groupGoalsByBoardState(plans) {
 function draftState(source) {
   if (source.running === true) {
     // The reviewer phase is a structured run stage, never a progress line.
-    return text(source.runStage) === "review_spec" ? "review_spec" : "writing_spec";
+    const runStage = text(source.runStage);
+    // A discussion questions a contract that is already written. It changes
+    // nothing, so the goal stays where the user left it rather than appearing
+    // to be planned again. A discussion on a stage that is not ready has no
+    // contract to sit beside, so it keeps the ordinary planning column.
+    if (runStage === "discussing") return stage(source) === "ready" ? "waiting_for_dev" : "writing_spec";
+    return runStage === "review_spec" ? "review_spec" : "writing_spec";
   }
   // Round zero means the first planner round never produced a specification.
   if (!(Number(source.round) >= 1)) return "writing_spec";

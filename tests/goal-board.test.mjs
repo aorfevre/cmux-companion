@@ -134,3 +134,19 @@ test("groups goals into every column, including the empty ones", () => {
   });
   assert.deepEqual(groupGoalsByBoardState(null), empty);
 });
+
+// A discussion questions a contract that is already written. It changes
+// nothing, so the goal must not appear to be planned again.
+test("keeps a discussing ready draft in waiting for dev", () => {
+  assert.equal(goalBoardState({ ...SUMMARY, stage: "ready", running: true, runStage: "discussing" }), "waiting_for_dev");
+  // A detail keeps the stage in `status`.
+  assert.equal(goalBoardState({ planId: "plan-9", planStatus: "draft", status: "ready", round: 2, running: true, runStage: "discussing" }), "waiting_for_dev");
+  // Without a contract there is nothing to sit beside, so the ordinary
+  // planning column applies.
+  assert.equal(goalBoardState({ ...SUMMARY, stage: "questions", running: true, runStage: "discussing" }), "writing_spec");
+  assert.equal(goalBoardState({ ...SUMMARY, stage: "ready", round: 0, running: true, runStage: "discussing" }), "waiting_for_dev");
+  // A display line must never move a card.
+  assert.equal(goalBoardState({ ...SUMMARY, stage: "ready", running: true, runStep: "Discussing the contract" }), "writing_spec");
+  // A launched goal is past discussion entirely.
+  assert.equal(goalBoardState({ ...LAUNCHED, running: true, runStage: "discussing" }), "dev_in_progress");
+});

@@ -687,6 +687,8 @@ function fakePlanner() {
     run: async (planId) => { calls.push(["run", planId]); return { ...draft, round: 0, running: true }; },
     feedback: async (planId, options) => { calls.push(["feedback", planId, options]); return { ...draft, round: 3 }; },
     feedbackBackground: async (planId, options) => { calls.push(["feedbackBackground", planId, options]); return { ...draft, running: true }; },
+    discuss: async (planId, options) => { calls.push(["discuss", planId, options]); return { planId, round: 1, question: options.text, answer: "T1 owns the whole module.", contractImpact: "none", suggestion: "" }; },
+    discussBackground: async (planId, options) => { calls.push(["discussBackground", planId, options]); return { ...draft, running: true, runStage: "discussing" }; },
     activeRuns: () => { calls.push(["activeRuns"]); return { runs: [{ planId: "plan-1", kind: "plan", phase: "running", stage: "writing_spec", step: "Read app/page.tsx", startedAt: 1, finishedAt: null }] }; },
     abort: async (planId) => { calls.push(["abort", planId]); return { planId, aborted: true, alreadyAborted: false, closedSessionIds: ["ws-1"], failedSessionIds: ["ws-2"] }; },
   };
@@ -1638,5 +1640,53 @@ test("every supervision route requires pairing", async (t) => {
   ]) {
     const response = await app.inject({ method, url, payload: method === "POST" ? {} : undefined });
     assert.equal(response.statusCode, 401, `${method} ${url}`);
+  }
+});
+
+test("routes a contract question to the planner, awaited or in the background", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+
+  const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/discuss", headers, payload: { text: "Why is T1 one task?" } });
+  assert.equal(awaited.statusCode, 200);
+  assert.equal(awaited.json().answer, "T1 owns the whole module.");
+  assert.equal(awaited.json().contractImpact, "none");
+  assert.deepEqual(planner.calls[0][2], { text: "Why is T1 one task?", onEvent: null });
+
+  const background = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/discuss", headers, payload: { text: "And T2?", background: true } });
+  assert.equal(background.statusCode, 202);
+  assert.equal(background.json().running, true);
+  assert.equal(background.json().runStage, "discussing");
+  assert.equal(planner.calls[1][0], "discussBackground");
+  assert.deepEqual(planner.calls[1][2], { text: "And T2?" });
+});
+
+test("reports every contract question refusal as a 400 the sheet can show", async () => {
+  const refusals = [
+    "Ask a question about this plan",
+    "That question is too long",
+    "This goal has no plan to question yet. Answer its questions first",
+    "This plan has been questioned 12 times. Reject it and re-plan instead",
+    "This goal is planning right now. Wait for the round to finish",
+    "This plan is already launched. Start a new goal",
+    "This goal was aborted. Start a new goal",
+    "This goal is already merged. Start a new goal",
+    "Unknown plan. Start a new goal",
+  ];
+  for (const sentence of refusals) {
+    const planner = fakePlanner();
+    planner.discuss = async () => { throw new TypeError(sentence); };
+    planner.discussBackground = async () => { throw new TypeError(sentence); };
+    const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+    const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+    const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/discuss", headers, payload: { text: "Why?" } });
+    assert.equal(awaited.statusCode, 400, sentence);
+    assert.equal(awaited.json().error, sentence);
+    const background = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/discuss", headers, payload: { text: "Why?", background: true } });
+    assert.equal(background.statusCode, 400, sentence);
+    assert.equal(background.json().error, sentence);
+    await app.close();
   }
 });
