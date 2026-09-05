@@ -138,6 +138,7 @@ export class GoalHealthSweep {
       wave: Number(task?.wave) || 0,
       launchStatus: launchStatus || null,
       launchError: task?.launchError || null,
+      launchReason: task?.launchReason || null,
       deliveryStatus,
       evidenceStatus: task?.evidenceStatus || null,
       evidenceError: task?.evidenceError || null,

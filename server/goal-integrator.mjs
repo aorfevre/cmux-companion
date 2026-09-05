@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { parseCompletionReport, readyCount, scopeDrift, validateCompletionReport } from "./delivery-contract.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { mergeSessionTitle, sessionEnv, sessionTitle } from "./session-name.mjs";
+import { acquireTaskWorktree, effectiveTaskBranch, launchReason } from "./task-branch.mjs";
 import { taskPrompt } from "./worktree-planner.mjs";
 
 export { readyCount } from "./delivery-contract.mjs";
@@ -464,7 +465,14 @@ export class GoalIntegrator {
     const dashboard = await this.worktrees.snapshot?.({ refresh: true });
     const recovered = dashboard?.repositories?.find((repository) => repository.id === plan.repositoryId)?.worktrees?.find((worktree) => worktree.branch === branch);
     if (recovered?.path) return this.store.recordIntegrationStarted(plan.planId, { branch, path: recovered.path });
-    const created = await this.worktrees.create(plan.repositoryId, { branch, base: `origin/${baseBranch}`, reuseIfAtBase: true, workspaces: await this.#workspaces() });
+    const inventory = await this.#workspaces();
+    const created = await this.worktrees.create(plan.repositoryId, {
+      branch,
+      base: `origin/${baseBranch}`,
+      reuseIfAtBase: true,
+      workspaces: inventory.workspaces,
+      workspacesAvailable: inventory.available,
+    });
     // A rebuild re-attaches the goal branch this plan already owns, so an
     // existing branch is only an error the first time round. Rejecting it on a
     // retry would strand a plan whose merge work is already on that branch.
@@ -482,37 +490,52 @@ export class GoalIntegrator {
     if (!startSha) throw new TypeError(`Could not resolve the integrated base for wave ${wave + 1}`);
     // Read once for the whole wave. The list only feeds the worktree reuse
     // check, which a stale entry cannot make looser.
-    const workspaces = await this.#workspaces();
+    const inventory = await this.#workspaces();
     const results = [];
     for (const task of tasks) {
       const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent, wave };
+      let branch = task.branch;
       let path = null;
       // One re-read per task. A wave of four tasks takes minutes, and an abort
       // during it must not open the sessions that are still to come. This sits
       // outside the try: a stopped goal is not a failed task launch.
       if (this.#terminal(plan.planId)) break;
       try {
-        const created = await this.worktrees.create(plan.repositoryId, { branch: task.branch, base: startSha, reuseIfAtBase: true, workspaces });
+        const created = await acquireTaskWorktree({
+          worktrees: this.worktrees,
+          repositoryId: plan.repositoryId,
+          repositoryPath: plan.cwd,
+          branch: task.branch,
+          base: startSha,
+          inventory,
+          git: (cwd, args, options) => this.#git(cwd, args, options),
+          planId: plan.planId,
+          taskId: task.id,
+          log: this.log,
+        });
+        branch = created.branch;
+        const effectiveTask = { ...task, branch: created.branch };
         path = created.worktree.path;
         if (created.branchCreated === false && !created.reused) {
-          throw new TypeError(`Branch ${task.branch} already exists, so wave ${wave + 1} cannot start from its integrated dependency base`);
+          throw new TypeError(`Branch ${effectiveTask.branch} already exists, so wave ${wave + 1} cannot start from its integrated dependency base`);
         }
         const brief = await this.briefs.write({
           planId: plan.planId,
           taskId: task.id,
-          markdown: taskPrompt(task, plan.spec, plan.images, plan.integrationBranch, "combined", `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions),
+          markdown: taskPrompt(effectiveTask, plan.spec, plan.images, plan.integrationBranch, "combined", `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions),
         });
         const workspace = await this.cmux.workspaceCreate({
           cwd: path,
-          title: sessionTitle(plan, task),
-          agent: task.agent,
-          env: sessionEnv(plan, task),
-          prompt: this.briefs.pointerPrompt({ title: task.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
+          title: sessionTitle(plan, effectiveTask),
+          agent: effectiveTask.agent,
+          env: sessionEnv(plan, effectiveTask),
+          prompt: this.briefs.pointerPrompt({ title: effectiveTask.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });
-        results.push({ ...summary, status: "launched", path, workspace, startSha });
+        results.push({ ...summary, branch: effectiveTask.branch, status: "launched", launchReason: null, path, workspace, startSha });
       } catch (cause) {
-        this.log?.warn?.({ err: cause, branch: task.branch, wave }, "workflow wave task launch failed");
-        results.push({ ...summary, status: "failed", path, startSha, error: cause?.message || "Could not launch this task" });
+        branch = effectiveTaskBranch(cause, branch);
+        this.log?.warn?.({ err: cause, branch, planId: plan.planId, taskId: task.id, wave }, "workflow wave task launch failed");
+        results.push({ ...summary, branch, status: "failed", launchReason: launchReason(cause), path, startSha, error: cause?.message || "Could not launch this task" });
       }
     }
     // An abort before the first task leaves nothing to record, and writing an
@@ -525,16 +548,16 @@ export class GoalIntegrator {
     await this.sessionCollector.collect(planId);
   }
 
-  // The list feeds the worktree reuse check only. An empty list makes that
-  // check stricter, so a cmux that is absent or silent must not fail a wave.
+  // Keep availability distinct from a confirmed empty list. New task branches
+  // can still launch while cmux is absent; existing worktrees fail closed.
   async #workspaces() {
-    if (!this.cmux?.workspaceListDetailed) return [];
+    if (!this.cmux?.workspaceListDetailed) return { available: false, workspaces: [] };
     try {
       const payload = await this.cmux.workspaceListDetailed();
-      return payload?.workspaces || [];
+      return { available: true, workspaces: Array.isArray(payload?.workspaces) ? payload.workspaces : [] };
     } catch (cause) {
       this.log?.warn?.({ err: cause }, "workflow could not read the workspace list");
-      return [];
+      return { available: false, workspaces: [] };
     }
   }
 

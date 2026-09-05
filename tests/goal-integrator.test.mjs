@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { AgentBriefs } from "../server/agent-brief.mjs";
 import { GoalIntegrator, mergePrompt, readyCount } from "../server/goal-integrator.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
+import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
 
 const REPO_ID = "repository12345678";
 const TASK_ONE = "a".repeat(40);
@@ -229,6 +230,100 @@ test("a completed workflow wave launches its dependents from the integrated comm
   const downstream = calls.filter((call) => call[0] === "workspaceCreate").at(-1)[1];
   assertPointer(downstream.prompt);
   assert.match(briefText(downstream.prompt), /Workflow dependencies: t1/);
+});
+
+test("an eligible dependent-wave acquisition retries once and persists the substituted branch", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { contract: true, workflow: true });
+  await integrator.assemble("plan-12345678");
+  const originalGit = integrator.repoCatalog.git;
+  const integratedSha = "d".repeat(40);
+  integrator.repoCatalog.git = async (cwd, args) => {
+    if (cwd === integrationPath && args[0] === "log") return `Task 1\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`;
+    if (cwd === integrationPath && args[0] === "rev-parse") return `${integratedSha}\n`;
+    return originalGit(cwd, args);
+  };
+  let refused = false;
+  const fallbackPath = join(integrationPath, "task-two-fallback");
+  integrator.worktrees.create = async (repositoryId, options) => {
+    calls.push(["create", repositoryId, options]);
+    if (options.branch === "feature/billing-ui" && !refused) {
+      refused = true;
+      throw worktreeStateError("That branch already has a worktree with a running session", WORKTREE_REASONS.RUNNING_SESSION);
+    }
+    mkdirSync(fallbackPath, { recursive: true });
+    return { created: true, branchCreated: true, worktree: { path: fallbackPath, branch: options.branch } };
+  };
+
+  await integrator.settle("plan-12345678");
+  const attempts = calls.filter((call) => call[0] === "create" && call[2].branch.startsWith("feature/billing-ui"));
+  assert.deepEqual(attempts.map((call) => call[2].branch), ["feature/billing-ui", "feature/billing-ui-2"]);
+  const task = store.get("plan-12345678").tasks[1];
+  assert.equal(task.branch, "feature/billing-ui-2");
+  assert.equal(task.worktreePath, fallbackPath);
+  assert.equal(task.launchReason, null);
+});
+
+test("a non-eligible dependent-wave failure does not retry", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { contract: true, workflow: true });
+  await integrator.assemble("plan-12345678");
+  const originalGit = integrator.repoCatalog.git;
+  integrator.repoCatalog.git = async (cwd, args) => {
+    if (cwd === integrationPath && args[0] === "log") return `Task 1\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`;
+    if (cwd === integrationPath && args[0] === "rev-parse") return `${"d".repeat(40)}\n`;
+    return originalGit(cwd, args);
+  };
+  integrator.worktrees.create = async (repositoryId, options) => {
+    calls.push(["create", repositoryId, options]);
+    throw worktreeStateError("Git could not create this worktree", WORKTREE_REASONS.ADD_FAILURE);
+  };
+
+  await integrator.settle("plan-12345678");
+  const attempts = calls.filter((call) => call[0] === "create" && call[2].branch === "feature/billing-ui");
+  assert.equal(attempts.length, 1);
+  assert.equal(store.get("plan-12345678").tasks[1].launchReason, WORKTREE_REASONS.ADD_FAILURE);
+});
+
+test("a wave workspace failure still persists the fallback branch and path", async (t) => {
+  const { store, integrator, calls, integrationPath } = fixture(t, { contract: true, workflow: true });
+  await integrator.assemble("plan-12345678");
+  const originalGit = integrator.repoCatalog.git;
+  integrator.repoCatalog.git = async (cwd, args) => {
+    if (cwd === integrationPath && args[0] === "log") return `Task 1\n\nCmux-Goal-Task: plan-12345678/t1/${TASK_ONE}\n`;
+    if (cwd === integrationPath && args[0] === "rev-parse") return `${"d".repeat(40)}\n`;
+    return originalGit(cwd, args);
+  };
+  let refused = false;
+  const fallbackPath = join(integrationPath, "task-two-failed-session");
+  integrator.worktrees.create = async (repositoryId, options) => {
+    calls.push(["create", repositoryId, options]);
+    if (!refused) {
+      refused = true;
+      throw worktreeStateError("That branch already exists locally", WORKTREE_REASONS.BRANCH_EXISTS);
+    }
+    mkdirSync(fallbackPath, { recursive: true });
+    return { created: true, branchCreated: true, worktree: { path: fallbackPath, branch: options.branch } };
+  };
+  integrator.cmux.workspaceCreate = async () => { throw new Error("cmux is not running"); };
+
+  await integrator.settle("plan-12345678");
+  const task = store.get("plan-12345678").tasks[1];
+  assert.equal(task.launchStatus, "failed");
+  assert.equal(task.branch, "feature/billing-ui-2");
+  assert.equal(task.worktreePath, fallbackPath);
+});
+
+test("ready evidence and the merge brief use the stored substituted branch", async (t) => {
+  const { store, integrator, calls } = fixture(t, { contract: true });
+  store.recordTaskRelaunch("plan-12345678", "t1", {
+    branch: "feature/billing-api-2", status: "launched", path: store.get("plan-12345678").tasks[0].worktreePath,
+    workspace: { workspace_id: "workspace-one-new" }, startSha: BASE,
+  });
+
+  await integrator.assemble("plan-12345678");
+  const lookup = calls.find((call) => call[0] === "git" && call[2][0] === "ls-remote" && call[2][2].includes("billing-api"));
+  assert.equal(lookup[2][2], "refs/heads/feature/billing-api-2");
+  const mergeWorkspace = calls.find((call) => call[0] === "workspaceCreate")[1];
+  assert.match(briefText(mergeWorkspace.prompt), /branch: feature\/billing-api-2/);
 });
 
 test("a restart advances queued work when the previous wave was already recorded as integrated", async (t) => {

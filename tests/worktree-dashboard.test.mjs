@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { RepoIdentityStore } from "../server/repo-identity-store.mjs";
 import { RepositoryArchive } from "../server/repository-archive.mjs";
 import { RepositoryFavorites } from "../server/repository-favorites.mjs";
-import { WorktreeDashboard, countUpdaterArtifacts, isManagedReleasePath, parseWorktreeList, worktreePath } from "../server/worktree-dashboard.mjs";
+import { WorktreeDashboard, countUpdaterArtifacts, isManagedReleasePath, parseWorktreeList, resolveWorktreeAcquisitionPath, worktreePath } from "../server/worktree-dashboard.mjs";
+import { WORKTREE_REASONS, classifyLegacyWorktreeError, isFreshBranchSafeReason, isWorktreeReason } from "../server/worktree-errors.mjs";
 import { GoalMergeWatch, selectGoalPullRequest } from "../server/goal-merge-watch.mjs";
 
 const REPO = { id: "repo-1234567890123", name: "sample", root: "karven", path: "/repo/sample", branch: "main" };
@@ -791,7 +792,8 @@ test("refuses to reuse a worktree unless the caller opts in", async () => {
   const { dashboard, repositoryId } = await reuseDashboard();
   await assert.rejects(
     () => dashboard.create(repositoryId, { branch: "feature/safe-name", base: "main" }),
-    /^TypeError: That branch already has a worktree$/,
+    (error) => error.message === "That branch already has a worktree"
+      && error.reason === WORKTREE_REASONS.REGISTERED_WORKTREE,
   );
 });
 
@@ -845,6 +847,255 @@ test("refuses to reuse a worktree that Git has locked", async () => {
   await assert.rejects(
     () => dashboard.create(repositoryId, { branch: "feature/safe-name", base: "main", reuseIfAtBase: true }),
     /already has a worktree that Git has locked/,
+  );
+});
+
+test("shares a closed worktree reason vocabulary and classifies only the historical acquisition messages", () => {
+  for (const reason of Object.values(WORKTREE_REASONS)) assert.equal(isWorktreeReason(reason), true);
+  assert.equal(isWorktreeReason("project-syncing"), false);
+  assert.equal(isFreshBranchSafeReason(WORKTREE_REASONS.BRANCH_EXISTS), true);
+  assert.equal(isFreshBranchSafeReason(WORKTREE_REASONS.RUNNING_SESSION), true);
+  assert.equal(isFreshBranchSafeReason(WORKTREE_REASONS.PATH_OCCUPIED), false);
+  assert.equal(
+    classifyLegacyWorktreeError("Git could not create this worktree: fatal: '/tmp/sample-feature' already exists"),
+    WORKTREE_REASONS.PATH_OCCUPIED,
+  );
+  assert.equal(
+    classifyLegacyWorktreeError("That branch already has a worktree with a running session"),
+    WORKTREE_REASONS.RUNNING_SESSION,
+  );
+  assert.equal(classifyLegacyWorktreeError("Git could not create this worktree"), null);
+});
+
+test("resolves normalized, truncated, and filesystem path collisions deterministically", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "cmux-companion-paths-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const repositoryPath = join(directory, "sample");
+  await mkdir(repositoryPath);
+
+  const firstBranch = "feature/54-focus-e2e";
+  const collidingBranch = "feature/54/focus/e2e";
+  const natural = worktreePath(repositoryPath, firstBranch);
+  const registered = [{ branch: firstBranch, path: natural }];
+  assert.equal(await resolveWorktreeAcquisitionPath(repositoryPath, firstBranch, registered), natural);
+  const collision = await resolveWorktreeAcquisitionPath(repositoryPath, collidingBranch, registered);
+  assert.notEqual(collision, natural);
+  assert.equal(await resolveWorktreeAcquisitionPath(repositoryPath, collidingBranch, registered), collision);
+
+  const longPrefix = `feature/${"a".repeat(90)}`;
+  const longOne = `${longPrefix}-one`;
+  const longTwo = `${longPrefix}-two`;
+  assert.equal(worktreePath(repositoryPath, longOne), worktreePath(repositoryPath, longTwo));
+  const longResolved = await resolveWorktreeAcquisitionPath(repositoryPath, longTwo, [{ branch: longOne, path: worktreePath(repositoryPath, longOne) }]);
+  assert.notEqual(longResolved, worktreePath(repositoryPath, longTwo));
+
+  const occupiedBranch = "feature/occupied";
+  const occupied = worktreePath(repositoryPath, occupiedBranch);
+  await mkdir(occupied);
+  await writeFile(join(occupied, "user-notes.txt"), "keep me");
+  const alternate = await resolveWorktreeAcquisitionPath(repositoryPath, occupiedBranch, []);
+  assert.notEqual(alternate, occupied);
+  assert.equal(await readFile(join(occupied, "user-notes.txt"), "utf8"), "keep me");
+
+  assert.equal(await resolveWorktreeAcquisitionPath(repositoryPath, "feature/ordinary", []), worktreePath(repositoryPath, "feature/ordinary"));
+});
+
+async function raceDashboard(t, mode) {
+  const directory = await mkdtemp(join(tmpdir(), "cmux-companion-race-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const repositoryPath = join(directory, "sample");
+  const targetPath = worktreePath(repositoryPath, "feature/race");
+  await mkdir(repositoryPath);
+  const sha = "a".repeat(40);
+  const featureSha = "b".repeat(40);
+  let inventory = `worktree ${repositoryPath}\0HEAD ${sha}\0branch refs/heads/main\0\0`;
+  let adds = 0;
+  let prunes = 0;
+  let absentAtRetry = false;
+  const calls = [];
+  const repoCatalog = {
+    cache: {},
+    list: async () => [{ ...REPO, path: repositoryPath }],
+    git: async (cwd, args, options) => {
+      calls.push([cwd, args, options]);
+      if (args[0] === "worktree" && args[1] === "add") {
+        adds += 1;
+        if (adds === 1) {
+          if (mode === "generic") throw Object.assign(new Error("git failed"), { stderr: "fatal: invalid object name\n" });
+          if (mode === "created-not-loadable") return "";
+          if (mode === "symlink") await symlink(repositoryPath, targetPath);
+          else {
+            await mkdir(targetPath);
+            if (mode === "non-empty") await writeFile(join(targetPath, "user-work.txt"), "do not delete");
+          }
+          throw Object.assign(new Error("git lost the race"), { stderr: `fatal: '${targetPath}' already exists\n` });
+        }
+        absentAtRetry = await lstat(targetPath).then(() => false, () => true);
+        await mkdir(targetPath);
+        inventory += `worktree ${targetPath}\0HEAD ${featureSha}\0branch refs/heads/feature/race\0\0`;
+        return "";
+      }
+      if (args[0] === "worktree" && args[1] === "prune") {
+        prunes += 1;
+        if (mode === "registered") inventory += `worktree ${targetPath}\0HEAD ${sha}\0branch refs/heads/feature/race\0\0`;
+        return "";
+      }
+      if (args[0] === "worktree" && args[1] === "list") return inventory;
+      if (args[0] === "check-ref-format") return "feature/race\n";
+      if (args[0] === "show-ref") throw new Error("missing branch");
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return `${repositoryPath}/.git\n`;
+      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return `${cwd}\n`;
+      if (args[0] === "rev-parse" && args[1] === "--verify") return `${sha}\n`;
+      if (args[0] === "rev-parse" && args[1] === "main^{commit}") return `${sha}\n`;
+      if (args[0] === "rev-parse" && args[1] === "HEAD") return `${cwd === targetPath && mode !== "registered" ? featureSha : sha}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd === targetPath ? "feature/race" : "main"}\n`;
+      if (args[0] === "log") return "100\n";
+      throw new Error(`unexpected git call: ${args.join(" ")}`);
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  return { dashboard, repositoryId, targetPath, calls, counts: () => ({ adds, prunes, absentAtRetry }) };
+}
+
+test("prunes an already-exists race, rechecks and removes only its empty directory, then retries once", async (t) => {
+  const fixture = await raceDashboard(t, "empty");
+  const result = await fixture.dashboard.create(fixture.repositoryId, {
+    branch: "feature/race", base: "main", workspaces: [], workspacesAvailable: true,
+  });
+  assert.equal(result.created, true);
+  assert.deepEqual(fixture.counts(), { adds: 2, prunes: 1, absentAtRetry: true });
+  assert.equal(result.worktree.path, fixture.targetPath);
+  const adds = fixture.calls.filter(([, args]) => args[0] === "worktree" && args[1] === "add");
+  assert.deepEqual(adds[0][1], adds[1][1], "the retry must repeat the same add exactly once");
+});
+
+for (const [mode, available] of [["non-empty", true], ["symlink", true], ["empty", false]]) {
+  test(`an already-exists race never removes a ${mode === "empty" ? "directory with unknown sessions" : mode}`, async (t) => {
+    const fixture = await raceDashboard(t, mode);
+    await assert.rejects(
+      () => fixture.dashboard.create(fixture.repositoryId, {
+        branch: "feature/race", base: "main", workspaces: [], workspacesAvailable: available,
+      }),
+      (error) => error.reason === WORKTREE_REASONS.PATH_OCCUPIED,
+    );
+    assert.deepEqual(fixture.counts(), { adds: 1, prunes: 1, absentAtRetry: false });
+    const stat = await lstat(fixture.targetPath);
+    if (mode === "symlink") assert.equal(stat.isSymbolicLink(), true);
+    else assert.equal(stat.isDirectory(), true);
+    if (mode === "non-empty") assert.equal(await readFile(join(fixture.targetPath, "user-work.txt"), "utf8"), "do not delete");
+  });
+}
+
+test("reuses a requested branch that becomes registered after prune", async (t) => {
+  const fixture = await raceDashboard(t, "registered");
+  const result = await fixture.dashboard.create(fixture.repositoryId, {
+    branch: "feature/race", base: "main", reuseIfAtBase: true, workspaces: [], workspacesAvailable: true,
+  });
+  assert.equal(result.reused, true);
+  assert.deepEqual(fixture.counts(), { adds: 1, prunes: 1, absentAtRetry: false });
+});
+
+test("requires a new task branch to start at its supplied base before invoking add", async () => {
+  const calls = [];
+  const repoCatalog = {
+    list: async () => [REPO],
+    git: async (cwd, args) => {
+      calls.push([cwd, args]);
+      if (args[0] === "worktree") return "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0";
+      if (args[0] === "check-ref-format") return "feature/existing\n";
+      if (args[0] === "show-ref") return "";
+      if (args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return "# branch.head main\n";
+      if (args[0] === "log") return "100\n";
+      throw new Error(`unexpected git call ${args.join(" ")}`);
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  await assert.rejects(
+    () => dashboard.create(repositoryId, { branch: "feature/existing", base: "main", requireFreshAtBase: true }),
+    (error) => error.reason === WORKTREE_REASONS.BRANCH_EXISTS,
+  );
+  assert.equal(calls.some(([, args]) => args[0] === "worktree" && args[1] === "add"), false);
+});
+
+test("every reuse state refusal carries its specific worktree reason", async () => {
+  const repoCatalog = {
+    git: async (cwd, args) => {
+      if (args[0] === "status") return "# branch.head feature/reason\n";
+      if (args[0] === "rev-parse" && args[1] === "main^{commit}") return "base\n";
+      if (args[0] === "rev-parse" && args[1] === "HEAD") return cwd.includes("unreadable") ? Promise.reject(new Error("bad HEAD")) : "head\n";
+      if (args[0] === "merge-base") throw new Error("not contained");
+      throw new Error(`unexpected git call ${args.join(" ")}`);
+    },
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog });
+  const repository = { path: "/repo/sample" };
+  const base = { id: "reason-worktree", path: "/repo/reason", branch: "feature/reason", sessions: [], changedFiles: 0, isPrimary: false, managedRelease: false, locked: null, detached: false };
+  dashboard.targets.set(base.id, { path: base.path, repositoryPath: repository.path });
+  const cases = [
+    [{ ...base, isPrimary: true }, WORKTREE_REASONS.PRIMARY],
+    [{ ...base, managedRelease: true }, WORKTREE_REASONS.MANAGED_RELEASE],
+    [{ ...base, locked: "busy" }, WORKTREE_REASONS.LOCKED],
+    [{ ...base, detached: true }, WORKTREE_REASONS.DETACHED],
+    [{ ...base }, WORKTREE_REASONS.SESSIONS_UNAVAILABLE, { workspacesAvailable: false }],
+    [{ ...base, sessions: [{ id: "ws" }] }, WORKTREE_REASONS.RUNNING_SESSION],
+    [{ ...base, changedFiles: 1 }, WORKTREE_REASONS.UNCOMMITTED_CHANGES],
+    [{ ...base, id: "missing" }, WORKTREE_REASONS.UNINSPECTABLE_WORKTREE],
+    [{ ...base, path: "/repo/unreadable" }, WORKTREE_REASONS.UNREADABLE_COMMIT],
+    [{ ...base }, WORKTREE_REASONS.FOREIGN_COMMITS],
+  ];
+  for (const [worktree, reason, options] of cases) {
+    await assert.rejects(
+      () => dashboard.reuseWorktree(worktree, repository, "main", options),
+      (error) => error instanceof TypeError && error.reason === reason,
+      reason,
+    );
+  }
+});
+
+test("task-worktree removal fails closed for unknown and foreign sessions but permits the allowed workspace", async () => {
+  const { repoCatalog, calls, targetPath } = reuseCatalog();
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  await assert.rejects(
+    () => dashboard.removeBranchWorktree(repositoryId, "feature/safe-name", { workspaces: [], workspacesAvailable: false }),
+    (error) => error.reason === WORKTREE_REASONS.SESSIONS_UNAVAILABLE,
+  );
+  assert.equal(calls.some(([, args]) => args[0] === "worktree" && args[1] === "remove"), false);
+
+  const workspace = { id: "workspace-foreign", title: "Foreign agent", current_directory: join(targetPath, "src") };
+  await assert.rejects(
+    () => dashboard.removeBranchWorktree(repositoryId, "feature/safe-name", { workspaces: [workspace], workspacesAvailable: true }),
+    (error) => error.reason === WORKTREE_REASONS.RUNNING_SESSION
+      && error.message.includes(workspace.id)
+      && error.message.includes(workspace.title),
+  );
+  assert.equal(calls.some(([, args]) => args[0] === "worktree" && args[1] === "remove"), false);
+
+  const result = await dashboard.removeBranchWorktree(repositoryId, "feature/safe-name", {
+    workspaces: [workspace], workspacesAvailable: true, allowedWorkspaceIds: [workspace.id],
+  });
+  assert.equal(result.removed, true);
+  assert.equal(calls.filter(([, args]) => args[0] === "worktree" && args[1] === "remove").length, 1);
+});
+
+test("generic add and created-but-not-loadable failures have distinct reasons", async (t) => {
+  const generic = await raceDashboard(t, "generic");
+  await assert.rejects(
+    () => generic.dashboard.create(generic.repositoryId, { branch: "feature/race", base: "main" }),
+    (error) => error.reason === WORKTREE_REASONS.ADD_FAILURE,
+  );
+  assert.deepEqual(generic.counts(), { adds: 1, prunes: 0, absentAtRetry: false });
+
+  const unloaded = await raceDashboard(t, "created-not-loadable");
+  await assert.rejects(
+    () => unloaded.dashboard.create(unloaded.repositoryId, { branch: "feature/race", base: "main" }),
+    (error) => error.reason === WORKTREE_REASONS.CREATED_NOT_LOADABLE,
   );
 });
 

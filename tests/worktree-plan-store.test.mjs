@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
+import { WORKTREE_REASONS } from "../server/worktree-errors.mjs";
 
 function memoryStore(t) {
   const store = new WorktreePlanStore({ path: ":memory:" });
@@ -310,8 +311,8 @@ test("records the launch outcome for each task", (t) => {
   const plan = store.recordLaunch("plan-1", {
     base: "origin/main",
     results: [
-      { id: "t1", status: "launched", path: "/repo/sample-billing", workspace: { workspace_id: "ws-1" } },
-      { id: "t2", status: "failed", error: "Branch feature/invoices already exists" },
+      { id: "t1", branch: "feature/billing-2", status: "launched", launchReason: WORKTREE_REASONS.REGISTERED_WORKTREE, path: "/repo/sample-billing", workspace: { workspace_id: "ws-1" } },
+      { id: "t2", branch: "feature/invoices-2", status: "failed", launchReason: WORKTREE_REASONS.BRANCH_EXISTS, error: "Branch feature/invoices already exists" },
     ],
   });
   assert.equal(plan.status, "launched");
@@ -320,9 +321,63 @@ test("records the launch outcome for each task", (t) => {
   assert.equal(plan.tasks[0].launchStatus, "launched");
   assert.equal(plan.tasks[0].workspaceId, "ws-1");
   assert.equal(plan.tasks[0].worktreePath, "/repo/sample-billing");
+  assert.equal(plan.tasks[0].branch, "feature/billing-2");
+  assert.equal(plan.tasks[0].launchReason, null, "success clears the acquisition refusal");
   assert.equal(plan.tasks[1].launchStatus, "failed");
+  assert.equal(plan.tasks[1].branch, "feature/invoices-2");
+  assert.equal(plan.tasks[1].launchReason, WORKTREE_REASONS.BRANCH_EXISTS);
   assert.match(plan.tasks[1].launchError, /already exists/);
   assert.equal(store.events("plan-1").at(-1).payload.launched, 1);
+});
+
+test("initial, wave, and relaunch records round-trip branch and launchReason", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  let plan = store.recordLaunch("plan-1", {
+    base: "origin/main",
+    results: [
+      { id: "t1", branch: "feature/billing-2", status: "failed", launchReason: WORKTREE_REASONS.RUNNING_SESSION, error: "occupied" },
+      { id: "t2", status: "queued" },
+    ],
+  });
+  assert.equal(plan.tasks[0].branch, "feature/billing-2");
+  assert.equal(plan.tasks[0].launchReason, WORKTREE_REASONS.RUNNING_SESSION);
+
+  plan = store.recordWaveLaunch("plan-1", {
+    wave: 1,
+    startSha: "a".repeat(40),
+    results: [{ id: "t2", branch: "feature/invoices-2", status: "failed", launchReason: WORKTREE_REASONS.BRANCH_EXISTS, error: "owned" }],
+  });
+  assert.equal(plan.tasks[1].branch, "feature/invoices-2");
+  assert.equal(plan.tasks[1].launchReason, WORKTREE_REASONS.BRANCH_EXISTS);
+
+  plan = store.recordTaskRelaunch("plan-1", "t1", {
+    branch: "feature/billing-3", status: "failed", launchReason: WORKTREE_REASONS.LOCKED, error: "locked",
+  });
+  assert.equal(plan.tasks[0].branch, "feature/billing-3");
+  assert.equal(plan.tasks[0].launchReason, WORKTREE_REASONS.LOCKED);
+  const event = store.events("plan-1").at(-1);
+  assert.equal(event.payload.result.branch, "feature/billing-3");
+  assert.equal(event.payload.result.launchReason, WORKTREE_REASONS.LOCKED);
+
+  plan = store.recordTaskRelaunch("plan-1", "t1", { branch: "feature/billing-4", status: "launched" });
+  assert.equal(plan.tasks[0].launchReason, null);
+});
+
+test("legacy launch messages infer their structured reasons without rewriting rows", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "s", tasks: TASKS });
+  store.db.prepare("UPDATE plan_tasks SET launch_error = ? WHERE plan_id = ? AND task_id = ?")
+    .run("Git could not create this worktree: fatal: '/repo/sample-feature-billing' already exists", "plan-1", "t1");
+  store.db.prepare("UPDATE plan_tasks SET launch_error = ? WHERE plan_id = ? AND task_id = ?")
+    .run("That branch already has a worktree with a running session", "plan-1", "t2");
+
+  const plan = store.get("plan-1");
+  assert.equal(plan.tasks[0].launchReason, WORKTREE_REASONS.PATH_OCCUPIED);
+  assert.equal(plan.tasks[1].launchReason, WORKTREE_REASONS.RUNNING_SESSION);
+  assert.equal(store.db.prepare("SELECT launch_reason FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get("plan-1", "t1").launch_reason, null);
 });
 
 test("tracks immutable task heads through one combined pull request", (t) => {
