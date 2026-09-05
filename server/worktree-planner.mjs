@@ -13,6 +13,7 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
 import { goalBoardState } from "./goal-board.mjs";
 import { sessionEnv, sessionTitle } from "./session-name.mjs";
+import { acquireTaskWorktree, effectiveTaskBranch, launchReason } from "./task-branch.mjs";
 import { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs";
 
 export { PLANNER_ENGINES, reviewerEngine } from "./worktree-planner-options.mjs";
@@ -688,12 +689,14 @@ export class WorktreePlanner {
   // was locked for good. This reads the stored plan directly, exactly as the
   // integrator does for a wave, and touches one task only.
   //
-  // Two modes, because a dead agent and a wrong turn need opposite things:
+  // Three modes, because a dead agent, a wrong turn and a branch ownership
+  // collision need different things:
   //   - `continue` keeps the worktree and whatever the agent already wrote,
   //     and opens a fresh session on it. This is the common case.
   //   - `restart` throws the working tree away and rebuilds from the base.
+  //   - `rebranch` preserves it and starts in a newly derived branch.
   async relaunchTask(planId, taskId, { mode = "continue", closeLive = false } = {}) {
-    if (mode !== "continue" && mode !== "restart") throw new TypeError("Relaunch mode must be continue or restart");
+    if (!new Set(["continue", "restart", "rebranch"]).has(mode)) throw new TypeError("Relaunch mode must be continue, restart, or rebranch");
     const { plan, task } = this.#launchedTask(planId, taskId);
     if (task.deliveryStatus === "integrated") throw new TypeError("This task is already merged into the goal branch");
     if (!this.cmux) throw new TypeError("Relaunching a task needs a cmux connection");
@@ -707,7 +710,13 @@ export class WorktreePlanner {
     // whole path exists to remove. `closeLive` closes it here instead — but
     // only when asked, because a session that is genuinely working must never
     // be killed by a button labelled Continue.
-    const live = await this.#liveSession(task.workspaceId);
+    const inventory = await this.#workspaces();
+    if (task.workspaceId && !inventory.available) {
+      throw new TypeError("This task's cmux session could not be checked. Reconnect cmux before relaunching it");
+    }
+    const live = task.workspaceId
+      ? inventory.workspaces.find((workspace) => workspace?.id === task.workspaceId) || null
+      : null;
     if (live && !closeLive) throw new TypeError("This task's cmux session is still open. Close it first, or answer it, before relaunching");
     if (live) {
       await this.cmux.workspaceClose(task.workspaceId).catch((cause) => {
@@ -717,8 +726,10 @@ export class WorktreePlanner {
 
     const base = plan.deliveryMode === "combined" && plan.integrationBranch ? plan.integrationBranch : plan.baseRef || "origin/main";
     const result = mode === "restart"
-      ? await this.#relaunchClean(plan, task, base)
-      : await this.#relaunchContinue(plan, task);
+      ? await this.#relaunchClean(plan, task, base, inventory)
+      : mode === "rebranch"
+        ? await this.#relaunchRebranch(plan, task, base, inventory)
+        : await this.#relaunchContinue(plan, task);
     // The dead session is recorded as closed before the new id is written, or
     // the old workspace id would vanish with nothing saying it was retired.
     if (task.workspaceId) this.#persist(() => this.store?.recordSessionsRetired(plan.planId, [{ workspaceId: task.workspaceId, taskId: task.id }]), plan.planId, "relaunch-retire");
@@ -772,40 +783,105 @@ export class WorktreePlanner {
           resume: "A previous agent worked in this worktree and stopped. Read the brief, then run `git status` and `git log` to see what is already done. Continue from there. Do not start again from nothing.",
         }),
       });
-      return { ...summary, status: "launched", path, workspace, startSha: task.startSha || head };
+      return { ...summary, status: "launched", launchReason: null, path, workspace, startSha: task.startSha || head };
     } catch (cause) {
       this.log?.warn?.({ err: cause, planId: plan.planId, taskId: task.id }, "task relaunch failed");
-      return { ...summary, status: "failed", path, error: cause?.message || "Could not relaunch this task" };
+      return { ...summary, status: "failed", launchReason: launchReason(cause), path, error: cause?.message || "Could not relaunch this task" };
     }
   }
 
   // Throw the working tree away and start the task again from its base. The
   // branch is deleted first, because `create` checks out an existing branch and
   // would put the agent back on the work this mode was asked to discard.
-  async #relaunchClean(plan, task, base) {
+  async #relaunchClean(plan, task, base, inventory) {
     const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent };
+    let branch = task.branch;
     let path = null;
     try {
-      await this.worktrees.removeBranchWorktree(plan.repositoryId, task.branch);
-      const created = await this.worktrees.create(plan.repositoryId, { branch: task.branch, base, workspaces: await this.#workspaces() });
+      await this.worktrees.removeBranchWorktree(plan.repositoryId, task.branch, {
+        workspaces: inventory.workspaces,
+        workspacesAvailable: inventory.available,
+        allowedWorkspaceIds: task.workspaceId ? [task.workspaceId] : [],
+      });
+      const created = await acquireTaskWorktree({
+        worktrees: this.worktrees,
+        repositoryId: plan.repositoryId,
+        repositoryPath: plan.cwd,
+        branch: task.branch,
+        base,
+        inventory,
+        git: this.git,
+        planId: plan.planId,
+        taskId: task.id,
+        log: this.log,
+      });
+      branch = created.branch;
+      const effectiveTask = { ...task, branch: created.branch };
       path = created.worktree.path;
       const startSha = String(await this.git(path, ["rev-parse", "HEAD"]).catch(() => "")).trim() || null;
       const brief = await this.briefs.write({
         planId: plan.planId,
         taskId: task.id,
-        markdown: taskPrompt(task, plan.spec, plan.images, base, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers),
+        markdown: taskPrompt(effectiveTask, plan.spec, plan.images, base, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers),
       });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
-        title: sessionTitle(plan, task),
-        agent: task.agent,
-        env: sessionEnv(plan, task),
+        title: sessionTitle(plan, effectiveTask),
+        agent: effectiveTask.agent,
+        env: sessionEnv(plan, effectiveTask),
         prompt: this.briefs.pointerPrompt({ title: task.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
       });
-      return { ...summary, status: "launched", path, workspace, startSha };
+      return { ...summary, branch: effectiveTask.branch, status: "launched", launchReason: null, path, workspace, startSha };
     } catch (cause) {
-      this.log?.warn?.({ err: cause, planId: plan.planId, taskId: task.id }, "task restart failed");
-      return { ...summary, status: "failed", path, error: cause?.message || "Could not restart this task" };
+      branch = effectiveTaskBranch(cause, branch);
+      this.log?.warn?.({ err: cause, branch, planId: plan.planId, taskId: task.id }, "task restart failed");
+      return { ...summary, branch, status: "failed", launchReason: launchReason(cause), path, error: cause?.message || "Could not restart this task" };
+    }
+  }
+
+  // A branch collision is not permission to delete the occupied branch. This
+  // mode derives the next bounded candidate and creates exactly one new
+  // worktree from the same base a clean restart would use.
+  async #relaunchRebranch(plan, task, base, inventory) {
+    const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent };
+    let branch = task.branch;
+    let path = null;
+    try {
+      const created = await acquireTaskWorktree({
+        worktrees: this.worktrees,
+        repositoryId: plan.repositoryId,
+        repositoryPath: plan.cwd,
+        branch: task.branch,
+        base,
+        inventory,
+        git: this.git,
+        planId: plan.planId,
+        taskId: task.id,
+        log: this.log,
+        forceFresh: true,
+        fallbackReason: task.launchReason,
+      });
+      branch = created.branch;
+      const effectiveTask = { ...task, branch: created.branch };
+      path = created.worktree.path;
+      const startSha = String(await this.git(path, ["rev-parse", "HEAD"]).catch(() => "")).trim() || null;
+      const brief = await this.briefs.write({
+        planId: plan.planId,
+        taskId: task.id,
+        markdown: taskPrompt(effectiveTask, plan.spec, plan.images, base, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers),
+      });
+      const workspace = await this.cmux.workspaceCreate({
+        cwd: path,
+        title: sessionTitle(plan, effectiveTask),
+        agent: effectiveTask.agent,
+        env: sessionEnv(plan, effectiveTask),
+        prompt: this.briefs.pointerPrompt({ title: effectiveTask.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
+      });
+      return { ...summary, branch: effectiveTask.branch, status: "launched", launchReason: null, path, workspace, startSha };
+    } catch (cause) {
+      branch = effectiveTaskBranch(cause, branch);
+      this.log?.warn?.({ err: cause, branch, planId: plan.planId, taskId: task.id }, "task rebranch failed");
+      return { ...summary, branch, status: "failed", launchReason: launchReason(cause), path, error: cause?.message || "Could not rebranch this task" };
     }
   }
 
@@ -822,14 +898,15 @@ export class WorktreePlanner {
     return { plan, task };
   }
 
-  // Returns the live workspace when cmux still holds it. An unreachable cmux
-  // returns null, which lets a relaunch proceed: refusing every recovery while
-  // cmux is down would rebuild the lock this whole path exists to remove.
+  // Returns the live workspace when cmux still holds it. Callers that can
+  // create a competing task session use #workspaces directly so unavailable
+  // inventory remains distinct from a confirmed empty list.
   async #liveSession(workspaceIdValue) {
     const id = String(workspaceIdValue || "").trim();
     if (!id) return null;
-    const workspaces = await this.#workspaces();
-    return workspaces.find((workspace) => workspace?.id === id) || null;
+    const inventory = await this.#workspaces();
+    if (!inventory.available) return null;
+    return inventory.workspaces.find((workspace) => workspace?.id === id) || null;
   }
 
   isRunning(planId) {
@@ -901,16 +978,18 @@ export class WorktreePlanner {
     // A retry may find worktrees a failed launch left behind. Reuse needs the
     // live session list to tell a stranded worktree from one an agent owns.
     // An unreachable cmux only makes the check stricter, never looser.
-    const workspaces = await this.#workspaces();
+    const inventory = await this.#workspaces();
     const results = [];
     for (const task of draft.tasks) {
       if ((Number(task.wave) || 0) !== firstWave) {
-        results.push({ id: task.id, title: task.title, branch: task.branch, agent: task.agent, status: "queued", wave: task.wave });
+        results.push({ id: task.id, title: task.title, branch: task.branch, agent: task.agent, status: "queued", launchReason: null, wave: task.wave });
         continue;
       }
-      results.push(await this.#launchTask(draft, task, base, deliveryMode, baseSha, workspaces));
+      results.push(await this.#launchTask(draft, task, base, deliveryMode, baseSha, inventory, repositoryPath));
     }
     const launched = results.filter((item) => item.status === "launched").length;
+    const effectiveBranches = new Map(results.map((result) => [result.id, result.branch]));
+    draft.tasks = draft.tasks.map((task) => ({ ...task, branch: effectiveBranches.get(task.id) || task.branch }));
     this.#persist(() => this.store?.recordLaunch(draft.planId, { base, baseSha, results }), draft.planId, "launch");
     // Deleting stops a plan running twice. That risk does not exist when nothing
     // was created, and keeping the draft saves the user a fresh planner round
@@ -921,11 +1000,25 @@ export class WorktreePlanner {
 
   // One task never rolls back another: a half-made plan the user can see and
   // finish by hand beats a silent undo of work that already started.
-  async #launchTask(draft, task, base, deliveryMode, startSha = null, workspaces = []) {
+  async #launchTask(draft, task, base, deliveryMode, startSha = null, inventory = { available: false, workspaces: [] }, repositoryPath = draft.cwd) {
     const summary = { id: task.id, title: task.title, branch: task.branch, agent: task.agent };
+    let branch = task.branch;
     let path = null;
     try {
-      const created = await this.worktrees.create(draft.repositoryId, { branch: task.branch, base, reuseIfAtBase: true, workspaces });
+      const created = await acquireTaskWorktree({
+        worktrees: this.worktrees,
+        repositoryId: draft.repositoryId,
+        repositoryPath,
+        branch: task.branch,
+        base,
+        inventory,
+        git: this.git,
+        planId: draft.planId,
+        taskId: task.id,
+        log: this.log,
+      });
+      branch = created.branch;
+      const effectiveTask = { ...task, branch: created.branch };
       path = created.worktree.path;
       // create() checks out an existing branch and ignores `base`, so the task
       // would start on old work instead of the fetched commit. Refuse it: an
@@ -933,7 +1026,7 @@ export class WorktreePlanner {
       // a failed row the user can act on. A reused worktree is exempt: it
       // already proved its HEAD equals `base`.
       if (created.branchCreated === false && !created.reused) {
-        throw new TypeError(`Branch ${task.branch} already exists, so this task would not start from ${base}. Rename it in the plan, or delete the branch first`);
+        throw new TypeError(`Branch ${effectiveTask.branch} already exists, so this task would not start from ${base}. Rename it in the plan, or delete the branch first`);
       }
       // Each worktree agent is isolated, so every task brief carries its images
       // and the delivery contract selected for the whole goal. The brief is
@@ -941,19 +1034,20 @@ export class WorktreePlanner {
       const brief = await this.briefs.write({
         planId: draft.planId,
         taskId: task.id,
-        markdown: taskPrompt(task, draft.spec, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers),
+        markdown: taskPrompt(effectiveTask, draft.spec, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers),
       });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
-        title: sessionTitle(draft, task),
-        agent: task.agent,
-        env: sessionEnv(draft, task),
-        prompt: this.briefs.pointerPrompt({ title: task.title, outcome: draft.spec?.outcome || draft.goal, path: brief.path }),
+        title: sessionTitle(draft, effectiveTask),
+        agent: effectiveTask.agent,
+        env: sessionEnv(draft, effectiveTask),
+        prompt: this.briefs.pointerPrompt({ title: effectiveTask.title, outcome: draft.spec?.outcome || draft.goal, path: brief.path }),
       });
-      return { ...summary, status: "launched", path, workspace, startSha };
+      return { ...summary, branch: effectiveTask.branch, status: "launched", launchReason: null, path, workspace, startSha };
     } catch (cause) {
-      this.log?.warn?.({ err: cause, branch: task.branch }, "planner task launch failed");
-      return { ...summary, status: "failed", path, error: cause?.message || "Could not launch this task" };
+      branch = effectiveTaskBranch(cause, branch);
+      this.log?.warn?.({ err: cause, branch, planId: draft.planId, taskId: task.id }, "planner task launch failed");
+      return { ...summary, branch, status: "failed", launchReason: launchReason(cause), path, error: cause?.message || "Could not launch this task" };
     }
   }
 
@@ -990,15 +1084,16 @@ export class WorktreePlanner {
     return repository.path;
   }
 
-  // The list feeds the worktree reuse check only. An empty list makes that
-  // check stricter, so a cmux that cannot answer must not fail the launch.
+  // Inventory availability is part of the answer. A genuinely new branch may
+  // launch while cmux is unreachable, but an existing worktree may not be
+  // reused or removed on the fiction that an exception meant "no sessions".
   async #workspaces() {
     try {
       const payload = await this.cmux.workspaceListDetailed();
-      return payload?.workspaces || [];
+      return { available: true, workspaces: Array.isArray(payload?.workspaces) ? payload.workspaces : [] };
     } catch (cause) {
       this.log?.warn?.({ err: cause }, "planner could not read the workspace list");
-      return [];
+      return { available: false, workspaces: [] };
     }
   }
 
