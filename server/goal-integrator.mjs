@@ -1,5 +1,6 @@
 import { GoalSessionCollector } from "./goal-session-collector.mjs";
-import { existsSync } from "node:fs";
+import { resolve, relative } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
 import { parseCompletionReport, readyCount, scopeDrift, validateCompletionReport } from "./delivery-contract.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { mergeSessionTitle, sessionEnv, sessionTitle } from "./session-name.mjs";
@@ -144,6 +145,53 @@ export class GoalIntegrator {
     timers.set(planId, timer);
   }
 
+  // The watchdog recovers missed Stop hooks using fresh liveness plus the same
+  // Git readiness checks as explicit assembly. It never retries real merge
+  // failures or launches over a running/awaiting/unknown agent.
+  async heal() {
+    const results = [];
+    const ids = this.store.sessionCleanupPlanIds?.() || [];
+    for (const id of ids) {
+      try {
+        const result = await this.#queue("heal", id, async () => {
+          let plan = this.store.get(id);
+          if (!plan || plan.boardStatus || plan.status !== "launched" || plan.deliveryMode !== "combined" ||
+              plan.finalPrUrl || plan.boardPrState === "OPEN" ||
+              plan.tasks.some((task) => task.launchStatus === "failed")) return null;
+          if ((plan.mergeStatus === "blocked" || plan.deliveryStatus === "blocked") && !/Another worktree operation holds this lock/.test(plan.deliveryError || "")) return null;
+          if (!this.cmux?.workspaceListDetailed || !this.cmux?.workspaceStatus) return null;
+          const live = await (this.cmux.loadWorkspaceListDetailed?.() || this.cmux.workspaceListDetailed());
+          if (!Array.isArray(live?.workspaces)) return null;
+          const owned = new Set([...plan.tasks.filter((task) => task.deliveryStatus !== "integrated").map((task) => task.workspaceId), plan.mergeWorkspaceId].filter(Boolean));
+          const canonical = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
+          const paths = [...plan.tasks.map((task) => task.worktreePath), plan.integrationWorktreePath].filter(Boolean).map(canonical);
+          const related = (item) => owned.has(item.id) || (item.current_directory && paths.some((path) => {
+            const child = relative(path, canonical(item.current_directory));
+            return child === "" || (!child.startsWith("..") && !child.startsWith("/"));
+          }));
+          for (const workspace of live.workspaces.filter(related)) {
+            const status = await this.cmux.workspaceStatus(workspace.id);
+            if (status?.signals?.any_agent_running !== false || status?.signals?.any_agent_needs_input !== false || status.effective === "working") return null;
+          }
+          plan = this.store.get(id);
+          if (!plan || plan.boardStatus || plan.status !== "launched" || plan.deliveryMode !== "combined" ||
+              plan.finalPrUrl || plan.boardPrState === "OPEN" || plan.tasks.some((task) => task.launchStatus === "failed")) return null;
+          if ((plan.mergeStatus === "blocked" || plan.deliveryStatus === "blocked") && !/Another worktree operation holds this lock/.test(plan.deliveryError || "")) return null;
+          const recovered = plan.mergeStatus === "running"
+            ? await this.#settle(id)
+            : await this.#assemble(id, { automatic: true });
+          await this.#retireSessions(id);
+          return recovered;
+        });
+        if (result) results.push({ planId: id, status: result.deliveryStatus });
+      } catch (cause) {
+        // One unavailable repository must not stop recovery of the others.
+        results.push({ planId: id, error: String(cause?.message || cause) });
+      }
+    }
+    return results;
+  }
+
   async assemble(planId, { automatic = false } = {}) {
     const id = String(planId || "");
     return this.#queue("assemble", id, async () => {
@@ -181,7 +229,7 @@ export class GoalIntegrator {
     if (plan.status !== "launched" || plan.deliveryMode !== "combined") {
       throw new TypeError("Only a launched multi-task goal can build a combined pull request");
     }
-    if (plan.finalPrUrl) return deliveryResult(plan);
+    if (plan.finalPrUrl || plan.boardPrState === "OPEN") return deliveryResult(plan);
 
     plan = await this.#guard(plan, () => this.#refreshTaskHeads(plan));
     await this.#publish(plan);

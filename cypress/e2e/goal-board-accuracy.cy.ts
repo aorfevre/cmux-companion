@@ -185,6 +185,28 @@ describe("goal board matches live cmux evidence", () => {
     cy.contains("That branch already has a worktree with a running session").should("not.exist");
   });
 
+  it("clears a stale lock failure after the watchdog observes the delivery PR", () => {
+    const source = plan("goal-lock", "Delivery recovered automatically", 1, {
+      health: "failed", boardState: "blocked", stuckCount: 1, deliveryStatus: "blocked", mergeStatus: "blocked",
+      deliveryError: "Another worktree operation holds this lock", healthReason: "Another worktree operation holds this lock",
+    });
+    const state: Scenario = { plans: [source], goals: [healthGoal(source, [], { health: "failed", stuckCount: 1 })], liveSessions: 0 };
+    installScenario(state);
+    visitBoard();
+    cy.findByRole("region", { name: "Blocked" }).should("contain.text", source.goal);
+    cy.then(() => {
+      state.plans = [{ ...source, health: "ready", boardState: "waiting_for_merge", stuckCount: 0,
+        deliveryStatus: "pr_open", mergeStatus: "done", deliveryError: null, healthReason: "The goal pull request is open",
+        boardPrState: "OPEN", boardPrNumber: 73, boardPrUrl: "https://github.test/pull/73" }];
+      state.goals = [];
+    });
+    cy.reload();
+    cy.wait(["@plans", "@health"]);
+    cy.findByRole("region", { name: "Waiting for merge" }).should("contain.text", source.goal);
+    cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", source.goal);
+    cy.contains("Another worktree operation holds this lock").should("not.exist");
+  });
+
   it("launches one multi-action follow-up from a Waiting for merge card", () => {
     const goal = "Review the open delivery";
     const waitingMerge = plan("goal-followup", goal, 1, {

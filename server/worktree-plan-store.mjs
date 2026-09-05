@@ -791,13 +791,18 @@ export class WorktreePlanStore {
     // stale read. It must not move the board backwards.
     if (boardStatus(row.board_status)) return this.get(id);
     const next = { number: prNumber(number), url: text(url), state };
-    if (this.#samePullRequest(row, next)) return this.get(id);
+    const staleDelivery = state === "OPEN" && (row.merge_status !== "done" || row.delivery_status !== "pr_open" || row.delivery_error);
+    if (this.#samePullRequest(row, next) && !staleDelivery) return this.get(id);
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare(`
         UPDATE plans SET board_pr_number = ?, board_pr_url = ?, board_pr_state = ?,
-          board_pr_observed_at = ?, updated_at = ? WHERE plan_id = ?
-      `).run(next.number, next.url, next.state, text(observedAt) || at, at, id);
+          board_pr_observed_at = ?, updated_at = ?,
+          merge_status = CASE WHEN ? = 'OPEN' THEN 'done' ELSE merge_status END,
+          delivery_status = CASE WHEN ? = 'OPEN' THEN 'pr_open' ELSE delivery_status END,
+          delivery_error = CASE WHEN ? = 'OPEN' THEN NULL ELSE delivery_error END
+          WHERE plan_id = ?
+      `).run(next.number, next.url, next.state, text(observedAt) || at, at, state, state, state, id);
       this.#insertEvent(id, null, "board_pull_request", { ...next, observedAt: text(observedAt) || at }, at);
     });
     return this.get(id);
@@ -811,12 +816,13 @@ export class WorktreePlanStore {
     // request is a no-op rather than a second event.
     if (current === "aborted") return this.get(planId);
     const next = { number: prNumber(number), url: text(url), state: "MERGED" };
-    if (current === "merged" && this.#samePullRequest(row, next)) return this.get(planId);
+    if (current === "merged" && this.#samePullRequest(row, next) && row.merge_status === "done" && row.delivery_status === "pr_open" && !row.delivery_error) return this.get(planId);
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare(`
         UPDATE plans SET board_status = 'merged', board_changed_at = ?, board_pr_number = ?,
-          board_pr_url = ?, board_pr_state = 'MERGED', board_pr_observed_at = ?, updated_at = ?
+          board_pr_url = ?, board_pr_state = 'MERGED', board_pr_observed_at = ?, updated_at = ?,
+          merge_status = 'done', delivery_status = 'pr_open', delivery_error = NULL
         WHERE plan_id = ?
       `).run(current === "merged" ? row.board_changed_at : at, next.number, next.url, text(observedAt) || at, at, planId);
       this.#insertEvent(planId, null, "board_merged", { ...next, observedAt: text(observedAt) || at }, at);
@@ -832,7 +838,7 @@ export class WorktreePlanStore {
 
   #boardRow(planId) {
     return this.db.prepare(
-      "SELECT board_status, board_changed_at, board_pr_number, board_pr_url, board_pr_state FROM plans WHERE plan_id = ?",
+      "SELECT board_status, board_changed_at, board_pr_number, board_pr_url, board_pr_state, merge_status, delivery_status, delivery_error FROM plans WHERE plan_id = ?",
     ).get(String(planId || "")) || null;
   }
 
