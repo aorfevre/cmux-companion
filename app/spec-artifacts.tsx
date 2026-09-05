@@ -12,11 +12,12 @@ import { useId } from "react";
 export type FlowNodeKind = "start" | "step" | "decision" | "end";
 export type FlowNode = { id: string; label: string; kind?: FlowNodeKind | string };
 export type FlowEdge = { from: string; to: string; label?: string };
-export type ScreenElementChange = "new" | "changed" | "removed" | "unchanged";
+export type ScreenElementChange = "added" | "changed" | "removed" | "unchanged";
 export type ScreenElementKind = "header" | "text" | "input" | "button" | "list" | "image" | "note";
 export type ScreenElement = { id: string; label: string; kind?: ScreenElementKind | string; change?: ScreenElementChange | string; note?: string };
-export type FlowArtifactData = { id: string; kind: "flow"; title?: string; nodes?: FlowNode[]; edges?: FlowEdge[] };
-export type ScreenArtifactData = { id: string; kind: "screen"; title?: string; elements?: ScreenElement[] };
+export type ScreenData = { name: string; elements?: ScreenElement[] };
+export type FlowArtifactData = { id: string; kind: "flow"; title?: string; summary?: string; nodes?: FlowNode[]; edges?: FlowEdge[] };
+export type ScreenArtifactData = { id: string; kind: "screen"; title?: string; summary?: string; screen?: ScreenData };
 export type DesignArtifact = FlowArtifactData | ScreenArtifactData;
 
 const NODE_WIDTH = 168;
@@ -28,7 +29,7 @@ const LINE_LENGTH = 22;
 const LINE_COUNT = 2;
 const EDGE_LABEL_LENGTH = 24;
 
-const CHANGE_LABELS: Record<string, string> = { new: "Added", changed: "Changed", removed: "Removed", unchanged: "Unchanged" };
+const CHANGE_LABELS: Record<string, string> = { added: "Added", changed: "Changed", removed: "Removed", unchanged: "Unchanged" };
 
 type PlacedNode = { node: FlowNode; layer: number; column: number; x: number; y: number };
 
@@ -130,6 +131,7 @@ export function FlowArtifact({ artifact }: { artifact: FlowArtifactData }) {
   const byId = new Map(layout.placed.map((item) => [item.node.id, item]));
   return <figure className="spec-flow">
     <figcaption><span className="spec-artifact-kind">Flow</span><strong>{title}</strong></figcaption>
+    {artifact.summary ? <p className="spec-artifact-summary">{artifact.summary}</p> : null}
     <div className="spec-flow-scroll">
       <svg className="spec-flow-svg" role="img" aria-label={`Flow diagram: ${title}`} width={layout.width} height={layout.height} viewBox={`0 0 ${layout.width} ${layout.height}`}>
         <title>{`Flow diagram: ${title}`}</title>
@@ -163,11 +165,13 @@ export function FlowArtifact({ artifact }: { artifact: FlowArtifactData }) {
 }
 
 export function ScreenArtifact({ artifact }: { artifact: ScreenArtifactData }) {
-  const elements = (artifact.elements || []).filter((element) => element && typeof element.id === "string");
+  const elements = (artifact.screen?.elements || []).filter((element) => element && typeof element.id === "string");
   if (!elements.length) return null;
   const title = artifact.title || "Screen";
+  const name = artifact.screen?.name || "";
   return <figure className="spec-screen">
-    <figcaption><span className="spec-artifact-kind">Screen</span><strong>{title}</strong></figcaption>
+    <figcaption><span className="spec-artifact-kind">Screen</span><strong>{title}</strong>{name ? <small className="spec-screen-name">{name}</small> : null}</figcaption>
+    {artifact.summary ? <p className="spec-artifact-summary">{artifact.summary}</p> : null}
     <ul className="spec-screen-elements">{elements.map((element) => {
       const change = typeof element.change === "string" && CHANGE_LABELS[element.change] ? element.change : "unchanged";
       const kind = typeof element.kind === "string" && element.kind ? element.kind : "text";

@@ -18,12 +18,16 @@ const MAX_NODES = 24;
 const MAX_EDGES = 40;
 const MAX_ELEMENTS = 24;
 const MAX_TITLE = 200;
-const MAX_LABEL = 160;
+const MAX_SUMMARY = 600;
+const MAX_LABEL = 120;
+const MAX_NOTE = 240;
 const MAX_RATIONALE = 500;
 const MAX_ARTIFACT_TEXT = 16_000;
 const NODE_KINDS = ["start", "step", "decision", "end"];
 const ELEMENT_KINDS = ["header", "text", "input", "button", "list", "image", "note"];
-const ELEMENT_CHANGES = ["new", "changed", "unchanged"];
+const ELEMENT_CHANGES = ["added", "changed", "removed", "unchanged"];
+// A plan written before the marker was renamed still reads correctly.
+const ELEMENT_CHANGE_ALIASES = { new: "added" };
 const EVIDENCE_STATUSES = ["planned", "not_applicable"];
 const SPEC_OPTION_IDS = SPEC_OPTIONS.options.map((option) => option.id);
 
@@ -85,11 +89,12 @@ function normalizeDesignArtifacts(raw) {
     if (seen.has(id)) continue;
     seen.add(id);
     const title = spend(budget, clean(source.title, MAX_TITLE));
+    const summary = spend(budget, clean(source.summary, MAX_SUMMARY));
     const artifact = kind === "flow"
-      ? { id, kind, title, ...normalizeFlow(source, budget) }
-      : { id, kind, title, elements: normalizeElements(source.elements, budget) };
+      ? { id, kind, title, summary, ...normalizeFlow(source, budget) }
+      : { id, kind, title, summary, screen: normalizeScreen(source.screen, budget) };
     if (kind === "flow" && !artifact.nodes.length) continue;
-    if (kind === "screen" && !artifact.elements.length) continue;
+    if (kind === "screen" && !artifact.screen) continue;
     artifacts.push(artifact);
   }
   return artifacts;
@@ -124,6 +129,16 @@ function normalizeFlow(source, budget) {
   return { nodes, edges };
 }
 
+// A screen carries its own name. A screen with no name, or with no surviving
+// element, is not a wireframe at all, so it is dropped rather than repaired.
+function normalizeScreen(raw, budget) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const name = spend(budget, clean(source.name, MAX_LABEL));
+  if (!name) return null;
+  const elements = normalizeElements(source.elements, budget);
+  return elements.length ? { name, elements } : null;
+}
+
 function normalizeElements(raw, budget) {
   const seen = new Set();
   const elements = [];
@@ -139,10 +154,17 @@ function normalizeElements(raw, budget) {
       id,
       label,
       kind: ELEMENT_KINDS.includes(element.kind) ? element.kind : "text",
-      change: ELEMENT_CHANGES.includes(element.change) ? element.change : "new",
+      change: elementChange(element.change),
+      note: spend(budget, clean(element.note, MAX_NOTE)),
     });
   }
   return elements;
+}
+
+function elementChange(value) {
+  const alias = typeof value === "string" ? ELEMENT_CHANGE_ALIASES[value] : undefined;
+  const change = alias || value;
+  return ELEMENT_CHANGES.includes(change) ? change : "added";
 }
 
 // The aggregate budget truncates instead of throwing. A model that returns one
@@ -164,11 +186,16 @@ export function formatDesignArtifacts(artifacts) {
   for (const artifact of items) {
     if (artifact?.kind === "flow") {
       lines.push(`Flow ${artifact.id}: ${artifact.title || "untitled"}`);
+      if (artifact.summary) lines.push(`  ${artifact.summary}`);
       for (const node of artifact.nodes || []) lines.push(`- node ${node.id} (${node.kind}): ${node.label}`);
       for (const edge of artifact.edges || []) lines.push(`- edge ${edge.from} -> ${edge.to}${edge.label ? `: ${edge.label}` : ""}`);
     } else if (artifact?.kind === "screen") {
       lines.push(`Screen ${artifact.id}: ${artifact.title || "untitled"}`);
-      for (const element of artifact.elements || []) lines.push(`- ${element.change} ${element.kind} ${element.id}: ${element.label}`);
+      if (artifact.summary) lines.push(`  ${artifact.summary}`);
+      if (artifact.screen?.name) lines.push(`- screen ${artifact.screen.name}`);
+      for (const element of artifact.screen?.elements || []) {
+        lines.push(`- ${element.change} ${element.kind} ${element.id}: ${element.label}${element.note ? ` (${element.note})` : ""}`);
+      }
     }
   }
   return lines.join("\n");

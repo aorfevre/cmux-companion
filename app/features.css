@@ -218,6 +218,8 @@
 .worktree-planner-sheet .spec-flow figcaption,.worktree-planner-sheet .spec-screen figcaption{display:flex;min-width:0;align-items:baseline;gap:7px}
 .worktree-planner-sheet .spec-artifact-kind{flex:none;border-radius:6px;background:#252c32;color:#8ca760;padding:3px 5px;font:7px ui-monospace,monospace;letter-spacing:.06em}
 .worktree-planner-sheet .spec-flow figcaption strong,.worktree-planner-sheet .spec-screen figcaption strong{min-width:0;color:#d8dee3;white-space:normal;font-size:9px;line-height:1.35}
+.worktree-planner-sheet .spec-screen-name{flex:none;color:#7f8a94;font-size:7px;line-height:1.4}
+.worktree-planner-sheet .spec-artifact-summary{margin:0;color:#8e99a2;white-space:normal;font-size:8px;line-height:1.45}
 /* A wide diagram scrolls. Shrinking it would make its labels unreadable. */
 .worktree-planner-sheet .spec-flow-scroll{max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
 .worktree-planner-sheet .spec-flow-svg{display:block;height:auto}
@@ -679,6 +681,8 @@
   .worktree-planner-sheet .goal-passport-options small,.worktree-planner-sheet .spec-screen-elements small{font-size:10px}
   .worktree-planner-sheet .goal-passport-options em,.worktree-planner-sheet .spec-change,.worktree-planner-sheet .spec-artifact-kind{font-size:10px;padding:4px 6px}
   .worktree-planner-sheet .spec-flow figcaption strong,.worktree-planner-sheet .spec-screen figcaption strong{font-size:12px}
+  .worktree-planner-sheet .spec-screen-name{font-size:10px}
+  .worktree-planner-sheet .spec-artifact-summary{font-size:11px}
   .github-issue-planner .issue-topics,.github-issue-planner .issue-prepared-plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));align-items:start}
 }
 

@@ -416,12 +416,12 @@ test("parsePlannerReply applies the option-aware contract limits", () => {
       id: "F1",
       kind: "flow",
       title: "Checkout",
-      nodes: Array.from({ length: 24 }, (unused, index) => ({ id: `n${index + 1}`, label: "x".repeat(160), kind: "step" })),
-      edges: Array.from({ length: 23 }, (unused, index) => ({ from: `n${index + 1}`, to: `n${index + 2}`, label: "y".repeat(160) })),
+      nodes: Array.from({ length: 24 }, (unused, index) => ({ id: `n${index + 1}`, label: "x".repeat(120), kind: "step" })),
+      edges: Array.from({ length: 23 }, (unused, index) => ({ from: `n${index + 1}`, to: `n${index + 2}`, label: "y".repeat(120) })),
     }],
   };
   const tasks = [{
-    id: "T1", title: "Billing", branch: "feature/billing", prompt: "x".repeat(9_700), type: "feature",
+    id: "T1", title: "Billing", branch: "feature/billing", prompt: "x".repeat(11_700), type: "feature",
     criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["server/**"], verification: ["npm test"],
   }];
   const reply = envelope(JSON.stringify({ spec, tasks }));
@@ -439,12 +439,12 @@ test("an option-dependent oversized reply is retried and never stored as ready",
       id: "F1",
       kind: "flow",
       title: "Checkout",
-      nodes: Array.from({ length: 24 }, (unused, index) => ({ id: `n${index + 1}`, label: "x".repeat(160), kind: "step" })),
-      edges: Array.from({ length: 23 }, (unused, index) => ({ from: `n${index + 1}`, to: `n${index + 2}`, label: "y".repeat(160) })),
+      nodes: Array.from({ length: 24 }, (unused, index) => ({ id: `n${index + 1}`, label: "x".repeat(120), kind: "step" })),
+      edges: Array.from({ length: 23 }, (unused, index) => ({ from: `n${index + 1}`, to: `n${index + 2}`, label: "y".repeat(120) })),
     }],
   };
   const tasks = [{
-    id: "T1", title: "Billing", branch: "feature/billing", prompt: "x".repeat(9_700), type: "feature",
+    id: "T1", title: "Billing", branch: "feature/billing", prompt: "x".repeat(11_700), type: "feature",
     criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["server/**"], verification: ["npm test"],
   }];
   const oversized = envelope(JSON.stringify({ spec, tasks }));
@@ -470,7 +470,7 @@ test("a task brief carries the enabled instructions, the evidence and every arti
     },
     designArtifacts: [
       { id: "F1", kind: "flow", title: "Checkout", nodes: [{ id: "n1", label: "Open cart", kind: "start" }, { id: "n2", label: "Pay", kind: "end" }], edges: [{ from: "n1", to: "n2", label: "confirms" }] },
-      { id: "S1", kind: "screen", title: "Billing page", elements: [{ id: "e1", label: "Total due", kind: "text", change: "changed" }] },
+      { id: "S1", kind: "screen", title: "Billing page", summary: "The total line moves above the fold.", screen: { name: "Billing", elements: [{ id: "e1", label: "Total due", kind: "text", change: "changed", note: "Now bold" }] } },
     ],
   };
   const options = { unitTests: true, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: true, flowcharts: true };
@@ -498,7 +498,9 @@ test("a task brief carries the enabled instructions, the evidence and every arti
   assert.match(brief, /- node n1 \(start\): Open cart/);
   assert.match(brief, /- edge n1 -> n2: confirms/);
   assert.match(brief, /Screen S1: Billing page/);
-  assert.match(brief, /- changed text e1: Total due/);
+  assert.match(brief, /The total line moves above the fold\./);
+  assert.match(brief, /- screen Billing/);
+  assert.match(brief, /- changed text e1: Total due \(Now bold\)/);
 
   // The rigor block sits after the contract and before the finish steps.
   assert.ok(brief.indexOf("Delivery contract for this task:") < brief.indexOf("Requested specification rigor"));

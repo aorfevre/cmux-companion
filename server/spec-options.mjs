@@ -39,7 +39,7 @@ export function specOptionsPromptLines(options) {
     lines.push('A planned refactorPass entry must also name a task whose type is "refactor". Use not_applicable with a rationale when no refactor is warranted.');
   }
   if (enabled.some((option) => option.id === "screenMocks" || option.id === "flowcharts")) {
-    lines.push('Return the requested design artifacts in spec.designArtifacts: [{"id":"F1","kind":"flow","title":"...","nodes":[{"id":"n1","label":"...","kind":"start|step|decision|end"}],"edges":[{"from":"n1","to":"n2","label":"..."}]}] for a flowchart, and [{"id":"S1","kind":"screen","title":"...","elements":[{"id":"e1","label":"...","kind":"header|text|input|button|list|image|note","change":"new|changed|unchanged"}]}] for a screen wireframe.');
+    lines.push('Return the requested design artifacts in spec.designArtifacts: [{"id":"F1","kind":"flow","title":"...","summary":"...","nodes":[{"id":"n1","label":"...","kind":"start|step|decision|end"}],"edges":[{"from":"n1","to":"n2","label":"..."}]}] for a flowchart, and [{"id":"S1","kind":"screen","title":"...","summary":"...","screen":{"name":"...","elements":[{"id":"e1","label":"...","kind":"header|text|input|button|list|image|note","change":"added|changed|removed|unchanged","note":"..."}]}}] for a screen wireframe.');
     lines.push("Use a not_applicable optionEvidence entry with a rationale when the goal has no screen or no flow to draw.");
   }
   return lines;

@@ -766,13 +766,16 @@ describe("worktree goal planner", () => {
             edges: [{ from: "n1", to: "n2", label: "submit" }, { from: "n2", to: "n3", label: "" }, { from: "n3", to: "n2", label: "retry" }, { from: "n3", to: "n4", label: "" }],
           },
           {
-            id: "S1", kind: "screen", title: "Invoice screen",
-            elements: [
-              { id: "e1", label: "Invoice header", kind: "header", change: "new" },
-              { id: "e2", label: hostileElement, kind: "text", change: "changed", note: "Copy review pending" },
-              { id: "e3", label: "Legacy total", kind: "text", change: "removed" },
-              { id: "e4", label: "Footer", kind: "note", change: "unchanged" },
-            ],
+            id: "S1", kind: "screen", title: "Invoice screen", summary: "The invoice screen gains a total and drops the legacy line.",
+            screen: {
+              name: "Invoice detail",
+              elements: [
+                { id: "e1", label: "Invoice header", kind: "header", change: "added" },
+                { id: "e2", label: hostileElement, kind: "text", change: "changed", note: "Copy review pending" },
+                { id: "e3", label: "Legacy total", kind: "text", change: "removed" },
+                { id: "e4", label: "Footer", kind: "note", change: "unchanged" },
+              ],
+            },
           },
         ],
       },
@@ -817,6 +820,10 @@ describe("worktree goal planner", () => {
     assert.ok(within(passport).getByText("Removed"));
     assert.ok(within(passport).getByText("Unchanged"));
     assert.ok(within(passport).getByText("Invoice header"));
+
+    // The screen names itself, and both artifacts show their summary.
+    assert.ok(within(passport).getByText("Invoice detail"));
+    assert.ok(within(passport).getByText("The invoice screen gains a total and drops the legacy line."));
 
     // Hostile-looking strings stay text: no element was injected and no link
     // was created from artifact content.

@@ -1554,7 +1554,7 @@ const SKIP_PROMPT = "Stop asking questions. Decide the remaining details yoursel
 const SPEC_HEAD = '{"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}]';
 const SPEC_TAIL = '},"tasks":[{"id":"T1","title":"...","branch":"feature/...","prompt":"...","type":"feature|bugfix|ui|backend|docs|test|migration|investigation|refactor","criterionIds":["AC-1"],"dependsOn":[],"ownedAreas":["path/or/glob/**"],"verification":["specific command or manual check"]}]}';
 const EVIDENCE_SHAPE = ',"optionEvidence":{"unitTests":{"status":"planned|not_applicable","rationale":"...","taskIds":["T1"],"criterionIds":["AC-1"]}}';
-const ARTIFACT_SHAPE = ',"designArtifacts":[{"id":"F1","kind":"flow|screen","title":"...","nodes":[],"edges":[],"elements":[]}]';
+const ARTIFACT_SHAPE = ',"designArtifacts":[{"id":"F1","kind":"flow|screen","title":"...","summary":"...","nodes":[],"edges":[],"screen":{"name":"...","elements":[]}}]';
 
 // The schema line grows only for the options the user actually asked for, so
 // a goal with no requests reads exactly the contract it always read.

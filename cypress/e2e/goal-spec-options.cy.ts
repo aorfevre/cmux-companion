@@ -38,13 +38,16 @@ const designArtifacts = [
     edges: [{ from: "n1", to: "n2", label: "submit" }, { from: "n2", to: "n3", label: "" }],
   },
   {
-    id: "S1", kind: "screen", title: "Spec depth sheet",
-    elements: [
-      { id: "e1", label: "Spec depth header", kind: "header", change: "new" },
-      { id: "e2", label: "Planner effort select", kind: "input", change: "changed" },
-      { id: "e3", label: "Second reasoning toggle", kind: "button", change: "removed" },
-      { id: "e4", label: "Plan this goal button", kind: "button", change: "unchanged" },
-    ],
+    id: "S1", kind: "screen", title: "Spec depth sheet", summary: "The planner sheet gains the six requests.",
+    screen: {
+      name: "Plan a goal",
+      elements: [
+        { id: "e1", label: "Spec depth header", kind: "header", change: "added" },
+        { id: "e2", label: "Planner effort select", kind: "input", change: "changed" },
+        { id: "e3", label: "Second reasoning toggle", kind: "button", change: "removed" },
+        { id: "e4", label: "Plan this goal button", kind: "button", change: "unchanged" },
+      ],
+    },
   },
 ];
 
@@ -216,10 +219,12 @@ describe("specification rigor options", () => {
 
       // The screen artifact is a structured description, not a screenshot.
       cy.get(".spec-screen").should("contain.text", "Spec depth sheet").within(() => {
-        cy.get("li.change-new").should("contain.text", "Added").and("contain.text", "Spec depth header");
+        cy.get("li.change-added").should("contain.text", "Added").and("contain.text", "Spec depth header");
         cy.get("li.change-changed").should("contain.text", "Changed").and("contain.text", "Planner effort select");
         cy.get("li.change-removed").should("contain.text", "Removed").and("contain.text", "Second reasoning toggle");
         cy.get("li.change-unchanged").should("contain.text", "Unchanged").and("contain.text", "Plan this goal button");
+        cy.contains(".spec-screen-name", "Plan a goal").should("be.visible");
+        cy.contains(".spec-artifact-summary", "The planner sheet gains the six requests.").should("be.visible");
         cy.get("img").should("not.exist");
       });
     });

@@ -142,10 +142,14 @@ const SCREEN = {
   id: "S1",
   kind: "screen",
   title: "Export screen",
-  elements: [
-    { id: "e1", label: "Invoices", kind: "header", change: "unchanged" },
-    { id: "e2", label: "Export CSV", kind: "button", change: "new" },
-  ],
+  summary: "The invoice list gains an export action.",
+  screen: {
+    name: "Invoices",
+    elements: [
+      { id: "e1", label: "Invoices", kind: "header", change: "unchanged" },
+      { id: "e2", label: "Export CSV", kind: "button", change: "added", note: "Top right of the header." },
+    ],
+  },
 };
 
 function evidence(id, entry) {
@@ -173,7 +177,10 @@ test("normalizes design artifacts, evidence and their caps", () => {
   assert.deepEqual(spec.designArtifacts.map((artifact) => artifact.id), ["F1", "S1"]);
   assert.equal(spec.designArtifacts[0].nodes.length, 3);
   assert.equal(spec.designArtifacts[0].edges.length, 2);
-  assert.equal(spec.designArtifacts[1].elements[1].change, "new");
+  assert.equal(spec.designArtifacts[1].screen.name, "Invoices");
+  assert.equal(spec.designArtifacts[1].screen.elements[1].change, "added");
+  assert.equal(spec.designArtifacts[1].screen.elements[1].note, "Top right of the header.");
+  assert.equal(spec.designArtifacts[1].summary, "The invoice list gains an export action.");
   assert.deepEqual(spec.optionEvidence.unitTests, { status: "planned", rationale: "", taskIds: ["T1"], criterionIds: ["AC-1"] });
   assert.deepEqual(spec.optionEvidence, normalizeDeliveryContract({ ...SPEC, optionEvidence: evidence("unitTests") }).optionEvidence);
 
@@ -189,19 +196,27 @@ test("normalizes design artifacts, evidence and their caps", () => {
     ...SPEC,
     designArtifacts: [
       { ...FLOW, nodes: Array.from({ length: 40 }, (_, index) => ({ id: `n${index + 1}`, label: `node ${index + 1}` })), edges: [] },
-      { ...SCREEN, elements: Array.from({ length: 40 }, (_, index) => ({ id: `e${index + 1}`, label: `element ${index + 1}` })) },
+      { ...SCREEN, screen: { name: "Invoices", elements: Array.from({ length: 40 }, (_, index) => ({ id: `e${index + 1}`, label: `element ${index + 1}` })) } },
     ],
   });
   assert.equal(overLists.designArtifacts[0].nodes.length, 24);
-  assert.equal(overLists.designArtifacts[1].elements.length, 24);
+  assert.equal(overLists.designArtifacts[1].screen.elements.length, 24);
   assert.equal(overLists.designArtifacts[0].nodes[0].label.length, 6);
 
   const overText = normalizeDeliveryContract({
     ...SPEC,
-    designArtifacts: [{ ...FLOW, title: "t".repeat(400), nodes: [{ id: "n1", label: "l".repeat(400), kind: "start" }], edges: [] }],
+    designArtifacts: [{ ...FLOW, title: "t".repeat(400), summary: "s".repeat(900), nodes: [{ id: "n1", label: "l".repeat(400), kind: "start" }], edges: [] }],
   });
   assert.equal(overText.designArtifacts[0].title.length, 200);
-  assert.equal(overText.designArtifacts[0].nodes[0].label.length, 160);
+  assert.equal(overText.designArtifacts[0].summary.length, 600);
+  assert.equal(overText.designArtifacts[0].nodes[0].label.length, 120);
+
+  const overNote = normalizeDeliveryContract({
+    ...SPEC,
+    designArtifacts: [{ ...SCREEN, screen: { name: "n".repeat(300), elements: [{ id: "e1", label: "Row", note: "x".repeat(400) }] } }],
+  });
+  assert.equal(overNote.designArtifacts[0].screen.name.length, 120);
+  assert.equal(overNote.designArtifacts[0].screen.elements[0].note.length, 240);
 });
 
 test("repairs duplicate ids, drops dangling edges, empty artifacts and unknown kinds", () => {
@@ -212,7 +227,7 @@ test("repairs duplicate ids, drops dangling edges, empty artifacts and unknown k
       { ...SCREEN, id: "F1" },
       { id: "X1", kind: "sequence", title: "Unknown", nodes: [{ id: "n1", label: "n" }] },
       { id: "X2", kind: "flow", title: "Empty", nodes: [], edges: [] },
-      { id: "X3", kind: "screen", title: "Empty", elements: [{ id: "e1", label: "" }] },
+      { id: "X3", kind: "screen", title: "Empty", screen: { name: "Empty", elements: [{ id: "e1", label: "" }] } },
       {
         id: "F4",
         kind: "flow",
@@ -227,6 +242,13 @@ test("repairs duplicate ids, drops dangling edges, empty artifacts and unknown k
   const repaired = spec.designArtifacts[2];
   assert.deepEqual(repaired.nodes.map((node) => node.id), ["n1", "n2", "n3"]);
   assert.deepEqual(repaired.edges, [{ from: "n1", to: "n2", label: "" }]);
+
+  // A screen with no name is not a wireframe, so it is dropped like an empty one.
+  const nameless = normalizeDeliveryContract({
+    ...SPEC,
+    designArtifacts: [{ id: "S9", kind: "screen", title: "Nameless", screen: { name: "", elements: [{ id: "e1", label: "Row" }] } }],
+  });
+  assert.deepEqual(nameless.designArtifacts, []);
 });
 
 test("holds design artifacts inside an aggregate text budget without throwing", () => {
