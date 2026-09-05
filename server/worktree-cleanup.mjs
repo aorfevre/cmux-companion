@@ -110,8 +110,7 @@ export class WorktreeCleanup {
             const registration = parseWorktrees(await git(row.repositoryPath, ["worktree", "list", "--porcelain", "-z"])).find((entry) => entry.path === row.path);
             if (!registration) throw new Error("Worktree registration disappeared");
             const repo = { common: row.common, path: row.repositoryPath, name: row.repository };
-            const discovered = await this.inventory.discover();
-            const fresh = await this.inventory.inspect(repo, registration, { activity: await this.inventory.activity(), markers: discovered.markers, estimate: false });
+            const fresh = await this.inventory.inspect(repo, registration, { activity: await this.inventory.activity(), markers: [], estimate: false });
             if (!fresh.eligible || fresh.head !== row.head || fresh.identity !== row.identity) throw new Error(fresh.reasons.join("; ") || "Worktree identity or HEAD changed");
             const info = await plainPath(row.path);
             if (`${info.dev}:${info.ino}` !== row.identity) throw new Error("Worktree path changed immediately before removal");
