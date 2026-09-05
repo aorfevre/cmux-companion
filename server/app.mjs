@@ -183,7 +183,7 @@ export async function buildApp({
   // goal's health gets worse — so a dead agent reaches the user instead of
   // waiting to be noticed. It moves no goal: every recovery stays explicit.
   const watchdog = goalWatchdog
-    || (health ? new GoalWatchdog({ health, pushService, mergeWatch, worktrees, sessionReaper: autoCloseSessions ? reaper : null, log: app.log }) : null);
+    || (health ? new GoalWatchdog({ health, integrator, pushService, mergeWatch, worktrees, sessionReaper: autoCloseSessions ? reaper : null, log: app.log }) : null);
   const detachWatchdog = watchdog?.start() || null;
   const detachIssueSyncScheduler = issueSyncScheduler?.start() || null;
   const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;

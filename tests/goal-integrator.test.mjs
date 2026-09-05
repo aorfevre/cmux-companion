@@ -833,3 +833,99 @@ test("an unreadable lifecycle never blocks delivery", async (t) => {
   integrator.cancel("plan-12345678");
   assert.equal(warnings.length, 1);
 });
+
+function idleRecovery(integrator) {
+  integrator.cmux.workspaceStatus = async () => ({ effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false } });
+}
+
+test("watchdog recovers a missed task Stop once, including concurrent sweeps", async (t) => {
+  const { integrator, calls, store } = fixture(t, { contract: true });
+  idleRecovery(integrator);
+  await Promise.all([integrator.heal(), integrator.heal()]);
+  assert.equal(store.get("plan-12345678").mergeStatus, "running");
+  assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 1);
+});
+
+for (const activity of [undefined, { effective: "working", signals: { any_agent_running: true, any_agent_needs_input: false } }, { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: true } }]) {
+  test(`watchdog protects running, awaiting or unknown activity: ${JSON.stringify(activity)}`, async (t) => {
+    const { integrator, calls } = fixture(t);
+    integrator.cmux.workspaceStatus = async () => activity;
+    assert.deepEqual(await integrator.heal(), []);
+    assert.equal(calls.length, 0);
+  });
+}
+
+test("watchdog checks unassociated sessions in task subdirectories using fresh inventory", async (t) => {
+  const { integrator, calls, store } = fixture(t);
+  idleRecovery(integrator);
+  integrator.cmux.loadWorkspaceListDetailed = async () => ({ workspaces: [{ id: "restored", current_directory: join(store.get("plan-12345678").tasks[0].worktreePath, "src") }] });
+  integrator.cmux.workspaceStatus = async (id) => { assert.equal(id, "restored"); return { signals: { any_agent_running: true } }; };
+  assert.deepEqual(await integrator.heal(), []);
+  assert.equal(calls.length, 0);
+});
+
+for (const reason of ["unpushed", "dirty", "unreadable", "report"]) {
+  test(`watchdog preserves incomplete evidence: ${reason}`, async (t) => {
+    const { integrator, calls } = fixture(t, { contract: true, secondPushed: reason !== "unpushed", reports: reason === "report" ? { t2: null } : {} });
+    idleRecovery(integrator);
+    const git = integrator.repoCatalog.git;
+    integrator.repoCatalog.git = async (cwd, args) => {
+      if (args[0] === "status" && reason === "dirty") return "?? personal.txt\n";
+      if (args[0] === "status" && reason === "unreadable") throw new Error("broken Git reference");
+      return git(cwd, args);
+    };
+    await integrator.heal();
+    assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 0);
+  });
+}
+
+test("watchdog retries temporary lock failures but leaves real merge failures alone", async (t) => {
+  const { integrator, store, calls } = fixture(t);
+  idleRecovery(integrator);
+  store.recordMergeBlocked("plan-12345678", "Conflicting requirements need a decision");
+  assert.deepEqual(await integrator.heal(), []);
+  store.recordMergeBlocked("plan-12345678", "Another worktree operation holds this lock");
+  await integrator.heal();
+  assert.equal(store.get("plan-12345678").mergeStatus, "running");
+  assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 1);
+});
+
+test("watchdog settles a missed merge Stop without creating a second session", async (t) => {
+  const { integrator, store, calls } = fixture(t, { pullRequest: { number: 73, url: "https://github.test/pull/73" } });
+  idleRecovery(integrator);
+  await integrator.assemble("plan-12345678");
+  await integrator.heal();
+  assert.equal(store.get("plan-12345678").deliveryStatus, "pr_open");
+  assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 1);
+});
+
+test("observed open PR prevents duplicate assembly", async (t) => {
+  const { integrator, store, calls } = fixture(t);
+  store.recordGoalPullRequest("plan-12345678", { number: 73, url: "https://github.test/pull/73", state: "OPEN" });
+  await integrator.assemble("plan-12345678");
+  assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 0);
+});
+
+test("unavailable inventory preserves goals and a broken goal does not stop others", async (t) => {
+  const { integrator, store, calls } = fixture(t);
+  idleRecovery(integrator);
+  integrator.cmux.loadWorkspaceListDetailed = async () => ({ error: "cmux offline" });
+  assert.deepEqual(await integrator.heal(), []);
+  assert.equal(calls.length, 0);
+  delete integrator.cmux.loadWorkspaceListDetailed;
+  const get = store.get.bind(store);
+  store.sessionCleanupPlanIds = () => ["broken-record", "plan-12345678"];
+  store.get = (id) => { if (id === "broken-record") throw new Error("database record unreadable"); return get(id); };
+  const results = await integrator.heal();
+  assert.match(results[0].error, /unreadable/);
+  assert.equal(results[1].status, "assembling");
+});
+
+test("an abort while checking liveness prevents recovery", async (t) => {
+  const { integrator, store, calls } = fixture(t);
+  idleRecovery(integrator);
+  const status = integrator.cmux.workspaceStatus;
+  integrator.cmux.workspaceStatus = async () => { store.recordGoalAborted("plan-12345678"); return status(); };
+  assert.deepEqual(await integrator.heal(), []);
+  assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 0);
+});

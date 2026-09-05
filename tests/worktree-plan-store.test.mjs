@@ -919,11 +919,11 @@ test("a terminal goal is no longer active work", (t) => {
   assert.equal(store.findPlanByMergeWorkspace("plan-merged-merge"), null);
   assert.equal(store.findPlanByMergeWorkspace("plan-aborted-merge"), null);
 
-  // The terminal plans keep every delivery field they had.
+  // Merge confirmation finishes delivery while preserving session associations.
   const merged = store.get("plan-merged");
   assert.equal(merged.status, "launched");
-  assert.equal(merged.deliveryStatus, "assembling");
-  assert.equal(merged.mergeStatus, "running");
+  assert.equal(merged.deliveryStatus, "pr_open");
+  assert.equal(merged.mergeStatus, "done");
   assert.equal(merged.mergeWorkspaceId, "plan-merged-merge");
   assert.deepEqual(merged.tasks.map((task) => task.workspaceId), ["plan-merged-workspace-0", "plan-merged-workspace-1"]);
 });
@@ -1168,4 +1168,32 @@ test("association repairs only a still-unassociated failed task and records an a
   assert.equal(plan.tasks[1].deliveryStatus, "pending");
   assert.equal(store.events("plan-1").at(-1).kind, "task_associated");
   assert.throws(() => store.recordTaskAssociation("plan-1", "t2", candidate), /changed/);
+});
+
+test("reobserving an open PR heals stale delivery failures idempotently", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  const pr = { number: 73, url: "https://github.test/pr/73", state: "OPEN" };
+  store.recordGoalPullRequest("plan-1", pr);
+  store.recordMergeBlocked("plan-1", "Another worktree operation holds this lock");
+  const healed = store.recordGoalPullRequest("plan-1", pr);
+  assert.equal(healed.deliveryError, null);
+  assert.equal(healed.mergeStatus, "done");
+  assert.equal(healed.deliveryStatus, "pr_open");
+  const count = store.events("plan-1").length;
+  store.recordGoalPullRequest("plan-1", pr);
+  assert.equal(store.events("plan-1").length, count);
+});
+
+test("a merged PR clears stale delivery errors on existing terminal records", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  const pr = { number: 73, url: "https://github.test/pr/73", state: "MERGED" };
+  store.recordGoalPullRequest("plan-1", pr);
+  // Simulate a record persisted by the older Companion.
+  store.db.prepare("UPDATE plans SET merge_status = 'blocked', delivery_error = 'stale lock' WHERE plan_id = ?").run("plan-1");
+  const healed = store.recordGoalPullRequest("plan-1", pr);
+  assert.equal(healed.boardStatus, "merged");
+  assert.equal(healed.deliveryError, null);
+  assert.equal(healed.mergeStatus, "done");
 });

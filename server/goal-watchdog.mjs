@@ -6,7 +6,8 @@
 // alert when a goal's health gets worse.
 //
 // GitHub reconciliation records delivered goals, then session collection
-// retires their workspaces. Agent recovery remains an explicit decision.
+// retires their workspaces. Verified missed delivery hooks can recover before
+// health assessment; ambiguous failures still require an explicit decision.
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1_000;
 // A goal that has just launched has no session yet on the first tick. Waiting
@@ -29,9 +30,10 @@ export const ALERTING = new Map([
 ]);
 
 export class GoalWatchdog {
-  constructor({ health, pushService = null, mergeWatch = null, worktrees = null, sessionCollector = null, sessionReaper = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
+  constructor({ health, integrator = null, pushService = null, mergeWatch = null, worktrees = null, sessionCollector = null, sessionReaper = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
     if (!health) throw new TypeError("A goal health sweep is required");
     this.health = health;
+    this.integrator = integrator;
     this.pushService = pushService;
     // Optional. With no reaper the watchdog behaves exactly as it did before:
     // it reports, and it closes nothing.
@@ -77,6 +79,8 @@ export class GoalWatchdog {
   // can share the dedupe.
   async check() {
     await this.#reconcile();
+    try { await this.integrator?.heal(); }
+    catch (cause) { this.log?.warn?.({ err: cause }, "goal delivery recovery failed"); }
     await this.sessionCollector?.sweep();
     const swept = await this.health.sweep();
     // An unreachable cmux reports every session as `unknown`. Alerting on that

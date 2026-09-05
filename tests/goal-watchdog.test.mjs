@@ -387,3 +387,13 @@ test("a watchdog with no reaper closes nothing and still reports", async () => {
   assert.equal(result.checked, true);
   assert.equal(result.sessions, null);
 });
+
+test("recovery runs before health assessment and recovery failures do not stop the sweep", async () => {
+  const order = [];
+  const health = sweep([]);
+  const original = health.sweep;
+  health.sweep = async () => { order.push("health"); return original(); };
+  const watchdog = new GoalWatchdog({ health, integrator: { heal: async () => { order.push("heal"); throw new Error("repository unavailable"); } } });
+  assert.equal((await watchdog.check()).checked, true);
+  assert.deepEqual(order, ["heal", "health"]);
+});

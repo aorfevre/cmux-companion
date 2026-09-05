@@ -361,7 +361,7 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
 - The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
-- The goal health sweep is read-only. The watchdog reconciles GitHub state and collects finished goal sessions; it never deletes branches or worktrees or restarts agents.
+- The goal health sweep is read-only. The watchdog reconciles GitHub state and collects finished goal sessions; it never deletes branches or worktrees. It can resume verified combined-goal delivery as described below.
 - The supervision timer may close one thing: a cmux session Companion itself opened for a goal, recorded on that goal's plan row, after that session's work is delivered. It may never close a session whose agent is running or waiting for an answer, a session of a goal whose merge is blocked and has no delivery PR, any session while cmux is unreachable, or any session Companion did not open for a goal. It deletes no branch and no worktree. Set `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` to `0`, `off` or `false` to stop the timer pass.
 - Restarting a task deletes its branch and its worktree, so it is refused for the primary checkout and for a managed release checkout, and the phone confirms before it runs.
 - Relaunching a task is refused while its cmux session is still open, because a second agent in one worktree would fight the first over the same files.
@@ -500,3 +500,28 @@ CMUX_COMPANION_CYPRESS_BROWSER=chrome npm run test:e2e:local
 ```
 
 This still uses deterministic local fixtures and refuses CI execution.
+
+### Automatic goal delivery recovery
+
+The watchdog checks about one minute after startup, then five minutes after each
+completed sweep. After refreshing GitHub, it recovers missed task/merge Stop
+hooks and retries the specific temporary “Another worktree operation holds this
+lock” failure. An observed open PR clears obsolete delivery errors; merged and
+aborted goals remain terminal. No activation is needed for this recovery.
+
+Recovery requires an available cmux inventory and explicitly idle agents in the
+recorded sessions and sessions using the task/integration worktrees (including
+subdirectories). Running agents, input requests, and unknown activity prevent
+recovery. Task readiness still requires clean Git status, a pushed exact commit,
+the goal/task completion trailer, and the completion report when required by the
+goal's delivery contract. Missing or unreadable evidence cannot prove completion.
+Operations serialize with assembly and settling; overlapping checks share the
+same recovery operation. Each goal's failure is isolated from the rest.
+
+Real merge conflicts, failed task launches, and ambiguous associations still need
+review. Recovery does not remove lock files or infer completion from inactivity.
+Use **Check & build combined PR** after resolving a genuine blocker, or
+`POST /api/goals/health/check` to run the supervision pass immediately. Session
+retirement and worktree deletion retain their separate safety policies and controls.
+The deterministic Cypress suite verifies the recovered board state; backend tests
+exercise the actual recovery decisions without launching agents or deleting real worktrees.
