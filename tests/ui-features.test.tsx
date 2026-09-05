@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
@@ -1326,6 +1326,8 @@ describe("worktree goal planner", () => {
 });
 
 describe("goals board", () => {
+  const columnPreferenceKey = "cmux-companion-goal-board-column-expansion";
+  beforeEach(() => localStorage.removeItem(columnPreferenceKey));
   const now = new Date().toISOString();
   const repository = (id: string, name: string, root: string) => ({ id, name, root, path: `/repo/${name}`, pullRequestsAvailable: false, summary: { worktrees: 1, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [{ id: `${id}-primary-worktree`, repoId: id, path: `/repo/${name}`, name, branch: "main", isPrimary: true, detached: false, locked: null, prunable: null, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }] });
   const dashboard = { generatedAt: "2026-09-01", summary: { repositories: 2, worktrees: 2, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, orphanSessions: [], repositories: [repository("repo-karven", "trust-layer", "karven"), repository("repo-rekord", "recorder", "rekord")] };
@@ -1336,7 +1338,7 @@ describe("goals board", () => {
   const review = plan({ planId: "plan-review", goal: "Review the spec", running: true, runPhase: "running", runStage: "review_spec", runStep: "Anything at all", boardState: "review_spec" });
   const waitingDev = plan({ planId: "plan-waiting-dev", goal: "Ready to launch work", taskCount: 3, boardState: "waiting_for_dev", sourceType: "github_issues", issueNumbers: [42] });
   const devInProgress = plan({ planId: "plan-dev", goal: "Agents are coding", status: "launched", taskCount: 2, deliveryStatus: "planning", launchedAt: now, boardState: "dev_in_progress" });
-  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "waiting_for_merge", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
+  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, followupCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "waiting_for_merge", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
   const merged = plan({ planId: "plan-merged", goal: "Merged already", status: "launched", taskCount: 4, launchedAt: now, boardState: "merged", boardStatus: "merged", boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12" });
   const aborted = plan({ planId: "plan-aborted", goal: "Stopped on purpose", taskCount: 1, boardState: "aborted", boardStatus: "aborted", boardChangedAt: now });
   // A launched goal whose agents died. It used to read as "Dev in progress",
@@ -1386,14 +1388,18 @@ describe("goals board", () => {
     return screen.getByRole("region", { name: "Goals board" });
   }
 
-  test("renders eight ordered columns with counts, descriptions, empty notes, and one card per state", async () => {
+  async function expandColumn(board: HTMLElement, label: string) {
+    await userEvent.click(within(board).getByRole("button", { name: `Expand ${label}` }));
+  }
+
+  test("renders ordered columns with terminal defaults collapsed and accurate counts", async () => {
     mountBoard();
     const board = await openBoard();
     assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("9"), true);
     const headings = within(board).getAllByRole("heading", { level: 3 }).map((item) => item.textContent);
     // GitHub Issues is the leftmost column, ahead of the eight goal columns.
     assert.deepEqual(headings, ["GitHub Issues", ...COLUMNS.map(([label]) => label)]);
-    for (const [label, description] of COLUMNS) assert.ok(within(board).getByText(description), `${label} description`);
+    for (const [label, description] of COLUMNS.slice(0, 6)) assert.ok(within(board).getByText(description), `${label} description`);
 
     const column = (label: string) => within(board).getByRole("region", { name: label });
     assert.ok(within(column("Writing Spec")).getByText("Write the spec"));
@@ -1402,19 +1408,57 @@ describe("goals board", () => {
     assert.ok(within(column("Dev in progress")).getByText("Agents are coding"));
     assert.ok(within(column("Waiting for merge")).getByText("Waiting on the PR"));
     assert.ok(within(column("Blocked")).getByText("Its agent died"));
-    assert.ok(within(column("Merged")).getByText("Merged already"));
-    assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
     assert.ok(within(column("Waiting for dev")).getByLabelText("2 goals in Waiting for dev"));
     assert.ok(within(column("Merged")).getByLabelText("1 goal in Merged"));
     assert.ok(within(column("Waiting for dev")).getByRole("list", { name: "Waiting for dev goals" }));
+    assert.equal(within(column("Merged")).queryByText("Merged already"), null);
+    assert.equal(within(column("Merged")).queryByText(COLUMNS[6][1]), null);
+    assert.equal(within(column("Aborted")).queryByText("Stopped on purpose"), null);
+    assert.equal(within(column("Aborted")).queryByText(COLUMNS[7][1]), null);
+    assert.equal(within(column("Merged")).getByRole("button", { name: "Expand Merged" }).getAttribute("aria-expanded"), "false");
+    assert.equal(within(column("Aborted")).getByRole("button", { name: "Expand Aborted" }).getAttribute("aria-expanded"), "false");
+    assert.equal(within(board).getAllByRole("button", { name: /^Collapse / }).length, 7);
+
+    await expandColumn(board, "Merged");
+    await expandColumn(board, "Aborted");
+    assert.ok(within(column("Merged")).getByText("Merged already"));
+    assert.ok(within(column("Merged")).getByText(COLUMNS[6][1]));
+    assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
+    assert.ok(within(column("Aborted")).getByText(COLUMNS[7][1]));
+    assert.equal(within(column("Merged")).getByRole("button", { name: "Collapse Merged" }).getAttribute("aria-expanded"), "true");
     // Every column renders, so an empty one carries a note instead of nothing.
     assert.equal(within(board).queryAllByText("No goal here yet.").length, 0);
 
     cleanup();
+    localStorage.removeItem(columnPreferenceKey);
     mountBoard([]);
     const emptyBoard = await openBoard();
     assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 9);
-    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 8);
+    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 6);
+  });
+
+  test("toggles any column and restores each choice from localStorage", async () => {
+    mountBoard();
+    let board = await openBoard();
+    await expandColumn(board, "Merged");
+    assert.ok(within(board).getByText("Merged already"));
+
+    cleanup();
+    mountBoard();
+    board = await openBoard();
+    assert.ok(within(board).getByText("Merged already"));
+    await userEvent.click(within(board).getByRole("button", { name: "Collapse Merged" }));
+    assert.equal(within(board).queryByText("Merged already"), null);
+
+    cleanup();
+    mountBoard();
+    board = await openBoard();
+    assert.equal(within(board).queryByText("Merged already"), null);
+    const waitingToggle = within(board).getByRole("button", { name: "Collapse Waiting for dev" });
+    assert.equal(waitingToggle.getAttribute("aria-expanded"), "true");
+    await userEvent.click(waitingToggle);
+    assert.equal(within(board).queryByText("Ready to launch work"), null);
+    assert.equal(within(board).getByRole("button", { name: "Expand Waiting for dev" }).getAttribute("aria-expanded"), "false");
   });
 
   test("falls back to the shared derivation when a plan carries no usable board state", async () => {
@@ -1469,6 +1513,7 @@ describe("goals board", () => {
     await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
 
     const searchBox = screen.getByRole("searchbox", { name: "Search projects" });
+    await expandColumn(screen.getByRole("region", { name: "Goals board" }), "Merged");
     await userEvent.type(searchBox, "Merged already");
     const filtered = screen.getByRole("region", { name: "Goals board" });
     assert.ok(within(filtered).getByText("Merged already"));
@@ -1587,6 +1632,8 @@ describe("goals board", () => {
   test("shows card metadata, lifecycle evidence, and pull-request links", async () => {
     mountBoard();
     const board = await openBoard();
+    await expandColumn(board, "Merged");
+    await expandColumn(board, "Aborted");
     const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
 
     const dev = card("Ready to launch work");
@@ -1611,6 +1658,71 @@ describe("goals board", () => {
     assert.ok(within(card("Agents are coding")).getByRole("button", { name: "View Agents are coding" }));
     assert.ok(within(card("Merged already")).getByRole("button", { name: "View Merged already" }));
     assert.ok(within(card("Stopped on purpose")).getByRole("button", { name: "View Stopped on purpose" }));
+    assert.ok(within(card("Waiting on the PR")).getByText("2 follow-ups"));
+  });
+
+  test("offers follow-up actions only on Waiting for merge and submits several actions in one request", async () => {
+    const issue = { repositoryId: "repo-karven", repositoryName: "trust-layer", number: 91, title: "Issue without follow-ups", labels: [], url: "https://github.test/issues/91", updatedAt: now, syncedAt: now, planId: null };
+    let planReads = 0;
+    const fetchMock = mountBoard(allPlans, (url, init) => {
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: now, issues: [issue] }), { status: 200 });
+      if (url === "/api/worktree-plans/plan-merge/followups" && init?.method === "POST") return new Response(JSON.stringify({ planId: "plan-merge", workspaceId: "followup-workspace", agent: "codex", actions: ["question", "review"], branch: "goal/merge", worktreePath: "/repo/goal-merge", pullRequest: { number: 77, url: "https://github.test/pr/77" }, title: "Follow up" }), { status: 200 });
+      if (url.startsWith("/api/worktree-plans") && (!init?.method || init.method === "GET")) { planReads += 1; return new Response(JSON.stringify({ plans: allPlans }), { status: 200 }); }
+      return null;
+    });
+    const board = await openBoard();
+    await within(board).findByText(issue.title);
+    const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
+
+    assert.ok(within(card("Waiting on the PR")).getByRole("button", { name: "More actions for Waiting on the PR" }));
+    for (const goal of ["Its agent died", "Agents are coding", "Merged already", "Stopped on purpose"]) {
+      assert.equal(within(card(goal)).queryByRole("button", { name: /More actions/ }), null, goal);
+    }
+    const issueCard = within(board).getByText(issue.title).closest("article") as HTMLElement;
+    assert.equal(within(issueCard).queryByRole("button", { name: /More actions/ }), null);
+
+    await userEvent.click(within(card("Waiting on the PR")).getByRole("button", { name: "More actions for Waiting on the PR" }));
+    const sheet = screen.getByRole("dialog", { name: "More actions for Waiting on the PR" });
+    for (const label of ["Ask a question", "More unit and e2e tests", "Complete code review", "Something else"]) assert.ok(within(sheet).getByText(label));
+    assert.equal((within(sheet).getByRole("radio", { name: "Claude" }) as HTMLInputElement).checked, true);
+
+    const postCount = () => fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/followups") && init?.method === "POST").length;
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+    assert.ok(await within(sheet).findByText("Pick at least one follow-up action"));
+    assert.equal(postCount(), 0);
+
+    await userEvent.click(within(sheet).getByRole("checkbox", { name: /^Ask a question/ }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+    assert.ok(await within(sheet).findByText("Write the question you want answered"));
+    assert.equal(postCount(), 0);
+
+    await userEvent.type(within(sheet).getByRole("textbox", { name: "Ask a question details" }), "Which edge cases remain?");
+    await userEvent.click(within(sheet).getByRole("checkbox", { name: /^Complete code review/ }));
+    await userEvent.click(within(sheet).getByRole("radio", { name: "Codex" }));
+    const readsBeforeSubmit = planReads;
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+
+    await waitFor(() => assert.equal(postCount(), 1));
+    const post = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/followups") && init?.method === "POST");
+    assert.equal(String(post?.[0]), "/api/worktree-plans/plan-merge/followups");
+    assert.deepEqual(JSON.parse(String(post?.[1]?.body)), { actions: ["question", "review"], question: "Which edge cases remain?", agent: "codex" });
+    await waitFor(() => assert.equal(screen.queryByRole("dialog", { name: "More actions for Waiting on the PR" }), null));
+    await waitFor(() => assert.ok(planReads > readsBeforeSubmit));
+  });
+
+  test("keeps the follow-up sheet open when the server refuses the request", async () => {
+    const fetchMock = mountBoard(allPlans, (url, init) => url === "/api/worktree-plans/plan-merge/followups" && init?.method === "POST"
+      ? new Response(JSON.stringify({ error: "The pull request branch is no longer available", code: "FOLLOWUP_BRANCH_MISSING" }), { status: 400 })
+      : null);
+    const board = await openBoard();
+    await userEvent.click(within(board).getByRole("button", { name: "More actions for Waiting on the PR" }));
+    const sheet = screen.getByRole("dialog", { name: "More actions for Waiting on the PR" });
+    await userEvent.click(within(sheet).getByRole("checkbox", { name: /^More unit and e2e tests/ }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Submit follow-up" }));
+
+    assert.ok(await within(sheet).findByText("The pull request branch is no longer available"));
+    assert.ok(screen.getByRole("dialog", { name: "More actions for Waiting on the PR" }));
+    assert.equal(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/followups") && init?.method === "POST").length, 1);
   });
 
   test("makes a blocked merge agree with cmux evidence, counters, and focus actions", async () => {
@@ -1707,6 +1819,8 @@ describe("goals board", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
     const board = await openBoard();
+    await expandColumn(board, "Merged");
+    await expandColumn(board, "Aborted");
     const card = (goal: string) => within(screen.getByRole("region", { name: "Goals board" })).getByText(goal).closest("article") as HTMLElement;
 
     // Terminal cards never offer Abort.

@@ -266,6 +266,14 @@ that one goal, instead of waiting for the next reconciliation pass. It reports
 three outcomes differently: the goal moved to Merged, its pull request is still
 open, or GitHub knows no pull request for its branch.
 
+**More actions** on every goal card in Waiting for merge opens a follow-up
+popup. Choose one or several actions: ask a question, add more unit and e2e
+tests, run a complete code review, or give a free-form instruction, then choose
+Claude or Codex. One submission opens exactly one cmux session in that goal's
+delivery worktree. Any code it produces is committed and pushed on the same
+branch, updating the existing pull request rather than opening another one.
+The follow-up session is left open for you to read and close.
+
 ## Local end-to-end checks
 
 The Cypress suite is intentionally excluded from `npm test`, `npm run verify`,

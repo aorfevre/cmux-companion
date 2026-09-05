@@ -309,6 +309,29 @@ test("the list carries a task count but no prompt", (t) => {
   assert.equal(plan.tasks, undefined);
 });
 
+test("keeps follow-up launches in order and reports their count", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.recordFollowupLaunched("plan-1", {
+    workspaceId: "followup-1", actions: ["question"], agent: "claude",
+    branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-1.md",
+  });
+  store.recordFollowupLaunched("plan-1", {
+    workspaceId: "followup-2", actions: ["tests", "review"], agent: "codex",
+    branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-2.md",
+  });
+
+  const plan = store.get("plan-1");
+  assert.deepEqual(plan.followups.map((followup) => followup.workspaceId), ["followup-1", "followup-2"]);
+  assert.deepEqual(plan.followups[1].actions, ["tests", "review"]);
+  assert.equal(plan.followups[0].agent, "claude");
+  assert.ok(plan.followups.every((followup) => followup.launchedAt));
+  assert.equal(store.list()[0].followupCount, 2);
+  const events = store.events("plan-1").filter((event) => event.kind === "followup_launched");
+  assert.equal(events.length, 2);
+  assert.deepEqual(events.map((event) => event.payload.workspaceId), ["followup-1", "followup-2"]);
+});
+
 test("filters the list by status", (t) => {
   const store = memoryStore(t);
   seed(store, "plan-1");
@@ -655,6 +678,29 @@ test("migrates a database that predates the board columns", (t) => {
   const [summary] = migrated.list();
   assert.equal(summary.boardStatus, null);
   assert.equal(summary.boardPrState, null);
+});
+
+test("migrates a database that predates durable follow-ups and records one", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "followup-plan-store-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "goal-plans.db");
+  const first = new WorktreePlanStore({ path });
+  seed(first);
+  first.close();
+
+  const legacy = new DatabaseSync(path);
+  legacy.exec("ALTER TABLE plans DROP COLUMN followups");
+  legacy.close();
+
+  const migrated = new WorktreePlanStore({ path });
+  t.after(() => migrated.close());
+  assert.deepEqual(migrated.get("plan-1").followups, []);
+  const recorded = migrated.recordFollowupLaunched("plan-1", {
+    workspaceId: "followup-1", actions: ["custom"], agent: "codex",
+    branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-1.md",
+  });
+  assert.equal(recorded.followups[0].workspaceId, "followup-1");
+  assert.equal(migrated.list()[0].followupCount, 1);
 });
 
 test("records an open pull request and only re-records a changed one", (t) => {
