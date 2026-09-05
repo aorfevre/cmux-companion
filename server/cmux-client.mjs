@@ -1,3 +1,4 @@
+import { withWorkspaceLaunch } from "./worktree-operations.mjs";
 import { execFile } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -245,7 +246,13 @@ export class CmuxClient {
     throw new TypeError("Unsupported inbox item");
   }
 
-  async workspaceCreate({ cwd, title, agent = "shell", prompt = "", script = null, env = null }) {
+  async workspaceCreate(options) {
+    if (typeof options?.cwd !== "string" || !options.cwd.startsWith("/")) throw new TypeError("Invalid repository path");
+    if (!statSync(options.cwd, { throwIfNoEntry: false })?.isDirectory()) throw new TypeError(`This directory does not exist: ${options.cwd}`);
+    return withWorkspaceLaunch(options.cwd, () => this.createWorkspaceLocked(options));
+  }
+
+  async createWorkspaceLocked({ cwd, title, agent = "shell", prompt = "", script = null, env = null }) {
     if (typeof cwd !== "string" || !cwd.startsWith("/")) throw new TypeError("Invalid repository path");
     // cmux accepts a cwd that does not exist and creates the workspace anyway.
     // Its shell then cannot enter the directory and silently keeps the one cmux

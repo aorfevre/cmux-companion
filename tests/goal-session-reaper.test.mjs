@@ -58,36 +58,34 @@ function reasonFor(kept, workspaceId) {
 
 // The delivery pull request is open, so every task's work is inside it. Only
 // the session that owns the merge has anything left to do.
-test("an open pull request retires every task session and keeps the merge session", async (t) => {
+test("an open pull request retires the original task and merge sessions", async (t) => {
   const store = combined(t);
   store.recordGoalPullRequest("plan-1", { number: 7, url: "https://github.test/pr/7", state: "OPEN" });
   const client = cmux(workspaces(ALL));
   const reaper = new GoalSessionReaper({ store, cmux: client });
 
   const result = await reaper.reap();
-  assert.deepEqual(result.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
-  assert.deepEqual(client.closed().sort(), ["workspace-0", "workspace-1"]);
-  assert.deepEqual(result.kept.map((entry) => entry.workspaceId), ["workspace-merge"]);
-  assert.match(reasonFor(result.kept, "workspace-merge"), /open pull request/);
+  assert.deepEqual(result.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(client.closed().sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(result.kept, []);
   assert.equal(result.failed.length, 0);
   const plan = store.get("plan-1");
   assert.ok(plan.tasks.every((task) => task.sessionClosedAt));
-  assert.equal(plan.mergeSessionClosedAt, null);
+  assert.ok(plan.mergeSessionClosedAt);
 });
 
 // A single-task goal has no merge session. Its one task pushed the branch the
 // pull request was opened from, so that task's session is the one to keep.
-test("an open pull request on a single-task goal keeps that task's own session", async (t) => {
+test("an open pull request on a single-task goal retires its task session", async (t) => {
   const store = combined(t, { tasks: [TASKS[0]], merge: false });
   store.recordGoalPullRequest("plan-1", { number: 8, url: "https://github.test/pr/8", state: "OPEN" });
   const client = cmux(workspaces(["workspace-0"]));
   const reaper = new GoalSessionReaper({ store, cmux: client });
 
   const result = await reaper.reap();
-  assert.deepEqual(result.closed, []);
-  assert.deepEqual(client.closed(), []);
-  assert.deepEqual(result.kept.map((entry) => entry.workspaceId), ["workspace-0"]);
-  assert.match(reasonFor(result.kept, "workspace-0"), /open pull request/);
+  assert.deepEqual(result.closed.map((entry) => entry.workspaceId), ["workspace-0"]);
+  assert.deepEqual(client.closed(), ["workspace-0"]);
+  assert.deepEqual(result.kept, []);
 });
 
 // --- a goal that ended ----------------------------------------------------
@@ -129,7 +127,6 @@ test("an aborted goal retires every session it owns, including a superseded merg
 
 test("a blocked merge closes nothing and says why", async (t) => {
   const store = combined(t);
-  store.recordGoalPullRequest("plan-1", { number: 7, url: "https://github.test/pr/7", state: "OPEN" });
   store.recordMergeBlocked("plan-1", "The merge agent stopped");
   const client = cmux(workspaces(ALL));
 
@@ -161,7 +158,7 @@ test("a running agent keeps its session open", async (t) => {
   const client = cmux(workspaces(ALL, { "workspace-0": { status: { effective: "working", signals: { any_agent_running: true } } } }));
 
   const result = await new GoalSessionReaper({ store, cmux: client }).reap();
-  assert.deepEqual(client.closed(), ["workspace-1"]);
+  assert.deepEqual(client.closed(), ["workspace-1", "workspace-merge"]);
   assert.match(reasonFor(result.kept, "workspace-0"), /agent is running/);
   assert.equal(store.get("plan-1").tasks[0].sessionClosedAt, null);
 });
@@ -220,7 +217,7 @@ test("a close cmux refuses stays pending and is retried on the next pass", async
   const reaper = new GoalSessionReaper({ store, cmux: client });
 
   const first = await reaper.reap();
-  assert.deepEqual(first.closed.map((entry) => entry.workspaceId), ["workspace-1"]);
+  assert.deepEqual(first.closed.map((entry) => entry.workspaceId), ["workspace-1", "workspace-merge"]);
   assert.deepEqual(first.failed.map((entry) => entry.workspaceId), ["workspace-0"]);
   assert.match(first.failed[0].error, /cmux is down/);
   assert.equal(store.get("plan-1").tasks[0].sessionClosedAt, null);

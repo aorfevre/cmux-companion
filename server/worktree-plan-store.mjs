@@ -7,7 +7,8 @@ import { normalizeSpecOptions } from "./spec-options.mjs";
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db");
 
 // A plan row is small, but its event log grows one row per round. Cap what a
-// single repository can accumulate so an abandoned plan never becomes a leak.
+// store can accumulate. Records owning unretired sessions remain until cleanup
+// succeeds, even when that temporarily exceeds this retention target.
 const MAX_PLANS = 200;
 // A full eight-task Delivery Contract can exceed 64 KiB once the spec and
 // self-contained prompts share one historical event. Keep enough room for the
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS plans (
   delivery_status TEXT NOT NULL DEFAULT 'planning',
   integration_branch TEXT,
   integration_worktree_path TEXT,
+  integration_worktree_removed_at TEXT,
   final_pr_number INTEGER,
   final_pr_url TEXT,
   delivery_error TEXT,
@@ -113,6 +115,7 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
   delivery_status TEXT NOT NULL DEFAULT 'pending',
   integrated_commit_sha TEXT,
   session_closed_at TEXT,
+  worktree_removed_at TEXT,
   PRIMARY KEY (plan_id, task_id)
 );
 CREATE TABLE IF NOT EXISTS plan_events (
@@ -234,7 +237,7 @@ export class WorktreePlanStore {
         planId,
       );
       const update = this.db.prepare(`
-        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, workspace_id = ?, start_sha = ?
+        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?, start_sha = ?
         WHERE plan_id = ? AND task_id = ?
       `);
       for (const result of results) {
@@ -257,7 +260,7 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       const update = this.db.prepare(`
-        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, workspace_id = ?,
+        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?,
           start_sha = ?, delivery_status = 'pending'
         WHERE plan_id = ? AND task_id = ?
       `);
@@ -360,7 +363,7 @@ export class WorktreePlanStore {
     this.#transaction(() => {
       this.db.prepare(`
         UPDATE plans SET delivery_status = 'assembling', integration_branch = ?,
-          integration_worktree_path = ?, delivery_error = NULL, updated_at = ? WHERE plan_id = ?
+          integration_worktree_path = ?, integration_worktree_removed_at = NULL, delivery_error = NULL, updated_at = ? WHERE plan_id = ?
       `).run(String(branch), String(path), at, String(planId));
       this.#insertEvent(String(planId), null, "integration_started", { branch, path }, at);
     });
@@ -452,20 +455,37 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
-  // The sessions Companion opened for this plan that have stopped being useful:
-  // a task session once its branch is integrated, and a merge session once a
-  // wave landed or a fresh merge agent replaced it. The live merge session is
-  // never in this list, because only a cleared or replaced id is superseded.
+  recordWorktreeRemoved(path) {
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare("UPDATE plan_tasks SET worktree_removed_at = ? WHERE worktree_path = ?").run(at, path);
+      this.db.prepare("UPDATE plans SET integration_worktree_removed_at = ? WHERE integration_worktree_path = ?").run(at, path);
+    });
+  }
+
+  // Sweep every launched plan, including old merged goals outside the board's
+  // 200-row window. Only durable workspace identities are eligible for cleanup.
+  sessionCleanupPlanIds() {
+    return this.db.prepare("SELECT plan_id FROM plans WHERE status = 'launched'").all().map((row) => row.plan_id);
+  }
+
   pendingSessionClosures(planId) {
     const id = String(planId || "");
+    const plan = this.get(id);
+    if (!plan) return [];
+    const delivered = Boolean(plan.finalPrNumber || plan.finalPrUrl || plan.boardPrNumber || plan.boardPrUrl);
+    if (!delivered && (plan.deliveryMode !== "combined" || plan.mergeStatus === "blocked" || plan.boardStatus)) return [];
     const tasks = this.db.prepare(`
       SELECT task_id, workspace_id FROM plan_tasks
-      WHERE plan_id = ? AND delivery_status = 'integrated' AND workspace_id IS NOT NULL AND session_closed_at IS NULL
+      WHERE plan_id = ? AND (? OR delivery_status = 'integrated') AND workspace_id IS NOT NULL AND session_closed_at IS NULL
       ORDER BY position
-    `).all(id).map((row) => ({ workspaceId: row.workspace_id, taskId: row.task_id }));
+    `).all(id, Number(delivered)).map((row) => ({ workspaceId: row.workspace_id, taskId: row.task_id }));
     const merges = this.#superseded(id)
       .filter((entry) => !entry.retiredAt)
       .map((entry) => ({ workspaceId: entry.workspaceId, taskId: null }));
+    if (delivered && plan.mergeWorkspaceId && !plan.mergeSessionClosedAt && !merges.some((entry) => entry.workspaceId === plan.mergeWorkspaceId)) {
+      merges.push({ workspaceId: plan.mergeWorkspaceId, taskId: null });
+    }
     return [...tasks, ...merges];
   }
 
@@ -501,6 +521,11 @@ export class WorktreePlanStore {
       }
       const retired = new Set(wanted.filter((entry) => entry.kind === "superseded").map((entry) => entry.workspaceId));
       if (retired.size) {
+        const current = this.db.prepare("SELECT merge_workspace_id FROM plans WHERE plan_id = ?").get(id)?.merge_workspace_id;
+        if (current && retired.has(current)) {
+          this.#supersedeMerge(id);
+          this.db.prepare("UPDATE plans SET merge_workspace_id = NULL WHERE plan_id = ?").run(id);
+        }
         const merges = this.#superseded(id)
           .map((entry) => (retired.has(entry.workspaceId) && !entry.retiredAt ? { ...entry, retiredAt: at } : entry));
         this.db.prepare("UPDATE plans SET superseded_merge_workspaces = ? WHERE plan_id = ?").run(json(merges), id);
@@ -564,7 +589,7 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare(`
-        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, workspace_id = ?,
+        UPDATE plan_tasks SET launch_status = ?, launch_error = ?, worktree_path = ?, worktree_removed_at = NULL, workspace_id = ?,
           start_sha = ?, head_sha = NULL, delivery_status = 'pending', evidence_status = NULL,
           evidence_error = NULL, completion_report = NULL, changed_files = '[]', scope_warnings = '[]',
           integrated_commit_sha = NULL, session_closed_at = NULL
@@ -871,6 +896,8 @@ export class WorktreePlanStore {
     ensure("plans", "cmux_notice_key", "TEXT");
     ensure("plans", "merge_workspace_id", "TEXT");
     ensure("plans", "merge_status", "TEXT");
+    ensure("plans", "integration_worktree_removed_at", "TEXT");
+    ensure("plan_tasks", "worktree_removed_at", "TEXT");
     ensure("plans", "merge_session_closed_at", "TEXT");
     ensure("plans", "superseded_merge_workspaces", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plans", "followups", "TEXT NOT NULL DEFAULT '[]'");
@@ -922,6 +949,17 @@ export class WorktreePlanStore {
     this.db.prepare(`
       DELETE FROM plans WHERE plan_id IN (
         SELECT plan_id FROM plans ORDER BY updated_at DESC, plan_id DESC LIMIT -1 OFFSET ?
+      )
+      AND (merge_workspace_id IS NULL OR merge_session_closed_at IS NOT NULL)
+      AND (integration_worktree_path IS NULL OR integration_worktree_removed_at IS NOT NULL)
+      AND NOT EXISTS (
+        SELECT 1 FROM plan_tasks t WHERE t.plan_id = plans.plan_id
+          AND ((t.workspace_id IS NOT NULL AND t.session_closed_at IS NULL)
+            OR (t.worktree_path IS NOT NULL AND t.worktree_removed_at IS NULL))
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(plans.superseded_merge_workspaces)
+        WHERE json_extract(value, '$.retiredAt') IS NULL
       )
     `).run(MAX_PLANS);
   }

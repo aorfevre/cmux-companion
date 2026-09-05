@@ -1405,13 +1405,10 @@ test("closes the finished sessions of a delivered goal on demand and reports wha
   const report = reaped.json();
   assert.equal(report.sessionsAvailable, true);
   assert.ok(report.checkedAt);
-  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
-  // The one session that still owns the open pull request stays, with a reason
-  // the board can show rather than a bare exclusion.
-  assert.deepEqual(report.kept.map((entry) => entry.workspaceId), ["workspace-merge"]);
-  assert.match(report.kept[0].reason, /open pull request/);
+  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(report.kept, []);
   assert.deepEqual(report.failed, []);
-  assert.deepEqual(cmux.calls.filter((call) => call[0] === "close").map((call) => call[1]).sort(), ["workspace-0", "workspace-1"]);
+  assert.deepEqual(cmux.calls.filter((call) => call[0] === "close").map((call) => call[1]).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
   assert.equal(store.recorded.length, 1);
 });
 
@@ -1427,14 +1424,14 @@ test("the dry run reports the same sessions without closing or recording any", a
   const dry = await app.inject({ method: "GET", url: "/api/goals/sessions/retirable", headers });
   assert.equal(dry.statusCode, 200);
   const report = dry.json();
-  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
-  assert.deepEqual(report.kept.map((entry) => entry.workspaceId), ["workspace-merge"]);
+  assert.deepEqual(report.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
+  assert.deepEqual(report.kept, []);
   assert.equal(cmux.calls.filter((call) => call[0] === "close").length, 0, "a dry run closes nothing");
   assert.deepEqual(store.recorded, [], "and records nothing, so the real pass still has work to do");
 
   // Proof that it changed nothing: the real pass afterwards still closes both.
   const real = await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: {} });
-  assert.deepEqual(real.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+  assert.deepEqual(real.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
 });
 
 test("both session routes answer 503 when there is no plan store", async (t) => {
@@ -1487,7 +1484,7 @@ test("the kill switch stops the timer pass and leaves the on-demand route workin
   // The user asking is not what the switch protects them from.
   const asked = await app.inject({ method: "POST", url: "/api/goals/sessions/reap", headers, payload: {} });
   assert.equal(asked.statusCode, 200);
-  assert.deepEqual(asked.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+  assert.deepEqual(asked.json().closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
 });
 
 // And with the switch unset, the same timer pass does retire them.
@@ -1504,7 +1501,7 @@ test("the supervision pass retires finished sessions when the switch is unset", 
 
   const swept = await app.inject({ method: "POST", url: "/api/goals/health/check", headers, payload: {} });
   assert.equal(swept.statusCode, 200);
-  assert.deepEqual(swept.json().sessions.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1"]);
+  assert.deepEqual(swept.json().sessions.closed.map((entry) => entry.workspaceId).sort(), ["workspace-0", "workspace-1", "workspace-merge"]);
   // The dead agent is still reported: tidying the sidebar costs no alert.
   assert.equal(swept.json().alerts.length, 1);
 });

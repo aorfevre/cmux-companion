@@ -238,14 +238,15 @@ it, so the panel and the behaviour cannot disagree. When both providers are
 exhausted it leads with the reset countdown.
 
 Companion also **retires the cmux sessions it opened for a goal** once their
-work is provably finished. When a goal's delivery pull request is open, every
-task session is closed and one session stays: the merge session, or, for a
-single-task goal that has no merge session, that one task's own session. When
-the goal is observed merged or aborted, that last session is closed too. A
-merge session a newer merge agent replaced is closed as soon as it is replaced.
+work is provably finished. A goal PR being created makes its original task and
+merge sessions eligible for retirement, including the single-task session that
+opened the PR. Running agents and agents waiting for input finish first; the
+next pass retries them. Follow-up sessions have separate identities. Goal
+worktrees remain until the goal PR is merged and worktree cleanup is enabled.
+A merge session a newer merge agent replaced is retired when idle.
 
 The pass never closes a session whose agent is running or waiting for an
-answer, never closes anything while a goal's merge is blocked, never closes
+answer, never closes anything while an undelivered goal's merge is blocked, never closes
 anything at all when cmux cannot be reached, and never touches a session
 Companion did not open for a goal. Every session that stays open is reported
 with the reason it stayed, so a kept session can always be explained.
@@ -360,8 +361,8 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
 - The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
-- The goal health sweep and its watchdog only read. They never move a goal and never touch a worktree, so an automatic check cannot destroy work.
-- The supervision timer may close one thing: a cmux session Companion itself opened for a goal, recorded on that goal's plan row, after that session's work is delivered. It may never close a session whose agent is running or waiting for an answer, a session of a goal whose merge is blocked, any session while cmux is unreachable, or any session Companion did not open for a goal. It deletes no branch and no worktree. Set `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` to `0`, `off` or `false` to stop the timer pass.
+- The goal health sweep is read-only. The watchdog reconciles GitHub state and collects finished goal sessions; it never deletes branches or worktrees or restarts agents.
+- The supervision timer may close one thing: a cmux session Companion itself opened for a goal, recorded on that goal's plan row, after that session's work is delivered. It may never close a session whose agent is running or waiting for an answer, a session of a goal whose merge is blocked and has no delivery PR, any session while cmux is unreachable, or any session Companion did not open for a goal. It deletes no branch and no worktree. Set `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` to `0`, `off` or `false` to stop the timer pass.
 - Restarting a task deletes its branch and its worktree, so it is refused for the primary checkout and for a managed release checkout, and the phone confirms before it runs.
 - Relaunching a task is refused while its cmux session is still open, because a second agent in one worktree would fight the first over the same files.
 - Session identity is exported with a strict variable-name pattern and shell-quoted values, so neither a goal nor a task title can become a command.
@@ -447,3 +448,39 @@ Open **Settings → Deployments** to see the running Companion release and the d
 ## License
 
 MIT
+
+### Automatic goal session cleanup
+
+Once Companion records a goal pull request, it closes the goal's recorded task
+sessions and final merge session, including for single-task goals and PRs already
+closed or merged. A combined goal's intermediate task and superseded merge
+sessions still close when their work is integrated. Blocked goals without a goal
+PR retain their sessions; a task PR within a combined goal does not finish it.
+
+Cleanup runs when a combined delivery settles or GitHub reconciliation observes
+the goal PR. The watchdog also sweeps durable records one minute after startup
+and every five minutes afterward, including old merged goals, to retry failed
+closes and collect leftovers. Plan retention preserves records with unretired
+sessions so cleanup cannot lose their identities. Already-missing sessions count as retired; connection
+failures remain retryable. Only workspace IDs recorded by Companion are closed.
+Untracked sessions are not inferred from their titles or directories. Branches,
+worktrees, and goal history remain available after sessions close.
+
+Local validation combines backend tests of real SQLite lifecycle records and a
+fake cmux adapter with Cypress coverage of the board retaining its PR state after
+session counts reach zero. The deterministic Cypress suite does not operate real
+cmux sessions.
+
+### Automatic worktree inventory and garbage collection
+
+**Worktree cleanup** provides a central dry-run inventory across Karven and Rekord,
+including nested repositories and external registrations. Sessions close when a
+goal PR is created; verified goal worktrees become eligible immediately when that
+PR is **merged**, subject to clean/unlocked/inactive and exact-commit checks.
+Other proven merged worktrees use a configurable seven-day grace period.
+Automatic development deletion, Git pruning, and updater release deletion all
+start **disabled**. The UI offers separate enable controls, schedules, reviewed
+manual runs, protected-item reasons, space estimates, and history. Branches are
+preserved; checkout folders and approved ignored build artifacts are deleted.
+
+See [cleanup policy, limitations and recovery](docs-worktree-cleanup.md).

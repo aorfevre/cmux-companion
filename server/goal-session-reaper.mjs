@@ -42,24 +42,16 @@ export function retirableSessions(plan, live = { available: false, byId: new Map
     for (const entry of candidates) keep.push(kept(entry, "cmux could not be reached, so no session was closed"));
     return { close, keep };
   }
-  if (plan?.mergeStatus === "blocked") {
+  if (plan?.mergeStatus === "blocked" && !hasOpenPullRequest(plan) && !isTerminal(plan)) {
     for (const entry of candidates) keep.push(kept(entry, "This goal's merge is blocked, so every session it owns stays open"));
     return { close, keep };
   }
 
   const terminal = isTerminal(plan);
   const prOpen = hasOpenPullRequest(plan);
-  // The one session a goal with an open pull request keeps: the session that
-  // owns the merge. A combined goal merges in its own merge session; a
-  // single-task goal has no merge session, so its task opened the pull request
-  // itself and that task's session is the one to keep.
-  const survivor = terminal || !prOpen ? "" : survivingSession(plan, candidates);
-
+  // Once the goal PR exists its original task and merge sessions are finished.
+  // Follow-up sessions have separate identities and are not owned by this list.
   for (const entry of candidates) {
-    if (!terminal && entry.workspaceId === survivor) {
-      keep.push(kept(entry, "This session owns the goal's open pull request"));
-      continue;
-    }
     if (!terminal && !prOpen && !finishedWithoutPullRequest(entry)) {
       keep.push(kept(entry, entry.kind === "task" ? "This task is not integrated yet" : "This goal is still being assembled"));
       continue;
@@ -102,7 +94,13 @@ export class GoalSessionReaper {
     this.enabled = enabled !== false;
   }
 
-  async reap({ planId = null } = {}) {
+  reap(options = {}) {
+    const run = (this.chain || Promise.resolve()).then(() => this.reapSequential(options));
+    this.chain = run.catch(() => {});
+    return run;
+  }
+
+  async reapSequential({ planId = null } = {}) {
     const checkedAt = new Date().toISOString();
     // The kill switch. It answers with the same shape as a pass that found
     // nothing, so a caller never has to special-case it.
@@ -171,6 +169,7 @@ export class GoalSessionReaper {
       const plan = this.#plan(String(planId));
       return plan ? [plan] : [];
     }
+    if (this.store.sessionCleanupPlanIds) return this.store.sessionCleanupPlanIds().map((id) => this.#plan(id)).filter(Boolean);
     const ids = [];
     for (const summary of this.#list({ status: "launched" })) {
       const id = text(summary?.planId);
@@ -205,7 +204,8 @@ export class GoalSessionReaper {
   async #liveWorkspaces() {
     if (!this.cmux?.workspaceListDetailed) return { available: false, byId: new Map() };
     try {
-      const payload = await this.cmux.workspaceListDetailed();
+      const payload = await (this.cmux.loadWorkspaceListDetailed ? this.cmux.loadWorkspaceListDetailed() : this.cmux.workspaceListDetailed());
+      if (!Array.isArray(payload?.workspaces)) throw new Error("Invalid cmux workspace inventory");
       const list = Array.isArray(payload?.workspaces) ? payload.workspaces : [];
       const byId = new Map();
       for (const workspace of list) {
@@ -223,7 +223,7 @@ export class GoalSessionReaper {
 // cmux has no typed error for a workspace that is gone, so its message is all
 // there is to read. Anything else may be a passing fault, and stays retryable.
 export function missingWorkspace(cause) {
-  return /not found|no such|unknown workspace|does not exist|already closed/i.test(String(cause?.message || ""));
+  return /workspace[^\n]*(?:not found|does not exist|already closed)|no such workspace|unknown workspace/i.test(String(cause?.message || ""));
 }
 
 // Every session the plan actually records and has not retired yet. Nothing else
@@ -263,20 +263,13 @@ function isTerminal(plan) {
 }
 
 // The delivery pull request is open, so every task's work is in it. A closed
-// pull request sends the goal back to development, and its URL is history
-// rather than evidence.
+// pull request still records delivery of those original sessions; follow-up
+// work is launched in separate sessions.
 function hasOpenPullRequest(plan) {
   const state = text(plan?.boardPrState).toUpperCase();
   if (state === "OPEN") return true;
-  if (state === "CLOSED") return false;
+  if (state === "CLOSED") return true;
   return plan?.deliveryStatus === "pr_open" || text(plan?.finalPrUrl) !== "";
-}
-
-function survivingSession(plan, candidates) {
-  if (plan?.deliveryMode === "combined") return text(plan?.mergeWorkspaceId);
-  // A single-task goal has no merge session. Its one task pushed the branch the
-  // pull request was opened from, so its session is the one that owns it.
-  return candidates.find((entry) => entry.kind === "task")?.workspaceId || "";
 }
 
 // What a session may be retired for while the goal is still being assembled.

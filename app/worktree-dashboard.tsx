@@ -1,5 +1,6 @@
 "use client";
 
+import { WorktreeCleanupPanel } from "./worktree-cleanup";
 import { FormEvent, RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { AttachmentStrip, composedPrompt, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 import { GoalBoardStateId, GoalHealth, goalPrLink, PlanSummary, terminalStatus, WorktreePlannerSheet } from "./worktree-planner";
@@ -775,6 +776,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
     });
   };
   return <>
+    <WorktreeCleanupPanel />
     {/* The board is a working screen, not a landing page: its own header is one
         bar, so the first Kanban card is visible without scrolling. Every other
         view keeps the hero it was written for. */}
