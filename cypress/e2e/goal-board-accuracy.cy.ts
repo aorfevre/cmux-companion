@@ -81,51 +81,59 @@ function visitBoard() {
 }
 
 describe("goal board matches live cmux evidence", () => {
-  it("reviews worktree cleanup, protects unsafe rows, and records a manual run without enabling automation", () => {
-    const state: Scenario = { plans: [], goals: [], liveSessions: 0 };
-    installScenario(state);
-    const policy = { enabled: false, intervalHours: 24, graceDays: 7, pruneEnabled: false, pruneGraceDays: 30 };
-    const history: Array<Record<string, unknown>> = [];
-    cy.intercept("GET", "**/api/worktree-cleanup", (request) => request.reply({ policy, history })).as("cleanupStatus");
-    cy.intercept("PATCH", "**/api/worktree-cleanup", (request) => { Object.assign(policy, request.body); request.reply({ policy }); }).as("cleanupConfig");
-    cy.intercept("POST", "**/api/worktree-cleanup/preview", {
-      previewId: "reviewed", summary: { candidates: 1, protected: 2, estimatedBytes: 1024 ** 3 }, errors: [], prune: [],
-      entries: [
-        { id: "done", path: "/fixture/merged-goal", branch: "goal/done", classification: "development", eligible: true, reasons: ["Goal PR #12 is merged; this exact work is delivered"], estimatedBytes: 1024 ** 3 },
-        { id: "dirty", path: "/fixture/dirty", branch: "feature/dirty", classification: "development", eligible: false, reasons: ["Tracked changes or untracked files would be lost"], estimatedBytes: null },
-        { id: "release", path: "/fixture/releases/current", branch: null, classification: "managed-release", eligible: false, reasons: ["Managed release: retention belongs to the updater"], estimatedBytes: null },
-      ],
-    }).as("cleanupPreview");
-    cy.intercept("POST", "**/api/worktree-cleanup/run", (request) => {
-      expect(request.body).to.deep.equal({ previewId: "reviewed", ids: ["done"], prune: [] });
-      const result = { at: now, estimatedReclaimedBytes: 1024 ** 3, results: [{ path: "/fixture/merged-goal", outcome: "removed" }] };
-      history.unshift(result); request.reply(result);
-    }).as("cleanupRun");
-    visitBoard();
-    cy.findByRole("button", { name: "Worktree cleanup" }).click();
-    cy.wait("@cleanupStatus");
-    cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).should("not.be.checked");
-    cy.findByRole("button", { name: "Preview cleanup" }).click();
-    cy.wait("@cleanupPreview");
-    cy.findByRole("region", { name: "Worktree cleanup" }).within(() => {
-      cy.contains("1 eligible · 2 protected");
-      cy.contains("Goal PR #12 is merged");
-      cy.findByRole("button", { name: "Run cleanup" }).should("be.disabled");
-      cy.findByRole("checkbox", { name: "Select /fixture/dirty" }).should("be.disabled");
-      cy.findByRole("checkbox", { name: "Select /fixture/releases/current" }).should("be.disabled");
-      cy.findByRole("checkbox", { name: "Select /fixture/merged-goal" }).check();
-      cy.findByRole("button", { name: "Run cleanup" }).click();
+  for (const entry of ["dashboard", "settings"] as const) {
+    it(`reviews worktree cleanup from ${entry}, protects unsafe rows, and records a manual run without enabling automation`, () => {
+      const state: Scenario = { plans: [], goals: [], liveSessions: 0 };
+      installScenario(state);
+      const policy = { enabled: false, intervalHours: 24, graceDays: 7, pruneEnabled: false, pruneGraceDays: 30 };
+      const history: Array<Record<string, unknown>> = [];
+      cy.intercept("GET", "**/api/worktree-cleanup", (request) => request.reply({ policy, history })).as("cleanupStatus");
+      cy.intercept("PATCH", "**/api/worktree-cleanup", (request) => { Object.assign(policy, request.body); request.reply({ policy }); }).as("cleanupConfig");
+      cy.intercept("POST", "**/api/worktree-cleanup/preview", {
+        previewId: "reviewed", summary: { candidates: 1, protected: 2, estimatedBytes: 1024 ** 3 }, errors: [], prune: [],
+        entries: [
+          { id: "done", path: "/fixture/merged-goal", branch: "goal/done", classification: "development", eligible: true, reasons: ["Goal PR #12 is merged; this exact work is delivered"], estimatedBytes: 1024 ** 3 },
+          { id: "dirty", path: "/fixture/dirty", branch: "feature/dirty", classification: "development", eligible: false, reasons: ["Tracked changes or untracked files would be lost"], estimatedBytes: null },
+          { id: "release", path: "/fixture/releases/current", branch: null, classification: "managed-release", eligible: false, reasons: ["Managed release: retention belongs to the updater"], estimatedBytes: null },
+        ],
+      }).as("cleanupPreview");
+      cy.intercept("POST", "**/api/worktree-cleanup/run", (request) => {
+        expect(request.body).to.deep.equal({ previewId: "reviewed", ids: ["done"], prune: [] });
+        const result = { at: now, estimatedReclaimedBytes: 1024 ** 3, results: [{ path: "/fixture/merged-goal", outcome: "removed" }] };
+        history.unshift(result); request.reply(result);
+      }).as("cleanupRun");
+      if (entry === "settings") {
+        cy.visit("/?view=settings");
+        cy.findByRole("heading", { name: /^Settings$/ }).should("be.visible");
+      } else {
+        visitBoard();
+      }
+      cy.findByRole("button", { name: "Worktree cleanup" }).click();
+      cy.wait("@cleanupStatus");
+      cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).should("not.be.checked");
+      cy.findByRole("button", { name: "Preview cleanup" }).click();
+      cy.wait("@cleanupPreview");
+      cy.findByRole("region", { name: "Worktree cleanup" }).within(() => {
+        cy.contains("1 eligible · 2 protected");
+        cy.contains("Goal PR #12 is merged");
+        cy.findByRole("button", { name: "Run cleanup" }).should("be.disabled");
+        cy.findByRole("checkbox", { name: "Select /fixture/dirty" }).should("be.disabled");
+        cy.findByRole("checkbox", { name: "Select /fixture/releases/current" }).should("be.disabled");
+        cy.findByRole("checkbox", { name: "Select /fixture/merged-goal" }).check();
+        cy.findByRole("button", { name: "Run cleanup" }).click();
+      });
+      cy.wait("@cleanupRun");
+      cy.contains("1 worktrees removed; 0 skipped or failed.").should("be.visible");
+      cy.contains("Cleanup history (1)").click();
+      cy.contains("removed: /fixture/merged-goal").should("be.visible");
+      cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).should("not.be.checked");
+      cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).check();
+      cy.wait("@cleanupConfig").its("request.body").should("deep.equal", { enabled: true });
+      cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).uncheck();
+      cy.wait("@cleanupConfig").its("request.body").should("deep.equal", { enabled: false });
     });
-    cy.wait("@cleanupRun");
-    cy.contains("1 worktrees removed; 0 skipped or failed.").should("be.visible");
-    cy.contains("Cleanup history (1)").click();
-    cy.contains("removed: /fixture/merged-goal").should("be.visible");
-    cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).should("not.be.checked");
-    cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).check();
-    cy.wait("@cleanupConfig").its("request.body").should("deep.equal", { enabled: true });
-    cy.findByRole("checkbox", { name: "Enable automatic development worktree deletion" }).uncheck();
-    cy.wait("@cleanupConfig").its("request.body").should("deep.equal", { enabled: false });
-  });
+
+  }
 
   it("shows updater release retention separately with current and rollback protected", () => {
     installScenario({ plans: [], goals: [], liveSessions: 0 });
@@ -137,6 +145,8 @@ describe("goal board matches live cmux evidence", () => {
     ] });
     cy.intercept("POST", "**/api/worktree-cleanup/releases/run", (request) => { expect(request.body).to.deep.equal({ previewId: "releases", ids: ["/fixture/release-old"] }); request.reply({ results: [] }); }).as("releaseRun");
     visitBoard();
+    cy.findByRole("button", { name: /^Settings$/ }).click();
+    cy.findByRole("heading", { name: /^Settings$/ }).should("be.visible");
     cy.findByRole("button", { name: "Worktree cleanup" }).click();
     cy.contains("Managed release retention (updater)").click();
     cy.findByRole("checkbox", { name: "Enable automatic release deletion" }).should("not.be.checked");

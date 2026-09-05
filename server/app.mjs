@@ -1195,6 +1195,8 @@ function dryRun(reaper) {
   const cmux = reaper.cmux?.workspaceListDetailed
     ? {
       workspaceListDetailed: () => reaper.cmux.workspaceListDetailed(),
+      ...(reaper.cmux.loadWorkspaceListDetailed ? { loadWorkspaceListDetailed: () => reaper.cmux.loadWorkspaceListDetailed() } : {}),
+      ...(reaper.cmux.workspaceStatus ? { workspaceStatus: (id) => reaper.cmux.workspaceStatus(id) } : {}),
       workspaceClose: async () => ({ ok: true }),
     }
     : reaper.cmux;

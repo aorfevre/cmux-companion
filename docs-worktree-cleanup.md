@@ -38,7 +38,7 @@ Bare repositories and unreadable Git metadata are protected.
   with a 24-hour default interval. Enabling development cleanup does not enable
   release cleanup or pruning.
 
-The dashboard's **Worktree cleanup** panel offers policy controls, **Preview
+The **Settings → Worktree cleanup** panel (also available in the Worktrees dashboard) offers policy controls, **Preview
 cleanup**, explicit candidate selection, and **Run cleanup**. Manual deletion
 requires a current reviewed preview but does not enable scheduled deletion.
 Changing the policy invalidates the previous preview. Previews expire after
@@ -161,3 +161,17 @@ protected rows, enable/disable controls, manual results/history and separate
 release retention UI with deterministic API fixtures. Run `npm test` and
 `npm run test:e2e:local`. Cypress remains local-only; no validation deletes real
 worktrees. Updater retention tests run in that repository with `npm run verify`.
+
+### Restored cmux sessions
+
+The session collector also reconciles live workspace UUIDs missing from stored
+goal records, as can happen after a cmux restore. It requires an exact stored
+checkout path and a matching Companion task/merge title identifying one unique
+goal. The goal must have recorded PR delivery or the task must be integrated.
+Follow-up identities and unrelated names are excluded. Immediately before
+closure it reloads ownership and workspace identity, and requires fresh status
+that explicitly reports no running agent, no pending input, and no dirty checkout.
+Unknown activity, ambiguous ownership, and missing delivery evidence preserve
+the workspace. A zero count means no sessions currently qualify; it does not
+mean every open workspace is useful. Closing a workspace leaves its worktree
+and Git branches intact. Restored UUIDs never overwrite stored task ownership.

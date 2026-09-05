@@ -314,3 +314,73 @@ test("a cmux client that cannot close a workspace reports the failure and closes
   assert.equal(result.failed.length, 3);
   assert.equal(store.get("plan-1").tasks.some((task) => task.sessionClosedAt), false);
 });
+
+test("recovers a restored merge UUID by exact path and Companion title without rewriting stored ownership", async (t) => {
+  const store = combined(t);
+  store.recordGoalPullRequest("plan-1", { number: 7, url: "https://github.test/pr/7", state: "OPEN" });
+  const original = store.get.bind(store);
+  store.get = (id) => ({ ...original(id), integrationWorktreePath: "/repo/goal" });
+  const restored = { id: "restored", title: "SMP-MERGE · Ship billing", current_directory: "/repo/goal",
+    status: { effective: "done", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } };
+  const list = [restored];
+  const client = cmux(list);
+  client.workspaceClose = async (id) => { client.calls.push(["close", id]); list.splice(list.findIndex((w) => w.id === id), 1); };
+  const reaper = new GoalSessionReaper({ store, cmux: client });
+  const result = await reaper.reap();
+  assert.ok(result.closed.some((e) => e.workspaceId === "restored" && e.kind === "restored"));
+  assert.equal(store.get("plan-1").mergeWorkspaceId, "workspace-merge");
+  assert.equal((await reaper.reap()).closed.length, 0);
+});
+
+test("restored session reconciliation protects ambiguous, unrelated, unfinished and follow-up workspaces", async () => {
+  const { restoredGoalSessions, restoredSessionProtection } = await import("../server/restored-goal-sessions.mjs");
+  const plan = { planId: "abc", repositoryName: "sample", integrationWorktreePath: "/repo/goal", boardStatus: "merged", tasks: [] };
+  const workspace = { id: "new", title: "SMP-MERGE · Ship billing", current_directory: "/repo/goal" };
+  assert.equal(restoredGoalSessions([plan], [workspace])[0].eligible, true);
+  assert.equal(restoredGoalSessions([plan, { ...plan, planId: "other" }], [workspace])[0].eligible, false);
+  assert.equal(restoredGoalSessions([plan], [{ ...workspace, current_directory: "/repo/elsewhere" }])[0].eligible, false);
+  assert.equal(restoredGoalSessions([plan], [{ ...workspace, title: "SMP-ASK · Follow up" }])[0].eligible, false);
+  assert.equal(restoredGoalSessions([{ ...plan, boardStatus: null }], [workspace])[0].eligible, false);
+  assert.equal(restoredGoalSessions([{ ...plan, followups: [{ workspaceId: "new" }] }], [workspace]).length, 0);
+  assert.ok(restoredSessionProtection(workspace));
+  for (const signals of [
+    { any_agent_running: true, any_agent_needs_input: false, is_git_dirty: false },
+    { any_agent_running: false, any_agent_needs_input: true, is_git_dirty: false },
+    { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: true },
+  ]) assert.ok(restoredSessionProtection({ ...workspace, status: { signals } }));
+});
+
+test("restored closure rechecks paths and fresh agent activity and retries individual failures", async (t) => {
+  const store = combined(t);
+  store.recordGoalPullRequest("plan-1", { number: 7, url: "https://github.test/pr/7", state: "OPEN" });
+  const original = store.get.bind(store);
+  store.get = (id) => ({ ...original(id), integrationWorktreePath: "/repo/goal" });
+  const workspace = { id: "restored", title: "SMP-MERGE · Ship billing", current_directory: "/repo/goal",
+    status: { signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } };
+  const client = cmux([workspace]);
+  let reads = 0;
+  client.workspaceListDetailed = async () => ({ workspaces: [{ ...workspace, current_directory: ++reads > 1 ? "/repo/other" : "/repo/goal" }] });
+  const reaper = new GoalSessionReaper({ store, cmux: client });
+  assert.ok((await reaper.reap()).kept.some((e) => /identity/.test(e.reason)));
+  assert.deepEqual(client.closed(), []);
+  client.workspaceListDetailed = async () => ({ workspaces: [workspace] });
+  client.workspaceStatus = async () => ({ signals: { ...workspace.status.signals, any_agent_running: true } });
+  assert.ok((await reaper.reap()).kept.some((e) => /activity/.test(e.reason)));
+  assert.deepEqual(client.closed(), []);
+  client.workspaceStatus = async () => { throw new Error("status unavailable"); };
+  assert.equal((await reaper.reap()).failed[0].error, "status unavailable");
+  client.workspaceStatus = async () => workspace.status;
+  assert.ok((await reaper.reap()).closed.some((e) => e.workspaceId === "restored"));
+});
+
+test("restored reconciliation supports current titles and legacy task titles with integrated evidence", async () => {
+  const { restoredGoalSessions } = await import("../server/restored-goal-sessions.mjs");
+  const { mergeSessionTitle, sessionTitle } = await import("../server/session-name.mjs");
+  const task = { id: "T2", title: "Build UI", type: "ui", worktreePath: "/repo/task", deliveryStatus: "integrated" };
+  const plan = { planId: "abc", repositoryName: "sample", goal: "Ship billing", integrationWorktreePath: "/repo/goal", boardStatus: "merged", tasks: [task] };
+  for (const title of [sessionTitle(plan, task), "SMP-T2-ui · Build UI"]) {
+    assert.equal(restoredGoalSessions([plan], [{ id: "new", title, current_directory: "/repo/task" }])[0].eligible, true);
+  }
+  assert.equal(restoredGoalSessions([plan], [{ id: "new", title: mergeSessionTitle(plan), current_directory: "/repo/goal" }])[0].eligible, true);
+  assert.equal(restoredGoalSessions([{ ...plan, boardStatus: null }], [{ id: "new", title: sessionTitle(plan, task), current_directory: "/repo/task" }])[0].eligible, true);
+});

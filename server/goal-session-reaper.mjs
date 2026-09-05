@@ -1,3 +1,4 @@
+import { restoredGoalSessions, restoredSessionProtection } from "./restored-goal-sessions.mjs";
 import { agentBusyState } from "./goal-health.mjs";
 
 // Companion opens one cmux session per task and one per merge attempt, and
@@ -134,6 +135,29 @@ export class GoalSessionReaper {
         } catch (cause) {
           this.log?.warn?.({ err: cause, planId: plan.planId }, "goal session reaper could not record retired sessions");
         }
+      }
+    }
+    // New UUIDs after a cmux restore are absent from the durable session list.
+    // Reconcile conservatively, and never stamp another task's stored UUID.
+    if (live.available) for (const entry of restoredGoalSessions(this.#plans(null), [...live.byId.values()])) {
+      if (planId && entry.planId !== planId) continue;
+      if (!entry.eligible) { kept.push(entry); continue; }
+      try {
+        const fresh = await this.#liveWorkspaces();
+        const currentPlans = this.#plans(null);
+        const candidate = restoredGoalSessions(currentPlans, [...fresh.byId.values()])
+          .find((item) => item.workspaceId === entry.workspaceId);
+        const workspace = { ...fresh.byId.get(entry.workspaceId) };
+        if (!fresh.available || !candidate?.eligible || candidate.path !== entry.path || candidate.title !== entry.title || candidate.planId !== entry.planId) {
+          kept.push({ ...entry, reason: "Workspace identity or delivery evidence changed during cleanup" }); continue;
+        }
+        if (this.cmux.workspaceStatus) workspace.status = await this.cmux.workspaceStatus(entry.workspaceId);
+        const protection = restoredSessionProtection(workspace);
+        if (protection) { kept.push({ ...entry, reason: protection }); continue; }
+        await this.cmux.workspaceClose(entry.workspaceId);
+        closed.push({ ...entry, closedInCmux: true });
+      } catch (cause) {
+        failed.push({ ...entry, error: String(cause?.message || cause) });
       }
     }
     return { checkedAt, sessionsAvailable: live.available, closed, kept, failed };
