@@ -158,7 +158,7 @@ export class GoalIntegrator {
           if (!plan || plan.boardStatus || plan.status !== "launched" || plan.deliveryMode !== "combined" ||
               plan.finalPrUrl || plan.boardPrState === "OPEN" ||
               plan.tasks.some((task) => task.launchStatus === "failed")) return null;
-          if (plan.mergeStatus === "blocked" && !/Another worktree operation holds this lock/.test(plan.deliveryError || "")) return null;
+          if ((plan.mergeStatus === "blocked" || plan.deliveryStatus === "blocked") && !/Another worktree operation holds this lock/.test(plan.deliveryError || "")) return null;
           if (!this.cmux?.workspaceListDetailed || !this.cmux?.workspaceStatus) return null;
           const live = await (this.cmux.loadWorkspaceListDetailed?.() || this.cmux.workspaceListDetailed());
           if (!Array.isArray(live?.workspaces)) return null;
@@ -176,6 +176,7 @@ export class GoalIntegrator {
           plan = this.store.get(id);
           if (!plan || plan.boardStatus || plan.status !== "launched" || plan.deliveryMode !== "combined" ||
               plan.finalPrUrl || plan.boardPrState === "OPEN" || plan.tasks.some((task) => task.launchStatus === "failed")) return null;
+          if ((plan.mergeStatus === "blocked" || plan.deliveryStatus === "blocked") && !/Another worktree operation holds this lock/.test(plan.deliveryError || "")) return null;
           const recovered = plan.mergeStatus === "running"
             ? await this.#settle(id)
             : await this.#assemble(id, { automatic: true });

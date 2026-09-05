@@ -1024,3 +1024,12 @@ test("an abort while checking liveness prevents recovery", async (t) => {
   assert.deepEqual(await integrator.heal(), []);
   assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 0);
 });
+
+test("a new permanent failure during activity checks is not retried", async (t) => {
+  const { integrator, store, calls } = fixture(t);
+  idleRecovery(integrator);
+  const status = integrator.cmux.workspaceStatus;
+  integrator.cmux.workspaceStatus = async () => { store.recordDeliveryFailure("plan-12345678", "Verification requires a decision"); return status(); };
+  assert.deepEqual(await integrator.heal(), []);
+  assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 0);
+});
