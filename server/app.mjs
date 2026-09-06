@@ -65,6 +65,8 @@ export async function buildApp({
   worktreeCleanup = null,
   worktreePlanner = null,
   worktreePlanStore = null,
+  agentBriefs = null,
+  githubIssueStore = null,
   goalIntegrator = null,
   goalFollowups = null,
   githubReviewToken = null,
@@ -119,7 +121,7 @@ export async function buildApp({
   const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
   // One brief store for both: every agent session reads its brief from the same
   // directory, and one cleanup pass covers the whole companion.
-  const briefs = new AgentBriefs();
+  const briefs = agentBriefs || new AgentBriefs();
   const planner = worktreePlanner
     || new WorktreePlanner({ worktrees, cmux, modelSettings, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
   // The one writer in the supervision path. It closes a cmux session only when
@@ -156,7 +158,7 @@ export async function buildApp({
   // GitHub Sync owns its own durable store. A test that injects the whole
   // service never opens the production file, exactly like the planner above.
   const issueSync = githubIssueSync
-    || new GitHubIssueSync({ worktrees, planner, store: new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+    || new GitHubIssueSync({ worktrees, planner, store: githubIssueStore || new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // The timer that keeps the issue column current without anyone pressing
   // GitHub Sync. The interval is read here rather than inside the class, so the
   // class stays purely injected and a test never depends on the environment.
