@@ -7,6 +7,35 @@ import { CmuxClient, parseWorkspaceMetrics } from "../server/cmux-client.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 
+test("selects the requested workspace, focuses its owning window, and highlights its active surface", async () => {
+  const windowId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const calls = [];
+  const client = new CmuxClient({ execute: async (_bin, args) => {
+    calls.push(args);
+    return { stdout: JSON.stringify({ window_id: windowId, workspace_id: ID }) };
+  } });
+  await client.selectWorkspace(ID);
+  assert.deepEqual(calls, [
+    ["--json", "rpc", "workspace.select", JSON.stringify({ workspace_id: ID })],
+    ["--json", "rpc", "window.focus", JSON.stringify({ window_id: windowId })],
+    ["--json", "rpc", "surface.trigger_flash", JSON.stringify({ workspace_id: ID, window_id: windowId })],
+  ]);
+});
+
+test("workspace opening reports selection and window focus failures but tolerates an unavailable flash", async () => {
+  for (const failure of ["workspace.select", "window.focus", "surface.trigger_flash"]) {
+    const calls = [];
+    const client = new CmuxClient({ execute: async (_bin, args) => {
+      calls.push(args[2]);
+      if (args[2] === failure) throw new Error("Target unavailable");
+      return { stdout: JSON.stringify({ window_id: ID }) };
+    } });
+    if (failure === "surface.trigger_flash") await client.selectWorkspace(ID);
+    else await assert.rejects(() => client.selectWorkspace(ID), /Target unavailable/);
+    assert.equal(calls.at(-1), failure);
+  }
+});
+
 test("uses argv-only cmux commands for screen reads", async () => {
   const calls = [];
   const client = new CmuxClient({
