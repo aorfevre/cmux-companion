@@ -2,9 +2,11 @@
 
 ## Summary
 
+T7 validation update (2026-09-06): findings were checked against post-refactor commit `c89984a`; original executed probes below remain attributed to their area review. Current consolidated dispositions and verification are in [the final review](README.md). Historical branch-isolation limitations below describe the original investigation, not missing assembled reports.
+
 Review version 1, T5; source baseline `444adaa059496acd27f24e75208e90bddf5cce38`. This is an investigation, not an implementation change. The highest-value work is to isolate API-test persistence, harden automation-config permissions, and make failed cleanup observable. Next come safe test discovery and deterministic process/timer harnesses. Findings below distinguish code-path evidence from executed checks; no runtime incident or flake rate is inferred from source alone.
 
-The existing suite has substantive assertions for authentication, persistence, concurrent work, failure recovery, and browser interactions. All 44 currently tracked non-live Node suites belong to `npm test`. Every one of the 11 deterministic Cypress specs has a catch-all API intercept. A same-basename comparison finds 20 server modules lacking a dedicated suite; many have explicit coverage inside differently named suites. This is not a count of untested modules.
+The existing suite has substantive assertions for authentication, persistence, concurrent work, failure recovery, and browser interactions. All 45 currently tracked non-live Node suites belong to `npm test`. Every one of the 12 deterministic Cypress specs has a catch-all API intercept. A same-basename comparison finds 19 server modules lacking a dedicated suite; many have explicit coverage inside differently named suites. This is not a count of untested modules.
 
 Only this report is owned by T5. The other four area reports and the behavior-preserving parser/Git-runner refactor belong to the combined delivery. They were absent from this task checkout at review time; their existence, assigned-file coverage, and the union of their server coverage blocks cannot be certified here.
 
@@ -29,6 +31,7 @@ cypress/e2e/goal-session-cleanup.cy.ts
 cypress/e2e/goal-spec-options.cy.ts
 cypress/e2e/spec-challenge.cy.ts
 cypress/e2e/task-branch-retry.cy.ts
+cypress/e2e/worktree-list-parsing.cy.ts
 cypress/live/real-goal.cy.ts
 cypress/support/commands.d.ts
 cypress/support/e2e.ts
@@ -94,6 +97,7 @@ tests/ui-features.test.tsx
 tests/ui-setup.ts
 tests/worktree-cleanup.test.mjs
 tests/worktree-dashboard.test.mjs
+tests/worktree-operations.test.mjs
 tests/worktree-plan-store.test.mjs
 tests/worktree-planner.test.mjs
 tsconfig.json
@@ -102,6 +106,8 @@ vitest.config.ts
 <!-- coverage:end -->
 
 ### Per-file review ledger
+
+T6 additions reviewed in full: `tests/worktree-operations.test.mjs:17` adds 24 parser, adapter, runner and backend cases; `cypress/e2e/worktree-list-parsing.cy.ts:18` adds branch/Locked/removal presentation coverage with an API fallback. `package.json:22` includes the new Node suite exactly once. The dedicated-suite gap is now 19; parser/runner boundary work is delivered, not pending.
 
 | Tracked file | Review scope / assessment |
 | --- | --- |
@@ -228,7 +234,7 @@ Severity means potential consequence: High affects private credentials or persis
 - **Severity:** Medium. **Category:** Test discovery / script composition.
 - **Path:line:** `package.json:22`.
 - **Scenario/consequence:** Adding a new non-live `.test.mjs` file without editing this command leaves it unexecuted by both npm test and verify.
-- **Evidence:** The command enumerates 44 exact paths. Mechanical set comparison found zero current omissions or stale entries. Adding a synthetic candidate to the comparison, without creating or executing a file, produces an omitted member. `tests/live-cmux.test.mjs:13` directly creates a real workspace; therefore replacing the list with `tests/*.test.mjs` is unsafe. Installed/Tailscale live files have another suffix and their own scripts (`package.json:23`).
+- **Evidence:** The command enumerates 45 exact paths. Mechanical set comparison found zero current omissions or stale entries. Adding a synthetic candidate to the comparison, without creating or executing a file, produces an omitted member. `tests/live-cmux.test.mjs:13` directly creates a real workspace; therefore replacing the list with `tests/*.test.mjs` is unsafe. Installed/Tailscale live files have another suffix and their own scripts (`package.json:23`).
 - **Action:** Move live suites behind an explicit directory or manifest boundary, then discover deterministic suites and assert membership parity. Until then, retain the allow-list and add a non-mutating inventory check that fails on an unclassified test. Preserve separate Vitest and local-only Cypress commands.
 
 ### TEST-004 — Cleanup is registered after operations and assertions
@@ -276,7 +282,7 @@ Severity means potential consequence: High affects private credentials or persis
 - **Severity:** Low. **Category:** Maintainability / fixture design.
 - **Path:line:** `tests/planner-background.test.mjs:30`, `tests/worktree-planner.test.mjs:196`, `tests/goal-recovery.test.mjs:31`, `cypress/e2e/goal-spec-options.cy.ts:118`.
 - **Scenario/consequence:** Common repository, usage, planner and API shapes must be updated across many local builders. Oversized files mix unrelated responsibilities and make focused ownership and setup review harder.
-- **Evidence:** The recovery fixture explicitly identifies its duplicated launchDeps shape. Source line counts are 2,595 for UI features, 2,293 for planner, 1,692 for API, 1,466 for dashboard, 1,329 for plan store, and 1,035 for integrator. All 11 Cypress specs repeat base API registration. Size alone does not establish a correctness defect or require arbitrary line limits.
+- **Evidence:** The recovery fixture explicitly identifies its duplicated launchDeps shape. Source line counts are 2,595 for UI features, 2,293 for planner, 1,692 for API, 1,466 for dashboard, 1,329 for plan store, and 1,035 for integrator. All 12 Cypress specs repeat base API registration. Size alone does not establish a correctness defect or require arbitrary line limits.
 - **Action:** Extract small factories returning fresh mutable state and explicit dependency overrides, including the isolated app builder in TEST-002. Split by behavior (contracts, lifecycle, transport), keep scenario-specific responses beside assertions, and run focused and aggregate suites after each move. Do not turn fixtures into a second production implementation.
 
 ### TEST-010 — Typecheck does not establish server JavaScript correctness
@@ -320,7 +326,6 @@ supervisor
 task-branch
 worktree-errors
 worktree-inventory
-worktree-operations
 worktree-planner-options
 <!-- dedicated-test-gap:end -->
 
@@ -344,19 +349,18 @@ worktree-planner-options
 | `task-branch` | Direct import under differently named suite: `tests/worktree-planner.test.mjs:7`. Behavior scope is recorded in the per-file ledger; import alone is not exhaustive coverage. |
 | `worktree-errors` | Direct import under differently named suite: `tests/api.test.mjs:9`, `tests/goal-integrator.test.mjs:9`, `tests/goal-recovery.test.mjs:11`, `tests/worktree-dashboard.test.mjs:10`, `tests/worktree-plan-store.test.mjs:8`, `tests/worktree-planner.test.mjs:8`. Behavior scope is recorded in the per-file ledger; import alone is not exhaustive coverage. |
 | `worktree-inventory` | Direct import under differently named suite: `tests/worktree-cleanup.test.mjs:6`. Behavior scope is recorded in the per-file ledger; import alone is not exhaustive coverage. |
-| `worktree-operations` | Direct import under differently named suite: `tests/worktree-cleanup.test.mjs:8`. Behavior scope is recorded in the per-file ledger; import alone is not exhaustive coverage. |
 | `worktree-planner-options` | Direct import under differently named suite: `tests/spec-options.test.mjs:4`. Behavior scope is recorded in the per-file ledger; import alone is not exhaustive coverage. |
 
-Prioritize behavioral gaps over renaming files: process startup/supervision and release-retention failure paths; event-stream reconnect/backpressure; script failure/cleanup behavior; and the T6 parser/runner boundary matrix. Direct imports alone establish a test relationship, not exhaustive coverage. Import-only relationships are explicitly marked below. There is no instrumented statement/branch coverage report in this investigation, so no coverage percentage is claimed.
+Prioritize behavioral gaps over renaming files: process startup/supervision and release-retention failure paths; event-stream reconnect/backpressure; script failure/cleanup behavior; and remaining malformed-input parser policy beyond T6’s tested Git `-z` boundary. Direct imports alone establish a test relationship, not exhaustive coverage. Import-only relationships are explicitly marked below. There is no instrumented statement/branch coverage report in this investigation, so no coverage percentage is claimed.
 
 ### Rejected or unverified claims
 
 | Claim | Disposition and evidence |
 | --- | --- |
-| npm test currently omits an existing non-live Node suite | Rejected: exact comparison is 44 expected versus 44 listed, with empty differences. Future omission is TEST-003. |
+| npm test currently omits an existing non-live Node suite | Rejected: exact comparison is 45 expected versus 45 listed, with empty differences. Future omission is TEST-003. |
 | Every module in the gap block is untested | Rejected: the table identifies direct imports and exercised paths under other suite names. |
 | A broad Node test glob is a safe simplification | Rejected: live-cmux has the same `.test.mjs` suffix and creates real resources. |
-| Deterministic Cypress has no API fallback | Rejected: all 11 specs contain the fallback. Endpoint completeness is still not proven because handled 501s need not fail assertions. |
+| Deterministic Cypress has no API fallback | Rejected: all 12 specs contain the fallback. Endpoint completeness is still not proven because handled 501s need not fail assertions. |
 | verify should automatically include Cypress/CI | Rejected: package composition intentionally follows README and AGENTS local-only policy. |
 | All TypeScript/config files are ignored by lint | Rejected: the flat config is broad; TEST-010 describes the actual limits. No effective-config run was performed without installed dependencies. |
 | Lockfile drift or a vulnerable dependency has been proven | Rejected/unverified: root maps and integrity metadata agree; no advisory audit, clean install, or exploit validation was run. |
@@ -369,7 +373,8 @@ Prioritize behavioral gaps over renaming files: process startup/supervision and 
 1. **Protect local state first:** implement TEST-002's isolated app factory and TEST-001's permission regression tests. Never validate these by touching a real operator database or credentials.
 2. **Make cleanup a checked contract:** address TEST-004 through TEST-007 with disposable resources, immediate hook registration, preserved ownership IDs, aggregate errors, and bounded process lifecycle tests. Keep destructive live execution opt-in and local-only.
 3. **Prevent silent validation loss:** add membership parity for deterministic Node tests and UI naming, preserving the live exclusions. Keep `verify` as Node → Vitest → lint → typecheck → build (`package.json:32`), and run deterministic Cypress separately for user-visible changes. A shared Cypress API fallback should also record unexpected requests and assert none occurred, while allowing explicitly modeled failures.
-4. **T6 refactor review task:** centralize porcelain parsing and low-level Git execution setup, retaining the dashboard adapter output and inventory contract. Current boundaries are `server/worktree-dashboard.mjs:862`, `server/worktree-inventory.mjs:16`, `server/worktree-inventory.mjs:13`, and `server/repo-catalog.mjs:309`. Keep RepoCatalog's shared concurrency admission/release outside or faithfully around the common executor; preserve injected execution, timeout/maxBuffer defaults and overrides, environment policies, raw stdout and failure propagation. Test NUL/LF framing, empty/trailing records, bare/detached records, reasonless and reasoned locked/prunable markers, unknown fields, whitespace/unusual paths, option forwarding, environment, empty output and execution rejection. Re-run real-Git cleanup/dashboard/catalog regressions and local Cypress branch/locked UI checks. This report requests the task; it does not implement T6.
+4. **T6 refactor review task — resolved:** See PLAT-007 in [server-platform.md](server-platform.md). Canonical parsing and low-level execution, direct edge-case tests, backend integration and local Cypress coverage are delivered. Task association still has a separate policy wrapper (GOAL-009); no claim is made that every Git invocation was migrated. NUL framing tests preserve LF/CRLF inside values; they do not establish support for line-delimited porcelain.
+
 5. **Reduce maintenance cost incrementally:** extract fresh-state fixtures and split oversized suites around responsibilities, then replace fragile waits/source-format assertions with observable outcomes. Check each touched test still fails for its intended behavioral regression. Scope static-analysis environments and document browser/platform prerequisites rather than implying universal portability.
 
 ### Tooling composition and drift assessment
