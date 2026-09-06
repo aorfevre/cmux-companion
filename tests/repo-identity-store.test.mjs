@@ -112,3 +112,36 @@ test("a healthy store opens and reports itself", () => {
   assert.equal(store.disabled, false);
   store.close();
 });
+
+// Keep environment mutation inside one synchronous test and restore it even
+// when an assertion fails; every store also closes in a finally block.
+test("environment status TTL defaults safely and zero disables SQLite status reads and writes", () => {
+  const previous = process.env.CMUX_COMPANION_STATUS_TTL_MS;
+  try {
+    for (const [value, expected] of [[undefined, 30_000], ["", 30_000], [" ", 30_000], ["invalid", 30_000], ["Infinity", 30_000], ["-1", 0], ["123", 123]]) {
+      if (value === undefined) delete process.env.CMUX_COMPANION_STATUS_TTL_MS;
+      else process.env.CMUX_COMPANION_STATUS_TTL_MS = value;
+      const store = memory();
+      try { assert.equal(store.statusTtlMs, expected, `environment value: ${value}`); }
+      finally { store.close(); }
+    }
+    process.env.CMUX_COMPANION_STATUS_TTL_MS = "0";
+    const store = memory();
+    try {
+      assert.equal(store.statusTtlMs, 0);
+      store.db.prepare("INSERT INTO worktree_status (path, output, last_activity, read_at) VALUES (?, ?, ?, ?)")
+        .run("/existing", " M file", 123, Date.now());
+      assert.equal(store.status("/existing"), null, "zero must ignore even a fresh stored row");
+      store.rememberStatuses([{ path: "/new", output: "?? new" }, { path: "/existing", output: "" }]);
+      const rows = store.db.prepare("SELECT path, output FROM worktree_status").all();
+      assert.equal(rows.length, 1, "zero must not insert status rows");
+      assert.equal(rows[0].output, " M file", "zero must not overwrite status rows");
+    } finally { store.close(); }
+    const explicit = new RepoIdentityStore({ path: ":memory:", statusTtlMs: 42 });
+    try { assert.equal(explicit.statusTtlMs, 42, "explicit constructor values still override the environment"); }
+    finally { explicit.close(); }
+  } finally {
+    if (previous === undefined) delete process.env.CMUX_COMPANION_STATUS_TTL_MS;
+    else process.env.CMUX_COMPANION_STATUS_TTL_MS = previous;
+  }
+});
