@@ -1,5 +1,6 @@
 "use client";
 
+import { goalPopupUrl } from "./goal-popup-url";
 import { BUILTIN_MODEL_ROLES, ModelRoles, ModelSelect, ModelSettingsStatus } from "./model-settings";
 import { REVIEW_AGENTS, REVIEW_OPTIONS } from "../server/review-options.mjs";
 import { DEV_SETUP_GOAL } from "./dev-setup-goal";
@@ -249,7 +250,7 @@ function TerminalGoalBanner({ status, plan }: { status: GoalBoardStatus; plan: P
   </section>;
 }
 
-export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGoal = "", onClose, onNotice }: { repository: PlannerRepository; initialPlanId?: string; initialGoal?: string; onClose: () => void; onNotice: (message: string) => void }) {
+export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGoal = "", initialDraft, onNewGoal, onPlanResolved, onClose, onNotice }: { repository: PlannerRepository; initialPlanId?: string; initialGoal?: string; initialDraft?: PlanDraft; onNewGoal?: () => void; onPlanResolved?: (draft: PlanDraft) => void; onClose: () => void; onNotice: (message: string) => void }) {
   const [goal, setGoal] = useState(initialGoal);
   const [modelRoles, setModelRoles] = useState<ModelRoles>(BUILTIN_MODEL_ROLES);
   const [modelWarning, setModelWarning] = useState("");
@@ -280,7 +281,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   // All six requests live in one object so the POST body, the reset and the
   // checkbox row can never disagree about which keys exist.
   const [specOptions, setSpecOptions] = useState<SpecOptions>(() => ({ ...SPEC_OPTION_DEFAULTS }));
-  const [draft, setDraft] = useState<PlanDraft | null>(null);
+  const [draft, setDraft] = useState<PlanDraft | null>(() => initialDraft ? normalizedDraft(initialDraft) : null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "assemble" | "feedback" | "discuss">("");
   // Keyed per task, not one shared string: one task relaunching must not
@@ -300,7 +301,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   const feedbackRef = useRef<HTMLTextAreaElement | null>(null);
   const { attachments, uploading, inputRef, addImages, pasteImages, removeImage } = useImageAttachments(onNotice);
 
-  const receive = useCallback((next: PlanDraft) => { setDraft(normalizedDraft(next)); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); }, []);
+  const receive = useCallback((next: PlanDraft) => { setDraft(normalizedDraft(next)); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); onPlanResolved?.(next); }, [onPlanResolved]);
 
   // The 202 that starts a discussion describes the same contract, not a new
   // one, and it carries no answer yet. Passing it through receive() would blank
@@ -353,13 +354,14 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   }, [fail, receive]);
 
   useEffect(() => {
-    if (!initialPlanId) return;
+    if (!initialPlanId || initialDraft) return;
     const kickoff = setTimeout(() => { void openPlan(initialPlanId); }, 0);
     return () => clearTimeout(kickoff);
-  }, [initialPlanId, openPlan]);
+  }, [initialPlanId, initialDraft, openPlan]);
 
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
+    if (onNewGoal) { onNewGoal(); return; }
     setGoal(""); setDraft(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); setQuestion(""); setSpecOptions({ ...SPEC_OPTION_DEFAULTS }); setReviewOptions({ ...REVIEW_OPTIONS.defaults });
   }
 
@@ -553,6 +555,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   // the way out.
   return <><div className="session-menu-backdrop" /><form className="worktree-launcher worktree-planner-sheet" role="dialog" aria-modal="true" aria-label="Plan a goal" onSubmit={(event) => event.preventDefault()}>
     <header><div><strong>{heading}</strong><span>{repository.name}</span></div><button type="button" aria-label="Close goal planner sheet" onClick={onClose}>×</button></header>
+    {draft && <div className="planner-goal-reference"><span>Goal reference: <code>{draft.planId}</code></span><button type="button" onClick={async () => { const url = goalPopupUrl({ planId: draft.planId }).href; try { await navigator.clipboard.writeText(url); onNotice("Goal link copied"); } catch { onNotice("Copy the goal URL from the address bar"); } }}>Copy goal link</button></div>}
     {draft && <button type="button" className="planner-new-goal" disabled={busy !== ""} onClick={newGoal}>← New goal</button>}
     {draft && terminal && <TerminalGoalBanner status={terminal} plan={draft} />}
     {!draft && <>

@@ -568,3 +568,18 @@ not checked against a live provider catalog; availability depends on the
 configured provider/account. Local Cypress covers the Settings and planner UI;
 backend tests verify persistence and the commands for each role without
 starting live agents.
+
+### Share a goal popup
+
+Opening any saved goal updates the browser address to
+`/?view=sessions&mode=worktrees&plan=<goal-id>`. Copy the address or press
+**Copy goal link** beside the visible goal reference. The link identifies the
+saved goal across planning, review, launch, merge, and completion; reopening it
+uses the goal ID directly, even when the current board list does not include it.
+Pairing and access to the same Companion instance are still required.
+
+Reload and browser Back/Forward restore the popup. Closing it clears the popup
+from the address. New-goal forms use `newGoal=<repository-id>` until saved;
+these links restore the repository/form, not unsaved text or attachments.
+Development-setup links also include `goalTemplate=dev-setup`. A missing goal
+opens an error with a Close button rather than silently opening another goal.
