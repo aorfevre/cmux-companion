@@ -5,6 +5,7 @@ import { normalizePullRequest, parsePorcelainV2 } from "./repo-catalog.mjs";
 import { RepositoryArchive } from "./repository-archive.mjs";
 import { RepositoryFavorites } from "./repository-favorites.mjs";
 import { WORKTREE_REASONS, worktreeStateError } from "./worktree-errors.mjs";
+import { parseWorktreePorcelain } from "./worktree-operations.mjs";
 
 const STATUS_PRIORITY = { ready: 0, done: 1, working: 2, attention: 3 };
 
@@ -860,26 +861,14 @@ function buildPullRequests(items) {
 }
 
 export function parseWorktreeList(output) {
-  const records = [];
-  let current = null;
-  for (const field of String(output).split("\0")) {
-    if (!field) {
-      if (current?.path) records.push(current);
-      current = null;
-      continue;
-    }
-    const space = field.indexOf(" ");
-    const key = space === -1 ? field : field.slice(0, space);
-    const value = space === -1 ? true : field.slice(space + 1);
-    if (key === "worktree") current = { path: String(value), head: null, branch: null, detached: false, locked: null, prunable: null };
-    else if (current && key === "HEAD") current.head = String(value);
-    else if (current && key === "branch") current.branch = String(value).replace(/^refs\/heads\//, "");
-    else if (current && key === "detached") current.detached = true;
-    else if (current && key === "locked") current.locked = value === true ? "Locked" : String(value);
-    else if (current && key === "prunable") current.prunable = value === true ? "Prunable" : String(value);
-  }
-  if (current?.path) records.push(current);
-  return records;
+  return parseWorktreePorcelain(output).filter((record) => record.path).map((record) => ({
+    path: record.path,
+    head: record.head,
+    branch: record.branch,
+    detached: record.detached,
+    locked: record.locked ? record.lockReason ?? "Locked" : null,
+    prunable: record.prunable ? record.pruneReason ?? "Prunable" : null,
+  }));
 }
 
 // The primary worktree, an active session, and a Git lock block every removal

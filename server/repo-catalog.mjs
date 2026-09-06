@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { runGit } from "./worktree-operations.mjs";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_ROOTS = [
@@ -310,12 +311,12 @@ export class RepoCatalog {
     if (this.gitActive >= this.gitConcurrency) await new Promise((resolve) => this.gitQueue.push(resolve));
     else this.gitActive += 1;
     try {
-      const { stdout = "" } = await this.execute("git", ["-C", cwd, ...args], {
+      const { stdout = "" } = await runGit(cwd, args, {
         encoding: "utf8",
         timeout: options.timeout || 8_000,
         maxBuffer: options.maxBuffer || 1024 * 1024,
         env: process.env,
-      });
+      }, this.execute);
       return stdout;
     } finally {
       const next = this.gitQueue.shift();

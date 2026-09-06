@@ -4,21 +4,27 @@ import { promisify } from "node:util";
 import { readdir, realpath } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { defaultManagedReleaseRoots, isManagedReleasePath } from "./worktree-dashboard.mjs";
-import { digest, plainPath } from "./worktree-operations.mjs";
+import { digest, parseWorktreePorcelain, plainPath, runGit } from "./worktree-operations.mjs";
 
 const execute = promisify(execFile);
 const OMIT = new Set([".git", "node_modules", ".next", "dist", "build", "coverage", ".cache", ".turbo", ".venv", "venv", "vendor"]);
 const BUILD_OUTPUT = new Set(["node_modules", ".next", "dist", "build", "coverage", ".turbo"]);
 export const inside = (root, path) => path === root || path.startsWith(`${root}${sep}`);
-export async function git(cwd, args) {
-  return (await execute("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } })).stdout;
+export async function git(cwd, args, executeGit = execute) {
+  return (await runGit(cwd, args, { encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } }, executeGit)).stdout;
 }
 export function parseWorktrees(output) {
-  return output.split("\0\0").filter(Boolean).map((record, index) => {
-    const fields = record.split("\0");
-    const value = (name) => fields.find((field) => field === name || field.startsWith(`${name} `))?.slice(name.length).trimStart();
-    return { path: value("worktree"), head: value("HEAD"), branch: value("branch")?.replace(/^refs\/heads\//, "") || null, primary: index === 0, bare: value("bare") !== undefined, locked: value("locked") !== undefined, lockReason: value("locked") || null, prunable: value("prunable") !== undefined };
-  });
+  return parseWorktreePorcelain(output).map((record, index) => ({
+    path: record.path?.trimStart(),
+    head: record.head?.trimStart() ?? undefined,
+    // Only a prefix hidden behind whitespace remains after canonical parsing.
+    branch: (record.branch?.trimStart() === record.branch ? record.branch : record.branch?.trimStart().replace(/^refs\/heads\//, "")) || null,
+    primary: index === 0,
+    bare: record.bare,
+    locked: record.locked,
+    lockReason: record.lockReason?.trimStart() || null,
+    prunable: record.prunable,
+  }));
 }
 export async function processActivity(cmux) {
   try {
