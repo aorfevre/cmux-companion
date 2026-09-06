@@ -110,3 +110,13 @@ Hosted CI, real CCS/LLM behavior, live cmux/GitHub delivery, other projects and
 reply-token savings were not exercised by this change. No merge or deployment
 was performed. The first autonomous review still needs observation before we
 can claim it reduces human interventions or makes another project ready.
+
+### CI portability follow-up
+
+The first hosted run exposed an installed-CCS assumption and two background
+launch tests whose 500 event-loop turns expired in under 7 ms. CCS discovery
+now uses a temporary executable/package/symlink fixture and verifies both
+explicit-binary and PATH discovery. Launch tests use a bounded elapsed-time
+wait, with a delayed brief-write regression case. Product behavior and test
+assertions are preserved. This test-only correction has no UI path to exercise
+in Cypress; targeted Node tests and the full local/hosted verification cover it.
