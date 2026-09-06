@@ -1,3 +1,3 @@
 # Claude project instructions
 
-Read and follow [AGENTS.md](AGENTS.md), the shared repository instructions.
+Claude follows [AGENTS.md](AGENTS.md) in full, including its reply convention.

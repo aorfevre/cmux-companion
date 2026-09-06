@@ -46,8 +46,13 @@ const SHA = /^[0-9a-f]{40}$/;
 // repoCatalog.git — see WorktreeDashboard.assertStillClean.
 const DEFAULT_STATUS_TTL_MS = 30_000;
 
+function environmentStatusTtlMs() {
+  const value = process.env.CMUX_COMPANION_STATUS_TTL_MS;
+  return value?.trim() && Number.isFinite(Number(value)) ? Number(value) : DEFAULT_STATUS_TTL_MS;
+}
+
 export class RepoIdentityStore {
-  constructor({ path = process.env.CMUX_COMPANION_REPO_DB || DEFAULT_PATH, statusTtlMs = Number(process.env.CMUX_COMPANION_STATUS_TTL_MS) || DEFAULT_STATUS_TTL_MS, now = Date.now } = {}) {
+  constructor({ path = process.env.CMUX_COMPANION_REPO_DB || DEFAULT_PATH, statusTtlMs = environmentStatusTtlMs(), now = Date.now } = {}) {
     this.path = path;
     this.statusTtlMs = Math.max(0, Number(statusTtlMs) || 0);
     this.now = now;
