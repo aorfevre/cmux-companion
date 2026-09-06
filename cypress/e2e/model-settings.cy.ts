@@ -45,22 +45,40 @@ describe("model defaults", () => {
     cy.findByLabelText("Planner Codex model").should("have.value", "gpt-6");
     cy.findByRole("region", { name: "Model defaults" }).screenshot("model-defaults-mobile");
     for (const role of ["Planner", "Spec reviewer", "Coder", "Code reviewer", "Merge agent", "Follow-up agent", "Issue analyzer"]) {
-      cy.findByLabelText(`${role} Codex model`).clear().type(`custom/${role.toLowerCase().replaceAll(" ", "-")}`);
+      cy.findByLabelText(`${role} Codex model`).select("__custom__");
+      cy.findByLabelText(`${role} Codex model ID`).type(`custom/${role.toLowerCase().replaceAll(" ", "-")}`);
     }
     cy.findByLabelText("Planner default provider").select("claude");
-    cy.findByLabelText("Planner Claude model").clear().type("custom-planner");
+    cy.findByLabelText("Planner Claude model").select("__custom__");
+    cy.findByLabelText("Planner Claude model ID").type("custom-planner");
     cy.findByRole("button", { name: "Save model defaults" }).click();
     cy.wait("@saveModels").its("request.body.roles.coder.models.codex").should("equal", "custom/coder");
     cy.contains("Model defaults saved").should("be.visible");
     cy.reload(); cy.wait("@loadModels");
-    cy.findByLabelText("Planner Claude model").should("have.value", "custom-planner");
-    cy.findByLabelText("Code reviewer Codex model").should("have.value", "custom/code-reviewer");
+    cy.findByLabelText("Planner Claude model ID").should("have.value", "custom-planner");
+    cy.findByLabelText("Code reviewer Codex model ID").should("have.value", "custom/code-reviewer");
     cy.findByRole("button", { name: "Reset planner" }).click();
     cy.findByRole("button", { name: "Save model defaults" }).click(); cy.wait("@saveModels");
     cy.reload(); cy.wait("@loadModels");
     cy.findByLabelText("Planner Codex model").should("have.value", "gpt-6");
-    cy.findByLabelText("Coder Codex model").should("have.value", "custom/coder");
+    cy.findByLabelText("Coder Codex model ID").should("have.value", "custom/coder");
     cy.document().then((doc) => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
+  });
+
+  it("offers all models while provider default is selected and persists concrete choices", () => {
+    scenario(); settings();
+    for (const role of ["Planner", "Spec reviewer", "Coder", "Code reviewer", "Merge agent", "Follow-up agent", "Issue analyzer"]) {
+      cy.findByLabelText(`${role} Claude model`).find("option").should("contain.text", "Provider default").and("contain.text", "Opus 5").and("contain.text", "Fable 5.1");
+      cy.findByLabelText(`${role} Claude model`).select("claude-fable-5-1");
+      cy.findByLabelText(`${role} Codex model`).find("option").should("contain.text", "Codex Astra").and("contain.text", "GPT-5.6 Sol").and("contain.text", "GPT-5.6 Terra").and("contain.text", "GPT-5.6 Luna");
+      cy.findByLabelText(`${role} Codex model`).select("gpt-5.6-terra");
+    }
+    cy.findByRole("button", { name: "Save model defaults" }).click(); cy.wait("@saveModels");
+    cy.reload(); cy.wait("@loadModels");
+    cy.findByLabelText("Coder Claude model").should("have.value", "claude-fable-5-1");
+    cy.findByLabelText("Coder Codex model").should("have.value", "gpt-5.6-terra");
+    planner();
+    cy.findByLabelText("Planner model").should("have.value", "gpt-5.6-terra");
   });
 
   it("keeps edits visible on save failure, discards them, and retries a failed load", () => {
@@ -68,12 +86,13 @@ describe("model defaults", () => {
     cy.contains("Settings unavailable").should("be.visible");
     cy.then(() => { state.failLoad = false; });
     cy.findByRole("button", { name: "Retry loading model defaults" }).click(); cy.wait("@loadModels");
-    cy.findByLabelText("Coder Codex model").clear().type("custom-coder");
+    cy.findByLabelText("Coder Codex model").select("__custom__");
+    cy.findByLabelText("Coder Codex model ID").type("custom-coder");
     cy.then(() => { state.failSave = true; });
     cy.findByRole("button", { name: "Save model defaults" }).click(); cy.wait("@saveModels");
     cy.contains("Could not save settings").should("be.visible");
     cy.contains("Model defaults saved").should("not.exist");
-    cy.findByLabelText("Coder Codex model").should("have.value", "custom-coder");
+    cy.findByLabelText("Coder Codex model ID").should("have.value", "custom-coder");
     cy.findByRole("button", { name: "Discard changes" }).click();
     cy.findByLabelText("Coder Codex model").should("have.value", "default");
   });
