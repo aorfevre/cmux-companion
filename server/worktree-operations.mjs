@@ -77,15 +77,15 @@ export async function plainPath(path, { missing = false } = {}) {
   }
   return lstat(absolute);
 }
-export async function withWorkspaceLaunch(cwd, work) {
+export async function withWorkspaceLaunch(cwd, work, { requireRepository = false, lockDirectory } = {}) {
   // The common-directory lock also covers launches into a subdirectory of a
   // worktree. Cleanup holds this same lock through its final checks and remove.
   const canonical = await realpath(cwd);
   let common;
   try { common = (await runGit(canonical, ["rev-parse", "--path-format=absolute", "--git-common-dir"], undefined)).stdout.trim(); }
-  catch { return work(); }
+  catch (cause) { if (requireRepository) throw cause; return work(); }
   return withOperationLock(`repository:${await realpath(common)}`, async () => {
     if (await realpath(cwd) !== canonical) throw new Error("Workspace path changed before launch");
     return work();
-  });
+  }, lockDirectory);
 }

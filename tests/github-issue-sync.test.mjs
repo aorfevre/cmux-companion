@@ -301,3 +301,24 @@ test("a truncated repository is reported and malformed stored rows are dropped",
   store.save();
   assert.equal(new GitHubIssueStore({ path }).list().length, 100);
 });
+
+test("simultaneous issue starts share one reservation while a different issue progresses", async (t) => {
+  const { service, starts } = await harness(t, { issuesByPath: { "/repo/app": [issue(78, "Safety"), issue(79, "Queue")] } });
+  await service.sync();
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const create = service.planner.startBackground;
+  service.planner.startBackground = async (input) => {
+    if (input.issueNumbers.includes(78)) await held;
+    return create(input);
+  };
+  const first = service.startGoal({ repositoryId: STARRED, number: 78 });
+  const duplicate = service.startGoal({ repositoryId: STARRED, number: 78 });
+  await service.startGoal({ repositoryId: STARRED, number: 79 });
+  assert.equal(starts.length, 1);
+  release();
+  const results = await Promise.all([first, duplicate]);
+  assert.equal(results[0].plan.planId, results[1].plan.planId);
+  assert.equal(results[1].created, false);
+  assert.equal(starts.filter((input) => input.issueNumbers.includes(78)).length, 1);
+});

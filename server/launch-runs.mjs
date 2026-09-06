@@ -24,12 +24,8 @@ export class LaunchRuns {
     const id = String(planId || "");
     if (!id) return false;
     if (this.launches.has(id)) return false;
-    // A stuck entry can only come from a launch this process never settled, so
-    // the cap drops the oldest rather than refusing every new launch.
-    if (this.launches.size >= MAX_LAUNCHES) {
-      const oldest = [...this.launches.entries()].sort((left, right) => left[1].startedAt - right[1].startedAt)[0];
-      if (oldest) this.launches.delete(oldest[0]);
-    }
+    // A live claim cannot be evicted: doing so permits a second writer.
+    if (this.launches.size >= MAX_LAUNCHES) return false;
     this.launches.set(id, { planId: id, startedAt: this.now() });
     return true;
   }

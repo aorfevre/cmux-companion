@@ -119,10 +119,12 @@ export class GoalSessionReaper {
       for (const entry of keep) kept.push({ planId: plan.planId, ...entry });
       const retired = [];
       for (const entry of close) {
-        const outcome = await this.#close(plan, entry, live);
+        const outcome = await this.#close(plan, entry);
         if (outcome.retired) {
           retired.push({ workspaceId: entry.workspaceId, taskId: entry.taskId, kind: entry.kind });
           closed.push({ planId: plan.planId, ...entry, closedInCmux: outcome.closedInCmux });
+        } else if (outcome.kept) {
+          kept.push({ planId: plan.planId, ...entry, reason: outcome.error });
         } else {
           failed.push({ planId: plan.planId, ...entry, error: outcome.error });
         }
@@ -166,10 +168,28 @@ export class GoalSessionReaper {
   // A workspace the live list does not hold is already finished from cmux's
   // point of view. Asking cmux to close it would log a failure for a session
   // that is gone, and the id would come back on every pass for ever.
-  async #close(plan, entry, live) {
+  async #close(plan, entry) {
+    const live = await this.#liveWorkspaces();
+    const currentPlan = this.#plan(plan.planId);
+    if (!live.available || !currentPlan) return { kept: true, error: "Fresh session or goal evidence is unavailable" };
+    const current = retirableSessions(currentPlan, live);
+    if (!current.close.some((candidate) => candidate.workspaceId === entry.workspaceId && candidate.taskId === entry.taskId && candidate.kind === entry.kind)) {
+      return { kept: true, error: current.keep.find((candidate) => candidate.workspaceId === entry.workspaceId)?.reason || "Session ownership or delivery evidence changed during cleanup" };
+    }
     if (!live.byId.has(entry.workspaceId)) return { retired: true, closedInCmux: false, error: null };
     if (!this.cmux?.workspaceClose) return { retired: false, closedInCmux: false, error: "This cmux client cannot close a workspace" };
+    let closing = false;
     try {
+      const workspace = { ...live.byId.get(entry.workspaceId) };
+      if (this.cmux.workspaceStatus) workspace.status = await this.cmux.workspaceStatus(entry.workspaceId);
+      const protection = restoredSessionProtection(workspace);
+      if (protection) return { kept: true, error: protection };
+      // Status itself awaited; recheck the durable identity before closing.
+      const latest = this.#plan(plan.planId);
+      if (!latest || !retirableSessions(latest, live).close.some((candidate) => candidate.workspaceId === entry.workspaceId && candidate.taskId === entry.taskId && candidate.kind === entry.kind)) {
+        return { kept: true, error: "Session ownership or delivery evidence changed during cleanup" };
+      }
+      closing = true;
       await this.cmux.workspaceClose(entry.workspaceId);
       return { retired: true, closedInCmux: true, error: null };
     } catch (cause) {
@@ -179,7 +199,7 @@ export class GoalSessionReaper {
       // never opened. Both are retired, or the same dead id is retried on every
       // pass for the life of the plan. Anything else may be a passing fault and
       // stays pending, so the next pass tries again.
-      if (missingWorkspace(cause)) return { retired: true, closedInCmux: false, error: null };
+      if (closing && missingWorkspace(cause)) return { retired: true, closedInCmux: false, error: null };
       return { retired: false, closedInCmux: false, error: message };
     }
   }

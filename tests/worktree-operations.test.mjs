@@ -177,3 +177,18 @@ test("adapters: strip the branch prefix exactly once even when the branch starts
   assert.equal(parseWorktrees(output)[0].branch, "refs/heads/topic");
   assert.equal(parseWorktreeList(output)[0].branch, "refs/heads/topic");
 });
+
+test("strict removal locking shares the launch lock and never falls back without Git evidence", async (t) => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "cmux-removal-lock-")));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const lockDirectory = join(directory, "locks");
+  let called = false;
+  await assert.rejects(() => withWorkspaceLaunch(directory, () => { called = true; }, { requireRepository: true, lockDirectory }));
+  assert.equal(called, false);
+  await git(directory, ["init"]);
+  await withWorkspaceLaunch(directory, async () => {
+    await assert.rejects(() => withWorkspaceLaunch(directory, () => { called = true; }, { requireRepository: true, lockDirectory }), /holds this lock/);
+  }, { lockDirectory });
+  assert.equal(called, false);
+  assert.equal(await withWorkspaceLaunch(directory, () => "removed", { requireRepository: true, lockDirectory }), "removed");
+});

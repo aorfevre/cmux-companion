@@ -73,7 +73,16 @@ export class GitHubIssueSync {
 
   // Turns one stored issue into one goal plan. It refuses an unknown issue and
   // never creates a second plan for an issue that already has one.
-  async startGoal({ repositoryId, number }) {
+  async startGoal(options) {
+    this.goalStarts ||= new Map();
+    const key = `${options.repositoryId}/${Number(options.number)}`;
+    if (this.goalStarts.has(key)) return this.goalStarts.get(key).then((result) => ({ ...result, created: false }));
+    const run = this.#startGoal(options);
+    this.goalStarts.set(key, run);
+    try { return await run; } finally { if (this.goalStarts.get(key) === run) this.goalStarts.delete(key); }
+  }
+
+  async #startGoal({ repositoryId, number }) {
     const id = String(repositoryId || "");
     const issueNumber = Number(number);
     if (!REPOSITORY_ID.test(id)) throw new TypeError("Invalid repository");
@@ -87,13 +96,19 @@ export class GitHubIssueSync {
       return { issue: saved, plan: existing, created: false };
     }
 
-    const plan = await this.planner.startBackground({
+    let plan;
+    try { plan = await this.planner.startBackground({
       repositoryId: id,
       goal: issueGoal(issue),
       issueNumbers: [issueNumber],
       issueUrls: issue.url ? [issue.url] : [],
       deliveryPolicy: "auto",
-    });
+    }); } catch (cause) {
+      if (cause?.code !== "ISSUE_ALREADY_PLANNED") throw cause;
+      const existing = await this.#existingPlan(id, issueNumber);
+      if (!existing) throw cause;
+      return { issue: this.store.setPlanId(id, issueNumber, existing.planId), plan: existing, created: false };
+    }
     const planId = String(plan?.planId || "");
     if (!planId) throw new TypeError("The planner did not return a goal plan");
     const saved = this.store.setPlanId(id, issueNumber, planId);

@@ -65,6 +65,8 @@ export async function buildApp({
   worktreeCleanup = null,
   worktreePlanner = null,
   worktreePlanStore = null,
+  agentBriefs = null,
+  githubIssueStore = null,
   goalIntegrator = null,
   goalFollowups = null,
   githubReviewToken = null,
@@ -111,7 +113,11 @@ export async function buildApp({
   });
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
-  const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog, log: app.log });
+  const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog, log: app.log, loadWorkspaces: async () => {
+    // Bypass bootstrap and cmux's shared pending display observation.
+    const payload = await (cmux.loadWorkspaceListDetailed ? cmux.loadWorkspaceListDetailed() : cmux.workspaceList());
+    return { available: Array.isArray(payload?.workspaces), workspaces: payload?.workspaces };
+  } });
   const cleanup = worktreeCleanup || new WorktreeCleanup({ inventory: new WorktreeInventory({ roots: repoCatalog.roots || [], activity: () => processActivity(cmux), goalPlans: () => planStore?.sessionCleanupPlanIds?.().map((id) => planStore.get(id)) || [] }), onRemoved: (path) => planStore?.recordWorktreeRemoved(path), log: app.log });
   const detachCleanup = cleanup.start();
   // The planner and delivery controller share one durable goal record. Tests
@@ -119,7 +125,7 @@ export async function buildApp({
   const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
   // One brief store for both: every agent session reads its brief from the same
   // directory, and one cleanup pass covers the whole companion.
-  const briefs = new AgentBriefs();
+  const briefs = agentBriefs || new AgentBriefs();
   const planner = worktreePlanner
     || new WorktreePlanner({ worktrees, cmux, modelSettings, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
   // The one writer in the supervision path. It closes a cmux session only when
@@ -156,7 +162,7 @@ export async function buildApp({
   // GitHub Sync owns its own durable store. A test that injects the whole
   // service never opens the production file, exactly like the planner above.
   const issueSync = githubIssueSync
-    || new GitHubIssueSync({ worktrees, planner, store: new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+    || new GitHubIssueSync({ worktrees, planner, store: githubIssueStore || new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // The timer that keeps the issue column current without anyone pressing
   // GitHub Sync. The interval is read here rather than inside the class, so the
   // class stays purely injected and a test never depends on the environment.
@@ -506,13 +512,14 @@ export async function buildApp({
     const bootstrap = await loadBootstrap();
     return worktrees.remove(request.params.id, {
       workspaces: bootstrap.workspaces,
+      workspacesAvailable: bootstrap.connected === true,
       discardChanges: request.query?.discardChanges === "1",
     });
   });
 
   app.post("/api/worktree-dashboard/repositories/:id/remove-clean", async (request) => {
     const bootstrap = await loadBootstrap();
-    return worktrees.removeCleanWorktrees(request.params.id, { workspaces: bootstrap.workspaces });
+    return worktrees.removeCleanWorktrees(request.params.id, { workspaces: bootstrap.workspaces, workspacesAvailable: bootstrap.connected === true });
   });
 
   app.patch("/api/worktree-dashboard/repositories/:id/archive", async (request) => {
