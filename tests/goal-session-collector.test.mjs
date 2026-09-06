@@ -9,7 +9,7 @@ function fixture(t) {
   const store = new WorktreePlanStore({ path: ":memory:" });
   t.after(() => store.close());
   const closed = [];
-  const cmux = { workspaceListDetailed: async () => ({ workspaces: store.sessionCleanupPlanIds().flatMap((id) => store.get(id).tasks.map((task) => ({ id: task.workspaceId }))) }), workspaceClose: async (id) => { closed.push(id); } };
+  const cmux = { workspaceListDetailed: async () => ({ workspaces: store.sessionCleanupPlanIds().flatMap((id) => store.get(id).tasks.map((task) => ({ id: task.workspaceId, status: { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } }))) }), workspaceClose: async (id) => { closed.push(id); } };
   const collector = new GoalSessionCollector({ store, cmux });
   const seed = (id, combined = false) => {
     store.createPlan({ planId: id, repositoryId: "repo", cwd: "/repo", goal: id });

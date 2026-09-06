@@ -453,22 +453,24 @@ test("keeps follow-up launches in order and reports their count", (t) => {
   const store = memoryStore(t);
   seed(store);
   store.recordFollowupLaunched("plan-1", {
-    workspaceId: "followup-1", actions: ["question"], agent: "claude",
+    followupId: "followup-unique-one", workspaceId: "followup-1", actions: ["question"], agent: "claude",
     branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-1.md",
   });
   store.recordFollowupLaunched("plan-1", {
-    workspaceId: "followup-2", actions: ["tests", "review"], agent: "codex",
+    followupId: "followup-unique-two", workspaceId: "followup-2", actions: ["tests", "review"], agent: "codex",
     branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-2.md",
   });
 
   const plan = store.get("plan-1");
   assert.deepEqual(plan.followups.map((followup) => followup.workspaceId), ["followup-1", "followup-2"]);
+  assert.deepEqual(plan.followups.map((entry) => entry.followupId), ["followup-unique-one", "followup-unique-two"]);
   assert.deepEqual(plan.followups[1].actions, ["tests", "review"]);
   assert.equal(plan.followups[0].agent, "claude");
   assert.ok(plan.followups.every((followup) => followup.launchedAt));
   assert.equal(store.list()[0].followupCount, 2);
   const events = store.events("plan-1").filter((event) => event.kind === "followup_launched");
   assert.equal(events.length, 2);
+  assert.deepEqual(events.map((event) => event.payload.followupId), ["followup-unique-one", "followup-unique-two"]);
   assert.deepEqual(events.map((event) => event.payload.workspaceId), ["followup-1", "followup-2"]);
 });
 
@@ -1326,4 +1328,23 @@ test("the store refuses a discussion verdict it does not define and writes nothi
   assert.throws(() => store.recordDiscussion("plan-1", { question: "Q?", answer: "A.", contractImpact: "rewrite", round: 1 }), /Unknown discussion impact/);
   assert.deepEqual(store.discussions("plan-1"), []);
   assert.equal(store.get("plan-1").updatedAt, before);
+});
+
+test("issue ownership is atomic across store instances and permits independent repositories", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "cmux-issue-claims-"));
+  let first; let second;
+  t.after(() => { first?.close(); second?.close(); rmSync(directory, { recursive: true, force: true }); });
+  const path = join(directory, "plans.db");
+  first = new WorktreePlanStore({ path });
+  second = new WorktreePlanStore({ path });
+  first.createPlan({ planId: "topic", repositoryId: "repo-a", goal: "Topic", issueNumbers: [78, 79] });
+  assert.throws(() => second.createPlan({ planId: "single", repositoryId: "repo-a", goal: "Duplicate", issueNumbers: [79] }), (cause) => cause.code === "ISSUE_ALREADY_PLANNED" && cause.planId === "topic");
+  assert.equal(first.get("single"), null, "rejected claim leaves no partial plan");
+  second.createPlan({ planId: "other-issue", repositoryId: "repo-a", goal: "Independent issue", issueNumbers: [80] });
+  second.createPlan({ planId: "other-repo", repositoryId: "repo-b", goal: "Independent repository", issueNumbers: [79] });
+  assert.ok(first.get("other-issue"));
+  assert.ok(first.get("other-repo"));
+  first.delete("topic");
+  second.createPlan({ planId: "retry", repositoryId: "repo-a", goal: "Explicitly deleted topic can be planned again", issueNumbers: [79] });
+  assert.ok(first.get("retry"));
 });

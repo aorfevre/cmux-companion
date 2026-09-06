@@ -48,8 +48,8 @@ describe("review safety boundaries", () => {
 
   it("loads fresh terminal and queue state on A-to-B-to-A selection", () => {
     common();
-    let aReads = 0;
-    cy.intercept("GET", "**/api/terminals/terminal-a/replay*", (request) => { aReads++; request.reply({ mode: "text", text: aReads === 1 ? "First Alpha" : "Current Alpha" }); });
+    let returnedToAlpha = false;
+    cy.intercept("GET", "**/api/terminals/terminal-a/replay*", (request) => { request.reply({ mode: "text", text: returnedToAlpha ? "Current Alpha" : "First Alpha" }); });
     cy.intercept("GET", "**/api/terminals/terminal-b/replay*", { mode: "text", text: "Current Beta" });
     cy.intercept("GET", "**/api/prompt-queue?*", (request) => request.reply({ items: String(request.query.surfaceId) === "terminal-a" ? [{ ...item, text: "Alpha instructions" }] : [] }));
     visitSession();
@@ -57,6 +57,7 @@ describe("review safety boundaries", () => {
     cy.findByRole("button", { name: "Session menu" }).click();
     cy.findByRole("button", { name: "2. Beta" }).click();
     cy.contains("Current Beta").should("be.visible");
+    cy.then(() => { returnedToAlpha = true; });
     cy.findByRole("button", { name: "Session menu" }).click();
     cy.findByRole("button", { name: "1. Alpha" }).click();
     cy.contains("Current Alpha").should("be.visible");

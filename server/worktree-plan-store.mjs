@@ -23,7 +23,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
   "session_retired", "board_merged", "board_aborted", "board_pull_request",
   "task_relaunched", "task_skipped", "followup_launched", "task_associated",
-  "review_claimed", "review_launched", "discussion",
+  "review_claimed", "review_launched", "discussion", "merge_cleanup_required",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -172,6 +172,15 @@ export class WorktreePlanStore {
     const options = safeSpecOptions(specOptions);
     const review = safeReviewOptions(reviewOptions);
     this.#transaction(() => {
+      // Reservation and plan creation are one transaction, before any planner
+      // process starts. Both single-issue and topic planning use this boundary.
+      if (issueNumbers.length) {
+        const wanted = new Set(issueNumbers.map(Number));
+        const existing = this.db.prepare("SELECT plan_id, issue_numbers FROM plans WHERE repository_id = ?").all(repositoryId)
+          .find((row) => parse(row.issue_numbers, []).some((number) => wanted.has(Number(number))));
+        if (existing) throw Object.assign(new TypeError("An issue already belongs to a saved goal. Open or delete that goal before planning again"), { code: "ISSUE_ALREADY_PLANNED", planId: existing.plan_id });
+      }
+
       this.db.prepare(`
         INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -423,6 +432,20 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  // A cancelled create may still return a workspace. Retain its identity for
+  // cleanup without reopening the goal or overwriting the current merge.
+  recordMergeCleanupRequired(planId, workspaceId) {
+    const id = String(planId);
+    const at = this.#stamp();
+    this.#transaction(() => {
+      const sessions = this.#superseded(id);
+      if (!sessions.some((entry) => entry.workspaceId === workspaceId)) sessions.push({ workspaceId, retiredAt: null });
+      this.db.prepare("UPDATE plans SET superseded_merge_workspaces = ?, updated_at = ? WHERE plan_id = ?").run(json(sessions), at, id);
+      this.#insertEvent(id, null, "merge_cleanup_required", { workspaceId }, at);
+    });
+    return this.get(id);
+  }
+
   recordMergeLaunched(planId, workspaceId) {
     const at = this.#stamp();
     this.#transaction(() => {
@@ -438,13 +461,14 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
-  recordFollowupLaunched(planId, { workspaceId, actions, agent, branch, worktreePath, briefPath }) {
+  recordFollowupLaunched(planId, { followupId, workspaceId, actions, agent, branch, worktreePath, briefPath }) {
     const at = this.#stamp();
     const id = String(planId);
     this.#transaction(() => {
       const row = this.db.prepare("SELECT followups FROM plans WHERE plan_id = ?").get(id);
       const followups = parse(row?.followups, []);
       const entry = {
+        followupId: text(followupId),
         workspaceId: text(workspaceId),
         actions: Array.isArray(actions) ? actions.map(String) : [],
         agent: text(agent),
@@ -611,9 +635,9 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       const close = this.db.prepare(
-        "UPDATE plan_tasks SET session_closed_at = ? WHERE plan_id = ? AND task_id = ? AND session_closed_at IS NULL",
+        "UPDATE plan_tasks SET session_closed_at = ? WHERE plan_id = ? AND task_id = ? AND workspace_id = ? AND session_closed_at IS NULL",
       );
-      for (const entry of wanted) if (entry.kind === "task" && entry.taskId) close.run(at, id, entry.taskId);
+      for (const entry of wanted) if (entry.kind === "task" && entry.taskId) close.run(at, id, entry.taskId, entry.workspaceId);
       // The live merge session has no row of its own, so the plan carries its
       // stamp. Only the id the plan currently points at may claim that column.
       if (wanted.some((entry) => entry.kind === "merge" && entry.workspaceId === liveMerge)) {

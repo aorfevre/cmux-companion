@@ -163,7 +163,7 @@ test("refuses to relaunch while the task's cmux session is still live", async (t
 test("closeLive closes the open session and then relaunches", async (t) => {
   const path = await realWorktree();
   const deps = recoveryDeps();
-  deps.cmux.workspaceListDetailed = async () => ({ workspaces: [{ id: "ws-old", current_directory: path }] });
+  deps.cmux.workspaceListDetailed = async () => ({ workspaces: deps.calls.some((call) => call[0] === "close") ? [] : [{ id: "ws-old", current_directory: path }] });
   const { planner } = launched(t, { deps, worktreePath: path });
 
   const result = await planner.relaunchTask("plan-1", "t1", { closeLive: true });
@@ -179,10 +179,11 @@ test("closeLive closes the open session and then relaunches", async (t) => {
 
 // A close that fails must not abandon the recovery: cmux may have dropped the
 // session already, which is the state the close was asking for.
-test("a failed close still relaunches the task", async (t) => {
+test("a failed close relaunches only when a fresh inventory proves absence", async (t) => {
   const path = await realWorktree();
   const deps = recoveryDeps();
-  deps.cmux.workspaceListDetailed = async () => ({ workspaces: [{ id: "ws-old", current_directory: path }] });
+  let reads = 0;
+  deps.cmux.workspaceListDetailed = async () => ({ workspaces: ++reads === 1 ? [{ id: "ws-old", current_directory: path }] : [] });
   deps.cmux.workspaceClose = async () => { throw new Error("no such workspace"); };
   const { planner } = launched(t, { deps, worktreePath: path });
 
@@ -425,7 +426,7 @@ test("unavailable inventory still permits rebranch when no workspace was ever re
 
 test("clean restart passes the live inventory and allows only its old workspace", async (t) => {
   const deps = recoveryDeps();
-  deps.cmux.workspaceListDetailed = async () => ({ workspaces: [
+  deps.cmux.workspaceListDetailed = async () => ({ workspaces: deps.calls.some((call) => call[0] === "close") ? [] : [
     { id: "ws-old", current_directory: "/repo/sample-feature-billing" },
   ] });
   const { planner } = launched(t, { deps });
@@ -590,4 +591,38 @@ test("skipping the same task twice is harmless", async (t) => {
   const second = await planner.skipTask("plan-1", "t1", { reason: "second" });
   assert.equal(second.skipped, true);
   assert.equal(store.get("plan-1").tasks[0].launchError, "second");
+});
+
+for (const mode of ["continue", "restart", "rebranch"]) {
+  for (const inventoryFails of [false, true]) {
+    test(`${mode} refuses replacement after failed close and ${inventoryFails ? "unavailable" : "still-live"} confirmation`, async (t) => {
+      const path = await realWorktree();
+      const deps = recoveryDeps();
+      let reads = 0;
+      deps.cmux.workspaceListDetailed = async () => {
+        if (++reads > 1 && inventoryFails) throw new Error("offline");
+        return { workspaces: [{ id: "ws-old", current_directory: path }] };
+      };
+      deps.cmux.workspaceClose = async () => { throw new Error("permission denied"); };
+      const { planner, store } = launched(t, { deps, worktreePath: path });
+      await assert.rejects(() => planner.relaunchTask("plan-1", "t1", { closeLive: true, mode }), /could not be confirmed closed/);
+      assert.equal(deps.calls.some(([kind]) => ["workspace", "create", "remove"].includes(kind)), false);
+      assert.equal(store.get("plan-1").tasks[0].workspaceId, "ws-old");
+      assert.equal(store.get("plan-1").tasks[0].sessionClosedAt, null);
+    });
+  }
+}
+
+test("concurrent recovery requests cannot create competing writers for one task", async (t) => {
+  const path = await realWorktree();
+  const deps = recoveryDeps();
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  deps.cmux.workspaceListDetailed = async () => { await held; return { workspaces: [] }; };
+  const { planner } = launched(t, { deps, worktreePath: path });
+  const first = planner.relaunchTask("plan-1", "t1");
+  await assert.rejects(() => planner.relaunchTask("plan-1", "t1"), /recovery operation in progress/);
+  release();
+  await first;
+  assert.equal(deps.calls.filter(([kind]) => kind === "workspace").length, 1);
 });

@@ -494,6 +494,7 @@ export class WorktreePlanner {
     // child through it, and every exit path deletes its own entry, so a
     // finished round leaves nothing behind for a later abort to kill.
     this.controllers = new Map();
+    this.taskOperations = new Set();
   }
 
   async start({ repositoryId, goal, images, engine, specOptions, reviewOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
@@ -549,8 +550,11 @@ export class WorktreePlanner {
       const oldest = [...this.drafts.entries()].sort((left, right) => left[1].at - right[1].at)[0];
       if (oldest) this.drafts.delete(oldest[0]);
     }
-    this.drafts.set(draft.planId, draft);
-    this.#persist(() => this.store?.createPlan({
+    const conflicting = [...this.drafts.values()].find((other) => other.repositoryId === repositoryId && (other.issueNumbers || []).some((number) => linkedIssues.includes(number)));
+    if (conflicting) throw Object.assign(new TypeError("An issue already belongs to a saved goal"), { code: "ISSUE_ALREADY_PLANNED", planId: conflicting.planId });
+    // No model work has been paid for yet. A failed reservation must stop here,
+    // unlike a history write after a completed round.
+    this.store?.createPlan({
       planId: draft.planId,
       repositoryId: draft.repositoryId,
       repositoryName: draft.repositoryName,
@@ -564,7 +568,8 @@ export class WorktreePlanner {
       engine: draft.engine,
       specOptions: draft.specOptions,
       reviewOptions: draft.reviewOptions,
-    }), draft.planId, "create");
+    });
+    this.drafts.set(draft.planId, draft);
     return draft;
   }
 
@@ -919,7 +924,15 @@ export class WorktreePlanner {
   //     and opens a fresh session on it. This is the common case.
   //   - `restart` throws the working tree away and rebuilds from the base.
   //   - `rebranch` preserves it and starts in a newly derived branch.
-  async relaunchTask(planId, taskId, { mode = "continue", closeLive = false } = {}) {
+  async relaunchTask(planId, taskId, options = {}) {
+    const key = `${planId}/${taskId}`;
+    if (this.taskOperations.has(key)) throw new TypeError("This task already has a recovery operation in progress");
+    this.taskOperations.add(key);
+    try { return await this.#relaunchTask(planId, taskId, options); }
+    finally { this.taskOperations.delete(key); }
+  }
+
+  async #relaunchTask(planId, taskId, { mode = "continue", closeLive = false } = {}) {
     if (!new Set(["continue", "restart", "rebranch"]).has(mode)) throw new TypeError("Relaunch mode must be continue, restart, or rebranch");
     const { plan, task } = this.#launchedTask(planId, taskId);
     if (task.deliveryStatus === "integrated") throw new TypeError("This task is already merged into the goal branch");
@@ -943,9 +956,16 @@ export class WorktreePlanner {
       : null;
     if (live && !closeLive) throw new TypeError("This task's cmux session is still open. Close it first, or answer it, before relaunching");
     if (live) {
-      await this.cmux.workspaceClose(task.workspaceId).catch((cause) => {
-        this.log?.warn?.({ err: cause, planId: plan.planId, taskId: task.id }, "closing a relaunched task session failed");
-      });
+      let closeError;
+      try { await this.cmux.workspaceClose(task.workspaceId); }
+      catch (cause) { closeError = cause; }
+      // Even an acknowledged close must become visible in a fresh inventory.
+      // A transport failure is recoverable only when that inventory proves
+      // the old workspace is gone; it is never permission for another writer.
+      const fresh = await this.#workspaces();
+      if (!fresh.available || fresh.workspaces.some((workspace) => workspace?.id === task.workspaceId)) {
+        throw new TypeError(`The previous session could not be confirmed closed. Retry before relaunching${closeError?.message ? `: ${closeError.message}` : ""}`);
+      }
     }
 
     const base = plan.deliveryMode === "combined" && plan.integrationBranch ? plan.integrationBranch : plan.baseRef || "origin/main";
@@ -1193,7 +1213,10 @@ export class WorktreePlanner {
   }
 
   async launch(planId) {
-    return this.#launchWork(await this.#launchable(planId));
+    const draft = await this.#launchable(planId);
+    if (!this.launches.begin(draft.planId)) throw new TypeError(LAUNCHING);
+    try { return await this.#launchWork(draft); }
+    finally { this.launches.finish(draft.planId); this.#launchSettled(draft.planId); }
   }
 
   // The background entry point. It answers as soon as the launch is registered,
@@ -1362,8 +1385,8 @@ export class WorktreePlanner {
   // reused or removed on the fiction that an exception meant "no sessions".
   async #workspaces() {
     try {
-      const payload = await this.cmux.workspaceListDetailed();
-      return { available: true, workspaces: Array.isArray(payload?.workspaces) ? payload.workspaces : [] };
+      const payload = await (this.cmux.loadWorkspaceListDetailed ? this.cmux.loadWorkspaceListDetailed() : this.cmux.workspaceListDetailed());
+      return { available: Array.isArray(payload?.workspaces), workspaces: Array.isArray(payload?.workspaces) ? payload.workspaces : [] };
     } catch (cause) {
       this.log?.warn?.({ err: cause }, "planner could not read the workspace list");
       return { available: false, workspaces: [] };

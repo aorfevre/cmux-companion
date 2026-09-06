@@ -10,11 +10,11 @@ merging the follow-up PR, deployment or live-agent tests.
 | --- | --- | --- |
 | #81 | Existing automation config and new backups stay private, including unchanged config | Implemented; two disposable configuration regressions pass |
 | #82 | API fixtures never open operator persistence; cleanup covers setup failure | Implemented; 82 API tests and an instrumented child regression pass without an API-suite home preload |
-| #78 | Manual single/bulk removal requires fresh Git and session evidence under the launch lock | Implemented; 107 dashboard/parser/lock tests pass; browser fixture correction awaiting rerun |
+| #78 | Manual single/bulk removal requires fresh Git and session evidence under the launch lock | Implemented; 107 dashboard/parser/lock tests and single/bulk Cypress cases pass |
 | #79 | Failed prompt saves prevent send and preserve visible feedback/edited text | Implemented; integrated Home unit test and local Cypress scenario pass |
-| #83 | Single launch writer and confirmed closure before replacement | Pending |
-| #84 | Atomic issue/follow-up ownership and durable unique identities | Pending |
-| #85 | Cancellation compensation and fresh recorded-session closure checks | Pending |
+| #83 | Single launch writer and confirmed closure before replacement | Implemented; concurrent launches/recovery, capacity and closure regressions pass |
+| #84 | Atomic issue/follow-up ownership and durable unique identities | Implemented; store, planning and follow-up ownership regressions pass |
+| #85 | Cancellation compensation and fresh recorded-session closure checks | Implemented; cancellation, compensation recovery and fresh-status regressions pass |
 | #80 | Obsolete terminal/reconnect responses cannot overwrite current state | Implemented; deferred success/error, A-B-A and reconnect-close unit regressions pass; terminal selection Cypress passes |
 
 ## Phase 1 evidence
@@ -34,7 +34,7 @@ preload. Config tests cover changed and already-correct JSON, preserving unrelat
 content and backup bytes, 0600 config/credential/backup modes, and argv-based
 reload through an injected executor. No real cmux reload occurred.
 
-Full verification and local Cypress will run after the remaining phases.
+Final verification results are recorded below.
 
 ## Phase 2 evidence
 
@@ -55,7 +55,60 @@ success side effects from late start, poll and callback responses.
 
 The first full local Cypress pass passed 67/69 tests. Two new deletion cases
 used a repository root outside the board's Karven/Rekord filters; fixtures were
-corrected to Karven. They must pass in the final rerun. React lint also caught
+corrected to Karven; both pass in the subsequent run. React lint also caught
 mutable memo state and effect-based UI resets in the initial implementation;
 these were replaced by effect-owned request refs and render-time selection reset.
 Standalone lint and types then passed. No failing assertion was removed.
+
+
+## Phase 3 evidence
+
+PLN-001/002 (#83): awaited and background launches share a live claim; the
+registry refuses overflow instead of evicting a writer. Task recovery claims
+its operation before external awaits and releases on failure. All recovery
+modes require fresh proof that the old workspace is absent before replacement,
+even when close was acknowledged. Failed close plus unavailable/still-present
+inventory creates/removes nothing; failed close plus proven absence can recover.
+
+PLN-003/GOAL-003 (#84): issue reservation and saved-plan creation share the SQLite
+transaction. Single-issue and topic planning use this boundary, and failure
+prevents the planner process from starting. Same-issue sync requests coalesce;
+independent issues proceed. Follow-up and merge creation share an application
+store/goal claim before awaits. Follow-ups check uncached checkout inventory
+before brief creation and again before workspace creation, refusing existing
+recorded or unrecorded writers. UUID brief identities are persisted with launch
+history; lifecycle changes compensate only the newly created session.
+
+GOAL-001/002 (#85): merge creation checks lifecycle after brief writing and after
+cmux create returns. Cancellation records the created identity before attempting
+close, preserving terminal board state and leaving retirement pending until a
+later reaper observation. Tests simulate cancellation within brief/create calls,
+failed compensation and reaper recovery. Recorded retirement refreshes inventory,
+durable ownership and status per candidate; explicit idle and clean signals are
+required. Replaced task identities cannot inherit an old session's retirement
+stamp. Running, unknown, dirty, unavailable and replaced observations refuse
+closure. Existing idle fixtures now provide explicit false status signals.
+
+The first full verification found five additional API/watchdog fixtures with
+ambiguous idle status. Those fixtures were corrected and the targeted suites
+pass. Full verification and the corrected Cypress run pass.
+No live agents, cmux workspaces or deployment were used for validation.
+
+
+## Final validation
+
+- `npm run verify`: passed, 973 backend tests and 103 UI tests, lint, types,
+  and production build. Build reports its existing large-chunk/classification
+  advisories; no check fails.
+- Final targeted store/follow-up/integrator/reaper tests: 189 passed, including
+  the persisted follow-up identity assertions added after the full run.
+- `node docs/code-review/check-review.mjs`: passed. This audits the original
+  `f4052f1` review snapshot (48 findings, 854 citations) and current membership
+  of all 49 Node test suites; it is not a fresh full-source code review.
+- `git diff --check`: passed.
+- `npm run test:e2e:local`: all 69 tests passed across 15 specs. The previous run
+  passed 68/69, including both deletion
+  cases. The remaining terminal fixture used request counts while polling could
+  add reads; it now changes its response at an explicit selection phase.
+- Hosted CI: pending publication. Live cmux, live agents, deployment, and merge
+  of this follow-up PR are not part of these checks.

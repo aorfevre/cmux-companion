@@ -1507,7 +1507,7 @@ function reapableStore() {
 function reapableCmux() {
   const cmux = fakeCmux();
   cmux.workspaceListDetailed = async () => ({
-    workspaces: ["workspace-0", "workspace-1", "workspace-merge"].map((id) => ({ id, title: id, status: { effective: "idle", signals: {} } })),
+    workspaces: ["workspace-0", "workspace-1", "workspace-merge"].map((id) => ({ id, title: id, status: { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } })),
   });
   return cmux;
 }

@@ -811,3 +811,44 @@ test("an aborted planning round keeps its phase after the detached promise settl
   assert.equal(store.get(draft.planId).lastErrorAt, null);
   store.close();
 });
+
+for (const second of ["launch", "launchBackground"]) {
+  test(`an awaited launch claims ownership before a concurrent ${second}`, async () => {
+    const { deps, release } = gatedLaunchDeps();
+    const planner = new WorktreePlanner(deps);
+    const draft = await readyPlan(planner);
+    const first = planner.launch(draft.planId);
+    // Both calls can enter asynchronous draft validation before the claim.
+    await assert.rejects(() => planner[second](draft.planId), /launching right now/);
+    assert.equal(planner.isLaunching(draft.planId), true);
+    release();
+    await first;
+    assert.equal(planner.isLaunching(draft.planId), false);
+    assert.deepEqual(deps.created, ["feature/billing", "feature/invoices"]);
+    assert.equal(deps.sessions.length, 2);
+  });
+}
+
+test("a rejected durable issue claim starts no model process or background run", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "existing-topic", repositoryId: REPO_ID, goal: "Existing topic", issueNumbers: [78, 79] });
+  const deps = fakeDeps({ replies: [] });
+  const planner = new WorktreePlanner({ ...deps, store });
+  await assert.rejects(() => planner.startBackground({ repositoryId: REPO_ID, goal: "Duplicate", issueNumbers: [79] }), (cause) => cause.code === "ISSUE_ALREADY_PLANNED");
+  assert.deepEqual(deps.calls, []);
+  assert.equal(planner.drafts.size, 0);
+  assert.equal(store.list({ status: "all" }).length, 1);
+});
+
+test("launch registry capacity refuses new claims without evicting live owners", async () => {
+  const { LaunchRuns } = await import("../server/launch-runs.mjs");
+  const runs = new LaunchRuns();
+  for (let index = 0; index < 200; index++) assert.equal(runs.begin(`plan-${index}`), true);
+  assert.equal(runs.begin("overflow"), false);
+  assert.equal(runs.begin("plan-0"), false);
+  assert.equal(runs.isLaunching("plan-0"), true);
+  runs.finish("plan-1");
+  assert.equal(runs.begin("overflow"), true);
+  assert.equal(runs.isLaunching("plan-0"), true);
+});
