@@ -113,7 +113,11 @@ export async function buildApp({
   });
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
-  const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog, log: app.log });
+  const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog, log: app.log, loadWorkspaces: async () => {
+    // Bypass bootstrap and cmux's shared pending display observation.
+    const payload = await (cmux.loadWorkspaceListDetailed ? cmux.loadWorkspaceListDetailed() : cmux.workspaceList());
+    return { available: Array.isArray(payload?.workspaces), workspaces: payload?.workspaces };
+  } });
   const cleanup = worktreeCleanup || new WorktreeCleanup({ inventory: new WorktreeInventory({ roots: repoCatalog.roots || [], activity: () => processActivity(cmux), goalPlans: () => planStore?.sessionCleanupPlanIds?.().map((id) => planStore.get(id)) || [] }), onRemoved: (path) => planStore?.recordWorktreeRemoved(path), log: app.log });
   const detachCleanup = cleanup.start();
   // The planner and delivery controller share one durable goal record. Tests
@@ -508,13 +512,14 @@ export async function buildApp({
     const bootstrap = await loadBootstrap();
     return worktrees.remove(request.params.id, {
       workspaces: bootstrap.workspaces,
+      workspacesAvailable: bootstrap.connected === true,
       discardChanges: request.query?.discardChanges === "1",
     });
   });
 
   app.post("/api/worktree-dashboard/repositories/:id/remove-clean", async (request) => {
     const bootstrap = await loadBootstrap();
-    return worktrees.removeCleanWorktrees(request.params.id, { workspaces: bootstrap.workspaces });
+    return worktrees.removeCleanWorktrees(request.params.id, { workspaces: bootstrap.workspaces, workspacesAvailable: bootstrap.connected === true });
   });
 
   app.patch("/api/worktree-dashboard/repositories/:id/archive", async (request) => {

@@ -5,7 +5,7 @@ import { normalizePullRequest, parsePorcelainV2 } from "./repo-catalog.mjs";
 import { RepositoryArchive } from "./repository-archive.mjs";
 import { RepositoryFavorites } from "./repository-favorites.mjs";
 import { WORKTREE_REASONS, worktreeStateError } from "./worktree-errors.mjs";
-import { parseWorktreePorcelain } from "./worktree-operations.mjs";
+import { parseWorktreePorcelain, withWorkspaceLaunch } from "./worktree-operations.mjs";
 
 const STATUS_PRIORITY = { ready: 0, done: 1, working: 2, attention: 3 };
 
@@ -43,9 +43,11 @@ export function countUpdaterArtifacts(output, artifacts = UPDATER_ARTIFACTS) {
 }
 
 export class WorktreeDashboard {
-  constructor({ repoCatalog, cacheMs = 5_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), repositoryFavorites = new RepositoryFavorites(), managedReleaseRoots = defaultManagedReleaseRoots(), repositoryConcurrency = 6, githubFailureBackoffMs = 60_000, log = null } = {}) {
+  constructor({ repoCatalog, loadWorkspaces = null, operationLock = (path, work) => withWorkspaceLaunch(path, work, { requireRepository: true }), cacheMs = 5_000, canonicalize = realpath, repositoryArchive = new RepositoryArchive(), repositoryFavorites = new RepositoryFavorites(), managedReleaseRoots = defaultManagedReleaseRoots(), repositoryConcurrency = 6, githubFailureBackoffMs = 60_000, log = null } = {}) {
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
     this.repoCatalog = repoCatalog;
+    this.loadWorkspaces = loadWorkspaces;
+    this.operationLock = operationLock;
     this.cacheMs = cacheMs;
     this.canonicalize = canonicalize;
     this.repositoryArchive = repositoryArchive;
@@ -438,43 +440,45 @@ export class WorktreeDashboard {
     return { ...target };
   }
 
-  async remove(id, { workspaces = [], discardChanges = false } = {}) {
+  async remove(id, { workspaces = [], workspacesAvailable, discardChanges = false } = {}) {
+    if (workspacesAvailable === false) throw worktreeStateError("Sessions could not be checked. Retry before removing this worktree", WORKTREE_REASONS.SESSIONS_UNAVAILABLE);
     if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid worktree");
     const dashboard = await this.snapshot({ workspaces, refresh: true });
     const worktree = dashboard.repositories.flatMap((repository) => [...repository.worktrees, ...repository.releases]).find((item) => item.id === id);
     const target = this.targets.get(id);
     if (!worktree || !target) throw new TypeError("Unknown worktree");
-    // The snapshot's dirty flag may be served from the short-lived status
-    // cache, so the gates below must not decide on it alone. Reading the
-    // working tree once here makes every branch of this method act on the
-    // state that exists now, including the discard branch, which skips
-    // assertStillClean by design and would otherwise be the one path where a
-    // cached "clean" could destroy work.
-    const live = await this.readLiveWorktreeState(worktree, target);
-    // The snapshot's own flags decide the ordinary refusals, so their wording
-    // is unchanged. The live state is added only for the discard branch, which
-    // skips assertStillClean by design.
     assertRemovable(worktree, { discardChanges: discardChanges === true });
-    if (discardChanges !== true && live.changedFiles > 0) {
-      throw new TypeError("This worktree changed. Commit or stash its changes before removing it");
-    }
-    // Discarding is the destructive branch. It must act on what is on disk now,
-    // not on a status that may have been served from the display cache.
-    if (discardChanges === true) assertRemovable({ ...worktree, ...live }, { discardChanges: true });
-    await this.runWorktreeRemoval(target);
+    let live;
+    await this.operationLock(target.path, async () => {
+      // This observation must be made after acquiring the same lock as launch.
+      const inventory = await Promise.resolve().then(() => this.loadWorkspaces?.()).catch(() => null);
+      if (!inventory || inventory.available !== true || !Array.isArray(inventory.workspaces)) {
+        throw worktreeStateError("Sessions could not be checked. Retry before removing this worktree", WORKTREE_REASONS.SESSIONS_UNAVAILABLE);
+      }
+      const current = await this.snapshot({ workspaces: inventory.workspaces, refresh: true });
+      const row = current.repositories.flatMap((repository) => [...repository.worktrees, ...repository.releases]).find((item) => item.id === id);
+      const currentTarget = this.targets.get(id);
+      if (!row || !currentTarget || currentTarget.path !== target.path) throw new TypeError("This worktree changed. Refresh before removing it");
+      assertRemovable(row, { discardChanges: discardChanges === true });
+      live = await this.readLiveWorktreeState(row, currentTarget);
+      if (discardChanges !== true && live.changedFiles > 0) throw new TypeError("This worktree changed. Commit or stash its changes before removing it");
+      if (discardChanges === true) assertRemovable({ ...row, ...live }, { discardChanges: true });
+      await this.runWorktreeRemoval(currentTarget);
+    });
     if (this.repoCatalog.invalidate) this.repoCatalog.invalidate(); else this.repoCatalog.cache = null;
     this.invalidate();
     return {
       removed: true,
       worktree: { id: worktree.id, branch: worktree.branch, path: worktree.path },
       branchPreserved: true,
-      discardedChanges: discardChanges === true && worktree.dirty,
+      discardedChanges: discardChanges === true && live.dirty,
     };
   }
 
   // Bulk cleanup keeps the same guards as a single removal. It is deliberately
   // tolerant: one worktree Git refuses must not stop the others.
-  async removeCleanWorktrees(repositoryId, { workspaces = [] } = {}) {
+  async removeCleanWorktrees(repositoryId, { workspaces = [], workspacesAvailable } = {}) {
+    if (workspacesAvailable === false) throw worktreeStateError("Sessions could not be checked. Retry before removing worktrees", WORKTREE_REASONS.SESSIONS_UNAVAILABLE);
     if (typeof repositoryId !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(repositoryId)) throw new TypeError("Invalid repository");
     const dashboard = await this.snapshot({ workspaces, refresh: true });
     const repository = dashboard.repositories.find((item) => item.id === repositoryId);
@@ -486,8 +490,7 @@ export class WorktreeDashboard {
       const entry = { id: worktree.id, branch: worktree.branch, path: worktree.path, removed: false, error: "" };
       try {
         if (!target) throw new TypeError("Unknown worktree");
-        await this.assertStillClean(worktree, target);
-        await this.runWorktreeRemoval(target);
+        await this.remove(worktree.id, { workspaces });
         entry.removed = true;
       } catch (cause) {
         entry.error = cause instanceof Error ? cause.message : "Could not remove this worktree";
@@ -514,10 +517,10 @@ export class WorktreeDashboard {
   // destroy it. It never consults the status cache: the argv differs, and it
   // goes straight to git rather than through the catalog's display read.
   async readLiveWorktreeState(worktree, target) {
-    const output = await this.repoCatalog.git(target.path, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]).catch(() => null);
-    // A status that cannot be read tells us nothing, so the snapshot's own
-    // values stand. Refusing here would block a removal on a transient failure.
-    if (output === null) return { changedFiles: worktree.changedFiles, dirty: worktree.dirty };
+    const output = await this.repoCatalog.git(target.path, ["status", "--porcelain=v2", "--branch", "--untracked-files=all"]).catch(() => {
+      throw worktreeStateError("Git status could not be checked. Retry before removing this worktree", WORKTREE_REASONS.UNINSPECTABLE_WORKTREE);
+    });
+    if (typeof output !== "string") throw worktreeStateError("Git status could not be checked", WORKTREE_REASONS.UNINSPECTABLE_WORKTREE);
     const latest = parsePorcelainV2(output);
     const artifacts = worktree.detached ? countUpdaterArtifacts(output) : 0;
     const changedFiles = Math.max(0, latest.changedFiles - artifacts);
