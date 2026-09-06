@@ -289,7 +289,7 @@ test("strictly rejects unknown engine values before ccs sees them", async () => 
   const deps = fakeDeps({ replies: [] });
   const planner = new WorktreePlanner(deps);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "gemini" } }), /Unknown planner provider/);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "claude", model: "gpt-5.6-sol" } }), /Unknown Claude Code planner model/);
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "claude", model: "bad model" } }), /Model must/);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { effort: "maximum" } }), /Unknown planner effort/);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: "yes" } }), /must be on or off/);
   assert.equal(deps.calls.length, 0);
@@ -577,7 +577,7 @@ test("normalizes omitted engine fields without coercing invalid input", () => {
   assert.deepEqual(normalizePlannerEngine({ provider: "claude" }), { provider: "claude", model: "default", effort: "default", reviewer: false });
   assert.ok(PLANNER_ENGINES.providers.codex.models.some((model) => model.id === "gpt-6" && model.label === "Codex Astra"));
   assert.equal(PLANNER_ENGINES.providers.codex.largestModel, "gpt-5.6-sol");
-  assert.throws(() => normalizePlannerEngine({ provider: "codex", model: "unknown-codex-model" }), /Unknown Codex planner model/);
+  assert.throws(() => normalizePlannerEngine({ provider: "codex", model: "bad model" }), /Model must/);
   assert.throws(() => normalizePlannerEngine(null), /must be an object/);
 });
 
@@ -2323,4 +2323,37 @@ test("detail returns every discussion oldest first beside the generic events", a
   assert.equal(detail.discussion.every((entry) => typeof entry.createdAt === "string"), true);
   assert.equal(detail.events.filter((event) => event.kind === "discussion").length, 2);
   assert.equal(detail.boardState, "waiting_for_dev");
+});
+
+test("saved planner and reviewer models reach CCS while explicit goal choices win", async () => {
+  const { ModelSettings } = await import("../server/model-settings.mjs");
+  const modelSettings = new ModelSettings();
+  modelSettings.configure({ roles: {
+    planner: { provider: "claude", models: { claude: "custom-planner" } },
+    specReviewer: { models: { codex: "custom-spec-reviewer" } },
+    codeReviewer: { models: { claude: "custom-code-reviewer" } },
+  } });
+  const ready = envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "s");
+  const deps = fakeDeps({ replies: [ready, ready] });
+  const planner = new WorktreePlanner({ ...deps, modelSettings });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: true }, reviewOptions: { codeReview: true } });
+  const models = deps.calls.filter(([bin]) => bin === "ccs").map(([, args]) => [args[0], args[args.indexOf("--model") + 1]]);
+  assert.deepEqual(models, [["claude", "custom-planner"], ["codex", "custom-spec-reviewer"]]);
+  assert.equal(draft.reviewOptions.reviewerModel, "custom-code-reviewer");
+  modelSettings.configure({ roles: { planner: { models: { claude: "new-default" } } } });
+  assert.equal(draft.engine.model, "custom-planner");
+  const explicitDeps = fakeDeps({ replies: [ready] });
+  const explicit = await new WorktreePlanner({ ...explicitDeps, modelSettings }).start({ repositoryId: REPO_ID, goal: "Explicit", engine: { provider: "codex", model: "custom-override" }, reviewOptions: { reviewerModel: "review-override" } });
+  assert.equal(explicit.engine.model, "custom-override");
+  assert.equal(explicit.reviewOptions.reviewerModel, "review-override");
+  assert.equal(explicitDeps.calls[0][1][explicitDeps.calls[0][1].indexOf("--model") + 1], "custom-override");
+});
+
+test("coder defaults reach task workspace launches", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  planner.modelSettings.configure({ roles: { coder: { models: { claude: "custom-coder", codex: "custom-coder" } } } });
+  const draft = await readyDraft(planner);
+  await planner.launch(draft.planId);
+  assert.equal(deps.calls.find(([kind]) => kind === "workspace")[1].model, "custom-coder");
 });

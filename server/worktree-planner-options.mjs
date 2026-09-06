@@ -1,8 +1,7 @@
-import { DEFAULT_MODEL_ROLES, MODEL_SUGGESTIONS, roleEngine } from "./model-options.mjs";
+import { DEFAULT_MODEL_ROLES, MODEL_CATALOG, roleEngine } from "./model-options.mjs";
 
 // This catalog is deliberately data-only: the client sheet and the server
-// validator both consume it, so a model cannot be offered in the UI without
-// also being allowed at the process boundary. The reviewer policy lives here
+// validator both consume it. Safe custom model IDs are accepted too. The reviewer policy lives here
 // too, rather than drifting between the label and the spawned command.
 export const PLANNER_ENGINES = Object.freeze({
   defaultProvider: DEFAULT_MODEL_ROLES.planner.provider,
@@ -22,23 +21,13 @@ export const PLANNER_ENGINES = Object.freeze({
       label: "Claude Code",
       family: "xclaude",
       largestModel: DEFAULT_MODEL_ROLES.specReviewer.models.claude,
-      models: Object.freeze([
-        Object.freeze({ id: "default", label: "Default" }),
-        Object.freeze({ id: MODEL_SUGGESTIONS.claude[1], label: "Opus 5" }),
-        Object.freeze({ id: MODEL_SUGGESTIONS.claude[2], label: "Fable 5.1" }),
-      ]),
+      models: Object.freeze(MODEL_CATALOG.claude.map((model) => Object.freeze(model))),
     }),
     codex: Object.freeze({
       label: "Codex",
       family: "xcodex",
       largestModel: DEFAULT_MODEL_ROLES.specReviewer.models.codex,
-      models: Object.freeze([
-        Object.freeze({ id: "default", label: "Default" }),
-        Object.freeze({ id: MODEL_SUGGESTIONS.codex[1], label: "Codex Astra" }),
-        Object.freeze({ id: MODEL_SUGGESTIONS.codex[2], label: "GPT-5.6 Sol" }),
-        Object.freeze({ id: MODEL_SUGGESTIONS.codex[3], label: "GPT-5.6 Terra" }),
-        Object.freeze({ id: MODEL_SUGGESTIONS.codex[4], label: "GPT-5.6 Luna" }),
-      ]),
+      models: Object.freeze(MODEL_CATALOG.codex.map((model) => Object.freeze(model))),
     }),
   }),
 });

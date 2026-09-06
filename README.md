@@ -537,3 +537,34 @@ Use **Check & build combined PR** after resolving a genuine blocker, or
 retirement and worktree deletion retain their separate safety policies and controls.
 The deterministic Cypress suite verifies the recovered board state; backend tests
 exercise the actual recovery decisions without launching agents or deleting real worktrees.
+
+
+### Model defaults
+
+Settings → **Model defaults** stores a model for each provider and role: planner,
+spec reviewer, coder, code reviewer, merge agent, follow-up agent, and GitHub
+issue analyzer. Planning starts with Codex Astra (`gpt-6`); Claude specification
+and code reviews start with Fable 5.1. Coding, merging, follow-ups, and issue analysis retain the provider default.
+The Settings panel also selects the default provider for planning, merging,
+and issue analysis. Task assignment and explicit provider choices still apply.
+
+Choose a suggestion or enter a custom provider model ID. `default` explicitly
+lets the provider choose its model. Save applies the choices across paired
+devices and survives restarts. Reset restores one role's built-in values;
+press Save to apply it. A failed save keeps the previous configuration active.
+
+New plans use the saved defaults and retain their resolved planner and requested
+code-review models. Per-goal model choices override Settings. New task launches,
+retries, dependency waves, merge sessions, and follow-ups read the current role
+defaults; existing agent sessions are unchanged. A follow-up containing a code
+review uses the code-review model even when it also requests tests or other work.
+The optional specification reviewer still uses the opposite provider at xhigh
+effort. The issue analyzer has its own defaults, separate from topic planning.
+
+Configuration lives in `~/.config/cmux-companion/model-settings.json` (override
+with `CMUX_COMPANION_MODEL_SETTINGS_FILE`). The paired, same-origin Settings
+API is `GET` / `PATCH /api/settings/models`. Custom IDs are syntax-validated,
+not checked against a live provider catalog; availability depends on the
+configured provider/account. Local Cypress covers the Settings and planner UI;
+backend tests verify persistence and the commands for each role without
+starting live agents.

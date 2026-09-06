@@ -34,8 +34,8 @@ test("missing input normalizes to a fresh all-off object", () => {
 
 test("a partial object keeps the defaults for what it omits", () => {
   assert.deepEqual(normalizeReviewOptions({ codeReview: true }), { codeReview: true, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
-  assert.deepEqual(normalizeReviewOptions({ reviewer: "codex" }), { codeReview: false, reviewer: "codex", reviewerModel: "claude-fable-5-1" });
-  assert.deepEqual(normalizeReviewOptions({ codeReview: true, reviewer: "codex" }), { codeReview: true, reviewer: "codex", reviewerModel: "claude-fable-5-1" });
+  assert.deepEqual(normalizeReviewOptions({ reviewer: "codex" }), { codeReview: false, reviewer: "codex", reviewerModel: "gpt-5.6-sol" });
+  assert.deepEqual(normalizeReviewOptions({ codeReview: true, reviewer: "codex" }), { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" });
 });
 
 test("malformed input throws an actionable TypeError", () => {
@@ -56,7 +56,7 @@ test("a stored value that predates the feature reads as no review", () => {
   assert.deepEqual(safeReviewOptions({}), DEFAULTS);
   assert.deepEqual(safeReviewOptions([]), DEFAULTS);
   assert.deepEqual(safeReviewOptions({ codeReview: "yes", reviewer: "gemini" }), DEFAULTS);
-  assert.deepEqual(safeReviewOptions({ codeReview: true, reviewer: "codex" }), { codeReview: true, reviewer: "codex", reviewerModel: "claude-fable-5-1" });
+  assert.deepEqual(safeReviewOptions({ codeReview: true, reviewer: "codex" }), { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" });
 });
 
 test("codeReviewRequested answers only for a valid enabled request", () => {
@@ -66,13 +66,13 @@ test("codeReviewRequested answers only for a valid enabled request", () => {
   assert.equal(codeReviewRequested({ codeReview: "true" }), false);
 });
 
-test("reviewer models use the catalog and survive normalization", () => {
-  for (const reviewerModel of ["claude-opus-5", "gpt-6", "gpt-5.6-sol", "default"]) {
+test("safe custom reviewer models survive normalization", () => {
+  for (const reviewerModel of ["claude-opus-5", "gpt-6", "gpt-5.6-sol", "default", "provider/custom-reviewer"]) {
     const value = { ...DEFAULTS, codeReview: true, reviewerModel };
     assert.deepEqual(normalizeReviewOptions(normalizeReviewOptions(value)), value);
   }
-  for (const reviewerModel of ["unknown-model", 42, null, {}, true]) {
-    assert.throws(() => normalizeReviewOptions({ reviewerModel }), /reviewerModel must be a known/);
+  for (const reviewerModel of ["bad model", 42, null, {}, true]) {
+    assert.throws(() => normalizeReviewOptions({ reviewerModel }), /Model must/);
     assert.deepEqual(safeReviewOptions({ codeReview: true, reviewerModel }), DEFAULTS);
     assert.equal(codeReviewRequested({ codeReview: true, reviewerModel }), true);
   }

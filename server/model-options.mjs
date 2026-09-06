@@ -1,10 +1,21 @@
 // Shared by Settings, the planner form, and the process boundary. Suggestions
 // are conveniences; safe custom model IDs do not require a code release.
 export const MODEL_PROVIDERS = ["claude", "codex"];
-export const MODEL_SUGGESTIONS = {
-  claude: ["default", "claude-opus-5", "claude-fable-5-1"],
-  codex: ["default", "gpt-6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+export const MODEL_CATALOG = {
+  claude: [
+    { id: "default", label: "Default" },
+    { id: "claude-opus-5", label: "Opus 5" },
+    { id: "claude-fable-5-1", label: "Fable 5.1" },
+  ],
+  codex: [
+    { id: "default", label: "Default" },
+    { id: "gpt-6", label: "Codex Astra" },
+    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+  ],
 };
+export const MODEL_SUGGESTIONS = Object.fromEntries(MODEL_PROVIDERS.map((provider) => [provider, MODEL_CATALOG[provider].map((model) => model.id)]));
 export const MODEL_ROLES = [
   { id: "planner", label: "Planner", description: "New goal plans and questions about their specification.", provider: true },
   { id: "specReviewer", label: "Spec reviewer", description: "The optional second pass uses the other provider.", provider: false },

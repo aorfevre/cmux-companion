@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DEFAULT_MODEL_ROLES, MODEL_PROVIDERS, MODEL_ROLES, MODEL_SUGGESTIONS } from "../server/model-options.mjs";
+import { DEFAULT_MODEL_ROLES, MODEL_CATALOG, MODEL_PROVIDERS, MODEL_ROLES } from "../server/model-options.mjs";
 import { request } from "./image-attachments";
 
 export type ModelProvider = "claude" | "codex";
@@ -16,15 +16,18 @@ export function ModelSettingsPanel() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  async function load() {
-    setError("");
-    try {
-      const value = await request<ModelSettingsStatus>("/api/settings/models");
-      setSettings(value);
-      setRoles(value.roles);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load model settings"); }
+  function load() {
+    return request<ModelSettingsStatus>("/api/settings/models").then((value) => {
+      setError(""); setSettings(value); setRoles(value.roles);
+    }).catch((cause) => { setError(cause instanceof Error ? cause.message : "Could not load model settings"); });
   }
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    let active = true;
+    request<ModelSettingsStatus>("/api/settings/models").then((value) => {
+      if (active) { setSettings(value); setRoles(value.roles); }
+    }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "Could not load model settings"); });
+    return () => { active = false; };
+  }, []);
 
   function update(id: string, provider: ModelProvider, model: string) {
     setNotice("");
@@ -45,7 +48,7 @@ export function ModelSettingsPanel() {
     <p>Choose the model for each role and provider. Use a suggested ID or enter a model supported by your provider. “default” uses the provider’s own default.</p>
     <p>Saved on this Mac for all paired devices. Changes apply to new agent runs; active sessions and existing planner choices keep their model.</p>
     {error && <p role="alert">{error}</p>}
-    {!roles && <button type="button" onClick={() => void load()}>Retry loading model defaults</button>}
+    {!roles && (error ? <button type="button" onClick={() => void load()}>Retry loading model defaults</button> : <p role="status">Loading model defaults…</p>)}
     {settings?.warning && <p role="status">{settings.warning}</p>}
     {roles && <form onSubmit={save}>
       <fieldset disabled={busy}>
@@ -58,15 +61,26 @@ export function ModelSettingsPanel() {
             </select></label>}
             {(MODEL_PROVIDERS as ModelProvider[]).map((provider) => <label key={provider}>
               <span>{provider === "claude" ? "Claude" : "Codex"} model</span>
-              <input aria-label={`${role.label} ${provider === "claude" ? "Claude" : "Codex"} model`} list={`models-${provider}`} value={roles[role.id].models[provider]} onChange={(event) => update(role.id, provider, event.target.value)} required maxLength={160} pattern="[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,159}" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+              <input aria-label={`${role.label} ${provider === "claude" ? "Claude" : "Codex"} model`} list={`models-${provider}`} value={roles[role.id].models[provider]} onChange={(event) => update(role.id, provider, event.target.value)} required maxLength={160} pattern={"[A-Za-z0-9][A-Za-z0-9._:\\/+\\-]{0,159}"} autoCapitalize="none" autoCorrect="off" spellCheck={false} />
             </label>)}
           </div>
           <button className="text-button" type="button" onClick={() => { setNotice(""); setRoles({ ...roles, [role.id]: structuredClone(settings!.defaults[role.id]) }); }}>Reset {role.label.toLowerCase()}</button>
         </div>)}
-        <div className="model-settings-actions"><button className="primary-button" type="submit" disabled={!dirty}>{busy ? "Saving…" : "Save model defaults"}</button><button type="button" disabled={!dirty} onClick={() => { setRoles(structuredClone(settings!.roles)); setNotice(""); setError(""); }}>Discard changes</button></div>
+        <div className="model-settings-actions"><button className="primary-button" type="submit" disabled={!dirty && !settings?.warning}>{busy ? "Saving…" : "Save model defaults"}</button><button type="button" disabled={!dirty} onClick={() => { setRoles(structuredClone(settings!.roles)); setNotice(""); setError(""); }}>Discard changes</button></div>
       </fieldset>
       {notice && <p role="status">{notice}</p>}
-      {(MODEL_PROVIDERS as ModelProvider[]).map((provider) => <datalist id={`models-${provider}`} key={provider}>{MODEL_SUGGESTIONS[provider].map((model) => <option key={model} value={model} />)}</datalist>)}
+      {(MODEL_PROVIDERS as ModelProvider[]).map((provider) => <datalist id={`models-${provider}`} key={provider}>{MODEL_CATALOG[provider].map((model) => <option key={model.id} value={model.id} />)}</datalist>)}
     </form>}
   </section>;
+}
+
+// Preserve the convenient suggestions while allowing newly released or
+// provider-specific model IDs without changing the app's catalog.
+export function ModelSelect({ label, provider, value, onChange }: { label: string; provider: ModelProvider; value: string; onChange: (model: string) => void }) {
+  const suggestions = MODEL_CATALOG[provider];
+  const custom = !suggestions.some((model) => model.id === value);
+  return <label><span>Model</span><select aria-label={label} value={custom ? "__custom__" : value} onChange={(event) => onChange(event.target.value === "__custom__" ? "" : event.target.value)}>
+    {suggestions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+    <option value="__custom__">Custom model…</option>
+  </select>{custom && <input aria-label={`${label} ID`} value={value} onChange={(event) => onChange(event.target.value)} placeholder="Provider model ID" maxLength={160} required autoCapitalize="none" autoCorrect="off" spellCheck={false} />}</label>;
 }

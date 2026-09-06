@@ -96,7 +96,7 @@ test("stores a goal without a review request as no review", (t) => {
 test("reads a malformed stored review request as no review", (t) => {
   const store = memoryStore(t);
   seed(store);
-  for (const stored of ["", "not json", "[]", '{"codeReview":false,"reviewer":"claude"}', '{"reviewerModel":"unknown-model"}', '{"reviewerModel":42}', '{"unknown":true}', '{"codeReview":"yes"}', '{"reviewer":"gemini"}']) {
+  for (const stored of ["", "not json", "[]", '{"codeReview":false,"reviewer":"claude"}', '{"reviewerModel":"bad model"}', '{"reviewerModel":42}', '{"unknown":true}', '{"codeReview":"yes"}', '{"reviewer":"gemini"}']) {
     store.db.prepare("UPDATE plans SET review_options = ? WHERE plan_id = ?").run(stored, "plan-1");
     assert.deepEqual(store.get("plan-1").reviewOptions, NO_REVIEW, `stored value ${stored}`);
     assert.deepEqual(store.list()[0].reviewOptions, NO_REVIEW, `stored value ${stored}`);

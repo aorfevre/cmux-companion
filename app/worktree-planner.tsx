@@ -1,5 +1,6 @@
 "use client";
 
+import { BUILTIN_MODEL_ROLES, ModelRoles, ModelSelect, ModelSettingsStatus } from "./model-settings";
 import { REVIEW_AGENTS, REVIEW_OPTIONS } from "../server/review-options.mjs";
 import { DEV_SETUP_GOAL } from "./dev-setup-goal";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
@@ -250,11 +251,32 @@ function TerminalGoalBanner({ status, plan }: { status: GoalBoardStatus; plan: P
 
 export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGoal = "", onClose, onNotice }: { repository: PlannerRepository; initialPlanId?: string; initialGoal?: string; onClose: () => void; onNotice: (message: string) => void }) {
   const [goal, setGoal] = useState(initialGoal);
+  const [modelRoles, setModelRoles] = useState<ModelRoles>(BUILTIN_MODEL_ROLES);
+  const [modelWarning, setModelWarning] = useState("");
+  const [modelDefaultsLoading, setModelDefaultsLoading] = useState(true);
+  const engineEdited = useRef(false);
+  const reviewEdited = useRef(false);
   const [provider, setProvider] = useState<PlannerProvider>(PLANNER_ENGINES.defaultProvider as PlannerProvider);
   const [model, setModel] = useState<string>(PLANNER_ENGINES.defaultModel);
   const [effort, setEffort] = useState<string>(PLANNER_ENGINES.defaultEffort);
   const [reviewer, setReviewer] = useState(false);
   const [reviewOptions, setReviewOptions] = useState<ReviewOptions>({ ...REVIEW_OPTIONS.defaults });
+  useEffect(() => {
+    let active = true;
+    request<ModelSettingsStatus>("/api/settings/models").then((value) => {
+      if (!value.roles?.planner) throw new Error("Model settings unavailable");
+      if (!active) return;
+      setModelRoles(value.roles);
+      setModelWarning(value.warning || "");
+      if (!engineEdited.current) {
+        const selected = value.roles.planner.provider!;
+        setProvider(selected); setModel(value.roles.planner.models[selected]);
+      }
+      if (!reviewEdited.current) setReviewOptions((current) => ({ ...current, reviewerModel: value.roles.codeReviewer.models[current.reviewer] }));
+    }).catch(() => { if (active) setModelWarning("Saved model defaults could not be loaded. Built-in defaults are shown."); })
+      .finally(() => { if (active) setModelDefaultsLoading(false); });
+    return () => { active = false; };
+  }, []);
   // All six requests live in one object so the POST body, the reset and the
   // checkbox row can never disagree about which keys exist.
   const [specOptions, setSpecOptions] = useState<SpecOptions>(() => ({ ...SPEC_OPTION_DEFAULTS }));
@@ -512,7 +534,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   const questionable = Boolean(draft) && !launchedPlan && !terminal;
   const atQuestionCap = discussion.length >= MAX_DISCUSSION;
   const providerOptions = PLANNER_ENGINES.providers[provider];
-  const reviewerConfig = reviewerEngine(provider);
+  const reviewerConfig = reviewerEngine(provider, modelRoles);
   const reviewerProvider = reviewerConfig.provider as PlannerProvider;
   const reviewerOptions = PLANNER_ENGINES.providers[reviewerProvider];
 
@@ -541,11 +563,12 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       </section>
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
+      {modelWarning && <p role="status">{modelWarning}</p>}
       <section className="planner-engine-config" aria-label="Planner configuration">
         <header><strong>Planner</strong><span>{providerOptions.label} ({providerOptions.family}) · {model === PLANNER_ENGINES.passthroughModel ? "CCS default model" : modelLabel(provider, model)}</span></header>
         <div className="planner-engine-controls">
-          <label><span>Engine</span><select aria-label="Planner engine" value={provider} onChange={(event) => { setProvider(event.target.value as PlannerProvider); setModel(event.target.value === PLANNER_ENGINES.defaultProvider ? PLANNER_ENGINES.defaultModel : PLANNER_ENGINES.passthroughModel); }}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
-          <label><span>Model</span><select aria-label="Planner model" value={model} onChange={(event) => setModel(event.target.value)}>{providerOptions.models.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+          <label><span>Engine</span><select aria-label="Planner engine" value={provider} onChange={(event) => { engineEdited.current = true; const selected = event.target.value as PlannerProvider; setProvider(selected); setModel(modelRoles.planner.models[selected]); }}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+          <ModelSelect label="Planner model" provider={provider} value={model} onChange={(value) => { engineEdited.current = true; setModel(value); }} />
           <label><span>Effort</span><select aria-label="Planner effort" value={effort} onChange={(event) => setEffort(event.target.value)}>{PLANNER_ENGINES.efforts.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
         </div>
         <label className="planner-reviewer-toggle"><input type="checkbox" aria-label="Add a reviewer pass" checked={reviewer} onChange={(event) => setReviewer(event.target.checked)} /><span>Add a reviewer pass</span></label>
@@ -556,10 +579,11 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
         <label className="planner-reviewer-toggle"><input type="checkbox" aria-label="Code review" checked={reviewOptions.codeReview} onChange={(event) => setReviewOptions((current) => ({ ...current, codeReview: event.target.checked }))} /><span>Request a code review</span></label>
         <div className="planner-engine-controls">
           <label><span>Reviewer</span><select aria-label="Code-review reviewer" value={reviewOptions.reviewer} onChange={(event) => {
+            reviewEdited.current = true;
             const reviewer = event.target.value as PlanAgent;
-            setReviewOptions((current) => ({ ...current, reviewer, reviewerModel: reviewer === REVIEW_OPTIONS.defaults.reviewer ? REVIEW_OPTIONS.defaults.reviewerModel : PLANNER_ENGINES.providers[reviewer].largestModel }));
+            setReviewOptions((current) => ({ ...current, reviewer, reviewerModel: modelRoles.codeReviewer.models[reviewer] }));
           }}>{REVIEW_AGENTS.map((agent) => <option key={agent} value={agent}>{PLANNER_ENGINES.providers[agent as PlanAgent].label}</option>)}</select></label>
-          <label><span>Model</span><select aria-label="Code-review model" value={reviewOptions.reviewerModel} onChange={(event) => setReviewOptions((current) => ({ ...current, reviewerModel: event.target.value }))}>{PLANNER_ENGINES.providers[reviewOptions.reviewer].models.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+          <ModelSelect label="Code-review model" provider={reviewOptions.reviewer} value={reviewOptions.reviewerModel} onChange={(value) => { reviewEdited.current = true; setReviewOptions((current) => ({ ...current, reviewerModel: value })); }} />
         </div>
       </section>
       <section className="planner-spec-options" aria-label="Spec depth">
@@ -573,7 +597,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       </section>
       {error && <p className="worktree-action-error">{error}</p>}
       {busy === "plan" && <p className="planner-waiting">Starting the round…</p>}
-      <div className="worktree-launch-actions"><ImagePickerButton attachments={attachments} disabled={busy === "plan" || uploading > 0} inputRef={inputRef} label="Choose goal images" onFiles={(files) => { void addImages(files); }} /><button type="button" className="primary-button" disabled={busy === "plan" || uploading > 0 || !goal.trim()} onClick={plan}>{busy === "plan" ? "Planning…" : uploading ? `Uploading ${uploading}…` : "Plan this goal"}</button></div>
+      <div className="worktree-launch-actions"><ImagePickerButton attachments={attachments} disabled={busy === "plan" || uploading > 0} inputRef={inputRef} label="Choose goal images" onFiles={(files) => { void addImages(files); }} /><button type="button" className="primary-button" disabled={busy === "plan" || modelDefaultsLoading || uploading > 0 || !goal.trim() || !model.trim() || !reviewOptions.reviewerModel.trim()} onClick={plan}>{busy === "plan" ? "Planning…" : uploading ? `Uploading ${uploading}…` : "Plan this goal"}</button></div>
     </>}
     {draft && running && !discussing && <section className="planner-running" aria-label="Planning in progress">
       <ContextReview goal={reviewGoal} images={reviewImages} />

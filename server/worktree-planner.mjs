@@ -519,7 +519,7 @@ export class WorktreePlanner {
     // The review request never reaches the planner prompt or a task brief. It
     // describes what happens after the pull request exists, which is nothing
     // the planner can plan for or evidence.
-    const normalizedReviewOptions = normalizeReviewOptions(reviewOptions);
+    const normalizedReviewOptions = normalizeReviewOptions(reviewOptions, this.modelSettings.roles);
     const repository = await this.#repository(repositoryId);
     const draft = {
       planId: randomUUID(),
