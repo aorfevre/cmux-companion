@@ -1,5 +1,7 @@
 # Consolidated code review
 
+> Historical review snapshot: the findings, counts and path:line citations below describe the source delivered in `f4052f1a8dc63761b50f874d452f7d551790d57a`. Later changes from main are reconciled in [PR #74 integration validation](integration-validation.md); they have not received another full repository review. The audit checks snapshot citations/inventories and separately checks current test membership.
+
 ## Overall verdict
 
 Version 2.0 · 2026-09-06 · final source baseline `c89984a` (T6), following the original `444adaa` area investigations. This review covers all 56 tracked server modules, all 26 assigned client/PWA files, and the complete tracked tests, Cypress, scripts and named root tooling surface. The coverage partition is 15 planning + 18 goals + 23 platform modules. Files without findings remain in the area inventories.

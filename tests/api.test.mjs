@@ -366,7 +366,7 @@ test("serves the worktree dashboard and creates worktrees and sessions", async (
   }]);
   const launched = await app.inject({ method: "POST", url: `/api/worktree-dashboard/${target.id}/launch`, headers, payload: { agent: "claude", prompt: "Review mobile UX" } });
   assert.equal(launched.statusCode, 201);
-  assert.deepEqual(cmux.calls.at(-1), ["create", { cwd: target.path, title: "safe: feature/mobile", agent: "claude", prompt: "Review mobile UX" }]);
+  assert.deepEqual(cmux.calls.at(-1), ["create", { cwd: target.path, title: "safe: feature/mobile", agent: "claude", model: "default", prompt: "Review mobile UX" }]);
   const removed = await app.inject({ method: "DELETE", url: `/api/worktree-dashboard/${target.id}`, headers });
   assert.equal(removed.statusCode, 200);
   assert.equal(removed.json().branchPreserved, true);
@@ -1001,7 +1001,7 @@ test("forwards the review request on both plan routes when a token is configured
   });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
-  const reviewOptions = { codeReview: true, reviewer: "codex" };
+  const reviewOptions = { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" };
 
   const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions } });
   assert.equal(awaited.statusCode, 201);
@@ -1689,4 +1689,43 @@ test("reports every contract question refusal as a 400 the sheet can show", asyn
     assert.equal(background.json().error, sentence);
     await app.close();
   }
+});
+
+test("rejects invalid reviewer models before either planner branch runs", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, githubReviewToken: fakeReviewToken({ configured: true }) });
+  t.after(() => app.close());
+  for (const background of [false, true]) {
+    for (const reviewerModel of ["bad model", 123]) {
+      const response = await app.inject({
+        method: "POST", url: "/api/worktree-plans",
+        headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+        payload: { repositoryId: "repository12345678", goal: "Add billing", background, reviewOptions: { codeReview: true, reviewer: "claude", reviewerModel } },
+      });
+      assert.equal(response.statusCode, 400);
+      assert.match(response.json().error, /Model must/);
+    }
+  }
+  assert.equal(planner.calls.length, 0);
+});
+
+test("model settings require pairing and a safe origin, then affect manual agent launches", async (t) => {
+  const cmux = fakeCmux();
+  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), repoCatalog: { get: async () => ({ id: "repo", path: "/repo", name: "Repo", scripts: [] }) } });
+  t.after(() => app.close());
+  assert.equal((await app.inject({ url: "/api/settings/models" })).statusCode, 401);
+  const cookie = await pairedCookie(app);
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const payload = { roles: { coder: { models: { codex: "custom-coder" } } } };
+  assert.equal((await app.inject({ method: "PATCH", url: "/api/settings/models", headers: { ...headers, origin: "https://evil.test" }, payload })).statusCode, 403);
+  const saved = await app.inject({ method: "PATCH", url: "/api/settings/models", headers, payload });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().roles.coder.models.codex, "custom-coder");
+  assert.equal((await app.inject({ url: "/api/settings/models", headers })).json().roles.coder.models.codex, "custom-coder");
+  const launched = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { repoId: "repo", agent: "codex", prompt: "Implement" } });
+  assert.equal(launched.statusCode, 201);
+  assert.equal(cmux.calls.find(([kind]) => kind === "create")[1].model, "custom-coder");
+  const rejected = await app.inject({ method: "PATCH", url: "/api/settings/models", headers, payload: { roles: { coder: { models: { codex: "--help" } } } } });
+  assert.equal(rejected.statusCode, 400);
+  assert.equal((await app.inject({ url: "/api/settings/models", headers })).json().roles.coder.models.codex, "custom-coder");
 });

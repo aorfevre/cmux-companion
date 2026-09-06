@@ -871,3 +871,23 @@
 .cleanup-inventory table { width: 100%; border-collapse: collapse; }
 .cleanup-inventory th, .cleanup-inventory td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border, #444); vertical-align: top; }
 .cleanup-inventory small { display: block; overflow-wrap: anywhere; min-width: 160px; }
+
+
+.model-settings { margin: 20px 0; padding: 20px; border: 1px solid var(--border, #29323d); border-radius: 16px; background: var(--panel, #11161c); }
+.model-settings h2 { margin: 0 0 8px; font-size: 18px; }
+.model-settings p { color: var(--muted, #929ca8); font-size: 13px; line-height: 1.5; }
+.model-settings fieldset { min-width: 0; border: 0; margin: 0; padding: 0; }
+.model-settings-role { padding: 18px 0; border-top: 1px solid var(--border, #29323d); }
+.model-settings-role h3 { margin: 0; font-size: 15px; }
+.model-settings-role p { margin: 5px 0 12px; }
+.model-settings-controls { display: flex; flex-wrap: wrap; gap: 12px; }
+.model-settings-controls label { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.model-settings-controls input, .model-settings-controls select { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border, #29323d); border-radius: 8px; background: var(--background, #090c10); color: inherit; font: inherit; }
+.model-settings-role > button { margin-top: 8px; }
+.model-settings-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.model-settings [role="alert"] { color: #ff9b9b; }
+@media (max-width: 480px) { .model-settings { padding: 14px; } .model-settings-controls label { flex-basis: 100%; } }
+
+.planner-goal-reference { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; color: var(--muted); font-size: 12px; }
+.planner-goal-reference code { overflow-wrap: anywhere; user-select: all; }
+.planner-goal-reference button { padding: 8px 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); color: inherit; }

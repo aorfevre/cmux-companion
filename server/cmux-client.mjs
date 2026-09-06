@@ -1,3 +1,4 @@
+import { normalizeModelId } from "./model-options.mjs";
 import { withWorkspaceLaunch } from "./worktree-operations.mjs";
 import { execFile } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
@@ -252,7 +253,7 @@ export class CmuxClient {
     return withWorkspaceLaunch(options.cwd, () => this.createWorkspaceLocked(options));
   }
 
-  async createWorkspaceLocked({ cwd, title, agent = "shell", prompt = "", script = null, env = null }) {
+  async createWorkspaceLocked({ cwd, title, agent = "shell", model = "default", prompt = "", script = null, env = null }) {
     if (typeof cwd !== "string" || !cwd.startsWith("/")) throw new TypeError("Invalid repository path");
     // cmux accepts a cwd that does not exist and creates the workspace anyway.
     // Its shell then cannot enter the directory and silently keeps the one cmux
@@ -269,14 +270,15 @@ export class CmuxClient {
     // goal and task a session belongs to. They are exported in the session's
     // own shell rather than passed to `workspace.create`, because the RPC's
     // env parameter is not part of the surface this client has verified.
+    const modelId = normalizeModelId(model);
+    const modelFlag = modelId === "default" ? "" : ` --model ${shellQuote(modelId)}`;
     const exports = envExports(env);
     const created = await this.rpc("workspace.create", { cwd, title: title.trim(), focus: false });
     const workspaceId = created.workspace_id || created.workspace_ref;
     assertTarget(workspaceId);
     let command = "";
     if (script) command = `npm run ${script}`;
-    else if (agent === "codex") command = prompt.trim() ? `xcodex ${shellQuote(prompt.trim())}` : "xcodex";
-    else if (agent === "claude") command = prompt.trim() ? `xclaude ${shellQuote(prompt.trim())}` : "xclaude";
+    else if (agent === "codex" || agent === "claude") command = `${agent === "codex" ? "xcodex" : "xclaude"}${modelFlag}${prompt.trim() ? ` ${shellQuote(prompt.trim())}` : ""}`;
     else if (prompt.trim()) command = `printf '%s\\n' ${shellQuote(prompt.trim())}`;
     const text = `${exports}${command}`;
     if (text) await this.rpc("surface.send_text", { workspace_id: workspaceId, text: `${text}\n` });
@@ -497,7 +499,16 @@ export class CmuxClient {
 
   async selectWorkspace(workspaceId) {
     assertTarget(workspaceId);
-    await this.run(["select-workspace", "--workspace", workspaceId]);
+    // Use explicit RPC targets so the server's inherited terminal context cannot
+    // route this user action to a different workspace or surface.
+    const selected = await this.rpc("workspace.select", { workspace_id: workspaceId });
+    assertTarget(selected.window_id);
+    await this.rpc("window.focus", { window_id: selected.window_id });
+    // The visual cue is optional; older cmux builds may not support it.
+    await this.rpc("surface.trigger_flash", {
+      workspace_id: workspaceId,
+      window_id: selected.window_id,
+    }).catch(() => {});
   }
 }
 

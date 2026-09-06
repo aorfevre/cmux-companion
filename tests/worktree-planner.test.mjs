@@ -233,14 +233,39 @@ test("a first round returns questions and records the session id", async () => {
   assert.ok(deps.calls[0][1].includes("--print"));
 });
 
-test("defaults to Claude and lets ccs choose its model and effort", async () => {
+test("defaults to Codex Astra and lets ccs choose its effort", async () => {
   const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
   const draft = await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
   const args = deps.calls[0][1];
-  assert.equal(args[0], "claude");
-  assert.equal(args.includes("--model"), false);
+  assert.equal(args[0], "codex");
+  assert.equal(args[args.indexOf("--model") + 1], "gpt-6");
   assert.equal(args.includes("--effort"), false);
-  assert.deepEqual(draft.engine, { provider: "claude", model: "default", effort: "default", reviewer: false });
+  assert.deepEqual(draft.engine, { provider: "codex", model: "gpt-6", effort: "default", reviewer: false });
+});
+
+for (const provider of ["claude", "codex"]) {
+  test(`${provider} Default model lets ccs choose without a --model argument`, async () => {
+    const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+    const draft = await new WorktreePlanner(deps).start({
+      repositoryId: REPO_ID, goal: "Add billing", engine: { provider, model: "default" },
+    });
+    assert.equal(deps.calls[0][1][0], provider);
+    assert.equal(deps.calls[0][1].includes("--model"), false);
+    assert.equal(draft.engine.model, "default");
+  });
+}
+
+test("the shipped planner default derives a Claude Fable reviewer", async () => {
+  assert.deepEqual(reviewerEngine(PLANNER_ENGINES.defaultProvider), {
+    provider: "claude", model: "claude-fable-5-1", effort: "xhigh", reviewer: false,
+  });
+  const ready = envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "s");
+  const deps = fakeDeps({ replies: [ready, ready] });
+  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: true } });
+  const args = deps.calls[1][1];
+  assert.equal(args[0], "claude");
+  assert.equal(args[args.indexOf("--model") + 1], "claude-fable-5-1");
+  assert.equal(args[args.indexOf("--effort") + 1], "xhigh");
 });
 
 test("runs Codex with the selected model and effort before the prompt", async () => {
@@ -264,7 +289,7 @@ test("strictly rejects unknown engine values before ccs sees them", async () => 
   const deps = fakeDeps({ replies: [] });
   const planner = new WorktreePlanner(deps);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "gemini" } }), /Unknown planner provider/);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "claude", model: "gpt-5.6-sol" } }), /Unknown Claude Code planner model/);
+  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "claude", model: "bad model" } }), /Model must/);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { effort: "maximum" } }), /Unknown planner effort/);
   await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: "yes" } }), /must be on or off/);
   assert.equal(deps.calls.length, 0);
@@ -414,7 +439,7 @@ test("the review request never reaches a planner prompt or a task brief", async 
   // A code review happens after the pull request exists. The planner can
   // neither plan for it nor evidence it, so asking would only invite a task
   // and an acceptance criterion for work that is not part of the delivery.
-  const reviewOptions = { codeReview: true, reviewer: "codex" };
+  const reviewOptions = { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" };
   const deps = launchDeps();
   const planner = new WorktreePlanner(deps);
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", reviewOptions });
@@ -544,7 +569,15 @@ test("a task brief with no requested option keeps its original shape", async () 
 });
 
 test("normalizes omitted engine fields without coercing invalid input", () => {
-  assert.deepEqual(normalizePlannerEngine({ provider: "codex" }), { provider: "codex", model: "default", effort: "default", reviewer: false });
+  const defaults = { provider: "codex", model: "gpt-6", effort: "default", reviewer: false };
+  assert.deepEqual(normalizePlannerEngine(undefined), defaults);
+  assert.deepEqual(normalizePlannerEngine({}), defaults);
+  assert.deepEqual(normalizePlannerEngine({ provider: "codex" }), defaults);
+  assert.deepEqual(normalizePlannerEngine({ provider: "codex", model: "gpt-6" }), defaults);
+  assert.deepEqual(normalizePlannerEngine({ provider: "claude" }), { provider: "claude", model: "default", effort: "default", reviewer: false });
+  assert.ok(PLANNER_ENGINES.providers.codex.models.some((model) => model.id === "gpt-6" && model.label === "Codex Astra"));
+  assert.equal(PLANNER_ENGINES.providers.codex.largestModel, "gpt-5.6-sol");
+  assert.throws(() => normalizePlannerEngine({ provider: "codex", model: "bad model" }), /Model must/);
   assert.throws(() => normalizePlannerEngine(null), /must be an object/);
 });
 
@@ -2290,4 +2323,37 @@ test("detail returns every discussion oldest first beside the generic events", a
   assert.equal(detail.discussion.every((entry) => typeof entry.createdAt === "string"), true);
   assert.equal(detail.events.filter((event) => event.kind === "discussion").length, 2);
   assert.equal(detail.boardState, "waiting_for_dev");
+});
+
+test("saved planner and reviewer models reach CCS while explicit goal choices win", async () => {
+  const { ModelSettings } = await import("../server/model-settings.mjs");
+  const modelSettings = new ModelSettings();
+  modelSettings.configure({ roles: {
+    planner: { provider: "claude", models: { claude: "custom-planner" } },
+    specReviewer: { models: { codex: "custom-spec-reviewer" } },
+    codeReviewer: { models: { claude: "custom-code-reviewer" } },
+  } });
+  const ready = envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "s");
+  const deps = fakeDeps({ replies: [ready, ready] });
+  const planner = new WorktreePlanner({ ...deps, modelSettings });
+  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: true }, reviewOptions: { codeReview: true } });
+  const models = deps.calls.filter(([bin]) => bin === "ccs").map(([, args]) => [args[0], args[args.indexOf("--model") + 1]]);
+  assert.deepEqual(models, [["claude", "custom-planner"], ["codex", "custom-spec-reviewer"]]);
+  assert.equal(draft.reviewOptions.reviewerModel, "custom-code-reviewer");
+  modelSettings.configure({ roles: { planner: { models: { claude: "new-default" } } } });
+  assert.equal(draft.engine.model, "custom-planner");
+  const explicitDeps = fakeDeps({ replies: [ready] });
+  const explicit = await new WorktreePlanner({ ...explicitDeps, modelSettings }).start({ repositoryId: REPO_ID, goal: "Explicit", engine: { provider: "codex", model: "custom-override" }, reviewOptions: { reviewerModel: "review-override" } });
+  assert.equal(explicit.engine.model, "custom-override");
+  assert.equal(explicit.reviewOptions.reviewerModel, "review-override");
+  assert.equal(explicitDeps.calls[0][1][explicitDeps.calls[0][1].indexOf("--model") + 1], "custom-override");
+});
+
+test("coder defaults reach task workspace launches", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  planner.modelSettings.configure({ roles: { coder: { models: { claude: "custom-coder", codex: "custom-coder" } } } });
+  const draft = await readyDraft(planner);
+  await planner.launch(draft.planId);
+  assert.equal(deps.calls.find(([kind]) => kind === "workspace")[1].model, "custom-coder");
 });

@@ -1,3 +1,5 @@
+import { ModelSettings } from "./model-settings.mjs";
+import { DEFAULT_MODEL_ROLES, normalizeModelId, roleEngine } from "./model-options.mjs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -391,25 +393,16 @@ const MAX_TASKS = 8;
 const MAX_IMAGES = 4;
 const MAX_DRAFTS = 50;
 
-export function normalizePlannerEngine(engine) {
-  if (engine === undefined) return {
-    provider: PLANNER_ENGINES.defaultProvider,
-    model: PLANNER_ENGINES.defaultModel,
-    effort: PLANNER_ENGINES.defaultEffort,
-    reviewer: false,
-  };
+export function normalizePlannerEngine(engine, roles = DEFAULT_MODEL_ROLES) {
+  if (engine === undefined) engine = {};
   if (!engine || typeof engine !== "object" || Array.isArray(engine)) {
     throw new TypeError("Planner engine configuration must be an object");
   }
-  const provider = engine.provider ?? PLANNER_ENGINES.defaultProvider;
+  const provider = engine.provider ?? roles.planner.provider;
   if (typeof provider !== "string" || !Object.hasOwn(PLANNER_ENGINES.providers, provider)) {
     throw new TypeError("Unknown planner provider. Choose Claude or Codex");
   }
-  const providerOptions = PLANNER_ENGINES.providers[provider];
-  const model = engine.model ?? PLANNER_ENGINES.defaultModel;
-  if (!providerOptions.models.some((option) => option.id === model)) {
-    throw new TypeError(`Unknown ${providerOptions.label} planner model`);
-  }
+  const model = normalizeModelId(engine.model ?? roleEngine(roles, "planner", provider).model);
   const effort = engine.effort ?? PLANNER_ENGINES.defaultEffort;
   if (!PLANNER_ENGINES.efforts.some((option) => option.id === effort)) {
     throw new TypeError("Unknown planner effort. Choose Default, Low, Medium, High, or Xhigh");
@@ -461,13 +454,14 @@ function minutes(ms) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, idleTimeoutMs = ROUND_IDLE_TIMEOUT_MS, ceilingMs = ROUND_CEILING_MS, usageTimeoutMs = 10_000, ttlMs = DRAFT_TTL_MS, store = null, runs = null, launches = null, progress = null, pushService = null, briefs = new AgentBriefs(), onLaunchSettled = null } = {}) {
+  constructor({ worktrees, cmux, accountUsage, modelSettings = new ModelSettings(), log = null, execute = streamExecFile, git = null, maxRounds = 6, idleTimeoutMs = ROUND_IDLE_TIMEOUT_MS, ceilingMs = ROUND_CEILING_MS, usageTimeoutMs = 10_000, ttlMs = DRAFT_TTL_MS, store = null, runs = null, launches = null, progress = null, pushService = null, briefs = new AgentBriefs(), onLaunchSettled = null } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
     // The dashboard owns the repo catalog, which owns the injected git runner.
     this.git = git || ((cwd, args, options) => worktrees.repoCatalog.git(cwd, args, options));
     this.cmux = cmux;
+    this.modelSettings = modelSettings;
     this.accountUsage = accountUsage;
     // The full brief goes to a file. cmux caps a prompt at 8,000 characters, so
     // the session gets a short pointer to that file instead of the brief text.
@@ -518,14 +512,14 @@ export class WorktreePlanner {
     const linkedIssues = normalizeIssueNumbers(issueNumbers);
     const linkedIssueUrls = normalizeIssueUrls(issueUrls);
     const normalizedDeliveryPolicy = deliveryPolicy === "combined" ? "combined" : "auto";
-    const normalizedEngine = normalizePlannerEngine(engine);
+    const normalizedEngine = normalizePlannerEngine(engine, this.modelSettings.roles);
     // Normalized before the repository scan, so an unknown option id refuses
     // the goal instead of leaving an unusable plan row behind.
     const normalizedSpecOptions = normalizeSpecOptions(specOptions);
     // The review request never reaches the planner prompt or a task brief. It
     // describes what happens after the pull request exists, which is nothing
     // the planner can plan for or evidence.
-    const normalizedReviewOptions = normalizeReviewOptions(reviewOptions);
+    const normalizedReviewOptions = normalizeReviewOptions(reviewOptions, this.modelSettings.roles);
     const repository = await this.#repository(repositoryId);
     const draft = {
       planId: randomUUID(),
@@ -1004,7 +998,7 @@ export class WorktreePlanner {
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: sessionTitle(plan, task),
-        agent: task.agent,
+        ...this.modelSettings.workspace("coder", task.agent),
         env: sessionEnv(plan, task),
         prompt: this.briefs.pointerPrompt({
           title: task.title,
@@ -1057,7 +1051,7 @@ export class WorktreePlanner {
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: sessionTitle(plan, effectiveTask),
-        agent: effectiveTask.agent,
+        ...this.modelSettings.workspace("coder", effectiveTask.agent),
         env: sessionEnv(plan, effectiveTask),
         prompt: this.briefs.pointerPrompt({ title: task.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
       });
@@ -1103,7 +1097,7 @@ export class WorktreePlanner {
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: sessionTitle(plan, effectiveTask),
-        agent: effectiveTask.agent,
+        ...this.modelSettings.workspace("coder", effectiveTask.agent),
         env: sessionEnv(plan, effectiveTask),
         prompt: this.briefs.pointerPrompt({ title: effectiveTask.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
       });
@@ -1318,7 +1312,7 @@ export class WorktreePlanner {
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: sessionTitle(draft, effectiveTask),
-        agent: effectiveTask.agent,
+        ...this.modelSettings.workspace("coder", effectiveTask.agent),
         env: sessionEnv(draft, effectiveTask),
         prompt: this.briefs.pointerPrompt({ title: effectiveTask.title, outcome: draft.spec?.outcome || draft.goal, path: brief.path }),
       });
@@ -1410,7 +1404,7 @@ export class WorktreePlanner {
     let spec = reply.legacy ? { ...reply.spec, outcome: draft.goal } : reply.spec;
     let tasks = reply.tasks;
     if (reply.status === "ready" && draft.engine.reviewer) {
-      const reviewer = reviewerEngine(draft.engine.provider);
+      const reviewer = reviewerEngine(draft.engine.provider, this.modelSettings.roles);
       // The structured stage is what the board reads. The line below it is
       // display text only, and no lifecycle rule may parse it.
       this.runs.setStage(draft.planId, "review_spec");
@@ -1468,7 +1462,7 @@ export class WorktreePlanner {
       "--allowed-tools", ALLOWED_TOOLS,
       "--disallowed-tools", DENIED_TOOLS,
     ];
-    if (engine.model !== PLANNER_ENGINES.defaultModel) args.push("--model", engine.model);
+    if (engine.model !== PLANNER_ENGINES.passthroughModel) args.push("--model", engine.model);
     if (engine.effort !== PLANNER_ENGINES.defaultEffort) args.push("--effort", engine.effort);
     if (sessionId) args.push("--resume", sessionId);
     // `--` is required, not cosmetic: --allowed-tools is variadic, so without a

@@ -136,3 +136,13 @@ test("a dashboard without a resolver still analyses through its snapshot", async
   const analysis = await service.analyze({ repositoryId: REPOSITORY_ID });
   assert.equal(analysis.repository.nameWithOwner, "acme/app");
 });
+
+test("issue analysis uses its saved provider and custom model", async () => {
+  const { service, calls } = harness();
+  service.modelSettings.configure({ roles: { issueAnalyzer: { provider: "codex", models: { codex: "custom-analyzer" } } } });
+  await service.analyze({ repositoryId: REPOSITORY_ID });
+  const args = calls.find(([bin]) => bin === "ccs")[1];
+  assert.equal(args[0], "codex");
+  assert.equal(args[args.indexOf("--model") + 1], "custom-analyzer");
+  assert.equal(args.at(-2), "--");
+});

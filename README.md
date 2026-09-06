@@ -165,6 +165,12 @@ and rebuilds from the base, so it confirms first. Skip drops one task, so a
 single dead task stops blocking every other task's finished work from reaching a
 pull request.
 
+**Open in cmux** selects that task's or merge agent's exact workspace, brings
+its owning window forward, and briefly highlights the active terminal when
+supported by cmux. The local Cypress suite checks the buttons' workspace targets
+and failure notices; native window selection is validated separately against
+installed cmux because the deterministic browser suite stubs the API.
+
 The verdict comes from a read-only sweep that joins each task's recorded cmux
 workspace to the live workspace list. It writes no plan state: moving a goal on
 a timer could declare a slow agent dead and rebuild its worktree underneath it,
@@ -360,7 +366,7 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - Terminal input, keys, and text length are explicitly validated.
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
-- The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
+- The goal planner invokes the selected `ccs claude` or `ccs codex` engine with read-only tool settings (`Read`, `Grep`, `Glob`), disabled slash commands and isolated MCP configuration; shell, editing, delegation and web tools are denied, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
 - The goal health sweep is read-only. The watchdog reconciles GitHub state and collects finished goal sessions; it never deletes branches or worktrees. It can resume verified combined-goal delivery as described below.
 - The supervision timer may close one thing: a cmux session Companion itself opened for a goal, recorded on that goal's plan row, after that session's work is delivered. It may never close a session whose agent is running or waiting for an answer, a session of a goal whose merge is blocked and has no delivery PR, any session while cmux is unreachable, or any session Companion did not open for a goal. It deletes no branch and no worktree. Set `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` to `0`, `off` or `false` to stop the timer pass.
 - Restarting a task deletes its branch and its worktree, so it is refused for the primary checkout and for a managed release checkout, and the phone confirms before it runs.
@@ -381,6 +387,10 @@ The uninstall command removes automatic startup but deliberately preserves the p
 Treat a paired phone as privileged: unlocking terminal input gives it control of interactive processes running in cmux.
 
 ## Development
+
+Use the Node version in `.nvmrc` (`nvm install && nvm use`), then `npm ci`.
+See [development setup and completion](docs/development.md) for verification,
+code-path evidence and the per-project **Review dev setup** workflow.
 
 Run the bridge and frontend in separate terminals:
 
@@ -428,6 +438,8 @@ Open **Settings → Deployments** to see the running Companion release and the d
 | `CMUX_COMPANION_VAPID_SUBJECT` | Installed private Tailscale HTTPS URL | Web Push sender identity advertised to Apple and other push services |
 | `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
 | `CMUX_COMPANION_QUEUE_FILE` | `~/.config/cmux-companion/prompt-queue.json` | Persistent follow-up prompt queue |
+| `CMUX_COMPANION_REPO_DB` | `~/.config/cmux-companion/repo-identity.db` | Rebuildable SQLite repository/worktree cache |
+| `CMUX_COMPANION_STATUS_TTL_MS` | `30000` | How long displayed worktree status/change counts may be reused, in milliseconds; `0` disables reuse |
 | `CMUX_COMPANION_PLANS_DB` | `~/.config/cmux-companion/goal-plans.db` | SQLite database of saved goal plans |
 | `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` | on | Automatic retirement of finished goal sessions on the supervision timer. Set `0`, `off` or `false` to stop the timer pass; `POST /api/goals/sessions/reap` stays available |
 | `CMUX_PLANNER_IDLE_TIMEOUT_MS` | `240000` | How long a planner round may print nothing before it is killed |
@@ -525,3 +537,49 @@ Use **Check & build combined PR** after resolving a genuine blocker, or
 retirement and worktree deletion retain their separate safety policies and controls.
 The deterministic Cypress suite verifies the recovered board state; backend tests
 exercise the actual recovery decisions without launching agents or deleting real worktrees.
+
+
+### Model defaults
+
+Settings → **Model defaults** stores a model for each provider and role: planner,
+spec reviewer, coder, code reviewer, merge agent, follow-up agent, and GitHub
+issue analyzer. Planning starts with Codex Astra (`gpt-6`); Claude specification
+and code reviews start with Fable 5.1. Coding, merging, follow-ups, and issue analysis retain the provider default.
+The Settings panel also selects the default provider for planning, merging,
+and issue analysis. Task assignment and explicit provider choices still apply.
+
+Choose a suggestion or enter a custom provider model ID. `default` explicitly
+lets the provider choose its model. Save applies the choices across paired
+devices and survives restarts. Reset restores one role's built-in values;
+press Save to apply it. A failed save keeps the previous configuration active.
+
+New plans use the saved defaults and retain their resolved planner and requested
+code-review models. Per-goal model choices override Settings. New task launches,
+retries, dependency waves, merge sessions, and follow-ups read the current role
+defaults; existing agent sessions are unchanged. A follow-up containing a code
+review uses the code-review model even when it also requests tests or other work.
+The optional specification reviewer still uses the opposite provider at xhigh
+effort. The issue analyzer has its own defaults, separate from topic planning.
+
+Configuration lives in `~/.config/cmux-companion/model-settings.json` (override
+with `CMUX_COMPANION_MODEL_SETTINGS_FILE`). The paired, same-origin Settings
+API is `GET` / `PATCH /api/settings/models`. Custom IDs are syntax-validated,
+not checked against a live provider catalog; availability depends on the
+configured provider/account. Local Cypress covers the Settings and planner UI;
+backend tests verify persistence and the commands for each role without
+starting live agents.
+
+### Share a goal popup
+
+Opening any saved goal updates the browser address to
+`/?view=sessions&mode=worktrees&plan=<goal-id>`. Copy the address or press
+**Copy goal link** beside the visible goal reference. The link identifies the
+saved goal across planning, review, launch, merge, and completion; reopening it
+uses the goal ID directly, even when the current board list does not include it.
+Pairing and access to the same Companion instance are still required.
+
+Reload and browser Back/Forward restore the popup. Closing it clears the popup
+from the address. New-goal forms use `newGoal=<repository-id>` until saved;
+these links restore the repository/form, not unsaved text or attachments.
+Development-setup links also include `goalTemplate=dev-setup`. A missing goal
+opens an error with a Close button rather than silently opening another goal.

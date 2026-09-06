@@ -11,6 +11,8 @@
 // The module is data-only and has no storage, no network and no Node
 // built-ins, because both the browser sheet and the server import it.
 
+import { DEFAULT_MODEL_ROLES, normalizeModelId } from "./model-options.mjs";
+
 export const REVIEW_AGENTS = Object.freeze(["claude", "codex"]);
 export const DEFAULT_REVIEW_AGENT = "claude";
 
@@ -20,6 +22,7 @@ export const REVIEW_OPTIONS = Object.freeze({
   defaults: Object.freeze({
     codeReview: false,
     reviewer: DEFAULT_REVIEW_AGENT,
+    reviewerModel: DEFAULT_MODEL_ROLES.codeReviewer.models.claude,
   }),
 });
 
@@ -27,12 +30,16 @@ const KEYS = Object.freeze(Object.keys(REVIEW_OPTIONS.defaults));
 
 // Strict for the same reason normalizeSpecOptions is strict: a silently
 // dropped key would let the sheet promise a review that never runs.
-export function normalizeReviewOptions(value) {
-  if (value === undefined || value === null) return { ...REVIEW_OPTIONS.defaults };
+export function normalizeReviewOptions(value, roles = DEFAULT_MODEL_ROLES) {
+  if (value === undefined || value === null) value = {};
   if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("Review options must be an object");
   const normalized = { ...REVIEW_OPTIONS.defaults };
   for (const [key, entry] of Object.entries(value)) {
     if (!KEYS.includes(key)) throw new TypeError(`Unknown review option ${key}`);
+    if (key === "reviewerModel") {
+      normalized.reviewerModel = normalizeModelId(entry);
+      continue;
+    }
     if (key === "reviewer") {
       if (typeof entry !== "string" || !REVIEW_AGENTS.includes(entry)) {
         throw new TypeError("Review option reviewer must be claude or codex");
@@ -43,6 +50,7 @@ export function normalizeReviewOptions(value) {
     if (typeof entry !== "boolean") throw new TypeError(`Review option ${key} must be true or false`);
     normalized[key] = entry;
   }
+  if (value.reviewerModel === undefined) normalized.reviewerModel = roles.codeReviewer.models[normalized.reviewer];
   return normalized;
 }
 
@@ -57,5 +65,9 @@ export function safeReviewOptions(value) {
 }
 
 export function codeReviewRequested(value) {
-  return safeReviewOptions(value).codeReview === true;
+  // Whether review was requested is independent of the chosen model.
+  const request = value && typeof value === "object" && !Array.isArray(value)
+    ? { ...value, reviewerModel: REVIEW_OPTIONS.defaults.reviewerModel }
+    : value;
+  return safeReviewOptions(request).codeReview === true;
 }

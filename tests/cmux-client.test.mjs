@@ -7,6 +7,35 @@ import { CmuxClient, parseWorkspaceMetrics } from "../server/cmux-client.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 
+test("selects the requested workspace, focuses its owning window, and highlights its active surface", async () => {
+  const windowId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const calls = [];
+  const client = new CmuxClient({ execute: async (_bin, args) => {
+    calls.push(args);
+    return { stdout: JSON.stringify({ window_id: windowId, workspace_id: ID }) };
+  } });
+  await client.selectWorkspace(ID);
+  assert.deepEqual(calls, [
+    ["--json", "rpc", "workspace.select", JSON.stringify({ workspace_id: ID })],
+    ["--json", "rpc", "window.focus", JSON.stringify({ window_id: windowId })],
+    ["--json", "rpc", "surface.trigger_flash", JSON.stringify({ workspace_id: ID, window_id: windowId })],
+  ]);
+});
+
+test("workspace opening reports selection and window focus failures but tolerates an unavailable flash", async () => {
+  for (const failure of ["workspace.select", "window.focus", "surface.trigger_flash"]) {
+    const calls = [];
+    const client = new CmuxClient({ execute: async (_bin, args) => {
+      calls.push(args[2]);
+      if (args[2] === failure) throw new Error("Target unavailable");
+      return { stdout: JSON.stringify({ window_id: ID }) };
+    } });
+    if (failure === "surface.trigger_flash") await client.selectWorkspace(ID);
+    else await assert.rejects(() => client.selectWorkspace(ID), /Target unavailable/);
+    assert.equal(calls.at(-1), failure);
+  }
+});
+
 test("uses argv-only cmux commands for screen reads", async () => {
   const calls = [];
   const client = new CmuxClient({
@@ -310,4 +339,19 @@ test("falls back to a default title instead of failing on a blank one", async ()
     title: "cmux companion",
     body: "still delivered",
   });
+});
+
+test("passes a custom model to the agent command and refuses shell syntax before creating a workspace", async (t) => {
+  const repo = mkdtempSync(join(tmpdir(), "cmux-model-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  for (const agent of ["codex", "claude"]) {
+    const calls = [];
+    const client = new CmuxClient({ execute: async (_bin, args) => { calls.push(args); return { stdout: JSON.stringify({ workspace_id: ID }) }; } });
+    await client.workspaceCreate({ cwd: repo, title: "Custom model", agent, model: "provider/custom-v2", prompt: "Do the task" });
+    const text = JSON.parse(calls[1][3]).text;
+    assert.match(text, new RegExp(`^x${agent} --model 'provider/custom-v2' 'Do the task'\\n$`));
+    const before = calls.length;
+    await assert.rejects(() => client.workspaceCreate({ cwd: repo, title: "Bad model", agent, model: "$(touch /tmp/unsafe)" }), /Model must/);
+    assert.equal(calls.length, before);
+  }
 });

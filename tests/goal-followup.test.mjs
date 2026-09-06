@@ -186,3 +186,12 @@ test("refuses a cmux response without a workspace id before recording launch", a
   assert.equal(workspaceCalls.length, 1);
   assert.equal(store.recorded.length, 0);
 });
+
+test("review follow-ups and general follow-ups use their separate saved models", async (t) => {
+  const plan = combinedPlan(await deliveryDirectory(t));
+  const { launcher, workspaceCalls } = harness(plan);
+  launcher.modelSettings.configure({ roles: { codeReviewer: { models: { codex: "custom-review" } }, followup: { models: { codex: "custom-followup" } } } });
+  await launcher.launch(plan.planId, { actions: ["review", "tests"], agent: "codex" });
+  await launcher.launch(plan.planId, { actions: ["tests"], agent: "codex" });
+  assert.deepEqual(workspaceCalls.map((call) => call.model), ["custom-review", "custom-followup"]);
+});

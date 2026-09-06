@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, dirname } from "node:path";
 import test from "node:test";
+import { AGENT_REPLY_FORMAT } from "../server/agent-reply-format.mjs";
 import { AgentBriefs } from "../server/agent-brief.mjs";
 
 const BRIEF = ["# Task T1", "", "## Delivery contract", "Outcome: the brief lives in a file.", "", "```bash", "npm run lint", "```", ""].join("\n");
@@ -14,7 +15,9 @@ test("writes the full brief to a private file inside the brief directory", async
   const { path } = await briefs.write({ planId: "bf93348d-7320", taskId: "T1", markdown: BRIEF });
   assert.ok(isAbsolute(path));
   assert.equal(dirname(path), root);
-  assert.equal(await readFile(path, "utf8"), BRIEF);
+  const content = await readFile(path, "utf8");
+  assert.ok(content.startsWith(BRIEF), "delivery contract and evidence remain intact");
+  assert.ok(content.endsWith(`${AGENT_REPLY_FORMAT}\n`), "all coding briefs receive the shared reply policy");
   assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
 

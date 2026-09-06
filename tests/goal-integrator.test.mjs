@@ -1033,3 +1033,12 @@ test("a new permanent failure during activity checks is not retried", async (t) 
   assert.deepEqual(await integrator.heal(), []);
   assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 0);
 });
+
+test("merge sessions use the configured provider and model", async (t) => {
+  const { integrator, calls } = fixture(t);
+  integrator.modelSettings.configure({ roles: { merger: { provider: "codex", models: { codex: "custom-merger" } } } });
+  await integrator.assemble("plan-12345678");
+  const created = calls.find(([kind]) => kind === "workspaceCreate")[1];
+  assert.equal(created.agent, "codex");
+  assert.equal(created.model, "custom-merger");
+});

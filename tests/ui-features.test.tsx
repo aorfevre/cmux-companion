@@ -405,16 +405,17 @@ describe("contextual mobile features", () => {
       if (url === "/api/worktree-plans/plan-running") return new Response(JSON.stringify(detail), { status: 200 });
       return new Response(JSON.stringify(dashboard), { status: 200 });
     }));
-    const opened = vi.fn();
-    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} initialPlanId="plan-running" onPlanOpened={opened} />);
+    window.history.replaceState(null, "", "/?view=sessions&mode=worktrees&plan=plan-running");
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
 
-    // The deep link picks the tab and the project, then opens the goal.
+    // The deep link resolves the goal independently of board selection.
     const planner = await screen.findByRole("dialog", { name: "Plan a goal" });
     assert.ok(await within(planner).findByRole("region", { name: "Planning in progress" }));
-    assert.equal(opened.mock.calls.length, 1);
+    assert.equal(new URLSearchParams(location.search).get("plan"), "plan-running");
     await userEvent.click(within(planner).getByRole("button", { name: "Close goal planner sheet" }));
 
     const tab = screen.getByRole("tab", { name: /Draft Goals/ });
+    await userEvent.click(tab);
     assert.ok(within(tab).getByText("1 planning"), "the tab counts the running round");
     const goals = screen.getByRole("region", { name: "Draft goals" });
     assert.ok(within(goals).getByText("Planning…"));
@@ -685,16 +686,23 @@ describe("worktree goal planner", () => {
     const model = screen.getByRole("combobox", { name: "Planner model" }) as HTMLSelectElement;
     const effort = screen.getByRole("combobox", { name: "Planner effort" }) as HTMLSelectElement;
     const reviewer = screen.getByRole("checkbox", { name: "Add a reviewer pass" }) as HTMLInputElement;
-    assert.equal(engine.value, "claude");
-    assert.equal(model.value, "default");
+    assert.equal(engine.value, "codex");
+    assert.equal(model.value, "gpt-6");
     assert.equal(effort.value, "default");
     assert.equal(reviewer.checked, false);
+    assert.ok(screen.getByText("Codex (xcodex) · Codex Astra"));
+    assert.ok(within(model).getByRole("option", { name: "Codex Astra" }));
+    await userEvent.selectOptions(model, "default");
+    assert.ok(screen.getByText("Codex (xcodex) · CCS default model"));
+    await userEvent.selectOptions(engine, "claude");
+    assert.equal(model.value, "default");
+    assert.ok(Array.from(model.options).some((option) => option.value === model.value));
     assert.ok(screen.getByText("Claude Code (xclaude) · CCS default model"));
     assert.ok(within(model).getByRole("option", { name: "Opus 5" }));
     assert.ok(within(model).getByRole("option", { name: "Fable 5.1" }));
 
     await userEvent.selectOptions(engine, "codex");
-    assert.equal(model.value, "default");
+    assert.equal(model.value, "gpt-6");
     assert.ok(within(model).getByRole("option", { name: "GPT-5.6 Sol" }));
     assert.equal(within(model).queryByRole("option", { name: "Opus 5" }), null);
     await userEvent.selectOptions(model, "gpt-5.6-terra");
@@ -707,6 +715,32 @@ describe("worktree goal planner", () => {
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
     const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
     assert.deepEqual(body.engine, { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: true });
+  });
+
+  test("defaults code review to Fable and submits a separate provider model", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
+      return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+    const model = screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement;
+    const provider = screen.getByRole("combobox", { name: "Code-review reviewer" }) as HTMLSelectElement;
+    assert.equal(model.value, "claude-fable-5-1");
+    assert.equal(model.selectedOptions[0].textContent, "Fable 5.1");
+    assert.equal(provider.value, "claude");
+    await userEvent.selectOptions(provider, "codex");
+    assert.equal(within(model).queryByRole("option", { name: "Fable 5.1" }), null);
+    assert.ok(Array.from(model.options).some((option) => option.value === model.value));
+    await userEvent.selectOptions(model, "gpt-6");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Code review" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Review this goal");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
+    assert.deepEqual(body.reviewOptions, { codeReview: true, reviewer: "codex", reviewerModel: "gpt-6" });
+    await userEvent.click(screen.getByRole("button", { name: /New goal/ }));
+    assert.equal((screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement).value, "claude-fable-5-1");
+    assert.equal((screen.getByRole("checkbox", { name: "Code review" }) as HTMLInputElement).checked, false);
   });
 
   // AC-1. The six requests are goal-wide, so they must reach the server as one

@@ -140,6 +140,122 @@ function visitBoard() {
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
 }
 
+describe("planner engine defaults", () => {
+  it("submits Codex Astra and keeps Default and provider switches valid", () => {
+    installScenario({ plans: [] });
+    cy.intercept("POST", "**/api/worktree-plans", (request) => {
+      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6", effort: "default", reviewer: true });
+      request.reply({ statusCode: 202, body: {
+        planId: "astra-default", repositoryId: "repo-spec", goal: request.body.goal,
+        status: "questions", round: 0, running: true, questions: [], tasks: [],
+      } });
+    }).as("planAstra");
+    visitBoard();
+    cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+    cy.findByRole("combobox", { name: "Planner engine" }).should("have.value", "codex");
+    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6");
+    cy.contains("Codex (xcodex) · Codex Astra").should("be.visible");
+    cy.findByRole("checkbox", { name: "Add a reviewer pass" }).check();
+    cy.contains("Reviewer: Claude Code (xclaude) · Fable 5.1 · xhigh effort").should("be.visible");
+    cy.findByRole("combobox", { name: "Planner model" }).select("default");
+    cy.contains("Codex (xcodex) · CCS default model").should("be.visible");
+    cy.findByRole("combobox", { name: "Planner engine" }).select("claude");
+    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "default");
+    cy.contains("Claude Code (xclaude) · CCS default model").should("be.visible");
+    cy.findByRole("combobox", { name: "Planner model" }).select("claude-opus-5");
+    cy.findByRole("combobox", { name: "Planner engine" }).select("codex");
+    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6");
+    cy.findByRole("textbox", { name: "Goal" }).type("Plan using Astra");
+    cy.findByRole("button", { name: "Plan this goal" }).click();
+    cy.wait("@planAstra");
+    cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
+  });
+});
+
+describe("post-delivery reviewer model", () => {
+  for (const changeModel of [false, true]) {
+    it(`opens with Fable 5.1 and submits the ${changeModel ? "selected" : "default"} reviewer model`, () => {
+      installScenario({ plans: [] });
+      cy.intercept("POST", "**/api/worktree-plans", (request) => {
+        expect(request.body.reviewOptions).to.deep.equal({ codeReview: true, reviewer: changeModel ? "codex" : "claude", reviewerModel: changeModel ? "gpt-6" : "claude-fable-5-1" });
+        request.reply({ statusCode: 202, body: { planId: "review-model", repositoryId: "repo-spec", goal: request.body.goal, status: "questions", round: 0, running: true, questions: [], tasks: [] } });
+      }).as("reviewModel");
+      visitBoard();
+      cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+      cy.findByRole("combobox", { name: "Code-review model" }).should("be.visible").and("have.value", "claude-fable-5-1").find("option:selected").should("have.text", "Fable 5.1");
+      cy.findByRole("combobox", { name: "Code-review reviewer" }).should("have.value", "claude");
+      if (changeModel) {
+        cy.findByRole("combobox", { name: "Code-review reviewer" }).select("codex");
+        cy.findByRole("combobox", { name: "Code-review model" }).select("gpt-6").find('option[value="claude-fable-5-1"]').should("not.exist");
+      }
+      cy.findByRole("checkbox", { name: "Code review" }).check();
+      cy.findByRole("textbox", { name: "Goal" }).type("Review the delivered goal");
+      cy.findByRole("button", { name: "Plan this goal" }).click();
+      cy.wait("@reviewModel");
+    });
+  }
+});
+
+describe("per-project development setup review", () => {
+  for (const provider of ["claude", "codex"]) {
+    it(`submits an editable project-specific review with ${provider}`, () => {
+      installScenario({ plans: [] });
+      cy.intercept("POST", "**/api/worktree-plans", (request) => {
+        expect(request.body.repositoryId).to.equal("repo-spec");
+        expect(request.body.engine.provider).to.equal(provider);
+        expect(request.body.goal).to.include("TypeScript, Cypress and Astro");
+        expect(request.body.goal).to.include("AGENTS.md, CLAUDE.md");
+        expect(request.body.goal).to.include("Result:").and.include("Checks:").and.include("Blockers:");
+        expect(request.body.goal).to.include("Keep the hardware simulator.");
+        expect(request.body.goal.length).to.be.at.most(4000);
+        expect(request.body.background).to.equal(true);
+        request.reply({ statusCode: 202, body: {
+          planId: "dev-setup", repositoryId: "repo-spec", goal: request.body.goal,
+          status: "questions", round: 0, running: true, questions: [], tasks: [],
+        } });
+      }).as("reviewSetup");
+      visitBoard();
+      cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+      cy.findByRole("button", { name: "Review dev setup" }).click();
+      cy.findByRole("textbox", { name: "Goal" }).type("\nKeep the hardware simulator.");
+      cy.findByRole("combobox", { name: "Planner engine" }).select(provider);
+      cy.findByRole("button", { name: "Plan this goal" }).click();
+      cy.wait("@reviewSetup");
+      cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
+    });
+  }
+
+  it("preserves a written goal and keeps the review editable after a failed submit", () => {
+    installScenario({ plans: [] });
+    cy.intercept("POST", "**/api/worktree-plans", { statusCode: 503, body: { error: "Planner unavailable" } }).as("failedReview");
+    visitBoard();
+    cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+    cy.findByRole("textbox", { name: "Goal" }).type("Keep my existing scope");
+    cy.findByRole("button", { name: "Review dev setup" }).should("be.disabled");
+    cy.findByRole("textbox", { name: "Goal" }).should("have.value", "Keep my existing scope").clear();
+    cy.findByRole("button", { name: "Review dev setup" }).click();
+    cy.findByRole("button", { name: "Plan this goal" }).click();
+    cy.wait("@failedReview");
+    cy.findByRole("dialog", { name: "Plan a goal" }).should("be.visible");
+    cy.contains("Planner unavailable").should("be.visible");
+    cy.findByRole("textbox", { name: "Goal" }).should("contain.value", "Make this repository");
+  });
+
+  it("opens a review from one project without submitting or carrying it into a normal goal", () => {
+    installScenario({ plans: [] });
+    let submissions = 0;
+    cy.intercept("POST", "**/api/worktree-plans", () => { submissions += 1; });
+    visitBoard();
+    cy.findByRole("tab", { name: /^Inactive/ }).click();
+    cy.findByRole("button", { name: "Review dev setup for cmux-e2e-cypress" }).click();
+    cy.findByRole("textbox", { name: "Goal" }).should("contain.value", "Make this repository");
+    cy.findByRole("button", { name: "Close goal planner sheet" }).click();
+    cy.then(() => expect(submissions).to.equal(0));
+    cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+    cy.findByRole("textbox", { name: "Goal" }).should("have.value", "");
+  });
+});
+
 describe("specification rigor options", () => {
   it("offers six unchecked controls and submits every one of them", () => {
     installScenario({ plans: [] });
@@ -149,7 +265,7 @@ describe("specification rigor options", () => {
       });
       // Effort stays the single extended-reasoning control. No second
       // reasoning field may ride along with the requests.
-      expect(request.body.engine).to.deep.equal({ provider: "claude", model: "default", effort: "default", reviewer: false });
+      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6", effort: "default", reviewer: false });
       request.reply({
         planId: "plan-new", repositoryId: "repo-spec", repositoryName: "cmux-e2e-cypress", goal: GOAL,
         status: "questions", stage: "questions", planStatus: "draft", running: true, round: 0,
