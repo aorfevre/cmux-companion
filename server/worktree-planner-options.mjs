@@ -1,10 +1,11 @@
+import { DEFAULT_MODEL_ROLES, MODEL_CATALOG, roleEngine } from "./model-options.mjs";
+
 // This catalog is deliberately data-only: the client sheet and the server
-// validator both consume it, so a model cannot be offered in the UI without
-// also being allowed at the process boundary. The reviewer policy lives here
+// validator both consume it. Safe custom model IDs are accepted too. The reviewer policy lives here
 // too, rather than drifting between the label and the spawned command.
 export const PLANNER_ENGINES = Object.freeze({
-  defaultProvider: "codex",
-  defaultModel: "gpt-6",
+  defaultProvider: DEFAULT_MODEL_ROLES.planner.provider,
+  defaultModel: DEFAULT_MODEL_ROLES.planner.models[DEFAULT_MODEL_ROLES.planner.provider],
   passthroughModel: "default",
   defaultEffort: "default",
   efforts: Object.freeze([
@@ -19,34 +20,23 @@ export const PLANNER_ENGINES = Object.freeze({
     claude: Object.freeze({
       label: "Claude Code",
       family: "xclaude",
-      largestModel: "claude-fable-5-1",
-      models: Object.freeze([
-        Object.freeze({ id: "default", label: "Default" }),
-        Object.freeze({ id: "claude-opus-5", label: "Opus 5" }),
-        Object.freeze({ id: "claude-fable-5-1", label: "Fable 5.1" }),
-      ]),
+      largestModel: DEFAULT_MODEL_ROLES.specReviewer.models.claude,
+      models: Object.freeze(MODEL_CATALOG.claude.map((model) => Object.freeze(model))),
     }),
     codex: Object.freeze({
       label: "Codex",
       family: "xcodex",
-      largestModel: "gpt-5.6-sol",
-      models: Object.freeze([
-        Object.freeze({ id: "default", label: "Default" }),
-        Object.freeze({ id: "gpt-6", label: "Codex Astra" }),
-        Object.freeze({ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }),
-        Object.freeze({ id: "gpt-5.6-terra", label: "GPT-5.6 Terra" }),
-        Object.freeze({ id: "gpt-5.6-luna", label: "GPT-5.6 Luna" }),
-      ]),
+      largestModel: DEFAULT_MODEL_ROLES.specReviewer.models.codex,
+      models: Object.freeze(MODEL_CATALOG.codex.map((model) => Object.freeze(model))),
     }),
   }),
 });
 
-export function reviewerEngine(provider) {
+export function reviewerEngine(provider, roles = DEFAULT_MODEL_ROLES) {
   if (provider !== "claude" && provider !== "codex") throw new TypeError("Unknown planner provider. Choose Claude or Codex");
   const reviewerProvider = provider === "claude" ? "codex" : "claude";
   return {
-    provider: reviewerProvider,
-    model: PLANNER_ENGINES.providers[reviewerProvider].largestModel,
+    ...roleEngine(roles, "specReviewer", reviewerProvider),
     effort: PLANNER_ENGINES.reviewerEffort,
     reviewer: false,
   };

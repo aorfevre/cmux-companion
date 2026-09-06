@@ -1,3 +1,4 @@
+import { ModelSettings } from "./model-settings.mjs";
 import { existsSync } from "node:fs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { goalBoardState } from "./goal-board.mjs";
@@ -10,10 +11,11 @@ import {
 import { followupSessionTitle, sessionEnv } from "./session-name.mjs";
 
 export class GoalFollowups {
-  constructor({ store, cmux = null, briefs = new AgentBriefs(), log = null } = {}) {
+  constructor({ modelSettings = new ModelSettings(), store, cmux = null, briefs = new AgentBriefs(), log = null } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     this.store = store;
     this.cmux = cmux;
+    this.modelSettings = modelSettings;
     this.briefs = briefs;
     this.log = log;
   }
@@ -58,7 +60,7 @@ export class GoalFollowups {
     const created = await this.cmux.workspaceCreate({
       cwd: target.worktreePath,
       title,
-      agent,
+      ...this.modelSettings.workspace(actions.includes("review") ? "codeReviewer" : "followup", agent),
       env: sessionEnv(plan, null),
       prompt: this.briefs.pointerPrompt({
         title: `Follow-up: ${followupActionLabels(actions).join(", ")}`,

@@ -11,7 +11,7 @@
 // The module is data-only and has no storage, no network and no Node
 // built-ins, because both the browser sheet and the server import it.
 
-import { PLANNER_ENGINES } from "./worktree-planner-options.mjs";
+import { DEFAULT_MODEL_ROLES, normalizeModelId } from "./model-options.mjs";
 
 export const REVIEW_AGENTS = Object.freeze(["claude", "codex"]);
 export const DEFAULT_REVIEW_AGENT = "claude";
@@ -22,7 +22,7 @@ export const REVIEW_OPTIONS = Object.freeze({
   defaults: Object.freeze({
     codeReview: false,
     reviewer: DEFAULT_REVIEW_AGENT,
-    reviewerModel: "claude-fable-5-1",
+    reviewerModel: DEFAULT_MODEL_ROLES.codeReviewer.models.claude,
   }),
 });
 
@@ -30,17 +30,14 @@ const KEYS = Object.freeze(Object.keys(REVIEW_OPTIONS.defaults));
 
 // Strict for the same reason normalizeSpecOptions is strict: a silently
 // dropped key would let the sheet promise a review that never runs.
-export function normalizeReviewOptions(value) {
-  if (value === undefined || value === null) return { ...REVIEW_OPTIONS.defaults };
+export function normalizeReviewOptions(value, roles = DEFAULT_MODEL_ROLES) {
+  if (value === undefined || value === null) value = {};
   if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("Review options must be an object");
   const normalized = { ...REVIEW_OPTIONS.defaults };
   for (const [key, entry] of Object.entries(value)) {
     if (!KEYS.includes(key)) throw new TypeError(`Unknown review option ${key}`);
     if (key === "reviewerModel") {
-      if (typeof entry !== "string" || !Object.values(PLANNER_ENGINES.providers).some((provider) => provider.models.some((model) => model.id === entry))) {
-        throw new TypeError("Review option reviewerModel must be a known Claude or Codex model id");
-      }
-      normalized.reviewerModel = entry;
+      normalized.reviewerModel = normalizeModelId(entry);
       continue;
     }
     if (key === "reviewer") {
@@ -53,6 +50,7 @@ export function normalizeReviewOptions(value) {
     if (typeof entry !== "boolean") throw new TypeError(`Review option ${key} must be true or false`);
     normalized[key] = entry;
   }
+  if (value.reviewerModel === undefined) normalized.reviewerModel = roles.codeReviewer.models[normalized.reviewer];
   return normalized;
 }
 

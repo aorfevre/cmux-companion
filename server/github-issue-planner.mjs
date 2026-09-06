@@ -1,3 +1,4 @@
+import { ModelSettings } from "./model-settings.mjs";
 import { randomUUID } from "node:crypto";
 import { finalEnvelope, streamExecFile } from "./worktree-planner.mjs";
 
@@ -13,10 +14,11 @@ const DENIED_TOOLS = "Read,Grep,Glob,Bash,Write,Edit,MultiEdit,NotebookEdit,Task
 // analysis itself is deliberately ephemeral; the selected topics become the
 // existing durable goal plans before any worktree is created.
 export class GitHubIssuePlanner {
-  constructor({ worktrees, planner, execute = streamExecFile, now = () => Date.now(), log = null } = {}) {
+  constructor({ modelSettings = new ModelSettings(), worktrees, planner, execute = streamExecFile, now = () => Date.now(), log = null } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!planner) throw new TypeError("A worktree planner is required");
     this.worktrees = worktrees;
+    this.modelSettings = modelSettings;
     this.planner = planner;
     this.execute = execute;
     this.now = now;
@@ -153,10 +155,12 @@ export class GitHubIssuePlanner {
   }
 
   async #model(repository, snapshot, onEvent = null) {
+    const engine = this.modelSettings.engine("issueAnalyzer");
     const args = [
-      "claude", "--print", "--output-format", "json",
+      engine.provider, "--print", "--output-format", "json",
       ...ISOLATION,
       "--disallowed-tools", DENIED_TOOLS,
+      ...(engine.model === "default" ? [] : ["--model", engine.model]),
       "--",
       groupingPrompt(repository, snapshot),
     ];

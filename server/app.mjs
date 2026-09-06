@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
+import { ModelSettings } from "./model-settings.mjs";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
 import { CmuxEventHub } from "./event-hub.mjs";
 import { PlannerProgress, TRACE_ID } from "./planner-progress.mjs";
@@ -54,6 +55,7 @@ const AUTO_CLOSE_OFF = new Set(["0", "off", "false"]);
 
 export async function buildApp({
   cmux = new CmuxClient(),
+  modelSettings = new ModelSettings(),
   token,
   frontendUpstream = null,
   logger = false,
@@ -119,7 +121,7 @@ export async function buildApp({
   // directory, and one cleanup pass covers the whole companion.
   const briefs = new AgentBriefs();
   const planner = worktreePlanner
-    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
+    || new WorktreePlanner({ worktrees, cmux, modelSettings, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
   // The one writer in the supervision path. It closes a cmux session only when
   // the plan records it and its work is delivered, so it is always safe to call
   // it; the switch below is about the timer, not about the rule.
@@ -132,9 +134,9 @@ export async function buildApp({
   const autoCloseSessions = !AUTO_CLOSE_OFF.has(String(process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS ?? "").trim().toLowerCase());
   const sessionCollector = planStore ? new GoalSessionCollector({ store: planStore, cmux, reaper, enabled: autoCloseSessions, log: app.log }) : null;
   const integrator = goalIntegrator
-    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector }) : null);
+    || (planStore ? new GoalIntegrator({ modelSettings, store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector }) : null);
   const followups = goalFollowups
-    || (planStore ? new GoalFollowups({ store: planStore, cmux, log: app.log, briefs }) : null);
+    || (planStore ? new GoalFollowups({ modelSettings, store: planStore, cmux, log: app.log, briefs }) : null);
   // The identity a goal code review posts under. It is separate from the
   // machine's own gh credential on purpose: GitHub refuses a verdict on your
   // own pull request, and the goal pull request is opened with that credential.
@@ -150,7 +152,7 @@ export async function buildApp({
   const health = goalHealthSweep
     || (planStore ? new GoalHealthSweep({ store: planStore, cmux, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
-    || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+    || new GitHubIssuePlanner({ modelSettings, worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // GitHub Sync owns its own durable store. A test that injects the whole
   // service never opens the production file, exactly like the planner above.
   const issueSync = githubIssueSync
@@ -388,6 +390,9 @@ export async function buildApp({
     return result;
   });
 
+  app.get("/api/settings/models", async () => modelSettings.status());
+  app.patch("/api/settings/models", async (request) => modelSettings.configure(request.body));
+
   app.get("/api/workspaces", async () => cmux.workspaceList());
 
   app.post("/api/workspaces", async (request, reply) => {
@@ -397,7 +402,7 @@ export async function buildApp({
     const created = await cmux.workspaceCreate({
       cwd: repo.path,
       title: typeof title === "string" && title.trim() ? title : repo.name,
-      agent,
+      ...modelSettings.workspace("coder", agent),
       prompt,
       script,
     });
@@ -486,7 +491,7 @@ export async function buildApp({
     const created = await cmux.workspaceCreate({
       cwd: target.path,
       title: typeof title === "string" && title.trim() ? title : `${target.repoName}: ${target.branch}`,
-      agent,
+      ...modelSettings.workspace("coder", agent),
       prompt,
     });
     bootstrapSnapshot = null;
