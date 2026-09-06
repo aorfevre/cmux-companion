@@ -716,6 +716,32 @@ describe("worktree goal planner", () => {
     assert.deepEqual(body.engine, { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: true });
   });
 
+  test("defaults code review to Fable and submits a separate provider model", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
+      return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+    const model = screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement;
+    const provider = screen.getByRole("combobox", { name: "Code-review reviewer" }) as HTMLSelectElement;
+    assert.equal(model.value, "claude-fable-5-1");
+    assert.equal(model.selectedOptions[0].textContent, "Fable 5.1");
+    assert.equal(provider.value, "claude");
+    await userEvent.selectOptions(provider, "codex");
+    assert.equal(within(model).queryByRole("option", { name: "Fable 5.1" }), null);
+    assert.ok(Array.from(model.options).some((option) => option.value === model.value));
+    await userEvent.selectOptions(model, "gpt-6");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Code review" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Review this goal");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
+    assert.deepEqual(body.reviewOptions, { codeReview: true, reviewer: "codex", reviewerModel: "gpt-6" });
+    await userEvent.click(screen.getByRole("button", { name: /New goal/ }));
+    assert.equal((screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement).value, "claude-fable-5-1");
+    assert.equal((screen.getByRole("checkbox", { name: "Code review" }) as HTMLInputElement).checked, false);
+  });
+
   // AC-1. The six requests are goal-wide, so they must reach the server as one
   // complete object: a missing key would let the contract validator believe a
   // request was never made.

@@ -172,6 +172,30 @@ describe("planner engine defaults", () => {
   });
 });
 
+describe("post-delivery reviewer model", () => {
+  for (const changeModel of [false, true]) {
+    it(`opens with Fable 5.1 and submits the ${changeModel ? "selected" : "default"} reviewer model`, () => {
+      installScenario({ plans: [] });
+      cy.intercept("POST", "**/api/worktree-plans", (request) => {
+        expect(request.body.reviewOptions).to.deep.equal({ codeReview: true, reviewer: changeModel ? "codex" : "claude", reviewerModel: changeModel ? "gpt-6" : "claude-fable-5-1" });
+        request.reply({ statusCode: 202, body: { planId: "review-model", repositoryId: "repo-spec", goal: request.body.goal, status: "questions", round: 0, running: true, questions: [], tasks: [] } });
+      }).as("reviewModel");
+      visitBoard();
+      cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+      cy.findByRole("combobox", { name: "Code-review model" }).should("be.visible").and("have.value", "claude-fable-5-1").find("option:selected").should("have.text", "Fable 5.1");
+      cy.findByRole("combobox", { name: "Code-review reviewer" }).should("have.value", "claude");
+      if (changeModel) {
+        cy.findByRole("combobox", { name: "Code-review reviewer" }).select("codex");
+        cy.findByRole("combobox", { name: "Code-review model" }).select("gpt-6").find('option[value="claude-fable-5-1"]').should("not.exist");
+      }
+      cy.findByRole("checkbox", { name: "Code review" }).check();
+      cy.findByRole("textbox", { name: "Goal" }).type("Review the delivered goal");
+      cy.findByRole("button", { name: "Plan this goal" }).click();
+      cy.wait("@reviewModel");
+    });
+  }
+});
+
 describe("per-project development setup review", () => {
   for (const provider of ["claude", "codex"]) {
     it(`submits an editable project-specific review with ${provider}`, () => {

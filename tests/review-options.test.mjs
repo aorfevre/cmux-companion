@@ -10,7 +10,7 @@ import {
   safeReviewOptions,
 } from "../server/review-options.mjs";
 
-const DEFAULTS = { codeReview: false, reviewer: "claude" };
+const DEFAULTS = { codeReview: false, reviewer: "claude", reviewerModel: "claude-fable-5-1" };
 
 test("the catalog is frozen data with a usable label and hint", () => {
   assert.deepEqual({ ...REVIEW_OPTIONS.defaults }, DEFAULTS);
@@ -33,9 +33,9 @@ test("missing input normalizes to a fresh all-off object", () => {
 });
 
 test("a partial object keeps the defaults for what it omits", () => {
-  assert.deepEqual(normalizeReviewOptions({ codeReview: true }), { codeReview: true, reviewer: "claude" });
-  assert.deepEqual(normalizeReviewOptions({ reviewer: "codex" }), { codeReview: false, reviewer: "codex" });
-  assert.deepEqual(normalizeReviewOptions({ codeReview: true, reviewer: "codex" }), { codeReview: true, reviewer: "codex" });
+  assert.deepEqual(normalizeReviewOptions({ codeReview: true }), { codeReview: true, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
+  assert.deepEqual(normalizeReviewOptions({ reviewer: "codex" }), { codeReview: false, reviewer: "codex", reviewerModel: "claude-fable-5-1" });
+  assert.deepEqual(normalizeReviewOptions({ codeReview: true, reviewer: "codex" }), { codeReview: true, reviewer: "codex", reviewerModel: "claude-fable-5-1" });
 });
 
 test("malformed input throws an actionable TypeError", () => {
@@ -56,7 +56,7 @@ test("a stored value that predates the feature reads as no review", () => {
   assert.deepEqual(safeReviewOptions({}), DEFAULTS);
   assert.deepEqual(safeReviewOptions([]), DEFAULTS);
   assert.deepEqual(safeReviewOptions({ codeReview: "yes", reviewer: "gemini" }), DEFAULTS);
-  assert.deepEqual(safeReviewOptions({ codeReview: true, reviewer: "codex" }), { codeReview: true, reviewer: "codex" });
+  assert.deepEqual(safeReviewOptions({ codeReview: true, reviewer: "codex" }), { codeReview: true, reviewer: "codex", reviewerModel: "claude-fable-5-1" });
 });
 
 test("codeReviewRequested answers only for a valid enabled request", () => {
@@ -64,4 +64,19 @@ test("codeReviewRequested answers only for a valid enabled request", () => {
   assert.equal(codeReviewRequested({ codeReview: false }), false);
   assert.equal(codeReviewRequested(undefined), false);
   assert.equal(codeReviewRequested({ codeReview: "true" }), false);
+});
+
+test("reviewer models use the catalog and survive normalization", () => {
+  for (const reviewerModel of ["claude-opus-5", "gpt-6", "gpt-5.6-sol", "default"]) {
+    const value = { ...DEFAULTS, codeReview: true, reviewerModel };
+    assert.deepEqual(normalizeReviewOptions(normalizeReviewOptions(value)), value);
+  }
+  for (const reviewerModel of ["unknown-model", 42, null, {}, true]) {
+    assert.throws(() => normalizeReviewOptions({ reviewerModel }), /reviewerModel must be a known/);
+    assert.deepEqual(safeReviewOptions({ codeReview: true, reviewerModel }), DEFAULTS);
+    assert.equal(codeReviewRequested({ codeReview: true, reviewerModel }), true);
+  }
+  assert.throws(() => { REVIEW_OPTIONS.defaults.reviewerModel = "gpt-6"; }, TypeError);
+  assert.deepEqual(REVIEW_OPTIONS.defaults, DEFAULTS);
+  assert.deepEqual(safeReviewOptions({ codeReview: false, reviewer: "claude" }), DEFAULTS);
 });

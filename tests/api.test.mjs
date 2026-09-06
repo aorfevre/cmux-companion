@@ -1001,7 +1001,7 @@ test("forwards the review request on both plan routes when a token is configured
   });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
-  const reviewOptions = { codeReview: true, reviewer: "codex" };
+  const reviewOptions = { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" };
 
   const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions } });
   assert.equal(awaited.statusCode, 201);
@@ -1689,4 +1689,22 @@ test("reports every contract question refusal as a 400 the sheet can show", asyn
     assert.equal(background.json().error, sentence);
     await app.close();
   }
+});
+
+test("rejects invalid reviewer models before either planner branch runs", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, githubReviewToken: fakeReviewToken({ configured: true }) });
+  t.after(() => app.close());
+  for (const background of [false, true]) {
+    for (const reviewerModel of ["unknown-model", 123]) {
+      const response = await app.inject({
+        method: "POST", url: "/api/worktree-plans",
+        headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+        payload: { repositoryId: "repository12345678", goal: "Add billing", background, reviewOptions: { codeReview: true, reviewer: "claude", reviewerModel } },
+      });
+      assert.equal(response.statusCode, 400);
+      assert.match(response.json().error, /reviewerModel must be a known/);
+    }
+  }
+  assert.equal(planner.calls.length, 0);
 });

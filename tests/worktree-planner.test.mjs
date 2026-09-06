@@ -439,7 +439,7 @@ test("the review request never reaches a planner prompt or a task brief", async 
   // A code review happens after the pull request exists. The planner can
   // neither plan for it nor evidence it, so asking would only invite a task
   // and an acceptance criterion for work that is not part of the delivery.
-  const reviewOptions = { codeReview: true, reviewer: "codex" };
+  const reviewOptions = { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" };
   const deps = launchDeps();
   const planner = new WorktreePlanner(deps);
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", reviewOptions });
