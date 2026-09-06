@@ -1,5 +1,6 @@
 "use client";
 
+import { DEV_SETUP_GOAL } from "./dev-setup-goal";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { canRetryOnFreshBranch } from "../server/worktree-errors.mjs";
 import { PLANNER_ENGINES, reviewerEngine, SPEC_OPTIONS } from "../server/worktree-planner-options.mjs";
@@ -245,8 +246,8 @@ function TerminalGoalBanner({ status, plan }: { status: GoalBoardStatus; plan: P
   </section>;
 }
 
-export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, onNotice }: { repository: PlannerRepository; initialPlanId?: string; onClose: () => void; onNotice: (message: string) => void }) {
-  const [goal, setGoal] = useState("");
+export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGoal = "", onClose, onNotice }: { repository: PlannerRepository; initialPlanId?: string; initialGoal?: string; onClose: () => void; onNotice: (message: string) => void }) {
+  const [goal, setGoal] = useState(initialGoal);
   const [provider, setProvider] = useState<PlannerProvider>(PLANNER_ENGINES.defaultProvider as PlannerProvider);
   const [model, setModel] = useState<string>(PLANNER_ENGINES.defaultModel);
   const [effort, setEffort] = useState<string>(PLANNER_ENGINES.defaultEffort);
@@ -530,6 +531,11 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", onClose, 
     {draft && <button type="button" className="planner-new-goal" disabled={busy !== ""} onClick={newGoal}>← New goal</button>}
     {draft && terminal && <TerminalGoalBanner status={terminal} plan={draft} />}
     {!draft && <>
+      <section className="planner-spec-options" aria-label="Development setup review">
+        <header><strong>Development setup</strong><span>Review instructions, setup and verification for this project, whatever its stack or coding agent.</span></header>
+        <button type="button" className="text-button" disabled={goal.trim() !== "" || busy !== ""} onClick={() => setGoal(DEV_SETUP_GOAL)}>Review dev setup</button>
+        <p>{goal.trim() ? "The goal below is editable. Clear it to use the review starting point." : "Start with an editable review goal. Planning does not change project files; review the plan before launching work."}</p>
+      </section>
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       <section className="planner-engine-config" aria-label="Planner configuration">

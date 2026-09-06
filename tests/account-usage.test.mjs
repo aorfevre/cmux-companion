@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AccountUsage, cadenceFromDuration, exactClaudeWindows, exactCodexWindows, findCcsPackageRoot } from "../server/account-usage.mjs";
 
 function source({ delay = 0 } = {}) {
@@ -78,9 +81,22 @@ test("treats authenticated accounts without reported windows as connected", asyn
   assert.equal(value.summary.unavailable, 0);
 });
 
-test("discovers the installed CCS package without a hard-coded Node version", () => {
-  const root = findCcsPackageRoot();
-  assert.match(root, /@kaitranntt\/ccs$/);
+test("discovers a symlinked CCS package without a hard-coded Node version", (t) => {
+  // Exercise the real filesystem resolver without a developer's global install.
+  const fixture = realpathSync(mkdtempSync(join(tmpdir(), "ccs-discovery-")));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  const version = join(fixture, "versions", "node", "v99.1.2");
+  const root = join(version, "lib", "node_modules", "@kaitranntt", "ccs");
+  const bin = join(version, "bin");
+  mkdirSync(join(root, "dist"), { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@kaitranntt/ccs" }));
+  const executable = join(root, "dist", "cli.js");
+  writeFileSync(executable, "#!/usr/bin/env node\n", { mode: 0o755 });
+  const ccsBin = join(bin, "ccs");
+  symlinkSync(executable, ccsBin);
+  assert.equal(findCcsPackageRoot({ ccsBin, pathValue: "" }), root);
+  assert.equal(findCcsPackageRoot({ ccsBin: "", pathValue: bin }), root);
 });
 
 test("keeps Claude core windows when the provider reports no reset time", () => {

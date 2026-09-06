@@ -1,3 +1,4 @@
+import { AGENT_REPLY_FORMAT } from "./agent-reply-format.mjs";
 import { chmod, mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -34,7 +35,7 @@ export class AgentBriefs {
     await chmod(this.directory, 0o700);
     await this.cleanup();
     const path = resolve(this.directory, `${plan}-${task}.md`);
-    await writeFile(path, markdown, { mode: 0o600 });
+    await writeFile(path, `${markdown}\n\n## Reply format\n\n${AGENT_REPLY_FORMAT}\n`, { mode: 0o600 });
     return { path };
   }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -458,12 +459,14 @@ function gatedLaunchDeps({ reply = TASKS_REPLY, gitFails = false } = {}) {
 
 // A background launch runs after the request ends, so a test waits on the
 // launch registry rather than on a promise no caller holds.
-async function launchSettled(planner, planId, attempts = 500) {
-  for (let index = 0; index < attempts; index += 1) {
-    if (!planner.isLaunching(planId)) return;
-    await new Promise((resolve) => setImmediate(resolve));
+async function launchSettled(planner, planId, timeoutMs = 5_000) {
+  // Counting event-loop turns can exhaust the budget before brief-file I/O
+  // finishes on CI. Bound actual elapsed time and yield to the filesystem.
+  const deadline = performance.now() + timeoutMs;
+  while (planner.isLaunching(planId)) {
+    if (performance.now() >= deadline) throw new Error(`the launch for ${planId} never finished`);
+    await delay(5);
   }
-  throw new Error(`the launch for ${planId} never finished`);
 }
 
 async function readyPlan(planner) {
@@ -482,6 +485,19 @@ test("a background launch answers before any worktree or session is created", as
   assert.deepEqual(deps.created, []);
   assert.deepEqual(deps.sessions, []);
 
+  release();
+  await launchSettled(planner, draft.planId);
+  assert.deepEqual(deps.created, ["feature/billing", "feature/invoices"]);
+  assert.equal(deps.sessions.length, 2);
+});
+
+test("a background launch waits for delayed brief-file I/O", async () => {
+  const { deps, release } = gatedLaunchDeps();
+  const write = deps.briefs.write.bind(deps.briefs);
+  deps.briefs.write = async (options) => { await delay(50); return write(options); };
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyPlan(planner);
+  await planner.launchBackground(draft.planId);
   release();
   await launchSettled(planner, draft.planId);
   assert.deepEqual(deps.created, ["feature/billing", "feature/invoices"]);

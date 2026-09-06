@@ -140,6 +140,66 @@ function visitBoard() {
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
 }
 
+describe("per-project development setup review", () => {
+  for (const provider of ["claude", "codex"]) {
+    it(`submits an editable project-specific review with ${provider}`, () => {
+      installScenario({ plans: [] });
+      cy.intercept("POST", "**/api/worktree-plans", (request) => {
+        expect(request.body.repositoryId).to.equal("repo-spec");
+        expect(request.body.engine.provider).to.equal(provider);
+        expect(request.body.goal).to.include("TypeScript, Cypress and Astro");
+        expect(request.body.goal).to.include("AGENTS.md, CLAUDE.md");
+        expect(request.body.goal).to.include("Result:").and.include("Checks:").and.include("Blockers:");
+        expect(request.body.goal).to.include("Keep the hardware simulator.");
+        expect(request.body.goal.length).to.be.at.most(4000);
+        expect(request.body.background).to.equal(true);
+        request.reply({ statusCode: 202, body: {
+          planId: "dev-setup", repositoryId: "repo-spec", goal: request.body.goal,
+          status: "questions", round: 0, running: true, questions: [], tasks: [],
+        } });
+      }).as("reviewSetup");
+      visitBoard();
+      cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+      cy.findByRole("button", { name: "Review dev setup" }).click();
+      cy.findByRole("textbox", { name: "Goal" }).type("\nKeep the hardware simulator.");
+      cy.findByRole("combobox", { name: "Planner engine" }).select(provider);
+      cy.findByRole("button", { name: "Plan this goal" }).click();
+      cy.wait("@reviewSetup");
+      cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
+    });
+  }
+
+  it("preserves a written goal and keeps the review editable after a failed submit", () => {
+    installScenario({ plans: [] });
+    cy.intercept("POST", "**/api/worktree-plans", { statusCode: 503, body: { error: "Planner unavailable" } }).as("failedReview");
+    visitBoard();
+    cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+    cy.findByRole("textbox", { name: "Goal" }).type("Keep my existing scope");
+    cy.findByRole("button", { name: "Review dev setup" }).should("be.disabled");
+    cy.findByRole("textbox", { name: "Goal" }).should("have.value", "Keep my existing scope").clear();
+    cy.findByRole("button", { name: "Review dev setup" }).click();
+    cy.findByRole("button", { name: "Plan this goal" }).click();
+    cy.wait("@failedReview");
+    cy.findByRole("dialog", { name: "Plan a goal" }).should("be.visible");
+    cy.contains("Planner unavailable").should("be.visible");
+    cy.findByRole("textbox", { name: "Goal" }).should("contain.value", "Make this repository");
+  });
+
+  it("opens a review from one project without submitting or carrying it into a normal goal", () => {
+    installScenario({ plans: [] });
+    let submissions = 0;
+    cy.intercept("POST", "**/api/worktree-plans", () => { submissions += 1; });
+    visitBoard();
+    cy.findByRole("tab", { name: /^Inactive/ }).click();
+    cy.findByRole("button", { name: "Review dev setup for cmux-e2e-cypress" }).click();
+    cy.findByRole("textbox", { name: "Goal" }).should("contain.value", "Make this repository");
+    cy.findByRole("button", { name: "Close goal planner sheet" }).click();
+    cy.then(() => expect(submissions).to.equal(0));
+    cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+    cy.findByRole("textbox", { name: "Goal" }).should("have.value", "");
+  });
+});
+
 describe("specification rigor options", () => {
   it("offers six unchecked controls and submits every one of them", () => {
     installScenario({ plans: [] });

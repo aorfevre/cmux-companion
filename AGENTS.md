@@ -1,25 +1,42 @@
-# Repository development instructions
+# Working on cmux companion
 
-These instructions apply to the entire repository and to every coding agent.
+A private, mobile-first PWA for monitoring and controlling cmux on a Mac over
+Tailscale. Project goals become saved plans, isolated agent worktrees and
+reviewable GitHub pull requests. Claude and Codex use the same delivery flow.
 
-## Local Cypress validation
+## Code map
 
-When developing a new feature or changing user-visible behavior, add or update
-the relevant Cypress end-to-end coverage and run it locally to confirm the
-feature works through the UI. Treat this validation as part of completing the
-feature, not as an optional follow-up.
+- `app/`: React/vinext UI; `page.tsx` owns sessions,
+  `worktree-dashboard.tsx` the project/goal board, `worktree-planner.tsx` planning.
+- `server/app.mjs`: Fastify API and service wiring; `security.mjs` authentication.
+- `server/worktree-planner.mjs`, `worktree-operations.mjs`: planning and launch;
+  `worktree-plan-store.mjs`: SQLite history; `goal-integrator.mjs` and
+  `goal-watchdog.mjs`: delivery and recovery; `cmux-client.mjs`: cmux boundary.
+- `tests/`: Node backend and Vitest UI tests; `cypress/e2e/`: local UI scenarios.
+- `scripts/`: development, local tests and macOS installation.
 
-Keep Cypress execution local-only. Do not add these tests to CI/CD unless the
-project maintainers explicitly change that policy. Use the deterministic local
-suite by default:
+## Boundaries and completion
 
-```bash
-npm run test:e2e:local
-```
+Preserve pairing, same-origin checks, repository allow-lists and argv-based
+process calls. Never touch unrelated sessions, worktrees, credentials or user
+changes. Do not merge, deploy or run live integrations without authorization.
+Keep one owner accountable for the observable outcome and integration; delegate
+only bounded independent work, without recursive delegation. Match checks to
+risk and report passed, failed and unverified paths separately.
 
-Use the opt-in live-agent suite only when the behavior specifically requires
-real cmux, xcodex, xclaude, GitHub pull-request, or merge integration. Follow
-the safety requirements documented in `README.md` before running it.
+Use the human-facing [reply format](server/agent-reply-format.mjs) for concise
+results, checks and blockers. Its word target never overrides required evidence.
 
-If a feature cannot reasonably be exercised in Cypress, document why and
-perform the closest available local validation instead.
+## Verify
+
+Use the runtime in `.nvmrc`, then `npm ci`. `npm run verify` runs backend tests,
+UI tests, lint, types and build; CI uses that same command.
+For new features or user-visible changes, add/update relevant Cypress coverage
+and run `npm run test:e2e:local`. Cypress stays local-only, outside CI and
+`verify`. If Cypress cannot exercise the change, explain why and run the closest
+local validation. Live-agent tests require the README safety opt-in.
+
+See [development setup and completion](docs/development.md),
+[product and security](README.md), and [local Cypress and live-test safety](README.md#local-end-to-end-checks).
+There are no repository skills today. Read task-relevant guidance when needed;
+keep reusable guidance authoritative and link it from any future skill.

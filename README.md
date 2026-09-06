@@ -360,7 +360,7 @@ The uninstall command removes automatic startup but deliberately preserves the p
 - Terminal input, keys, and text length are explicitly validated.
 - No route accepts a shell command, arbitrary cmux arguments, or arbitrary RPC.
 - Repository launch is restricted to immediate Git repositories in configured roots; package scripts must come from that repository's `package.json`.
-- The goal planner runs `ccs claude` read-only: `Bash`, `Write`, `Edit`, `Task`, `Skill`, and web access are denied by name, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
+- The goal planner invokes the selected `ccs claude` or `ccs codex` engine with read-only tool settings (`Read`, `Grep`, `Glob`), disabled slash commands and isolated MCP configuration; shell, editing, delegation and web tools are denied, the prompt follows a `--` terminator so text can never become a flag, and a plan is capped at eight tasks with a bounded number of question rounds.
 - The goal health sweep is read-only. The watchdog reconciles GitHub state and collects finished goal sessions; it never deletes branches or worktrees. It can resume verified combined-goal delivery as described below.
 - The supervision timer may close one thing: a cmux session Companion itself opened for a goal, recorded on that goal's plan row, after that session's work is delivered. It may never close a session whose agent is running or waiting for an answer, a session of a goal whose merge is blocked and has no delivery PR, any session while cmux is unreachable, or any session Companion did not open for a goal. It deletes no branch and no worktree. Set `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` to `0`, `off` or `false` to stop the timer pass.
 - Restarting a task deletes its branch and its worktree, so it is refused for the primary checkout and for a managed release checkout, and the phone confirms before it runs.
@@ -381,6 +381,10 @@ The uninstall command removes automatic startup but deliberately preserves the p
 Treat a paired phone as privileged: unlocking terminal input gives it control of interactive processes running in cmux.
 
 ## Development
+
+Use the Node version in `.nvmrc` (`nvm install && nvm use`), then `npm ci`.
+See [development setup and completion](docs/development.md) for verification,
+code-path evidence and the per-project **Review dev setup** workflow.
 
 Run the bridge and frontend in separate terminals:
 
