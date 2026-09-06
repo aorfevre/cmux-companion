@@ -497,7 +497,16 @@ export class CmuxClient {
 
   async selectWorkspace(workspaceId) {
     assertTarget(workspaceId);
-    await this.run(["select-workspace", "--workspace", workspaceId]);
+    // Use explicit RPC targets so the server's inherited terminal context cannot
+    // route this user action to a different workspace or surface.
+    const selected = await this.rpc("workspace.select", { workspace_id: workspaceId });
+    assertTarget(selected.window_id);
+    await this.rpc("window.focus", { window_id: selected.window_id });
+    // The visual cue is optional; older cmux builds may not support it.
+    await this.rpc("surface.trigger_flash", {
+      workspace_id: workspaceId,
+      window_id: selected.window_id,
+    }).catch(() => {});
   }
 }
 

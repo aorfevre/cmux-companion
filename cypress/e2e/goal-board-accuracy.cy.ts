@@ -334,10 +334,36 @@ describe("goal board matches live cmux evidence", () => {
     cy.wait("@selectMerge").its("request.url").should("match", /\/api\/workspaces\/ws-merge\/select$/);
     cy.findByRole("region", { name: "Goals needing attention" }).within(() => {
       cy.contains("Goal merge");
-      cy.findByRole("button", { name: "Open Goal merge in cmux" }).should("exist");
+      cy.findByRole("button", { name: "Open Goal merge in cmux" }).click();
       cy.findByRole("button", { name: /Continue|Restart|Skip/ }).should("not.exist");
     });
+    cy.wait("@selectMerge").its("request.url").should("match", /\/api\/workspaces\/ws-merge\/select$/);
+    cy.contains("Focused Goal merge in cmux").should("be.visible");
     cy.findByLabelText("2 live cmux sessions").should("exist");
+  });
+
+  it("opens each attention task's own workspace and reports a closed workspace", () => {
+    const sessions = [
+      { id: "ws-first", title: "First agent", effective: "todo" },
+      { id: "ws-second", title: "Second agent", effective: "todo" },
+    ];
+    const source = plan("goal-attention", "Two waiting agents", 2, { boardState: "blocked", workspaceIds: sessions.map((session) => session.id) });
+    const tasks = sessions.map((session, index) => task(`T${index + 1}`, "needs_you", session));
+    installScenario({ plans: [source], goals: [healthGoal(source, tasks)], liveSessions: 2 });
+    cy.intercept("POST", "**/api/workspaces/ws-first/select", { ok: true }).as("selectFirst");
+    cy.intercept("POST", "**/api/workspaces/ws-second/select", { statusCode: 404, body: { error: "Workspace not found" } }).as("selectSecond");
+    visitBoard();
+    cy.findByRole("region", { name: "Goals needing attention" }).within(() => {
+      cy.findByRole("button", { name: "Open Implement the fixture in cmux" }).click();
+    });
+    cy.wait("@selectFirst");
+    cy.contains("Focused Implement the fixture in cmux").should("be.visible");
+    cy.findByRole("region", { name: "Goals needing attention" }).within(() => {
+      cy.findByRole("button", { name: "Open Verify the fixture in cmux" }).click();
+    });
+    cy.wait("@selectSecond");
+    cy.contains("Workspace not found").should("be.visible");
+    cy.findByRole("button", { name: "Open Verify the fixture in cmux" }).should("be.enabled");
   });
 
   it("shows the next dependency wave launching automatically after integration", () => {

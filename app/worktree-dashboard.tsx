@@ -513,7 +513,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice, i
   }
 
   // The one caller of /api/workspaces/:id/select. It only focuses the cmux
-  // desktop app, so a failure is a notice and never blocks the card.
+  // workspace and its desktop window, so a failure is a notice and never blocks the card.
   async function focusWorkspace(workspaceId: string, label: string) {
     await runBoardAction(`focus:${workspaceId}`, async () => {
       try { await request(`/api/workspaces/${encodeURIComponent(workspaceId)}/select`, { method: "POST", body: "{}" }); onNotice(`Focused ${label} in cmux`); }

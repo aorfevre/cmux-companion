@@ -165,6 +165,12 @@ and rebuilds from the base, so it confirms first. Skip drops one task, so a
 single dead task stops blocking every other task's finished work from reaching a
 pull request.
 
+**Open in cmux** selects that task's or merge agent's exact workspace, brings
+its owning window forward, and briefly highlights the active terminal when
+supported by cmux. The local Cypress suite checks the buttons' workspace targets
+and failure notices; native window selection is validated separately against
+installed cmux because the deterministic browser suite stubs the API.
+
 The verdict comes from a read-only sweep that joins each task's recorded cmux
 workspace to the live workspace list. It writes no plan state: moving a goal on
 a timer could declare a slow agent dead and rebuild its worktree underneath it,
