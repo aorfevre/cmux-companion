@@ -11,6 +11,8 @@
 // The module is data-only and has no storage, no network and no Node
 // built-ins, because both the browser sheet and the server import it.
 
+import { PLANNER_ENGINES } from "./worktree-planner-options.mjs";
+
 export const REVIEW_AGENTS = Object.freeze(["claude", "codex"]);
 export const DEFAULT_REVIEW_AGENT = "claude";
 
@@ -20,6 +22,7 @@ export const REVIEW_OPTIONS = Object.freeze({
   defaults: Object.freeze({
     codeReview: false,
     reviewer: DEFAULT_REVIEW_AGENT,
+    reviewerModel: "claude-fable-5-1",
   }),
 });
 
@@ -33,6 +36,13 @@ export function normalizeReviewOptions(value) {
   const normalized = { ...REVIEW_OPTIONS.defaults };
   for (const [key, entry] of Object.entries(value)) {
     if (!KEYS.includes(key)) throw new TypeError(`Unknown review option ${key}`);
+    if (key === "reviewerModel") {
+      if (typeof entry !== "string" || !Object.values(PLANNER_ENGINES.providers).some((provider) => provider.models.some((model) => model.id === entry))) {
+        throw new TypeError("Review option reviewerModel must be a known Claude or Codex model id");
+      }
+      normalized.reviewerModel = entry;
+      continue;
+    }
     if (key === "reviewer") {
       if (typeof entry !== "string" || !REVIEW_AGENTS.includes(entry)) {
         throw new TypeError("Review option reviewer must be claude or codex");
@@ -57,5 +67,9 @@ export function safeReviewOptions(value) {
 }
 
 export function codeReviewRequested(value) {
-  return safeReviewOptions(value).codeReview === true;
+  // Whether review was requested is independent of the chosen model.
+  const request = value && typeof value === "object" && !Array.isArray(value)
+    ? { ...value, reviewerModel: REVIEW_OPTIONS.defaults.reviewerModel }
+    : value;
+  return safeReviewOptions(request).codeReview === true;
 }
