@@ -405,16 +405,17 @@ describe("contextual mobile features", () => {
       if (url === "/api/worktree-plans/plan-running") return new Response(JSON.stringify(detail), { status: 200 });
       return new Response(JSON.stringify(dashboard), { status: 200 });
     }));
-    const opened = vi.fn();
-    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} initialPlanId="plan-running" onPlanOpened={opened} />);
+    window.history.replaceState(null, "", "/?view=sessions&mode=worktrees&plan=plan-running");
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
 
-    // The deep link picks the tab and the project, then opens the goal.
+    // The deep link resolves the goal independently of board selection.
     const planner = await screen.findByRole("dialog", { name: "Plan a goal" });
     assert.ok(await within(planner).findByRole("region", { name: "Planning in progress" }));
-    assert.equal(opened.mock.calls.length, 1);
+    assert.equal(new URLSearchParams(location.search).get("plan"), "plan-running");
     await userEvent.click(within(planner).getByRole("button", { name: "Close goal planner sheet" }));
 
     const tab = screen.getByRole("tab", { name: /Draft Goals/ });
+    await userEvent.click(tab);
     assert.ok(within(tab).getByText("1 planning"), "the tab counts the running round");
     const goals = screen.getByRole("region", { name: "Draft goals" });
     assert.ok(within(goals).getByText("Planning…"));

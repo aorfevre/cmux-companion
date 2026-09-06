@@ -887,3 +887,7 @@
 .model-settings-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
 .model-settings [role="alert"] { color: #ff9b9b; }
 @media (max-width: 480px) { .model-settings { padding: 14px; } .model-settings-controls label { flex-basis: 100%; } }
+
+.planner-goal-reference { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; color: var(--muted); font-size: 12px; }
+.planner-goal-reference code { overflow-wrap: anywhere; user-select: all; }
+.planner-goal-reference button { padding: 8px 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); color: inherit; }
