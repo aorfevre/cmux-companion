@@ -3,8 +3,9 @@
 // also being allowed at the process boundary. The reviewer policy lives here
 // too, rather than drifting between the label and the spawned command.
 export const PLANNER_ENGINES = Object.freeze({
-  defaultProvider: "claude",
-  defaultModel: "default",
+  defaultProvider: "codex",
+  defaultModel: "gpt-6",
+  passthroughModel: "default",
   defaultEffort: "default",
   efforts: Object.freeze([
     Object.freeze({ id: "default", label: "Default" }),
@@ -31,6 +32,7 @@ export const PLANNER_ENGINES = Object.freeze({
       largestModel: "gpt-5.6-sol",
       models: Object.freeze([
         Object.freeze({ id: "default", label: "Default" }),
+        Object.freeze({ id: "gpt-6", label: "Codex Astra" }),
         Object.freeze({ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }),
         Object.freeze({ id: "gpt-5.6-terra", label: "GPT-5.6 Terra" }),
         Object.freeze({ id: "gpt-5.6-luna", label: "GPT-5.6 Luna" }),

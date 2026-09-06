@@ -685,16 +685,23 @@ describe("worktree goal planner", () => {
     const model = screen.getByRole("combobox", { name: "Planner model" }) as HTMLSelectElement;
     const effort = screen.getByRole("combobox", { name: "Planner effort" }) as HTMLSelectElement;
     const reviewer = screen.getByRole("checkbox", { name: "Add a reviewer pass" }) as HTMLInputElement;
-    assert.equal(engine.value, "claude");
-    assert.equal(model.value, "default");
+    assert.equal(engine.value, "codex");
+    assert.equal(model.value, "gpt-6");
     assert.equal(effort.value, "default");
     assert.equal(reviewer.checked, false);
+    assert.ok(screen.getByText("Codex (xcodex) · Codex Astra"));
+    assert.ok(within(model).getByRole("option", { name: "Codex Astra" }));
+    await userEvent.selectOptions(model, "default");
+    assert.ok(screen.getByText("Codex (xcodex) · CCS default model"));
+    await userEvent.selectOptions(engine, "claude");
+    assert.equal(model.value, "default");
+    assert.ok(Array.from(model.options).some((option) => option.value === model.value));
     assert.ok(screen.getByText("Claude Code (xclaude) · CCS default model"));
     assert.ok(within(model).getByRole("option", { name: "Opus 5" }));
     assert.ok(within(model).getByRole("option", { name: "Fable 5.1" }));
 
     await userEvent.selectOptions(engine, "codex");
-    assert.equal(model.value, "default");
+    assert.equal(model.value, "gpt-6");
     assert.ok(within(model).getByRole("option", { name: "GPT-5.6 Sol" }));
     assert.equal(within(model).queryByRole("option", { name: "Opus 5" }), null);
     await userEvent.selectOptions(model, "gpt-5.6-terra");
