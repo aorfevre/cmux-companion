@@ -1,5 +1,6 @@
 "use client";
 
+import { REVIEW_AGENTS, REVIEW_OPTIONS } from "../server/review-options.mjs";
 import { DEV_SETUP_GOAL } from "./dev-setup-goal";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { canRetryOnFreshBranch } from "../server/worktree-errors.mjs";
@@ -11,6 +12,7 @@ import { readyCount } from "../server/delivery-contract.mjs";
 import { PromptDisclosure } from "./prompt-markdown";
 import { DesignArtifacts, DesignArtifact } from "./spec-artifacts";
 
+export type ReviewOptions = { codeReview: boolean; reviewer: "claude" | "codex"; reviewerModel: string };
 export type PlanAgent = "claude" | "codex";
 export type PlanQuestion = { id: string; text: string; options: string[] };
 export type CompletionReport = { criteria: string[]; verification: { check: string; status: "passed" | "failed" | "not_run" }[]; limitations: string[] };
@@ -252,6 +254,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   const [model, setModel] = useState<string>(PLANNER_ENGINES.defaultModel);
   const [effort, setEffort] = useState<string>(PLANNER_ENGINES.defaultEffort);
   const [reviewer, setReviewer] = useState(false);
+  const [reviewOptions, setReviewOptions] = useState<ReviewOptions>({ ...REVIEW_OPTIONS.defaults });
   // All six requests live in one object so the POST body, the reset and the
   // checkbox row can never disagree about which keys exist.
   const [specOptions, setSpecOptions] = useState<SpecOptions>(() => ({ ...SPEC_OPTION_DEFAULTS }));
@@ -335,7 +338,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
 
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
-    setGoal(""); setDraft(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); setQuestion(""); setSpecOptions({ ...SPEC_OPTION_DEFAULTS });
+    setGoal(""); setDraft(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); setQuestion(""); setSpecOptions({ ...SPEC_OPTION_DEFAULTS }); setReviewOptions({ ...REVIEW_OPTIONS.defaults });
   }
 
   // The round runs in the background, so this answers as soon as the plan row
@@ -346,7 +349,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
     event.preventDefault();
     setBusy("plan"); setError(""); setSteps([]);
     try {
-      receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions, background: true }) }));
+      receive(await request<PlanDraft>("/api/worktree-plans", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions, reviewOptions, background: true }) }));
       onNotice(`Planning this goal on ${repository.name}. It appears in Writing Spec.`);
       onClose();
     }
@@ -539,14 +542,25 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       <section className="planner-engine-config" aria-label="Planner configuration">
-        <header><strong>Planner</strong><span>{providerOptions.label} ({providerOptions.family}) · {model === PLANNER_ENGINES.defaultModel ? "CCS default model" : modelLabel(provider, model)}</span></header>
+        <header><strong>Planner</strong><span>{providerOptions.label} ({providerOptions.family}) · {model === PLANNER_ENGINES.passthroughModel ? "CCS default model" : modelLabel(provider, model)}</span></header>
         <div className="planner-engine-controls">
-          <label><span>Engine</span><select aria-label="Planner engine" value={provider} onChange={(event) => { setProvider(event.target.value as PlannerProvider); setModel(PLANNER_ENGINES.defaultModel); }}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+          <label><span>Engine</span><select aria-label="Planner engine" value={provider} onChange={(event) => { setProvider(event.target.value as PlannerProvider); setModel(event.target.value === PLANNER_ENGINES.defaultProvider ? PLANNER_ENGINES.defaultModel : PLANNER_ENGINES.passthroughModel); }}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
           <label><span>Model</span><select aria-label="Planner model" value={model} onChange={(event) => setModel(event.target.value)}>{providerOptions.models.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
           <label><span>Effort</span><select aria-label="Planner effort" value={effort} onChange={(event) => setEffort(event.target.value)}>{PLANNER_ENGINES.efforts.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
         </div>
         <label className="planner-reviewer-toggle"><input type="checkbox" aria-label="Add a reviewer pass" checked={reviewer} onChange={(event) => setReviewer(event.target.checked)} /><span>Add a reviewer pass</span></label>
         {reviewer && <p className="planner-reviewer-identity">Reviewer: {reviewerOptions.label} ({reviewerOptions.family}) · {modelLabel(reviewerProvider, reviewerConfig.model)} · {reviewerConfig.effort} effort</p>}
+      </section>
+      <section className="planner-engine-config" aria-label="Post-delivery code review">
+        <header><strong>{REVIEW_OPTIONS.label}</strong><span>{REVIEW_OPTIONS.hint}</span></header>
+        <label className="planner-reviewer-toggle"><input type="checkbox" aria-label="Code review" checked={reviewOptions.codeReview} onChange={(event) => setReviewOptions((current) => ({ ...current, codeReview: event.target.checked }))} /><span>Request a code review</span></label>
+        <div className="planner-engine-controls">
+          <label><span>Reviewer</span><select aria-label="Code-review reviewer" value={reviewOptions.reviewer} onChange={(event) => {
+            const reviewer = event.target.value as PlanAgent;
+            setReviewOptions((current) => ({ ...current, reviewer, reviewerModel: reviewer === REVIEW_OPTIONS.defaults.reviewer ? REVIEW_OPTIONS.defaults.reviewerModel : PLANNER_ENGINES.providers[reviewer].largestModel }));
+          }}>{REVIEW_AGENTS.map((agent) => <option key={agent} value={agent}>{PLANNER_ENGINES.providers[agent as PlanAgent].label}</option>)}</select></label>
+          <label><span>Model</span><select aria-label="Code-review model" value={reviewOptions.reviewerModel} onChange={(event) => setReviewOptions((current) => ({ ...current, reviewerModel: event.target.value }))}>{PLANNER_ENGINES.providers[reviewOptions.reviewer].models.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+        </div>
       </section>
       <section className="planner-spec-options" aria-label="Spec depth">
         <header><strong>Spec depth</strong><span>Each request becomes a written requirement in every planning round and task brief.</span></header>

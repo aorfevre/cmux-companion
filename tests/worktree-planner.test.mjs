@@ -233,14 +233,39 @@ test("a first round returns questions and records the session id", async () => {
   assert.ok(deps.calls[0][1].includes("--print"));
 });
 
-test("defaults to Claude and lets ccs choose its model and effort", async () => {
+test("defaults to Codex Astra and lets ccs choose its effort", async () => {
   const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
   const draft = await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
   const args = deps.calls[0][1];
-  assert.equal(args[0], "claude");
-  assert.equal(args.includes("--model"), false);
+  assert.equal(args[0], "codex");
+  assert.equal(args[args.indexOf("--model") + 1], "gpt-6");
   assert.equal(args.includes("--effort"), false);
-  assert.deepEqual(draft.engine, { provider: "claude", model: "default", effort: "default", reviewer: false });
+  assert.deepEqual(draft.engine, { provider: "codex", model: "gpt-6", effort: "default", reviewer: false });
+});
+
+for (const provider of ["claude", "codex"]) {
+  test(`${provider} Default model lets ccs choose without a --model argument`, async () => {
+    const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
+    const draft = await new WorktreePlanner(deps).start({
+      repositoryId: REPO_ID, goal: "Add billing", engine: { provider, model: "default" },
+    });
+    assert.equal(deps.calls[0][1][0], provider);
+    assert.equal(deps.calls[0][1].includes("--model"), false);
+    assert.equal(draft.engine.model, "default");
+  });
+}
+
+test("the shipped planner default derives a Claude Fable reviewer", async () => {
+  assert.deepEqual(reviewerEngine(PLANNER_ENGINES.defaultProvider), {
+    provider: "claude", model: "claude-fable-5-1", effort: "xhigh", reviewer: false,
+  });
+  const ready = envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "s");
+  const deps = fakeDeps({ replies: [ready, ready] });
+  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: true } });
+  const args = deps.calls[1][1];
+  assert.equal(args[0], "claude");
+  assert.equal(args[args.indexOf("--model") + 1], "claude-fable-5-1");
+  assert.equal(args[args.indexOf("--effort") + 1], "xhigh");
 });
 
 test("runs Codex with the selected model and effort before the prompt", async () => {
@@ -414,7 +439,7 @@ test("the review request never reaches a planner prompt or a task brief", async 
   // A code review happens after the pull request exists. The planner can
   // neither plan for it nor evidence it, so asking would only invite a task
   // and an acceptance criterion for work that is not part of the delivery.
-  const reviewOptions = { codeReview: true, reviewer: "codex" };
+  const reviewOptions = { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" };
   const deps = launchDeps();
   const planner = new WorktreePlanner(deps);
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", reviewOptions });
@@ -544,7 +569,15 @@ test("a task brief with no requested option keeps its original shape", async () 
 });
 
 test("normalizes omitted engine fields without coercing invalid input", () => {
-  assert.deepEqual(normalizePlannerEngine({ provider: "codex" }), { provider: "codex", model: "default", effort: "default", reviewer: false });
+  const defaults = { provider: "codex", model: "gpt-6", effort: "default", reviewer: false };
+  assert.deepEqual(normalizePlannerEngine(undefined), defaults);
+  assert.deepEqual(normalizePlannerEngine({}), defaults);
+  assert.deepEqual(normalizePlannerEngine({ provider: "codex" }), defaults);
+  assert.deepEqual(normalizePlannerEngine({ provider: "codex", model: "gpt-6" }), defaults);
+  assert.deepEqual(normalizePlannerEngine({ provider: "claude" }), { provider: "claude", model: "default", effort: "default", reviewer: false });
+  assert.ok(PLANNER_ENGINES.providers.codex.models.some((model) => model.id === "gpt-6" && model.label === "Codex Astra"));
+  assert.equal(PLANNER_ENGINES.providers.codex.largestModel, "gpt-5.6-sol");
+  assert.throws(() => normalizePlannerEngine({ provider: "codex", model: "unknown-codex-model" }), /Unknown Codex planner model/);
   assert.throws(() => normalizePlannerEngine(null), /must be an object/);
 });
 
