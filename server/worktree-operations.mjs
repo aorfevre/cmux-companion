@@ -1,7 +1,44 @@
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
+import { promisify } from "node:util";
+
+const executeGit = promisify(execFile);
+
+// Callers own execution policy and stdout defaults; preserve the process result
+// and rejection object unchanged.
+export function runGit(cwd, args, options, execute = executeGit) {
+  return execute("git", ["-C", cwd, ...args], options);
+}
+
+export function parseWorktreePorcelain(output) {
+  const records = [];
+  let current = null;
+  for (const field of String(output).split("\0")) {
+    if (!field) {
+      current = null;
+      continue;
+    }
+    const space = field.indexOf(" ");
+    const key = space === -1 ? field : field.slice(0, space);
+    const value = space === -1 ? null : field.slice(space + 1);
+    if (key === "worktree") {
+      current = { path: value, head: null, branch: null, detached: false, bare: false, locked: false, lockReason: null, prunable: false, pruneReason: null };
+      records.push(current);
+    } else if (current) {
+      if (key === "HEAD") current.head = value;
+      else if (key === "branch") current.branch = value?.replace(/^refs\/heads\//, "") ?? null;
+      else if (key === "detached" || key === "bare") current[key] = true;
+      else if (key === "locked" || key === "prunable") {
+        current[key] = true;
+        current[key === "locked" ? "lockReason" : "pruneReason"] = value;
+      }
+    }
+  }
+  return records;
+}
 
 export const cleanupHome = () => join(process.env.CMUX_COMPANION_HOME || homedir(), ".config", "cmux-companion", "worktree-cleanup");
 export const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -43,11 +80,9 @@ export async function plainPath(path, { missing = false } = {}) {
 export async function withWorkspaceLaunch(cwd, work) {
   // The common-directory lock also covers launches into a subdirectory of a
   // worktree. Cleanup holds this same lock through its final checks and remove.
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
   const canonical = await realpath(cwd);
   let common;
-  try { common = (await promisify(execFile)("git", ["-C", canonical, "rev-parse", "--path-format=absolute", "--git-common-dir"])).stdout.trim(); }
+  try { common = (await runGit(canonical, ["rev-parse", "--path-format=absolute", "--git-common-dir"], undefined)).stdout.trim(); }
   catch { return work(); }
   return withOperationLock(`repository:${await realpath(common)}`, async () => {
     if (await realpath(cwd) !== canonical) throw new Error("Workspace path changed before launch");
