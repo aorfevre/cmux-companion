@@ -1,0 +1,60 @@
+// Shared by Settings, the planner form, and the process boundary. Suggestions
+// are conveniences; safe custom model IDs do not require a code release.
+export const MODEL_PROVIDERS = ["claude", "codex"];
+export const MODEL_SUGGESTIONS = {
+  claude: ["default", "claude-opus-5", "claude-fable-5-1"],
+  codex: ["default", "gpt-6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+};
+export const MODEL_ROLES = [
+  { id: "planner", label: "Planner", description: "New goal plans and questions about their specification.", provider: true },
+  { id: "specReviewer", label: "Spec reviewer", description: "The optional second pass uses the other provider.", provider: false },
+  { id: "coder", label: "Coder", description: "Task launches, retries, dependency waves, and manually launched agents. Task provider choices still apply.", provider: false },
+  { id: "codeReviewer", label: "Code reviewer", description: "Post-delivery review requests and follow-ups that include a code review, using the selected provider.", provider: false },
+  { id: "merger", label: "Merge agent", description: "Combines completed tasks into the delivery branch.", provider: true },
+  { id: "followup", label: "Follow-up agent", description: "Additional tests, questions, and custom work after delivery.", provider: false },
+  { id: "issueAnalyzer", label: "Issue analyzer", description: "Groups GitHub issues into topics before planning.", provider: true },
+];
+export const DEFAULT_MODEL_ROLES = Object.fromEntries(MODEL_ROLES.map((role) => [role.id, {
+  ...(role.provider ? { provider: role.id === "planner" ? "codex" : "claude" } : {}),
+  models: ["specReviewer", "codeReviewer"].includes(role.id)
+    ? { claude: "claude-fable-5-1", codex: "gpt-5.6-sol" }
+    : { claude: "default", codex: role.id === "planner" ? "gpt-6" : "default" },
+}]));
+
+export function normalizeModelId(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}$/.test(value)) {
+    throw new TypeError("Model must be an ID of 1–160 letters, numbers, dots, underscores, colons, slashes, plus signs or hyphens");
+  }
+  return value;
+}
+
+export function roleEngine(roles, roleId, provider) {
+  const role = roles[roleId];
+  if (!role) throw new TypeError("Unknown model role");
+  const selected = provider ?? role.provider;
+  if (!MODEL_PROVIDERS.includes(selected)) throw new TypeError("Choose Claude or Codex");
+  return { provider: selected, model: normalizeModelId(role.models[selected]) };
+}
+
+export function patchModelRoles(current, patch) {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new TypeError("Model roles must be an object");
+  const next = structuredClone(current);
+  for (const [id, value] of Object.entries(patch)) {
+    const role = MODEL_ROLES.find((entry) => entry.id === id);
+    if (!role) throw new TypeError(`Unknown model role ${id}`);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`Invalid settings for ${role.label}`);
+    for (const [key, entry] of Object.entries(value)) {
+      if (key === "provider" && role.provider) {
+        if (!MODEL_PROVIDERS.includes(entry)) throw new TypeError("Choose Claude or Codex");
+        next[id].provider = entry;
+      } else if (key === "models") {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new TypeError("Models must be an object");
+        for (const [provider, model] of Object.entries(entry)) {
+          if (!MODEL_PROVIDERS.includes(provider)) throw new TypeError("Choose Claude or Codex");
+          next[id].models[provider] = normalizeModelId(model);
+        }
+      } else throw new TypeError(`Unknown ${role.label} setting ${key}`);
+    }
+  }
+  return next;
+}

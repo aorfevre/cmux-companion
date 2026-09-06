@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp } from "./app.mjs";
+import { ModelSettings, DEFAULT_MODEL_SETTINGS_PATH } from "./model-settings.mjs";
 import { CmuxClient } from "./cmux-client.mjs";
 import { PushService } from "./push-service.mjs";
 import { PreviewManager } from "./preview-manager.mjs";
@@ -29,6 +30,7 @@ export async function startServer({
   const repoCatalog = new RepoCatalog({ identityStore: openRepoIdentityStore() });
   const app = await buildApp({
     cmux,
+    modelSettings: new ModelSettings({ path: process.env.CMUX_COMPANION_MODEL_SETTINGS_FILE || DEFAULT_MODEL_SETTINGS_PATH }),
     token,
     repoCatalog,
     pushService,

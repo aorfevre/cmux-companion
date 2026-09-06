@@ -1,3 +1,4 @@
+import { ModelSettings } from "./model-settings.mjs";
 import { GoalSessionCollector } from "./goal-session-collector.mjs";
 import { resolve, relative } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
@@ -23,7 +24,7 @@ class TerminalGoalError extends TypeError {}
 // branch is ready by reading git, then hands the merge itself to one cmux agent:
 // a conflict needs judgement, which no subprocess can supply.
 export class GoalIntegrator {
-  constructor({ store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS, briefs = new AgentBriefs(), sessionCollector = null } = {}) {
+  constructor({ modelSettings = new ModelSettings(), store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS, briefs = new AgentBriefs(), sessionCollector = null } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
@@ -31,6 +32,7 @@ export class GoalIntegrator {
     this.worktrees = worktrees;
     this.repoCatalog = repoCatalog;
     this.cmux = cmux;
+    this.modelSettings = modelSettings;
     this.sessionCollector = sessionCollector || new GoalSessionCollector({ store, cmux, log });
     // The full brief goes to a file. cmux caps a prompt at 8,000 characters, so
     // every agent session gets a short pointer to that file instead.
@@ -307,7 +309,7 @@ export class GoalIntegrator {
           cwd: plan.integrationWorktreePath,
           title: mergeSessionTitle(plan),
           env: sessionEnv(plan, null),
-          agent: "claude",
+          ...this.modelSettings.workspace("merger"),
           prompt: this.briefs.pointerPrompt({ title: `Merge: ${plan.goal}`, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });
         const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
@@ -575,7 +577,7 @@ export class GoalIntegrator {
         const workspace = await this.cmux.workspaceCreate({
           cwd: path,
           title: sessionTitle(plan, effectiveTask),
-          agent: effectiveTask.agent,
+          ...this.modelSettings.workspace("coder", effectiveTask.agent),
           env: sessionEnv(plan, effectiveTask),
           prompt: this.briefs.pointerPrompt({ title: effectiveTask.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });
