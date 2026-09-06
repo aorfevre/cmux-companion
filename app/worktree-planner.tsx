@@ -539,9 +539,9 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       <section className="planner-engine-config" aria-label="Planner configuration">
-        <header><strong>Planner</strong><span>{providerOptions.label} ({providerOptions.family}) · {model === PLANNER_ENGINES.defaultModel ? "CCS default model" : modelLabel(provider, model)}</span></header>
+        <header><strong>Planner</strong><span>{providerOptions.label} ({providerOptions.family}) · {model === PLANNER_ENGINES.passthroughModel ? "CCS default model" : modelLabel(provider, model)}</span></header>
         <div className="planner-engine-controls">
-          <label><span>Engine</span><select aria-label="Planner engine" value={provider} onChange={(event) => { setProvider(event.target.value as PlannerProvider); setModel(PLANNER_ENGINES.defaultModel); }}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+          <label><span>Engine</span><select aria-label="Planner engine" value={provider} onChange={(event) => { setProvider(event.target.value as PlannerProvider); setModel(event.target.value === PLANNER_ENGINES.defaultProvider ? PLANNER_ENGINES.defaultModel : PLANNER_ENGINES.passthroughModel); }}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
           <label><span>Model</span><select aria-label="Planner model" value={model} onChange={(event) => setModel(event.target.value)}>{providerOptions.models.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
           <label><span>Effort</span><select aria-label="Planner effort" value={effort} onChange={(event) => setEffort(event.target.value)}>{PLANNER_ENGINES.efforts.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
         </div>

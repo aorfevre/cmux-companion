@@ -406,7 +406,7 @@ export function normalizePlannerEngine(engine) {
     throw new TypeError("Unknown planner provider. Choose Claude or Codex");
   }
   const providerOptions = PLANNER_ENGINES.providers[provider];
-  const model = engine.model ?? PLANNER_ENGINES.defaultModel;
+  const model = engine.model ?? (provider === PLANNER_ENGINES.defaultProvider ? PLANNER_ENGINES.defaultModel : PLANNER_ENGINES.passthroughModel);
   if (!providerOptions.models.some((option) => option.id === model)) {
     throw new TypeError(`Unknown ${providerOptions.label} planner model`);
   }
@@ -1468,7 +1468,7 @@ export class WorktreePlanner {
       "--allowed-tools", ALLOWED_TOOLS,
       "--disallowed-tools", DENIED_TOOLS,
     ];
-    if (engine.model !== PLANNER_ENGINES.defaultModel) args.push("--model", engine.model);
+    if (engine.model !== PLANNER_ENGINES.passthroughModel) args.push("--model", engine.model);
     if (engine.effort !== PLANNER_ENGINES.defaultEffort) args.push("--effort", engine.effort);
     if (sessionId) args.push("--resume", sessionId);
     // `--` is required, not cosmetic: --allowed-tools is variadic, so without a
