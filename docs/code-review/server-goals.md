@@ -2,6 +2,8 @@
 
 ## Summary
 
+T7 validation update (2026-09-06): findings were checked against post-refactor commit `c89984a`; original executed probes below remain attributed to their area review. Current consolidated dispositions and verification are in [the final review](README.md). Historical branch-isolation limitations below describe the original investigation, not missing assembled reports.
+
 Reviewed all 18 assigned modules in full (3,075 lines) at commit `444adaa059496acd27f24e75208e90bddf5cce38`, on 2026-09-05. This is the T2 area report for the combined review; it does not certify the other four area reports or implement T6's Git refactor.
 
 The strongest existing protections are per-plan integration serialization, separate assemble/settle timers, exact pushed-head readiness checks, conservative restored-session matching, and durable retirement records. The highest-value work is to close the late-abort and stale-session-activity windows, prevent simultaneous follow-up writers, and make timer/process shutdown and recovery reliable. These are verified code/probe findings, not claims of incidents in a live installation.
@@ -105,6 +107,8 @@ This documentation-only task adds no runtime logic or user-visible behavior. Exi
 
 ### GOAL-004 — Medium — Shutdown / timer lifecycle
 
+**Canonical disposition:** open; also owns the same stop/finalizer defect in the issue scheduler (PLN-007, [planning report](server-planning.md)). Both sites remain acceptance targets; they count once in the final canonical totals.
+
 **Location:** `server/goal-watchdog.mjs:60`, `server/goal-watchdog.mjs:66`, `server/goal-watchdog.mjs:73`.
 
 **Scenario/consequence:** `stop()` during an in-flight `check()` clears the old timer; the check's unconditional `finally(tick)` arms a new one afterward. App closure can therefore leave a watchdog running against resources already closed (`server/app.mjs:1100`). This does not prove the standalone executable stays alive, since its stop handler exits the process (`server/index.mjs:47`).
@@ -129,7 +133,7 @@ This documentation-only task adds no runtime logic or user-visible behavior. Exi
 
 **Scenario/consequence:** Authentication/network/timeout failure while checking the merge PR is treated exactly like confirmed PR absence. Settle persists “stopped without opening a pull request,” blocking a goal whose PR may actually exist. Healing deliberately does not retry such permanent-looking blocked errors (`server/goal-integrator.mjs:161`); later independent merge reconciliation may recover it, but its availability is not guaranteed.
 
-**Evidence:** P8 settled a running plan with no remaining task integration checks and injected an executor rejecting with `Error('authentication unavailable')`, code 42. The call resolved to blocked with “The merge agent stopped without opening a pull request…” rather than preserving uncertainty. JSON parsing also returns null on malformed output (`server/goal-integrator.mjs:771`). Existing tests cover PR present/absent (`tests/goal-integrator.test.mjs:375`, `tests/goal-integrator.test.mjs:386`). RepoCatalog already distinguishes known no-PR diagnostics from unavailable GitHub (`server/repo-catalog.mjs:300`).
+**Evidence:** P8 settled a running plan with no remaining task integration checks and injected an executor rejecting with `Error('authentication unavailable')`, code 42. The call resolved to blocked with “The merge agent stopped without opening a pull request…” rather than preserving uncertainty. JSON parsing also returns null on malformed output (`server/goal-integrator.mjs:771`). Existing tests cover PR present/absent (`tests/goal-integrator.test.mjs:375`, `tests/goal-integrator.test.mjs:386`). RepoCatalog already distinguishes known no-PR diagnostics from unavailable GitHub (`server/repo-catalog.mjs:301`).
 
 **Action:** Return a typed observed/absent/unavailable outcome, preserve diagnostic context, and leave transient/unavailable observations eligible for bounded retries. Test unauthorized, timeout, malformed JSON, confirmed absence and later recovery.
 
@@ -153,15 +157,15 @@ This documentation-only task adds no runtime logic or user-visible behavior. Exi
 
 **Action:** Evict entries for absent surfaces and add a bounded size/TTL policy compatible with single-plan inspect calls. Test clock advance, surface replacement, failed reads, overlapping inspect/sweep and active-entry reuse.
 
-### GOAL-009 — Low — Duplicated low-level Git setup
+### GOAL-009 — Low — Duplicated low-level Git setup — open residual
 
-**Location:** `server/task-association.mjs:7`, `server/task-association.mjs:8`; comparison boundaries `server/worktree-inventory.mjs:13`, `server/repo-catalog.mjs:309`.
+**Location:** `server/task-association.mjs:7`, `server/task-association.mjs:8`; canonical runner at `server/worktree-operations.mjs:12`.
 
-**Scenario/consequence:** Task association maintains another execFile/promisify Git wrapper, with its own timeout, buffer and trimming policy. Inventory and RepoCatalog separately construct Git execution options. Fixes to execution defaults or option forwarding need multiple edits, and silently replacing one wrapper with another would change semantics.
+**Scenario/consequence:** Task association still owns a separate execFile/promisify Git wrapper (30 seconds, 1 MiB, trimmed stdout), so low-level invocation maintenance has one remaining independent site.
 
-**Evidence:** Static comparison confirms association trims stdout and uses a 30-second/1-MiB call; inventory returns raw stdout with a 30-second/16-MiB call and noninteractive environment overrides; RepoCatalog returns raw stdout under its semaphore and injectable executor. The goal integrator already delegates Git to RepoCatalog (`server/goal-integrator.mjs:612`) while its separate executor handles gh (`server/goal-integrator.mjs:616`); that distinction must survive. Shared porcelain parsing is adjacent T6 scope: inventory and dashboard independently parse worktree porcelain (`server/worktree-inventory.mjs:16`, `server/worktree-dashboard.mjs:862`), not an additional parser hidden in these 18 modules.
+**Evidence:** T7 source comparison confirms that wrapper remains unchanged. The overlapping inventory/catalog/launch setup and inventory/dashboard parser claims are consolidated into canonical PLAT-007 and resolved by T6. Catalog still owns its semaphore and injected executor at `server/repo-catalog.mjs:310`; integrator delegates Git there at `server/goal-integrator.mjs:612` and separately executes gh at `server/goal-integrator.mjs:616`.
 
-**Action:** T6 should centralize low-level execution construction and porcelain parsing behind adapters, retaining caller-specific raw/trimmed output, environment, timeout/buffer defaults, injected execution, original rejection objects and RepoCatalog semaphore ownership. Reuse the association and cleanup real-Git regressions. This report recommends the bounded refactor; it makes no source changes and does not claim it is completed.
+**Action:** Optionally migrate association onto runGit while preserving its timeout, buffer, stdout trimming and original rejection; retain `tests/task-association.test.mjs:9`. This residual was outside T6’s three execution sites. Do not count the delivered parser/runner duplication again as open.
 
 ### Rejected or unverified claims
 

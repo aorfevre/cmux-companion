@@ -2,6 +2,8 @@
 
 ## Summary
 
+T7 validation update (2026-09-06): the current source and T6 tests were rechecked at `c89984a`; assembled coverage, final dispositions and newly executed gates are in [the final review](README.md). Historical isolated-branch limitations below no longer describe missing peer reports. PLAT-007 is resolved only for the supported NUL-framed Git boundary and three migrated invocation sites; the remaining association wrapper is GOAL-009.
+
 Review version: 1.1, 2026-09-06 (T6 resolution update). Source baseline: `444adaa059496acd27f24e75208e90bddf5cce38`. Scope: T3, 23 complete server modules (6,269 lines). The original T3 investigation changed no source or tests. Findings describe that baseline; PLAT-007 below records the delivered T6 refactor. Citations in touched modules have been refreshed.
 
 The highest-value work is to make manual worktree deletion fail closed on unavailable status and session evidence (PLAT-001 and PLAT-006). Automatic cleanup already demonstrates substantially stronger safeguards. Next, serialize preview allocation and fix the queue and reconnect lifecycle contracts. T6 has resolved the confirmed porcelain parser and low-level Git invocation duplication (PLAT-007), retaining the adapters, concurrency limits, dependency injection, and errors.

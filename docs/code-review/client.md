@@ -2,6 +2,8 @@
 
 ## Summary
 
+T7 validation update (2026-09-06): findings were checked against post-refactor commit `c89984a`; original executed probes below remain attributed to their area review. Current consolidated dispositions and verification are in [the final review](README.md). Historical branch-isolation limitations below describe the original investigation, not missing assembled reports.
+
 Review version: 1.0, 2026-09-05. Source baseline: `444adaa059496acd27f24e75208e90bddf5cce38`. Scope: T4, client and PWA; documentation only. Severity means High: potentially wrong agent input/context; Medium: a broken workflow or access barrier; Low: localized presentation or maintenance cost. Findings below distinguish code-traced scenarios from executed reproductions; passing existing tests does not disprove an uncovered scenario.
 
 The strongest foundations are shared lifecycle derivation, in-flight GET sharing, explicit cleanup previews, and safe text rendering. The highest-value work is, in order: prevent stale terminal/queue responses and failed-save sends (CLIENT-001/002); keep feedback visible and make sheets operable by keyboard (CLIENT-003/005); repair Markdown and offline-shell failures (CLIENT-007/008); enforce closed-goal UI state and reconnect ordering (CLIENT-004/009); then consolidate preferences, requests, attachments, and CSS (CLIENT-006/010/011). Avoid a wholesale board rewrite: its existing behavioral coverage is valuable.
