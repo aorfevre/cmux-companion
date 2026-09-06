@@ -4,7 +4,7 @@ Updated 2026-09-06 against main `708398551e6a82d74faf04d8c1022c0e0605cdb2`. This
 
 ## Conflict resolution
 
-The only conflict was `package.json`'s explicit backend test command. The resolution retains main's test-list guard and model-settings suite plus this PR's worktree-operations suite: 47 non-live Node suites, each named exactly once. No runtime refactor conflict occurred; the canonical parser, caller adapters and Git execution policies remain intact.
+The only conflict was `package.json`'s explicit backend test command. The resolution retains main's test-list guard and model-settings suite plus this PR's worktree-operations suite: 47 non-live Node suites, each named exactly once. Main advanced during validation with the model-picker fix (#77); that update merged cleanly and the gates were rerun. No runtime refactor conflict occurred; the canonical parser, caller adapters and Git execution policies remain intact.
 
 ## Review snapshot and current applicability
 
@@ -35,6 +35,6 @@ Recommended order: test isolation, deletion safety and failed-save handling, the
 - `npm run verify` passed: 928 backend tests, 96 UI tests, lint, typecheck and production build. Default persistence was redirected to a disposable directory using a temporary Node preload overriding `os.homedir` (with `syncBuiltinESMExports`) and explicit `CMUX_COMPANION_HOME`, `CMUX_COMPANION_PLANS_DB` and `CMUX_COMPANION_REPO_DB`; shell HOME was unchanged.
 - `node docs/code-review/check-review.mjs` passed: snapshot partition 15/18/23, client 26, tooling 88, 48 finding IDs, 854 citations; current non-live test membership 47.
 - The audit utility's standalone ESLint initially found an unused loop index after the snapshot change; the index was removed and the check passed.
-- Local Cypress: pending completion.
+- Initial integration against `c6f2a25`: local Cypress passed all 64 tests across 14 specs. After incorporating #77, `npm run test:e2e:local` passed all 65 tests across 14 specs, including the worktree-list compatibility and updated model-picker coverage.
 
 Dependency installation reports one moderate advisory in the unchanged lockfile; build emits large-chunk and vinext route-classification advisories. No live-agent, installed-companion, real-device PWA, merge or deployment checks were run. Hosted CI status is recorded in the PR after pushing.

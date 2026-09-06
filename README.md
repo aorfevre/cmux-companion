@@ -548,7 +548,8 @@ and code reviews start with Fable 5.1. Coding, merging, follow-ups, and issue an
 The Settings panel also selects the default provider for planning, merging,
 and issue analysis. Task assignment and explicit provider choices still apply.
 
-Choose a suggestion or enter a custom provider model ID. `default` explicitly
+Choose a model from the full dropdown or select **Custom model…** to enter a
+provider model ID, then **Save model defaults**. `default` explicitly
 lets the provider choose its model. Save applies the choices across paired
 devices and survives restarts. Reset restores one role's built-in values;
 press Save to apply it. A failed save keeps the previous configuration active.
