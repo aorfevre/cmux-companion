@@ -116,4 +116,3 @@ function quoted(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim().slice(0, 40);
   return text ? `"${text}"` : "";
 }
-

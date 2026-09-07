@@ -44,4 +44,3 @@ export function FollowupSheet({ plan, busy, onClose, onSubmit }: { plan: PlanSum
     <div className="goal-followup-submit"><button type="button" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" className="primary-button" disabled={busy}>{busy ? "Starting follow-up…" : "Submit follow-up"}</button></div>
   </form></>;
 }
-
