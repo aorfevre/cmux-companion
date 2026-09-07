@@ -990,7 +990,7 @@ export async function buildApp({
       if (!question || request.body?.kind !== "question") throw new TypeError("This goal question changed. Open its current conversation");
       const selections = request.body?.selections;
       if (!Array.isArray(selections) || selections.length !== 1 || typeof selections[0] !== "string" || !selections[0].trim()) throw new TypeError("Answer the goal question");
-      const result = await goalSessions.answer(question.planId, { generation: question.generation, feedback: selections[0].trim() });
+      const result = await goalSessions.answer(question.planId, { generation: question.generation, questionRevision: question.questionRevision, feedback: selections[0].trim() });
       inboxSnapshot = null;
       return { ok: true, result };
     }
@@ -1198,7 +1198,7 @@ export function managedGoalInbox(plans = []) {
     .map((plan) => {
       const version = createHash("sha256").update(JSON.stringify([plan.planId, plan.goalSessionGeneration, plan.goalSessionQuestionRevision])).digest("hex");
       const id = `goal-question-${version}`;
-      return { id, requestId: id, type: "request", kind: "question", planId: plan.planId, generation: plan.goalSessionGeneration,
+      return { id, requestId: id, type: "request", kind: "question", planId: plan.planId, generation: plan.goalSessionGeneration, questionRevision: plan.goalSessionQuestionRevision,
         workspaceId: plan.goalSessionWorkspaceId, title: "Goal needs your answer", subtitle: plan.goal,
         body: plan.questions.map((question) => question.text).join("\n"),
         questionOptions: plan.questions.length === 1 ? [...(plan.questions[0].options || []), "Write reply…"] : ["Write reply…"] };
