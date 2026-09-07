@@ -246,7 +246,7 @@ function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo
     <main className="detail-shell">
       <header className="detail-header"><button className="back-button" onClick={props.onBack}>‹ <span>Back</span></button><div><strong>{props.workspace.title}</strong><span>{compactPath(props.workspace.current_directory)}</span></div><button className="session-menu-button" aria-label="Session menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><span className={`status-orb ${sessionState(props.workspace).tone}`} />•••</button></header>
       {props.context && <aside className={`notification-context ${props.context.kind}`}><div><strong>{props.context.kind === "failure" ? "A command or test failed" : props.context.kind === "pullRequest" ? "Pull request updated" : props.context.kind === "completion" ? "Work is ready to review" : "Session update"}</strong><span>You opened this session from a notification.</span></div>{props.context.file && <button onClick={() => props.onMarkdown(props.context!.file!)}>Open {props.context.file.split("/").pop()}</button>}<button aria-label="Dismiss notification context" onClick={props.onDismissContext}>×</button></aside>}
-      <ManagedGoalControls workspaceId={props.workspace.id} />
+      <ManagedGoalControls workspaceId={props.workspace.id} readOnly={props.readOnly} />
       {props.tab === "terminal" && <TerminalPanel {...props} fontSize={fontSize} fitToPhone={fitToPhone} shortcutsOpen={shortcutsOpen} onShortcuts={setShortcutsOpen} />}
       {props.tab === "tasks" && <HealthPanel workspace={props.workspace} terminal={props.terminal} onChanged={props.onChanged} onNotice={props.onNotice} />}
       {props.tab === "changes" && <ChangesPanel repo={props.repo} onMarkdown={props.onMarkdown} />}
@@ -256,49 +256,58 @@ function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo
 }
 
 
-export function ManagedGoalControls({ workspaceId }: { workspaceId: string }) {
+export function ManagedGoalControls({ workspaceId, readOnly = false }: { workspaceId: string; readOnly?: boolean }) {
+  return <GoalControlsForWorkspace key={workspaceId} workspaceId={workspaceId} readOnly={readOnly} />;
+}
+
+function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: string; readOnly: boolean }) {
   const [plan, setPlan] = useState<PlanDraft | null>(null);
   const [changes, setChanges] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"approve" | "changes" | null>(null);
   const [error, setError] = useState("");
-  const load = useCallback(async () => {
-    try {
-      const result = await api<{ plan: PlanDraft | null }>(`/api/goal-sessions/workspace/${encodeURIComponent(workspaceId)}`);
-      setPlan(result.plan); setError("");
-    } catch { setPlan(null); }
-  }, [workspaceId]);
+  const [readError, setReadError] = useState("");
+  const ownedRead = useOwnedReads(workspaceId);
+  const mutation = useRef(0);
+  const load = useCallback(() => ownedRead("goal",
+    async (signal) => { const version = mutation.current; const result = await api<{ plan: PlanDraft | null }>(`/api/goal-sessions/workspace/${encodeURIComponent(workspaceId)}`, { signal }); return { ...result, version }; },
+    (result) => { if (result.version === mutation.current) { setPlan(result.plan); setReadError(""); } },
+    () => setReadError("Could not refresh this goal. Refresh before approving.")), [workspaceId, ownedRead]);
   useEffect(() => {
     const kickoff = setTimeout(() => { void load(); }, 0);
     const poll = setInterval(() => { void load(); }, 2_500);
     return () => { clearTimeout(kickoff); clearInterval(poll); };
   }, [load]);
   async function approve() {
-    if (!plan?.proposalRevision || !plan.goalSessionGeneration) return;
-    setBusy(true); setError("");
+    if (readOnly || busy || readError || !plan?.proposalRevision || !plan.goalSessionGeneration) return;
+    mutation.current += 1;
+    setBusy("approve"); setError("");
     try {
       setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/approve`, { method: "POST", body: JSON.stringify({ generation: plan.goalSessionGeneration, revision: plan.proposalRevision }) }));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not approve this proposal"); }
-    finally { setBusy(false); }
+    finally { mutation.current += 1; setBusy(null); }
   }
   async function requestChanges() {
-    if (!plan?.proposalRevision || !plan.goalSessionGeneration || !changes.trim()) return;
-    setBusy(true); setError("");
+    if (readOnly || busy || readError || !plan?.proposalRevision || !plan.goalSessionGeneration || !changes.trim()) return;
+    mutation.current += 1;
+    setBusy("changes"); setError("");
     try {
       setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/request-changes`, { method: "POST", body: JSON.stringify({ generation: plan.goalSessionGeneration, revision: plan.proposalRevision, feedback: changes.trim() }) }));
       setChanges("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not request proposal changes"); }
-    finally { setBusy(false); }
+    finally { mutation.current += 1; setBusy(null); }
   }
-  if (!plan) return null;
-  if (plan.goalSessionState === "awaiting_input") return <section className="planner-delivery-status" aria-label="Managed goal questions"><strong>Goal needs your answer</strong>{plan.questions.map((question) => <p key={question.id}>Question: {question.text}{question.options.length ? ` (${question.options.join(" / ")})` : ""}</p>)}<p>Reply in this visible conversation to continue planning.</p></section>;
-  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <section className="planner-delivery-status" aria-label="Managed goal status"><strong>Managed goal</strong><p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "The agent is investigating this goal in the visible conversation.")}</p></section>;
+  if (!plan) return readError ? <p role="alert">{readError}</p> : null;
+  const errors = <>{error && <p role="alert">{error}</p>}{readError && <p role="alert">{readError}</p>}</>;
+  if (plan.goalSessionState === "awaiting_input") return <section className="planner-delivery-status" aria-label="Managed goal questions"><strong>Goal needs your answer</strong>{plan.questions.map((question) => <p key={question.id}>Question: {question.text}{question.options.length ? ` (${question.options.join(" / ")})` : ""}</p>)}<p>Reply in this visible conversation to continue planning.</p>{errors}</section>;
+  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong><p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "The agent is investigating this goal in the visible conversation.")}</p>{errors}</section>;
   return <section className="planner-delivery-status" aria-label="Proposal awaiting approval"><strong>Proposal revision {plan.proposalRevision}</strong><p>{plan.proposal.intendedBehavior || plan.goal}</p>
     {plan.proposal.scope?.length ? <p>Scope: {plan.proposal.scope.join(" · ")}</p> : null}
     {plan.proposal.assumptions?.length ? <p>Assumptions: {plan.proposal.assumptions.join(" · ")}</p> : null}
     {plan.proposal.verification?.length ? <p>Verify: {plan.proposal.verification.join(" · ")}</p> : null}
-    <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} maxLength={4_000} rows={2} onChange={(event) => setChanges(event.target.value)} /></label>
-    {error && <p role="alert">{error}</p>}
-    <div className="planner-actions"><button type="button" disabled={busy || !changes.trim()} onClick={requestChanges}>Request changes</button><button type="button" className="primary-button" disabled={busy} onClick={approve}>{busy ? "Approving…" : "Approve and implement"}</button></div>
+    <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} disabled={readOnly || Boolean(busy)} maxLength={4_000} rows={2} onChange={(event) => setChanges(event.target.value)} /></label>
+    {errors}
+    {readOnly && <p>Enable input in the session menu to approve or request changes.</p>}
+    <div className="planner-actions"><button type="button" disabled={readOnly || Boolean(readError) || Boolean(busy) || !changes.trim()} onClick={requestChanges}>{busy === "changes" ? "Sending…" : "Request changes"}</button><button type="button" className="primary-button" disabled={readOnly || Boolean(readError) || Boolean(busy)} onClick={approve}>{busy === "approve" ? "Approving…" : "Approve and implement"}</button></div>
   </section>;
 }
 
