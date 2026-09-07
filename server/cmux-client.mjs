@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -18,6 +19,7 @@ const ALLOWED_KEYS = new Set([
 const ALLOWED_TODO_ACTIONS = new Set(["check", "uncheck", "start"]);
 const ALLOWED_AGENTS = new Set(["shell", "codex", "claude"]);
 const CLIENT_ID_PATTERN = /^[a-zA-Z0-9:_-]{8,128}$/;
+const GOAL_SESSION_RUNNER = fileURLToPath(new URL("./goal-session-runner.mjs", import.meta.url));
 
 export class CmuxCommandError extends Error {
   constructor(message, { code, stderr } = {}) {
@@ -253,7 +255,7 @@ export class CmuxClient {
     return withWorkspaceLaunch(options.cwd, () => this.createWorkspaceLocked(options));
   }
 
-  async createWorkspaceLocked({ cwd, title, agent = "shell", model = "default", prompt = "", script = null, env = null }) {
+  async createWorkspaceLocked({ cwd, title, agent = "shell", model = "default", prompt = "", script = null, env = null, goalSession = null }) {
     if (typeof cwd !== "string" || !cwd.startsWith("/")) throw new TypeError("Invalid repository path");
     // cmux accepts a cwd that does not exist and creates the workspace anyway.
     // Its shell then cannot enter the directory and silently keeps the one cmux
@@ -264,6 +266,7 @@ export class CmuxClient {
     if (typeof title !== "string" || !title.trim() || title.trim().length > 100) throw new TypeError("Invalid workspace title");
     if (typeof prompt !== "string" || prompt.length > 8_000) throw new TypeError("Prompt is too long");
     if (script !== null && !/^[a-zA-Z0-9:_-]{1,64}$/.test(script)) throw new TypeError("Invalid package script");
+    if (goalSession !== null && (!/^[0-9a-f-]{36}$/i.test(String(goalSession?.planId || "")) || typeof goalSession?.databasePath !== "string" || !goalSession.databasePath.startsWith("/"))) throw new TypeError("Invalid goal session runner");
 
     // A title is what a person reads, and a person can rename it. These stamps
     // are the identity that survives that, so a later sweep can still say which
@@ -277,7 +280,8 @@ export class CmuxClient {
     const workspaceId = created.workspace_id || created.workspace_ref;
     assertTarget(workspaceId);
     let command = "";
-    if (script) command = `npm run ${script}`;
+    if (goalSession) throw new TypeError("Start a goal session runner after its workspace is recorded");
+    else if (script) command = `npm run ${script}`;
     else if (agent === "codex" || agent === "claude") command = `${agent === "codex" ? "xcodex" : "xclaude"}${modelFlag}${prompt.trim() ? ` ${shellQuote(prompt.trim())}` : ""}`;
     else if (prompt.trim()) command = `printf '%s\\n' ${shellQuote(prompt.trim())}`;
     const text = `${exports}${command}`;
@@ -290,6 +294,18 @@ export class CmuxClient {
     if (typeof title !== "string" || !title.trim() || title.trim().length > 100) throw new TypeError("Invalid workspace title");
     await this.run(["workspace", "rename", workspaceId, "--title", title.trim()]);
     return { ok: true };
+  }
+
+  // This is deliberately narrower than surface.send_text: callers cannot use
+  // it to inject a shell command. The runner has one checked-in entry point
+  // and receives only a UUID, database path and immutable generation.
+  async workspaceStartGoalSessionRunner(workspaceId, { planId, databasePath, generation }) {
+    assertTarget(workspaceId);
+    if (!/^[0-9a-f-]{36}$/i.test(String(planId || "")) || typeof databasePath !== "string" || !databasePath.startsWith("/") || !Number.isInteger(generation) || generation < 1) {
+      throw new TypeError("Invalid goal session runner");
+    }
+    const command = `${shellQuote(process.execPath)} ${shellQuote(GOAL_SESSION_RUNNER)} ${shellQuote(planId)} ${shellQuote(databasePath)} ${shellQuote(String(generation))}\n`;
+    return this.rpc("surface.send_text", { workspace_id: workspaceId, text: command });
   }
 
   async workspaceClose(workspaceId) {

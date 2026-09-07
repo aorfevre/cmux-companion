@@ -2,6 +2,7 @@ import { releaseRetention } from "./release-retention.mjs";
 import { WorktreeCleanup } from "./worktree-cleanup.mjs";
 import { WorktreeInventory, processActivity } from "./worktree-inventory.mjs";
 import { GoalSessionCollector } from "./goal-session-collector.mjs";
+import { GoalSessionService } from "./goal-session-service.mjs";
 import Fastify from "fastify";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -128,6 +129,7 @@ export async function buildApp({
   const briefs = agentBriefs || new AgentBriefs();
   const planner = worktreePlanner
     || new WorktreePlanner({ worktrees, cmux, modelSettings, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
+  const goalSessions = planStore ? new GoalSessionService({ store: planStore, worktrees, cmux, modelSettings, log: app.log }) : null;
   // The one writer in the supervision path. It closes a cmux session only when
   // the plan records it and its work is delivered, so it is always safe to call
   // it; the switch below is about the timer, not about the rule.
@@ -562,6 +564,27 @@ export async function buildApp({
     }
     if (request.body?.background === true) return reply.code(202).send(await planner.startBackground(goal));
     return reply.code(201).send(await reportRound(request.body?.traceId, (onEvent) => planner.start({ ...goal, onEvent })));
+  });
+
+  // This path is deliberately separate from legacy bulk planning. It starts
+  // one owned worktree and one visible managed conversation; old plans retain
+  // their saved task-split and launch behavior unchanged.
+  app.post("/api/goal-sessions", async (request, reply) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    const plan = await goalSessions.start(request.body || {});
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return reply.code(201).send(plan);
+  });
+
+  app.post("/api/goal-sessions/:planId/approve", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    return goalSessions.approve(request.params.planId, request.body || {});
+  });
+
+  app.post("/api/goal-sessions/:planId/request-changes", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    return goalSessions.requestChanges(request.params.planId, request.body || {});
   });
 
   app.post("/api/worktree-plans/:planId/answers", async (request, reply) => {
