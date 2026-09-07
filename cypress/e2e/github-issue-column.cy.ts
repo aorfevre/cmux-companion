@@ -97,6 +97,40 @@ describe("GitHub Sync and the GitHub Issues column", () => {
       });
   });
 
+  it("returns an aborted issue to the list without restarting or deleting its history", () => {
+    const goal = "Resolve GitHub issue #12: Restore the caret";
+    const oldPlan = { planId: "aborted-issue", repositoryId: starred.id, repositoryName: starred.name, goal,
+      boardStatus: "aborted", boardState: "aborted", status: "draft", stage: "questions", round: 0, taskCount: 0,
+      createdAt: now, updatedAt: now, launchedAt: null, issueNumbers: [12], workflow: "goal_session" };
+    const state: Column = { issues: [{ ...starredIssue, planId: oldPlan.planId }], plans: [oldPlan] };
+    installBoard(state);
+    let returns = 0;
+    cy.intercept("POST", "**/api/worktree-plans/aborted-issue/return-issues", (request) => {
+      returns += 1;
+      if (returns === 1) { request.reply({ statusCode: 503, body: { error: "Storage unavailable" } }); return; }
+      state.plans = [{ ...oldPlan, issuesReturnedAt: now }];
+      request.reply({ planId: oldPlan.planId, issuesReturnedAt: now });
+    }).as("returnIssue");
+    visitBoard();
+    cy.findByRole("button", { name: /Expand Aborted/ }).click();
+    cy.findByRole("button", { name: `Return issues to GitHub list for ${goal}` }).click();
+    cy.contains("its history, branches and worktrees are kept").should("be.visible");
+    cy.findByRole("button", { name: `Cancel returning issues for ${goal}` }).click();
+    cy.then(() => expect(returns).to.equal(0));
+    cy.findByRole("button", { name: `Return issues to GitHub list for ${goal}` }).click();
+    cy.findByRole("button", { name: `Confirm return issues for ${goal}` }).click();
+    cy.wait("@returnIssue");
+    cy.contains("Storage unavailable").should("be.visible");
+    cy.findByRole("region", { name: "GitHub Issues" }).findByRole("button", { name: /^Start a goal/ }).should("not.exist");
+    cy.findByRole("button", { name: `Confirm return issues for ${goal}` }).click();
+    cy.wait("@returnIssue");
+    cy.findByRole("region", { name: "GitHub Issues" }).findByRole("button", { name: "Start a goal for #12 Restore the caret" }).should("be.visible");
+    cy.findByRole("region", { name: "Aborted" }).should("contain.text", goal).and("contain.text", "Issues returned to GitHub list");
+    visitBoard();
+    cy.findByRole("region", { name: "GitHub Issues" }).findByRole("button", { name: "Start a goal for #12 Restore the caret" }).should("be.visible");
+    cy.then(() => expect(returns).to.equal(2));
+  });
+
   it("opens the issue's managed conversation and waits for proposal approval", () => {
     const state: Column = { issues: [starredIssue], plans: [] };
     installBoard(state);

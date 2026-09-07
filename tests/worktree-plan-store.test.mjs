@@ -1402,3 +1402,25 @@ test("finds a managed goal only by its persisted workspace identity", (t) => {
   assert.equal(store.findGoalSessionByWorkspace("00000000-0000-4000-8000-000000000001")?.planId, "plan-1");
   assert.equal(store.findGoalSessionByWorkspace("workspace-not-owned"), null);
 });
+
+test("returning aborted issues retains history and releases the reservation exactly once", (t) => {
+  const store = memoryStore(t);
+  const input = { planId: "old", repositoryId: "repo", goal: "Issue goal", issueNumbers: [9, 10], issueUrls: ["https://github.com/acme/app/issues/9"] };
+  store.createPlan(input);
+  assert.throws(() => store.returnIssuesToBacklog("old"), /Only aborted/);
+  assert.throws(() => store.returnIssuesToBacklog("unknown"), /Unknown plan/);
+  store.recordGoalAborted("old");
+  const returned = store.returnIssuesToBacklog("old");
+  assert.equal(returned.boardStatus, "aborted");
+  assert.deepEqual(returned.issueNumbers, [9, 10]);
+  assert.deepEqual(returned.issueUrls, input.issueUrls);
+  assert.ok(returned.issuesReturnedAt);
+  assert.equal(store.returnIssuesToBacklog("old").issuesReturnedAt, returned.issuesReturnedAt);
+  assert.equal(store.events("old").filter((event) => event.kind === "issues_returned").length, 1);
+  store.createPlan({ ...input, planId: "new" });
+  assert.throws(() => store.createPlan({ ...input, planId: "third" }), /already belongs/);
+  assert.ok(store.list().find((plan) => plan.planId === "old").issuesReturnedAt);
+  seed(store, "no-issue");
+  store.recordGoalAborted("no-issue");
+  assert.throws(() => store.returnIssuesToBacklog("no-issue"), /no linked/);
+});

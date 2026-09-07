@@ -682,6 +682,12 @@ export async function buildApp({
   // ccs session instead of starting the goal again.
   app.post("/api/worktree-plans/:planId/resume", async (request) => planner.resume(request.params.planId));
 
+  app.post("/api/worktree-plans/:planId/return-issues", async (request) => {
+    if (!planStore) throw serviceUnavailable("Goal storage is unavailable");
+    const plan = planStore.returnIssuesToBacklog(request.params.planId);
+    return { planId: plan.planId, issuesReturnedAt: plan.issuesReturnedAt };
+  });
+
   app.delete("/api/worktree-plans/:planId", async (request) => planner.remove(request.params.planId));
 
   // A full plan is 8 tasks with prompts of up to 4,000 characters each, which

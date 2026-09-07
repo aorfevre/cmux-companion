@@ -188,6 +188,7 @@ export class GitHubIssuePlanner {
     const response = await this.planner.list({ repositoryId, status: "all", limit: 200 });
     const claimed = new Map();
     for (const plan of response?.plans || []) {
+      if (plan.issuesReturnedAt) continue;
       for (const number of plan.issueNumbers || []) claimed.set(Number(number), plan);
     }
     const conflicts = [...new Set(selections.flatMap((selection) => selection.issueNumbers).filter((number) => claimed.has(number)))];
