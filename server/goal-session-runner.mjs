@@ -3,6 +3,7 @@
 // Companion can prove the read-only tool surface before approval and can resume
 // the same compatible CCS conversation after a revision-bound decision.
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { finalEnvelope, parsePlannerReply, progressEvent, streamExecFile } from "./worktree-planner.mjs";
@@ -36,13 +37,17 @@ const TURN_TIMEOUT_MS = 30 * 60_000;
 const TURN_IDLE_TIMEOUT_MS = 5 * 60_000;
 const TURN_MAX_BUFFER = 1024 * 1024;
 
-export async function runGoalSession({ planId, databasePath, generation: generationArg = null, execute = runCcs, out = console.log, input = process.stdin, intervalMs = 1_000 } = {}) {
+export async function runGoalSession({ planId, databasePath, generation: generationArg = null, dispatchId: dispatchArg = null, execute = runCcs, out = console.log, input = process.stdin, intervalMs = 1_000 } = {}) {
   const store = new WorktreePlanStore({ path: databasePath });
   let plan = store.get(planId);
   if (!plan || plan.workflow !== "goal_session" || !plan.goalSessionWorktreePath) throw new Error("This goal session is unavailable");
   const generation = Number.isInteger(generationArg) ? generationArg : plan.goalSessionGeneration;
   if (generation !== plan.goalSessionGeneration) throw new Error("This goal session was replaced; reopen its current workspace");
-  store.claimGoalSessionRunner(planId, { generation, pid: process.pid });
+  // Direct invocations retain a safe local path for diagnostics and tests.
+  // The cmux boundary always supplies its preclaimed dispatch id.
+  const dispatchId = typeof dispatchArg === "string" && /^[0-9a-f-]{36}$/i.test(dispatchArg) ? dispatchArg : randomUUID();
+  if (!dispatchArg) store.claimGoalSessionRunnerDispatch(planId, { generation, dispatchId });
+  store.claimGoalSessionRunner(planId, { generation, pid: process.pid, dispatchId });
   out("Goal session started. I can investigate and refine the proposal here. Companion will require an approval card before implementation tools are enabled.");
   const lines = createInterface({ input, crlfDelay: Infinity });
   let turn = Promise.resolve();
@@ -55,6 +60,13 @@ export async function runGoalSession({ planId, databasePath, generation: generat
     const reply = parsePlannerReply(output, plan.specOptions);
     if (!reply.sessionId) throw new Error("The provider did not return a resumable conversation id");
     plan = store.recordGoalSessionProviderSession(planId, { generation, providerSessionId: reply.sessionId });
+    // Feedback can arrive while a read-only provider turn is running. It is
+    // durable and wins over this stale reply, so no proposal becomes visible
+    // until the queued request has been applied in the same conversation.
+    if (!pendingFeedback && store.get(planId)?.goalSessionPendingInput) {
+      out("New feedback was queued while I was planning. Revising before publishing a proposal.");
+      return;
+    }
     if (reply.status === "questions") {
       store.publishGoalSessionQuestions(planId, { generation, providerSessionId: reply.sessionId, questions: reply.questions });
       out(reply.questions.map((question) => `Question: ${question.text}${question.options.length ? ` (${question.options.join(" / ")})` : ""}`).join("\n"));
@@ -143,6 +155,11 @@ export async function runGoalSession({ planId, databasePath, generation: generat
     }
     if (current?.goalSessionState === "awaiting_input") {
       try { store.submitGoalSessionAnswer(planId, { generation, feedback }); }
+      catch (cause) { out(String(cause?.message || cause)); }
+      return;
+    }
+    if (current?.goalSessionState === "planning") {
+      try { store.queueGoalSessionSteering(planId, { generation, feedback }); out("Feedback queued. The next proposal will include it."); }
       catch (cause) { out(String(cause?.message || cause)); }
       return;
     }
@@ -236,6 +253,6 @@ function completionText(envelope) {
 }
 
 if (process.argv[1]?.endsWith("goal-session-runner.mjs")) {
-  const [planId, databasePath, generation] = process.argv.slice(2);
-  runGoalSession({ planId, databasePath, generation: Number(generation) }).catch((cause) => { console.error(cause?.message || cause); process.exitCode = 1; });
+  const [planId, databasePath, generation, dispatchId] = process.argv.slice(2);
+  runGoalSession({ planId, databasePath, generation: Number(generation), dispatchId }).catch((cause) => { console.error(cause?.message || cause); process.exitCode = 1; });
 }

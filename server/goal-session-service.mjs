@@ -51,17 +51,18 @@ export class GoalSessionService {
     let plan = this.store.get(planId);
     if (!plan || plan.workflow !== "goal_session" || plan.boardStatus) throw new TypeError("This managed goal session is unavailable");
     if (!plan.goalSessionWorktreePath) throw new TypeError("This goal stopped before its worktree was recorded. Start a new goal rather than risking a second checkout");
-    if (!plan.goalSessionWorkspaceId) {
-      if (plan.goalSessionState !== "starting") throw new TypeError("This goal session has no recoverable workspace");
-      const workspace = await this.cmux.workspaceCreate({ cwd: plan.goalSessionWorktreePath, title: `Goal · ${plan.goal.slice(0, 72)}`, agent: "shell" });
-      plan = this.store.recordGoalSessionStart(plan.planId, {
-        worktreePath: plan.goalSessionWorktreePath, workspaceId: workspace.workspace_id, generation: plan.goalSessionGeneration,
-      });
-    }
+    if (!plan.goalSessionWorkspaceId) throw new TypeError("This goal stopped before its workspace identity was recorded. Recovery will not create a second conversation");
     const activePid = plan.goalSessionRunnerPid;
-    if (activePid && this.processAlive(activePid)) throw new TypeError("This goal session runner is still active in its workspace");
+    if (activePid && this.processAlive(activePid)) {
+      // A provider failure leaves the runner alive and holding this workspace.
+      // It can consume a durable retry queue; starting another process here
+      // would create a second writer in the same terminal.
+      if (plan.goalSessionError && plan.goalSessionState === "planning") return this.store.retryGoalSessionTurn(plan.planId, { generation: plan.goalSessionGeneration });
+      throw new TypeError("This goal session runner is still active in its workspace");
+    }
     if (activePid) this.store.clearDeadGoalSessionRunner(plan.planId, { generation: plan.goalSessionGeneration, pid: activePid });
     plan = this.store.get(plan.planId);
+    if (plan.goalSessionRunnerDispatchId) throw new TypeError("Starting this goal session runner is still uncertain. Reopen its recorded conversation before retrying");
     if (plan.goalSessionError && plan.goalSessionState === "planning") plan = this.store.retryGoalSessionTurn(plan.planId, { generation: plan.goalSessionGeneration });
     await this.#startRunner(plan);
     return this.store.get(plan.planId);
@@ -75,9 +76,16 @@ export class GoalSessionService {
 
   async #startRunner(plan) {
     if (!plan?.goalSessionWorkspaceId || !plan?.goalSessionGeneration) throw new TypeError("This goal session has no durable workspace");
-    await this.cmux.workspaceStartGoalSessionRunner(plan.goalSessionWorkspaceId, {
-      planId: plan.planId, databasePath: this.store.path, generation: plan.goalSessionGeneration,
-    });
+    const dispatchId = randomUUID();
+    this.store.claimGoalSessionRunnerDispatch(plan.planId, { generation: plan.goalSessionGeneration, dispatchId });
+    try {
+      await this.cmux.workspaceStartGoalSessionRunner(plan.goalSessionWorkspaceId, {
+        planId: plan.planId, databasePath: this.store.path, generation: plan.goalSessionGeneration, dispatchId,
+      });
+    } catch (cause) {
+      this.store.releaseGoalSessionRunnerDispatch(plan.planId, { generation: plan.goalSessionGeneration, dispatchId });
+      throw cause;
+    }
   }
 
   findByWorkspace(workspaceId) { return this.store.findGoalSessionByWorkspace(workspaceId); }

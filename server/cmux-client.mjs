@@ -299,12 +299,12 @@ export class CmuxClient {
   // This is deliberately narrower than surface.send_text: callers cannot use
   // it to inject a shell command. The runner has one checked-in entry point
   // and receives only a UUID, database path and immutable generation.
-  async workspaceStartGoalSessionRunner(workspaceId, { planId, databasePath, generation }) {
+  async workspaceStartGoalSessionRunner(workspaceId, { planId, databasePath, generation, dispatchId }) {
     assertTarget(workspaceId);
-    if (!/^[0-9a-f-]{36}$/i.test(String(planId || "")) || typeof databasePath !== "string" || !databasePath.startsWith("/") || !Number.isInteger(generation) || generation < 1) {
+    if (!/^[0-9a-f-]{36}$/i.test(String(planId || "")) || typeof databasePath !== "string" || !databasePath.startsWith("/") || !Number.isInteger(generation) || generation < 1 || !/^[0-9a-f-]{36}$/i.test(String(dispatchId || ""))) {
       throw new TypeError("Invalid goal session runner");
     }
-    const command = `${shellQuote(process.execPath)} ${shellQuote(GOAL_SESSION_RUNNER)} ${shellQuote(planId)} ${shellQuote(databasePath)} ${shellQuote(String(generation))}\n`;
+    const command = `${shellQuote(process.execPath)} ${shellQuote(GOAL_SESSION_RUNNER)} ${shellQuote(planId)} ${shellQuote(databasePath)} ${shellQuote(String(generation))} ${shellQuote(dispatchId)}\n`;
     return this.rpc("surface.send_text", { workspace_id: workspaceId, text: command });
   }
 

@@ -32,7 +32,10 @@ test("starts one managed workspace and persists its uploaded goal context", asyn
   assert.equal(plan.goalSessionWorkspaceId, "workspace-goal");
   assert.deepEqual(plan.images, [{ path: "/attachments/reference.png", name: "reference.png" }]);
   assert.equal(calls.filter(([kind]) => kind === "create").length, 1);
-  assert.deepEqual(calls.find(([kind]) => kind === "runner").slice(1), ["workspace-goal", { planId: plan.planId, databasePath: ":memory:", generation: 1 }]);
+  const runner = calls.find(([kind]) => kind === "runner").slice(1);
+  assert.equal(runner[0], "workspace-goal");
+  assert.deepEqual({ planId: runner[1].planId, databasePath: runner[1].databasePath, generation: runner[1].generation }, { planId: plan.planId, databasePath: ":memory:", generation: 1 });
+  assert.match(runner[1].dispatchId, /^[0-9a-f-]{36}$/);
 });
 
 test("rejects malformed goal-session image references before creating a worktree", async (t) => {
@@ -79,4 +82,29 @@ test("records the worktree before cmux creates a workspace and recovers the exac
   assert.equal(recovered.goalSessionWorkspaceId, "workspace-goal");
   assert.equal(restarted.length, 1);
   assert.equal(restarted[0][0], "workspace-goal");
+});
+
+test("recovery queues a failed turn for its live owner without starting another runner", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "managed-plan", repositoryId: "repo", goal: "Ship billing" });
+  store.reserveGoalSession("managed-plan", { branch: "goal-session/managed", generation: 1 });
+  store.recordGoalSessionStart("managed-plan", { worktreePath: "/repo/managed", workspaceId: "workspace-managed", generation: 1 });
+  store.publishProposal("managed-plan", { generation: 1, providerSessionId: "provider", proposal: { intendedBehavior: "Ship billing" } });
+  store.requestProposalChanges("managed-plan", { generation: 1, revision: 1, feedback: "Keep exports stable." });
+  store.consumeGoalSessionInput("managed-plan", { generation: 1 });
+  store.recordGoalSessionInputFailure("managed-plan", { generation: 1, error: "provider timed out" });
+  const dispatchId = "00000000-0000-4000-8000-000000000010";
+  store.claimGoalSessionRunnerDispatch("managed-plan", { generation: 1, dispatchId });
+  store.claimGoalSessionRunner("managed-plan", { generation: 1, dispatchId, pid: process.pid });
+  let started = false;
+  const service = new GoalSessionService({
+    store, modelSettings: { roles: undefined }, processAlive: () => true,
+    worktrees: {}, cmux: { workspaceStartGoalSessionRunner: async () => { started = true; } },
+  });
+  const recovered = await service.recover("managed-plan");
+  assert.equal(started, false);
+  assert.equal(recovered.goalSessionActiveInput, null);
+  assert.equal(recovered.goalSessionPendingInput, "Keep exports stable.");
+  assert.equal(recovered.goalSessionError, null);
 });
