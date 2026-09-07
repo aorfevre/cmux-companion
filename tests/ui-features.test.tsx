@@ -702,7 +702,7 @@ describe("worktree goal planner", () => {
     assert.equal(engine.value, "codex");
     assert.equal(model.value, "gpt-6-astra");
     assert.equal(effort.value, "default");
-    assert.equal(reviewer.checked, false);
+    assert.equal(reviewer.checked, true);
     assert.ok(screen.getByText("Codex (xcodex) · Codex Astra"));
     assert.ok(within(model).getByRole("option", { name: "Codex Astra" }));
     await userEvent.selectOptions(model, "default");
@@ -721,7 +721,6 @@ describe("worktree goal planner", () => {
     await userEvent.selectOptions(model, "gpt-5.6-terra");
     await userEvent.selectOptions(effort, "high");
     assert.ok(screen.getByText("Codex (xcodex) · GPT-5.6 Terra"));
-    await userEvent.click(reviewer);
     assert.ok(screen.getByText("Reviewer: Claude Code (xclaude) · Fable 5.1 · xhigh effort"));
 
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
@@ -746,44 +745,112 @@ describe("worktree goal planner", () => {
     assert.equal(within(model).queryByRole("option", { name: "Fable 5.1" }), null);
     assert.ok(Array.from(model.options).some((option) => option.value === model.value));
     await userEvent.selectOptions(model, "gpt-6-astra");
-    await userEvent.click(screen.getByRole("checkbox", { name: "Code review" }));
+    assert.equal((screen.getByRole("checkbox", { name: "Code review" }) as HTMLInputElement).checked, true);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Review this goal");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
     const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
     assert.deepEqual(body.reviewOptions, { codeReview: true, reviewer: "codex", reviewerModel: "gpt-6-astra" });
     await userEvent.click(screen.getByRole("button", { name: /New goal/ }));
     assert.equal((screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement).value, "claude-fable-5-1");
-    assert.equal((screen.getByRole("checkbox", { name: "Code review" }) as HTMLInputElement).checked, false);
+    assert.equal((screen.getByRole("checkbox", { name: "Code review" }) as HTMLInputElement).checked, true);
   });
 
-  // AC-1. The six requests are goal-wide, so they must reach the server as one
-  // complete object: a missing key would let the contract validator believe a
-  // request was never made.
-  test("offers six Spec depth requests, sends all six keys, and resets them on New goal", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
-      return new Response(JSON.stringify(readyDraft), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+  const formChecks = {
+    "Add a reviewer pass": true, "Code review": true,
+    "Unit tests": true, "End-to-end tests": true, "Edge cases": true, "Refactor review": true,
+    "Screen wireframes": false, "Flowcharts": false,
+  };
+  const defaultSpecOptions = { unitTests: true, e2eTests: true, edgeCases: true, refactorPass: true, screenMocks: false, flowcharts: false };
+  const changedSpecOptions = { unitTests: false, e2eTests: false, edgeCases: true, refactorPass: false, screenMocks: true, flowcharts: true };
+  const changedChecks = { ...formChecks, "Add a reviewer pass": false, "Code review": false, "Unit tests": false, "End-to-end tests": false, "Refactor review": false, "Screen wireframes": true, "Flowcharts": true };
+  function assertFormChecks(expected = formChecks) {
+    for (const [name, checked] of Object.entries(expected)) {
+      assert.equal((screen.getByRole("checkbox", { name }) as HTMLInputElement).checked, checked, name);
+    }
+    assert.equal(within(screen.getByRole("region", { name: "Spec depth" })).getAllByRole("checkbox").length, 6);
+  }
+  async function changeFormChecks() {
+    for (const name of Object.keys(formChecks) as (keyof typeof formChecks)[]) {
+      if (formChecks[name] !== changedChecks[name]) await userEvent.click(screen.getByRole("checkbox", { name }));
+    }
+  }
 
-    const names = ["Unit tests", "End-to-end tests", "Edge cases", "Refactor review", "Screen wireframes", "Flowcharts"];
-    const depth = screen.getByRole("region", { name: "Spec depth" });
-    for (const name of names) assert.equal((within(depth).getByRole("checkbox", { name }) as HTMLInputElement).checked, false);
-    assert.ok(within(depth).getByText("Cover the new logic with unit tests."));
-    assert.ok(within(depth).getByText("Return a flowchart for each new or changed flow."));
+  for (const [button, endpoint] of [["Plan this goal", "/api/worktree-plans"], ["Start goal session", "/api/goal-sessions"]]) {
+    for (const changed of [false, true]) {
+      test(`${button} submits ${changed ? "explicit overrides after a failed submit" : "untouched review and spec defaults"} and resets on New goal`, async () => {
+        let fail = changed;
+        const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input) === endpoint && init?.method === "POST") {
+            if (fail) return new Response(JSON.stringify({ error: "Planner unavailable" }), { status: 503 });
+            return new Response(JSON.stringify(readyDraft), { status: 201 });
+          }
+          return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+        assertFormChecks();
+        if (changed) {
+          await changeFormChecks();
+          await userEvent.selectOptions(screen.getByRole("combobox", { name: "Code-review reviewer" }), "codex");
+          await userEvent.selectOptions(screen.getByRole("combobox", { name: "Code-review model" }), "gpt-6-astra");
+        }
+        await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
+        await userEvent.click(screen.getByRole("button", { name: button }));
+        if (changed) {
+          assert.ok(await screen.findByText("Planner unavailable"));
+          assertFormChecks(changedChecks);
+          assert.equal((screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement).value, "gpt-6-astra");
+          fail = false;
+          await userEvent.click(screen.getByRole("button", { name: button }));
+        }
+        const posts = fetchMock.mock.calls.filter(([url, init]) => String(url) === endpoint && init?.method === "POST");
+        assert.equal(posts.length, changed ? 2 : 1);
+        for (const [, init] of posts) {
+          const body = JSON.parse(String(init?.body));
+          assert.deepEqual(body.engine, { provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: !changed });
+          assert.deepEqual(body.specOptions, changed ? changedSpecOptions : defaultSpecOptions);
+          assert.deepEqual(body.reviewOptions, { codeReview: !changed, reviewer: changed ? "codex" : "claude", reviewerModel: changed ? "gpt-6-astra" : "claude-fable-5-1" });
+        }
+        await userEvent.click(await screen.findByRole("button", { name: "← New goal" }));
+        assertFormChecks();
+      });
+    }
+  }
 
-    await userEvent.click(within(depth).getByRole("checkbox", { name: "Unit tests" }));
-    await userEvent.click(within(depth).getByRole("checkbox", { name: "Screen wireframes" }));
+  test("parent-managed New goal remount restores every form default", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(readyDraft), { status: 200 })));
+    function Harness() {
+      const [generation, setGeneration] = useState(0);
+      return <WorktreePlannerSheet key={generation} repository={repository} onNewGoal={() => setGeneration((current) => current + 1)} onClose={() => {}} onNotice={() => {}} />;
+    }
+    render(<Harness />);
+    await changeFormChecks();
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-
-    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
-    assert.deepEqual(body.specOptions, { unitTests: true, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: true, flowcharts: false });
-
     await userEvent.click(await screen.findByRole("button", { name: "← New goal" }));
-    const reset = await screen.findByRole("region", { name: "Spec depth" });
-    for (const name of names) assert.equal((within(reset).getByRole("checkbox", { name }) as HTMLInputElement).checked, false);
+    assertFormChecks();
+    assert.equal((screen.getByRole("textbox", { name: "Goal" }) as HTMLTextAreaElement).value, "");
+  });
+
+  test("resuming a saved goal does not replace its disabled options with form defaults", async () => {
+    const saved = {
+      ...readyDraft,
+      engine: { provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false },
+      reviewOptions: { codeReview: false, reviewer: "claude", reviewerModel: "claude-fable-5-1" },
+      specOptions: { unitTests: false, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: false, flowcharts: false },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void input; void init;
+      return new Response(JSON.stringify(saved), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const resolved = vi.fn();
+    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onPlanResolved={resolved} onClose={() => {}} onNotice={() => {}} />);
+    assert.ok(await screen.findByRole("button", { name: "Launch 2 sessions" }));
+    assert.equal(screen.queryByRole("region", { name: "Spec depth" }), null);
+    assert.equal(screen.queryByRole("checkbox", { name: "Add a reviewer pass" }), null);
+    assert.deepEqual(resolved.mock.calls[0][0], saved);
+    assert.equal(fetchMock.mock.calls.some(([, init]) => init?.method === "POST"), false);
   });
 
   // AC-7. The coverage rows come from the server. The artifacts come from a

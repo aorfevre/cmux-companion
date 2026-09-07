@@ -1,5 +1,5 @@
-// Specification rigor is an opt-in the user makes before any code exists. This
-// spec covers the whole visible arc: the six unchecked controls, the exact
+// Specification rigor is editable before any code exists. This
+// spec covers the whole visible arc: the six controls and their defaults, the exact
 // booleans that reach the server, and the Goal Passport that reports back how
 // each request was covered, ruled out or missed.
 //
@@ -393,43 +393,53 @@ describe("per-project development setup review", () => {
 });
 
 describe("specification rigor options", () => {
-  it("offers six unchecked controls and submits every one of them", () => {
-    installScenario({ plans: [] });
-    cy.intercept("POST", "**/api/worktree-plans", (request) => {
-      expect(request.body.specOptions).to.deep.equal({
-        unitTests: true, e2eTests: false, edgeCases: false, refactorPass: true, screenMocks: false, flowcharts: true,
+  for (const [button, endpoint] of [["Plan this goal", "worktree-plans"], ["Start goal session", "goal-sessions"]]) {
+    for (const changed of [false, true]) {
+      it(`${button} submits ${changed ? "explicit opt-outs and diagram opt-ins" : "untouched review and spec defaults"}`, () => {
+        cy.viewport(1280, 1400);
+        installScenario({ plans: [] });
+        cy.intercept("POST", `**/api/${endpoint}`, (request) => {
+          expect(request.body.specOptions).to.deep.equal(changed ? {
+            unitTests: false, e2eTests: false, edgeCases: true, refactorPass: false, screenMocks: true, flowcharts: true,
+          } : {
+            unitTests: true, e2eTests: true, edgeCases: true, refactorPass: true, screenMocks: false, flowcharts: false,
+          });
+          // Effort remains the only reasoning control.
+          expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: !changed });
+          expect(request.body.reviewOptions).to.deep.equal({ codeReview: !changed, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
+          request.reply({
+            planId: "plan-new", repositoryId: "repo-spec", repositoryName: "cmux-e2e-cypress", goal: GOAL,
+            status: "questions", stage: "questions", planStatus: "draft", running: true, round: 0,
+            questions: [], tasks: [], createdAt: now, updatedAt: now, launchedAt: null,
+          });
+        }).as("createPlan");
+        visitBoard();
+
+        cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+        cy.findByRole("dialog", { name: "Plan a goal" }).should("be.visible").within(() => {
+          cy.findByRole("region", { name: "Spec depth" }).should("be.visible");
+          SPEC_CONTROLS.forEach((label, index) => cy.findByRole("checkbox", { name: label }).should(index < 4 ? "be.checked" : "not.be.checked"));
+          cy.findByRole("region", { name: "Spec depth" }).findAllByRole("checkbox").should("have.length", SPEC_CONTROLS.length);
+          cy.findByRole("checkbox", { name: "Add a reviewer pass" }).should("be.checked");
+          cy.findByRole("checkbox", { name: "Code review" }).should("be.checked");
+
+          if (changed) {
+            for (const name of ["Add a reviewer pass", "Code review", "Unit tests", "End-to-end tests", "Refactor review"]) {
+              cy.findByRole("checkbox", { name }).uncheck().should("not.be.checked");
+            }
+            for (const name of ["Screen wireframes", "Flowcharts"]) cy.findByRole("checkbox", { name }).check().should("be.checked");
+          }
+          cy.findByRole("textbox", { name: "Goal" }).type(GOAL);
+          cy.screenshot(`goal-form-${endpoint}-${changed ? "overrides" : "defaults"}`, { capture: "fullPage" });
+          cy.findByRole("region", { name: "Spec depth" }).scrollIntoView().screenshot(`goal-spec-${endpoint}-${changed ? "overrides" : "defaults"}`);
+          cy.findByRole("button", { name: button }).click();
+        });
+
+        cy.wait("@createPlan");
+        cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
       });
-      // Effort stays the single extended-reasoning control. No second
-      // reasoning field may ride along with the requests.
-      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
-      request.reply({
-        planId: "plan-new", repositoryId: "repo-spec", repositoryName: "cmux-e2e-cypress", goal: GOAL,
-        status: "questions", stage: "questions", planStatus: "draft", running: true, round: 0,
-        questions: [], tasks: [], createdAt: now, updatedAt: now, launchedAt: null,
-      });
-    }).as("createPlan");
-    visitBoard();
-
-    cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
-    cy.findByRole("dialog", { name: "Plan a goal" }).should("be.visible").within(() => {
-      cy.findByRole("region", { name: "Spec depth" }).should("be.visible");
-      // Nothing is requested until the user asks for it.
-      SPEC_CONTROLS.forEach((label) => cy.findByRole("checkbox", { name: label }).should("not.be.checked"));
-      cy.findByRole("region", { name: "Spec depth" }).findAllByRole("checkbox").should("have.length", SPEC_CONTROLS.length);
-
-      cy.findByRole("textbox", { name: "Goal" }).type(GOAL);
-      cy.findByRole("checkbox", { name: "Unit tests" }).check();
-      cy.findByRole("checkbox", { name: "Refactor review" }).check();
-      cy.findByRole("checkbox", { name: "Flowcharts" }).check();
-      cy.findByRole("checkbox", { name: "Unit tests" }).should("be.checked");
-      cy.findByRole("checkbox", { name: "Edge cases" }).should("not.be.checked");
-
-      cy.findByRole("button", { name: "Plan this goal" }).click();
-    });
-
-    cy.wait("@createPlan");
-    cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
-  });
+    }
+  }
 
   it("reports covered, not-applicable and missing requests with their artifacts", () => {
     installScenario({ plans: [readySummary()] });
