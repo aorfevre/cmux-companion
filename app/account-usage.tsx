@@ -1,12 +1,15 @@
 "use client";
 
+import { LauncherReference } from "./provider-launchers";
+import { request } from "./api-request";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Cadence = "5h" | "daily" | "weekly" | "monthly" | "other";
 type UsageWindow = { id: string; cadence: Cadence; label: string; category: "usage" | "additional" | "code-review"; remainingPercent: number; resetAt: string | null; reported: true };
 type UsageAccount = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; windows: UsageWindow[] };
-type UsageProvider = { id: "claude" | "codex"; label: string; available: boolean; accounts: UsageAccount[] };
-type UsageResponse = { generatedAt: string; source: "CCS"; available: boolean; summary: Record<UsageAccount["status"], number>; providers: UsageProvider[] };
+type UsageProvider = { id: "claude" | "codex" | "kimi"; label: string; available: boolean; message?: string | null; accounts: UsageAccount[] };
+type UsageResponse = { generatedAt: string; source: string; available: boolean; summary: Record<UsageAccount["status"], number>; providers: UsageProvider[] };
 type ReconnectSession = { sessionId: string; provider: UsageProvider["id"]; status: "waiting" | "processing" | "success" | "error" | "expired" | "cancelled"; message: string; authUrl: string | null; expiresAt: string };
 
 const CORE_WINDOWS: Array<{ cadence: Exclude<Cadence, "other">; label: string }> = [
@@ -20,52 +23,64 @@ export function AccountUsageView({ onBack }: { onBack: () => void }) {
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [reconnecting, setReconnecting] = useState<{ provider: UsageProvider; account: UsageAccount } | null>(null);
+  const pending = useRef(false);
+  const mounted = useRef(false);
   const load = useCallback(async (refresh = false) => {
+    if (pending.current) return;
+    pending.current = true;
     setLoading(true);
     try {
-      const response = await fetch(`/api/account-usage${refresh ? "?refresh=1" : ""}`);
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || "Could not read CCS usage");
-      setUsage(body as UsageResponse);
-      setError("");
+      const body = await request<UsageResponse>(`/api/account-usage${refresh ? "?refresh=1" : ""}`);
+      if (mounted.current) { setUsage(body); setError(""); }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not read CCS usage");
+      if (mounted.current) setError(cause instanceof Error ? cause.message : "Could not read account usage");
     } finally {
-      setLoading(false);
+      pending.current = false;
+      if (mounted.current) setLoading(false);
     }
   }, []);
-  useEffect(() => { const timer = setTimeout(load, 0); return () => clearTimeout(timer); }, [load]);
+  useEffect(() => {
+    mounted.current = true;
+    const initial = setTimeout(() => void load(), 0);
+    const refreshVisible = () => { if (document.visibilityState === "visible") void load(); };
+    const poll = window.setInterval(refreshVisible, 60_000);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => { mounted.current = false; clearTimeout(initial); clearInterval(poll); document.removeEventListener("visibilitychange", refreshVisible); };
+  }, [load]);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   const total = useMemo(() => usage?.providers.reduce((sum, provider) => sum + provider.accounts.length, 0) || 0, [usage]);
   const attention = (usage?.summary.low || 0) + (usage?.summary.exhausted || 0) + (usage?.summary.reconnect || 0);
   const reconnectSuccess = useCallback(() => load(true), [load]);
 
   return <section className="account-usage-page">
-    <header className="usage-page-head"><button onClick={onBack}>‹ Settings</button><div><p className="eyebrow">CCS · LIVE QUOTA</p><h1>Licence usage</h1></div><button className="usage-refresh" disabled={loading} onClick={() => load(true)} aria-label="Refresh account usage">↻</button></header>
-    <p className="usage-intro">Remaining coding capacity for every account connected to CCS. Missing windows are never treated as zero.</p>
-    {usage && <div className="usage-summary"><span><strong>{total}</strong> accounts</span><span className={attention ? "attention" : "ready"}><strong>{attention}</strong> need attention</span><small>{relativeUpdated(usage.generatedAt)}</small></div>}
+    <header className="usage-page-head"><button onClick={onBack}>‹ Settings</button><div><p className="eyebrow">PROVIDERS · LIVE QUOTA</p><h1>Licence usage</h1></div><button className="usage-refresh" disabled={loading} onClick={() => load(true)} aria-label="Refresh account usage">↻</button></header>
+    <p className="usage-intro">Remaining coding capacity from CCS and Kimi Code. Refreshes every minute while visible; missing windows are never treated as zero.</p>
+    {usage && <div className="usage-summary"><span><strong>{total}</strong> accounts</span><span className={attention ? "attention" : "ready"}><strong>{attention}</strong> need attention</span><small>{loading ? "Refreshing…" : relativeUpdated(usage.generatedAt)}</small></div>}
     {loading && !usage && <div className="usage-loading"><i /><i /><i /></div>}
-    {error && <div className="usage-error"><strong>Usage unavailable</strong><span>{error}</span><button onClick={() => load(true)}>Try again</button></div>}
-    {usage && !usage.available && !error && <div className="usage-error"><strong>CCS usage is unavailable</strong><span>Check that CCS is installed on this Mac, then refresh.</span></div>}
+    {error && <div className="usage-error"><strong>{usage ? "Refresh failed · showing previous usage" : "Usage unavailable"}</strong><span>{error}</span><button onClick={() => load(true)}>Try again</button></div>}
+    {usage && !usage.available && !error && <div className="usage-error"><strong>Account usage is unavailable</strong><span>Check CCS or configure Kimi Code usage on this Mac, then refresh.</span></div>}
     <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection provider={provider} now={now} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
-    {usage?.available && <p className="usage-privacy">Quota comes directly from CCS. OAuth credentials never leave your Mac or appear in this view.</p>}
+    {usage?.available && <p className="usage-privacy">Quota is fetched on your Mac from each provider. Credentials never appear in this view.</p>}
+    <LauncherReference />
     {reconnecting && <ReconnectSheet key={reconnecting.account.id} provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
   </section>;
 }
 
 function ProviderSection({ provider, now, onReconnect }: { provider: UsageProvider; now: number; onReconnect: (account: UsageAccount) => void }) {
-  return <section className="usage-provider"><header><div className={`provider-mark ${provider.id}`}>{provider.id === "claude" ? "C" : "O"}</div><div><h2>{provider.label}</h2><span>{provider.accounts.length} connected account{provider.accounts.length === 1 ? "" : "s"}</span></div></header>
-    {!provider.available && <p className="provider-warning">This provider did not return usage.</p>}
-    {provider.available && provider.accounts.length === 0 && <p className="provider-empty">No CCS account connected.</p>}
+  return <section className="usage-provider"><header><div className={`provider-mark ${provider.id}`}>{provider.id === "claude" ? "C" : provider.id === "kimi" ? "K" : "O"}</div><div><h2>{provider.label}</h2><span>{provider.accounts.length} connected account{provider.accounts.length === 1 ? "" : "s"}</span></div></header>
+    {!provider.available && <p className="provider-warning">{provider.message || "This provider did not return usage."}</p>}
+    {provider.available && provider.accounts.length === 0 && <p className="provider-empty">No account connected.</p>}
     <div className="usage-account-list">{provider.accounts.map((account) => <AccountCard account={account} now={now} onReconnect={() => onReconnect(account)} key={account.id} />)}</div>
   </section>;
 }
 
 function AccountCard({ account, now, onReconnect }: { account: UsageAccount; now: number; onReconnect: () => void }) {
-  const extras = account.windows.filter((window) => window.category !== "usage" || window.cadence === "other");
+  const core = CORE_WINDOWS.map(({ cadence, label }) => ({ cadence, label, window: account.windows.filter((item) => item.category === "usage" && item.cadence === cadence).sort((a, b) => a.remainingPercent - b.remainingPercent)[0] }));
+  const selected = new Set(core.map((item) => item.window?.id));
+  const extras = account.windows.filter((window) => !selected.has(window.id));
   return <article className={`usage-account ${account.status}`}><header><div><strong>{account.email || account.label}</strong><span>{[account.plan, account.isDefault ? "default" : null, account.paused ? "paused" : null].filter(Boolean).join(" · ") || "CCS account"}</span></div><span className={`usage-status ${account.status}`}>{statusLabel(account.status, account.windows.length)}</span></header>
     {account.message && <p className={`account-message ${account.status}`}>{account.message}</p>}
-    <div className="core-window-grid">{CORE_WINDOWS.map(({ cadence, label }) => <CoreWindow label={label} window={account.windows.find((item) => item.category === "usage" && item.cadence === cadence)} now={now} key={cadence} />)}</div>
+    <div className="core-window-grid">{core.map(({ cadence, label, window }) => <CoreWindow label={label} window={window} now={now} key={cadence} />)}</div>
     {extras.length > 0 && <div className="extra-windows"><p>Additional limits</p>{extras.map((window) => <ExtraWindow window={window} now={now} key={window.id} />)}</div>}
     {account.status === "reconnect" && <button className="account-reconnect" onClick={onReconnect}>Reconnect account</button>}
   </article>;
@@ -199,5 +214,5 @@ export function resetText(value: string | null, now: number) {
   const minutes = Math.ceil(milliseconds / 60_000);
   const days = Math.floor(minutes / 1_440);
   const hours = Math.floor((minutes % 1_440) / 60);
-  return `Resets in ${String(days).padStart(2, "0")}:${String(hours).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  return `Resets in ${days ? `${days}d ` : ""}${hours ? `${hours}h ` : ""}${minutes % 60}m`;
 }

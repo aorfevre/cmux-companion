@@ -1,3 +1,4 @@
+import { kimiUsage } from "./kimi-usage.mjs";
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -13,8 +14,9 @@ const PROVIDERS = [
 ];
 
 export class AccountUsage {
-  constructor({ sourceLoader = loadCcsSource, cacheMs = CACHE_MS } = {}) {
+  constructor({ sourceLoader = loadCcsSource, cacheMs = CACHE_MS, kimiLoader = kimiUsage } = {}) {
     this.sourceLoader = sourceLoader;
+    this.kimiLoader = kimiLoader;
     this.cacheMs = cacheMs;
     this.cache = null;
     this.pending = null;
@@ -49,6 +51,15 @@ export class AccountUsage {
   }
 
   async #load() {
+    const [ccs, kimi] = await Promise.all([this.#loadCcs(), this.kimiLoader().catch(() => ({ available: false, accounts: [], quotas: [] }))]);
+    const provider = normalizeProvider({ id: "kimi", label: "Kimi Code" }, kimi.accounts, kimi.quotas, kimi.available);
+    provider.message = kimi.message || null;
+    const result = response([...ccs.providers, provider], ccs.available || kimi.available);
+    result.source = kimi.available ? "CCS + Kimi Code" : "CCS";
+    return result;
+  }
+
+  async #loadCcs() {
     try {
       const source = await this.sourceLoader();
       const metadata = Object.fromEntries(PROVIDERS.map(({ id }) => [id, safeAccounts(source.getProviderAccounts, id)]));
@@ -120,7 +131,7 @@ function normalizeAccount(provider, account, quota = null, providerAvailable = t
   return {
     id: opaqueAccountId(provider, account.id),
     label: cleanText(account.nickname) || cleanText(account.email) || cleanText(account.id) || "Account",
-    email: cleanText(account.email) || cleanText(account.id) || null,
+    email: cleanText(account.email) || (provider === "kimi" ? null : cleanText(account.id)) || null,
     plan: cleanPlan(quota?.planType || account.tier),
     isDefault: Boolean(account.isDefault),
     paused: Boolean(account.paused),
@@ -175,6 +186,7 @@ function cadenceLabel(cadence) {
 }
 
 function finitePercent(value) {
+  if (!["number", "string"].includes(typeof value) || typeof value === "string" && !value.trim()) return null;
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.min(100, Math.round(number))) : null;
 }
@@ -353,8 +365,9 @@ export function exactClaudeWindows(payload) {
 
 function claudeWindow(raw, cadence, category, label) {
   if (!raw || typeof raw !== "object") return null;
+  const utilization = finitePercent(raw.utilization);
+  if (utilization === null) return null;
   const remainingPercent = finitePercent(100 - Number(raw.utilization));
-  if (remainingPercent === null) return null;
   return { label, featureLabel: label, category, cadence, remainingPercent, resetAt: safeDate(raw.resets_at) };
 }
 
@@ -400,10 +413,9 @@ export function exactCodexWindows(payload) {
   const windows = [];
   const add = (label, raw, category, featureLabel = null) => {
     if (!raw || typeof raw !== "object") return;
-    const usedPercent = Number(raw.used_percent ?? raw.usedPercent);
-    if (!Number.isFinite(usedPercent)) return;
-    const remainingPercent = finitePercent(100 - usedPercent);
-    if (remainingPercent === null) return;
+    const usedPercent = finitePercent(raw.used_percent ?? raw.usedPercent);
+    if (usedPercent === null) return;
+    const remainingPercent = finitePercent(100 - Number(raw.used_percent ?? raw.usedPercent));
     const duration = Number(raw.limit_window_seconds ?? raw.limitWindowSeconds);
     const resetEpoch = Number(raw.reset_at ?? raw.resetAt);
     const resetSeconds = Number(raw.reset_after_seconds ?? raw.resetAfterSeconds);

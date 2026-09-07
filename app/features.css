@@ -949,3 +949,14 @@
 .planner-goal-reference button { padding: 8px 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); color: inherit; }
 
 .goal-board-card>footer .goal-board-return-issues{grid-column:1/-1;min-height:44px;border-color:#52632f;color:var(--lime);white-space:normal}
+
+.provider-mark.kimi{background:#22213c;color:#b6adff}
+.launcher-reference{margin-top:22px;border:1px solid var(--line);border-radius:12px;padding:14px;font-size:12px;color:var(--muted)}
+.launcher-reference summary{cursor:pointer;color:var(--text);font-weight:700}
+.launcher-reference p{line-height:1.5}
+.launcher-reference dl>div{display:flex;gap:12px;justify-content:space-between;padding:8px 0}
+.launcher-reference dd{margin:0;min-width:0;text-align:right;overflow-wrap:anywhere}
+.launcher-reference small{display:block;font-size:10px;margin-top:4px}
+.launch-form fieldset button small{display:block;font-size:10px;overflow-wrap:anywhere}
+.worktree-launcher fieldset button{min-width:0;overflow-wrap:anywhere}
+.launcher-warning{flex-basis:100%;color:var(--orange);font-size:10px}

@@ -68,3 +68,9 @@ test("a failed write does not claim to have saved or change active defaults", (t
   assert.throws(() => settings.configure({ roles: { planner: { models: { codex: "custom-model" } } } }));
   assert.equal(settings.engine("planner").model, "gpt-6");
 });
+
+test("manual Kimi sessions use the CLI default without entering the goal model catalog", () => {
+  const settings = new ModelSettings();
+  assert.deepEqual(settings.workspace("coder", "kimi"), { agent: "kimi" });
+  assert.throws(() => settings.engine("planner", "kimi"));
+});

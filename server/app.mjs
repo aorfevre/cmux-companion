@@ -35,6 +35,7 @@ import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
 import { GitHubIssueStore } from "./github-issue-store.mjs";
 import { GitHubIssueSync } from "./github-issue-sync.mjs";
 import { GitHubIssueSyncScheduler } from "./github-issue-sync-scheduler.mjs";
+import { providerLaunchers } from "./provider-launchers.mjs";
 import { AccountUsage } from "./account-usage.mjs";
 import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import { deploymentStatus, updaterLaunchAgentRunning } from "./deployment-health.mjs";
@@ -403,6 +404,8 @@ export async function buildApp({
     worktrees.invalidate();
     return result;
   });
+
+  app.get("/api/settings/launchers", async () => ({ providers: cmux.launchers || providerLaunchers() }));
 
   app.get("/api/settings/models", async () => modelSettings.status());
   app.patch("/api/settings/models", async (request) => modelSettings.configure(request.body));

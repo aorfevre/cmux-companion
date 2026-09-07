@@ -29,7 +29,7 @@ export class ModelSettings {
   engine(role, provider) { return roleEngine(this.roles, role, provider); }
 
   workspace(role, agent) {
-    if (agent === "shell") return { agent };
+    if (agent === "shell" || agent === "kimi") return { agent };
     const engine = this.engine(role, agent);
     return { agent: engine.provider, model: engine.model };
   }

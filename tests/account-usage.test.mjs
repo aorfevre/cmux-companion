@@ -65,7 +65,7 @@ test("returns a safe unavailable response when CCS cannot be loaded", async () =
   const usage = new AccountUsage({ sourceLoader: async () => { throw new Error("/private/path and token"); } });
   const value = await usage.snapshot({ refresh: true });
   assert.equal(value.available, false);
-  assert.equal(value.providers.length, 2);
+  assert.equal(value.providers.length, 3);
   assert.doesNotMatch(JSON.stringify(value), /private\/path|token/);
 });
 
@@ -138,4 +138,42 @@ test("uses Codex provider window durations for accurate cadence labels", () => {
   assert.deepEqual(windows.map((window) => [window.cadence, window.remainingPercent, window.category]), [
     ["weekly", 88, "usage"], ["monthly", 75, "usage"], ["5h", 96, "additional"],
   ]);
+});
+
+test("Kimi quotas remain available without CCS and never expose the subscription key", async () => {
+  const { kimiUsage, exactKimiWindows } = await import("../server/kimi-usage.mjs");
+  const payload = { usage: { limit: 100, used: 30, resetAt: "2026-09-10T00:00:00Z" }, limits: [
+    { window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: 200, remaining: 0, reset_in: 60 } },
+    { detail: { limit: 100 } }, { detail: { limit: 0, used: 0 } }, { detail: { limit: null, used: null } },
+  ] };
+  const windows = exactKimiWindows(payload, 0);
+  assert.deepEqual(windows.map((window) => [window.cadence, window.remainingPercent]), [["weekly", 70], ["5h", 0]]);
+  assert.equal(windows[1].resetAt, "1970-01-01T00:01:00.000Z");
+  const fetcher = async (url, options) => {
+    assert.equal(url, "https://api.kimi.com/coding/v1/usages");
+    assert.equal(options.headers.Authorization, "Bearer private-kimi-key");
+    assert.equal(options.redirect, "error");
+    return { ok: true, json: async () => payload };
+  };
+  const usage = new AccountUsage({ sourceLoader: async () => { throw new Error("No CCS"); }, kimiLoader: () => kimiUsage({ key: "private-kimi-key", fetcher }) });
+  const value = await usage.snapshot();
+  assert.equal(value.available, true);
+  assert.equal(value.providers[2].accounts[0].status, "exhausted");
+  assert.equal(value.summary.exhausted, 1);
+  assert.doesNotMatch(JSON.stringify(value), /private-kimi-key/);
+  const unavailable = await kimiUsage({ key: "private-kimi-key", fetcher: async () => { throw new Error("private-kimi-key"); } });
+  assert.equal(unavailable.available, false);
+  assert.doesNotMatch(JSON.stringify(unavailable), /private-kimi-key/);
+  const disabled = await kimiUsage({ key: "", fetcher: () => { throw new Error("Must not fetch"); } });
+  assert.equal(disabled.accounts.length, 0);
+});
+
+test("missing provider values cannot become zero usage or full capacity", async () => {
+  for (const utilization of [null, false, "", " ", [], {}]) assert.deepEqual(exactClaudeWindows({ five_hour: { utilization } }), []);
+  assert.deepEqual(exactCodexWindows({ rate_limit: { primary_window: { used_percent: null, usedPercent: null } } }), []);
+  const ccs = source();
+  ccs.fetchAllClaudeQuotas = async () => [{ account: "one@example.test", quota: { success: true, windows: [{ remainingPercent: null, cadence: "weekly" }] } }];
+  const value = await new AccountUsage({ sourceLoader: async () => ccs }).snapshot();
+  assert.deepEqual(value.providers[0].accounts[0].windows, []);
+  assert.equal(value.providers[0].accounts[0].status, "ready");
 });

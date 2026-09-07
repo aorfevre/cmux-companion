@@ -87,6 +87,17 @@ describe("the board creates a worktree on the latest default branch", () => {
     cy.findByRole("dialog", { name: "Create Git worktree" }).should("not.exist");
   });
 
+  it("starts a Kimi session in the new worktree", () => {
+    cy.findByRole("button", { name: "＋ Worktree" }).click();
+    cy.findByRole("menuitem", { name: "Create a worktree in trust-layer" }).click();
+    cy.findByRole("dialog", { name: "Create Git worktree" }).within(() => {
+      cy.findByRole("button", { name: "New worktree Kimi (kimi)" }).click();
+      cy.findByRole("button", { name: "Create & start session" }).click();
+    });
+    cy.wait("@createWorktree");
+    cy.wait("@launchWorktree").its("request.body.agent").should("equal", "kimi");
+  });
+
   it("filters the picker by name and reaches the other repository", () => {
     cy.findByRole("button", { name: "＋ Worktree" }).click();
     cy.findByRole("searchbox", { name: "Find a repository" }).type("record");

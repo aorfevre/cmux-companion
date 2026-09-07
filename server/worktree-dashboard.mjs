@@ -1008,7 +1008,7 @@ function normalizeSession(workspace) {
   const state = sessionState(workspace);
   const terminal = workspace.terminals?.find((item) => item.is_focused) || workspace.terminals?.[0];
   const agentText = [workspace.title, workspace.preview, ...(workspace.terminals || []).map((item) => item.title)].join(" ").toLowerCase();
-  const provider = agentText.includes("claude") ? "Claude" : agentText.includes("codex") ? "Codex" : "Terminal";
+  const provider = agentText.includes("claude") ? "Claude" : agentText.includes("codex") ? "Codex" : agentText.includes("kimi") ? "Kimi" : "Terminal";
   return {
     id: workspace.id,
     title: workspace.title || "Untitled workspace",

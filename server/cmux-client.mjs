@@ -1,3 +1,4 @@
+import { providerLaunchers, launcherCommand } from "./provider-launchers.mjs";
 import { normalizeModelId } from "./model-options.mjs";
 import { withWorkspaceLaunch } from "./worktree-operations.mjs";
 import { execFile } from "node:child_process";
@@ -17,7 +18,7 @@ const ALLOWED_KEYS = new Set([
   "ctrl+c", "ctrl+d", "ctrl+z", "ctrl+l", "ctrl+j",
 ]);
 const ALLOWED_TODO_ACTIONS = new Set(["check", "uncheck", "start"]);
-const ALLOWED_AGENTS = new Set(["shell", "codex", "claude"]);
+const ALLOWED_AGENTS = new Set(["shell", "codex", "claude", "kimi"]);
 const CLIENT_ID_PATTERN = /^[a-zA-Z0-9:_-]{8,128}$/;
 const GOAL_SESSION_RUNNER = fileURLToPath(new URL("./goal-session-runner.mjs", import.meta.url));
 
@@ -36,7 +37,9 @@ export class CmuxClient {
     execute = execFileAsync,
     socketPassword = readCredential(process.env.CMUX_SOCKET_PASSWORD_FILE || DEFAULT_PASSWORD_FILE),
     maxConcurrent = 2,
+    launcherEnv = process.env,
   } = {}) {
+    this.launchers = providerLaunchers(launcherEnv);
     this.bin = bin;
     this.execute = execute;
     this.socketPassword = socketPassword;
@@ -280,7 +283,7 @@ export class CmuxClient {
     assertTarget(workspaceId);
     let command = "";
     if (script) command = `npm run ${script}`;
-    else if (agent === "codex" || agent === "claude") command = `${agent === "codex" ? "xcodex" : "xclaude"}${modelFlag}${prompt.trim() ? ` ${shellQuote(prompt.trim())}` : ""}`;
+    else if (agent !== "shell") command = launcherCommand(agent, this.launchers.find((provider) => provider.id === agent).command, modelFlag, prompt, shellQuote);
     else if (prompt.trim()) command = `printf '%s\\n' ${shellQuote(prompt.trim())}`;
     const text = `${exports}${command}`;
     if (text) await this.rpc("surface.send_text", { workspace_id: workspaceId, text: `${text}\n` });

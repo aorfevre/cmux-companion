@@ -365,6 +365,14 @@ test("serves the worktree dashboard and creates worktrees and sessions", async (
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  assert.equal((await app.inject({ url: "/api/settings/launchers" })).statusCode, 401);
+  const launchers = await app.inject({ url: "/api/settings/launchers", headers });
+  assert.deepEqual(launchers.json().providers.map((item) => item.command), ["xcodex", "xclaude", "kimi"]);
+  const kimiLaunch = await app.inject({ method: "POST", url: `/api/worktree-dashboard/${target.id}/launch`, headers, payload: { agent: "kimi", prompt: "Review mobile UX", command: "evil" } });
+  assert.equal(kimiLaunch.statusCode, 201);
+  assert.deepEqual(cmux.calls.at(-1)[1], { cwd: target.path, title: "safe: feature/mobile", agent: "kimi", prompt: "Review mobile UX" });
+  calls.length = 0;
+  cmux.calls.length = 0;
   const dashboard = await app.inject({ url: "/api/worktree-dashboard?refresh=1&github=1", headers: { cookie } });
   assert.equal(dashboard.statusCode, 200);
   assert.equal(dashboard.json().summary.worktrees, 1);

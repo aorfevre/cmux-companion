@@ -657,3 +657,40 @@ from the address. New-goal forms use `newGoal=<repository-id>` until saved;
 these links restore the repository/form, not unsaved text or attachments.
 Development-setup links also include `goalTemplate=dev-setup`. A missing goal
 opens an error with a Close button rather than silently opening another goal.
+
+### Provider launchers and licence usage
+
+Manual repository and worktree sessions support Claude, Codex and Kimi. The
+installed setup keeps `xclaude` and `xcodex`; Kimi defaults to `kimi`. To use the
+standard CLIs on another Mac, export `CMUX_COMPANION_CLAUDE_COMMAND=claude` and
+`CMUX_COMPANION_CODEX_COMMAND=codex` before starting the companion. Set
+`CMUX_COMPANION_KIMI_COMMAND` to override Kimi's executable. Restart the companion
+after changing these values. `.env.example` is a reference, not an auto-loaded file.
+
+Each value accepts one command name (including an interactive zsh alias) or an
+absolute executable path. For fixed flags, configure a local wrapper script that
+forwards `"$@"`. Commands cannot be supplied in API launch requests. These settings
+apply to manual sessions; the structured planner and automated goal runners still
+use CCS with Claude/Codex and their existing model settings. Kimi uses its CLI's
+default model and receives an initial task through `--prompt`.
+
+Licence usage shows configured commands under **Provider launcher commands**.
+Quota refreshes every minute while the page is visible and when returning to the
+page, reusing the server's one-minute cache. Manual refresh bypasses that cache.
+Requests in progress are shared; failed browser refreshes retain the prior display.
+Reset times include explicit units, and all reported limits remain visible.
+Missing percentages and absent windows are never converted into zero or 100%.
+
+CCS provides Claude and Codex account discovery and quotas. Optional Kimi Code
+subscription usage uses `CMUX_COMPANION_KIMI_API_KEY`, configured only in the Mac's
+companion environment, and the fixed `https://api.kimi.com/coding/v1/usages`
+endpoint. This is separate from Moonshot API billing. Without a key, Kimi sessions
+remain available and the usage page explains how to enable quotas. Invalid or
+unavailable credentials produce an unavailable state, never invented quota values.
+Keys are sent only to Kimi's endpoint, are never returned to the browser, and cannot
+be entered through this UI. Kimi CLI login and account switching remain in Kimi CLI;
+CCS reconnect and automatic capacity scheduling apply only to Claude/Codex.
+
+Kimi integration follows the upstream [CLI options](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/cli/__init__.py),
+[usage implementation](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/ui/shell/usage.py)
+and [platform configuration](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/auth/platforms.py).

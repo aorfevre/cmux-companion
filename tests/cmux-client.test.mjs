@@ -355,3 +355,24 @@ test("passes a custom model to the agent command and refuses shell syntax before
     assert.equal(calls.length, before);
   }
 });
+
+test("configures provider executables while retaining aliases and safely quoting Kimi prompts", async (t) => {
+  const repo = mkdtempSync(join(tmpdir(), "launcher-test-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const calls = [];
+  const client = new CmuxClient({ launcherEnv: { CMUX_COMPANION_CODEX_COMMAND: "codex", CMUX_COMPANION_KIMI_COMMAND: "/Applications/My CLI/kimi" }, execute: async (_bin, args) => {
+    calls.push(args);
+    return { stdout: JSON.stringify({ workspace_id: ID }) };
+  } });
+  await client.workspaceCreate({ cwd: repo, title: "Kimi", agent: "kimi", prompt: "$(touch /tmp/nope) 'quoted'", model: "kimi-test" });
+  assert.equal(JSON.parse(calls.at(-1)[3]).text, "'/Applications/My CLI/kimi' --model 'kimi-test' --prompt '$(touch /tmp/nope) '\\''quoted'\\'''\n");
+  await client.workspaceCreate({ cwd: repo, title: "Codex", agent: "codex" });
+  assert.equal(JSON.parse(calls.at(-1)[3]).text, "codex\n");
+  await client.workspaceCreate({ cwd: repo, title: "Claude", agent: "claude" });
+  assert.equal(JSON.parse(calls.at(-1)[3]).text, "xclaude\n");
+  await client.workspaceCreate({ cwd: repo, title: "Kimi", agent: "kimi" });
+  assert.equal(JSON.parse(calls.at(-1)[3]).text, "'/Applications/My CLI/kimi'\n");
+  for (const command of ["ccs kimi", "kimi; touch /tmp/nope", "$(whoami)", "kimi\n", "", "--help"]) {
+    assert.throws(() => new CmuxClient({ launcherEnv: { CMUX_COMPANION_KIMI_COMMAND: command } }), /Invalid kimi launcher/);
+  }
+});
