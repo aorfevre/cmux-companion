@@ -86,7 +86,7 @@ export async function runGoalSession({ planId, databasePath, generation: generat
     out(`Proposal revision ${store.get(planId).proposalRevision} is ready in Companion. Approve it there to enable implementation, or type feedback here to revise it.`);
   };
 
-  if (!plan.goalSessionProviderSessionId) {
+  if (!plan.goalSessionProviderSessionId && !plan.goalSessionError) {
     void (turn = turn.then(() => planningTurn(openingMessage(plan))).catch((cause) => { store.recordGoalSessionPlanningFailure(planId, { generation, error: cause?.message || cause }); out(`Planning failed: ${cause.message}`); }));
   } else if (plan.goalSessionState === "planning" && !plan.goalSessionPendingInput && !plan.goalSessionError) {
     void (turn = turn.then(() => planningTurn("Resume the saved goal conversation. Reconstruct the next proposal from the goal and saved decisions. Do not implement anything.")).catch((cause) => { store.recordGoalSessionPlanningFailure(planId, { generation, error: cause?.message || cause }); out(`Planning failed: ${cause.message}`); }));
@@ -137,13 +137,20 @@ export async function runGoalSession({ planId, databasePath, generation: generat
     const current = store.get(planId);
     if (current?.goalSessionGeneration !== generation) { out("This goal session was replaced; reopen its current workspace."); return; }
     if (current?.transitionStatus === "delivered") {
+      let claimed;
+      try { claimed = store.claimGoalSessionCorrection(planId, { generation, feedback }); }
+      catch (cause) { out(String(cause?.message || cause)); return; }
       turn = turn.then(() => {
         const latest = store.get(planId);
-        if (latest?.goalSessionGeneration !== generation || latest?.boardStatus || latest?.transitionStatus !== "delivered") throw new Error("This goal session was closed before the correction could run");
-        return execute(command(latest, `The user requested this in-scope correction: ${feedback}\nThe approved proposal is: ${JSON.stringify(latest.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: latest.goalSessionWorktreePath, out }).then((output) => {
+        if (latest?.goalSessionGeneration !== generation || latest?.boardStatus || latest?.goalSessionCorrectionStatus !== "dispatching") throw new Error("This goal session was closed before the correction could run");
+        return execute(command(latest, `The user requested this in-scope correction: ${claimed.goalSessionCorrectionInput}\nThe approved proposal is: ${JSON.stringify(latest.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: latest.goalSessionWorktreePath, out }).then((output) => {
           const completed = validateGoalSessionExecution(output, latest.goalSessionProviderSessionId);
+          store.recordGoalSessionCorrection(planId, { generation });
           const report = completionText(completed);
           if (report) out(report);
+        }).catch((cause) => {
+          store.recordGoalSessionCorrection(planId, { generation, error: cause?.message || cause });
+          throw cause;
         });
       }).catch((cause) => out(`Correction was not run: ${cause?.message || cause}`));
       return;

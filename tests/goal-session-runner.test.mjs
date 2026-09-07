@@ -168,6 +168,27 @@ test("prints a provider completion that has no assistant prose", async (t) => {
   assert.ok(output.some((line) => /opened PR #42/.test(line)));
 });
 
+test("a post-delivery correction is claimed durably and is never replayed after failure", async (t) => {
+  const { databasePath, planId, store } = setupSession(t);
+  store.approveProposal(planId, { generation: 1, revision: 1 });
+  store.claimGoalSessionTransition(planId, { generation: 1, revision: 1 });
+  store.recordGoalSessionTransition(planId, { generation: 1, revision: 1 });
+  const input = new PassThrough();
+  let calls = 0;
+  const stop = await runGoalSession({
+    planId, databasePath, generation: 1, input, out: () => {}, intervalMs: 10,
+    execute: async () => { calls += 1; throw new Error("connection dropped after dispatch"); },
+  });
+  t.after(stop);
+  input.write("Correct the receipt text\n");
+  await wait(60);
+  assert.equal(calls, 1);
+  assert.equal(store.get(planId).goalSessionCorrectionStatus, "uncertain");
+  input.write("Try the correction again\n");
+  await wait(40);
+  assert.equal(calls, 1, "an uncertain writable correction is not replayed");
+});
+
 test("provider questions become durable attention and the terminal answer resumes the same conversation", async (t) => {
   const { databasePath, planId, store } = setupSession(t);
   store.db.prepare("UPDATE plans SET goal_session_provider_session_id = NULL, proposal_revision = 0, proposal = NULL, questions = '[]', goal_session_state = 'planning' WHERE plan_id = ?").run(planId);

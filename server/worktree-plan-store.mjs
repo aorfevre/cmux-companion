@@ -24,7 +24,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "session_retired", "board_merged", "board_aborted", "board_pull_request",
   "task_relaunched", "task_skipped", "followup_launched", "task_associated",
   "review_claimed", "review_launched", "discussion", "merge_cleanup_required",
-  "goal_session_started", "proposal_published", "proposal_changes_requested", "proposal_approved", "goal_session_transition",
+  "goal_session_started", "proposal_published", "proposal_changes_requested", "proposal_approved", "goal_session_transition", "goal_session_correction",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -118,6 +118,8 @@ CREATE TABLE IF NOT EXISTS plans (
   ,goal_session_runner_started_at TEXT
   ,goal_session_runner_dispatch_id TEXT
   ,goal_session_runner_dispatched_at TEXT
+  ,goal_session_correction_input TEXT
+  ,goal_session_correction_status TEXT
 );
 CREATE TABLE IF NOT EXISTS plan_tasks (
   plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
@@ -490,6 +492,29 @@ export class WorktreePlanStore {
     // send a second writable command. Leave it uncertain until the coordinator
     // reconciles the provider/session state.
     if (changed) this.#insertEvent(String(planId), null, "goal_session_transition", { generation, revision, status: failed ? "uncertain" : "delivered", error: failed || null }, at);
+    return this.get(planId);
+  }
+
+  claimGoalSessionCorrection(planId, { generation, feedback } = {}) {
+    const note = text(feedback);
+    if (!Number.isInteger(generation) || generation < 1 || !note || note.length > 4_000) throw new TypeError("Invalid goal-session correction");
+    const at = this.#stamp();
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_correction_input = ?, goal_session_correction_status = 'dispatching', updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND transition_status = 'delivered' AND (goal_session_correction_status IS NULL OR goal_session_correction_status = 'delivered')`)
+      .run(note, at, String(planId), generation).changes;
+    if (changed !== 1) throw new TypeError("A correction is already running or its result is uncertain");
+    this.#insertEvent(String(planId), null, "goal_session_correction", { generation, status: "dispatching", feedback: note }, at);
+    return this.get(planId);
+  }
+
+  recordGoalSessionCorrection(planId, { generation, error = null } = {}) {
+    const failed = text(error);
+    const at = this.#stamp();
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_correction_status = ?, goal_session_error = ?, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND goal_session_correction_status = 'dispatching'`).run(failed ? "uncertain" : "delivered", failed || null, at, String(planId), generation).changes;
+    if (changed) this.#insertEvent(String(planId), null, "goal_session_correction", { generation, status: failed ? "uncertain" : "delivered", error: failed || null }, at);
     return this.get(planId);
   }
 
@@ -1393,6 +1418,8 @@ export class WorktreePlanStore {
     ensure("plans", "goal_session_runner_started_at", "TEXT");
     ensure("plans", "goal_session_runner_dispatch_id", "TEXT");
     ensure("plans", "goal_session_runner_dispatched_at", "TEXT");
+    ensure("plans", "goal_session_correction_input", "TEXT");
+    ensure("plans", "goal_session_correction_status", "TEXT");
     ensure("plans", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'");
     ensure("plans", "delivery_status", "TEXT NOT NULL DEFAULT 'planning'");
     ensure("plans", "integration_branch", "TEXT");
@@ -1520,6 +1547,8 @@ function readPlan(row) {
     goalSessionRunnerStartedAt: row.goal_session_runner_started_at ?? null,
     goalSessionRunnerDispatchId: row.goal_session_runner_dispatch_id ?? null,
     goalSessionRunnerDispatchedAt: row.goal_session_runner_dispatched_at ?? null,
+    goalSessionCorrectionInput: row.goal_session_correction_input ?? null,
+    goalSessionCorrectionStatus: row.goal_session_correction_status ?? null,
     sessionId: row.session_id,
     round: row.round,
     status: row.status,
