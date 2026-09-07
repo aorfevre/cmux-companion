@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { runGoalSession } from "../server/goal-session-runner.mjs";
+import { runGoalSession, validateGoalSessionExecution } from "../server/goal-session-runner.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 
 function setupSession(t) {
@@ -59,4 +59,84 @@ test("a rejected durable proposal correction runs once and remains recoverable",
   assert.equal(plan.goalSessionActiveInput, "Keep invoices out.", "the rejected correction remains durable for an explicit retry");
   assert.match(plan.goalSessionError || "", /provider rejected the correction/);
   assert.equal(plan.goalSessionWorktreePath, directory);
+});
+
+function resultEnvelope({ subtype = "success", sessionId = "provider-session-1", result = "Completed", isError = false } = {}) {
+  return JSON.stringify({ type: "result", subtype, session_id: sessionId, result, ...(isError ? { is_error: true } : {}) });
+}
+
+test("an exit-zero provider error envelope leaves approval transition uncertain", async (t) => {
+  const { databasePath, planId, store } = setupSession(t);
+  const calls = [];
+  const stop = await runGoalSession({
+    planId,
+    databasePath,
+    generation: 1,
+    input: new PassThrough(),
+    out: () => {},
+    intervalMs: 10,
+    execute: async (args) => {
+      calls.push(args);
+      return resultEnvelope({ subtype: "error", result: "permission denied", isError: true });
+    },
+  });
+  t.after(stop);
+
+  store.approveProposal(planId, { generation: 1, revision: 1 });
+  await wait(60);
+
+  assert.equal(calls.length, 1);
+  const args = calls[0];
+  assert.equal(args[args.indexOf("--tools") + 1], "Read,Grep,Glob,Edit,Write,Bash");
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "manual");
+  assert.ok(args.includes("--restricted"));
+  assert.ok(args.includes("--permission-prompts"));
+  assert.ok(!args.some((arg) => arg.includes("dangerously-skip-permissions") || arg.includes("bypassPermissions")));
+  assert.equal(store.get(planId).transitionStatus, "uncertain");
+  assert.match(store.get(planId).goalSessionError || "", /permission denied/);
+});
+
+test("only a successful provider envelope completes a writable turn", () => {
+  assert.equal(validateGoalSessionExecution(resultEnvelope()).session_id, "provider-session-1");
+  assert.throws(() => validateGoalSessionExecution(resultEnvelope({ subtype: "error", result: "permission denied", isError: true })), /permission denied/);
+  assert.throws(() => validateGoalSessionExecution("not an envelope"), /completion envelope/);
+});
+
+test("planning is read-only until its durable proposal approval dispatches one writable resume", async (t) => {
+  const { databasePath, directory, planId, store } = setupSession(t);
+  store.db.prepare("UPDATE plans SET goal_session_provider_session_id = NULL, proposal_revision = 0, proposal = NULL, goal_session_state = 'planning' WHERE plan_id = ?").run(planId);
+  const calls = [];
+  const stop = await runGoalSession({
+    planId,
+    databasePath,
+    generation: 1,
+    input: new PassThrough(),
+    out: () => {},
+    intervalMs: 10,
+    execute: async (args) => {
+      calls.push(args);
+      if (calls.length === 1) return resultEnvelope({
+        sessionId: "provider-session-2",
+        result: JSON.stringify({ tasks: [{ title: "Billing", branch: "feature/billing", prompt: "Implement billing", verification: ["npm test"] }] }),
+      });
+      return resultEnvelope({ sessionId: "provider-session-2" });
+    },
+  });
+  t.after(stop);
+
+  await wait(60);
+  assert.equal(calls.length, 1);
+  const planning = calls[0];
+  assert.equal(planning[planning.indexOf("--tools") + 1], "Read,Grep,Glob");
+  assert.equal(planning[planning.indexOf("--permission-mode") + 1], "plan");
+  assert.ok(!planning.includes("Bash"));
+  assert.equal(store.get(planId).goalSessionState, "awaiting_approval");
+
+  store.approveProposal(planId, { generation: 1, revision: 1 });
+  await wait(60);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].includes("--resume"));
+  assert.equal(calls[1][calls[1].indexOf("--resume") + 1], "provider-session-2");
+  assert.equal(store.get(planId).goalSessionWorktreePath, directory);
+  assert.equal(store.get(planId).transitionStatus, "delivered");
 });

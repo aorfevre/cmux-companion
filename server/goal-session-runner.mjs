@@ -2,13 +2,35 @@
 // intentionally a small line-oriented program instead of a native CLI wrapper:
 // Companion can prove the read-only tool surface before approval and can resume
 // the same compatible CCS conversation after a revision-bound decision.
-import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
-import { finalEnvelope, parsePlannerReply, progressEvent } from "./worktree-planner.mjs";
+import { finalEnvelope, parsePlannerReply, progressEvent, streamExecFile } from "./worktree-planner.mjs";
 
-const READ_ONLY = ["--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--allowed-tools", "Read,Grep,Glob", "--disallowed-tools", "Bash,Write,Edit,MultiEdit,NotebookEdit,Task,WebFetch,WebSearch"];
-const WRITABLE = ["--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands"];
+// `--tools` is the enforced provider tool surface. `--allowed-tools` only
+// answers permission prompts for this narrow subset; it is deliberately never
+// used as the access-control mechanism by itself. The installed Claude CLI
+// supports these flags, including `--restricted`, without any bypass mode.
+const READ_ONLY = [
+  "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--restricted",
+  "--tools", "Read,Grep,Glob", "--permission-mode", "plan", "--permission-prompts", "none",
+  "--allowed-tools", "Read,Grep,Glob",
+  "--disallowed-tools", "Bash,Write,Edit,MultiEdit,NotebookEdit,Task,WebFetch,WebSearch",
+];
+const WRITABLE_TOOL_ALLOWLIST = [
+  "Read", "Grep", "Glob", "Edit", "Write",
+  "Bash(git status *)", "Bash(git diff *)", "Bash(git add *)", "Bash(git commit *)", "Bash(git push *)",
+  "Bash(git rev-parse *)", "Bash(git log *)", "Bash(git show *)", "Bash(git branch --show-current)", "Bash(git fetch *)",
+  "Bash(npm ci)", "Bash(npm test)", "Bash(npm run *)", "Bash(npx cypress run *)", "Bash(node --test *)",
+].join(",");
+const WRITABLE = [
+  "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--restricted",
+  "--tools", "Read,Grep,Glob,Edit,Write,Bash", "--permission-mode", "manual", "--permission-prompts", "none",
+  "--allowed-tools", WRITABLE_TOOL_ALLOWLIST,
+  "--disallowed-tools", "MultiEdit,NotebookEdit,Task,WebFetch,WebSearch",
+];
+const TURN_TIMEOUT_MS = 30 * 60_000;
+const TURN_IDLE_TIMEOUT_MS = 5 * 60_000;
+const TURN_MAX_BUFFER = 1024 * 1024;
 
 export async function runGoalSession({ planId, databasePath, generation: generationArg = null, execute = runCcs, out = console.log, input = process.stdin, intervalMs = 1_000 } = {}) {
   const store = new WorktreePlanStore({ path: databasePath });
@@ -69,7 +91,7 @@ export async function runGoalSession({ planId, databasePath, generation: generat
       if (!claimed) { implementationStarted = false; return; }
       try {
         out("Approval recorded. Resuming this provider conversation with implementation tools enabled.");
-        await execute(command(claimed, implementationMessage(claimed), true), { cwd: claimed.goalSessionWorktreePath, out });
+        validateGoalSessionExecution(await execute(command(claimed, implementationMessage(claimed), true), { cwd: claimed.goalSessionWorktreePath, out }));
         store.recordGoalSessionTransition(planId, { generation, revision: claimed.approvalRevision });
         out("Implementation turn completed. Review the workspace and request an in-scope correction here if needed.");
       } catch (cause) {
@@ -88,7 +110,7 @@ export async function runGoalSession({ planId, databasePath, generation: generat
       turn = turn.then(() => {
         const latest = store.get(planId);
         if (latest?.goalSessionGeneration !== generation || latest?.boardStatus || latest?.transitionStatus !== "delivered") throw new Error("This goal session was closed before the correction could run");
-        return execute(command(latest, `The user requested this in-scope correction: ${feedback}\nThe approved proposal is: ${JSON.stringify(latest.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: latest.goalSessionWorktreePath, out });
+        return execute(command(latest, `The user requested this in-scope correction: ${feedback}\nThe approved proposal is: ${JSON.stringify(latest.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: latest.goalSessionWorktreePath, out }).then(validateGoalSessionExecution);
       }).catch((cause) => out(`Correction was not run: ${cause?.message || cause}`));
       return;
     }
@@ -120,24 +142,34 @@ function implementationMessage(plan) {
   return `The user approved proposal revision ${plan.approvalRevision}. The immutable approved proposal is:\n${JSON.stringify(plan.proposal)}\nImplement only that displayed scope in this worktree. Do not expand it without another proposal. When finished, commit the change, push the branch, open one pull request against the recorded base, and report concrete manual verification and changed files.`;
 }
 
-function runCcs(args, { cwd, out = null }) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("ccs", args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = ""; let stderr = "";
-    let partial = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk; partial += chunk;
-      const rows = partial.split("\n"); partial = rows.pop() || "";
-      for (const row of rows) {
-        const prose = assistantProse(row);
-        if (prose) out?.(prose);
-        else { const progress = progressEvent(row); if (progress?.t) out?.(progress.t); }
-      }
-    });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.once("error", reject);
-    child.once("close", (code) => code === 0 ? resolve(finalEnvelope(stdout)) : reject(new Error(stderr.trim() || "CCS exited without completing the goal turn")));
-  });
+function runCcs(args, { cwd, out = null } = {}) {
+  return streamExecFile("ccs", args, {
+    cwd,
+    env: process.env,
+    timeout: TURN_TIMEOUT_MS,
+    idleTimeout: TURN_IDLE_TIMEOUT_MS,
+    maxBuffer: TURN_MAX_BUFFER,
+    onLine: (row) => {
+      const prose = assistantProse(row);
+      if (prose) out?.(prose);
+      else { const progress = progressEvent(row); if (progress?.t) out?.(progress.t); }
+    },
+  }).then(({ stdout }) => finalEnvelope(stdout));
+}
+
+// A zero exit code only says that the CLI process exited. Provider failures and
+// permission denials are emitted as stream-json result envelopes with that same
+// exit code, so a writable transition must validate the provider result before
+// it becomes delivered.
+export function validateGoalSessionExecution(output) {
+  const raw = finalEnvelope(String(output || "")).trim();
+  let envelope;
+  try { envelope = JSON.parse(raw); } catch { throw new TypeError("The provider did not return a completion envelope"); }
+  if (envelope?.type !== "result" || envelope?.subtype !== "success" || envelope?.is_error === true || typeof envelope.session_id !== "string" || !envelope.session_id.trim()) {
+    const detail = String(envelope?.result || envelope?.error || "provider execution was not successful").replace(/\s+/g, " ").trim().slice(0, 500);
+    throw new TypeError(`The provider did not complete the writable turn: ${detail}`);
+  }
+  return envelope;
 }
 
 function assistantProse(row) {
