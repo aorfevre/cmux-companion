@@ -28,7 +28,7 @@ function setup() {
 
 describe("licence usage and provider commands", () => {
   for (const width of [390, 1440]) it(`shows Kimi quotas and configured launchers at ${width}px`, () => {
-    setup(); cy.viewport(width, 900); cy.clock(new Date(now).getTime());
+    setup(); cy.viewport(width, 900); cy.clock(new Date(now).getTime(), ["Date", "setInterval", "clearInterval"]);
     cy.visit("/?view=usage"); cy.tick(1); cy.wait(["@usage", "@launchers"]);
     cy.contains("Kimi Code subscription").should("be.visible");
     cy.contains("70%").should("be.visible");
