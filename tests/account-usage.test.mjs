@@ -3,7 +3,12 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { kimiUsage } from "../server/kimi-usage.mjs";
 import { AccountUsage, cadenceFromDuration, exactClaudeWindows, exactCodexWindows, findCcsPackageRoot } from "../server/account-usage.mjs";
+
+function testUsage(options) {
+  return new AccountUsage({ kimiLoader: () => kimiUsage({ key: "" }), ...options });
+}
 
 function source({ delay = 0 } = {}) {
   const accounts = {
@@ -34,7 +39,7 @@ function source({ delay = 0 } = {}) {
 }
 
 test("normalizes CCS accounts and exposes only sanitized usage data", async () => {
-  const usage = new AccountUsage({ sourceLoader: async () => source() });
+  const usage = testUsage({ sourceLoader: async () => source() });
   const value = await usage.snapshot({ refresh: true });
   assert.equal(value.source, "CCS");
   assert.equal(value.available, true);
@@ -53,7 +58,7 @@ test("normalizes CCS accounts and exposes only sanitized usage data", async () =
 
 test("caches snapshots and coalesces concurrent refreshes", async () => {
   let loads = 0;
-  const usage = new AccountUsage({ sourceLoader: async () => { loads += 1; return source({ delay: 15 }); } });
+  const usage = testUsage({ sourceLoader: async () => { loads += 1; return source({ delay: 15 }); } });
   const values = await Promise.all([usage.snapshot({ refresh: true }), usage.snapshot({ refresh: true }), usage.snapshot()]);
   assert.equal(loads, 1);
   assert.equal(values.every((value) => value === values[0]), true);
@@ -62,7 +67,7 @@ test("caches snapshots and coalesces concurrent refreshes", async () => {
 });
 
 test("returns a safe unavailable response when CCS cannot be loaded", async () => {
-  const usage = new AccountUsage({ sourceLoader: async () => { throw new Error("/private/path and token"); } });
+  const usage = testUsage({ sourceLoader: async () => { throw new Error("/private/path and token"); } });
   const value = await usage.snapshot({ refresh: true });
   assert.equal(value.available, false);
   assert.equal(value.providers.length, 3);
@@ -74,7 +79,7 @@ test("treats authenticated accounts without reported windows as connected", asyn
   empty.fetchAllClaudeQuotas = async () => [{ account: "one@example.test", quota: { success: true, lastUpdated: 1_788_000_000_000, windows: [] } }];
   empty.getProviderAccounts = (provider) => provider === "claude" ? [{ id: "one@example.test", email: "one@example.test" }] : [];
   empty.fetchAllCodexQuotas = async () => [];
-  const value = await new AccountUsage({ sourceLoader: async () => empty }).snapshot({ refresh: true });
+  const value = await testUsage({ sourceLoader: async () => empty }).snapshot({ refresh: true });
   const account = value.providers[0].accounts[0];
   assert.equal(account.status, "ready");
   assert.equal(account.message, "Connected. Provider reported no active usage window.");
@@ -155,7 +160,7 @@ test("Kimi quotas remain available without CCS and never expose the subscription
     assert.equal(options.redirect, "error");
     return { ok: true, json: async () => payload };
   };
-  const usage = new AccountUsage({ sourceLoader: async () => { throw new Error("No CCS"); }, kimiLoader: () => kimiUsage({ key: "private-kimi-key", fetcher }) });
+  const usage = testUsage({ sourceLoader: async () => { throw new Error("No CCS"); }, kimiLoader: () => kimiUsage({ key: "private-kimi-key", fetcher }) });
   const value = await usage.snapshot();
   assert.equal(value.available, true);
   assert.equal(value.providers[2].accounts[0].status, "exhausted");
@@ -173,7 +178,7 @@ test("missing provider values cannot become zero usage or full capacity", async 
   assert.deepEqual(exactCodexWindows({ rate_limit: { primary_window: { used_percent: null, usedPercent: null } } }), []);
   const ccs = source();
   ccs.fetchAllClaudeQuotas = async () => [{ account: "one@example.test", quota: { success: true, windows: [{ remainingPercent: null, cadence: "weekly" }] } }];
-  const value = await new AccountUsage({ sourceLoader: async () => ccs }).snapshot();
+  const value = await testUsage({ sourceLoader: async () => ccs }).snapshot();
   assert.deepEqual(value.providers[0].accounts[0].windows, []);
   assert.equal(value.providers[0].accounts[0].status, "ready");
 });

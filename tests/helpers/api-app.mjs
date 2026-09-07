@@ -8,6 +8,7 @@ import { GitHubIssueStore } from "../../server/github-issue-store.mjs";
 import { GitHubReviewToken } from "../../server/github-review-token.mjs";
 import { AgentBriefs } from "../../server/agent-brief.mjs";
 import { ImageAttachments } from "../../server/image-attachments.mjs";
+import { kimiUsage } from "../../server/kimi-usage.mjs";
 import { AccountUsage } from "../../server/account-usage.mjs";
 import { RepoCatalog } from "../../server/repo-catalog.mjs";
 import { WorktreeDashboard } from "../../server/worktree-dashboard.mjs";
@@ -50,7 +51,7 @@ export async function buildTestApp(t, options = {}) {
     githubReviewToken: options.githubReviewToken || new GitHubReviewToken({ path: join(directory, "review-token.json") }),
     agentBriefs: options.agentBriefs || new AgentBriefs({ directory: join(directory, "briefs") }),
     imageAttachments: options.imageAttachments || new ImageAttachments({ directory: join(directory, "attachments") }),
-    accountUsage: options.accountUsage || new AccountUsage({ sourceLoader: async () => { throw new Error("No account source in API fixture"); } }),
+    accountUsage: options.accountUsage || new AccountUsage({ kimiLoader: () => kimiUsage({ key: "" }), sourceLoader: async () => { throw new Error("No account source in API fixture"); } }),
   });
   app.decorate("fixtureDirectory", directory);
   return app;
