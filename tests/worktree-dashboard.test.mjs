@@ -412,6 +412,84 @@ test("creates a sibling worktree from a validated branch and base revision", asy
   assert.equal(worktreePath("/repo/sample", "feature/safe-name"), targetPath);
 });
 
+// The board's one-click worktree sends no base. The default remote branch is
+// resolved and fetched first, so the new branch starts at that tip and never at
+// a stale local ref.
+test("branches from the fetched default remote branch when useDefaultBase is set", async () => {
+  const calls = [];
+  const targetPath = "/repo/sample-feature-safe-name";
+  let inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0";
+  const repoCatalog = {
+    cache: {},
+    list: async () => [REPO],
+    git: async (cwd, args, options) => {
+      calls.push([cwd, args, options]);
+      if (args[0] === "worktree" && args[1] === "add") {
+        inventory += `worktree ${targetPath}\0HEAD bbbbbbbb\0branch refs/heads/feature/safe-name\0\0`;
+        return "";
+      }
+      if (args[0] === "worktree") return inventory;
+      if (args[0] === "check-ref-format") return "feature/safe-name\n";
+      if (args[0] === "symbolic-ref") return "origin/trunk\n";
+      if (args[0] === "fetch") return "";
+      if (args[0] === "show-ref") throw new Error("missing branch");
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "aaaaaaaa\n";
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd === targetPath ? "feature/safe-name" : "main"}\n`;
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  const result = await dashboard.create(repositoryId, { branch: "feature/safe-name", base: "stale-local", useDefaultBase: true });
+  assert.equal(result.branchCreated, true);
+  const fetched = calls.find(([, args]) => args[0] === "fetch");
+  assert.deepEqual(fetched, ["/repo/sample", ["fetch", "origin", "trunk"], { timeout: 120_000 }]);
+  const add = calls.find(([, args]) => args[0] === "worktree" && args[1] === "add");
+  // The supplied `base` is ignored: the fetched default branch wins.
+  assert.deepEqual(add, ["/repo/sample", ["worktree", "add", "-b", "feature/safe-name", targetPath, "origin/trunk"], { timeout: 120_000 }]);
+});
+
+// A repository with no local origin/HEAD must not fall back to "main" while its
+// default branch is something else, so the remote is asked directly.
+test("asks the remote for the default branch when useDefaultBase finds no local ref", async () => {
+  const calls = [];
+  const targetPath = "/repo/sample-feature-safe-name";
+  let inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0";
+  const repoCatalog = {
+    cache: {},
+    list: async () => [REPO],
+    git: async (cwd, args, options) => {
+      calls.push([cwd, args, options]);
+      if (args[0] === "worktree" && args[1] === "add") {
+        inventory += `worktree ${targetPath}\0HEAD bbbbbbbb\0branch refs/heads/feature/safe-name\0\0`;
+        return "";
+      }
+      if (args[0] === "worktree") return inventory;
+      if (args[0] === "check-ref-format") return "feature/safe-name\n";
+      if (args[0] === "symbolic-ref") throw new Error("no origin/HEAD");
+      if (args[0] === "ls-remote") return "ref: refs/heads/master\tHEAD\nabc123\tHEAD\n";
+      if (args[0] === "fetch") return "";
+      if (args[0] === "show-ref") throw new Error("missing branch");
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "aaaaaaaa\n";
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd === targetPath ? "feature/safe-name" : "main"}\n`;
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  await dashboard.create(repositoryId, { branch: "feature/safe-name", useDefaultBase: true });
+  const add = calls.find(([, args]) => args[0] === "worktree" && args[1] === "add");
+  assert.deepEqual(add, ["/repo/sample", ["worktree", "add", "-b", "feature/safe-name", targetPath, "origin/master"], { timeout: 120_000 }]);
+});
+
 // Goal plans persist the dashboard id (one id for a repository and all of its
 // linked worktrees), while RepoCatalog has a path-derived id. A clean task
 // restart must resolve the former from the dashboard just like create() does.
