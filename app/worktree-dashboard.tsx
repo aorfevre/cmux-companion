@@ -311,6 +311,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
   // board through the same warning strip as every other dashboard failure.
   const [issueNotice, setIssueNotice] = useState("");
   const [confirmTaskAction, setConfirmTaskAction] = useState("");
+  const [confirmReturnIssuesId, setConfirmReturnIssuesId] = useState("");
   const [confirmDeleteGoalId, setConfirmDeleteGoalId] = useState("");
   const [deletingGoalId, setDeletingGoalId] = useState("");
   // Abort keeps its own confirmation and busy ids. Sharing the delete state
@@ -498,6 +499,19 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
       onNotice(`${repo.name} ${favorite ? "favorited" : "unfavorited"}`);
     } catch (cause) { onNotice(cause instanceof Error ? cause.message : `Could not ${favorite ? "favorite" : "unfavorite"} ${repo.name}`); }
     finally { setBusy(""); }
+  }
+
+  async function returnIssues(plan: PlanSummary) {
+    await runBoardAction(`return-issues:${plan.planId}`, async () => {
+      try {
+        const result = await request<{ issuesReturnedAt: string }>(`/api/worktree-plans/${encodeURIComponent(plan.planId)}/return-issues`, { method: "POST" });
+        setGoalPlans((plans) => plans.map((item) => item.planId === plan.planId ? { ...item, issuesReturnedAt: result.issuesReturnedAt } : item));
+        setConfirmReturnIssuesId("");
+        onNotice("Issues released for a new goal. Open synced issues are back in GitHub Issues; use GitHub Sync if any are missing.");
+      } catch (cause) {
+        onNotice(cause instanceof Error ? cause.message : "Could not return issues to the GitHub list");
+      }
+    });
   }
 
   async function deleteGoal(plan: PlanSummary) {
@@ -730,7 +744,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
   // issue column. The plan ids come from the UNSCOPED goal list: picking one
   // project must narrow the goal columns, never make a started issue reappear
   // in the issue column beside them.
-  const knownPlanIds = new Set(goalPlans.map((plan) => plan.planId));
+  const knownPlanIds = new Set(goalPlans.filter((plan) => !plan.issuesReturnedAt).map((plan) => plan.planId));
   // The goal filter runs first, so a search can only narrow what is already on
   // the board. The header count and the "No issue matches" fallback both read
   // this array, never the raw `issueCards`.
@@ -878,6 +892,11 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
               onRequestAbort={() => { setGoalError(""); setConfirmAbortGoalId(plan.planId); }}
               onCancelAbort={() => setConfirmAbortGoalId("")}
               onConfirmAbort={() => { void abortGoal(plan); }}
+              returningIssues={boardBusy[`return-issues:${plan.planId}`] === true}
+              confirmingReturn={confirmReturnIssuesId === plan.planId}
+              onRequestReturn={() => setConfirmReturnIssuesId(plan.planId)}
+              onCancelReturn={() => setConfirmReturnIssuesId("")}
+              onConfirmReturn={() => { void returnIssues(plan); }}
               checking={boardBusy[`checkmerge:${plan.planId}`] === true}
               onCheckMerge={() => { void checkMerge(plan); }}
               followupBusy={boardBusy[`followup:${plan.planId}`] === true}
@@ -927,7 +946,7 @@ function GitHubIssueBoardCard({ issue, starting, onStart }: { issue: GitHubIssue
   </article>;
 }
 
-function GoalBoardCard({ plan, state, repositoryName, tasks, focusSessionId, confirming, aborting, focusing, checking, followupBusy, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge, onMoreActions }: { plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; tasks: HealthTask[]; focusSessionId: string | null; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; followupBusy: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void; onMoreActions: () => void }) {
+function GoalBoardCard({ returningIssues, confirmingReturn, onRequestReturn, onCancelReturn, onConfirmReturn, plan, state, repositoryName, tasks, focusSessionId, confirming, aborting, focusing, checking, followupBusy, onOpen, onRequestAbort, onCancelAbort, onConfirmAbort, onFocusWorkspace, onCheckMerge, onMoreActions }: { returningIssues: boolean; confirmingReturn: boolean; onRequestReturn: () => void; onCancelReturn: () => void; onConfirmReturn: () => void; plan: PlanSummary; state: GoalBoardStateId; repositoryName: string; tasks: HealthTask[]; focusSessionId: string | null; confirming: boolean; aborting: boolean; focusing: boolean; checking: boolean; followupBusy: boolean; onOpen: () => void; onRequestAbort: () => void; onCancelAbort: () => void; onConfirmAbort: () => void; onFocusWorkspace: () => void; onCheckMerge: () => void; onMoreActions: () => void }) {
   const closed = state === "merged" || state === "aborted";
   const link = goalPrLink(plan);
   const openLabel = goalOpenLabel(plan);
@@ -957,9 +976,10 @@ function GoalBoardCard({ plan, state, repositoryName, tasks, focusSessionId, con
       : <span key={number}>#{number}</span>)}</p>}
     <p className="goal-board-card-evidence">{boardEvidence(plan, state)}</p>
     {link && (state === "waiting_for_merge" || state === "merged") && <a className="goal-board-pr" href={link.url} target="_blank" rel="noreferrer">{link.label}</a>}
-    {confirming
+    {plan.issuesReturnedAt && <p className="goal-board-card-evidence">Issues returned to GitHub list. This goal remains aborted.</p>}
+    {confirmingReturn ? <footer className="goal-board-abort-confirm"><span>Return linked issues to the GitHub list? Open synced issues will be available for a new goal. This goal stays aborted; its history, branches and worktrees are kept.</span><div><button type="button" aria-label={`Cancel returning issues for ${plan.goal}`} disabled={returningIssues} onClick={onCancelReturn}>Cancel</button><button type="button" aria-label={`Confirm return issues for ${plan.goal}`} disabled={returningIssues} onClick={onConfirmReturn}>{returningIssues ? "Returning…" : "Return issues"}</button></div></footer> : confirming
       ? <footer className="goal-board-abort-confirm"><span>Abort this goal? Active specification work and live cmux sessions are cancelled. Its worktrees and branches are kept.</span><div><button type="button" aria-label={`Cancel aborting ${plan.goal}`} disabled={aborting} onClick={onCancelAbort}>Cancel</button><button type="button" className="confirm-abort" aria-label={`Confirm abort ${plan.goal}`} disabled={aborting} onClick={onConfirmAbort}>{aborting ? "Aborting…" : "Confirm abort"}</button></div></footer>
-      : <footer><button type="button" className="goal-board-open" aria-label={`${openLabel} ${plan.goal}`} onClick={onOpen}>{openLabel}</button>{!closed && <button type="button" className="goal-board-abort" aria-label={`Abort ${plan.goal}`} onClick={onRequestAbort}>Abort</button>}{state === "waiting_for_merge" && <button type="button" className="goal-board-more" aria-label={`More actions for ${plan.goal}`} disabled={followupBusy} onClick={onMoreActions}>{followupBusy ? "Starting follow-up…" : "More actions"}</button>}{checkable && <button type="button" className="goal-board-check" aria-label={`Check if ${plan.goal} is merged`} disabled={checking} onClick={onCheckMerge}>{checking ? "Checking GitHub…" : "Check if merged"}</button>}{focusSessionId && <button type="button" className="goal-board-focus" aria-label={`Open ${plan.goal} in cmux`} disabled={focusing} onClick={onFocusWorkspace}>{focusing ? "Opening…" : "Open in cmux"}</button>}</footer>}
+      : <footer><button type="button" className="goal-board-open" aria-label={`${openLabel} ${plan.goal}`} onClick={onOpen}>{openLabel}</button>{state === "aborted" && Boolean(plan.issueNumbers?.length) && !plan.issuesReturnedAt && <button type="button" className="goal-board-return-issues" aria-label={`Return issues to GitHub list for ${plan.goal}`} onClick={onRequestReturn}>Return issues to GitHub list</button>}{!closed && <button type="button" className="goal-board-abort" aria-label={`Abort ${plan.goal}`} onClick={onRequestAbort}>Abort</button>}{state === "waiting_for_merge" && <button type="button" className="goal-board-more" aria-label={`More actions for ${plan.goal}`} disabled={followupBusy} onClick={onMoreActions}>{followupBusy ? "Starting follow-up…" : "More actions"}</button>}{checkable && <button type="button" className="goal-board-check" aria-label={`Check if ${plan.goal} is merged`} disabled={checking} onClick={onCheckMerge}>{checking ? "Checking GitHub…" : "Check if merged"}</button>}{focusSessionId && <button type="button" className="goal-board-focus" aria-label={`Open ${plan.goal} in cmux`} disabled={focusing} onClick={onFocusWorkspace}>{focusing ? "Opening…" : "Open in cmux"}</button>}</footer>}
   </article>;
 }
 

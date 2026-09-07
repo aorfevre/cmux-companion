@@ -380,3 +380,15 @@ test("an unavailable managed-session service never falls back to the background 
   await assert.rejects(service.startGoal({ repositoryId: STARRED, number: 11 }), /Visible goal sessions are unavailable/);
   assert.equal(starts.length, 0);
 });
+
+test("returned aborted issues can start a fresh goal while unreleased goals still reserve them", async (t) => {
+  const { service, starts } = await harness(t, {
+    issuesByPath: { "/repo/app": [issue(11, "Restore editor focus")] },
+    existingPlans: [{ planId: "old", issueNumbers: [11], boardStatus: "aborted", issuesReturnedAt: "2026-09-07T12:00:00Z" }],
+  });
+  await service.sync();
+  const result = await service.startGoal({ repositoryId: STARRED, number: 11 });
+  assert.equal(result.created, true);
+  assert.equal(starts.length, 1);
+  assert.notEqual(result.plan.planId, "old");
+});

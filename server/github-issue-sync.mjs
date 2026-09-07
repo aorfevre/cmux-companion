@@ -185,7 +185,7 @@ export class GitHubIssueSync {
       throw new TypeError("Could not check the existing goals for this repository. Try again");
     }
     const plans = Array.isArray(response?.plans) ? response.plans : [];
-    return plans.find((plan) => (Array.isArray(plan?.issueNumbers) ? plan.issueNumbers : []).some((value) => Number(value) === number)) || null;
+    return plans.find((plan) => !plan.issuesReturnedAt && (Array.isArray(plan?.issueNumbers) ? plan.issueNumbers : []).some((value) => Number(value) === number)) || null;
   }
 }
 

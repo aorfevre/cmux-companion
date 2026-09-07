@@ -21,7 +21,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "goal", "questions", "answers", "tasks", "feedback", "edit", "launch",
   "task_ready", "task_pending", "integration_started", "task_integrated", "delivery_failed", "final_pr",
   "merge_launched", "merge_blocked", "task_evidence", "wave_launched", "wave_integrated",
-  "session_retired", "board_merged", "board_aborted", "board_pull_request",
+  "session_retired", "board_merged", "board_aborted", "issues_returned", "board_pull_request",
   "task_relaunched", "task_skipped", "followup_launched", "task_associated",
   "review_claimed", "review_launched", "discussion", "merge_cleanup_required",
   "goal_session_started", "proposal_published", "proposal_changes_requested", "proposal_approved", "goal_session_transition", "goal_session_correction",
@@ -199,7 +199,7 @@ export class WorktreePlanStore {
       // process starts. Both single-issue and topic planning use this boundary.
       if (issueNumbers.length) {
         const wanted = new Set(issueNumbers.map(Number));
-        const existing = this.db.prepare("SELECT plan_id, issue_numbers FROM plans WHERE repository_id = ?").all(repositoryId)
+        const existing = this.db.prepare("SELECT plan_id, issue_numbers FROM plans WHERE repository_id = ? AND issues_returned_at IS NULL").all(repositoryId)
           .find((row) => parse(row.issue_numbers, []).some((number) => wanted.has(Number(number))));
         if (existing) throw Object.assign(new TypeError("An issue already belongs to a saved goal. Open or delete that goal before planning again"), { code: "ISSUE_ALREADY_PLANNED", planId: existing.plan_id });
       }
@@ -1144,6 +1144,22 @@ export class WorktreePlanStore {
 
   // The user stopped the goal. An already aborted plan is returned untouched,
   // and a merged plan is never demoted: the two terminal states are exclusive.
+  returnIssuesToBacklog(planId) {
+    const id = String(planId || "");
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT * FROM plans WHERE plan_id = ?").get(id);
+      if (!row) throw new TypeError("Unknown plan");
+      if (row.board_status !== "aborted") throw new TypeError("Only aborted goals can return issues to the GitHub list");
+      const issueNumbers = parse(row.issue_numbers, []);
+      if (!issueNumbers.length) throw new TypeError("This goal has no linked GitHub issues");
+      if (row.issues_returned_at) return;
+      const at = this.#stamp();
+      this.db.prepare("UPDATE plans SET issues_returned_at = ?, updated_at = ? WHERE plan_id = ?").run(at, at, id);
+      this.#insertEvent(id, null, "issues_returned", { issueNumbers, issueUrls: parse(row.issue_urls, []), at }, at);
+    });
+    return this.get(id);
+  }
+
   recordGoalAborted(planId, { reason = null } = {}) {
     const id = String(planId || "");
     const row = this.#boardRow(id);
@@ -1315,6 +1331,7 @@ export class WorktreePlanStore {
       finalPrNumber: row.final_pr_number,
       finalPrUrl: row.final_pr_url,
       issueNumbers: parse(row.issue_numbers, []),
+      issuesReturnedAt: row.issues_returned_at ?? null,
       deliveryPolicy: row.delivery_policy || "auto",
       engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
       specOptions: safeSpecOptions(parse(row.spec_options, null)),
@@ -1403,6 +1420,7 @@ export class WorktreePlanStore {
     };
     ensure("plans", "base_sha", "TEXT");
     ensure("plans", "source_type", "TEXT");
+    ensure("plans", "issues_returned_at", "TEXT");
     ensure("plans", "issue_numbers", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plans", "issue_urls", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plans", "delivery_policy", "TEXT NOT NULL DEFAULT 'auto'");
@@ -1536,6 +1554,7 @@ function readPlan(row) {
     images: parse(row.images, []),
     sourceType: row.source_type,
     issueNumbers: parse(row.issue_numbers, []),
+    issuesReturnedAt: row.issues_returned_at ?? null,
     issueUrls: parse(row.issue_urls, []),
     deliveryPolicy: row.delivery_policy || "auto",
     engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },

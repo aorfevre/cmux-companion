@@ -200,6 +200,12 @@ saved planner model defaults. The goal retains its issue links. Review the
 proposal and choose **Approve and implement** before development starts.
 Existing issue goals keep their original workflow and are reused on retries.
 
+Aborted issue goals offer **Return issues to GitHub list**. After confirmation,
+open issues already in the synced backlog appear immediately and can start a
+fresh goal. Run **GitHub Sync** if an open issue is missing. The old goal stays
+aborted with its history, linked issue references, branches and worktrees intact;
+this action neither restarts work nor reopens a closed issue on GitHub.
+
 The repository's bulk issue-planning sheet remains a separate workflow:
 
 **GitHub Issues** loads up to 100 open tickets from the repository selected by the local checkout's `origin`, then asks an isolated Claude analyzer to group every ticket exactly once into delivery-sized master topics. Select the topics to deliver, answer topic-level clarifications, and create the saved goal plans. Any repository-planner follow-up questions stay in the same sheet. Once every selected plan is ready, one action launches all topic worktrees; their agents then run in parallel.

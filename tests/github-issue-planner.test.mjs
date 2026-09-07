@@ -105,6 +105,12 @@ test("refuses stale issues and issues already claimed by a saved goal", async ()
   await assert.rejects(() => claimed.service.prepare({ analysisId: claimedAnalysis.analysisId, topics: [{ id: "topic-1" }] }), /#55 already belongs/);
 });
 
+test("returned issue reservations do not block bulk topic planning", async () => {
+  const released = harness({ existingPlans: [{ planId: "old", issueNumbers: [55], boardStatus: "aborted", issuesReturnedAt: "2026-09-07T12:00:00Z" }] });
+  const analysis = await released.service.analyze({ repositoryId: REPOSITORY_ID });
+  await released.service.prepare({ analysisId: analysis.analysisId, topics: [{ id: "topic-1" }] });
+});
+
 test("launches prepared topic plans in order and reports parallel worktree count", async () => {
   const { service, launches } = harness();
   const result = await service.launch({ planIds: ["plan-a", "plan-b", "plan-a"] });
