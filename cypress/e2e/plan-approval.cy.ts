@@ -99,28 +99,29 @@ describe("concise saved-goal approval", () => {
       cy.contains("End-to-end validation is queued after the parallel work").should("be.visible");
 
       cy.findByRole("region", { name: "Delivery plan" }).within(() => {
-        cy.contains("1 combined pull request").should("be.visible");
-        cy.findByRole("region", { name: "Wave 1" }).findAllByRole("button").should("have.length", 2);
-        cy.findByRole("region", { name: "Wave 2" }).findAllByRole("button").should("have.length", 1);
-        cy.findByRole("region", { name: "Wave 3" }).findAllByRole("button").should("have.length", 1);
-        cy.get(".delivery-flowchart-edges > path").should("have.length", 4);
+        cy.contains("One combined pull request").should("be.visible");
+        cy.get(".delivery-stage").eq(0).find(".delivery-plan-task").should("have.length", 2);
+        cy.get(".delivery-stage").eq(1).find(".delivery-plan-task").should("have.length", 1);
+        cy.get(".delivery-stage").eq(2).find(".delivery-plan-task").should("have.length", 1);
+        cy.contains("After task 1, task 2").should("be.visible");
+        cy.contains("After task 1, task 3").click();
+        cy.get(".delivery-plan-task").last().find("details[open] li").should("have.length", 2)
+          .and("contain.text", "Build the approval surface").and("contain.text", "Verify the approval flow");
         cy.root().then(($chart) => expect($chart[0].scrollWidth).to.be.at.most($chart[0].clientWidth));
-        cy.findByRole("button", { name: /^Verify the approval flow/ }).click().should("have.attr", "aria-pressed", "true");
-        cy.contains("Scope: The local flow is covered").should("be.visible");
-        cy.contains("Files: cypress/e2e").should("be.visible");
-        cy.contains("Checks: npm run test:e2e:local").should("be.visible");
+        cy.get(".delivery-plan-task").eq(2).within(() => {
+          cy.contains("summary", "Scope and checks").click();
+          cy.contains("Scope: The local flow is covered").should("be.visible");
+          cy.contains("Files: cypress/e2e").should("be.visible");
+          cy.contains("Checks: npm run test:e2e:local").should("be.visible");
+        });
       });
       cy.screenshot("plan-approval-mobile", { capture: "fullPage" });
 
-      cy.contains("In scope").should("not.be.visible");
-      cy.findByText("Full delivery contract · 1 assumption").click();
       cy.contains("In scope").should("be.visible");
       cy.contains("Goal passport").should("be.visible");
-      cy.findByText("Risks and technical constraints").click();
       cy.contains("A dependency is missed").should("be.visible");
-      cy.findByText("Acceptance evidence").click();
       cy.contains("The concise summary is readable").should("be.visible");
-      cy.findByText("Task instructions").click();
+      cy.findByText("Task ownership and checks").click();
       cy.contains("Owns: cypress/e2e").should("be.visible");
     });
   });
@@ -133,7 +134,6 @@ describe("concise saved-goal approval", () => {
       cy.contains("Older saved contract stays reviewable").should("be.visible");
       cy.contains("Review the outcome, decisions, and parallel delivery before launching.").should("not.exist");
       cy.findByRole("region", { name: "Delivery plan" }).should("contain.text", "1 task pull request");
-      cy.findByText("Full delivery contract · 1 assumption").click();
       cy.contains("Goal passport").should("be.visible");
       cy.contains("Regenerating saved plans").should("be.visible");
     });

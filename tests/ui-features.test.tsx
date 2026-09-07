@@ -928,8 +928,8 @@ describe("worktree goal planner", () => {
     assert.ok(within(passport).getByText("One planner assumption remains visible for approval"));
     assert.ok(within(passport).getByText("Provider outage"));
     assert.ok(within(passport).getByText("Keep retries bounded"));
-    assert.ok(within(passport).getByText("Wave 1"));
-    assert.ok(within(passport).getByText("Wave 2"));
+    assert.ok(within(passport).getByText("Stage 1"));
+    assert.ok(within(passport).getByText("Stage 2"));
     assert.ok(within(passport).getByText("integrated"));
     assert.ok(within(passport).getByText("completed"));
     assert.ok(within(passport).getByText("planned"));
@@ -941,13 +941,14 @@ describe("worktree goal planner", () => {
   });
 
   test("keeps an approval summary and dependency delivery plan concise until details are requested", async () => {
+    const overview = "Review a concise plan before starting work. " + "Keep the saved decision context visible. ".repeat(9);
     const approvalDraft = {
       ...readyDraft,
       deliveryMode: "combined",
       spec: {
         version: 2, outcome: "Operators can review every detail before launch", inScope: ["Planner review"], nonGoals: ["Automatic launch"], constraints: ["Keep saved plans compatible"], assumptions: ["A reviewer opens the plan"], risks: [],
         approvalSummary: {
-          overview: "Review a concise plan before starting work.",
+          overview,
           userFlow: ["Read the plan", "Inspect the waves", "Start work"],
           decisions: [{ choice: "One combined PR", consequence: "The delivery is assembled after every task is ready." }],
           successCriteria: ["Dependencies are visible before launch."],
@@ -966,22 +967,30 @@ describe("worktree goal planner", () => {
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
     const passport = await screen.findByRole("region", { name: "Goal passport" });
-    assert.ok(within(passport).getByText("Review a concise plan before starting work."));
+    assert.ok(within(passport).getByText(overview.trim()));
     assert.ok(within(passport).getByText("One combined PR"));
     assert.ok(within(passport).getByText("Assign a verification command"));
     assert.ok(within(passport).getByText("One assumption needs approval"));
     const chart = within(passport).getByRole("region", { name: "Delivery plan" });
-    assert.ok(within(chart).getByText("2 tasks · 2 waves"));
-    assert.ok(within(chart).getByText(/1 combined pull request/));
-    assert.equal(chart.querySelectorAll(".delivery-flowchart-edges > path").length, 1);
-    await userEvent.click(within(chart).getByRole("button", { name: /Publish UI/ }));
-    assert.ok(within(chart).getByText("Scope: The plan is reviewable"));
-    assert.ok(within(chart).getByText("Files: app/**"));
-    const contractDetails = within(passport).getByText(/Full delivery contract/).parentElement as HTMLDetailsElement;
-    assert.equal(contractDetails.open, false);
-    await userEvent.click(within(contractDetails).getByText(/Full delivery contract/));
-    assert.equal(contractDetails.open, true);
-    assert.ok(within(contractDetails).getByText("Automatic launch"));
+    assert.ok(within(chart).getByText("2 tasks · 2 stages"));
+    assert.ok(within(chart).getByText(/One combined pull request/));
+    const task = chart.querySelectorAll(".delivery-plan-task")[1] as HTMLElement;
+    await userEvent.click(within(task).getByText("Scope and checks"));
+    assert.ok(within(task).getByText("Scope: The plan is reviewable"));
+    assert.ok(within(task).getByText("Files: app/**"));
+    const dependencies = within(task).getByText("After task 1").parentElement as HTMLDetailsElement;
+    assert.equal(dependencies.open, false);
+    await userEvent.click(within(task).getByText("After task 1"));
+    assert.equal(dependencies.open, true);
+    assert.ok(within(dependencies).getByText("Prepare API"));
+    assert.ok(within(passport).getByText("Automatic launch"));
+    assert.ok(within(passport).getByText("A reviewer opens the plan"));
+    const fullOutcome = within(passport).getByText("Read the full expected outcome").closest("details") as HTMLDetailsElement;
+    assert.equal(fullOutcome.open, false);
+    await userEvent.click(within(fullOutcome).getByText("Read the full expected outcome"));
+    assert.equal(fullOutcome.open, true);
+    assert.ok(within(fullOutcome).getByText("Operators can review every detail before launch"));
+
   });
 
   test("rejects a plan with written feedback and starts a fresh analysis", async () => {

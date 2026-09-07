@@ -1836,6 +1836,8 @@ const CONTRACT_LINES = [
   "It never holds both keys.",
   "Ask questions only while a real ambiguity would change the split. Otherwise return the tasks.",
   "The spec states the user-visible outcome, explicit scope boundaries, constraints, visible assumptions, observable acceptance criteria, and material risks.",
+  "Write spec.outcome as one or two short sentences (at most 300 characters) explaining the observable change to a human deciding whether to launch development. Do not copy the issue body, prompt instructions, or implementation checklist into the outcome. Preserve necessary detail in scope, constraints, acceptance criteria, and task prompts.",
+  "Name assumptions that need human agreement explicitly, and pair each material risk with a concrete mitigation. Give tasks short, distinct titles; keep implementation details in their prompts.",
   "Include approvalSummary for every new or revised contract. It is concise plain-language approval copy faithful to the detailed spec: overview is at most 600 characters; userFlow, decisions, and successCriteria each have at most five entries; each entry or decision field is at most 240 characters.",
   "State consequential choices and their effects in decisions. Do not add requirements, conceal assumptions or blockers, or treat the summary as authoritative: the detailed contract and readiness remain authoritative.",
   "Every acceptance criterion has at least one task. Every task names the criteria it delivers, its owned files or areas, and concrete verification.",

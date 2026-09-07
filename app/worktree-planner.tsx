@@ -4,7 +4,7 @@ import { goalPopupUrl } from "./goal-popup-url";
 import { BUILTIN_MODEL_ROLES, ModelRoles, ModelSelect, ModelSettingsStatus } from "./model-settings";
 import { REVIEW_AGENTS, REVIEW_OPTIONS } from "../server/review-options.mjs";
 import { DEV_SETUP_GOAL } from "./dev-setup-goal";
-import { FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { canRetryOnFreshBranch } from "../server/worktree-errors.mjs";
 import { PLANNER_ENGINES, reviewerEngine, SPEC_OPTIONS } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
@@ -178,64 +178,32 @@ function DeliveryTasks({ tasks, planId, health, busy, confirming, onRelaunch, on
 
 type TaskHealth = { health: string; reason: string; launchReason?: string | null; branch?: string; session?: { id: string } | null };
 
-function DeliveryFlowchart({ tasks, waves, criteria, deliveryMode }: { tasks: PlanTask[]; waves: string[][]; criteria: PlanCriterion[]; deliveryMode?: "single" | "combined" }) {
-  const [selectedId, setSelectedId] = useState("");
-  const [edges, setEdges] = useState<{ id: string; from: number; to: number; left: number; top: number; lane?: number }[]>([]);
-  const chartRef = useRef<HTMLDivElement | null>(null);
-  const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
+function DeliveryPlan({ tasks, waves, criteria, deliveryMode }: { tasks: PlanTask[]; waves: string[][]; criteria: PlanCriterion[]; deliveryMode?: "single" | "combined" }) {
+  const orderedIds = waves.flat();
+  const deliveryLabel = deliveryMode === "combined" ? "One combined pull request" : deliveryMode === "single" ? `${tasks.length} task pull request${tasks.length === 1 ? "" : "s"}` : "Delivery mode set at launch";
   const taskById = new Map(tasks.map((task) => [task.id, task]));
-  const selected = taskById.get(selectedId);
-  const deliveryLabel = deliveryMode === "combined"
-    ? "1 combined pull request"
-    : deliveryMode === "single"
-      ? `${tasks.length} task pull request${tasks.length === 1 ? "" : "s"}`
-      : "delivery mode set at launch";
-  useLayoutEffect(() => {
-    const redraw = () => {
-      const chart = chartRef.current;
-      if (!chart) return;
-      const boundary = chart.getBoundingClientRect();
-      const waveByTask = new Map(waves.flatMap((wave, index) => wave.map((id) => [id, index] as const)));
-      const next = tasks.flatMap((task) => (task.dependsOn || []).flatMap((dependency) => {
-        const source = nodeRefs.current.get(dependency)?.getBoundingClientRect();
-        const target = nodeRefs.current.get(task.id)?.getBoundingClientRect();
-        if (!source || !target) return [];
-        const skipsWave = (waveByTask.get(task.id) ?? 0) - (waveByTask.get(dependency) ?? 0) > 1;
-        return [{ id: `${dependency}-${task.id}`, from: source.left - boundary.left + source.width / 2, to: target.left - boundary.left + target.width / 2, left: source.bottom - boundary.top, top: target.top - boundary.top, lane: skipsWave ? Math.max(8, boundary.width - 8) : undefined }];
-      }));
-      setEdges(next);
-    };
-    redraw();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(redraw);
-    if (observer && chartRef.current) observer.observe(chartRef.current);
-    window.addEventListener("resize", redraw);
-    return () => { observer?.disconnect(); window.removeEventListener("resize", redraw); };
-  }, [tasks, waves]);
-  if (!waves.length || !tasks.length) return null;
-  return <section className="delivery-flowchart" aria-label="Delivery plan">
-    <header><strong>Delivery plan</strong><small>{tasks.length} tasks · {waves.length} waves</small></header>
-    <div className="delivery-flowchart-waves" ref={chartRef}>
-      <svg className="delivery-flowchart-edges" aria-hidden="true"><defs><marker id="delivery-flowchart-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M 0 0 L 6 3 L 0 6 z" /></marker></defs>{edges.map((edge) => <path key={edge.id} markerEnd="url(#delivery-flowchart-arrow)" d={edge.lane ? `M ${edge.from} ${edge.left} L ${edge.lane} ${edge.left} L ${edge.lane} ${edge.top} L ${edge.to} ${edge.top}` : `M ${edge.from} ${edge.left} C ${edge.from} ${(edge.left + edge.top) / 2}, ${edge.to} ${(edge.left + edge.top) / 2}, ${edge.to} ${edge.top}`} />)}</svg>
-      {waves.map((wave, index) => <section className="delivery-flowchart-wave" key={`${index}-${wave.join("-")}`} aria-label={`Wave ${index + 1}`}>
-        <span>Wave {index + 1}</span>
-        <div className="delivery-flowchart-nodes">{wave.map((id) => {
+  const taskNumber = (id: string) => orderedIds.indexOf(id) + 1;
+  return <section className="delivery-plan" aria-label="Delivery plan">
+    <header><strong>Delivery plan</strong><span>{tasks.length} tasks · {waves.length} stages</span></header>
+    <ol className="delivery-stages">
+      {waves.map((wave, index) => <li className="delivery-stage" key={`${index}-${wave.join("-")}`}>
+        <div className="delivery-stage-heading"><span className="delivery-stage-number" aria-hidden="true">{index + 1}</span><strong>Stage {index + 1}</strong>{wave.length > 1 && <span className="delivery-parallel">{wave.length} tasks can run in parallel</span>}</div>
+        <ol className="delivery-stage-tasks">{wave.map((id) => {
           const task = taskById.get(id);
-          if (!task) return null;
-          const dependencies = (task.dependsOn || []).map((dependency) => taskById.get(dependency)?.title || dependency);
-          return <button type="button" key={id} ref={(element) => { if (element) nodeRefs.current.set(id, element); else nodeRefs.current.delete(id); }} className={selectedId === id ? "selected" : ""} aria-pressed={selectedId === id} onClick={() => setSelectedId(id)}>
-            <b>{task.title}</b>
-            <small>{dependencies.length ? `← ${dependencies.join(" · ")}` : "Starts this delivery"}</small>
-          </button>;
-        })}</div>
-      </section>)}
-    </div>
-    <div className="delivery-flowchart-endpoint">↓ {deliveryLabel}</div>
-    {selected && <aside className="delivery-flowchart-task" aria-live="polite">
-      <strong>{selected.title}</strong>
-      <small>Scope: {selected.criterionIds?.map((id) => criteria.find((criterion) => criterion.id === id)?.text).filter(Boolean).join(" · ") || "Not declared"}</small>
-      <small>Files: {selected.ownedAreas?.join(", ") || "Not declared"}</small>
-      <small>Checks: {selected.verification?.join(" · ") || "Not declared"}</small>
-    </aside>}
+          const dependencies = task?.dependsOn || [];
+          return <li className="delivery-plan-task" key={id}>
+            <div className="delivery-task-title"><span className="delivery-task-number">{taskNumber(id)}</span><strong>{task?.title || id}</strong></div>
+            {dependencies.length ? <details className="delivery-dependencies"><summary>After {dependencies.map((dependency) => taskNumber(dependency) ? `task ${taskNumber(dependency)}` : dependency).join(", ")}</summary><ul>{dependencies.map((dependency) => <li key={dependency}>{taskById.get(dependency)?.title || dependency}</li>)}</ul></details> : <p className="delivery-start">No prerequisites</p>}
+            <details className="delivery-dependencies"><summary>Scope and checks</summary><div>
+              <p>Scope: {task?.criterionIds?.map((criterionId) => criteria.find((criterion) => criterion.id === criterionId)?.text).filter(Boolean).join(" · ") || "Not declared"}</p>
+              <p>Files: {task?.ownedAreas?.join(", ") || "Not declared"}</p>
+              <p>Checks: {task?.verification?.join(" · ") || "Not declared"}</p>
+            </div></details>
+          </li>;
+        })}</ol>
+      </li>)}
+    </ol>
+    {tasks.length > 0 && <footer><span aria-hidden="true">↓</span> {deliveryLabel}</footer>}
   </section>;
 }
 
@@ -243,47 +211,51 @@ function GoalPassport({ draft }: { draft: PlanDraft }) {
   const spec = draft.spec;
   if (!spec) return null;
   const readiness = draft.readiness;
-  const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave ?? 0))].sort((left, right) => left - right).map((wave) => draft.tasks.filter((task) => (task.wave ?? 0) === wave).map((task) => task.id));
+  const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave || 0))].sort((a, b) => a - b).map((wave) => draft.tasks.filter((task) => (task.wave || 0) === wave).map((task) => task.id));
   // The server already decided each status. Reading the warning strings here
   // would produce a second, drifting source of truth.
   const requestedCoverage = (readiness?.optionCoverage || []).filter((entry) => entry?.requested === true);
   const artifacts = spec.designArtifacts || [];
+  const needsReview = Boolean(readiness?.warnings?.length || spec.assumptions?.length || spec.risks?.length);
+  const reviewStatus = readiness?.ready === false ? "Needs work" : readiness?.ready !== true ? "Plan checks unavailable" : needsReview ? "Review before launch" : "Plan checks passed";
   const summary = spec.approvalSummary;
-  const assumptionCount = spec.assumptions?.length || 0;
+  const displayedOutcome = summary?.overview || spec.outcome;
+  const longOutcome = !summary?.overview && displayedOutcome.length > 320;
+  // Old contracts may contain the whole issue. Show an explicitly labelled
+  // excerpt and preserve the exact text; never invent a summary or rewrite it.
+  const outcomePreview = longOutcome ? `${displayedOutcome.slice(0, 280).trimEnd()}…` : displayedOutcome;
   return <section className="goal-passport" aria-label="Goal passport">
-    <header><div><small>{summary?.overview ? "OVERVIEW" : "DELIVERY CONTRACT"}</small><strong>{summary?.overview || spec.outcome}</strong></div><em className={readiness?.ready === false ? "blocked" : "ready"}>{readiness?.ready === false ? "Needs work" : "Ready to code"}</em></header>
-    {(readiness?.errors?.length || readiness?.warnings?.length) ? <div className="goal-passport-readiness">
+    <header><div><small>PLAN REVIEW</small><strong>{longOutcome ? "Expected outcome (excerpt)" : "Expected outcome"}</strong></div><em className={readiness?.ready === false ? "blocked" : needsReview || readiness?.ready !== true ? "review" : "ready"}>{reviewStatus}</em></header>
+    <p className="goal-review-outcome">{outcomePreview}</p>
+    {(longOutcome || Boolean(summary?.overview && summary.overview !== spec.outcome)) && <PromptDisclosure label="Full expected outcome" summary="Read the full expected outcome" text={spec.outcome} />}
+    <p className="goal-review-note">Plan checks validate the contract structure. Review the scope and assumptions before launching; implementation checks are reported below when available.</p>
+    {(readiness?.errors?.length || readiness?.warnings?.length) ? <div className="goal-passport-readiness"><strong>Review notes</strong>
       {readiness.errors?.map((item) => <p className="error" key={item}>{item}</p>)}
       {readiness.warnings?.map((item) => <p className="warning" key={item}>{item}</p>)}
     </div> : null}
     {summary?.userFlow?.length ? <div className="goal-passport-block"><strong>User flow</strong><ol className="goal-passport-summary-list">{summary.userFlow.map((step) => <li key={step}>{step}</li>)}</ol></div> : null}
     {summary?.decisions?.length ? <div className="goal-passport-block"><strong>Decisions</strong><ul className="goal-passport-decisions">{summary.decisions.map((decision) => <li key={`${decision.choice}-${decision.consequence}`}><b>{decision.choice}</b><small>{decision.consequence}</small></li>)}</ul></div> : null}
     {summary?.successCriteria?.length ? <div className="goal-passport-block"><strong>Success criteria</strong><ul className="goal-passport-summary-list">{summary.successCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul></div> : null}
-    <DeliveryFlowchart tasks={draft.tasks} waves={waves} criteria={spec.acceptanceCriteria} deliveryMode={draft.deliveryMode || (draft.deliveryPolicy === "combined" ? "combined" : undefined)} />
-    <details className="goal-passport-details"><summary>Full delivery contract · {assumptionCount} assumption{assumptionCount === 1 ? "" : "s"}</summary>
-      {summary?.overview && <div className="goal-passport-block"><strong>Outcome</strong><p className="goal-passport-overview">{spec.outcome}</p></div>}
-      <div className="goal-passport-scope">
-        <PassportList title="In scope" items={spec.inScope} empty="Defined by the outcome" />
-        <PassportList title="Non-goals" items={spec.nonGoals} empty="None declared" />
-        <PassportList title="Constraints" items={spec.constraints} empty="None declared" />
-        <PassportList title="Assumptions" items={spec.assumptions} empty="None" />
-      </div>
-    </details>
-    {(spec.risks?.length > 0 || requestedCoverage.length > 0 || artifacts.length > 0) && <details className="goal-passport-details"><summary>Risks and technical constraints</summary>
-      {spec.risks?.length > 0 && <div className="goal-passport-block"><strong>Risks and mitigations</strong><ul className="goal-passport-risks">{spec.risks.map((risk, index) => <li key={`${index}-${risk.text}-${risk.mitigation}`}><em>{risk.level}</em><div><span>{risk.text}</span><small>{risk.mitigation || "No mitigation recorded"}</small></div></li>)}</ul></div>}
+    <div className="goal-passport-scope">
+      <PassportList title="In scope" items={spec.inScope} empty="Defined by the outcome" />
+      <PassportList title="Non-goals" items={spec.nonGoals} empty="None declared" />
+      <PassportList title="Constraints" items={spec.constraints} empty="None declared" />
+      <PassportList title="Assumptions to review" items={spec.assumptions} empty="None" />
+    </div>
+    {spec.risks?.length > 0 && <div className="goal-passport-block"><strong>Risks and mitigations</strong><ul className="goal-passport-risks">{spec.risks.map((risk, index) => <li key={`${index}-${risk.text}-${risk.mitigation}`}><em>{risk.level}</em><div><span>{risk.text}</span><small>{risk.mitigation || "No mitigation recorded"}</small></div></li>)}</ul></div>}
+    <div className="goal-passport-block"><strong>Success criteria and verification</strong><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
+      const tasks = draft.tasks.filter((task) => task.criterionIds?.includes(criterion.id));
+      const state = criterionState(tasks);
+      return <li key={criterion.id}><code>{criterion.id}</code><div><span>{criterion.text}</span><small>Check: {criterion.verification || "Not specified"}</small><small>{tasks.map((task) => task.title).join(" · ") || "No task assigned"}</small></div><em className={state}>{state}</em></li>;
+    })}</ul></div>
+    <DeliveryPlan tasks={draft.tasks} waves={waves} criteria={spec.acceptanceCriteria} deliveryMode={draft.deliveryMode || (draft.deliveryPolicy === "combined" ? "combined" : undefined)} />
     {requestedCoverage.length > 0 && <div className="goal-passport-block"><strong>Specification coverage</strong><ul className="goal-passport-options">{requestedCoverage.map((entry) => <li key={entry.id} className={`coverage-${entry.status}`}>
       <span>{SPEC_OPTION_LABELS[entry.id] || entry.id}</span>
       <small>{entry.message || "No detail recorded"}</small>
       <em className={`coverage-${entry.status}`}>{COVERAGE_LABELS[entry.status] || entry.status}</em>
     </li>)}</ul></div>}
     {artifacts.length > 0 && <div className="goal-passport-block"><strong>Design artifacts</strong><DesignArtifacts artifacts={artifacts} /></div>}
-    </details>}
-    <details className="goal-passport-details"><summary>Acceptance evidence</summary><div className="goal-passport-block"><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
-      const tasks = draft.tasks.filter((task) => task.criterionIds?.includes(criterion.id));
-      const state = criterionState(tasks);
-      return <li key={criterion.id}><code>{criterion.id}</code><div><span>{criterion.text}</span><small>{criterion.verification}</small><small>{tasks.map((task) => task.title).join(" · ") || "No task assigned"}</small></div><em className={state}>{state}</em></li>;
-    })}</ul></div></details>
-    <details className="goal-passport-details"><summary>Task instructions</summary><div className="goal-passport-block"><ul className="goal-passport-task-plan">{draft.tasks.map((task) => <li key={task.id}><span>{task.title}</span><small>Owns: {task.ownedAreas?.join(", ") || "Not declared"}</small><small>Depends on: {task.dependsOn?.join(", ") || "None"}</small><small>Verify: {task.verification?.join(" · ") || "Not declared"}</small></li>)}</ul></div></details>
+    <details className="goal-review-details"><summary>Task ownership and checks</summary><div className="goal-passport-block"><ul className="goal-passport-task-plan">{draft.tasks.map((task) => <li key={task.id}><span>{task.title}</span><small>Owns: {task.ownedAreas?.join(", ") || "Not declared"}</small><small>Depends on: {task.dependsOn?.join(", ") || "None"}</small><small>Verify: {task.verification?.join(" · ") || "Not declared"}</small></li>)}</ul></div></details>
     {draft.tasks.some((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length) && <div className="goal-passport-block"><strong>Task evidence</strong><ul className="goal-passport-evidence">{draft.tasks.filter((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length).map((task) => <li key={task.id}><span>{task.title}</span>{task.completionReport?.verification.map((item) => <small key={`${item.check}-${item.status}`}>{item.check}: <b className={item.status}>{item.status}</b></small>)}{task.completionReport?.limitations.map((item) => <small className="limitation" key={item}>Limitation: {item}</small>)}{task.scopeWarnings?.map((item) => <small className="warning" key={item}>Outside ownership: {item}</small>)}{task.evidenceError && <small className="error">{task.evidenceError}</small>}</li>)}</ul></div>}
   </section>;
 }
@@ -820,7 +792,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       {error && <p className="worktree-action-error">{error}</p>}
       {terminal ? <section className="planner-delivery-status" aria-label="Recorded delivery status"><strong>{terminal === "merged" ? "Merged" : "Aborted"}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}</section>
         : launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p>
-        : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{launchLabel(draft)}</button>}
+        : <section className="planner-launch-decision" aria-label="Launch decision"><div><strong>{draft.readiness?.ready === false ? "Resolve plan errors before launching" : "Launch development"}</strong><p>{draft.readiness?.ready === false ? "Use “This plan is wrong” to request a revised plan." : "Starts task agents in isolated worktrees. Their work is delivered for pull request review."}</p>{Boolean(draft.spec?.assumptions?.length || draft.readiness?.warnings?.length) && <p className="planner-launch-review-count">Review {draft.spec?.assumptions?.length || 0} assumptions and {draft.readiness?.warnings?.length || 0} warnings above before proceeding.</p>}</div><button type="button" className="primary-button" disabled={locked || draft.readiness?.ready === false} onClick={launch}>{launchLabel(draft)}</button></section>}
     </>}
   </form></>;
 }

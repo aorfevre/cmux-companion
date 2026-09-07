@@ -133,7 +133,7 @@ describe("questioning a delivery contract", () => {
 
       cy.findByRole("region", { name: "Goal passport" }).should("be.visible")
         .and("contain.text", "A questioned contract is answered without being rewritten")
-        .and("contain.text", "Ready to code");
+        .and("contain.text", "Plan checks passed");
       cy.contains("Round 2 · 2 tasks").should("be.visible");
       cy.get(".planner-task").should("have.length", 2);
       cy.get(".planner-task").first().should("contain.text", "Store the discussion");

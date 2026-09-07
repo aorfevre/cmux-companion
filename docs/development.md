@@ -60,6 +60,28 @@ The editable starting brief is defined once in
 review worker or new external integration is needed: the submitted text is the
 saved goal. An existing goal retains its submitted text if the preset changes.
 
+## Reviewing a plan before launch
+
+The planner review shows the expected outcome, scope, assumptions, risks and
+success criteria before the delivery stages. “Plan checks passed” means the
+saved contract passed structural validation; it is not evidence that the work
+has been implemented or tested. Warnings, assumptions or risks change that
+label to “Review before launch”. Structural errors remain visible and disable
+the launch action; warning-only plans can still be launched after review.
+
+Stages show execution order and which tasks can run in parallel. Numbered task
+references expand to the full prerequisite titles, including dependencies that
+skip stages. The launch panel explains the action and reminds the reviewer of
+recorded assumptions and warnings. Reading or expanding the plan starts no
+agents; the launch button uses the existing launch endpoint.
+
+For older contracts with long outcomes, the review explicitly labels an
+excerpt and retains the entire original under “Read the full expected outcome”,
+with rendered Markdown and raw text available. It does not synthesize an
+unverified summary or change a saved contract. New planner prompts request a
+short observable outcome and put implementation detail in the relevant contract
+fields. A live planner's adherence to that instruction still needs observation.
+
 ## Concise replies
 
 The authoritative [reply convention](../server/agent-reply-format.mjs) is shared

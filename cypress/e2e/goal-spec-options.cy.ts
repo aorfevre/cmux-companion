@@ -98,7 +98,7 @@ function readySummary() {
 
 function readyDetail() {
   return {
-    ...readySummary(), planStatus: "draft", questions: [], tasks: readyTasks, events: [],
+    ...readySummary(), planStatus: "draft", deliveryMode: "combined", questions: [], tasks: readyTasks, events: [],
     specOptions: { unitTests: true, e2eTests: false, edgeCases: true, refactorPass: true, screenMocks: true, flowcharts: true },
     spec: readySpec, readiness: readyReadiness, contractVersion: 2,
   };
@@ -139,6 +139,100 @@ function visitBoard() {
   cy.wait(["@dashboard", "@plans"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
 }
+
+describe("delivery plan readability", () => {
+  for (const width of [390, 1280]) {
+    it(`shows parallel stages and expandable dependencies at ${width}px`, () => {
+      cy.viewport(width, 900);
+      installScenario({ plans: [readySummary()] });
+      const detail = readyDetail();
+      const titles = ["Define report outcomes and planner behavior", "Persist normalized findings and atomic provenance", "Securely collect findings reports", "Make board supervision and cleanup report-aware", "Expose authenticated findings APIs", "Build report planning and triage UI", "Complete end-to-end verification and documentation"];
+      const dependencies = [[], ["T1"], ["T1", "T2"], ["T1", "T2"], ["T3", "T4"], ["T5"], ["T3", "T4", "T5", "T6"]];
+      detail.tasks = titles.map((title, index) => ({ ...readyTasks[0], id: `T${index + 1}`, title, dependsOn: dependencies[index], wave: [0, 1, 2, 2, 3, 4, 5][index] }));
+      detail.readiness = { ...detail.readiness, waves: [["T1"], ["T2"], ["T3", "T4"], ["T5"], ["T6"], ["T7"]] };
+      cy.intercept("GET", "**/api/worktree-plans/plan-spec", detail).as("deliveryDetail");
+      visitBoard();
+      cy.findByRole("button", { name: `Resume ${READY_GOAL}` }).click();
+      cy.wait("@deliveryDetail");
+      cy.findByRole("region", { name: "Delivery plan" }).within(() => {
+        cy.contains("7 tasks · 6 stages").should("be.visible");
+        cy.get(".delivery-stage").should("have.length", 6);
+        cy.get(".delivery-plan-task").should("have.length", 7).each(($card) => {
+          expect($card[0].scrollWidth).to.be.at.most($card[0].clientWidth);
+        });
+        cy.contains("2 tasks can run in parallel").should("be.visible");
+        cy.get(".delivery-plan-task").last().within(() => {
+          cy.get("details").should("not.have.attr", "open");
+          cy.contains("summary", "After task 3, task 4, task 5, task 6").click();
+          cy.contains("li", titles[2]).should("be.visible");
+          cy.contains("li", titles[5]).should("be.visible");
+        });
+        cy.contains("One combined pull request").should("be.visible");
+      });
+    });
+  }
+});
+
+describe("human launch review", () => {
+  for (const width of [390, 1280]) {
+    it(`surfaces decisions and preserves a long outcome at ${width}px`, () => {
+      cy.viewport(width, 900);
+      installScenario({ plans: [readySummary()] });
+      const fullOutcome = "Restore the saved dictation session without autoplay. " + "Existing drafts must remain readable. ".repeat(20) + "Final constraint: preserve the listening requirement.";
+      const detail = readyDetail();
+      cy.intercept("GET", "**/api/worktree-plans/plan-spec", {
+        ...detail, spec: { ...detail.spec, outcome: fullOutcome,
+          assumptions: ["Restoring correction access must preserve the listening requirement"],
+          risks: [{ text: "Legacy drafts may be lost", mitigation: "Read both draft formats", level: "high" }],
+        },
+      }).as("reviewDetail");
+      let launches = 0;
+      cy.intercept("POST", "**/api/worktree-plans/plan-spec/launch", (request) => {
+        launches += 1;
+        request.reply({ statusCode: 202, body: { planId: "plan-spec", launched: 0, results: [] } });
+      }).as("launchReview");
+      visitBoard();
+      cy.findByRole("button", { name: `Resume ${READY_GOAL}` }).click();
+      cy.wait("@reviewDetail");
+      cy.findByRole("region", { name: "Goal passport" }).within(() => {
+        cy.contains("Review before launch").should("be.visible");
+        cy.contains("Expected outcome (excerpt)").should("be.visible");
+        cy.get(".goal-review-outcome").invoke("text").should("have.length.lessThan", 300);
+        cy.contains("Restoring correction access must preserve the listening requirement").should("be.visible");
+        cy.contains("Legacy drafts may be lost").should("be.visible");
+        cy.contains("Read both draft formats").should("be.visible");
+        cy.contains("Success criteria and verification").should("be.visible");
+        cy.get(".goal-passport-criteria").should("contain.text", "planned");
+        cy.contains("summary", "Read the full expected outcome").click();
+        cy.findByRole("button", { name: "Show Full expected outcome as raw text" }).click();
+        cy.get("pre").should("have.text", fullOutcome);
+      });
+      cy.findByRole("region", { name: "Launch decision" }).within(() => {
+        cy.contains("Review 1 assumptions and 1 warnings above before proceeding.").should("be.visible");
+        cy.findByRole("button", { name: /Start workflow/ }).should("be.enabled");
+      });
+      cy.then(() => expect(launches).to.equal(0));
+      cy.findByRole("region", { name: "Launch decision" }).findByRole("button").click();
+      cy.wait("@launchReview");
+      cy.then(() => expect(launches).to.equal(1));
+    });
+  }
+
+  it("keeps structural errors visible and prevents launch", () => {
+    installScenario({ plans: [readySummary()] });
+    const detail = readyDetail();
+    cy.intercept("GET", "**/api/worktree-plans/plan-spec", {
+      ...detail, readiness: { ...detail.readiness, ready: false, errors: ["AC-2 has no task"] },
+    }).as("blockedReview");
+    visitBoard();
+    cy.findByRole("button", { name: `Resume ${READY_GOAL}` }).click();
+    cy.wait("@blockedReview");
+    cy.contains("Needs work").should("be.visible");
+    cy.contains("AC-2 has no task").should("be.visible");
+    cy.findByRole("region", { name: "Launch decision" }).findByRole("button").should("be.disabled");
+    cy.findByRole("button", { name: "This plan is wrong" }).should("be.enabled");
+  });
+});
 
 describe("planner engine defaults", () => {
   it("submits Codex Astra and keeps Default and provider switches valid", () => {
@@ -306,11 +400,10 @@ describe("specification rigor options", () => {
       // Missing requested coverage is a readiness warning. It never blocks the
       // launch, so the contract still reads as ready.
       cy.contains("Requested flowcharts coverage is missing: the contract holds no flow artifact").should("be.visible");
-      cy.contains("Ready to code").should("be.visible");
+      cy.contains("Review before launch").should("be.visible");
 
       // Coverage and design artifacts are authoritative contract detail. The
       // concise approval surface leaves them collapsed until a reviewer asks.
-      cy.findByText("Risks and technical constraints").click();
       cy.contains("Specification coverage").should("be.visible");
       cy.get(".goal-passport-options li").should("have.length", 5);
       // A request the user never made is absent, rather than reported as clean.
