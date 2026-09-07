@@ -1758,6 +1758,9 @@ test("durable goal questions reach the inbox and stale replies never reach cmux"
   assert.equal(store.get("inbox-goal").goalSessionPendingInput, "Card");
   assert.equal(store.get("inbox-goal").goalSessionState, "planning");
   assert.equal((await app.inject({ url: "/api/inbox", headers })).json().actionableCount, 0);
+  store.publishGoalSessionQuestions("inbox-goal", { generation: 1, questions: [{ id: "q1", text: "Card or invoice?", options: ["Card", "Invoice"] }] });
+  const next = (await app.inject({ url: "/api/inbox", headers })).json();
+  assert.notEqual(next.items[0].requestId, item.requestId, "identical questions in a new round have a new durable identity");
   assert.equal((await app.inject({ method: "POST", url, headers, payload: { kind: "question", selections: ["Invoice"] } })).statusCode, 400);
   assert.equal(cmux.calls.filter(([kind]) => kind === "reply").length, 0);
 });

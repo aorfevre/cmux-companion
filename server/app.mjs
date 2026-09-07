@@ -1196,7 +1196,7 @@ export async function buildApp({
 export function managedGoalInbox(plans = []) {
   return plans.filter((plan) => plan.workflow === "goal_session" && !plan.boardStatus && plan.goalSessionState === "awaiting_input" && plan.questions?.length)
     .map((plan) => {
-      const version = createHash("sha256").update(JSON.stringify([plan.planId, plan.goalSessionGeneration, plan.proposalRevision, plan.updatedAt, plan.questions])).digest("hex");
+      const version = createHash("sha256").update(JSON.stringify([plan.planId, plan.goalSessionGeneration, plan.goalSessionQuestionRevision])).digest("hex");
       const id = `goal-question-${version}`;
       return { id, requestId: id, type: "request", kind: "question", planId: plan.planId, generation: plan.goalSessionGeneration,
         workspaceId: plan.goalSessionWorkspaceId, title: "Goal needs your answer", subtitle: plan.goal,
