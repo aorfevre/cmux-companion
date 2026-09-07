@@ -420,3 +420,18 @@ test("retirement does not stamp a replacement created while old close was awaiti
   assert.equal(task.workspaceId, "replacement");
   assert.equal(task.sessionClosedAt, null);
 });
+
+test("a managed owner stays available through PR review, even without a task row", async () => {
+  const plan = { planId: "managed", workflow: "goal_session", goalSessionWorkspaceId: "owner", goalSessionWorktreePath: "/repo/goal", boardPrState: "OPEN", finalPrUrl: "https://github.test/pr/4", tasks: [] };
+  const live = { available: true, byId: new Map(workspaces(["owner"]).map((workspace) => [workspace.id, workspace])) };
+  for (const tasks of [[], [{ id: "owner-task", workspaceId: "owner", deliveryStatus: "integrated" }]]) {
+    const result = retirableSessions({ ...plan, tasks }, live);
+    assert.deepEqual(result.close, []);
+    assert.match(reasonFor(result.keep, "owner"), /review and corrections/);
+  }
+  const { restoredGoalSessions } = await import("../server/restored-goal-sessions.mjs");
+  const restored = restoredGoalSessions([plan], [{ id: "restored-owner", title: "Restored goal", current_directory: "/repo/goal" }]);
+  assert.equal(restored[0].eligible, false);
+  assert.match(restored[0].reason, /review and corrections/);
+  assert.deepEqual(restoredGoalSessions([plan], [{ id: "owner", title: "Goal", current_directory: "/repo/goal" }]), []);
+});

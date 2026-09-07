@@ -5,6 +5,7 @@ import { GoalSessionCollector } from "./goal-session-collector.mjs";
 import { GoalSessionService } from "./goal-session-service.mjs";
 import Fastify from "fastify";
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
@@ -590,6 +591,18 @@ export async function buildApp({
     return goalSessions.approve(request.params.planId, request.body || {});
   });
 
+  app.post("/api/goal-sessions/:planId/answer", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    const result = await goalSessions.answer(request.params.planId, request.body || {});
+    inboxSnapshot = null;
+    return result;
+  });
+
+  app.post("/api/goal-sessions/:planId/recover", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    return goalSessions.recover(request.params.planId);
+  });
+
   app.post("/api/goal-sessions/:planId/request-changes", async (request) => {
     if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
     return goalSessions.requestChanges(request.params.planId, request.body || {});
@@ -960,9 +973,27 @@ export async function buildApp({
     }
   };
 
-  app.get("/api/inbox", loadInbox);
+  const managedQuestions = () => managedGoalInbox((planStore?.list?.({ limit: 200 }) || [])
+    .filter((plan) => plan.workflow === "goal_session").map((plan) => planStore.get(plan.planId)).filter(Boolean));
+  app.get("/api/inbox", async () => {
+    const inbox = await loadInbox().catch((cause) => {
+      if (!managedQuestions().length) throw cause;
+      return { items: [], actionableCount: 0, unreadCount: 0 };
+    });
+    const questions = managedQuestions();
+    return { ...inbox, items: [...questions, ...inbox.items], actionableCount: inbox.actionableCount + questions.length };
+  });
 
   app.post("/api/inbox/:requestId/reply", async (request) => {
+    if (String(request.params.requestId).startsWith("goal-question-")) {
+      const question = managedQuestions().find((item) => item.requestId === request.params.requestId);
+      if (!question || request.body?.kind !== "question") throw new TypeError("This goal question changed. Open its current conversation");
+      const selections = request.body?.selections;
+      if (!Array.isArray(selections) || selections.length !== 1 || typeof selections[0] !== "string" || !selections[0].trim()) throw new TypeError("Answer the goal question");
+      const result = await goalSessions.answer(question.planId, { generation: question.generation, feedback: selections[0].trim() });
+      inboxSnapshot = null;
+      return { ok: true, result };
+    }
     const result = await cmux.feedReply(request.params.requestId, request.body?.kind, request.body || {});
     inboxSnapshot = null;
     return { ok: true, result };
@@ -1158,6 +1189,20 @@ export async function buildApp({
   }
 
   return app;
+}
+
+// IDs name the current durable question set, not a native cmux request. A
+// stale notification must never answer a later turn or grant tool permission.
+export function managedGoalInbox(plans = []) {
+  return plans.filter((plan) => plan.workflow === "goal_session" && !plan.boardStatus && plan.goalSessionState === "awaiting_input" && plan.questions?.length)
+    .map((plan) => {
+      const version = createHash("sha256").update(JSON.stringify([plan.planId, plan.goalSessionGeneration, plan.proposalRevision, plan.updatedAt, plan.questions])).digest("hex");
+      const id = `goal-question-${version}`;
+      return { id, requestId: id, type: "request", kind: "question", planId: plan.planId, generation: plan.goalSessionGeneration,
+        workspaceId: plan.goalSessionWorkspaceId, title: "Goal needs your answer", subtitle: plan.goal,
+        body: plan.questions.map((question) => question.text).join("\n"),
+        questionOptions: plan.questions.length === 1 ? [...(plan.questions[0].options || []), "Write reply…"] : ["Write reply…"] };
+    });
 }
 
 export function normalizeInbox(feed = {}, notificationPayload = {}) {
