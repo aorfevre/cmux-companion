@@ -1,203 +1,117 @@
 # A visible session for each goal
 
-Status: implementation authorized; validation in progress.
-Branch: `feature/goal-session-planning`, in its own isolated worktree.
-Main through `a28167c` has been integrated.
+Implementation branch: `feature/goal-session-planning`, in the dedicated
+`cmux-companion-feature-goal-session-planning` worktree. Main through `a28167c`
+has been integrated. The original checkout and its user changes were not modified.
 
 ## Outcome
 
-Starting a goal opens a visible cmux agent session in an isolated worktree.
-The user and agent refine the idea in that conversation, approve a small
-implementation increment, experience the result, and iterate in the same
-conversation. Companion retains the goal, decisions, worktree and delivery
-evidence when the terminal or bridge restarts.
+A new goal opens a visible conversation in its own worktree. The user can answer
+questions, steer the investigation and approve a concrete increment before the
+agent receives writable tools. One owner keeps the same provider conversation,
+checkout and cmux workspace through implementation and PR review.
 
-Success means quicker correction of misunderstandings and a shorter path to a
-useful preview. More plans, tasks or PRs are not success measures.
+The intended benefit is earlier correction of misunderstandings and a shorter
+path to a useful preview. More plans, tasks or PRs are not success measures.
+Neither product quality nor iteration-speed improvements have been measured yet.
 
-## First user journey
+## User journey
 
-1. Choose a repository, agent and goal; select **Start goal session**.
-2. Companion saves the goal, creates one isolated worktree and opens one visible
-   cmux workspace. The goal opens its session view, with the conversation as the
-   primary content and a compact goal summary alongside it.
-3. The agent investigates in planning mode. The user can send steering messages
-   throughout investigation; delivery, queued input and interruption must be
-   distinguished honestly using the existing terminal controls. Questions appear
-   in the conversation and the existing attention inbox.
-4. The agent proposes one small increment: intended behavior, scope exclusions,
-   consequential assumptions, and how the user will try and verify it. A proposal
-   card offers **Approve and implement** and **Request changes**, with free text.
-5. Requesting changes continues the conversation and produces a revised proposal.
-   Asking a question can lead to a follow-up question or revision; there is no
-   separate explanation-only discussion mode for this workflow.
-6. Approval authorizes the displayed revision. Implementation continues in the
-   same worktree and, where supported, the same provider conversation and cmux
-   workspace. The agent does not launch another task agent by default.
-7. The agent supplies a preview or concrete manual check, changes and verification
-   results, and a reviewable PR through the existing single-task delivery flow.
-   The user can request corrections in this session. Material scope expansion
-   requires another proposal; ordinary corrections within scope do not.
-8. Merge stays a separate user decision. Closing the session does not delete the
-   goal, its worktree, its approvals or its review evidence.
+1. Choose a repository, provider and goal, then **Start goal session**. The form's
+   default submission uses this path; **Plan this goal** remains the explicit
+   legacy planner workflow.
+2. Companion saves the goal, acquires an isolated checkout from the fetched
+   default remote branch and records its identity before starting cmux.
+3. The visible runner investigates with read-only tools. Questions are durable,
+   appear beside the conversation and enter the action inbox. An attention
+   button exposes pending inbox actions from Home.
+4. Review intended behavior, scope, exclusions, assumptions, acceptance criteria
+   and verification. **Request changes** continues planning; **Approve and
+   implement** applies to the displayed proposal revision and session generation.
+5. The same provider conversation resumes with implementation tools. Its owner
+   becomes exactly one launched task for existing health and PR tracking.
+6. Open the saved goal's **Open conversation** action to return to its recorded
+   workspace. The conversation stays available during PR review and accepts
+   corrections within approved scope. Merge remains a separate decision.
 
-The same provider conversation handles planning, implementation and review.
-The visible terminal runs a managed line-oriented CCS runner, not a native
-Codex or Claude TUI. Both provider selections use CCS with `--target claude`;
-provider processes restart between turns and resume the saved conversation ID.
-A failed continuity check stops the transition instead of substituting another
-executor. Installed CLI help was inspected; live provider behavior remains
-unverified.
+Automated planner and post-delivery code reviewers remain on the legacy path.
+Visible-session creation refuses these options before allocating resources rather
+than silently ignoring a selected reviewer. Bulk issue planning and existing
+multi-task delivery also retain their existing flow.
 
-## Boundaries for the first version
+## Implementation and boundaries
 
-- One goal, one owning agent, one worktree; preserve Claude and Codex selection.
-- Reuse the terminal view, input, question inbox, private preview links and PR UI.
-- Keep old saved plans and already launched workflows working as they are. Give
-  new session-based goals an explicit workflow discriminator; do not reinterpret
-  historical records or automatically launch them.
-- Leave bulk issue planning and existing parallel delivery on their current path
-  until this single-goal experience proves useful.
-- No new multi-agent orchestration, automatic reviewer, transcript platform,
-  model migration, automatic merging or deployment.
-- Creating the goal may allocate a worktree and agent runtime metadata. It does
-  not authorize implementation edits, dependency installation or execution of
-  arbitrary repository scripts during planning.
+`server/goal-session-runner.mjs` is a managed, line-oriented terminal program.
+Both provider selections use CCS with `--target claude`, explicit tool controls
+and a saved provider conversation ID. Provider processes restart between turns;
+this is not native Codex/Claude TUI continuity or a durable transcript platform.
 
-## Approval and conversation contract
+Planning supplies only Read, Grep and Glob, disables other tool sources and
+cannot obtain writable tools through a textual approval. The authenticated,
+same-origin-checked proposal endpoint records approval before the runner claims
+one writable transition. Writable turns use a bounded tool configuration without
+a permission-bypass mode. Process duration, idle time and retained output are
+bounded. Error envelopes, denied permissions and changed conversation IDs are
+rejected even when the provider process exits successfully.
 
-Approval must be tied to an immutable proposal revision, not terminal text or an
-agent saying that the user approved. Persist the proposal and its revision before
-showing the approval control. Record the user's decision, time and exact revision
-through an authenticated, same-origin-checked Companion action. Keep repository
-allow-lists and existing read-only phone protections.
+The existing SQLite plan store owns the workflow discriminator, worktree and
+base, workspace, provider ID, generation, proposal and question revisions,
+approval, input queue and runner/dispatch ownership. Stale approvals and question
+replies cannot authorize a later revision. The inbox routes managed answers to
+the stored goal; it never forwards them as native tool-permission replies.
 
-Reject a stale approval after revision, an approval for another goal, and an
-approval from a retired session generation. Duplicate submissions must not start
-implementation twice. Separate durable approval from delivery to the agent: a
-bridge crash between these operations must leave a recoverable pending transition,
-not another implementation launch. Reconcile the agent's state before resending
-an uncertain transition.
+The existing GitHub observer associates a PR with the owner's recorded branch.
+Provider prose and a successful process exit do not prove delivery or mark a goal
+ready for review. Reapers retain the owning session while review is open and
+protect restored workspaces associated with an active managed goal. Legacy launch,
+relaunch and follow-up paths must not create a second managed-goal writer.
 
-The current `contractVersion` is a schema discriminator (1/2), not a proposal
-revision counter. Add a separate monotonic revision identity. The current
-`sessionId` is a headless planner conversation id; store cmux workspace/surface
-ids and provider conversation identity separately.
+Pairing, same-origin checks, repository allow-lists, argv boundaries and the
+phone's read-only input protection remain in place. No merge, deployment or
+live-agent integration is part of this implementation task.
 
-Do not equate product-scope approval with blanket tool-permission approval. The
-existing `exitPlan` reply accepts modes including permission bypass; the new goal
-action must deliberately map to the provider's appropriate transition without
-quietly granting bypass permissions.
+## Recovery and practical limits
 
-Planning restrictions must be enforced by supported provider controls, not only
-by a prompt asking the agent to wait. The current interactive launcher invokes
-`xcodex`/`xclaude`; it does not establish that either starts in enforced planning
-mode or that both expose the same approval event. This is the first technical
-uncertainty to resolve. A server-side approval record alone cannot prevent a
-write-capable terminal agent from editing.
+Creation retries carry a stable request key and must match the original normalized
+goal context. The saved checkout is recorded before subsequent external calls.
+Partial failures retain their identity and error rather than masquerading as
+successful planning. The start-error UI currently shows the error text; inspect
+the saved failed goal on the board rather than opening it directly from that
+error.
 
-## Lifecycle and recovery
+**Recover failed turn** can queue a failed planning input on the live owner.
+Restart requires proven ownership and no live recorded runner. A durable dispatch
+claim prevents concurrent restart requests from injecting another command. A
+failed writable transition or correction remains uncertain and is not replayed.
+Missing workspace identity or an ambiguous dispatch can require manual
+reconciliation; the recovery endpoint does not guess a replacement workspace.
+Terminal closure does not erase saved decisions or delete the checkout. Terminal
+input is line-oriented: use one line per terminal turn, or the saved goal
+sheet’s answer/request-change text area for multiline feedback.
 
-Use explicit workflow state: starting, planning, awaiting approval, implementing,
-ready for review, merged or aborted. Track waiting for a user answer, unavailable
-session and errors as attention/health information rather than treating agent
-silence as completion. Map these states into the existing board without deriving
-them from free-form terminal output.
+The checked-in CLI configuration and fake-process tests establish the requested
+permission surface and lifecycle behavior. They cannot establish that a live CCS
+installation enforces every flag, that cmux focus/replay behaves correctly on the
+user's Mac, or that a real provider completes the work and creates the right PR.
+Those paths require the README live-test opt-in and explicit authorization.
 
-Persist goal identity, branch/base SHA, worktree path, workspace/surface identity,
-provider conversation identity when available, session generation, proposal
-revisions, approval and transition status. Use the existing SQLite store and event
-history rather than a second source of truth. Define structured, validated agent
-events for proposal publication and state changes; the exact transport is chosen
-after provider capability inspection. Agents may publish proposals, never approve
-their own proposals. Do not parse terminal prose to grant authorization.
+## Validation
 
-Creation and retry must reuse the recorded goal resources or show a recoverable
-partial-start failure. A missing workspace offers explicit reconnect/resume;
-there is no automatic replacement agent or discarded worktree. Restore provider
-context where supported, otherwise explain the loss and reconstruct from saved
-decisions with user awareness. Do not claim full transcript durability from the
-current terminal buffer. Reapers and cleanup must protect active planning and
-review sessions, including goals without a launched task yet.
+Use Node 22.23.1 from `.nvmrc` and the checked-in npm lockfile.
 
-## Implementation sequence
+Focused checks cover read-only planning, provider identity, durable input failures,
+question revisions, stale decisions, runner recovery, workspace-owned UI reads,
+phone read-only protection and terminal-goal guards. Real SQLite plus fake GitHub
+observations verifies approval → one owner task → open PR with retained session
+→ merged PR with eligible cleanup.
 
-1. **Prove the session transition.** Inspect existing launcher configuration,
-   provider controls and cmux events without changing user aliases. Define and
-   test a narrow provider adapter for planning launch, proposal publication,
-   approval transition and resume. Check both selected engines. Record precisely
-   which guarantees are supported; resolve missing enforcement or continuity
-   before presenting this as an approval-gated workflow. A real agent experiment
-   needs the README live-test opt-in and explicit authorization.
-2. **Deliver one vertical slice.** Extend the existing goal store/API with the
-   session workflow, revision-bound decisions and recoverable creation; connect
-   it to worktree acquisition, cmux launch and the existing conversation/inbox UI.
-   Demonstrate goal → question → revision → approval → same-session edit before
-   adding broader delivery behavior.
-3. **Connect review and recovery.** Adapt single-task completion/PR association,
-   goal health, restored sessions, cleanup and board navigation. Preserve the
-   owning session for review and same-scope corrections. Validate restart and
-   stale-event behavior before enabling the new path by default.
+Local Cypress covers creation into the exact workspace, questions, scope changes,
+revision-bound approval, inbox answering without approval, stale approval errors
+and recovery without creating another goal. Existing browser coverage is retained.
 
-One implementation owner follows this entire path. These are sequential slices,
-not instructions to create independent parallel worktrees.
-
-## Existing integration points
-
-| Area | Existing code | Planned responsibility |
-| --- | --- | --- |
-| Goal entry and view | `app/worktree-planner.tsx`, `app/worktree-dashboard.tsx` | Start/open session; compact proposal and approval controls |
-| Conversation and decisions | `app/page.tsx`, `server/prompt-queue.mjs` | Reuse terminal input, queued messages and inbox; retain goal context |
-| API and security | `server/app.mjs`, `server/security.mjs` | Authenticated lifecycle/decision endpoints; target and revision validation |
-| Persistence | `server/worktree-plan-store.mjs` | Additive workflow/session/proposal records and durable transition history |
-| Planning | `server/worktree-planner.mjs`, `server/agent-brief.mjs` | Separate legacy headless planning from interactive goal coordination |
-| Worktree and session | `server/worktree-dashboard.mjs`, `server/worktree-operations.mjs`, `server/cmux-client.mjs` | Reuse acquisition and locks; explicit planning launch/transition adapter |
-| Delivery and health | `server/goal-integrator.mjs`, `server/goal-watchdog.mjs`, `server/goal-board.mjs` | Single owner delivery, review state and observable recovery |
-| Session retention | `server/restored-goal-sessions.mjs`, `server/goal-session-collector.mjs`, `server/goal-session-reaper.mjs`, `server/worktree-cleanup.mjs` | Associate and protect goal sessions before and after implementation |
-
-The original checkout and its uncommitted user changes were not modified.
-The implementation started from main at `6d699cb` and subsequently integrated
-main through `a28167c`, preserving the concise legacy approval flow and board
-worktree button. All feature edits and checks use the separate worktree.
-
-## Acceptance and validation
-
-- Starting/retrying one goal creates at most one owned worktree and session;
-  partial failures remain visible and recoverable.
-- Before approval, the user can ask, steer and answer without rejecting a plan
-  through a separate form. Questions target the correct goal/session.
-- An edit attempted during planning is blocked by the supported provider control;
-  simply checking whether the launch endpoint was called does not prove this.
-- Request changes revises the proposal without implementation. Stale, duplicate,
-  wrong-goal and retired-session approvals cannot authorize unintended work.
-- Approval continues the same conversation/worktree; failed delivery or restart
-  preserves the decision and never duplicates execution.
-- The user can open the goal from its board card or notification, try the result,
-  and request an in-scope correction without starting another goal.
-- Old plans still load, launch and recover normally. Active planning sessions
-  cannot be collected as completed or orphaned sessions.
-
-Use Node from `.nvmrc` and `npm ci` when implementation begins. Add meaningful
-backend tests for store migrations, lifecycle/revision races, provider boundaries,
-restart/retry and cleanup; UI tests for navigation and actionable proposal states.
-Add local Cypress scenarios for the complete journey, request changes, questions,
-stale approvals, duplicate clicks and disconnected-session recovery. Run
-`npm run verify` and `npm run test:e2e:local`.
-
-Cypress's stubbed APIs cannot prove native cmux focus, provider permission
-enforcement, real conversation continuity or GitHub delivery. Report these
-separately, and validate live only under the README opt-in. Measure time to first
-useful preview, effort to correct a misunderstanding and acceptance after hands-on
-review on a few comparable real goals before widening rollout.
-
-## Implementation validation
-
-Final full verification and local Cypress results will be recorded here before
-PR publication. Focused regression tests cover conversation identity, enforced
-read-only argv, rejected provider envelopes, durable feedback failures,
-workspace-owned approval reads and phone read-only protection.
-
-An interim full verification run exposed a legacy in-memory planner regression
-introduced by the managed-workflow guard. It must be fixed with all original
-coverage retained. No live cmux/provider/GitHub delivery check, installation,
-merge or deployment has been performed.
+Validation: 994 backend tests, 110 UI tests and lint passed; the full local
+Cypress suite passed all 77 tests. Typecheck passed during focused validation;
+final build confirmation is recorded in the PR. During integration, the full suite exposed an in-memory legacy planner regression and
+older UI fixtures missing the new workspace-goal lookup. These were fixed while
+retaining their original assertions. Live CCS/cmux/GitHub behavior, installation,
+merge and deployment remain unverified and were not performed.
