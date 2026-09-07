@@ -28,11 +28,16 @@ export function parseCookies(header = "") {
       .split(";")
       .map((part) => part.trim())
       .filter(Boolean)
-      .map((part) => {
+      .flatMap((part) => {
         const index = part.indexOf("=");
-        return index < 0
-          ? [decodeURIComponent(part), ""]
-          : [decodeURIComponent(part.slice(0, index)), decodeURIComponent(part.slice(index + 1))];
+        try {
+          return [index < 0
+            ? [decodeURIComponent(part), ""]
+            : [decodeURIComponent(part.slice(0, index)), decodeURIComponent(part.slice(index + 1))]];
+        } catch {
+          // An invalid cookie must not break pairing or other valid cookies.
+          return [];
+        }
       }),
   );
 }

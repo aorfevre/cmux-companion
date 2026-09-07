@@ -93,7 +93,7 @@ const FRAGMENT_LENGTH = 4;
 // server/goal-integrator.mjs already puts on a goal branch. A plan with no
 // usable id still gets a readable fragment, because an empty pair of
 // parentheses would say nothing and would still cost three characters.
-export function goalFragment(planId) {
+function goalFragment(planId) {
   return text(planId).replace(/[^a-z0-9]/gi, "").slice(0, FRAGMENT_LENGTH).toLowerCase() || "goal";
 }
 

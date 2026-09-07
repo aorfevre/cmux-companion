@@ -107,7 +107,7 @@ The installer also enables cmux’s supported password-protected automation mode
 ## Requirements
 
 - macOS with cmux installed in `/Applications/cmux.app`
-- Node.js 22.13 or later
+- Node.js 22.23.1 (the supported Node 22 runtime is pinned in `.nvmrc`)
 - Tailscale connected on both the Mac and phone
 
 ## Install

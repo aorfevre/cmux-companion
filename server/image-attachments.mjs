@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-export const DEFAULT_ATTACHMENT_DIRECTORY = join(homedir(), ".config", "cmux-companion", "attachments");
+const DEFAULT_ATTACHMENT_DIRECTORY = join(homedir(), ".config", "cmux-companion", "attachments");
 
 function imageType(buffer) {
   if (buffer.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) return { mime: "image/png", extension: "png" };

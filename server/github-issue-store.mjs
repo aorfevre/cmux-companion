@@ -1,4 +1,5 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readPrivateJson } from "./private-json-state.mjs";
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -19,22 +20,17 @@ export class GitHubIssueStore {
   }
 
   load() {
-    try {
-      const value = JSON.parse(readFileSync(this.path, "utf8"));
-      const rows = Array.isArray(value?.issues) ? value.issues : [];
-      this.issues = new Map();
-      // A malformed row is dropped, never thrown. A corrupted file must degrade
-      // to an empty column that the next sync refills, not to a companion that
-      // refuses to start.
-      for (const row of rows) {
-        const issue = normalize(row);
-        if (issue) this.issues.set(key(issue.repositoryId, issue.number), issue);
-      }
-      this.syncedAt = text(value?.syncedAt, 100) || null;
-    } catch {
-      this.issues = new Map();
-      this.syncedAt = null;
+    const value = readPrivateJson(this.path, { issues: [], syncedAt: null }, value => value !== null && typeof value === "object" && Array.isArray(value.issues));
+    const rows = Array.isArray(value?.issues) ? value.issues : [];
+    this.issues = new Map();
+    // A malformed row is dropped, never thrown. A corrupted file must degrade
+    // to an empty column that the next sync refills, not to a companion that
+    // refuses to start.
+    for (const row of rows) {
+      const issue = normalize(row);
+      if (issue) this.issues.set(key(issue.repositoryId, issue.number), issue);
     }
+    this.syncedAt = text(value?.syncedAt, 100) || null;
   }
 
   // Every stored issue as a board card, ordered by repository then issue

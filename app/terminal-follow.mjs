@@ -1,4 +1,4 @@
-export const FOLLOW_THRESHOLD_PX = 72;
+const FOLLOW_THRESHOLD_PX = 72;
 
 export function isNearBottom({ scrollTop, scrollHeight, clientHeight }, threshold = FOLLOW_THRESHOLD_PX) {
   return scrollHeight - clientHeight - scrollTop <= threshold;

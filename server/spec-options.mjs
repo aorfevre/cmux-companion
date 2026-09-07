@@ -17,7 +17,7 @@ export function normalizeSpecOptions(value) {
   return normalized;
 }
 
-export function enabledSpecOptions(options) {
+function enabledSpecOptions(options) {
   const normalized = normalizeSpecOptions(options);
   return SPEC_OPTIONS.options.filter((option) => normalized[option.id]);
 }

@@ -1,5 +1,6 @@
+import { readPrivateJson } from "./private-json-state.mjs";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import webpush from "web-push";
@@ -285,10 +286,8 @@ export class PushService {
   }
 
   load() {
-    try {
-      const value = JSON.parse(readFileSync(this.path, "utf8"));
-      return { vapid: value.vapid || null, subscriptions: Array.isArray(value.subscriptions) ? value.subscriptions.map((item) => ({ ...item, settings: normalizeSettings(item.settings) })) : [], delivered: Array.isArray(value.delivered) ? value.delivered.filter((item) => typeof item === "string").slice(-500) : [] };
-    } catch { return { vapid: null, subscriptions: [], delivered: [] }; }
+    const value = readPrivateJson(this.path, { vapid: null, subscriptions: [], delivered: [] }, value => value !== null && typeof value === "object" && Array.isArray(value.subscriptions));
+    return { vapid: value.vapid || null, subscriptions: Array.isArray(value.subscriptions) ? value.subscriptions.map((item) => ({ ...item, settings: normalizeSettings(item.settings) })) : [], delivered: Array.isArray(value.delivered) ? value.delivered.filter((item) => typeof item === "string").slice(-500) : [] };
   }
 
   save() {
@@ -426,4 +425,4 @@ function pullRequestSummary(pullRequest) {
   return "The pull request status changed.";
 }
 
-export { defaultSettings, isQuiet };
+export { isQuiet };

@@ -38,3 +38,24 @@ test("a failed read can be retried", async () => {
   await expect(request("/fixture/failure")).rejects.toThrow("offline");
   expect(await request("/fixture/failure")).toEqual({});
 });
+
+for (const headers of [{ "X-Fixture": "object" }, new Headers({ "X-Fixture": "headers" }), [["X-Fixture", "tuple"]] as [string, string][]]) test("normalizes all RequestInit header forms and preserves explicit content types", async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response("{}"));
+  vi.stubGlobal("fetch", fetcher);
+  await request("/fixture/headers", { method: "POST", body: "{}", headers });
+  const actual = fetcher.mock.calls[0][1].headers as Headers;
+  expect(actual.get("X-Fixture")).toBe(new Headers(headers).get("X-Fixture"));
+  expect(actual.get("Content-Type")).toBe("application/json");
+});
+
+test("invalid successful JSON fails explicitly and a subsequent read can recover", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response("<html>proxy error</html>")).mockResolvedValueOnce(new Response("{}")));
+  await expect(request("/fixture/invalid-json")).rejects.toThrow("invalid JSON");
+  expect(await request("/fixture/invalid-json")).toEqual({});
+});
+
+test("supports empty success and malformed error responses without hiding the status", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 })).mockResolvedValueOnce(new Response("bad gateway", { status: 502 })));
+  expect(await request("/fixture/empty", { method: "DELETE" })).toBeUndefined();
+  await expect(request("/fixture/proxy-failure")).rejects.toThrow("502");
+});

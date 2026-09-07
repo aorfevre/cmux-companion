@@ -41,6 +41,16 @@ test("issues a secure one-year session cookie", () => {
   assert.match(cookie, /Secure/);
 });
 
+test("malformed cookies do not break valid session or bearer authentication", () => {
+  const token = "a-secure-pairing-token-that-is-long-enough";
+  for (const malformed of ["broken=%", "%E0%A4%A=value", "cmux_session=%E0%A4%A"]) {
+    assert.deepEqual(parseCookies(`${malformed}; valid=hello%20world`), { valid: "hello world" });
+    assert.equal(isSessionAuthorized({ headers: { cookie: malformed } }, token), false);
+    assert.equal(isAuthorized({ headers: { cookie: malformed, authorization: `Bearer ${token}` } }, token), true);
+    assert.equal(isSessionAuthorized({ headers: { cookie: `${malformed}; cmux_session=${sessionValue(token)}` } }, token), true);
+  }
+});
+
 test("parses cookies and validates same-origin mutations", () => {
   assert.deepEqual(parseCookies("one=1; encoded=hello%20world"), { one: "1", encoded: "hello world" });
   assert.equal(isSafeOrigin({ headers: { origin: "https://mac.tail.test", host: "mac.tail.test" } }), true);

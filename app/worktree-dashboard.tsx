@@ -1,6 +1,8 @@
 "use client";
 
-import { canRetryOnFreshBranch } from "../server/worktree-errors.mjs";
+import { FollowupSheet, type FollowupSubmission } from "./goal-followup-sheet";
+
+import { isFreshBranchSafeReason } from "../server/worktree-errors.mjs";
 import { WorktreeCleanupPanel } from "./worktree-cleanup";
 import { FormEvent, RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { AttachmentStrip, composedPrompt, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
@@ -10,7 +12,6 @@ import { GoalBoardStateId, GoalHealth, goalPrLink, PlanDraft, PlanSummary, TaskR
 // The board reads its columns and its placement from the one shared module, so
 // the dashboard can never invent a column the server does not know.
 import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../server/goal-board.mjs";
-import { DEFAULT_FOLLOWUP_AGENT, GOAL_FOLLOWUP_ACTIONS, GOAL_FOLLOWUP_AGENTS, MAX_FOLLOWUP_TEXT, normalizeFollowupRequest } from "../server/goal-followup-actions.mjs";
 // The GitHub Issues column shares its identity with the server, exactly like
 // the goal columns above. One label, one id, one empty hint, in one file.
 import { GITHUB_ISSUE_ALL_STARTED_HINT, GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_HINT, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, visibleGithubIssues } from "../server/github-issue-board.mjs";
@@ -59,9 +60,7 @@ type GitHubIssueColumnPayload = { syncedAt: string | null; issues: GitHubIssueCa
 type GitHubIssueSyncRepository = { repositoryId: string; name: string; status: string; issueCount: number; truncated: boolean; error: string | null };
 type GitHubIssueSyncResult = { syncedAt: string; status: string; message: string | null; repositories: GitHubIssueSyncRepository[]; issues: GitHubIssueCard[] };
 type GitHubIssueGoalResult = { issue: GitHubIssueCard; plan: { planId: string; workflow?: string; goalSessionWorkspaceId?: string | null }; created: boolean };
-type FollowupAgent = "claude" | "codex";
-type FollowupSubmission = { actions: string[]; question?: string; custom?: string; agent: FollowupAgent };
-type FollowupResult = { planId: string; workspaceId: string; agent: FollowupAgent; actions: string[]; branch: string; worktreePath: string; pullRequest: { number: number; url: string } | null; title: string };
+type FollowupResult = { planId: string; workspaceId: string; agent: FollowupSubmission["agent"]; actions: string[]; branch: string; worktreePath: string; pullRequest: { number: number; url: string } | null; title: string };
 // The four verdicts that mean a person is needed. Everything else is either
 // progress or a state with nothing to act on, so the rail never lists it.
 const ATTENTION_HEALTH = new Set<GoalHealth>(["dead", "idle", "failed", "needs_you"]);
@@ -135,7 +134,7 @@ function boardEvidence(plan: PlanSummary, state: GoalBoardStateId) {
 // What one retirement pass did, in one sentence. An unreachable cmux proves
 // nothing about any agent, so it is never reported as "0 finished sessions":
 // it says liveness is unknown, exactly as the attention rail already does.
-export function sessionReapNotice(report: SessionReapReport) {
+function sessionReapNotice(report: SessionReapReport) {
   const kept = report.kept.length;
   const kepts = `${kept} kept`;
   if (!report.sessionsAvailable) return "cmux could not be reached, so agent liveness is unknown. No session was closed.";
@@ -264,7 +263,7 @@ function normalizeDashboard(dashboard: Dashboard): Dashboard {
   };
 }
 
-export function bulkRemovableWorktrees(repo: DashboardRepository) {
+function bulkRemovableWorktrees(repo: DashboardRepository) {
   return repo.worktrees.filter((worktree) => !worktree.managedRelease && !worktree.isPrimary && worktree.changedFiles === 0 && !worktree.locked && worktree.sessions.length === 0);
 }
 
@@ -983,44 +982,6 @@ function GoalBoardCard({ returningIssues, confirmingReturn, onRequestReturn, onC
   </article>;
 }
 
-function FollowupSheet({ plan, busy, onClose, onSubmit }: { plan: PlanSummary; busy: boolean; onClose: () => void; onSubmit: (submission: FollowupSubmission) => Promise<void> }) {
-  const [actions, setActions] = useState<string[]>([]);
-  const [question, setQuestion] = useState("");
-  const [custom, setCustom] = useState("");
-  const [agent, setAgent] = useState<FollowupAgent>(DEFAULT_FOLLOWUP_AGENT as FollowupAgent);
-  const [error, setError] = useState("");
-
-  function toggleAction(id: string, checked: boolean) {
-    setActions((current) => checked ? [...current, id] : current.filter((action) => action !== id));
-    setError("");
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setError("");
-    try {
-      const normalized = normalizeFollowupRequest({ actions, question, custom, agent }) as { actions: string[]; question: string; custom: string; agent: FollowupAgent };
-      await onSubmit({ actions: normalized.actions, ...(normalized.question ? { question: normalized.question } : {}), ...(normalized.custom ? { custom: normalized.custom } : {}), agent: normalized.agent });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not start this follow-up");
-    }
-  }
-
-  return <><button type="button" className="session-menu-backdrop" aria-label="Close follow-up actions" disabled={busy} onClick={onClose} /><form className="worktree-launcher goal-followup-sheet" role="dialog" aria-modal="true" aria-label={`More actions for ${plan.goal}`} onSubmit={submit}>
-    <header><div><strong>More actions</strong><span>{plan.goal}</span></div><button type="button" aria-label="Close follow-up actions" disabled={busy} onClick={onClose}>×</button></header>
-    <div className="goal-followup-options">{GOAL_FOLLOWUP_ACTIONS.map((action) => {
-      const checked = actions.includes(action.id);
-      return <div className={checked ? "selected" : ""} key={action.id}>
-        <label className="goal-followup-option" aria-label={`${action.label}: ${action.description}`}><input type="checkbox" checked={checked} onChange={(event) => toggleAction(action.id, event.target.checked)} /><span><strong>{action.label}</strong><small>{action.description}</small></span></label>
-        {checked && action.requiresText && <label className="goal-followup-text"><span>{action.label}</span><textarea aria-label={`${action.label} details`} value={action.textKey === "question" ? question : custom} maxLength={MAX_FOLLOWUP_TEXT} rows={4} onChange={(event) => { if (action.textKey === "question") setQuestion(event.target.value); else setCustom(event.target.value); setError(""); }} /></label>}
-      </div>;
-    })}</div>
-    <fieldset className="goal-followup-agents"><legend>Agent</legend>{GOAL_FOLLOWUP_AGENTS.map((option) => <label className={agent === option ? "selected" : ""} key={option}><input type="radio" name="followup-agent" value={option} checked={agent === option} onChange={() => { setAgent(option as FollowupAgent); setError(""); }} /><span>{option.slice(0, 1).toUpperCase() + option.slice(1)}</span></label>)}</fieldset>
-    {error && <p className="worktree-action-error" role="alert">{error}</p>}
-    <div className="goal-followup-submit"><button type="button" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" className="primary-button" disabled={busy}>{busy ? "Starting follow-up…" : "Submit follow-up"}</button></div>
-  </form></>;
-}
-
 // Which provider takes the next task, and what would change that answer. The
 // verdict is the server's; this renders it and never recomputes it.
 function AgentCapacityStrip({ capacity, error, now, onRetry }: { capacity: AgentCapacity | null; error: string; now: number; onRetry: () => void }) {
@@ -1108,7 +1069,7 @@ function AttentionRail({ relaunchModes, railRef, rows, sessionsAvailable, loaded
         const relaunchKey = `relaunch:${goal.planId}:${task.id}`;
         const skipKey = `skip:${goal.planId}:${task.id}`;
         const working = busy[relaunchKey] === true || busy[skipKey] === true;
-        const rebranchable = kind === "task" && task.launchStatus === "failed" && canRetryOnFreshBranch(task.launchReason);
+        const rebranchable = kind === "task" && task.launchStatus === "failed" && isFreshBranchSafeReason(task.launchReason);
         const confirmRestart = confirming === `restart:${goal.planId}:${task.id}`;
         const confirmSkip = confirming === `skip:${goal.planId}:${task.id}`;
         return <li key={`${goal.planId}:${kind}:${item.id}`}>

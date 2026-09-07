@@ -25,17 +25,25 @@ export async function capturePreview({ sourceUrl, targetPort, width = 390, heigh
       isMobile: true,
       hasTouch: true,
       ignoreHTTPSErrors: true,
+      serviceWorkers: "block",
       userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 cmux-companion-preview",
     });
-    const page = await context.newPage();
-    await page.route("**/*", async (route) => {
+    await context.route("**/*", async (route) => {
       const requestUrl = new URL(route.request().url());
-      if (["data:", "blob:", "about:"].includes(requestUrl.protocol) || (LOOPBACK_HOSTS.has(requestUrl.hostname) && Number(requestUrl.port || defaultPort(requestUrl.protocol)) === Number(targetPort))) {
+      if (["data:", "blob:", "about:"].includes(requestUrl.protocol) || (["http:", "https:"].includes(requestUrl.protocol) && LOOPBACK_HOSTS.has(requestUrl.hostname) && Number(requestUrl.port || defaultPort(requestUrl.protocol)) === Number(targetPort))) {
         await route.continue();
       } else {
         await route.abort("blockedbyclient");
       }
     });
+    // HTTP routes do not intercept WebSocket traffic. Context-level handlers
+    // also cover popups, while blocking service workers prevents route bypass.
+    await context.routeWebSocket("**/*", socket => {
+      const target = new URL(socket.url());
+      if (["ws:", "wss:"].includes(target.protocol) && LOOPBACK_HOSTS.has(target.hostname) && Number(target.port || (target.protocol === "wss:" ? 443 : 80)) === Number(targetPort)) socket.connectToServer();
+      else socket.close();
+    });
+    const page = await context.newPage();
     const response = await page.goto(url.href, { waitUntil: "domcontentloaded", timeout: 15_000 });
     if (!response || response.status() >= 500) throw new TypeError("The local app did not render successfully");
     await page.waitForTimeout(750);

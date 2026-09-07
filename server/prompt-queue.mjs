@@ -1,6 +1,7 @@
+import { readPrivateJson } from "./private-json-state.mjs";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -149,13 +150,9 @@ export class PromptQueue extends EventEmitter {
   }
 
   load() {
-    try {
-      const value = JSON.parse(readFileSync(this.path, "utf8"));
-      const items = Array.isArray(value.items) ? value.items.map(normalizeStoredItem).filter(Boolean).slice(-MAX_ITEMS) : [];
-      return { items };
-    } catch {
-      return { items: [] };
-    }
+    const value = readPrivateJson(this.path, { items: [] }, value => value !== null && typeof value === "object" && Array.isArray(value.items));
+    const items = Array.isArray(value.items) ? value.items.map(normalizeStoredItem).filter(Boolean).slice(-MAX_ITEMS) : [];
+    return { items };
   }
 
   save() {

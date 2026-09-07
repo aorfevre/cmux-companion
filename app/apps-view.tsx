@@ -81,7 +81,7 @@ function relativePreviewTime(value: string) {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-export function FixEditor({ preview, capture, onClose, onFix, onNotice }: { preview: Preview; capture: Capture; onClose: () => void; onFix: (preview: Preview, prompt: string, queue: boolean) => Promise<void>; onNotice: (message: string) => void }) {
+function FixEditor({ preview, capture, onClose, onFix, onNotice }: { preview: Preview; capture: Capture; onClose: () => void; onFix: (preview: Preview, prompt: string, queue: boolean) => Promise<void>; onNotice: (message: string) => void }) {
   const [strokes, setStrokes] = useState<Stroke[]>([]); const [note, setNote] = useState(""); const [busy, setBusy] = useState(false); const drawing = useRef(false);
   function point(event: ReactPointerEvent<SVGSVGElement>) { const rect = event.currentTarget.getBoundingClientRect(); return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) }; }
   function begin(event: ReactPointerEvent<SVGSVGElement>) { event.preventDefault(); drawing.current = true; event.currentTarget.setPointerCapture(event.pointerId); setStrokes((current) => [...current, { points: [point(event)] }]); }

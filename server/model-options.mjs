@@ -15,7 +15,6 @@ export const MODEL_CATALOG = {
     { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
   ],
 };
-export const MODEL_SUGGESTIONS = Object.fromEntries(MODEL_PROVIDERS.map((provider) => [provider, MODEL_CATALOG[provider].map((model) => model.id)]));
 export const MODEL_ROLES = [
   { id: "planner", label: "Planner", description: "New goal plans and questions about their specification.", provider: true },
   { id: "specReviewer", label: "Spec reviewer", description: "The optional second pass uses the other provider.", provider: false },

@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 if (process.env.CI) throw new Error("The Cypress suite is intentionally local-only and refuses to run in CI.");
 
 const open = process.argv.includes("--open");
+const spaExperiment = process.argv.includes("--spa-experiment");
 // vinext binds its development listener to localhost even when Vite receives a
 // numeric host. Use the URL it actually advertises, or readiness waits forever
 // while the frontend is already serving on IPv6 loopback.
@@ -13,7 +14,9 @@ const port = 3221;
 const baseUrl = `http://${host}:${port}`;
 const environment = { ...process.env, CMUX_COMPANION_LOCAL_E2E: "1" };
 await assertPortAvailable(port);
-const frontend = spawn("npm", ["run", "dev", "--", "--host", host, "--port", String(port)], {
+const frontend = spawn(spaExperiment ? process.execPath : "npm", spaExperiment
+  ? ["node_modules/vite/bin/vite.js", "preview", "--config", "experiments/local-spa/vite.config.ts", "--host", host, "--port", String(port), "--strictPort"]
+  : ["run", "dev", "--", "--host", host, "--port", String(port)], {
   cwd: process.cwd(),
   env: environment,
   stdio: "inherit",

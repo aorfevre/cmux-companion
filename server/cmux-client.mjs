@@ -526,7 +526,7 @@ export class CmuxClient {
   }
 }
 
-export function assertTarget(value) {
+function assertTarget(value) {
   if (!TARGET_PATTERN.test(String(value || ""))) {
     throw new TypeError("Invalid cmux target");
   }
@@ -603,7 +603,7 @@ function envExports(env) {
   return pairs.length ? `${pairs.join("; ")}; ` : "";
 }
 
-export { ALLOWED_KEYS, ALLOWED_AGENTS, ALLOWED_TODO_ACTIONS };
+
 
 function readCredential(path) {
   try {

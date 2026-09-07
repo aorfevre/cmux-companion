@@ -85,6 +85,18 @@ test("health is public while cmux data requires pairing", async (t) => {
   assert.equal((await app.inject({ method: "POST", url: "/api/auth/pair", payload: { token: "wrong" } })).statusCode, 401);
 });
 
+test("malformed cookies preserve public health, reject unauthenticated reads and allow pairing", async (t) => {
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN });
+  t.after(() => app.close());
+  const headers = { cookie: "cmux_session=%" };
+  assert.equal((await app.inject({ url: "/api/health", headers })).statusCode, 200);
+  assert.equal((await app.inject({ url: "/api/bootstrap", headers })).statusCode, 401);
+  const paired = await app.inject({ method: "POST", url: "/api/auth/pair", headers, payload: { token: TOKEN } });
+  assert.equal(paired.statusCode, 200);
+  const cookie = `${headers.cookie}; ${paired.headers["set-cookie"].split(";")[0]}`;
+  assert.equal((await app.inject({ url: "/api/bootstrap", headers: { cookie } })).statusCode, 200);
+});
+
 test("requires launchctl to report a running updater process with a pid", () => {
   assert.equal(launchAgentIsRunning("state = running\n\tpid = 74825\n"), true);
   assert.equal(launchAgentIsRunning("state = exited\n\tlast exit code = 1\n"), false);
@@ -1822,4 +1834,33 @@ test("an authenticated issue-card start creates a managed planning workspace wit
   assert.notEqual(restarted.json().plan.planId, result.plan.planId);
   assert.equal(worktreeCalls, 2);
   assert.equal(runnerCalls, 2);
+});
+
+test("write schemas reject coercion and unknown controls before invoking cmux", async t => {
+  const cmux = fakeCmux();
+  const app = await buildApp(t, { cmux, token: TOKEN });
+  t.after(() => app.close());
+  const headers = { authorization: `Bearer ${TOKEN}` };
+  for (const payload of [{ text: "hello", enter: "false" }, { text: 42 }, { text: "hello", shell: true }]) {
+    const response = await app.inject({ method: "POST", url: `/api/terminals/${TERM_ID}/input`, headers, payload });
+    assert.equal(response.statusCode, 400);
+  }
+  assert.deepEqual(cmux.calls, []);
+  const valid = await app.inject({ method: "POST", url: `/api/terminals/${TERM_ID}/input`, headers, payload: { text: "hello", enter: false } });
+  assert.equal(valid.statusCode, 200);
+  assert.deepEqual(cmux.calls, [["text", TERM_ID, "hello"]]);
+});
+
+test("schema-rejected planner requests still terminate their progress trace", async t => {
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  t.after(() => app.close());
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const headers = { authorization: `Bearer ${TOKEN}` };
+  const rejected = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repo", goal: {}, traceId: TRACE } });
+  assert.equal(rejected.statusCode, 400);
+  const stream = await fetch(`${base}/api/worktree-plans/progress/${TRACE}`, { headers, signal: AbortSignal.timeout(1500) });
+  const reader = stream.body.getReader();
+  try { assert.match(new TextDecoder().decode((await reader.read()).value), /"k":"error"/); }
+  finally { await reader.cancel(); }
 });

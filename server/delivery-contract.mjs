@@ -34,7 +34,7 @@ const ELEMENT_CHANGE_ALIASES = { new: "added" };
 const EVIDENCE_STATUSES = ["planned", "not_applicable"];
 const SPEC_OPTION_IDS = SPEC_OPTIONS.options.map((option) => option.id);
 
-export const DELIVERY_CONTRACT_VERSION = 2;
+const DELIVERY_CONTRACT_VERSION = 2;
 
 export function normalizeDeliveryContract(raw, goal = "") {
   const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};

@@ -1,0 +1,30 @@
+{
+  "entry": [
+    "app/page.tsx",
+    "app/layout.tsx",
+    "scripts/*.mjs",
+    "tests/*.{mjs,tsx,ts}",
+    "cypress/**/*.ts",
+    "*.config.{ts,mjs}",
+    "worker/index.ts",
+    "public/sw.js",
+    "experiments/local-spa/main.tsx",
+    "experiments/local-spa/vite.config.ts"
+  ],
+  "project": [
+    "app/**/*.{ts,tsx,mjs,css}",
+    "server/**/*.mjs",
+    "scripts/**/*.mjs",
+    "tests/**/*.{mjs,tsx,ts}",
+    "cypress/**/*.ts",
+    "*.config.{ts,mjs}",
+    "worker/**/*.ts",
+    "public/*.js",
+    "experiments/**/*.{ts,tsx}",
+    "server/**/*.d.ts"
+  ],
+  "ignoreDependencies": [
+    "tailwindcss",
+    "next"
+  ]
+}
