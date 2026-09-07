@@ -950,6 +950,26 @@
 
 .goal-board-card>footer .goal-board-return-issues{grid-column:1/-1;min-height:44px;border-color:#52632f;color:var(--lime);white-space:normal}
 
+/* Goals is the working surface; operational navigation stays secondary. */
+.dashboard-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px 8px}
+.dashboard-heading h1{margin:0;font-size:24px;letter-spacing:-.7px}
+.dashboard-tools{position:relative}
+.dashboard-tools summary,.dashboard-views summary{cursor:pointer;color:var(--muted);font-size:14px;min-height:44px;padding:12px 8px}
+.dashboard-tools nav{position:absolute;right:0;top:100%;z-index:35;display:grid;min-width:180px;padding:8px;border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:0 12px 30px #0006}
+.dashboard-tools button{min-height:44px;text-align:left;border:0;border-radius:8px;padding:10px;background:transparent;color:var(--text);font-size:14px}
+.dashboard-tools button:hover,.dashboard-tools button:focus-visible{background:#232a31}
+.dashboard-views{margin-bottom:12px}
+.dashboard-views .worktree-filter-tabs{margin-bottom:0}
+@media(min-width:1000px){.dashboard-heading{padding:20px 42px 0}}
+
+.board-secondary-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:4px 0 12px}
+.board-loading{margin:12px 0;padding:24px 16px;border:1px solid var(--line);border-radius:12px;color:var(--muted);font-size:16px}
+
+.dashboard-heading-actions{display:flex;align-items:center;gap:12px}
+
+.goal-attention.clear{flex-direction:row;flex-wrap:wrap;align-items:center;padding:8px 12px}
+.goal-attention.clear .goal-attention-empty{border:0;padding:0;text-align:left}
+
 /* Plan review: one decision at a time, with the full contract a tab away. */
 .worktree-planner-sheet .goal-review{background:#12181d;border-color:#303b43;padding:20px;gap:20px}
 .worktree-planner-sheet .goal-review>header strong{font-size:20px;letter-spacing:-.025em}

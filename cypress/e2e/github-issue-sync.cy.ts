@@ -125,6 +125,7 @@ function visitBoard() {
 // The board re-reads the plan list behind Refresh GitHub. Advancing the
 // fixture and then pressing it is how a test observes the next server answer.
 function refreshBoard() {
+  cy.openBoardTools();
   cy.findByRole("button", { name: "Refresh GitHub" }).click();
   cy.wait("@plans");
 }
@@ -146,6 +147,7 @@ describe("GitHub Sync covers the starred projects end to end", () => {
     visitBoard();
 
     cy.findByRole("region", { name: "GitHub Issues" }).should("contain.text", EMPTY_HINT);
+    cy.openBoardTools();
     cy.findByRole("button", { name: "GitHub Sync" }).click();
 
     cy.wait("@sync").then((interception) => {
@@ -281,6 +283,7 @@ describe("GitHub Sync covers the starred projects end to end", () => {
     }).as("sync");
     visitBoard();
 
+    cy.openBoardTools();
     cy.findByRole("button", { name: "GitHub Sync" }).click();
     cy.wait("@sync");
 
@@ -304,6 +307,7 @@ describe("GitHub Sync covers the starred projects end to end", () => {
     visitBoard();
 
     cy.findByRole("region", { name: "GitHub Issues" }).should("contain.text", EMPTY_HINT);
+    cy.openBoardTools();
     cy.findByRole("button", { name: "GitHub Sync" }).click();
     cy.wait("@sync");
 

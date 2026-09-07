@@ -81,6 +81,7 @@ describe("review safety boundaries", () => {
       cy.intercept("DELETE", "**/api/worktree-dashboard/worktree-safety", { statusCode: 400, body: { error, reason: "sessions-unavailable" } }).as("remove");
       cy.intercept("POST", "**/api/worktree-dashboard/repositories/repo-safety/remove-clean", { repository: { id: repository.id, name: repository.name }, requested: 1, removed: 0, failed: 1, results: [{ ...row, removed: false, error }], branchPreserved: true }).as("bulk");
       cy.visit("/?mode=worktrees");
+      cy.contains("summary", "Board tools").click();
       cy.findByRole("tab", { name: /^Inactive/ }).click();
       if (bulk) {
         cy.findByRole("button", { name: "Remove clean worktrees in cmux-e2e-safety" }).click();

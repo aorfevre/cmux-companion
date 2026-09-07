@@ -108,6 +108,7 @@ describe("launching a goal is fire and forget", () => {
     cy.then(() => {
       state.plans = [readyPlan({ status: "launched", launchedCount: 2, launchedAt: now, deliveryStatus: "implementing", boardState: "dev_in_progress" })];
     });
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Refresh GitHub" }).click();
     cy.wait("@plans");
 

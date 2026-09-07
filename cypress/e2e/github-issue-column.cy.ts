@@ -71,6 +71,7 @@ describe("GitHub Sync and the GitHub Issues column", () => {
     }).as("sync");
     visitBoard();
 
+    cy.openBoardTools();
     cy.findByRole("button", { name: "GitHub Sync" }).click();
     cy.wait("@sync").then((interception) => {
       const repositories = (interception.response?.body?.repositories || []) as { repositoryId: string }[];
@@ -217,6 +218,7 @@ describe("GitHub Sync and the GitHub Issues column", () => {
     cy.findByRole("region", { name: "GitHub Issues" })
       .should("contain.text", "No GitHub issues yet. Star a repository, then choose GitHub Sync to pull its open issues.");
 
+    cy.openBoardTools();
     cy.findByRole("button", { name: "GitHub Sync" }).click();
     cy.wait("@sync");
     cy.contains("No starred repositories. Star a repository first; GitHub Sync reads starred repositories only.").should("be.visible");

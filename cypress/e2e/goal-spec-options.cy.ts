@@ -381,6 +381,7 @@ describe("per-project development setup review", () => {
     let submissions = 0;
     cy.intercept("POST", "**/api/worktree-plans", () => { submissions += 1; });
     visitBoard();
+    cy.contains("summary", "Board tools").click();
     cy.findByRole("tab", { name: /^Inactive/ }).click();
     cy.findByRole("button", { name: "Review dev setup for cmux-e2e-cypress" }).click();
     cy.findByRole("textbox", { name: "Goal" }).should("contain.value", "Make this repository");

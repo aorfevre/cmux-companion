@@ -92,7 +92,7 @@ describe("visible goal conversation", () => {
     }).as("inboxAnswer");
     start();
     cy.findByRole("button", { name: /Back/ }).click();
-    cy.findByRole("button", { name: "1 item needs your attention" }).click();
+    cy.findByRole("button", { name: "Inbox · 1" }).click();
     cy.findByRole("heading", { name: "Goal needs your answer" }).should("be.visible");
     cy.findByRole("button", { name: /^Card$/ }).click(); cy.wait("@inboxAnswer");
     cy.findByRole("heading", { name: "Goal needs your answer" }).should("not.exist");

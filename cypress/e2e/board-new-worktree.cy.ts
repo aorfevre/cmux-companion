@@ -67,6 +67,7 @@ describe("the board creates a worktree on the latest default branch", () => {
   });
 
   it("picks a repository, keeps the generated branch, and starts the chosen agent", () => {
+    cy.openBoardTools();
     cy.findByRole("button", { name: "＋ Worktree" }).click();
     cy.findByRole("menuitem", { name: "Create a worktree in trust-layer" }).click();
     cy.findByRole("dialog", { name: "Create Git worktree" }).within(() => {
@@ -88,6 +89,7 @@ describe("the board creates a worktree on the latest default branch", () => {
   });
 
   it("filters the picker by name and reaches the other repository", () => {
+    cy.openBoardTools();
     cy.findByRole("button", { name: "＋ Worktree" }).click();
     cy.findByRole("searchbox", { name: "Find a repository" }).type("record");
     cy.findByRole("menuitem", { name: "Create a worktree in trust-layer" }).should("not.exist");

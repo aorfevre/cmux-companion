@@ -7,7 +7,7 @@ No cloud application server is involved. Terminal output and input travel direct
 ## What it does
 
 - Shows every cmux workspace and terminal
-- Adds an opt-in **Worktrees Beta** home view that groups parallel branches, agents, Git state, and open pull requests while keeping the existing Sessions view
+- Opens on the **Goals board**, with Goals, Licence Usage, and Settings as the main navigation. Tools keeps Sessions and Local apps accessible; Board tools contains repository/worktree and draft/launched goal lists, GitHub refresh/sync, and finished-session cleanup; worktree cleanup lives in Settings. Explicit session and goal links still open their targets; old session-home preferences no longer override the dashboard.
 - Shows sanitized per-account Claude Code and OpenAI Codex quota from CCS, including reported 5-hour, daily, weekly, monthly, and additional feature windows
 - Highlights real cmux status, structured tasks, CPU, memory, and process health
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
