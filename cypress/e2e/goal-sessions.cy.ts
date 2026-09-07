@@ -48,6 +48,7 @@ function scenario(initial: Record<string, unknown> = basePlan) {
     plan = { ...plan, goalSessionState: "implementing", approvalRevision: plan.proposalRevision };
     request.reply(plan);
   }).as("approval");
+  return { getPlan: () => plan, setPlan: (next: Record<string, unknown>) => { plan = next; } };
 }
 function start() {
   cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-read-only", "false"); } });
@@ -76,6 +77,26 @@ describe("visible goal conversation", () => {
     cy.location("search").should("contain", "workspace=goal-workspace");
     cy.get("@startGoal.all").should("have.length", 1);
     cy.get("@approval.all").should("have.length", 1);
+  });
+
+  it("answers a durable goal question from the inbox without approving implementation", () => {
+    const state = scenario();
+    cy.intercept("GET", "**/api/inbox", (request) => {
+      const waiting = state.getPlan().goalSessionState === "awaiting_input";
+      request.reply({ items: waiting ? [{ id: "goal-question-current", requestId: "goal-question-current", type: "request", kind: "question", workspaceId: workspace.id, title: "Goal needs your answer", body: "Which payment method?", questionOptions: ["Card", "Invoice", "Write reply…"] }] : [], actionableCount: waiting ? 1 : 0, unreadCount: 0 });
+    });
+    cy.intercept("POST", "**/api/inbox/goal-question-current/reply", (request) => {
+      expect(request.body).to.deep.equal({ kind: "question", selections: ["Card"] });
+      state.setPlan({ ...state.getPlan(), questions: [], goalSessionState: "awaiting_approval", proposalRevision: 1, proposal });
+      request.reply({ ok: true });
+    }).as("inboxAnswer");
+    start();
+    cy.findByRole("button", { name: /Back/ }).click();
+    cy.findByRole("button", { name: "1 item needs your attention" }).click();
+    cy.findByRole("heading", { name: "Goal needs your answer" }).should("be.visible");
+    cy.findByRole("button", { name: /^Card$/ }).click(); cy.wait("@inboxAnswer");
+    cy.findByRole("heading", { name: "Goal needs your answer" }).should("not.exist");
+    cy.get("@approval.all").should("have.length", 0);
   });
 
   it("keeps stale approval rejection visible and requires review of the new proposal", () => {

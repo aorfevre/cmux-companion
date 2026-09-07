@@ -20,6 +20,7 @@ function installHome(handler: (url: string, init?: RequestInit) => Promise<Respo
     if (result) return result;
     if (url === "/api/auth/status") return response({ paired: true });
     if (url === "/api/bootstrap") return response({ connected: true, host: {}, workspaces: [workspace], refreshedAt: "2026-09-06" });
+    if (url.startsWith("/api/goal-sessions/workspace/")) return response({ plan: null });
     if (url === "/api/inbox") return response({ items: [], actionableCount: 0, unreadCount: 0 });
     if (url === "/api/repos") return response({ repos: [] });
     if (url.startsWith("/api/prompt-queue?")) return response({ items: [queued] });
