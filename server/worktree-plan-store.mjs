@@ -281,7 +281,7 @@ export class WorktreePlanStore {
     const id = String(planId);
     const row = this.db.prepare(`SELECT goal_session_pending_input, goal_session_active_input FROM plans WHERE plan_id = ? AND workflow = 'goal_session'
       AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state = 'planning'`).get(id, generation);
-    const feedback = text(row?.goal_session_active_input) || text(row?.goal_session_pending_input);
+    const feedback = text(row?.goal_session_pending_input) || text(row?.goal_session_active_input);
     if (!feedback) return null;
     // Keep it durable until the provider turn publishes a replacement. A
     // runner crash or provider rejection must replay this exact request rather
@@ -296,6 +296,13 @@ export class WorktreePlanStore {
       AND (goal_session_pending_input = ? OR goal_session_active_input = ?)`)
       .run(text(feedback), this.#stamp(), String(planId), generation, text(feedback), text(feedback)).changes;
     return changed === 1;
+  }
+
+  recordGoalSessionInputFailure(planId, { generation, error } = {}) {
+    const message = text(error)?.slice(0, 2_000) || "The requested proposal revision failed";
+    this.db.prepare(`UPDATE plans SET goal_session_error = ?, updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
+      AND goal_session_generation = ? AND goal_session_active_input IS NOT NULL`).run(message, this.#stamp(), String(planId), generation);
+    return this.get(planId);
   }
 
   recordGoalSessionProviderSession(planId, { generation, providerSessionId } = {}) {

@@ -49,12 +49,15 @@ export async function runGoalSession({ planId, databasePath, generation: generat
   const timer = setInterval(() => {
     if (implementationStarted) return;
     const current = store.get(planId);
-    if (!inputQueued && current?.goalSessionGeneration === generation && current?.goalSessionState === "planning" && (current.goalSessionPendingInput || current.goalSessionActiveInput)) {
+    if (!inputQueued && current?.goalSessionGeneration === generation && current?.goalSessionState === "planning" && current.goalSessionPendingInput) {
       inputQueued = true;
       turn = turn.then(async () => {
         const feedback = store.consumeGoalSessionInput(planId, { generation });
         if (feedback) await planningTurn(`The user requested these changes: ${feedback}\nRevise the proposal. Do not implement anything.`, feedback);
-      }).catch((cause) => out(`Planning failed: ${cause?.message || cause}`)).finally(() => { inputQueued = false; });
+      }).catch((cause) => {
+        store.recordGoalSessionInputFailure(planId, { generation, error: cause?.message || cause });
+        out(`Planning failed: ${cause?.message || cause}`);
+      }).finally(() => { inputQueued = false; });
       return;
     }
     if (current?.goalSessionGeneration !== generation || current?.transitionStatus !== "pending" || !current.approvalRevision) return;
