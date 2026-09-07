@@ -279,14 +279,19 @@ export class WorktreePlanStore {
 
   consumeGoalSessionInput(planId, { generation } = {}) {
     const id = String(planId);
-    const row = this.db.prepare(`SELECT goal_session_pending_input, goal_session_active_input FROM plans WHERE plan_id = ? AND workflow = 'goal_session'
-      AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state = 'planning'`).get(id, generation);
-    const feedback = text(row?.goal_session_pending_input) || text(row?.goal_session_active_input);
+    const row = this.db.prepare(`SELECT goal_session_pending_input FROM plans WHERE plan_id = ? AND workflow = 'goal_session'
+      AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state = 'planning'
+      AND goal_session_pending_input IS NOT NULL AND goal_session_active_input IS NULL`).get(id, generation);
+    const feedback = text(row?.goal_session_pending_input);
     if (!feedback) return null;
-    // Keep it durable until the provider turn publishes a replacement. A
-    // runner crash or provider rejection must replay this exact request rather
-    // than silently dropping the user's correction.
-    return feedback;
+    // Claim the correction before the provider turn begins. A rejected turn
+    // remains active and visible for an explicit recovery action; it is never
+    // silently replayed on the next polling interval or runner restart.
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_pending_input = NULL, goal_session_active_input = ?, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+      AND goal_session_state = 'planning' AND goal_session_pending_input = ? AND goal_session_active_input IS NULL`)
+      .run(feedback, this.#stamp(), id, generation, feedback).changes;
+    return changed === 1 ? feedback : null;
   }
 
   acknowledgeGoalSessionInput(planId, { generation, feedback } = {}) {
