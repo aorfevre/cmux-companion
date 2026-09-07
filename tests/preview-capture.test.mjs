@@ -24,3 +24,35 @@ test("captures a real loopback app at a bounded mobile viewport", { skip: !exist
   assert.equal(result.buffer.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
   assert.ok(result.buffer.length > 1_000);
 });
+
+test("capture blocks cross-port HTTP, WebSockets, popups and service-worker bypass", { skip: !existsSync(CHROME) }, async t => {
+  let forbiddenRequests = 0;
+  let upgrades = 0;
+  let serviceWorkers = 0;
+  let allowedRequests = 0;
+  const forbidden = createServer((_request, response) => { forbiddenRequests++; response.end("must not be reached"); });
+  forbidden.on("upgrade", (_request, socket) => { upgrades++; socket.destroy(); });
+  await new Promise(resolve => forbidden.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => forbidden.close(resolve)));
+  const blockedPort = forbidden.address().port;
+  const allowed = createServer((request, response) => {
+    if (request.url === "/probe") { allowedRequests++; response.end("ok"); return; }
+    if (request.url === "/sw.js") { serviceWorkers++; response.setHeader("Content-Type", "application/javascript"); response.end("self.addEventListener('fetch', () => {});"); return; }
+    response.setHeader("Content-Type", "text/html");
+    response.end(`<!doctype html><h1>Network containment fixture</h1><script>
+      fetch('/probe');
+      fetch('http://127.0.0.1:${blockedPort}/leak').catch(() => {});
+      new WebSocket('ws://127.0.0.1:${blockedPort}/socket');
+      window.open('http://127.0.0.1:${blockedPort}/popup');
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    </script>`);
+  });
+  await new Promise(resolve => allowed.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => allowed.close(resolve)));
+  const port = allowed.address().port;
+  await capturePreview({ sourceUrl: `http://127.0.0.1:${port}/`, targetPort: port, executablePath: CHROME });
+  assert.equal(allowedRequests, 1, "fixture JS must actually execute");
+  assert.equal(forbiddenRequests, 0);
+  assert.equal(upgrades, 0);
+  assert.equal(serviceWorkers, 0);
+});

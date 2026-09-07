@@ -1,23 +1,24 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
+import { ImageUploadSession } from "./image-upload-session";
 import { request } from "./api-request";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 export type ImageAttachment = { path: string; name: string; mime: string; size: number; preview: string };
 
-export const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-export const MAX_IMAGE_COUNT = 4;
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGE_COUNT = 4;
 const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 
 export { request } from "./api-request";
 
-export function imageDataUrl(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("Could not read that image")); reader.readAsDataURL(file); }); }
+function imageDataUrl(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("Could not read that image")); reader.readAsDataURL(file); }); }
 
 // The paths travel inside the prompt because each agent runs in its own
 // worktree and reads the file itself.
-export function imagePromptLines(attachments: { path: string }[]) {
+function imagePromptLines(attachments: { path: string }[]) {
   if (!attachments.length) return "";
   return [`Attached image${attachments.length > 1 ? "s" : ""}:`, ...attachments.map((image) => `- ${image.path}`)].join("\n");
 }
@@ -32,45 +33,60 @@ export function imageReferences(attachments: ImageAttachment[]) {
 
 // One uploader for every sheet: it validates the files, saves each one through
 // the attachments route, and reports each failure through the notice callback.
-export function useImageAttachments(onNotice: (message: string) => void) {
-  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
-  const [uploading, setUploading] = useState(0);
+export function useImageAttachments(onNotice: (message: string) => void, ownerKey = "sheet") {
+  const owner = useMemo(() => new ImageUploadSession(ownerKey), [ownerKey]);
+  const [snapshot, setSnapshot] = useState({ owner, images: owner.images, pending: 0 });
   const inputRef = useRef<HTMLInputElement>(null);
-  const count = attachments.length;
-
+  useLayoutEffect(() => {
+    owner.activate();
+    return () => owner.deactivate();
+  }, [owner]);
+  const publish = useCallback(() => {
+    if (owner.active) setSnapshot({ owner, images: [...owner.images], pending: owner.pending });
+  }, [owner]);
   const addImages = useCallback(async (files: File[]) => {
-    const available = MAX_IMAGE_COUNT - count;
+    if (!owner.active) return;
+    const available = MAX_IMAGE_COUNT - owner.images.length - owner.pending;
     if (available <= 0) { onNotice("You can attach up to four images at a time"); return; }
     if (files.length > available) onNotice("Only the first four images were added");
-    const selected = files.slice(0, available);
-    const valid = selected.filter((file) => {
+    const valid = files.slice(0, available).filter((file) => {
       if (!IMAGE_TYPES.has(file.type)) { onNotice(`${file.name || "That file"} is not a supported image`); return false; }
       if (file.size > MAX_IMAGE_BYTES) { onNotice(`${file.name || "That image"} must be 8 MB or smaller`); return false; }
       return true;
     });
     if (!valid.length) return;
-    setUploading((pending) => pending + valid.length);
+    const generation = owner.reserve(valid.length);
+    // Reserve before any await so simultaneous paste/picker events cannot
+    // upload beyond the cap or append into a different terminal/sheet.
+    publish();
+    const current = () => owner.active && owner.generation === generation;
     const uploaded = await Promise.all(valid.map(async (file) => {
       try {
         const dataUrl = await imageDataUrl(file);
+        if (!current()) return null;
         const result = await request<{ image: Omit<ImageAttachment, "preview"> }>("/api/attachments/images", { method: "POST", body: JSON.stringify({ dataUrl, name: file.name || "pasted image" }) });
         return { ...result.image, preview: dataUrl };
-      } catch (cause) { onNotice(cause instanceof Error ? cause.message : "Could not attach image"); return null; }
-      finally { setUploading((pending) => Math.max(0, pending - 1)); }
+      } catch (cause) { if (current()) onNotice(cause instanceof Error ? cause.message : "Could not attach image"); return null; }
     }));
-    setAttachments((current) => [...current, ...uploaded.filter((image): image is ImageAttachment => image != null)].slice(0, MAX_IMAGE_COUNT));
-  }, [count, onNotice]);
-
+    if (!current()) return;
+    owner.finish(valid.length, uploaded.filter((image): image is ImageAttachment => image != null));
+    publish();
+  }, [owner, onNotice, publish]);
   const pasteImages = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const images = [...event.clipboardData.items].filter((item) => item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file));
     if (!images.length) return;
     event.preventDefault();
     void addImages(images);
   }, [addImages]);
-
-  const removeImage = useCallback((path: string) => setAttachments((current) => current.filter((item) => item.path !== path)), []);
-
-  return { attachments, uploading, inputRef, addImages, pasteImages, removeImage };
+  const removeImage = useCallback((path: string) => {
+    owner.remove(path);
+    publish();
+  }, [owner, publish]);
+  const clearAttachments = useCallback(() => {
+    owner.clear();
+    publish();
+  }, [owner, publish]);
+  return { attachments: snapshot.owner === owner ? snapshot.images : [], uploading: snapshot.owner === owner ? snapshot.pending : 0, inputRef, addImages, pasteImages, removeImage, clearAttachments };
 }
 
 export function AttachmentStrip({ attachments, className = "", onRemove }: { attachments: ImageAttachment[]; className?: string; onRemove: (path: string) => void }) {

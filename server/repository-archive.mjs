@@ -1,4 +1,5 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readPrivateJson } from "./private-json-state.mjs";
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -12,13 +13,9 @@ export class RepositoryArchive {
   }
 
   load() {
-    try {
-      const value = JSON.parse(readFileSync(this.path, "utf8"));
-      const ids = Array.isArray(value?.repositories) ? value.repositories : [];
-      this.ids = new Set(ids.filter((id) => typeof id === "string" && /^[A-Za-z0-9_-]{18}$/.test(id)));
-    } catch {
-      this.ids = new Set();
-    }
+    const value = readPrivateJson(this.path, { repositories: [] }, value => value !== null && typeof value === "object" && Array.isArray(value.repositories));
+    const ids = Array.isArray(value?.repositories) ? value.repositories : [];
+    this.ids = new Set(ids.filter((id) => typeof id === "string" && /^[A-Za-z0-9_-]{18}$/.test(id)));
   }
 
   has(id) {

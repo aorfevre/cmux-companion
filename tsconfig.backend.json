@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "checkJs": true,
+    "incremental": false
+  },
+  "include": [
+    "server/planner-runs.mjs",
+    "server/goal-run-types.d.ts",
+    "server/task-launch-result.mjs"
+  ]
+}

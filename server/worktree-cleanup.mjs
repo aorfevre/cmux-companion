@@ -7,7 +7,7 @@ import { WorktreeInventory, git, parseWorktrees } from "./worktree-inventory.mjs
 import { cleanupHome, plainPath, readJson, withOperationLock, writeJson } from "./worktree-operations.mjs";
 
 const DAY = 86_400_000;
-export const DEFAULT_POLICY = Object.freeze({ enabled: false, intervalHours: 24, graceDays: 7, pruneEnabled: false, pruneGraceDays: 30 });
+const DEFAULT_POLICY = Object.freeze({ enabled: false, intervalHours: 24, graceDays: 7, pruneEnabled: false, pruneGraceDays: 30 });
 export class WorktreeCleanup {
   constructor({ inventory, directory = cleanupHome(), now = () => Date.now(), log = null, onRemoved = async () => {} } = {}) {
     if (!(inventory instanceof WorktreeInventory) && !inventory?.snapshot) throw new Error("Worktree inventory required");

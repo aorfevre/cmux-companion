@@ -145,7 +145,7 @@ export class GoalFollowups {
 // The brief is the whole follow-up contract. Goal text and the user's own
 // words are fenced as data, and the fence grows when those words contain
 // backticks so they cannot escape their quoted block.
-export function followupPrompt(plan, { actions, question, custom, branch, pullRequest }) {
+function followupPrompt(plan, { actions, question, custom, branch, pullRequest }) {
   const selected = new Set(Array.isArray(actions) ? actions : []);
   const sections = GOAL_FOLLOWUP_ACTIONS.filter((action) => selected.has(action.id)).map((action) => {
     if (action.id === "question") return [

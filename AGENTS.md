@@ -21,7 +21,7 @@ See [product behavior](README.md#what-it-does) and [architecture](README.md#arch
 - `scripts/`: development, verification and macOS installation/operator tooling.
 
 ## Prerequisites and configuration
-Use Node.js >=22.13, preferably the version in `.nvmrc`, and npm with the checked-in
+Use Node.js >=22.23.1 <23, with the version in `.nvmrc`, and npm with the checked-in
 `package-lock.json` (lockfile v3); do not substitute another package manager.
 The installed product and live integrations require macOS, cmux and Tailscale,
 CCS where planning/accounts need it, and authenticated `gh` for GitHub features.
@@ -66,9 +66,10 @@ why and run the closest local validation. See [local end-to-end checks](README.m
 If Electron fails, use `CMUX_COMPANION_CYPRESS_BROWSER=chrome npm run test:e2e:local`.
 
 ## Test conventions
-Server tests are top-level `tests/*.test.mjs` files, explicitly listed in the
-`package.json` test script; the first test guards this list. Only
-`tests/live-cmux.test.mjs` is excluded because it needs real cmux.
+Server tests are top-level `tests/*.test.mjs` files, automatically discovered by
+`scripts/run-backend-tests.mjs`; tests guard discovery and live-suite exclusion.
+Live suites use `*.live.mjs` and explicit opt-in scripts; legacy live names are
+also excluded.
 Vitest automatically selects `tests/ui-*.test.tsx`. Deterministic Cypress specs
 in `cypress/e2e` stub APIs and stay excluded from `npm test`, `npm run verify`
 and CI. Live suites require separate authorization and the README safety opt-in.

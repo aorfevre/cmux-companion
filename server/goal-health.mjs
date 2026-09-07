@@ -20,7 +20,7 @@ export const DEFAULT_IDLE_MS = 20 * 60 * 1_000;
 
 // Every verdict this module can return, worst first. The order is the ranking:
 // a goal reports the worst verdict any of its tasks carries.
-export const TASK_HEALTH = Object.freeze(["failed", "dead", "idle", "needs_you", "working", "ready", "integrated", "skipped", "queued", "unknown"]);
+const TASK_HEALTH = Object.freeze(["failed", "dead", "idle", "needs_you", "working", "ready", "integrated", "skipped", "queued", "unknown"]);
 
 const RANK = new Map(TASK_HEALTH.map((value, index) => [value, TASK_HEALTH.length - index]));
 

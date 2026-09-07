@@ -9,15 +9,15 @@ import { useId } from "react";
 // marker identifiers are computed here, so a hostile label can change what a
 // diagram says and nothing else.
 
-export type FlowNodeKind = "start" | "step" | "decision" | "end";
-export type FlowNode = { id: string; label: string; kind?: FlowNodeKind | string };
-export type FlowEdge = { from: string; to: string; label?: string };
-export type ScreenElementChange = "added" | "changed" | "removed" | "unchanged";
-export type ScreenElementKind = "header" | "text" | "input" | "button" | "list" | "image" | "note";
-export type ScreenElement = { id: string; label: string; kind?: ScreenElementKind | string; change?: ScreenElementChange | string; note?: string };
-export type ScreenData = { name: string; elements?: ScreenElement[] };
-export type FlowArtifactData = { id: string; kind: "flow"; title?: string; summary?: string; nodes?: FlowNode[]; edges?: FlowEdge[] };
-export type ScreenArtifactData = { id: string; kind: "screen"; title?: string; summary?: string; screen?: ScreenData };
+type FlowNodeKind = "start" | "step" | "decision" | "end";
+type FlowNode = { id: string; label: string; kind?: FlowNodeKind | string };
+type FlowEdge = { from: string; to: string; label?: string };
+type ScreenElementChange = "added" | "changed" | "removed" | "unchanged";
+type ScreenElementKind = "header" | "text" | "input" | "button" | "list" | "image" | "note";
+type ScreenElement = { id: string; label: string; kind?: ScreenElementKind | string; change?: ScreenElementChange | string; note?: string };
+type ScreenData = { name: string; elements?: ScreenElement[] };
+type FlowArtifactData = { id: string; kind: "flow"; title?: string; summary?: string; nodes?: FlowNode[]; edges?: FlowEdge[] };
+type ScreenArtifactData = { id: string; kind: "screen"; title?: string; summary?: string; screen?: ScreenData };
 export type DesignArtifact = FlowArtifactData | ScreenArtifactData;
 
 const NODE_WIDTH = 168;
@@ -37,7 +37,7 @@ type PlacedNode = { node: FlowNode; layer: number; column: number; x: number; y:
 // always draws the same picture. A cycle has no topological order, so its
 // members are placed after the resolvable nodes instead of being dropped or
 // looped over forever.
-export function flowLayout(nodeValues: FlowNode[], edgeValues: FlowEdge[]) {
+function flowLayout(nodeValues: FlowNode[], edgeValues: FlowEdge[]) {
   const nodes = nodeValues.filter((node) => node && typeof node.id === "string" && node.id !== "");
   const known = new Set(nodes.map((node) => node.id));
   const edges = edgeValues.filter((edge) => edge && known.has(edge.from) && known.has(edge.to));
@@ -91,7 +91,7 @@ export function flowLayout(nodeValues: FlowNode[], edgeValues: FlowEdge[]) {
 
 // Long labels are wrapped, then the overflow is cut. A word longer than one
 // line is cut rather than left to escape its box.
-export function wrapLabel(text: string) {
+function wrapLabel(text: string) {
   const words = String(text || "").split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let current = "";
@@ -120,7 +120,7 @@ function anchors(from: PlacedNode, to: PlacedNode) {
   return { x1: from.x, y1: from.y + NODE_HEIGHT / 2, x2: to.x + NODE_WIDTH, y2: to.y + NODE_HEIGHT / 2 };
 }
 
-export function FlowArtifact({ artifact }: { artifact: FlowArtifactData }) {
+function FlowArtifact({ artifact }: { artifact: FlowArtifactData }) {
   // The marker id must be unique per rendered diagram, and it must not come
   // from the artifact. React supplies one that is stable across renders.
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
@@ -164,7 +164,7 @@ export function FlowArtifact({ artifact }: { artifact: FlowArtifactData }) {
   </figure>;
 }
 
-export function ScreenArtifact({ artifact }: { artifact: ScreenArtifactData }) {
+function ScreenArtifact({ artifact }: { artifact: ScreenArtifactData }) {
   const elements = (artifact.screen?.elements || []).filter((element) => element && typeof element.id === "string");
   if (!elements.length) return null;
   const title = artifact.title || "Screen";

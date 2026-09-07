@@ -270,7 +270,7 @@ export class GoalSessionReaper {
 
 // cmux has no typed error for a workspace that is gone, so its message is all
 // there is to read. Anything else may be a passing fault, and stays retryable.
-export function missingWorkspace(cause) {
+function missingWorkspace(cause) {
   return /workspace[^\n]*(?:not found|does not exist|already closed)|no such workspace|unknown workspace/i.test(String(cause?.message || ""));
 }
 

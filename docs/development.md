@@ -142,3 +142,41 @@ explicit-binary and PATH discovery. Launch tests use a bounded elapsed-time
 wait, with a delayed brief-write regression case. Product behavior and test
 assertions are preserved. This test-only correction has no UI path to exercise
 in Cypress; targeted Node tests and the full local/hosted verification cover it.
+
+## Quality checks and ownership
+
+`npm test` discovers top-level `tests/*.test.mjs` automatically. Use `*.live.mjs`
+for live integration suites and an explicit opt-in command; the runner also
+excludes legacy `live-*` names. Tests are never discovered inside nested
+worktrees. `npm run typecheck` checks the frontend and a strict checked-JSDoc
+pilot for planner run transitions and durable task launch results. Extend that
+pilot when changing another pure boundary; do not claim the entire backend is
+statically checked.
+
+Planner process transport, model reply normalization, HTTP planner routes and
+SQLite schema/migrations have separate owners in `server/planner-process.mjs`,
+`planner-reply.mjs`, `planner-routes.mjs` and `worktree-plan-schema.mjs`.
+`useOwnedRead` owns asynchronous UI reads across terminal/workspace changes;
+`useImageAttachments` owns upload capacity and image lifetime for each sheet or
+terminal. Reuse these boundaries instead of copying asynchronous state logic.
+
+JSON registries use `readPrivateJson`: a missing file initializes defaults,
+invalid JSON/top-level shape is preserved in a mode-0600 `.corrupt-*` sibling
+before recovery, and other IO errors propagate. Stop Companion before manually
+repairing a registry. Inspect the backup locally, restore validated contents to
+the original path with mode 0600, and restart through the normal authorized
+operator flow. Do not blindly replay recovered queued prompts or expose previews.
+Each registry and SQLite store has one service-process writer; WAL is not a
+cross-process ownership lock. Never run two bridges against the same state files.
+
+`node scripts/benchmark-plan-store.mjs` measures the store with 200 synthetic
+goals in a temporary directory and removes its own data afterward. The review's
+measurements and their limits are recorded in [implementation evidence](reviews/implementation-status.md).
+
+Production builds stamp the service worker with a digest of client assets and
+worker code, so cache versions change without a manual counter. Development
+workers bypass caching; local Cypress disables registration and uses API
+fixtures. The separate deterministic browser tests exercise worker install,
+update and offline navigation using an ephemeral local HTTP fixture when Chrome
+is installed. Preview capture tests also exercise HTTP/WebSocket and service
+worker containment without Tailscale or external services.

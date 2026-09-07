@@ -3,6 +3,8 @@
 
 import { useOwnedReads } from "./owned-reads";
 import { request as api } from "./api-request";
+import { composedPrompt, useImageAttachments, type ImageAttachment } from "./image-attachments";
+import { useOwnedRead } from "./use-owned-read";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountUsageView } from "./account-usage";
 import { AppsView, type Preview } from "./apps-view";
@@ -31,7 +33,6 @@ type Overview = { status: WorkspaceStatus; todos: { items: Todo[]; progress: { c
 type ChangedFile = { path: string; status: string; area: string; areas: string[] };
 type Changes = { repo: Repo; files: ChangedFile[]; summary: { staged: string; unstaged: string }; recentCommit?: { hash: string; subject: string } | null };
 type PullRequest = { number: number; title: string; url: string; state: string; isDraft: boolean; reviewDecision: string; mergeState: string; headBranch: string; baseBranch: string; updatedAt?: string | null; author?: string | null; checks: { passed: number; failed: number; pending: number; total: number } };
-type ImageAttachment = { path: string; name: string; mime: string; size: number; preview: string };
 type PromptQueueItem = { id: string; workspaceId: string; surfaceId: string; text: string; createdAt: string; updatedAt: string; attempts: number; lastError?: string | null };
 type View = "sessions" | "inbox" | "launch" | "apps" | "settings" | "usage";
 type DetailTab = "terminal" | "tasks" | "changes";
@@ -39,25 +40,23 @@ type HomeMode = "sessions" | "worktrees";
 
 
 
+function sameTerminalView(left: TerminalView | null, right: TerminalView | null) { return terminalViewSignature(left) === terminalViewSignature(right); }
+
 function compactPath(path?: string | null) { return path ? path.replace(/^\/Users\/[^/]+/, "~") : "Directory unavailable"; }
 function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
 function sessionState(workspace: Workspace) { if (workspace.has_unread || workspace.status?.signals?.any_agent_needs_input) return { label: "Needs you", tone: "attention" }; if (workspace.status?.effective === "working" || workspace.status?.signals?.any_agent_running) return { label: "Working", tone: "working" }; if (workspace.status?.effective === "done") return { label: "Done", tone: "done" }; return { label: "Ready", tone: "ready" }; }
 function formatBytes(bytes = 0) { if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`; if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(0)} MB`; return `${(bytes / 1024 ** 3).toFixed(1)} GB`; }
-function imageDataUrl(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("Could not read that image")); reader.readAsDataURL(file); }); }
-function composedPrompt(draft: string, attachments: ImageAttachment[]) { const imageLines = attachments.map((image) => `- ${image.path}`); return [draft.trim(), imageLines.length ? `Attached image${imageLines.length > 1 ? "s" : ""}:\n${imageLines.join("\n")}` : ""].filter(Boolean).join("\n\n"); }
 
 export default function Home() {
   const [auth, setAuth] = useState<"loading" | "paired" | "unpaired" | "offline">("loading");
   const [pairingToken, setPairingToken] = useState(""); const [pairingError, setPairingError] = useState("");
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null); const [inbox, setInbox] = useState<Inbox>({ items: [], actionableCount: 0, unreadCount: 0 }); const [repos, setRepos] = useState<Repo[]>([]);
   const [view, setView] = useState<View>(() => { if (typeof window === "undefined") return "sessions"; if (hasGoalPopup(location.search)) return "sessions"; const value = new URLSearchParams(location.search).get("view"); return value === "inbox" || value === "launch" || value === "apps" || value === "settings" || value === "usage" ? value : "sessions"; }); const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); return query.has("action") || (!query.has("workspace") && query.has("repo") && query.has("file")) ? null : query.get("workspace"); }); const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("surface")); const [detailTab, setDetailTab] = useState<DetailTab>(() => { if (typeof window === "undefined") return "terminal"; const tab = new URLSearchParams(location.search).get("tab"); return tab === "changes" || tab === "tasks" ? tab : "terminal"; });
-  const [terminalView, setTerminalView] = useState<TerminalView | null>(null); const [screenError, setScreenError] = useState(""); const [draft, setDraft] = useState(""); const [sending, setSending] = useState(false); const [live, setLive] = useState(false); const [notice, setNotice] = useState("");
+  const [draft, setDraft] = useState(""); const [sending, setSending] = useState(false); const [live, setLive] = useState(false); const [notice, setNotice] = useState("");
   const [actionId, setActionId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("action"));
   const [focusedPreviewId, setFocusedPreviewId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("preview"));
   const [documentTarget, setDocumentTarget] = useState<{ repoId: string; path: string } | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); const repoId = query.get("repo"); const path = query.get("file"); return repoId && path && !query.has("workspace") && !query.has("action") ? { repoId, path } : null; });
   const [notificationContext, setNotificationContext] = useState<{ kind: string; file?: string | null } | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); const kind = query.get("context"); return kind && query.has("workspace") ? { kind, file: query.get("file") } : null; });
-  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
-  const [queueItems, setQueueItems] = useState<PromptQueueItem[]>([]);
   // Worktrees is the landing view, because its board is the one screen that says
   // what is running and what needs a person. `?mode=sessions` and a stored
   // choice both still win, so a phone that prefers the flat session list keeps
@@ -71,23 +70,17 @@ export default function Home() {
   const selectedTerminal = selectedWorkspace?.terminals.find((terminal) => terminal.id === selectedTerminalId) || selectedWorkspace?.terminals[0] || null;
   const selectedRepo = useMemo(() => { const directory = selectedWorkspace?.current_directory || selectedTerminal?.current_directory; if (!directory) return null; return repos.find((repo) => directory === repo.path || directory.startsWith(`${repo.path}/`)) || null; }, [repos, selectedTerminal, selectedWorkspace]);
   const queueWorkspaceId = selectedWorkspace?.id || null; const queueSurfaceId = selectedTerminal?.id || null;
-
-  const selection = `${auth}:${queueWorkspaceId}:${queueSurfaceId}`;
-  const readOwned = useOwnedReads(selection);
-  const [previousSelection, setPreviousSelection] = useState(selection);
-  if (previousSelection !== selection) {
-    setPreviousSelection(selection);
-    setTerminalView(null); setScreenError(""); setQueueItems([]);
-  }
+  const { attachments, addImages, removeImage, clearAttachments } = useImageAttachments(setNotice, `${queueWorkspaceId}:${queueSurfaceId}`);
+  const addImage = useCallback((file: File) => addImages([file]), [addImages]);
 
   const loadBootstrap = useCallback(async () => { try { const data = await api<Bootstrap>("/api/bootstrap"); setBootstrap(data); setAuth("paired"); return data; } catch (error) { if (error instanceof Error && error.message.includes("Pair")) setAuth("unpaired"); setBootstrap((current) => current ? { ...current, connected: false, error: "Waiting for cmux" } : null); return null; } }, []);
   const loadInbox = useCallback(async () => { try { setInbox(await api<Inbox>("/api/inbox")); } catch { /* cmux reconnects independently */ } }, []);
   const loadRepos = useCallback(async () => { try { setRepos((await api<{ repos: Repo[] }>("/api/repos")).repos); } catch { /* retry later */ } }, []);
-  const loadPromptQueue = useCallback(async (force = false) => {
-    if (!queueWorkspaceId || !queueSurfaceId) return;
-    const query = new URLSearchParams({ workspaceId: queueWorkspaceId, surfaceId: queueSurfaceId });
-    await readOwned("queue", (signal) => api<{ items: PromptQueueItem[] }>(`/api/prompt-queue?${query}`, { signal }), (result) => setQueueItems(result.items), () => {}, force);
-  }, [queueSurfaceId, queueWorkspaceId, readOwned]);
+  const readIdentity = `${auth}:${queueWorkspaceId}:${queueSurfaceId}`;
+  const queuePath = queueWorkspaceId && queueSurfaceId ? `/api/prompt-queue?${new URLSearchParams({ workspaceId: queueWorkspaceId, surfaceId: queueSurfaceId })}` : null;
+  const { value: queueResult, refresh: loadPromptQueue } = useOwnedRead<{ items: PromptQueueItem[] } | null>(queuePath, null, Object.is, readIdentity);
+  const queueItems = queueResult?.items || [];
+  const { value: terminalView, error: screenError, refresh: loadTerminal, clear: clearTerminal } = useOwnedRead<TerminalView | null>(selectedTerminal ? `/api/terminals/${selectedTerminal.id}/replay?scrollback=600` : null, null, sameTerminalView, readIdentity);
 
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -106,13 +99,6 @@ export default function Home() {
     return () => { stopped = true; clearTimeout(kickoff); clearInterval(poll); if (retry) clearTimeout(retry); if (refreshTimer.current) clearTimeout(refreshTimer.current); socket?.close(); };
   }, [auth, loadBootstrap, loadInbox, loadPromptQueue, loadRepos]);
 
-  const loadTerminal = useCallback(async () => {
-    if (!selectedTerminal) return;
-    await readOwned("terminal", (signal) => api<TerminalView>(`/api/terminals/${selectedTerminal.id}/replay?scrollback=600`, { signal }), (result) => {
-      setTerminalView((current) => terminalViewSignature(current) === terminalViewSignature(result) ? current : result);
-      setScreenError("");
-    }, (error) => setScreenError(error instanceof Error ? error.message : "Unable to read this terminal"));
-  }, [selectedTerminal, readOwned]);
   useEffect(() => { if (!selectedTerminal || detailTab !== "terminal") return; const kickoff = setTimeout(loadTerminal, 0); const poll = setInterval(() => { if (document.visibilityState === "visible") loadTerminal(); }, 1_500); return () => { clearTimeout(kickoff); clearInterval(poll); }; }, [selectedTerminal, detailTab, loadTerminal]);
   useEffect(() => { const timer = setTimeout(loadPromptQueue, 0); return () => clearTimeout(timer); }, [loadPromptQueue]);
 
@@ -123,7 +109,7 @@ export default function Home() {
       if (result.created) setNotice(`Local app detected on port ${port}`);
       if (open) { setFocusedPreviewId(result.preview.id); setSelectedWorkspaceId(null); setView("apps"); history.replaceState(null, "", `/?view=apps&preview=${encodeURIComponent(result.preview.id)}`); }
     } catch (error) { if (open) setNotice(error instanceof Error ? error.message : "Could not register local app"); }
-  }, [selectedRepo?.id, selectedWorkspace]);
+  }, [selectedRepo, selectedWorkspace]);
   useEffect(() => {
     if (!terminalView || !selectedWorkspace) return;
     for (const url of terminalContext(terminalView).urls) {
@@ -133,11 +119,8 @@ export default function Home() {
   }, [terminalView, selectedWorkspace, discoverLocalUrl]);
 
   async function pair(event: FormEvent) { event.preventDefault(); setPairingError(""); try { await api("/api/auth/pair", { method: "POST", body: JSON.stringify({ token: pairingToken.trim() }) }); setPairingToken(""); setAuth("paired"); } catch (error) { setPairingError(error instanceof Error ? error.message : "Pairing failed"); } }
-  function openWorkspace(workspace: Workspace, tab: DetailTab = "terminal") { setDocumentTarget(null); setActionId(null); setNotificationContext(null); setSelectedWorkspaceId(workspace.id); setSelectedTerminalId(workspace.terminals.find((terminal) => terminal.is_focused)?.id || workspace.terminals[0]?.id || null); setTerminalView(null); clearAttachments(); setDetailTab(tab); history.replaceState(null, "", `/?workspace=${encodeURIComponent(workspace.id)}${tab !== "terminal" ? `&tab=${tab}` : ""}`); }
-  function closeWorkspaceView() { setSelectedWorkspaceId(null); setSelectedTerminalId(null); setTerminalView(null); clearAttachments(); history.replaceState(null, "", `/?view=${view}`); }
-  function clearAttachments() { setAttachments((current) => { current.forEach((image) => URL.revokeObjectURL(image.preview)); return []; }); }
-  async function addImage(file: File) { if (attachments.length >= 4) { setNotice("You can attach up to four images at a time"); return; } if (!file.type.startsWith("image/")) { setNotice("Choose an image file"); return; } if (file.size > 8 * 1024 * 1024) { setNotice("Image must be 8 MB or smaller"); return; } try { const dataUrl = await imageDataUrl(file); const result = await api<{ image: Omit<ImageAttachment, "preview"> }>("/api/attachments/images", { method: "POST", body: JSON.stringify({ dataUrl, name: file.name || "pasted image" }) }); const attached = { ...result.image, preview: URL.createObjectURL(file) }; setAttachments((current) => { if (current.length >= 4) { URL.revokeObjectURL(attached.preview); return current; } return [...current, attached]; }); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not attach image"); } }
-  function removeImage(path: string) { setAttachments((current) => current.filter((image) => { if (image.path === path) URL.revokeObjectURL(image.preview); return image.path !== path; })); }
+  function openWorkspace(workspace: Workspace, tab: DetailTab = "terminal") { setDocumentTarget(null); setActionId(null); setNotificationContext(null); setSelectedWorkspaceId(workspace.id); setSelectedTerminalId(workspace.terminals.find((terminal) => terminal.is_focused)?.id || workspace.terminals[0]?.id || null); clearTerminal(); clearAttachments(); setDetailTab(tab); history.replaceState(null, "", `/?workspace=${encodeURIComponent(workspace.id)}${tab !== "terminal" ? `&tab=${tab}` : ""}`); }
+  function closeWorkspaceView() { setSelectedWorkspaceId(null); setSelectedTerminalId(null); clearTerminal(); clearAttachments(); history.replaceState(null, "", `/?view=${view}`); }
   async function sendPrompt(event: FormEvent) { event.preventDefault(); if (!selectedTerminal || (!draft.trim() && attachments.length === 0) || readOnly) return; const text = composedPrompt(draft, attachments); setSending(true); try { await api(`/api/terminals/${selectedTerminal.id}/input`, { method: "POST", body: JSON.stringify({ text, enter: true }) }); setDraft(""); clearAttachments(); setTimeout(loadTerminal, 200); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not send input"); } finally { setSending(false); } }
   async function queuePrompt() { if (!selectedWorkspace || !selectedTerminal || (!draft.trim() && attachments.length === 0) || readOnly) return; const text = composedPrompt(draft, attachments); setSending(true); try { await api("/api/prompt-queue", { method: "POST", body: JSON.stringify({ workspaceId: selectedWorkspace.id, surfaceId: selectedTerminal.id, text }) }); setDraft(""); clearAttachments(); await loadPromptQueue(true); setNotice("Prompt queued for the next agent stop"); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not queue prompt"); } finally { setSending(false); } }
   async function queueAction(id: string, action: "update" | "move" | "send" | "remove", value?: string | number) { setSending(true); try { const path = action === "update" || action === "remove" ? `/api/prompt-queue/${id}` : `/api/prompt-queue/${id}/${action}`; const method = action === "update" ? "PATCH" : action === "remove" ? "DELETE" : "POST"; const body = action === "update" ? JSON.stringify({ text: value }) : action === "move" ? JSON.stringify({ direction: value }) : "{}"; await api(path, { method, body }); await loadPromptQueue(true); if (action === "send") { setNotice("Queued prompt sent"); setTimeout(loadTerminal, 200); } return true; } catch (error) { setNotice(error instanceof Error ? error.message : "Queue action failed"); return false; } finally { setSending(false); } }
@@ -152,7 +135,7 @@ export default function Home() {
   if (auth === "loading") return <LoadingScreen />;
   if (auth === "unpaired" || auth === "offline") return <PairScreen offline={auth === "offline"} token={pairingToken} error={pairingError} onToken={setPairingToken} onPair={pair} />;
   if (documentTarget) return <MarkdownViewer repoId={documentTarget.repoId} path={documentTarget.path} onClose={() => { setDocumentTarget(null); history.replaceState(null, "", selectedWorkspace ? `/?workspace=${encodeURIComponent(selectedWorkspace.id)}` : "/?view=sessions"); }} onAsk={(file) => { const workspace = bootstrap?.workspaces.find((item) => item.current_directory === file.repo.path || item.current_directory?.startsWith(`${file.repo.path}/`)); if (!workspace) { setNotice("Open a session for this repository first"); return; } setDraft(`Please review ${file.path} and help me with it.`); openWorkspace(workspace); }} onOpenWorkspace={openRepoWorkspace} />;
-  if (selectedWorkspace && selectedTerminal) return <><Notice message={notice} onDismiss={() => setNotice("")} /><WorkspaceDetail workspace={selectedWorkspace} terminal={selectedTerminal} repo={selectedRepo} tab={detailTab} context={notificationContext} terminalView={terminalView} screenError={screenError} draft={draft} attachments={attachments} queueItems={queueItems} sending={sending} readOnly={readOnly} onBack={closeWorkspaceView} onTab={setDetailTab} onTerminal={(id) => { setSelectedTerminalId(id); setTerminalView(null); clearAttachments(); }} onDraft={setDraft} onImage={addImage} onRemoveImage={removeImage} onSubmit={sendPrompt} onQueue={queuePrompt} onQueueUpdate={(id, text) => queueAction(id, "update", text)} onQueueMove={async (id, direction) => { await queueAction(id, "move", direction); }} onQueueSend={async (id) => { await queueAction(id, "send"); }} onQueueRemove={async (id) => { await queueAction(id, "remove"); }} onKey={sendKey} onReadOnly={() => changeReadOnly(!readOnly)} onRefresh={loadTerminal} onChanged={async () => { await loadBootstrap(); }} onNotice={setNotice} onDismissContext={() => setNotificationContext(null)} onMarkdown={(path) => selectedRepo ? openDocument(selectedRepo.id, path) : setNotice("That file is outside a catalogued repository")} onLocalUrl={(url) => discoverLocalUrl(url, true)} onApps={() => changeView("apps")} /></>;
+  if (selectedWorkspace && selectedTerminal) return <><Notice message={notice} onDismiss={() => setNotice("")} /><WorkspaceDetail workspace={selectedWorkspace} terminal={selectedTerminal} repo={selectedRepo} tab={detailTab} context={notificationContext} terminalView={terminalView} screenError={screenError} draft={draft} attachments={attachments} queueItems={queueItems} sending={sending} readOnly={readOnly} onBack={closeWorkspaceView} onTab={setDetailTab} onTerminal={(id) => { setSelectedTerminalId(id); clearTerminal(); clearAttachments(); }} onDraft={setDraft} onImage={addImage} onRemoveImage={removeImage} onSubmit={sendPrompt} onQueue={queuePrompt} onQueueUpdate={(id, text) => queueAction(id, "update", text)} onQueueMove={async (id, direction) => { await queueAction(id, "move", direction); }} onQueueSend={async (id) => { await queueAction(id, "send"); }} onQueueRemove={async (id) => { await queueAction(id, "remove"); }} onKey={sendKey} onReadOnly={() => changeReadOnly(!readOnly)} onRefresh={loadTerminal} onChanged={async () => { await loadBootstrap(); }} onNotice={setNotice} onDismissContext={() => setNotificationContext(null)} onMarkdown={(path) => selectedRepo ? openDocument(selectedRepo.id, path) : setNotice("That file is outside a catalogued repository")} onLocalUrl={(url) => discoverLocalUrl(url, true)} onApps={() => changeView("apps")} /></>;
 
   return <main className="app-shell"><AppHeader connected={Boolean(bootstrap?.connected)} live={live} device={bootstrap?.host?.mac_display_name || "Your Mac"} /><Notice message={notice} onDismiss={() => setNotice("")} />
     {view !== "inbox" && inbox.actionableCount > 0 && <button className="primary-small" onClick={() => changeView("inbox")}>{inbox.actionableCount} {inbox.actionableCount === 1 ? "item needs" : "items need"} your attention</button>}
@@ -249,8 +232,8 @@ function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo
       {props.context && <aside className={`notification-context ${props.context.kind}`}><div><strong>{props.context.kind === "failure" ? "A command or test failed" : props.context.kind === "pullRequest" ? "Pull request updated" : props.context.kind === "completion" ? "Work is ready to review" : "Session update"}</strong><span>You opened this session from a notification.</span></div>{props.context.file && <button onClick={() => props.onMarkdown(props.context!.file!)}>Open {props.context.file.split("/").pop()}</button>}<button aria-label="Dismiss notification context" onClick={props.onDismissContext}>×</button></aside>}
       <ManagedGoalControls workspaceId={props.workspace.id} readOnly={props.readOnly} />
       {props.tab === "terminal" && <TerminalPanel {...props} fontSize={fontSize} fitToPhone={fitToPhone} shortcutsOpen={shortcutsOpen} onShortcuts={setShortcutsOpen} />}
-      {props.tab === "tasks" && <HealthPanel workspace={props.workspace} terminal={props.terminal} onChanged={props.onChanged} onNotice={props.onNotice} />}
-      {props.tab === "changes" && <ChangesPanel repo={props.repo} onMarkdown={props.onMarkdown} />}
+      {props.tab === "tasks" && <HealthPanel key={props.workspace.id} workspace={props.workspace} terminal={props.terminal} onChanged={props.onChanged} onNotice={props.onNotice} />}
+      {props.tab === "changes" && <ChangesPanel key={props.repo?.id} repo={props.repo} onMarkdown={props.onMarkdown} />}
       {menuOpen && <><button className="session-menu-backdrop" aria-label="Close session menu" onClick={() => setMenuOpen(false)} /><section className="session-menu" role="dialog" aria-modal="true" aria-label="Session menu"><header><div><strong>{props.workspace.title}</strong><span>Session controls</span></div><button onClick={() => setMenuOpen(false)}>×</button></header><nav className="session-menu-nav">{(["terminal", "tasks", "changes"] as DetailTab[]).map((tab) => <button className={props.tab === tab ? "active" : ""} onClick={() => { props.onTab(tab); setMenuOpen(false); }} key={tab}>{tab === "tasks" ? "Health" : tab[0].toUpperCase() + tab.slice(1)}</button>)}</nav><PullRequestBanner repo={props.repo} />{props.workspace.terminals.length > 1 && <div className="session-menu-section"><span>Terminals</span><div className="menu-terminal-list">{props.workspace.terminals.map((terminal, index) => <button className={terminal.id === props.terminal.id ? "active" : ""} onClick={() => { props.onTerminal(terminal.id); setMenuOpen(false); }} key={terminal.id}>{index + 1}. {terminal.title}</button>)}</div></div>}<div className="session-menu-section"><span>Display & input</span><div className="menu-action-grid"><button className={fitToPhone ? "active" : ""} onClick={toggleFit}>Fit text <b>{fitToPhone ? "On" : "Off"}</b></button><button onClick={props.onRefresh}>Refresh</button><button onClick={() => changeFont(-1)} disabled={fontSize <= 11}>Text A−</button><button onClick={() => changeFont(1)} disabled={fontSize >= 20}>Text A＋</button><button className={!props.readOnly ? "active" : ""} onClick={props.onReadOnly}>{props.readOnly ? "Enable input" : "Input enabled"}</button><button disabled={props.readOnly} onClick={() => { props.onTab("terminal"); setShortcutsOpen(true); setMenuOpen(false); }}>／ Shortcuts</button><button onClick={() => { setMenuOpen(false); props.onApps(); }}>Local apps <b>›</b></button></div></div><div className="session-menu-section"><span>Special keys</span><div className="menu-key-grid">{[["Esc", "escape"], ["Tab", "tab"], ["↑", "up"], ["↓", "down"], ["Ctrl-C", "ctrl+c"], ["Enter", "enter"]].map(([label, key]) => <button disabled={props.readOnly || props.sending} onClick={() => props.onKey(key)} key={key}>{label}</button>)}</div></div></section></>}
     </main>
   );
@@ -421,9 +404,11 @@ function PromptQueueRow({ item, index, count, busy, onUpdate, onMove, onSend, on
 }
 
 function HealthPanel({ workspace, terminal, onChanged, onNotice }: { workspace: Workspace; terminal: Terminal; onChanged: () => void; onNotice: (message: string) => void }) {
-  const [overview, setOverview] = useState<Overview | null>(null); const [busy, setBusy] = useState(false); const load = useCallback(async () => { try { setOverview(await api<Overview>(`/api/workspaces/${workspace.id}/overview`)); } catch (error) { onNotice(error instanceof Error ? error.message : "Health unavailable"); } }, [workspace.id, onNotice]);
+  const { value: overview, error, refresh: load } = useOwnedRead<Overview | null>(`/api/workspaces/${workspace.id}/overview`, null);
+  const [busy, setBusy] = useState(false);
   useEffect(() => { const kickoff = setTimeout(load, 0); const poll = setInterval(load, 10_000); return () => { clearTimeout(kickoff); clearInterval(poll); }; }, [load]);
-  async function mutate(path: string, body = "{}") { setBusy(true); try { await api(path, { method: "POST", body }); await load(); await onChanged(); } catch (error) { onNotice(error instanceof Error ? error.message : "Action failed"); } finally { setBusy(false); } }
+  async function mutate(path: string, body = "{}") { setBusy(true); try { await api(path, { method: "POST", body }); await load(true); await onChanged(); } catch (error) { onNotice(error instanceof Error ? error.message : "Action failed"); } finally { setBusy(false); } }
+  if (error) return <div className="detail-loading" role="alert">{error}</div>;
   if (!overview) return <div className="detail-loading">Reading session health…</div>; const progress = overview.todos.progress; const state = overview.status.effective || overview.status.inferred || "ready";
   return <section className="health-page"><div className="health-hero"><span className={`status-orb ${state === "working" ? "working" : state === "done" ? "done" : "ready"}`} /><div><p>Session state</p><h2>{state}</h2><span>{overview.status.signals?.any_agent_needs_input ? "Agent is waiting for input" : overview.status.signals?.is_git_dirty ? "Working tree has changes" : "No blockers reported"}</span></div></div><div className="metric-grid"><div><span>CPU</span><strong>{overview.metrics?.cpuPercent.toFixed(1) || "0"}%</strong></div><div><span>Memory</span><strong>{formatBytes(overview.metrics?.memoryBytes)}</strong></div><div><span>Processes</span><strong>{overview.metrics?.processCount || 0}</strong></div></div><div className="health-section"><div className="section-heading"><div><h2>Agent tasks</h2><p>{progress.completed} of {progress.total} complete</p></div><span>{progress.total ? Math.round(progress.completed / progress.total * 100) : 0}%</span></div><div className="progress-track"><i style={{ width: `${progress.total ? progress.completed / progress.total * 100 : 0}%` }} /></div>{overview.todos.items.length === 0 ? <p className="muted empty-line">No structured tasks in this workspace.</p> : <div className="todo-list">{overview.todos.items.map((todo) => <button disabled={busy} key={todo.id} onClick={() => mutate(`/api/workspaces/${workspace.id}/todos/${todo.id}/${todo.state === "completed" ? "uncheck" : "check"}`)}><i className={todo.state}>{todo.state === "completed" ? "✓" : todo.state === "in-progress" ? "◐" : ""}</i><span>{todo.text}</span></button>)}</div>}</div><div className="health-section recovery"><h2>Recovery</h2><p>Restart the current terminal shell if it is stuck. Your workspace and other terminals stay open.</p><button disabled={busy} onClick={() => mutate(`/api/workspaces/${workspace.id}/respawn`, JSON.stringify({ surfaceId: terminal.id }))}>Restart current terminal</button><button className="danger-button" disabled={busy} onClick={() => { if (confirm(`Close “${workspace.title}”?`)) mutate(`/api/workspaces/${workspace.id}/close`); }}>Close workspace</button></div></section>;
 }

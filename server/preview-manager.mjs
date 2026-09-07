@@ -1,7 +1,8 @@
+import { readPrivateJson } from "./private-json-state.mjs";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -196,12 +197,8 @@ export class PreviewManager extends EventEmitter {
   }
 
   load() {
-    try {
-      const value = JSON.parse(readFileSync(this.path, "utf8"));
-      return { previews: Array.isArray(value.previews) ? value.previews.map(normalizeStoredPreview).filter(Boolean) : [] };
-    } catch {
-      return { previews: [] };
-    }
+    const value = readPrivateJson(this.path, { previews: [] }, value => value !== null && typeof value === "object" && Array.isArray(value.previews));
+    return { previews: Array.isArray(value.previews) ? value.previews.map(normalizeStoredPreview).filter(Boolean) : [] };
   }
 
   save() {

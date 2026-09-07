@@ -9,7 +9,7 @@ import { digest, parseWorktreePorcelain, plainPath, runGit } from "./worktree-op
 const execute = promisify(execFile);
 const OMIT = new Set([".git", "node_modules", ".next", "dist", "build", "coverage", ".cache", ".turbo", ".venv", "venv", "vendor"]);
 const BUILD_OUTPUT = new Set(["node_modules", ".next", "dist", "build", "coverage", ".turbo"]);
-export const inside = (root, path) => path === root || path.startsWith(`${root}${sep}`);
+const inside = (root, path) => path === root || path.startsWith(`${root}${sep}`);
 export async function git(cwd, args, executeGit = execute) {
   return (await runGit(cwd, args, { encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } }, executeGit)).stdout;
 }

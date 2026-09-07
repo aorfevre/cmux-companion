@@ -1,7 +1,7 @@
 import { isFreshBranchSafeReason, isWorktreeReason } from "./worktree-errors.mjs";
 
-export const MAX_TASK_BRANCH_LENGTH = 81;
-export const MAX_TASK_BRANCH_SUFFIX = 20;
+const MAX_TASK_BRANCH_LENGTH = 81;
+const MAX_TASK_BRANCH_SUFFIX = 20;
 
 const TASK_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/;
 const FALLBACK_SUFFIX = /-(\d+)$/;

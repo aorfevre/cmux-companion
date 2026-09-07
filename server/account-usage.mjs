@@ -223,7 +223,7 @@ export function findCcsPackageRoot({ ccsBin = process.env.CCS_BIN, pathValue = p
   throw new Error("CCS is not installed");
 }
 
-export async function loadCcsSource() {
+async function loadCcsSource() {
   const root = findCcsPackageRoot();
   const require = createRequire(import.meta.url);
   const accounts = require(join(root, "dist", "cliproxy", "accounts", "account-manager.js"));

@@ -20,7 +20,6 @@ export const WORKTREE_REASONS = Object.freeze({
 });
 
 const REASON_SET = new Set(Object.values(WORKTREE_REASONS));
-export const WORKTREE_REASON_CODES = Object.freeze([...REASON_SET]);
 
 // These failures are tied to the requested branch or to a worktree already
 // registered for it. A newly named branch can safely avoid that ownership;
@@ -62,7 +61,7 @@ export function classifyLegacyWorktreeError(message) {
   return null;
 }
 
-export class WorktreeStateError extends TypeError {
+class WorktreeStateError extends TypeError {
   constructor(message, reason) {
     super(message);
     this.name = "TypeError";
@@ -74,10 +73,3 @@ export class WorktreeStateError extends TypeError {
 export function worktreeStateError(message, reason) {
   return new WorktreeStateError(message, reason);
 }
-
-// Compatibility aliases keep callers focused on behavior while the goal
-// recovery layer adopts the shared module in its follow-up task.
-export const canRetryOnFreshBranch = isFreshBranchSafeReason;
-export const canRetryWithFreshBranch = isFreshBranchSafeReason;
-export const classifyWorktreeError = classifyLegacyWorktreeError;
-export const inferWorktreeReason = classifyLegacyWorktreeError;

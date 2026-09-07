@@ -5,7 +5,7 @@ import { BUILTIN_MODEL_ROLES, ModelRoles, ModelSelect, ModelSettingsStatus } fro
 import { REVIEW_AGENTS, REVIEW_OPTIONS } from "../server/review-options.mjs";
 import { DEV_SETUP_GOAL } from "./dev-setup-goal";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { canRetryOnFreshBranch } from "../server/worktree-errors.mjs";
+import { isFreshBranchSafeReason } from "../server/worktree-errors.mjs";
 import { PLANNER_ENGINES, reviewerEngine, SPEC_OPTIONS } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 // One shared predicate: two copies had already drifted, so the sheet read
@@ -15,30 +15,29 @@ import { PromptDisclosure } from "./prompt-markdown";
 import { DesignArtifacts, DesignArtifact } from "./spec-artifacts";
 
 export type ReviewOptions = { codeReview: boolean; reviewer: "claude" | "codex"; reviewerModel: string };
-export type PlanAgent = "claude" | "codex";
-export type PlanQuestion = { id: string; text: string; options: string[] };
-export type CompletionReport = { criteria: string[]; verification: { check: string; status: "passed" | "failed" | "not_run" }[]; limitations: string[] };
-export type PlanCriterion = { id: string; text: string; verification: string };
+type PlanAgent = "claude" | "codex";
+type PlanQuestion = { id: string; text: string; options: string[] };
+type CompletionReport = { criteria: string[]; verification: { check: string; status: "passed" | "failed" | "not_run" }[]; limitations: string[] };
+type PlanCriterion = { id: string; text: string; verification: string };
 // The six specification-rigor requests. The keys and their order come from
 // SPEC_OPTIONS, so the sheet cannot offer a request the server refuses.
-export type SpecOptionId = "unitTests" | "e2eTests" | "edgeCases" | "refactorPass" | "screenMocks" | "flowcharts";
+type SpecOptionId = "unitTests" | "e2eTests" | "edgeCases" | "refactorPass" | "screenMocks" | "flowcharts";
 export type SpecOptions = Record<SpecOptionId, boolean>;
-export type SpecOptionCatalogEntry = { id: SpecOptionId; label: string; hint: string };
-export type PlanOptionEvidence = { status: "planned" | "not_applicable"; rationale: string; taskIds: string[]; criterionIds: string[] };
+type SpecOptionCatalogEntry = { id: SpecOptionId; label: string; hint: string };
+type PlanOptionEvidence = { status: "planned" | "not_applicable"; rationale: string; taskIds: string[]; criterionIds: string[] };
 // The server derives this. The sheet only displays it, so a status here is
 // never re-computed from readiness warning prose.
-export type PlanOptionCoverage = { id: SpecOptionId; requested: boolean; status: "not_requested" | "covered" | "not_applicable" | "missing"; message: string };
-export type ApprovalSummary = { overview: string; userFlow: string[]; decisions: { choice: string; consequence: string }[]; successCriteria: string[] };
-export type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[]; approvalSummary?: ApprovalSummary; optionEvidence?: Partial<Record<SpecOptionId, PlanOptionEvidence>>; designArtifacts?: DesignArtifact[] };
-export type PlanReadiness = { ready: boolean; errors: string[]; warnings: string[]; waves: string[][]; coverage: { criterionId: string; taskIds: string[] }[]; optionCoverage?: PlanOptionCoverage[] };
+type PlanOptionCoverage = { id: SpecOptionId; requested: boolean; status: "not_requested" | "covered" | "not_applicable" | "missing"; message: string };
+type ApprovalSummary = { overview: string; userFlow: string[]; decisions: { choice: string; consequence: string }[]; successCriteria: string[] };
+type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[]; approvalSummary?: ApprovalSummary; optionEvidence?: Partial<Record<SpecOptionId, PlanOptionEvidence>>; designArtifacts?: DesignArtifact[] };
+type PlanReadiness = { ready: boolean; errors: string[]; warnings: string[]; waves: string[][]; coverage: { criterionId: string; taskIds: string[] }[]; optionCoverage?: PlanOptionCoverage[] };
 export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; type?: string; criterionIds?: string[]; dependsOn?: string[]; ownedAreas?: string[]; verification?: string[]; wave?: number; launchStatus?: string; launchReason?: string | null; launchError?: string | null; deliveryStatus?: string; completionReport?: CompletionReport | null; evidenceStatus?: string | null; evidenceError?: string | null; changedFiles?: string[]; scopeWarnings?: string[]; workspaceId?: string | null; worktreePath?: string | null };
 // One question and its answer, attached to the contract round it examined. The
 // round is what keeps a suggestion from an older split out of the current one.
-export type PlanDiscussion = { question: string; answer: string; contractImpact: "none" | "revision_suggested"; suggestion: string; round: number; createdAt: string };
-export type PlanImage = { path: string; name: string };
-export type PlanRun = { planId: string; kind: string; phase: "running" | "done" | "failed"; step: string; error: string; startedAt: number; finishedAt: number | null };
+type PlanDiscussion = { question: string; answer: string; contractImpact: "none" | "revision_suggested"; suggestion: string; round: number; createdAt: string };
+type PlanImage = { path: string; name: string };
 export type PlannerProvider = "claude" | "codex";
-export type PlannerEngine = { provider: PlannerProvider; model: string; effort: string; reviewer: boolean };
+type PlannerEngine = { provider: PlannerProvider; model: string; effort: string; reviewer: boolean };
 // The eight lifecycle ids come from server/goal-board.mjs. The board and the
 // planner sheet read the same ids, so a card and its sheet never disagree.
 export type GoalBoardStateId = "writing_spec" | "review_spec" | "waiting_for_dev" | "dev_in_progress" | "waiting_for_merge" | "blocked" | "merged" | "aborted";
@@ -46,15 +45,13 @@ export type GoalBoardStateId = "writing_spec" | "review_spec" | "waiting_for_dev
 // the plan list both send one of these words and nothing else.
 export type GoalHealth = "failed" | "dead" | "idle" | "needs_you" | "working" | "ready" | "integrated" | "queued" | "unknown";
 export type GoalBoardStatus = "merged" | "aborted";
-export type GoalBoardPrState = "OPEN" | "CLOSED" | "MERGED";
+type GoalBoardPrState = "OPEN" | "CLOSED" | "MERGED";
 // Every plan payload carries these. `boardState` is the server's derivation,
 // and the other fields are the structured evidence behind it.
-export type GoalBoardFields = { boardState?: GoalBoardStateId | null; boardStatus?: GoalBoardStatus | null; boardChangedAt?: string | null; boardPrNumber?: number | null; boardPrUrl?: string | null; boardPrState?: GoalBoardPrState | null; boardPrObservedAt?: string | null; runStage?: string | null };
+type GoalBoardFields = { boardState?: GoalBoardStateId | null; boardStatus?: GoalBoardStatus | null; boardChangedAt?: string | null; boardPrNumber?: number | null; boardPrUrl?: string | null; boardPrState?: GoalBoardPrState | null; boardPrObservedAt?: string | null; runStage?: string | null };
 export type PlanSummary = { planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; issueNumbers?: number[]; issuesReturnedAt?: string | null; followupCount?: number; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; mergeStatus?: string | null; mergeWorkspaceId?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; readyCount?: number; failedCount?: number; skippedCount?: number; queuedCount?: number; agentSplit?: { claude: number; codex: number }; workspaceIds?: string[]; health?: GoalHealth | null; healthReason?: string | null; stuckCount?: number | null; createdAt: string; updatedAt: string; launchedAt: string | null } & GoalBoardFields;
-export type GoalProposal = { intendedBehavior?: string; scope?: string[]; exclusions?: string[]; assumptions?: string[]; acceptanceCriteria?: { text: string; verification: string }[]; verification?: string[] };
+type GoalProposal = { intendedBehavior?: string; scope?: string[]; exclusions?: string[]; assumptions?: string[]; acceptanceCriteria?: { text: string; verification: string }[]; verification?: string[] };
 export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; images?: PlanImage[]; issueNumbers?: number[]; issuesReturnedAt?: string | null; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; specOptions?: SpecOptions; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; discussion?: PlanDiscussion[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[]; workflow?: "planned" | "goal_session"; goalSessionState?: string | null; goalSessionWorkspaceId?: string | null; goalSessionGeneration?: number; goalSessionQuestionRevision?: number; proposalRevision?: number; proposal?: GoalProposal | null; approvalRevision?: number | null; transitionStatus?: string | null; goalSessionError?: string | null } & GoalBoardFields;
-export type PlanLaunchRow = { id: string; title: string; branch: string; agent: string; status: "launched" | "failed" | "queued"; wave?: number; path?: string | null; workspace?: unknown; error?: string };
-export type PlanLaunchResult = { planId: string; base: string; deliveryMode?: "single" | "combined"; launched: number; results: PlanLaunchRow[] };
 export type TaskRelaunchResult = { branch?: string; launchReason?: string | null };
 type DeliveryResult = { planId: string; deliveryMode: "combined"; deliveryStatus: string; integrationBranch?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null };
 type PlannerRepository = { id: string; name: string };
@@ -159,7 +156,7 @@ function DeliveryTasks({ tasks, planId, health, busy, confirming, onRelaunch, on
     // Only a launched task that has not delivered can be recovered. A ready or
     // integrated task has nothing to redo, and a queued one has not started.
     const recoverable = task.launchStatus === "launched" && task.deliveryStatus !== "ready" && task.deliveryStatus !== "integrated";
-    const rebranchable = task.launchStatus === "failed" && canRetryOnFreshBranch(verdict?.launchReason ?? task.launchReason);
+    const rebranchable = task.launchStatus === "failed" && isFreshBranchSafeReason(verdict?.launchReason ?? task.launchReason);
     const relaunchKey = `relaunch:${task.id}`;
     const skipKey = `skip:${task.id}`;
     const working = busy[relaunchKey] === true || busy[skipKey] === true;

@@ -68,5 +68,3 @@ export class GitHubIssueSyncScheduler {
     return pass;
   }
 }
-
-export { DEFAULT_INTERVAL_MS, DEFAULT_START_DELAY_MS };

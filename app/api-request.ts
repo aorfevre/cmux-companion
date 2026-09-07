@@ -7,9 +7,19 @@ export function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (share && reads.has(path)) return reads.get(path) as Promise<T>;
   if (init && !["GET", "HEAD"].includes((init.method || "GET").toUpperCase())) reads.clear();
   const pending = (async () => {
-    const response = await fetch(path, { ...init, headers: { ...(init?.body != null ? { "Content-Type": "application/json" } : {}), ...init?.headers } });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+    const headers = new Headers(init?.headers);
+    if (init?.body != null && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    const response = await fetch(path, { ...init, headers });
+    if (response.ok && (response.status === 204 || init?.method?.toUpperCase() === "HEAD")) return undefined as T;
+    let body: unknown;
+    try { body = await response.json(); }
+    catch {
+      throw new Error(response.ok ? "Companion returned invalid JSON" : `Request failed (${response.status})`);
+    }
+    if (!response.ok) {
+      const message = body && typeof body === "object" && "error" in body && typeof body.error === "string" ? body.error : `Request failed (${response.status})`;
+      throw new Error(message);
+    }
     return body as T;
   })();
   if (!share) return pending;

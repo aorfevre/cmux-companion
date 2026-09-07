@@ -150,7 +150,7 @@ export function validateCallbackUrl(callbackUrl, authUrl) {
   return null;
 }
 
-export async function loadCcsReconnectSource() {
+async function loadCcsReconnectSource() {
   const root = findCcsPackageRoot();
   const require = createRequire(import.meta.url);
   const proxy = require(`${root}/dist/cliproxy/proxy/proxy-target-resolver.js`);

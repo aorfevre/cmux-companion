@@ -3,7 +3,7 @@ import { chmod, mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-export const DEFAULT_BRIEF_DIRECTORY = join(homedir(), ".config", "cmux-companion", "briefs");
+const DEFAULT_BRIEF_DIRECTORY = join(homedir(), ".config", "cmux-companion", "briefs");
 
 const MAX_POINTER_CHARACTERS = 1_900;
 

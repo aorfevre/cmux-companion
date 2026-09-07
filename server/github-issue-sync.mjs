@@ -192,7 +192,7 @@ export class GitHubIssueSync {
 // The goal prompt. The issue title and body are repository content that any
 // GitHub user can write, so they are labelled untrusted data and never
 // instructions, with the same wording as server/github-issue-planner.mjs.
-export function issueGoal(issue) {
+function issueGoal(issue) {
   return [
     `Resolve GitHub issue #${issue.number}: ${issue.title}`,
     "",

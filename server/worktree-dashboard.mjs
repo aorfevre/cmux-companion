@@ -16,7 +16,7 @@ const STATUS_PRIORITY = { ready: 0, done: 1, working: 2, attention: 3 };
 // bookkeeping, not user work, so they do not count as changes. Only detached
 // checkouts get this treatment, and only for untracked entries, so a real edit
 // in a branch worktree still blocks removal.
-export const UPDATER_ARTIFACTS = new Set(["release-manifest.json", "transaction.json", "bootstrap.next"]);
+const UPDATER_ARTIFACTS = new Set(["release-manifest.json", "transaction.json", "bootstrap.next"]);
 
 export function defaultManagedReleaseRoots(homeDirectory = process.env.CMUX_COMPANION_HOME || process.env.HOME) {
   if (!homeDirectory) return [];
@@ -883,7 +883,7 @@ export function parseWorktreeList(output) {
 // The primary worktree, an active session, and a Git lock block every removal
 // path. Only a dirty *detached* worktree can be forced, and only when the
 // client explicitly asked for it after its own second confirmation.
-export function assertRemovable(worktree, { discardChanges = false } = {}) {
+function assertRemovable(worktree, { discardChanges = false } = {}) {
   if (worktree.managedRelease) throw new TypeError("Managed deployment releases cannot be removed");
   if (worktree.isPrimary) throw new TypeError("The primary worktree cannot be removed");
   if (worktree.sessions.length) throw new TypeError("Close this worktree\u2019s sessions before removing it");
@@ -893,7 +893,7 @@ export function assertRemovable(worktree, { discardChanges = false } = {}) {
   if (!worktree.detached) throw new TypeError("Only a detached worktree can be removed with its changes discarded");
 }
 
-export function isBulkRemovable(worktree) {
+function isBulkRemovable(worktree) {
   return !worktree.managedRelease && !worktree.isPrimary && worktree.changedFiles === 0 && !worktree.locked && worktree.sessions.length === 0;
 }
 

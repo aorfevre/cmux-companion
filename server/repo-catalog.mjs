@@ -390,7 +390,7 @@ export function normalizePullRequest(value) {
   };
 }
 
-export function repoId(path) {
+function repoId(path) {
   return createHash("sha256").update(path).digest("base64url").slice(0, 18);
 }
 
@@ -459,5 +459,3 @@ function parseRoots(value) {
   const roots = value.split(":").map((item) => item.trim()).filter(Boolean);
   return roots.length ? roots : null;
 }
-
-export { DEFAULT_ROOTS };

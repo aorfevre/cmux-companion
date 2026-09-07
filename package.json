@@ -4,11 +4,11 @@
   "description": "A private, mobile-first cmux companion for your Tailscale network.",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.23.1 <23"
   },
   "scripts": {
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
-    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build && node scripts/stamp-service-worker.mjs",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "companion:dev": "node server/index.mjs",
     "companion:start": "NODE_ENV=production node server/supervisor.mjs",
@@ -19,8 +19,8 @@
     "update:retry": "node ../cmux-companion-updater/scripts/operator.mjs retry",
     "update:disable": "node ../cmux-companion-updater/scripts/operator.mjs disable",
     "update:enable": "node ../cmux-companion-updater/scripts/operator.mjs enable",
-    "test": "node --test tests/api-fixture.test.mjs tests/configure-cmux-automation.test.mjs tests/worktree-operations.test.mjs tests/test-script-list.test.mjs tests/model-settings.test.mjs tests/task-association.test.mjs tests/worktree-cleanup.test.mjs tests/goal-session-collector.test.mjs tests/goal-session-runner.test.mjs tests/goal-session-service.test.mjs tests/cmux-client.test.mjs tests/cmux-groups.test.mjs tests/delivery-contract.test.mjs tests/spec-options.test.mjs tests/review-options.test.mjs tests/github-review-token.test.mjs tests/agent-capacity.test.mjs tests/goal-board.test.mjs tests/goal-followup-actions.test.mjs tests/goal-followup.test.mjs tests/goal-health.test.mjs tests/goal-session-reaper.test.mjs tests/goal-watchdog.test.mjs tests/security.test.mjs tests/api.test.mjs tests/account-usage.test.mjs tests/ccs-reconnect.test.mjs tests/image-attachments.test.mjs tests/agent-brief.test.mjs tests/repo-catalog.test.mjs tests/repo-identity-store.test.mjs tests/worktree-dashboard.test.mjs tests/worktree-planner.test.mjs tests/worktree-plan-store.test.mjs tests/session-name.test.mjs tests/goal-recovery.test.mjs tests/planner-background.test.mjs tests/goal-integrator.test.mjs tests/github-issue-planner.test.mjs tests/github-issue-sync.test.mjs tests/github-issue-sync-scheduler.test.mjs tests/planner-progress.test.mjs tests/preview-manager.test.mjs tests/preview-capture.test.mjs tests/prompt-queue.test.mjs tests/push-service.test.mjs tests/context-links.test.mjs tests/terminal-follow.test.mjs tests/terminal-grid.test.mjs tests/slash-shortcuts.test.mjs tests/responsive-layout.test.mjs",
-    "test:live": "node --test tests/live-cmux.test.mjs",
+    "test": "node scripts/run-backend-tests.mjs",
+    "test:live": "node --test tests/cmux.live.mjs",
     "test:installed": "node --test tests/installed-companion.live.mjs",
     "test:preview-live": "node --test tests/tailscale-preview.live.mjs",
     "test:ui": "vitest run --config vitest.config.ts",
@@ -28,7 +28,7 @@
     "test:e2e:open": "node scripts/run-local-cypress.mjs --open",
     "test:e2e:live-audit": "node scripts/e2e-live-audit.mjs",
     "test:e2e:live-agent": "node scripts/run-live-agent-cypress.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.backend.json",
     "verify": "npm test && npm run test:ui && npm run lint && npm run typecheck && npm run build",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
@@ -43,9 +43,7 @@
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
-    "undici": "^7.29.0",
-    "web-push": "^3.6.7",
-    "ws": "^8.21.3"
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.54.2",
