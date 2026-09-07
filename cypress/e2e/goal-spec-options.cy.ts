@@ -154,6 +154,7 @@ describe("delivery plan readability", () => {
       visitBoard();
       cy.findByRole("button", { name: `Resume ${READY_GOAL}` }).click();
       cy.wait("@deliveryDetail");
+      cy.findByRole("tab", { name: "Tasks" }).click();
       cy.findByRole("region", { name: "Delivery plan" }).within(() => {
         cy.contains("7 tasks · 6 stages").should("be.visible");
         cy.get(".delivery-stage").should("have.length", 6);
@@ -175,6 +176,39 @@ describe("delivery plan readability", () => {
 
 describe("human launch review", () => {
   for (const width of [390, 1280]) {
+    it(`offers a concise overview and visual design review at ${width}px`, () => {
+      cy.viewport(width, 900);
+      installScenario({ plans: [readySummary()] });
+      const detail = readyDetail();
+      cy.intercept("GET", "**/api/worktree-plans/plan-spec", {
+        ...detail, spec: { ...detail.spec, approvalSummary: {
+          overview: "Choose how thoroughly your goal is checked, then review the proposed screens and workflow before starting development.",
+          userFlow: ["Choose your checks", "Review the proposed design", "Approve and start work"],
+          decisions: [{ choice: "Keep the review before launch", consequence: "You can change the plan before agents start modifying code." }],
+          successCriteria: ["Your requested checks stay with the goal.", "You can inspect the design before launch.", "Results show which checks actually passed.", "Older saved plans remain readable."],
+        } },
+      }).as("conciseReview");
+      visitBoard();
+      cy.findByRole("button", { name: `Resume ${READY_GOAL}` }).click();
+      cy.wait("@conciseReview");
+      cy.get(".review-success li").should("have.length", 3);
+      cy.findByRole("tabpanel", { name: "Overview" }).should("be.visible");
+      cy.screenshot(`plan-review-overview-${width}`, { capture: "viewport" });
+      cy.findByRole("tab", { name: "Design" }).click();
+      cy.findByRole("list", { name: "User journey" }).find("li").should("have.length", 3);
+      cy.findByRole("img", { name: "Flow diagram: Request to evidence" }).should("be.visible");
+      cy.screenshot(`plan-review-design-${width}`, { capture: "viewport" });
+      cy.findByRole("tab", { name: /Impacts/ }).click();
+      cy.contains("You can change the plan before agents start modifying code.").should("be.visible");
+      cy.contains("summary", "Affected code").click();
+      cy.contains("Planned ownership, not a measured diff.").should("be.visible");
+      cy.screenshot(`plan-review-impacts-${width}`, { capture: "viewport" });
+      cy.findByRole("tab", { name: "Tasks" }).focus().type("{rightarrow}");
+      cy.findByRole("tab", { name: "Checks" }).should("have.focus").and("have.attr", "aria-selected", "true");
+      cy.get(".goal-passport-criteria").should("be.visible");
+      cy.contains("Older saved plans remain readable.").should("be.visible");
+    });
+
     it(`surfaces decisions and preserves a long outcome at ${width}px`, () => {
       cy.viewport(width, 900);
       installScenario({ plans: [readySummary()] });
@@ -196,19 +230,26 @@ describe("human launch review", () => {
       cy.wait("@reviewDetail");
       cy.findByRole("region", { name: "Goal passport" }).within(() => {
         cy.contains("Review before launch").should("be.visible");
+        cy.findByRole("tab", { name: "Overview" }).should("have.attr", "aria-selected", "true");
+        cy.findByRole("tablist").then(($tabs) => expect($tabs[0].scrollWidth).to.be.at.most($tabs[0].clientWidth));
+        cy.contains("Success criteria and verification").should("not.exist");
+        cy.get(".planner-task").should("not.exist");
         cy.contains("Expected outcome (excerpt)").should("be.visible");
         cy.get(".goal-review-outcome").invoke("text").should("have.length.lessThan", 300);
+        cy.findByRole("tab", { name: /Impacts/ }).click();
         cy.contains("Restoring correction access must preserve the listening requirement").should("be.visible");
         cy.contains("Legacy drafts may be lost").should("be.visible");
         cy.contains("Read both draft formats").should("be.visible");
+        cy.findByRole("tab", { name: "Checks" }).click();
         cy.contains("Success criteria and verification").should("be.visible");
         cy.get(".goal-passport-criteria").should("contain.text", "planned");
+        cy.findByRole("tab", { name: "Overview" }).click();
         cy.contains("summary", "Read the full expected outcome").click();
         cy.findByRole("button", { name: "Show Full expected outcome as raw text" }).click();
         cy.get("pre").should("have.text", fullOutcome);
       });
       cy.findByRole("region", { name: "Launch decision" }).within(() => {
-        cy.contains("Review 1 assumptions and 1 warnings above before proceeding.").should("be.visible");
+        cy.contains("Review 1 assumptions and 1 warnings in Impacts before proceeding.").should("be.visible");
         cy.findByRole("button", { name: /Start workflow/ }).should("be.enabled");
       });
       cy.then(() => expect(launches).to.equal(0));
@@ -400,11 +441,13 @@ describe("specification rigor options", () => {
     cy.findByRole("region", { name: "Goal passport" }).should("be.visible").within(() => {
       // Missing requested coverage is a readiness warning. It never blocks the
       // launch, so the contract still reads as ready.
+      cy.findByRole("tab", { name: /Impacts/ }).click();
       cy.contains("Requested flowcharts coverage is missing: the contract holds no flow artifact").should("be.visible");
       cy.contains("Review before launch").should("be.visible");
 
       // Coverage and design artifacts are authoritative contract detail. The
       // concise approval surface leaves them collapsed until a reviewer asks.
+      cy.findByRole("tab", { name: "Checks" }).click();
       cy.contains("Specification coverage").should("be.visible");
       cy.get(".goal-passport-options li").should("have.length", 5);
       // A request the user never made is absent, rather than reported as clean.
@@ -422,6 +465,7 @@ describe("specification rigor options", () => {
         .and("contain.text", "Missing");
 
       // The flow artifact is drawn from the returned nodes and edges only.
+      cy.findByRole("tab", { name: "Design" }).click();
       cy.contains("Design artifacts").should("be.visible");
       cy.findByRole("img", { name: "Flow diagram: Request to evidence" }).within(() => {
         cy.contains("tspan", "Pick options").should("exist");

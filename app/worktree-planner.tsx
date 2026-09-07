@@ -4,7 +4,7 @@ import { goalPopupUrl } from "./goal-popup-url";
 import { BUILTIN_MODEL_ROLES, ModelRoles, ModelSelect, ModelSettingsStatus } from "./model-settings";
 import { REVIEW_AGENTS, REVIEW_OPTIONS } from "../server/review-options.mjs";
 import { DEV_SETUP_GOAL } from "./dev-setup-goal";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { isFreshBranchSafeReason } from "../server/worktree-errors.mjs";
 import { PLANNER_ENGINES, reviewerEngine, SPEC_OPTIONS } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
@@ -204,35 +204,66 @@ function DeliveryPlan({ tasks, waves, criteria, deliveryMode }: { tasks: PlanTas
   </section>;
 }
 
-function GoalPassport({ draft }: { draft: PlanDraft }) {
+type ReviewTab = "Overview" | "Design" | "Impacts" | "Tasks" | "Checks";
+const REVIEW_TABS: ReviewTab[] = ["Overview", "Design", "Impacts", "Tasks", "Checks"];
+
+function GoalPassport({ draft, children }: { draft: PlanDraft; children?: ReactNode }) {
+  const [tab, setTab] = useState<ReviewTab>("Overview");
+  const uid = useId();
+  const tabsRef = useRef<HTMLDivElement>(null);
   const spec = draft.spec;
-  if (!spec) return null;
+  if (!spec) return <>{children}</>;
   const readiness = draft.readiness;
   const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave || 0))].sort((a, b) => a - b).map((wave) => draft.tasks.filter((task) => (task.wave || 0) === wave).map((task) => task.id));
-  // The server already decided each status. Reading the warning strings here
-  // would produce a second, drifting source of truth.
   const requestedCoverage = (readiness?.optionCoverage || []).filter((entry) => entry?.requested === true);
   const artifacts = spec.designArtifacts || [];
   const needsReview = Boolean(readiness?.warnings?.length || spec.assumptions?.length || spec.risks?.length);
   const reviewStatus = readiness?.ready === false ? "Needs work" : readiness?.ready !== true ? "Plan checks unavailable" : needsReview ? "Review before launch" : "Plan checks passed";
   const summary = spec.approvalSummary;
   const displayedOutcome = summary?.overview || spec.outcome;
-  const longOutcome = !summary?.overview && displayedOutcome.length > 320;
-  // Old contracts may contain the whole issue. Show an explicitly labelled
-  // excerpt and preserve the exact text; never invent a summary or rewrite it.
+  const longOutcome = displayedOutcome.length > 320;
+  // An excerpt stays explicitly labelled; no client-generated claims or impact scores.
   const outcomePreview = longOutcome ? `${displayedOutcome.slice(0, 280).trimEnd()}…` : displayedOutcome;
-  return <section className="goal-passport" aria-label="Goal passport">
-    <header><div><small>PLAN REVIEW</small><strong>{longOutcome ? "Expected outcome (excerpt)" : "Expected outcome"}</strong></div><em className={readiness?.ready === false ? "blocked" : needsReview || readiness?.ready !== true ? "review" : "ready"}>{reviewStatus}</em></header>
-    <p className="goal-review-outcome">{outcomePreview}</p>
-    {(longOutcome || Boolean(summary?.overview && summary.overview !== spec.outcome)) && <PromptDisclosure label="Full expected outcome" summary="Read the full expected outcome" text={spec.outcome} />}
-    <p className="goal-review-note">Plan checks validate the contract structure. Review the scope and assumptions before launching; implementation checks are reported below when available.</p>
-    {(readiness?.errors?.length || readiness?.warnings?.length) ? <div className="goal-passport-readiness"><strong>Review notes</strong>
-      {readiness.errors?.map((item) => <p className="error" key={item}>{item}</p>)}
-      {readiness.warnings?.map((item) => <p className="warning" key={item}>{item}</p>)}
-    </div> : null}
-    {summary?.userFlow?.length ? <div className="goal-passport-block"><strong>User flow</strong><ol className="goal-passport-summary-list">{summary.userFlow.map((step) => <li key={step}>{step}</li>)}</ol></div> : null}
-    {summary?.decisions?.length ? <div className="goal-passport-block"><strong>Decisions</strong><ul className="goal-passport-decisions">{summary.decisions.map((decision) => <li key={`${decision.choice}-${decision.consequence}`}><b>{decision.choice}</b><small>{decision.consequence}</small></li>)}</ul></div> : null}
-    {summary?.successCriteria?.length ? <div className="goal-passport-block"><strong>Success criteria</strong><ul className="goal-passport-summary-list">{summary.successCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul></div> : null}
+  const success = summary?.successCriteria?.length ? summary.successCriteria : spec.acceptanceCriteria.map((criterion) => criterion.text);
+  const areas = [...new Set(draft.tasks.flatMap((task) => task.ownedAreas || []))];
+  function navigate(next: ReviewTab) {
+    setTab(next);
+    tabsRef.current?.querySelector<HTMLButtonElement>(`[data-review-tab="${next}"]`)?.focus();
+  }
+  return <section className="goal-passport goal-review" aria-label="Goal passport">
+    <header><div><small>YOUR PLAN</small><strong>A clear view before you start</strong></div><em className={readiness?.ready === false ? "blocked" : needsReview || readiness?.ready !== true ? "review" : "ready"}>{reviewStatus}</em></header>
+    {Boolean(readiness?.errors?.length) && <div className="goal-passport-readiness" role="alert">{readiness?.errors.map((item) => <p className="error" key={item}>{item}</p>)}</div>}
+    <div className="plan-review-tabs" role="tablist" aria-label="Plan review sections" ref={tabsRef}>
+      {REVIEW_TABS.map((name, index) => <button type="button" role="tab" key={name} data-review-tab={name} id={`${uid}-tab-${name}`} aria-controls={`${uid}-panel-${name}`} aria-selected={tab === name} tabIndex={tab === name ? 0 : -1} onClick={() => setTab(name)} onKeyDown={(event) => {
+        const next = event.key === "ArrowRight" ? (index + 1) % REVIEW_TABS.length : event.key === "ArrowLeft" ? (index + REVIEW_TABS.length - 1) % REVIEW_TABS.length : event.key === "Home" ? 0 : event.key === "End" ? REVIEW_TABS.length - 1 : -1;
+        if (next < 0) return;
+        event.preventDefault(); navigate(REVIEW_TABS[next]);
+      }}>{name}{name === "Impacts" && needsReview && <span className="review-attention-dot" aria-label="Needs review" />}</button>)}
+    </div>
+    <div className="plan-review-panel" role="tabpanel" id={`${uid}-panel-${tab}`} aria-labelledby={`${uid}-tab-${tab}`} tabIndex={0}>
+    {tab === "Overview" && <>
+      <div className="review-overview-heading"><small>{longOutcome ? "Expected outcome (excerpt)" : "Expected outcome"}</small><p className="goal-review-outcome">{outcomePreview}</p></div>
+      {(longOutcome || Boolean(summary?.overview && summary.overview !== spec.outcome)) && <PromptDisclosure label="Full expected outcome" summary="Read the full expected outcome" text={spec.outcome} />}
+      {longOutcome && summary?.overview && <PromptDisclosure label="Full overview" summary="Read the full overview" text={summary.overview} />}
+      <div className="review-at-a-glance">
+        <button type="button" onClick={() => navigate("Tasks")}><b>{draft.tasks.length}</b><span>Tasks <span aria-hidden="true">↗</span></span><small>{waves.length} delivery stages</small></button>
+        <button type="button" onClick={() => navigate("Design")}><b>{artifacts.length}</b><span>Design sketches <span aria-hidden="true">↗</span></span><small>{artifacts.length ? "Explore screens & flows" : "No sketches supplied"}</small></button>
+        <button type="button" onClick={() => navigate("Impacts")}><b>{spec.risks.length}</b><span>Declared risks <span aria-hidden="true">↗</span></span><small>{spec.assumptions.length} assumptions to review</small></button>
+      </div>
+      {needsReview && <button type="button" className="review-attention" onClick={() => navigate("Impacts")}>Before you decide: review {spec.assumptions.length} assumptions, {spec.risks.length} risks and {readiness?.warnings?.length || 0} warnings <span aria-hidden="true">→</span></button>}
+      <div className="review-success"><strong>What success looks like</strong><ul>{success.slice(0, 3).map((criterion, index) => <li key={index}><span aria-hidden="true">✓</span>{criterion}</li>)}</ul><button type="button" onClick={() => navigate("Checks")}>See all {spec.acceptanceCriteria.length} acceptance checks →</button></div>
+      <p className="goal-review-note">Plan checks cover structure. Implementation results appear in Checks.</p>
+    </>}
+    {tab === "Design" && <>
+      <h3>How it will work</h3>
+      {summary?.userFlow?.length ? <ol className="review-user-flow" aria-label="User journey">{summary.userFlow.map((step, index) => <li key={index}><span>{index + 1}</span><p>{step}</p></li>)}</ol> : <p className="goal-review-note">No user journey was supplied in this plan.</p>}
+      {artifacts.length > 0 ? <div className="goal-passport-block"><strong>Design artifacts</strong><p className="goal-review-note">Proposed screens and flows for review.</p><DesignArtifacts artifacts={artifacts} /></div> : <div className="review-empty"><strong>No design sketches yet</strong><p>Ask for screen mockups or flowcharts in “Question this plan”, then request a revised plan to include them.</p></div>}
+    </>}
+    {tab === "Impacts" && <>
+      <h3>What changes, and what to watch</h3>
+      {summary?.decisions?.length ? <div className="goal-passport-block"><strong>Decisions and consequences</strong><ul className="goal-passport-decisions">{summary.decisions.map((decision, index) => <li key={index}><b>{decision.choice}</b><small>{decision.consequence}</small></li>)}</ul></div> : <p className="goal-review-note">No decision consequences were supplied. Review the declared scope below.</p>}
+      {Boolean(readiness?.warnings?.length) && <div className="goal-passport-readiness"><strong>Review notes</strong>{readiness?.warnings.map((item) => <p className="warning" key={item}>{item}</p>)}</div>}
+      <details className="goal-review-details"><summary>Affected code · {areas.length} declared areas</summary><ul className="review-code-areas">{areas.map((area) => <li key={area}><code>{area}</code></li>)}</ul><p className="goal-review-note">Planned ownership, not a measured diff.{draft.tasks.some((task) => !task.ownedAreas?.length) ? " Some tasks have no declared areas." : ""}</p></details>
     <div className="goal-passport-scope">
       <PassportList title="In scope" items={spec.inScope} empty="Defined by the outcome" />
       <PassportList title="Non-goals" items={spec.nonGoals} empty="None declared" />
@@ -240,20 +271,29 @@ function GoalPassport({ draft }: { draft: PlanDraft }) {
       <PassportList title="Assumptions to review" items={spec.assumptions} empty="None" />
     </div>
     {spec.risks?.length > 0 && <div className="goal-passport-block"><strong>Risks and mitigations</strong><ul className="goal-passport-risks">{spec.risks.map((risk, index) => <li key={`${index}-${risk.text}-${risk.mitigation}`}><em>{risk.level}</em><div><span>{risk.text}</span><small>{risk.mitigation || "No mitigation recorded"}</small></div></li>)}</ul></div>}
+
+      {spec.risks.length === 0 && <p className="goal-review-note">No risks were declared by the planner.</p>}
+    </>}
+    {tab === "Tasks" && <>
+      <DeliveryPlan tasks={draft.tasks} waves={waves} criteria={spec.acceptanceCriteria} deliveryMode={draft.deliveryMode || (draft.deliveryPolicy === "combined" ? "combined" : undefined)} />
+      <details className="goal-review-details"><summary>Task ownership and checks</summary><div className="goal-passport-block"><ul className="goal-passport-task-plan">{draft.tasks.map((task) => <li key={task.id}><span>{task.title}</span><small>Owns: {task.ownedAreas?.join(", ") || "Not declared"}</small><small>Depends on: {task.dependsOn?.join(", ") || "None"}</small><small>Verify: {task.verification?.join(" · ") || "Not declared"}</small></li>)}</ul></div></details>
+      <details className="goal-review-details"><summary>Agents and task prompts</summary>{children}</details>
+    </>}
+    {tab === "Checks" && <>
+      {summary?.successCriteria?.length ? <div className="goal-passport-block"><strong>Success criteria</strong><ul className="goal-passport-summary-list">{summary.successCriteria.map((criterion, index) => <li key={index}>{criterion}</li>)}</ul></div> : null}
     <div className="goal-passport-block"><strong>Success criteria and verification</strong><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
       const tasks = draft.tasks.filter((task) => task.criterionIds?.includes(criterion.id));
       const state = criterionState(tasks);
       return <li key={criterion.id}><code>{criterion.id}</code><div><span>{criterion.text}</span><small>Check: {criterion.verification || "Not specified"}</small><small>{tasks.map((task) => task.title).join(" · ") || "No task assigned"}</small></div><em className={state}>{state}</em></li>;
     })}</ul></div>
-    <DeliveryPlan tasks={draft.tasks} waves={waves} criteria={spec.acceptanceCriteria} deliveryMode={draft.deliveryMode || (draft.deliveryPolicy === "combined" ? "combined" : undefined)} />
     {requestedCoverage.length > 0 && <div className="goal-passport-block"><strong>Specification coverage</strong><ul className="goal-passport-options">{requestedCoverage.map((entry) => <li key={entry.id} className={`coverage-${entry.status}`}>
       <span>{SPEC_OPTION_LABELS[entry.id] || entry.id}</span>
       <small>{entry.message || "No detail recorded"}</small>
       <em className={`coverage-${entry.status}`}>{COVERAGE_LABELS[entry.status] || entry.status}</em>
     </li>)}</ul></div>}
-    {artifacts.length > 0 && <div className="goal-passport-block"><strong>Design artifacts</strong><DesignArtifacts artifacts={artifacts} /></div>}
-    <details className="goal-review-details"><summary>Task ownership and checks</summary><div className="goal-passport-block"><ul className="goal-passport-task-plan">{draft.tasks.map((task) => <li key={task.id}><span>{task.title}</span><small>Owns: {task.ownedAreas?.join(", ") || "Not declared"}</small><small>Depends on: {task.dependsOn?.join(", ") || "None"}</small><small>Verify: {task.verification?.join(" · ") || "Not declared"}</small></li>)}</ul></div></details>
     {draft.tasks.some((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length) && <div className="goal-passport-block"><strong>Task evidence</strong><ul className="goal-passport-evidence">{draft.tasks.filter((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length).map((task) => <li key={task.id}><span>{task.title}</span>{task.completionReport?.verification.map((item) => <small key={`${item.check}-${item.status}`}>{item.check}: <b className={item.status}>{item.status}</b></small>)}{task.completionReport?.limitations.map((item) => <small className="limitation" key={item}>Limitation: {item}</small>)}{task.scopeWarnings?.map((item) => <small className="warning" key={item}>Outside ownership: {item}</small>)}{task.evidenceError && <small className="error">{task.evidenceError}</small>}</li>)}</ul></div>}
+    </>}
+    </div>
   </section>;
 }
 
@@ -756,21 +796,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
     {draft && draft.workflow !== "goal_session" && (!running || discussing) && !stalled && draft.status === "ready" && <>
       <p className="planner-round">Round {draft.round} · {draft.tasks.length} task{draft.tasks.length === 1 ? "" : "s"}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />
-      <GoalPassport draft={draft} />
-      {/* The thread stays readable for the whole life of the goal. Only an
-          unlaunched, non-terminal, ready contract can still be questioned or
-          revised, so the composer and the handoff hang off `questionable`. */}
-      <section className="planner-discussion" aria-label="Question this plan">
-        <header><strong>Question this plan</strong><span>Ask about this Delivery Contract before you launch it. The planner answers against the repository and this exact contract. It changes neither the specification nor the task split.</span></header>
-        <DiscussionThread entries={discussion} round={draft.round} actionable={questionable} onUseSuggestion={useSuggestion} />
-        {discussion.length === 0 && !discussing && <p className="planner-discussion-empty">No question has been asked about this contract yet.</p>}
-        {discussing && <ProgressSteps steps={steps} waiting="Answering your question against the repository and this contract. The tasks below do not change." />}
-        {questionable && <div className="planner-discussion-composer">
-          <label><span>Question about this plan</span><textarea aria-label="Question about this plan" value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} maxLength={2_000} placeholder="Does task 2 already cover the migration, or does that need its own task?" disabled={atQuestionCap} /></label>
-          {atQuestionCap && <p className="planner-discussion-cap">{DISCUSSION_CAP_NOTE}</p>}
-          <div className="planner-actions"><button type="button" className="primary-button" disabled={locked || atQuestionCap || !question.trim()} onClick={() => { void discuss(); }}>{busy === "discuss" ? "Asking…" : "Ask"}</button></div>
-        </div>}
-      </section>
+      <GoalPassport key={`${draft.planId}-${draft.round}`} draft={draft}>
       {draft.tasks.length > 1 && <section className="planner-delivery-mode" aria-label="Combined pull request delivery"><strong>One combined PR</strong><p>Task agents commit and push isolated branches. Companion pins their commits and starts a merge agent that resolves conflicts, verifies against a baseline, and opens one pull request.</p></section>}
       <div className="planner-tasks">{draft.tasks.map((task) => <article className="planner-task" key={task.id}>
         <header><strong>{task.title}</strong>{!launchedPlan && !terminal && <button type="button" className="planner-remove-task" aria-label={`Remove ${task.title}`} disabled={locked || draft.tasks.length < 2} onClick={() => editTasks(draft.tasks.filter((item) => item.id !== task.id))}>×</button>}</header>
@@ -779,6 +805,20 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
         <small className="planner-agent-reason">{task.agentReason}</small>
         <PromptDisclosure label={`Prompt for ${task.title}`} summary="Prompt" text={task.prompt} />
       </article>)}</div>
+      </GoalPassport>
+      {/* The thread stays readable for the whole life of the goal. Only an
+          unlaunched, non-terminal, ready contract can still be questioned or
+          revised, so the composer and the handoff hang off `questionable`. */}
+      <section className="planner-discussion" aria-label="Question this plan">
+        <header><strong>Question this plan</strong><span>Ask about the design, tradeoffs, or scope. Answers don’t change the plan.</span></header>
+        <DiscussionThread entries={discussion} round={draft.round} actionable={questionable} onUseSuggestion={useSuggestion} />
+        {discussing && <ProgressSteps steps={steps} waiting="Answering your question against the repository and this contract. The tasks below do not change." />}
+        {questionable && <div className="planner-discussion-composer">
+          <label><span>Question about this plan</span><textarea aria-label="Question about this plan" value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} maxLength={2_000} placeholder="Does task 2 already cover the migration, or does that need its own task?" disabled={atQuestionCap} /></label>
+          {atQuestionCap && <p className="planner-discussion-cap">{DISCUSSION_CAP_NOTE}</p>}
+          <div className="planner-actions"><button type="button" className="primary-button" disabled={locked || atQuestionCap || !question.trim()} onClick={() => { void discuss(); }}>{busy === "discuss" ? "Asking…" : "Ask"}</button></div>
+        </div>}
+      </section>
       {!launchedPlan && !terminal && <section className="planner-reject" aria-label="Reject this plan">
         {rejecting ? <>
           <label><span>What is wrong with this split?</span><textarea ref={feedbackRef} aria-label="What is wrong with this split?" value={feedback} onChange={(event) => setFeedback(event.target.value)} rows={3} maxLength={2_000} placeholder="Tasks 2 and 3 touch the same file, so they cannot run in parallel…" /></label>
@@ -789,7 +829,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       {error && <p className="worktree-action-error">{error}</p>}
       {terminal ? <section className="planner-delivery-status" aria-label="Recorded delivery status"><strong>{terminal === "merged" ? "Merged" : "Aborted"}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}</section>
         : launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p>
-        : <section className="planner-launch-decision" aria-label="Launch decision"><div><strong>{draft.readiness?.ready === false ? "Resolve plan errors before launching" : "Launch development"}</strong><p>{draft.readiness?.ready === false ? "Use “This plan is wrong” to request a revised plan." : "Starts task agents in isolated worktrees. Their work is delivered for pull request review."}</p>{Boolean(draft.spec?.assumptions?.length || draft.readiness?.warnings?.length) && <p className="planner-launch-review-count">Review {draft.spec?.assumptions?.length || 0} assumptions and {draft.readiness?.warnings?.length || 0} warnings above before proceeding.</p>}</div><button type="button" className="primary-button" disabled={locked || draft.readiness?.ready === false} onClick={launch}>{launchLabel(draft)}</button></section>}
+        : <section className="planner-launch-decision" aria-label="Launch decision"><div><strong>{draft.readiness?.ready === false ? "Resolve plan errors before launching" : "Launch development"}</strong><p>{draft.readiness?.ready === false ? "Use “This plan is wrong” to request a revised plan." : "Starts task agents in isolated worktrees. Their work is delivered for pull request review."}</p>{Boolean(draft.spec?.assumptions?.length || draft.readiness?.warnings?.length) && <p className="planner-launch-review-count">Review {draft.spec?.assumptions?.length || 0} assumptions and {draft.readiness?.warnings?.length || 0} warnings in Impacts before proceeding.</p>}</div><button type="button" className="primary-button" disabled={locked || draft.readiness?.ready === false} onClick={launch}>{launchLabel(draft)}</button></section>}
     </>}
   </form></>;
 }

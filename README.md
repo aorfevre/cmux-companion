@@ -14,6 +14,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
 - Starts one goal as a visible conversation in its own worktree, with questions, revisions, and approval before implementation
 - Turns one goal into a validated Delivery Contract with observable acceptance criteria, scope, assumptions, risks, ownership, verification, and dependency waves; then starts each eligible task in an isolated worktree while balancing Claude and Codex by remaining quota
+- Opens plan review on a concise overview, with Design, Impacts, Tasks, and Checks tabs for proposed screens and flows, consequences, scope, dependencies, and verification; older plans retain their complete saved text
 - Groups a repository's open GitHub issues into selectable master topics, plans and launches the topics in parallel, and links every final PR back to the issues it closes
 - Delivers a multi-task goal as one verified pull request: task agents push isolated branches, Companion pins their finished commits and cuts one goal branch, and a single merge agent squash-merges them, resolves the conflicts it can, re-runs the repository's own verification against a baseline, and opens the combined PR
 - Supervises every launched goal: checks each task's agent against the live cmux session list, alerts when one dies or goes quiet, and can continue, restart or skip that one task without abandoning the goal

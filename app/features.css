@@ -969,3 +969,54 @@
 
 .goal-attention.clear{flex-direction:row;flex-wrap:wrap;align-items:center;padding:8px 12px}
 .goal-attention.clear .goal-attention-empty{border:0;padding:0;text-align:left}
+
+/* Plan review: one decision at a time, with the full contract a tab away. */
+.worktree-planner-sheet .goal-review{background:#12181d;border-color:#303b43;padding:20px;gap:20px}
+.worktree-planner-sheet .goal-review>header strong{font-size:20px;letter-spacing:-.025em}
+.worktree-planner-sheet .plan-review-tabs{display:flex;gap:4px;border-bottom:1px solid #303b43;overflow-x:auto}
+.worktree-planner-sheet .plan-review-tabs button{position:relative;flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:10px 12px;border:0;border-bottom:2px solid transparent;border-radius:6px 6px 0 0;background:transparent;color:#a9b6c0;font-size:14px;white-space:nowrap}
+.worktree-planner-sheet .plan-review-tabs button[aria-selected=true]{border-bottom-color:var(--lime);background:#202a22;color:#e6f6d3}
+.worktree-planner-sheet .goal-review button:focus-visible,.worktree-planner-sheet .plan-review-panel:focus-visible{outline:2px solid #9fc4ff;outline-offset:2px}
+.worktree-planner-sheet .review-attention-dot{width:6px;height:6px;border-radius:50%;background:#f0c985;flex:none}
+.worktree-planner-sheet .plan-review-panel{display:flex;flex-direction:column;gap:20px;min-width:0;overflow-wrap:anywhere}
+.worktree-planner-sheet .plan-review-panel h3{margin:0;color:#e5ecf1;font-size:18px}
+.worktree-planner-sheet .review-overview-heading>small{color:#aab7c1;font-size:12px}
+.worktree-planner-sheet .review-overview-heading .goal-review-outcome{max-width:72ch;font-size:20px;line-height:1.5;letter-spacing:-.015em;margin:8px 0 0}
+.worktree-planner-sheet .review-at-a-glance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.worktree-planner-sheet .review-at-a-glance>button{display:flex;flex-direction:column;align-items:flex-start;gap:7px;text-align:left;border:1px solid #344149;border-radius:12px;background:#1a2229;padding:16px;color:#e0e8ed;min-width:0}
+.worktree-planner-sheet .review-at-a-glance>button:hover{border-color:#809c60;background:#202b29}
+.worktree-planner-sheet .review-at-a-glance b{font-size:28px;line-height:1.1;font-weight:500;color:#d8efbc}
+.worktree-planner-sheet .review-at-a-glance span{font-size:14px}
+.worktree-planner-sheet .review-at-a-glance small{color:#a0aeb9;font-size:12px;line-height:1.4}
+.worktree-planner-sheet .review-attention{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;text-align:left;border:1px solid #635238;border-radius:9px;background:#28251e;padding:12px;color:#efcea0;font-size:13px;line-height:1.5}
+.worktree-planner-sheet .review-success>strong{color:#dbe5eb;font-size:15px}
+.worktree-planner-sheet .review-success ul{list-style:none;padding:0;margin:12px 0;display:grid;gap:10px}
+.worktree-planner-sheet .review-success li{display:flex;gap:10px;color:#b9c7d1;font-size:14px;line-height:1.5}
+.worktree-planner-sheet .review-success li>span{color:#bbd69b}
+.worktree-planner-sheet .review-success>button{min-height:44px;padding:6px 0;border:0;background:transparent;color:#a9cbff;font-size:13px}
+.worktree-planner-sheet .review-user-flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:24px;list-style:none;margin:0;padding:0}
+.worktree-planner-sheet .review-user-flow li{position:relative;border:1px solid #465441;border-radius:12px;background:#1c2623;padding:16px;min-width:0}
+.worktree-planner-sheet .review-user-flow li:not(:last-child)::after{content:"→";position:absolute;right:-20px;top:45%;color:#a7c18a}
+.worktree-planner-sheet .review-user-flow li>span{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#344430;color:#d4edb7;font-size:12px}
+.worktree-planner-sheet .review-user-flow p{margin:12px 0 0;color:#c7d7cf;font-size:14px;line-height:1.5}
+.worktree-planner-sheet .review-empty{padding:24px;border:1px dashed #45525d;border-radius:12px;color:#c3d0da;font-size:15px}
+.worktree-planner-sheet .review-empty p{max-width:65ch;color:#a7b5c1;font-size:14px;line-height:1.6}
+.worktree-planner-sheet .review-code-areas{display:flex;flex-wrap:wrap;gap:8px;padding:0;list-style:none;color:#b4cdeb;font-size:13px}
+.worktree-planner-sheet .goal-review .goal-passport-scope{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.worktree-planner-sheet .goal-review .goal-passport-scope>div{padding:16px}
+.worktree-planner-sheet .goal-review .goal-passport-scope li{margin-bottom:7px;color:#b1bdc6}
+@media(max-width:600px){
+  .worktree-planner-sheet .goal-review{padding:12px;gap:16px}
+  .worktree-planner-sheet .goal-review>header strong{font-size:18px}
+  .worktree-planner-sheet .plan-review-tabs{gap:0}
+  .worktree-planner-sheet .plan-review-tabs button{padding:10px 6px;font-size:12px}
+  .worktree-planner-sheet .review-overview-heading .goal-review-outcome{font-size:17px}
+  .worktree-planner-sheet .review-at-a-glance{gap:6px}
+  .worktree-planner-sheet .review-at-a-glance>button{padding:10px 8px;gap:6px}
+  .worktree-planner-sheet .review-at-a-glance b{font-size:23px}
+  .worktree-planner-sheet .review-at-a-glance span{font-size:12px}
+  .worktree-planner-sheet .review-at-a-glance small{font-size:11px}
+  .worktree-planner-sheet .goal-review .goal-passport-scope{grid-template-columns:minmax(0,1fr)}
+  .worktree-planner-sheet .review-user-flow{grid-template-columns:minmax(0,1fr)}
+  .worktree-planner-sheet .review-user-flow li:not(:last-child)::after{content:"↓";right:50%;top:auto;bottom:-23px}
+}
