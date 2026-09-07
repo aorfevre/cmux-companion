@@ -364,6 +364,8 @@ test("the opening prompt carries the enabled demands and the evidence schema onl
   assert.match(prompt, /- Unit tests: Cover the new logic with unit tests\./);
   assert.match(prompt, /- End-to-end tests: Cover the user-visible flow with end-to-end tests\./);
   assert.match(prompt, /"optionEvidence"/);
+  assert.match(prompt, /"approvalSummary"/);
+  assert.match(prompt, /faithful to the detailed spec/);
   // No design request was made, so the artifact schema stays out of the prompt.
   assert.equal(prompt.includes('"designArtifacts"'), false);
   assert.equal(prompt.includes("Edge cases"), false);
@@ -395,14 +397,20 @@ test("every later round keeps demanding the enabled options", async (t) => {
 
   await planner.feedback(draft.planId, { text: "These tasks share a file." });
   assert.match(lastPrompt(deps), /- Unit tests: Cover the new logic with unit tests\./);
+  assert.match(lastPrompt(deps), /Regenerate approvalSummary so it faithfully reflects the revised detailed contract/);
 });
 
-test("a skipped round with no option keeps its single original sentence", async (t) => {
+test("a skipped round with no option carries the current contract schema", async (t) => {
   const { store, deps, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
   t.after(() => store.close());
   const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
   await planner.answer(draft.planId, { skip: true });
-  assert.equal(lastPrompt(deps), "Stop asking questions. Decide the remaining details yourself and reply now with the delivery-contract JSON object.");
+  const prompt = lastPrompt(deps);
+  assert.match(prompt, /^Stop asking questions\. Decide the remaining details yourself and reply now with the delivery-contract JSON object\./);
+  assert.match(prompt, /"approvalSummary"/);
+  assert.match(prompt, /Include approvalSummary for every new or revised contract/);
+  assert.equal(prompt.includes("optionEvidence"), false);
+  assert.equal(prompt.includes("designArtifacts"), false);
 });
 
 test("a resumed session whose ccs session is gone still demands the options", async (t) => {
@@ -417,6 +425,7 @@ test("a resumed session whose ccs session is gone still demands the options", as
   const prompt = lastPrompt(deps);
   assert.match(prompt, /- Screen wireframes: Return a screen wireframe for each new or changed screen\./);
   assert.match(prompt, /"designArtifacts"/);
+  assert.match(prompt, /Include approvalSummary for every new or revised contract/);
 });
 
 test("the reviewer round demands the same options as the round it reviews", async () => {
@@ -433,6 +442,7 @@ test("the reviewer round demands the same options as the round it reviews", asyn
   assert.match(prompt, /Critique the proposed delivery contract/);
   assert.match(prompt, /- Unit tests: Cover the new logic with unit tests\./);
   assert.match(prompt, /"optionEvidence"/);
+  assert.match(prompt, /Include approvalSummary for every new or revised contract/);
 });
 
 test("the review request never reaches a planner prompt or a task brief", async () => {
@@ -1761,6 +1771,7 @@ test("feedback on a plan with no session restates the goal and the rejected spli
   assert.ok(prompt.includes("feature/billing-api"));
   assert.ok(prompt.includes("Add the billing screen."));
   assert.ok(prompt.includes("The UI cannot land without the API."));
+  assert.ok(prompt.includes("Include approvalSummary for every new or revised contract"));
   assert.ok(!deps.calls[0][1].includes("--resume"));
 });
 

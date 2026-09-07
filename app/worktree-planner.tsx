@@ -4,7 +4,7 @@ import { goalPopupUrl } from "./goal-popup-url";
 import { BUILTIN_MODEL_ROLES, ModelRoles, ModelSelect, ModelSettingsStatus } from "./model-settings";
 import { REVIEW_AGENTS, REVIEW_OPTIONS } from "../server/review-options.mjs";
 import { DEV_SETUP_GOAL } from "./dev-setup-goal";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { canRetryOnFreshBranch } from "../server/worktree-errors.mjs";
 import { PLANNER_ENGINES, reviewerEngine, SPEC_OPTIONS } from "../server/worktree-planner-options.mjs";
 import { AttachmentReview, AttachmentStrip, imageReferences, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
@@ -28,7 +28,8 @@ export type PlanOptionEvidence = { status: "planned" | "not_applicable"; rationa
 // The server derives this. The sheet only displays it, so a status here is
 // never re-computed from readiness warning prose.
 export type PlanOptionCoverage = { id: SpecOptionId; requested: boolean; status: "not_requested" | "covered" | "not_applicable" | "missing"; message: string };
-export type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[]; optionEvidence?: Partial<Record<SpecOptionId, PlanOptionEvidence>>; designArtifacts?: DesignArtifact[] };
+export type ApprovalSummary = { overview: string; userFlow: string[]; decisions: { choice: string; consequence: string }[]; successCriteria: string[] };
+export type PlanSpec = { version?: number; outcome: string; inScope: string[]; nonGoals: string[]; constraints: string[]; assumptions: string[]; acceptanceCriteria: PlanCriterion[]; risks: { text: string; mitigation: string; level: string }[]; approvalSummary?: ApprovalSummary; optionEvidence?: Partial<Record<SpecOptionId, PlanOptionEvidence>>; designArtifacts?: DesignArtifact[] };
 export type PlanReadiness = { ready: boolean; errors: string[]; warnings: string[]; waves: string[][]; coverage: { criterionId: string; taskIds: string[] }[]; optionCoverage?: PlanOptionCoverage[] };
 export type PlanTask = { id: string; title: string; branch: string; prompt: string; agent: PlanAgent; agentReason: string; type?: string; criterionIds?: string[]; dependsOn?: string[]; ownedAreas?: string[]; verification?: string[]; wave?: number; launchStatus?: string; launchReason?: string | null; launchError?: string | null; deliveryStatus?: string; completionReport?: CompletionReport | null; evidenceStatus?: string | null; evidenceError?: string | null; changedFiles?: string[]; scopeWarnings?: string[]; workspaceId?: string | null; worktreePath?: string | null };
 // One question and its answer, attached to the contract round it examined. The
@@ -151,41 +152,112 @@ function DeliveryTasks({ tasks, planId, health, busy, confirming, onRelaunch, on
 
 type TaskHealth = { health: string; reason: string; launchReason?: string | null; branch?: string; session?: { id: string } | null };
 
+function DeliveryFlowchart({ tasks, waves, criteria, deliveryMode }: { tasks: PlanTask[]; waves: string[][]; criteria: PlanCriterion[]; deliveryMode?: "single" | "combined" }) {
+  const [selectedId, setSelectedId] = useState("");
+  const [edges, setEdges] = useState<{ id: string; from: number; to: number; left: number; top: number; lane?: number }[]>([]);
+  const chartRef = useRef<HTMLDivElement | null>(null);
+  const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const selected = taskById.get(selectedId);
+  const deliveryLabel = deliveryMode === "combined"
+    ? "1 combined pull request"
+    : deliveryMode === "single"
+      ? `${tasks.length} task pull request${tasks.length === 1 ? "" : "s"}`
+      : "delivery mode set at launch";
+  useLayoutEffect(() => {
+    const redraw = () => {
+      const chart = chartRef.current;
+      if (!chart) return;
+      const boundary = chart.getBoundingClientRect();
+      const waveByTask = new Map(waves.flatMap((wave, index) => wave.map((id) => [id, index] as const)));
+      const next = tasks.flatMap((task) => (task.dependsOn || []).flatMap((dependency) => {
+        const source = nodeRefs.current.get(dependency)?.getBoundingClientRect();
+        const target = nodeRefs.current.get(task.id)?.getBoundingClientRect();
+        if (!source || !target) return [];
+        const skipsWave = (waveByTask.get(task.id) ?? 0) - (waveByTask.get(dependency) ?? 0) > 1;
+        return [{ id: `${dependency}-${task.id}`, from: source.left - boundary.left + source.width / 2, to: target.left - boundary.left + target.width / 2, left: source.bottom - boundary.top, top: target.top - boundary.top, lane: skipsWave ? Math.max(8, boundary.width - 8) : undefined }];
+      }));
+      setEdges(next);
+    };
+    redraw();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(redraw);
+    if (observer && chartRef.current) observer.observe(chartRef.current);
+    window.addEventListener("resize", redraw);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", redraw); };
+  }, [tasks, waves]);
+  if (!waves.length || !tasks.length) return null;
+  return <section className="delivery-flowchart" aria-label="Delivery plan">
+    <header><strong>Delivery plan</strong><small>{tasks.length} tasks · {waves.length} waves</small></header>
+    <div className="delivery-flowchart-waves" ref={chartRef}>
+      <svg className="delivery-flowchart-edges" aria-hidden="true"><defs><marker id="delivery-flowchart-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M 0 0 L 6 3 L 0 6 z" /></marker></defs>{edges.map((edge) => <path key={edge.id} markerEnd="url(#delivery-flowchart-arrow)" d={edge.lane ? `M ${edge.from} ${edge.left} L ${edge.lane} ${edge.left} L ${edge.lane} ${edge.top} L ${edge.to} ${edge.top}` : `M ${edge.from} ${edge.left} C ${edge.from} ${(edge.left + edge.top) / 2}, ${edge.to} ${(edge.left + edge.top) / 2}, ${edge.to} ${edge.top}`} />)}</svg>
+      {waves.map((wave, index) => <section className="delivery-flowchart-wave" key={`${index}-${wave.join("-")}`} aria-label={`Wave ${index + 1}`}>
+        <span>Wave {index + 1}</span>
+        <div className="delivery-flowchart-nodes">{wave.map((id) => {
+          const task = taskById.get(id);
+          if (!task) return null;
+          const dependencies = (task.dependsOn || []).map((dependency) => taskById.get(dependency)?.title || dependency);
+          return <button type="button" key={id} ref={(element) => { if (element) nodeRefs.current.set(id, element); else nodeRefs.current.delete(id); }} className={selectedId === id ? "selected" : ""} aria-pressed={selectedId === id} onClick={() => setSelectedId(id)}>
+            <b>{task.title}</b>
+            <small>{dependencies.length ? `← ${dependencies.join(" · ")}` : "Starts this delivery"}</small>
+          </button>;
+        })}</div>
+      </section>)}
+    </div>
+    <div className="delivery-flowchart-endpoint">↓ {deliveryLabel}</div>
+    {selected && <aside className="delivery-flowchart-task" aria-live="polite">
+      <strong>{selected.title}</strong>
+      <small>Scope: {selected.criterionIds?.map((id) => criteria.find((criterion) => criterion.id === id)?.text).filter(Boolean).join(" · ") || "Not declared"}</small>
+      <small>Files: {selected.ownedAreas?.join(", ") || "Not declared"}</small>
+      <small>Checks: {selected.verification?.join(" · ") || "Not declared"}</small>
+    </aside>}
+  </section>;
+}
+
 function GoalPassport({ draft }: { draft: PlanDraft }) {
   const spec = draft.spec;
   if (!spec) return null;
   const readiness = draft.readiness;
-  const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave || 0))].sort().map((wave) => draft.tasks.filter((task) => (task.wave || 0) === wave).map((task) => task.id));
+  const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave ?? 0))].sort((left, right) => left - right).map((wave) => draft.tasks.filter((task) => (task.wave ?? 0) === wave).map((task) => task.id));
   // The server already decided each status. Reading the warning strings here
   // would produce a second, drifting source of truth.
   const requestedCoverage = (readiness?.optionCoverage || []).filter((entry) => entry?.requested === true);
   const artifacts = spec.designArtifacts || [];
+  const summary = spec.approvalSummary;
+  const assumptionCount = spec.assumptions?.length || 0;
   return <section className="goal-passport" aria-label="Goal passport">
-    <header><div><small>DELIVERY CONTRACT</small><strong>{spec.outcome}</strong></div><em className={readiness?.ready === false ? "blocked" : "ready"}>{readiness?.ready === false ? "Needs work" : "Ready to code"}</em></header>
+    <header><div><small>{summary?.overview ? "OVERVIEW" : "DELIVERY CONTRACT"}</small><strong>{summary?.overview || spec.outcome}</strong></div><em className={readiness?.ready === false ? "blocked" : "ready"}>{readiness?.ready === false ? "Needs work" : "Ready to code"}</em></header>
     {(readiness?.errors?.length || readiness?.warnings?.length) ? <div className="goal-passport-readiness">
       {readiness.errors?.map((item) => <p className="error" key={item}>{item}</p>)}
       {readiness.warnings?.map((item) => <p className="warning" key={item}>{item}</p>)}
     </div> : null}
-    <div className="goal-passport-scope">
-      <PassportList title="In scope" items={spec.inScope} empty="Defined by the outcome" />
-      <PassportList title="Non-goals" items={spec.nonGoals} empty="None declared" />
-      <PassportList title="Constraints" items={spec.constraints} empty="None declared" />
-      <PassportList title="Assumptions" items={spec.assumptions} empty="None" />
-    </div>
-    {spec.risks?.length > 0 && <div className="goal-passport-block"><strong>Risks and mitigations</strong><ul className="goal-passport-risks">{spec.risks.map((risk, index) => <li key={`${index}-${risk.text}-${risk.mitigation}`}><em>{risk.level}</em><div><span>{risk.text}</span><small>{risk.mitigation || "No mitigation recorded"}</small></div></li>)}</ul></div>}
+    {summary?.userFlow?.length ? <div className="goal-passport-block"><strong>User flow</strong><ol className="goal-passport-summary-list">{summary.userFlow.map((step) => <li key={step}>{step}</li>)}</ol></div> : null}
+    {summary?.decisions?.length ? <div className="goal-passport-block"><strong>Decisions</strong><ul className="goal-passport-decisions">{summary.decisions.map((decision) => <li key={`${decision.choice}-${decision.consequence}`}><b>{decision.choice}</b><small>{decision.consequence}</small></li>)}</ul></div> : null}
+    {summary?.successCriteria?.length ? <div className="goal-passport-block"><strong>Success criteria</strong><ul className="goal-passport-summary-list">{summary.successCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul></div> : null}
+    <DeliveryFlowchart tasks={draft.tasks} waves={waves} criteria={spec.acceptanceCriteria} deliveryMode={draft.deliveryMode || (draft.deliveryPolicy === "combined" ? "combined" : undefined)} />
+    <details className="goal-passport-details"><summary>Full delivery contract · {assumptionCount} assumption{assumptionCount === 1 ? "" : "s"}</summary>
+      {summary?.overview && <div className="goal-passport-block"><strong>Outcome</strong><p className="goal-passport-overview">{spec.outcome}</p></div>}
+      <div className="goal-passport-scope">
+        <PassportList title="In scope" items={spec.inScope} empty="Defined by the outcome" />
+        <PassportList title="Non-goals" items={spec.nonGoals} empty="None declared" />
+        <PassportList title="Constraints" items={spec.constraints} empty="None declared" />
+        <PassportList title="Assumptions" items={spec.assumptions} empty="None" />
+      </div>
+    </details>
+    {(spec.risks?.length > 0 || requestedCoverage.length > 0 || artifacts.length > 0) && <details className="goal-passport-details"><summary>Risks and technical constraints</summary>
+      {spec.risks?.length > 0 && <div className="goal-passport-block"><strong>Risks and mitigations</strong><ul className="goal-passport-risks">{spec.risks.map((risk, index) => <li key={`${index}-${risk.text}-${risk.mitigation}`}><em>{risk.level}</em><div><span>{risk.text}</span><small>{risk.mitigation || "No mitigation recorded"}</small></div></li>)}</ul></div>}
     {requestedCoverage.length > 0 && <div className="goal-passport-block"><strong>Specification coverage</strong><ul className="goal-passport-options">{requestedCoverage.map((entry) => <li key={entry.id} className={`coverage-${entry.status}`}>
       <span>{SPEC_OPTION_LABELS[entry.id] || entry.id}</span>
       <small>{entry.message || "No detail recorded"}</small>
       <em className={`coverage-${entry.status}`}>{COVERAGE_LABELS[entry.status] || entry.status}</em>
     </li>)}</ul></div>}
     {artifacts.length > 0 && <div className="goal-passport-block"><strong>Design artifacts</strong><DesignArtifacts artifacts={artifacts} /></div>}
-    <div className="goal-passport-block"><strong>Acceptance evidence</strong><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
+    </details>}
+    <details className="goal-passport-details"><summary>Acceptance evidence</summary><div className="goal-passport-block"><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
       const tasks = draft.tasks.filter((task) => task.criterionIds?.includes(criterion.id));
       const state = criterionState(tasks);
       return <li key={criterion.id}><code>{criterion.id}</code><div><span>{criterion.text}</span><small>{criterion.verification}</small><small>{tasks.map((task) => task.title).join(" · ") || "No task assigned"}</small></div><em className={state}>{state}</em></li>;
-    })}</ul></div>
-    <div className="goal-passport-block"><strong>Workflow</strong><ol className="goal-passport-waves">{waves.map((wave, index) => <li key={`${index}-${wave.join("-")}`}><span>Wave {index + 1}</span><div>{wave.map((id) => { const task = draft.tasks.find((item) => item.id === id); return <b key={id}>{task?.title || id}</b>; })}</div></li>)}</ol></div>
-    <div className="goal-passport-block"><strong>Task plan</strong><ul className="goal-passport-task-plan">{draft.tasks.map((task) => <li key={task.id}><span>{task.title}</span><small>Owns: {task.ownedAreas?.join(", ") || "Not declared"}</small><small>Depends on: {task.dependsOn?.join(", ") || "None"}</small><small>Verify: {task.verification?.join(" · ") || "Not declared"}</small></li>)}</ul></div>
+    })}</ul></div></details>
+    <details className="goal-passport-details"><summary>Task instructions</summary><div className="goal-passport-block"><ul className="goal-passport-task-plan">{draft.tasks.map((task) => <li key={task.id}><span>{task.title}</span><small>Owns: {task.ownedAreas?.join(", ") || "Not declared"}</small><small>Depends on: {task.dependsOn?.join(", ") || "None"}</small><small>Verify: {task.verification?.join(" · ") || "Not declared"}</small></li>)}</ul></div></details>
     {draft.tasks.some((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length) && <div className="goal-passport-block"><strong>Task evidence</strong><ul className="goal-passport-evidence">{draft.tasks.filter((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length).map((task) => <li key={task.id}><span>{task.title}</span>{task.completionReport?.verification.map((item) => <small key={`${item.check}-${item.status}`}>{item.check}: <b className={item.status}>{item.status}</b></small>)}{task.completionReport?.limitations.map((item) => <small className="limitation" key={item}>Limitation: {item}</small>)}{task.scopeWarnings?.map((item) => <small className="warning" key={item}>Outside ownership: {item}</small>)}{task.evidenceError && <small className="error">{task.evidenceError}</small>}</li>)}</ul></div>}
   </section>;
 }

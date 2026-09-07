@@ -40,6 +40,29 @@ test("normalizes the delivery contract and task metadata", () => {
   assert.deepEqual(task.ownedAreas, ["server/export/**"]);
 });
 
+test("normalizes bounded approval copy without fabricating a legacy summary", () => {
+  const summary = normalizeDeliveryContract({
+    ...SPEC,
+    approvalSummary: {
+      overview: `  ${"o".repeat(700)}  `,
+      userFlow: Array.from({ length: 7 }, (_, index) => `step ${index} ${"u".repeat(300)}`),
+      decisions: [
+        { choice: "c".repeat(300), consequence: "d".repeat(300) },
+        { choice: "Missing consequence" },
+      ],
+      successCriteria: Array.from({ length: 7 }, (_, index) => `criterion ${index} ${"s".repeat(300)}`),
+    },
+  }).approvalSummary;
+  assert.equal(summary.overview.length, 600);
+  assert.equal(summary.userFlow.length, 5);
+  assert.ok(summary.userFlow.every((item) => item.length <= 240));
+  assert.deepEqual(summary.decisions, [{ choice: "c".repeat(240), consequence: "d".repeat(240) }]);
+  assert.equal(summary.successCriteria.length, 5);
+  assert.ok(summary.successCriteria.every((item) => item.length <= 240));
+  assert.equal(normalizeDeliveryContract(SPEC).approvalSummary, undefined);
+  assert.equal(normalizeDeliveryContract({ ...SPEC, approvalSummary: { userFlow: ["Open export"] } }).approvalSummary, undefined);
+});
+
 test("computes execution waves from task dependencies", () => {
   assert.deepEqual(deliveryWaves(TASKS), { waves: [["T1"], ["T2"]], errors: [] });
   assert.match(deliveryWaves([{ ...TASKS[0], dependsOn: ["T2"] }, TASKS[1]]).errors[0], /cycle/);
