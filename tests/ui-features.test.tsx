@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
-import { BottomNav, HomeModeSwitch, InboxView, LastUpdateStamp, PullRequestBanner, TerminalPanel } from "../app/page";
+import { BottomNav, HomeModeSwitch, InboxView, LastUpdateStamp, ManagedGoalControls, PullRequestBanner, TerminalPanel } from "../app/page";
 import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { WorktreeDashboardView } from "../app/worktree-dashboard";
 import { WorktreePlannerSheet } from "../app/worktree-planner";
@@ -2713,5 +2713,30 @@ describe("questioning a delivery contract", () => {
     assert.ok(within(region).getByText("This plan has been questioned 12 times. Reject it and re-plan instead"));
     assert.equal((within(region).getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled, true);
     assert.equal((within(region).getByRole("textbox", { name: "Question about this plan" }) as HTMLTextAreaElement).disabled, true);
+  });
+});
+
+
+describe("managed goal controls in a visible workspace", () => {
+  test("keeps the revision-bound approval card beside its exact conversation", async () => {
+    const proposal = {
+      planId: "goal-1", repositoryId: "repo-1", goal: "Ship billing", round: 0, status: "questions", questions: [], tasks: [],
+      workflow: "goal_session", goalSessionWorkspaceId: "workspace-goal", goalSessionGeneration: 1, goalSessionState: "awaiting_approval", proposalRevision: 3,
+      proposal: { intendedBehavior: "Customers can pay", scope: ["Billing form"], verification: ["npm test"] },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/goal-sessions/workspace/workspace-goal") return new Response(JSON.stringify({ plan: proposal }), { status: 200 });
+      if (url === "/api/goal-sessions/goal-1/approve" && init?.method === "POST") return new Response(JSON.stringify({ ...proposal, goalSessionState: "implementing", proposal: null }), { status: 200 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ManagedGoalControls workspaceId="workspace-goal" />);
+    assert.ok(await screen.findByRole("region", { name: "Proposal awaiting approval" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve and implement" }));
+    await waitFor(() => assert.ok(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")));
+    const approval = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/approve"));
+    assert.deepEqual(JSON.parse(String(approval?.[1]?.body)), { generation: 1, revision: 3 });
+    assert.ok(await screen.findByText("Implementation is continuing in this conversation."));
   });
 });

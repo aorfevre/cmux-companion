@@ -6,6 +6,7 @@ function common() {
   cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing deterministic safety fixture" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: {}, workspaces: [workspace], refreshedAt: now });
+  cy.intercept("GET", "**/api/goal-sessions/workspace/*", { plan: null });
   cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
   cy.intercept("GET", "**/api/repos", { repos: [] });
   cy.intercept("GET", "**/api/health", { version: { builtAt: now } });

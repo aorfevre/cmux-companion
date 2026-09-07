@@ -1731,3 +1731,36 @@ test("model settings require pairing and a safe origin, then affect manual agent
   assert.equal(rejected.statusCode, 400);
   assert.equal((await app.inject({ url: "/api/settings/models", headers })).json().roles.coder.models.codex, "custom-coder");
 });
+
+test("durable goal questions reach the inbox and stale replies never reach cmux", async (t) => {
+  const { WorktreePlanStore } = await import("../server/worktree-plan-store.mjs");
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "inbox-goal", repositoryId: "repo", cwd: "/fixture", goal: "Choose billing" });
+  store.reserveGoalSession("inbox-goal", { branch: "goal-session/inbox", generation: 1 });
+  store.recordGoalSessionStart("inbox-goal", { worktreePath: "/fixture-goal", workspaceId: WS_ID, generation: 1 });
+  store.publishGoalSessionQuestions("inbox-goal", { generation: 1, questions: [{ id: "q1", text: "Card or invoice?", options: ["Card", "Invoice"] }] });
+  const cmux = fakeCmux();
+  const app = await buildApp(t, { token: TOKEN, cmux, worktreePlanStore: store });
+  const cookie = await pairedCookie(app);
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const inbox = (await app.inject({ url: "/api/inbox", headers })).json();
+  assert.equal(inbox.actionableCount, 1);
+  const item = inbox.items[0];
+  assert.equal(item.workspaceId, WS_ID);
+  assert.equal(item.kind, "question");
+  assert.match(item.body, /Card or invoice/);
+  assert.ok(item.questionOptions.includes("Write reply…"));
+  const url = `/api/inbox/${item.requestId}/reply`;
+  assert.equal((await app.inject({ method: "POST", url, headers, payload: { kind: "exitPlan", mode: "autoAccept" } })).statusCode, 400);
+  assert.equal(store.get("inbox-goal").goalSessionState, "awaiting_input");
+  assert.equal((await app.inject({ method: "POST", url, headers, payload: { kind: "question", selections: ["Card"] } })).statusCode, 200);
+  assert.equal(store.get("inbox-goal").goalSessionPendingInput, "Card");
+  assert.equal(store.get("inbox-goal").goalSessionState, "planning");
+  assert.equal((await app.inject({ url: "/api/inbox", headers })).json().actionableCount, 0);
+  store.publishGoalSessionQuestions("inbox-goal", { generation: 1, questions: [{ id: "q1", text: "Card or invoice?", options: ["Card", "Invoice"] }] });
+  const next = (await app.inject({ url: "/api/inbox", headers })).json();
+  assert.notEqual(next.items[0].requestId, item.requestId, "identical questions in a new round have a new durable identity");
+  assert.equal((await app.inject({ method: "POST", url, headers, payload: { kind: "question", selections: ["Invoice"] } })).statusCode, 400);
+  assert.equal(cmux.calls.filter(([kind]) => kind === "reply").length, 0);
+});

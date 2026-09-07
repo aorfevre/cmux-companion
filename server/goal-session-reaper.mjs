@@ -53,6 +53,10 @@ export function retirableSessions(plan, live = { available: false, byId: new Map
   // Once the goal PR exists its original task and merge sessions are finished.
   // Follow-up sessions have separate identities and are not owned by this list.
   for (const entry of candidates) {
+    if (plan?.workflow === "goal_session" && !terminal && entry.workspaceId === plan.goalSessionWorkspaceId) {
+      keep.push(kept(entry, "The goal conversation stays open for review and corrections"));
+      continue;
+    }
     if (!terminal && !prOpen && !finishedWithoutPullRequest(entry)) {
       keep.push(kept(entry, entry.kind === "task" ? "This task is not integrated yet" : "This goal is still being assembled"));
       continue;
@@ -285,6 +289,9 @@ function ownedSessions(plan) {
       title: text(task?.title) || workspaceId,
       deliveryStatus: text(task?.deliveryStatus) || "pending",
     });
+  }
+  if (plan?.workflow === "goal_session" && !isTerminal(plan) && plan.goalSessionWorkspaceId && !sessions.some((entry) => entry.workspaceId === plan.goalSessionWorkspaceId)) {
+    sessions.push({ workspaceId: plan.goalSessionWorkspaceId, taskId: null, kind: "goal", title: plan.goal || "Goal", deliveryStatus: "pending" });
   }
   const mergeId = text(plan?.mergeWorkspaceId);
   if (mergeId && !plan?.mergeSessionClosedAt) {

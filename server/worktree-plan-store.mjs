@@ -24,6 +24,7 @@ export const PLAN_EVENT_KINDS = new Set([
   "session_retired", "board_merged", "board_aborted", "board_pull_request",
   "task_relaunched", "task_skipped", "followup_launched", "task_associated",
   "review_claimed", "review_launched", "discussion", "merge_cleanup_required",
+  "goal_session_started", "proposal_published", "proposal_changes_requested", "proposal_approved", "goal_session_transition", "goal_session_correction",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -97,6 +98,28 @@ CREATE TABLE IF NOT EXISTS plans (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   launched_at TEXT
+  ,workflow TEXT NOT NULL DEFAULT 'planned'
+  ,goal_session_state TEXT
+  ,goal_session_workspace_id TEXT
+  ,goal_session_worktree_path TEXT
+  ,goal_session_branch TEXT
+  ,goal_session_generation INTEGER NOT NULL DEFAULT 0
+  ,goal_session_provider_session_id TEXT
+  ,proposal_revision INTEGER NOT NULL DEFAULT 0
+  ,proposal TEXT
+  ,approval_revision INTEGER
+  ,approval_at TEXT
+  ,transition_status TEXT
+  ,goal_session_error TEXT
+  ,goal_session_pending_input TEXT
+  ,goal_session_active_input TEXT
+  ,goal_session_question_revision INTEGER NOT NULL DEFAULT 0
+  ,goal_session_runner_pid INTEGER
+  ,goal_session_runner_started_at TEXT
+  ,goal_session_runner_dispatch_id TEXT
+  ,goal_session_runner_dispatched_at TEXT
+  ,goal_session_correction_input TEXT
+  ,goal_session_correction_status TEXT
 );
 CREATE TABLE IF NOT EXISTS plan_tasks (
   plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
@@ -188,6 +211,328 @@ export class WorktreePlanStore {
       this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review }, at);
     });
     this.#prune();
+    return this.get(planId);
+  }
+
+  // Goal sessions are additive to the historic plan workflow. The stored
+  // generation is part of every mutable decision, so a recovered or replaced
+  // session can never consume an approval intended for its predecessor.
+  // The worktree must be recorded before cmux is asked to create a workspace.
+  // That boundary is recoverable after a companion crash: recovery can only
+  // ever attach a workspace to this exact checkout, never make a second one.
+  recordGoalSessionWorktree(planId, { worktreePath, generation = 1 } = {}) {
+    const path = text(worktreePath);
+    if (!path || !Number.isInteger(generation) || generation < 1) throw new TypeError("Invalid goal session worktree");
+    const at = this.#stamp();
+    const changed = this.db.prepare(`UPDATE plans SET cwd = ?, goal_session_worktree_path = ?, goal_session_error = NULL, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_state = 'starting' AND board_status IS NULL
+        AND goal_session_generation = ? AND goal_session_workspace_id IS NULL`).run(path, path, at, String(planId), generation).changes;
+    if (changed !== 1) throw new TypeError("This goal session worktree has already been recorded or is unavailable");
+    return this.get(planId);
+  }
+
+  recordGoalSessionBase(planId, { baseRef = null, baseSha = null } = {}) {
+    const ref = text(baseRef);
+    const sha = text(baseSha);
+    if (!ref && !sha) return this.get(planId);
+    const changed = this.db.prepare(`UPDATE plans SET base_ref = COALESCE(?, base_ref), base_sha = COALESCE(?, base_sha), updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_state = 'starting' AND board_status IS NULL`)
+      .run(ref || null, sha || null, this.#stamp(), String(planId)).changes;
+    if (changed !== 1) throw new TypeError("This goal session base can no longer be recorded");
+    return this.get(planId);
+  }
+
+  recordGoalSessionStart(planId, { worktreePath, workspaceId: workspaceIdValue, providerSessionId = null, generation = 1 } = {}) {
+    const path = text(worktreePath);
+    const workspace = text(workspaceIdValue);
+    if (!path || !workspace || !Number.isInteger(generation) || generation < 1) throw new TypeError("Invalid goal session identity");
+    const at = this.#stamp();
+    this.#transaction(() => {
+      const changed = this.db.prepare(`
+        UPDATE plans SET workflow = 'goal_session', cwd = ?, goal_session_state = 'planning',
+          goal_session_worktree_path = ?, goal_session_workspace_id = ?, goal_session_generation = ?,
+          goal_session_provider_session_id = ?, proposal_revision = 0, proposal = NULL,
+          approval_revision = NULL, approval_at = NULL, transition_status = NULL, goal_session_error = NULL,
+          updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_state = 'starting' AND board_status IS NULL
+          AND goal_session_generation = ? AND (goal_session_worktree_path IS NULL OR goal_session_worktree_path = ?)
+      `).run(path, path, workspace, generation, text(providerSessionId) || null, at, String(planId), generation, path).changes;
+      if (changed !== 1) throw new TypeError("This goal session has already started or is unavailable");
+      this.#insertEvent(String(planId), null, "goal_session_started", { worktreePath: path, workspaceId: workspace, generation, providerSessionId: text(providerSessionId) || null }, at);
+    });
+    return this.get(planId);
+  }
+
+  reserveGoalSession(planId, { branch, generation = 1 } = {}) {
+    const at = this.#stamp();
+    const safeBranch = text(branch);
+    if (!safeBranch || !Number.isInteger(generation) || generation < 1) throw new TypeError("Invalid goal session reservation");
+    const changed = this.db.prepare(`UPDATE plans SET workflow = 'goal_session', goal_session_state = 'starting',
+      goal_session_branch = ?, goal_session_generation = ?, goal_session_error = NULL, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'planned' AND board_status IS NULL`).run(safeBranch, generation, at, String(planId)).changes;
+    if (changed !== 1) throw new TypeError("This goal session has already started or is unavailable");
+    return this.get(planId);
+  }
+
+  recordGoalSessionStartFailure(planId, error) {
+    const at = this.#stamp();
+    this.db.prepare(`UPDATE plans SET goal_session_error = ?, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_state IN ('starting', 'planning')
+        AND goal_session_runner_pid IS NULL AND transition_status IS NULL`).run(text(error).slice(0, 2_000) || "Goal session could not start", at, String(planId));
+    return this.get(planId);
+  }
+
+  claimGoalSessionRunnerDispatch(planId, { generation, dispatchId } = {}) {
+    const dispatch = text(dispatchId);
+    if (!Number.isInteger(generation) || generation < 1 || !/^[0-9a-f-]{36}$/i.test(dispatch)) throw new TypeError("Invalid goal-session runner dispatch");
+    const at = this.#stamp();
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_runner_dispatch_id = ?, goal_session_runner_dispatched_at = ?, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND goal_session_workspace_id IS NOT NULL AND goal_session_runner_pid IS NULL AND goal_session_runner_dispatch_id IS NULL`)
+      .run(dispatch, at, at, String(planId), generation).changes;
+    if (changed !== 1) throw new TypeError("A goal session runner is active or its start is still uncertain");
+    return this.get(planId);
+  }
+
+  releaseGoalSessionRunnerDispatch(planId, { generation, dispatchId } = {}) {
+    return this.db.prepare(`UPDATE plans SET goal_session_runner_dispatch_id = NULL, goal_session_runner_dispatched_at = NULL, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_generation = ? AND goal_session_runner_dispatch_id = ? AND goal_session_runner_pid IS NULL`)
+      .run(this.#stamp(), String(planId), generation, text(dispatchId)).changes === 1;
+  }
+
+  claimGoalSessionRunner(planId, { generation, pid, dispatchId } = {}) {
+    const dispatch = text(dispatchId);
+    if (!Number.isInteger(generation) || generation < 1 || !Number.isInteger(pid) || pid < 1 || !/^[0-9a-f-]{36}$/i.test(dispatch)) throw new TypeError("Invalid goal-session runner identity");
+    const at = this.#stamp();
+    const existing = this.db.prepare(`SELECT goal_session_runner_pid FROM plans WHERE plan_id = ? AND workflow = 'goal_session'
+      AND board_status IS NULL AND goal_session_generation = ? AND goal_session_workspace_id IS NOT NULL`).get(String(planId), generation);
+    if (!existing) throw new TypeError("This goal session runner is unavailable");
+    if (Number(existing.goal_session_runner_pid) && Number(existing.goal_session_runner_pid) !== pid) throw new TypeError("A goal session runner is already active");
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_runner_pid = ?, goal_session_runner_started_at = ?,
+      goal_session_runner_dispatch_id = NULL, goal_session_runner_dispatched_at = NULL, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND goal_session_runner_pid IS NULL AND goal_session_runner_dispatch_id = ?`)
+      .run(pid, at, at, String(planId), generation, dispatch).changes;
+    if (changed !== 1) throw new TypeError("A goal session runner is already active");
+    return this.get(planId);
+  }
+
+  releaseGoalSessionRunner(planId, { generation, pid } = {}) {
+    if (!Number.isInteger(generation) || !Number.isInteger(pid)) return false;
+    return this.db.prepare(`UPDATE plans SET goal_session_runner_pid = NULL, goal_session_runner_started_at = NULL, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_generation = ? AND goal_session_runner_pid = ?`)
+      .run(this.#stamp(), String(planId), generation, pid).changes === 1;
+  }
+
+  clearDeadGoalSessionRunner(planId, { generation, pid } = {}) {
+    return this.releaseGoalSessionRunner(planId, { generation, pid });
+  }
+
+  retryGoalSessionTurn(planId, { generation } = {}) {
+    if (!Number.isInteger(generation) || generation < 1) throw new TypeError("Invalid goal-session recovery");
+    const at = this.#stamp();
+    this.#transaction(() => {
+      const row = this.db.prepare(`SELECT goal_session_active_input, goal_session_error, goal_session_state FROM plans WHERE plan_id = ?
+        AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?`).get(String(planId), generation);
+      if (!row || row.goal_session_state !== "planning" || !text(row.goal_session_error)) throw new TypeError("This goal session has no failed turn to recover");
+      const feedback = text(row.goal_session_active_input) || "Resume the saved goal conversation and produce the requested proposal. Do not implement anything.";
+      const changed = this.db.prepare(`UPDATE plans SET goal_session_pending_input = ?, goal_session_active_input = NULL,
+        goal_session_error = NULL, updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL
+          AND goal_session_generation = ? AND goal_session_state = 'planning' AND goal_session_error IS NOT NULL`)
+        .run(feedback, at, String(planId), generation).changes;
+      if (changed !== 1) throw new TypeError("This goal session changed before its failed turn could be recovered");
+    });
+    return this.get(planId);
+  }
+
+  publishGoalSessionQuestions(planId, { generation, questions, providerSessionId = null } = {}) {
+    if (!Number.isInteger(generation) || generation < 1 || !Array.isArray(questions) || !questions.length) throw new TypeError("Invalid goal-session questions");
+    const cleaned = questions.map((question, index) => ({
+      id: text(question?.id) || `q${index + 1}`,
+      text: text(question?.text).slice(0, 2_000),
+      options: Array.isArray(question?.options) ? question.options.map((option) => text(option).slice(0, 500)).filter(Boolean).slice(0, 6) : [],
+    })).filter((question) => question.text);
+    if (!cleaned.length) throw new TypeError("Invalid goal-session questions");
+    const at = this.#stamp();
+    this.#transaction(() => {
+      const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'awaiting_input', questions = ?,
+        goal_session_question_revision = goal_session_question_revision + 1,
+        goal_session_provider_session_id = COALESCE(?, goal_session_provider_session_id), goal_session_error = NULL, updated_at = ?
+        WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND goal_session_state IN ('planning', 'awaiting_input')`).run(json(cleaned), text(providerSessionId) || null, at, String(planId), generation).changes;
+      if (changed !== 1) throw new TypeError("These questions belong to an unavailable goal session");
+      this.#insertEvent(String(planId), null, "questions", { generation, questions: cleaned }, at);
+    });
+    return this.get(planId);
+  }
+
+  publishProposal(planId, { generation, proposal, providerSessionId = null } = {}) {
+    if (!Number.isInteger(generation) || generation < 1 || !proposal || typeof proposal !== "object" || Array.isArray(proposal)) throw new TypeError("Invalid goal-session proposal");
+    const at = this.#stamp();
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT proposal_revision FROM plans WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state IN ('planning', 'awaiting_input', 'awaiting_approval')").get(String(planId), generation);
+      if (!row) throw new TypeError("This proposal belongs to an unavailable goal session");
+      const revision = Number(row.proposal_revision || 0) + 1;
+      this.db.prepare(`UPDATE plans SET goal_session_state = 'awaiting_approval', proposal_revision = ?, proposal = ?,
+        goal_session_provider_session_id = COALESCE(?, goal_session_provider_session_id), approval_revision = NULL,
+        approval_at = NULL, transition_status = NULL, goal_session_error = NULL, updated_at = ? WHERE plan_id = ?`).run(revision, json(proposal), text(providerSessionId) || null, at, String(planId));
+      this.#insertEvent(String(planId), null, "proposal_published", { generation, revision, proposal }, at);
+    });
+    return this.get(planId);
+  }
+
+  requestProposalChanges(planId, { generation, revision, feedback } = {}) {
+    const note = text(feedback);
+    if (!Number.isInteger(generation) || !Number.isInteger(revision) || revision < 1 || !note || note.length > 4_000) throw new TypeError("Invalid proposal change request");
+    const at = this.#stamp();
+    this.#transaction(() => {
+      const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'planning', approval_revision = NULL, approval_at = NULL,
+        goal_session_pending_input = ?,
+        transition_status = NULL, goal_session_error = NULL, updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
+        AND board_status IS NULL AND goal_session_generation = ? AND proposal_revision = ? AND goal_session_state = 'awaiting_approval'`).run(note, at, String(planId), generation, revision).changes;
+      if (changed !== 1) throw new TypeError("This proposal is no longer current");
+      this.#insertEvent(String(planId), null, "proposal_changes_requested", { generation, revision, feedback: note }, at);
+    });
+    return this.get(planId);
+  }
+
+  consumeGoalSessionInput(planId, { generation } = {}) {
+    const id = String(planId);
+    const row = this.db.prepare(`SELECT goal_session_pending_input FROM plans WHERE plan_id = ? AND workflow = 'goal_session'
+      AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state = 'planning'
+      AND goal_session_pending_input IS NOT NULL AND goal_session_active_input IS NULL`).get(id, generation);
+    const feedback = text(row?.goal_session_pending_input);
+    if (!feedback) return null;
+    // Claim the correction before the provider turn begins. A rejected turn
+    // remains active and visible for an explicit recovery action; it is never
+    // silently replayed on the next polling interval or runner restart.
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_pending_input = NULL, goal_session_active_input = ?, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+      AND goal_session_state = 'planning' AND goal_session_pending_input = ? AND goal_session_active_input IS NULL`)
+      .run(feedback, this.#stamp(), id, generation, feedback).changes;
+    return changed === 1 ? feedback : null;
+  }
+
+  acknowledgeGoalSessionInput(planId, { generation, feedback } = {}) {
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_active_input = NULL,
+      goal_session_pending_input = CASE WHEN goal_session_pending_input = ? THEN NULL ELSE goal_session_pending_input END,
+      updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_generation = ?
+      AND (goal_session_pending_input = ? OR goal_session_active_input = ?)`)
+      .run(text(feedback), this.#stamp(), String(planId), generation, text(feedback), text(feedback)).changes;
+    return changed === 1;
+  }
+
+  recordGoalSessionInputFailure(planId, { generation, error } = {}) {
+    const message = text(error)?.slice(0, 2_000) || "The requested proposal revision failed";
+    this.db.prepare(`UPDATE plans SET goal_session_error = ?, updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
+      AND goal_session_generation = ? AND goal_session_active_input IS NOT NULL`).run(message, this.#stamp(), String(planId), generation);
+    return this.get(planId);
+  }
+
+  recordGoalSessionPlanningFailure(planId, { generation, error } = {}) {
+    const message = text(error)?.slice(0, 2_000) || "The proposal turn failed";
+    this.db.prepare(`UPDATE plans SET goal_session_error = ?, updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
+      AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state = 'planning'`).run(message, this.#stamp(), String(planId), generation);
+    return this.get(planId);
+  }
+
+  submitGoalSessionAnswer(planId, { generation, questionRevision = null, feedback } = {}) {
+    const answer = text(feedback);
+    if (!Number.isInteger(generation) || generation < 1 || (questionRevision !== null && (!Number.isInteger(questionRevision) || questionRevision < 1)) || !answer || answer.length > 4_000) throw new TypeError("Invalid goal-session answer");
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'planning', questions = '[]',
+      goal_session_pending_input = ?, goal_session_active_input = NULL, goal_session_error = NULL, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND goal_session_state = 'awaiting_input' ${questionRevision === null ? "" : "AND goal_session_question_revision = ?"}`)
+      .run(answer, this.#stamp(), String(planId), generation, ...(questionRevision === null ? [] : [questionRevision])).changes;
+    if (changed !== 1) throw new TypeError("These questions are no longer current");
+    return this.get(planId);
+  }
+
+  queueGoalSessionSteering(planId, { generation, feedback } = {}) {
+    const note = text(feedback);
+    if (!Number.isInteger(generation) || generation < 1 || !note || note.length > 4_000) throw new TypeError("Invalid goal-session feedback");
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_pending_input = ?, goal_session_error = NULL, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND goal_session_state = 'planning' AND goal_session_pending_input IS NULL AND goal_session_active_input IS NULL`)
+      .run(note, this.#stamp(), String(planId), generation).changes;
+    if (changed !== 1) throw new TypeError("This goal already has a proposal change in progress");
+    return this.get(planId);
+  }
+
+  findGoalSessionByWorkspace(workspaceId) {
+    const id = text(workspaceId);
+    if (!id || id.length > 200) return null;
+    const row = this.db.prepare("SELECT * FROM plans WHERE workflow = 'goal_session' AND goal_session_workspace_id = ? LIMIT 1").get(id);
+    return row ? readPlan(row) : null;
+  }
+
+  recordGoalSessionProviderSession(planId, { generation, providerSessionId } = {}) {
+    const session = text(providerSessionId);
+    if (!Number.isInteger(generation) || generation < 1 || !session) throw new TypeError("Invalid provider conversation identity");
+    const at = this.#stamp();
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_provider_session_id = ?, updated_at = ? WHERE plan_id = ?
+      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state IN ('planning', 'awaiting_input', 'awaiting_approval')`).run(session, at, String(planId), generation).changes;
+    if (changed !== 1) throw new TypeError("This provider conversation belongs to an unavailable goal session");
+    return this.get(planId);
+  }
+
+  approveProposal(planId, { generation, revision } = {}) {
+    if (!Number.isInteger(generation) || !Number.isInteger(revision) || revision < 1) throw new TypeError("Invalid proposal approval");
+    const at = this.#stamp();
+    this.#transaction(() => {
+      const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'implementing', approval_revision = ?, approval_at = ?,
+        transition_status = 'pending', goal_session_error = NULL, status = 'launched', delivery_mode = 'single', delivery_status = 'implementing',
+        launched_at = COALESCE(launched_at, ?), updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
+        AND board_status IS NULL AND goal_session_generation = ? AND proposal_revision = ? AND goal_session_state = 'awaiting_approval'`).run(revision, at, at, at, String(planId), generation, revision).changes;
+      if (changed !== 1) throw new TypeError("This proposal is no longer current or was already approved");
+      this.db.prepare(`INSERT INTO plan_tasks (plan_id, task_id, position, title, branch, prompt, task_type, criterion_ids, depends_on, owned_areas, verification,
+        launch_status, worktree_path, workspace_id, start_sha, delivery_status)
+        SELECT plan_id, 'goal-session', 0, goal, goal_session_branch, goal, 'feature', '[]', '[]', '[]', '[]',
+          'launched', goal_session_worktree_path, goal_session_workspace_id, base_sha, 'pending'
+        FROM plans WHERE plan_id = ? AND NOT EXISTS (SELECT 1 FROM plan_tasks WHERE plan_id = ? AND task_id = 'goal-session')`).run(String(planId), String(planId));
+      this.#insertEvent(String(planId), null, "proposal_approved", { generation, revision }, at);
+    });
+    return this.get(planId);
+  }
+
+  claimGoalSessionTransition(planId, { generation, revision } = {}) {
+    const at = this.#stamp();
+    const changed = this.db.prepare(`UPDATE plans SET transition_status = 'dispatching', updated_at = ? WHERE plan_id = ?
+      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND approval_revision = ? AND transition_status = 'pending'`).run(at, String(planId), generation, revision).changes;
+    return changed === 1 ? this.get(planId) : null;
+  }
+
+  recordGoalSessionTransition(planId, { generation, revision, error = null } = {}) {
+    const at = this.#stamp();
+    const failed = text(error);
+    const changed = this.db.prepare(`UPDATE plans SET transition_status = ?, goal_session_state = ?, goal_session_error = ?, updated_at = ? WHERE plan_id = ?
+      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND approval_revision = ? AND transition_status = 'dispatching'`).run(failed ? "uncertain" : "delivered", "implementing", failed || null, at, String(planId), generation, revision).changes;
+    // A transport failure after the child was started is not permission to
+    // send a second writable command. Leave it uncertain until the coordinator
+    // reconciles the provider/session state.
+    if (changed) this.#insertEvent(String(planId), null, "goal_session_transition", { generation, revision, status: failed ? "uncertain" : "delivered", error: failed || null }, at);
+    return this.get(planId);
+  }
+
+  claimGoalSessionCorrection(planId, { generation, feedback } = {}) {
+    const note = text(feedback);
+    if (!Number.isInteger(generation) || generation < 1 || !note || note.length > 4_000) throw new TypeError("Invalid goal-session correction");
+    const at = this.#stamp();
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_correction_input = ?, goal_session_correction_status = 'dispatching', updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND transition_status = 'delivered' AND (goal_session_correction_status IS NULL OR goal_session_correction_status = 'delivered')`)
+      .run(note, at, String(planId), generation).changes;
+    if (changed !== 1) throw new TypeError("A correction is already running or its result is uncertain");
+    this.#insertEvent(String(planId), null, "goal_session_correction", { generation, status: "dispatching", feedback: note }, at);
+    return this.get(planId);
+  }
+
+  recordGoalSessionCorrection(planId, { generation, error = null } = {}) {
+    const failed = text(error);
+    const at = this.#stamp();
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_correction_status = ?, goal_session_error = ?, updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND goal_session_correction_status = 'dispatching'`).run(failed ? "uncertain" : "delivered", failed || null, at, String(planId), generation).changes;
+    if (changed) this.#insertEvent(String(planId), null, "goal_session_correction", { generation, status: failed ? "uncertain" : "delivered", error: failed || null }, at);
     return this.get(planId);
   }
 
@@ -584,13 +929,14 @@ export class WorktreePlanStore {
     this.#transaction(() => {
       this.db.prepare("UPDATE plan_tasks SET worktree_removed_at = ? WHERE worktree_path = ?").run(at, path);
       this.db.prepare("UPDATE plans SET integration_worktree_removed_at = ? WHERE integration_worktree_path = ?").run(at, path);
+      this.db.prepare("UPDATE plans SET goal_session_error = 'The goal session worktree was removed', updated_at = ? WHERE goal_session_worktree_path = ?").run(at, path);
     });
   }
 
   // Sweep every launched plan, including old merged goals outside the board's
   // 200-row window. Only durable workspace identities are eligible for cleanup.
   sessionCleanupPlanIds() {
-    return this.db.prepare("SELECT plan_id FROM plans WHERE status = 'launched'").all().map((row) => row.plan_id);
+    return this.db.prepare("SELECT plan_id FROM plans WHERE status = 'launched' OR (workflow = 'goal_session' AND goal_session_state NOT IN ('aborted', 'merged'))").all().map((row) => row.plan_id);
   }
 
   pendingSessionClosures(planId) {
@@ -993,7 +1339,12 @@ export class WorktreePlanStore {
       // Every session this goal still owns, so one card can offer Open in cmux
       // without a second request. The merge session is included because it is
       // the one the user opens when a merge is blocked.
-      workspaceIds: splitIds(row.open_workspace_ids, row.merge_workspace_id),
+      workspaceIds: splitIds([row.open_workspace_ids, row.merge_workspace_id, row.goal_session_workspace_id].filter(Boolean).join(","), null),
+      workflow: row.workflow || "planned",
+      goalSessionState: row.goal_session_state ?? null,
+      goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,
+      goalSessionError: row.goal_session_error ?? null,
+      proposalRevision: Number(row.proposal_revision) || 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       launchedAt: row.launched_at,
@@ -1066,6 +1417,28 @@ export class WorktreePlanStore {
     ensure("plans", "review_brief_path", "TEXT");
     ensure("plans", "review_launched_at", "TEXT");
     ensure("plans", "review_session_closed_at", "TEXT");
+    ensure("plans", "workflow", "TEXT NOT NULL DEFAULT 'planned'");
+    ensure("plans", "goal_session_state", "TEXT");
+    ensure("plans", "goal_session_workspace_id", "TEXT");
+    ensure("plans", "goal_session_worktree_path", "TEXT");
+    ensure("plans", "goal_session_branch", "TEXT");
+    ensure("plans", "goal_session_generation", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plans", "goal_session_provider_session_id", "TEXT");
+    ensure("plans", "proposal_revision", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plans", "proposal", "TEXT");
+    ensure("plans", "approval_revision", "INTEGER");
+    ensure("plans", "approval_at", "TEXT");
+    ensure("plans", "transition_status", "TEXT");
+    ensure("plans", "goal_session_error", "TEXT");
+    ensure("plans", "goal_session_pending_input", "TEXT");
+    ensure("plans", "goal_session_active_input", "TEXT");
+    ensure("plans", "goal_session_question_revision", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plans", "goal_session_runner_pid", "INTEGER");
+    ensure("plans", "goal_session_runner_started_at", "TEXT");
+    ensure("plans", "goal_session_runner_dispatch_id", "TEXT");
+    ensure("plans", "goal_session_runner_dispatched_at", "TEXT");
+    ensure("plans", "goal_session_correction_input", "TEXT");
+    ensure("plans", "goal_session_correction_status", "TEXT");
     ensure("plans", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'");
     ensure("plans", "delivery_status", "TEXT NOT NULL DEFAULT 'planning'");
     ensure("plans", "integration_branch", "TEXT");
@@ -1135,6 +1508,7 @@ export class WorktreePlanStore {
       )
       AND (merge_workspace_id IS NULL OR merge_session_closed_at IS NOT NULL)
       AND (integration_worktree_path IS NULL OR integration_worktree_removed_at IS NOT NULL)
+      AND (workflow != 'goal_session' OR (goal_session_workspace_id IS NULL AND goal_session_worktree_path IS NULL))
       AND NOT EXISTS (
         SELECT 1 FROM plan_tasks t WHERE t.plan_id = plans.plan_id
           AND ((t.workspace_id IS NOT NULL AND t.session_closed_at IS NULL)
@@ -1172,6 +1546,28 @@ function readPlan(row) {
     reviewBriefPath: row.review_brief_path ?? null,
     reviewLaunchedAt: row.review_launched_at ?? null,
     reviewSessionClosedAt: row.review_session_closed_at ?? null,
+    workflow: row.workflow || "planned",
+    goalSessionState: row.goal_session_state ?? null,
+    goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,
+    goalSessionWorktreePath: row.goal_session_worktree_path ?? null,
+    goalSessionBranch: row.goal_session_branch ?? null,
+    goalSessionGeneration: Number(row.goal_session_generation) || 0,
+    goalSessionProviderSessionId: row.goal_session_provider_session_id ?? null,
+    proposalRevision: Number(row.proposal_revision) || 0,
+    proposal: parse(row.proposal, null),
+    approvalRevision: Number.isInteger(row.approval_revision) ? row.approval_revision : null,
+    approvalAt: row.approval_at ?? null,
+    transitionStatus: row.transition_status ?? null,
+    goalSessionError: row.goal_session_error ?? null,
+    goalSessionPendingInput: row.goal_session_pending_input ?? null,
+    goalSessionActiveInput: row.goal_session_active_input ?? null,
+    goalSessionQuestionRevision: Number(row.goal_session_question_revision) || 0,
+    goalSessionRunnerPid: Number.isInteger(row.goal_session_runner_pid) ? row.goal_session_runner_pid : null,
+    goalSessionRunnerStartedAt: row.goal_session_runner_started_at ?? null,
+    goalSessionRunnerDispatchId: row.goal_session_runner_dispatch_id ?? null,
+    goalSessionRunnerDispatchedAt: row.goal_session_runner_dispatched_at ?? null,
+    goalSessionCorrectionInput: row.goal_session_correction_input ?? null,
+    goalSessionCorrectionStatus: row.goal_session_correction_status ?? null,
     sessionId: row.session_id,
     round: row.round,
     status: row.status,

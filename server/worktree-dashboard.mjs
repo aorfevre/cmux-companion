@@ -647,7 +647,7 @@ export class WorktreeDashboard {
       // A null result means the leftover was behind the base and held nothing
       // of its own, so reuseWorktree removed it. Fall through and build it
       // again from the current base.
-      if (reused) return reused;
+      if (reused) return { ...reused, baseRef };
       retiredExisting = existing;
     }
 
@@ -694,7 +694,7 @@ export class WorktreeDashboard {
     const refreshed = await this.snapshot({ refresh: true });
     const created = refreshed.repositories.flatMap((item) => item.worktrees).find((item) => item.path === targetPath);
     if (!created) throw worktreeStateError("The worktree was created but could not be loaded", WORKTREE_REASONS.CREATED_NOT_LOADABLE);
-    return { created: true, reused: false, worktree: created, branchCreated: !branchExists };
+    return { created: true, reused: false, worktree: created, branchCreated: !branchExists, baseRef };
   }
 
   async recoverAlreadyExistsRace({ repository, branchName, baseRef, args, targetPath, reuseIfAtBase, workspaces, workspacesAvailable, originalError }) {

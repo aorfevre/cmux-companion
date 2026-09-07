@@ -30,9 +30,10 @@ export const ALERTING = new Map([
 ]);
 
 export class GoalWatchdog {
-  constructor({ health, integrator = null, pushService = null, mergeWatch = null, worktrees = null, sessionCollector = null, sessionReaper = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
+  constructor({ health, store = null, integrator = null, pushService = null, mergeWatch = null, worktrees = null, sessionCollector = null, sessionReaper = null, log = null, intervalMs = DEFAULT_INTERVAL_MS, startDelayMs = DEFAULT_START_DELAY_MS } = {}) {
     if (!health) throw new TypeError("A goal health sweep is required");
     this.health = health;
+    this.store = store;
     this.integrator = integrator;
     this.pushService = pushService;
     // Optional. With no reaper the watchdog behaves exactly as it did before:
@@ -93,7 +94,7 @@ export class GoalWatchdog {
     // sweep is skipped above applies here: an unreachable cmux proves nothing
     // about any agent, so nothing is closed on the strength of it.
     const sessions = await this.#reap();
-    const alerts = [];
+    const alerts = await this.#managedInputAlerts();
     const seen = new Set();
     for (const goal of swept.goals || []) {
       seen.add(goal.planId);
@@ -139,6 +140,27 @@ export class GoalWatchdog {
   // Returns true only when a device actually received the alert. With no push
   // service at all it returns true: there is nothing to retry, and retrying
   // every tick forever would be worse than reporting once.
+  // Managed goal questions do not originate from a native cmux inbox card.
+  // The runner records them in SQLite, and this existing attention channel
+  // wakes a closed phone once without inferring any approval from the text.
+  async #managedInputAlerts() {
+    const plans = this.store?.list?.({ limit: 200 }) || [];
+    const alerts = [];
+    const active = new Set();
+    for (const plan of plans) {
+      if (plan?.workflow !== "goal_session" || plan?.goalSessionState !== "awaiting_input" || plan?.boardStatus) continue;
+      const key = `managed-input:${plan.planId}`;
+      active.add(key);
+      if (this.managedInputAlerted?.has(key)) continue;
+      const delivered = await this.#push({ planId: plan.planId, goal: plan.goal, tasks: [] }, { kind: "attention", label: "needs your answer" });
+      if (!this.managedInputAlerted) this.managedInputAlerted = new Set();
+      if (delivered) this.managedInputAlerted.add(key);
+      alerts.push({ planId: plan.planId, health: "needs_you", goal: plan.goal, stuckCount: 1, delivered });
+    }
+    for (const key of this.managedInputAlerted || []) if (!active.has(key)) this.managedInputAlerted.delete(key);
+    return alerts;
+  }
+
   // Best-effort, and deliberately before the sweep rather than instead of it.
   // A GitHub read that fails must still leave the liveness check to run, so a
   // dead agent is reported even when `gh` is unauthenticated or offline.

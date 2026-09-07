@@ -12,6 +12,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Highlights real cmux status, structured tasks, CPU, memory, and process health
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
 - Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
+- Starts one goal as a visible conversation in its own worktree, with questions, revisions, and approval before implementation
 - Turns one goal into a validated Delivery Contract with observable acceptance criteria, scope, assumptions, risks, ownership, verification, and dependency waves; then starts each eligible task in an isolated worktree while balancing Claude and Codex by remaining quota
 - Groups a repository's open GitHub issues into selectable master topics, plans and launches the topics in parallel, and links every final PR back to the issues it closes
 - Delivers a multi-task goal as one verified pull request: task agents push isolated branches, Companion pins their finished commits and cuts one goal branch, and a single merge agent squash-merges them, resolves the conflicts it can, re-runs the repository's own verification against a baseline, and opens the combined PR
@@ -38,6 +39,47 @@ No cloud application server is involved. Terminal output and input travel direct
 - Installs as a standalone PWA on iPhone
 - Waits quietly when cmux is closed and reconnects when it opens
 - Starts automatically at macOS login through a LaunchAgent
+
+## Visible goal sessions
+
+In Worktrees, open **New goal**, describe a small increment and select **Start
+goal session**. Companion saves the goal and opens an isolated worktree with a
+visible cmux conversation. Answer questions there or through the attention inbox.
+Steering during planning is saved for the next turn. Review the proposed scope,
+exclusions, assumptions, acceptance criteria and verification, then choose
+**Request changes** or **Approve and implement**. Approval applies to that exact
+revision and session generation. Phone read-only protection also disables the
+session's approval and recovery controls until input is enabled.
+
+The same owner conversation continues implementation and review. **Open
+conversation** on a saved goal returns to its recorded workspace. **Recover failed
+turn** retries a failed planning turn through its existing owner; it never
+blindly retries an uncertain writable turn. The goal retains its checkout,
+questions and decisions when the bridge restarts. A session with missing or
+uncertain ownership can require manual reconciliation rather than creating
+another writer. The owning conversation stays open while its PR is reviewed.
+
+This conversation uses a line-oriented runner in cmux and CCS with an explicit
+Claude-compatible target for both selected providers. It resumes the saved
+provider conversation between processes; it is not a native Codex or Claude TUI.
+Send terminal replies one line at a time; use the saved goal sheet’s answer or
+request-change text area for multiline feedback. Planning enables only Read, Grep and Glob. Approval enables a bounded writable
+tool configuration without a permission-bypass mode. Unsupported commands can
+still be refused and reported as failed or uncertain turns.
+
+The owner is associated with one task for existing health and PR tracking.
+Companion observes PR state through its GitHub refresh/watch path; provider prose
+or a successful process exit is not delivery evidence. Existing **Plan this
+goal**, bulk issue planning and multi-task delivery retain their separate flow.
+Automated planner/code reviewers remain on that legacy path; a visible-session
+start rejects those selections before allocating resources.
+Merge and deployment remain separate decisions.
+
+See the [feature contract and validation](docs/goal-session-planning.md). Local
+fixtures exercise the workflow, identities and recovery boundaries; real CCS
+permission enforcement, cmux continuity and live GitHub delivery still require
+the explicit live-test opt-in. Product-quality and iteration-speed improvements
+have not yet been measured on real goals.
 
 ## Architecture
 

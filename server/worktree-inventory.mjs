@@ -96,7 +96,7 @@ export class WorktreeInventory {
     const plans = this.goalPlans();
     const goal = await goalWorktreeProof(repo, row, plans, { readPr: this.readGoalPr });
     if (goal) return goal;
-    if (plans.some((plan) => plan.integrationWorktreePath === row.path || plan.tasks?.some((task) => task.worktreePath === row.path))) return { proven: false, reason: "Goal PR is not verified merged for this exact worktree HEAD" };
+    if (plans.some((plan) => plan.integrationWorktreePath === row.path || plan.goalSessionWorktreePath === row.path || plan.tasks?.some((task) => task.worktreePath === row.path))) return { proven: false, reason: "Goal PR is not verified merged for this exact worktree HEAD" };
     if (base.error) return { proven: false, reason: "Default branch could not be verified against origin" };
     try {
       await git(repo.path, ["merge-base", "--is-ancestor", row.head, base.head]);

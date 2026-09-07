@@ -1137,6 +1137,7 @@ export class WorktreePlanner {
     this.#assertNotTerminal(id);
     const plan = this.#read(() => this.store?.get(id));
     if (!plan) throw new TypeError("Unknown plan. Start a new goal");
+    if (plan.workflow === "goal_session") throw new TypeError("This managed goal owns its visible cmux conversation and cannot launch a legacy task recovery");
     if (plan.status !== "launched") throw new TypeError("This goal has not launched yet, so it has no task to recover");
     const task = (plan.tasks || []).find((item) => item.id === String(taskId || ""));
     if (!task) throw new TypeError("Unknown task in this goal");
@@ -1543,10 +1544,17 @@ export class WorktreePlanner {
     // before the cache: an aborted goal whose draft is still hot must refuse
     // exactly like one that was reloaded from the database.
     this.#assertNotTerminal(id);
-    const cached = this.drafts.get(id);
-    if (cached) return cached;
     const stored = this.#read(() => this.store?.get(id));
+    const cached = this.drafts.get(id);
+    // A few supported adapters intentionally keep only an in-memory draft.
+    // A persisted row, when present, still wins for the managed-session guard.
+    if (!stored && cached) return cached;
     if (!stored) throw new TypeError("Unknown plan. Start a new goal");
+    // A managed goal owns one visible conversation and revision-bound decision
+    // records. Legacy planner mutations must not create a second provider turn
+    // or turn terminal/inbox text into an implementation approval.
+    if (stored.workflow === "goal_session") throw new TypeError("This goal is managed in its cmux session. Use its proposal controls there");
+    if (cached) return cached;
     if (stored.status === "launched") throw new TypeError("This plan is already launched. Start a new goal");
     const draft = draftFromStore(stored);
     this.drafts.set(draft.planId, draft);
@@ -1641,6 +1649,8 @@ export class WorktreePlanner {
 
   async remove(planId) {
     const id = String(planId || "");
+    const plan = this.#read(() => this.store?.get(id));
+    if (plan?.workflow === "goal_session") throw new TypeError("Managed goal sessions are retained for their workspace and approval record. Abort it instead");
     this.#assertIdle(id);
     this.drafts.delete(id);
     const deleted = this.#read(() => this.store?.delete(id)) === true;
@@ -1679,7 +1689,7 @@ export class WorktreePlanner {
 // both lists and must not be closed twice.
 function goalWorkspaceIds(plan) {
   const ids = (Array.isArray(plan?.tasks) ? plan.tasks : []).map((task) => task?.workspaceId);
-  ids.push(plan?.mergeWorkspaceId);
+  ids.push(plan?.mergeWorkspaceId, plan?.goalSessionWorkspaceId);
   for (const entry of Array.isArray(plan?.supersededMergeWorkspaces) ? plan.supersededMergeWorkspaces : []) {
     ids.push(typeof entry === "string" ? entry : entry?.workspaceId);
   }
@@ -1941,7 +1951,7 @@ export function taskPrompt(task, spec, images, base, deliveryMode = "single", re
   return [withImages(task.prompt, images), contract, ...rigor, completionReportInstruction(task), finish].join("\n\n");
 }
 
-function normalizeImages(images) {
+export function normalizeImages(images) {
   if (images === undefined || images === null) return [];
   if (!Array.isArray(images)) throw new TypeError("Attached images must be a list");
   if (images.length > MAX_IMAGES) throw new TypeError(`Attach at most ${MAX_IMAGES} images`);

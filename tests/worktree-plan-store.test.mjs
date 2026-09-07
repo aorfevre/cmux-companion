@@ -1362,3 +1362,43 @@ test("issue ownership is atomic across store instances and permits independent r
   second.createPlan({ planId: "retry", repositoryId: "repo-a", goal: "Explicitly deleted topic can be planned again", issueNumbers: [79] });
   assert.ok(first.get("retry"));
 });
+
+test("goal-session approvals are bound to one generation and immutable proposal revision", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.reserveGoalSession("plan-1", { branch: "goal-session/plan-1", generation: 1 });
+  store.recordGoalSessionStart("plan-1", {
+    worktreePath: "/repo/goal-session", workspaceId: "00000000-0000-4000-8000-000000000001", generation: 1,
+  });
+  store.publishProposal("plan-1", { generation: 1, proposal: { intendedBehavior: "Add billing", scope: ["billing"] } });
+  const first = store.get("plan-1");
+  assert.equal(first.goalSessionState, "awaiting_approval");
+  assert.equal(first.proposalRevision, 1);
+  assert.throws(() => store.approveProposal("plan-1", { generation: 2, revision: 1 }), /no longer current/);
+  store.requestProposalChanges("plan-1", { generation: 1, revision: 1, feedback: "Keep invoices out." });
+  store.publishProposal("plan-1", { generation: 1, proposal: { intendedBehavior: "Add billing only", scope: ["billing"] } });
+  assert.equal(store.get("plan-1").proposalRevision, 2);
+  assert.throws(() => store.approveProposal("plan-1", { generation: 1, revision: 1 }), /no longer current/);
+  store.approveProposal("plan-1", { generation: 1, revision: 2 });
+  const approved = store.get("plan-1");
+  assert.equal(approved.status, "launched");
+  assert.equal(approved.tasks.length, 1);
+  assert.deepEqual(approved.tasks[0].workspaceId, "00000000-0000-4000-8000-000000000001");
+  assert.equal(approved.tasks[0].branch, "goal-session/plan-1");
+  assert.equal(store.claimGoalSessionTransition("plan-1", { generation: 1, revision: 2 }).transitionStatus, "dispatching");
+  assert.equal(store.claimGoalSessionTransition("plan-1", { generation: 1, revision: 2 }), null, "a duplicate click cannot dispatch twice");
+  store.recordGoalSessionTransition("plan-1", { generation: 1, revision: 2, error: "Bridge reply was lost" });
+  assert.equal(store.get("plan-1").transitionStatus, "uncertain", "an uncertain handoff is never automatically replayed");
+});
+
+
+test("finds a managed goal only by its persisted workspace identity", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.reserveGoalSession("plan-1", { branch: "goal-session/plan-1", generation: 1 });
+  store.recordGoalSessionStart("plan-1", {
+    worktreePath: "/repo/goal-session", workspaceId: "00000000-0000-4000-8000-000000000001", generation: 1,
+  });
+  assert.equal(store.findGoalSessionByWorkspace("00000000-0000-4000-8000-000000000001")?.planId, "plan-1");
+  assert.equal(store.findGoalSessionByWorkspace("workspace-not-owned"), null);
+});

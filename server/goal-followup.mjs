@@ -34,6 +34,7 @@ export class GoalFollowups {
   async #launch(id, { actions, question, custom, agent }) {
     const plan = this.store.get(id);
     if (!plan) throw new TypeError("Unknown plan. Start a new goal");
+    if (plan.workflow === "goal_session") throw new TypeError("Managed goal sessions retain their one visible conversation for delivery and review");
     if (goalBoardState(plan) !== "waiting_for_merge") {
       throw new TypeError("Only a goal waiting for merge can take a follow-up action");
     }
