@@ -577,6 +577,14 @@ export async function buildApp({
     return reply.code(201).send(plan);
   });
 
+  // Workspace detail uses this exact persisted identity to keep proposal
+  // decisions beside the managed terminal, without guessing from a directory
+  // or touching a legacy plan.
+  app.get("/api/goal-sessions/workspace/:workspaceId", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    return { plan: goalSessions.findByWorkspace(request.params.workspaceId) };
+  });
+
   app.post("/api/goal-sessions/:planId/approve", async (request) => {
     if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
     return goalSessions.approve(request.params.planId, request.body || {});

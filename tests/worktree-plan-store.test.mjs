@@ -1371,3 +1371,15 @@ test("goal-session approvals are bound to one generation and immutable proposal 
   store.recordGoalSessionTransition("plan-1", { generation: 1, revision: 2, error: "Bridge reply was lost" });
   assert.equal(store.get("plan-1").transitionStatus, "uncertain", "an uncertain handoff is never automatically replayed");
 });
+
+
+test("finds a managed goal only by its persisted workspace identity", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.reserveGoalSession("plan-1", { branch: "goal-session/plan-1", generation: 1 });
+  store.recordGoalSessionStart("plan-1", {
+    worktreePath: "/repo/goal-session", workspaceId: "00000000-0000-4000-8000-000000000001", generation: 1,
+  });
+  assert.equal(store.findGoalSessionByWorkspace("00000000-0000-4000-8000-000000000001")?.planId, "plan-1");
+  assert.equal(store.findGoalSessionByWorkspace("workspace-not-owned"), null);
+});

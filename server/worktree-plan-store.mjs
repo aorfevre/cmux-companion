@@ -310,6 +310,13 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  findGoalSessionByWorkspace(workspaceId) {
+    const id = text(workspaceId);
+    if (!id || id.length > 200) return null;
+    const row = this.db.prepare("SELECT * FROM plans WHERE workflow = 'goal_session' AND goal_session_workspace_id = ? LIMIT 1").get(id);
+    return row ? readPlan(row) : null;
+  }
+
   recordGoalSessionProviderSession(planId, { generation, providerSessionId } = {}) {
     const session = text(providerSessionId);
     if (!Number.isInteger(generation) || generation < 1 || !session) throw new TypeError("Invalid provider conversation identity");

@@ -39,6 +39,7 @@ export class GoalSessionService {
     }
   }
 
+  findByWorkspace(workspaceId) { return this.store.findGoalSessionByWorkspace(workspaceId); }
   approve(planId, decision) { return this.store.approveProposal(planId, decision); }
   requestChanges(planId, decision) { return this.store.requestProposalChanges(planId, decision); }
 }

@@ -17,6 +17,7 @@ import { ModelSettingsPanel } from "./model-settings";
 import { WorktreeCleanupPanel } from "./worktree-cleanup";
 import { WorktreeDashboardView } from "./worktree-dashboard";
 import { DeploymentHealth } from "./deployment-health";
+import type { PlanDraft } from "./worktree-planner";
 
 type Terminal = { id: string; title: string; current_directory?: string | null; is_focused?: boolean; is_ready?: boolean };
 type WorkspaceStatus = { effective?: string; inferred?: string; signals?: Record<string, boolean> };
@@ -245,12 +246,59 @@ function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo
     <main className="detail-shell">
       <header className="detail-header"><button className="back-button" onClick={props.onBack}>‹ <span>Back</span></button><div><strong>{props.workspace.title}</strong><span>{compactPath(props.workspace.current_directory)}</span></div><button className="session-menu-button" aria-label="Session menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><span className={`status-orb ${sessionState(props.workspace).tone}`} />•••</button></header>
       {props.context && <aside className={`notification-context ${props.context.kind}`}><div><strong>{props.context.kind === "failure" ? "A command or test failed" : props.context.kind === "pullRequest" ? "Pull request updated" : props.context.kind === "completion" ? "Work is ready to review" : "Session update"}</strong><span>You opened this session from a notification.</span></div>{props.context.file && <button onClick={() => props.onMarkdown(props.context!.file!)}>Open {props.context.file.split("/").pop()}</button>}<button aria-label="Dismiss notification context" onClick={props.onDismissContext}>×</button></aside>}
+      <ManagedGoalControls workspaceId={props.workspace.id} />
       {props.tab === "terminal" && <TerminalPanel {...props} fontSize={fontSize} fitToPhone={fitToPhone} shortcutsOpen={shortcutsOpen} onShortcuts={setShortcutsOpen} />}
       {props.tab === "tasks" && <HealthPanel workspace={props.workspace} terminal={props.terminal} onChanged={props.onChanged} onNotice={props.onNotice} />}
       {props.tab === "changes" && <ChangesPanel repo={props.repo} onMarkdown={props.onMarkdown} />}
       {menuOpen && <><button className="session-menu-backdrop" aria-label="Close session menu" onClick={() => setMenuOpen(false)} /><section className="session-menu" role="dialog" aria-modal="true" aria-label="Session menu"><header><div><strong>{props.workspace.title}</strong><span>Session controls</span></div><button onClick={() => setMenuOpen(false)}>×</button></header><nav className="session-menu-nav">{(["terminal", "tasks", "changes"] as DetailTab[]).map((tab) => <button className={props.tab === tab ? "active" : ""} onClick={() => { props.onTab(tab); setMenuOpen(false); }} key={tab}>{tab === "tasks" ? "Health" : tab[0].toUpperCase() + tab.slice(1)}</button>)}</nav><PullRequestBanner repo={props.repo} />{props.workspace.terminals.length > 1 && <div className="session-menu-section"><span>Terminals</span><div className="menu-terminal-list">{props.workspace.terminals.map((terminal, index) => <button className={terminal.id === props.terminal.id ? "active" : ""} onClick={() => { props.onTerminal(terminal.id); setMenuOpen(false); }} key={terminal.id}>{index + 1}. {terminal.title}</button>)}</div></div>}<div className="session-menu-section"><span>Display & input</span><div className="menu-action-grid"><button className={fitToPhone ? "active" : ""} onClick={toggleFit}>Fit text <b>{fitToPhone ? "On" : "Off"}</b></button><button onClick={props.onRefresh}>Refresh</button><button onClick={() => changeFont(-1)} disabled={fontSize <= 11}>Text A−</button><button onClick={() => changeFont(1)} disabled={fontSize >= 20}>Text A＋</button><button className={!props.readOnly ? "active" : ""} onClick={props.onReadOnly}>{props.readOnly ? "Enable input" : "Input enabled"}</button><button disabled={props.readOnly} onClick={() => { props.onTab("terminal"); setShortcutsOpen(true); setMenuOpen(false); }}>／ Shortcuts</button><button onClick={() => { setMenuOpen(false); props.onApps(); }}>Local apps <b>›</b></button></div></div><div className="session-menu-section"><span>Special keys</span><div className="menu-key-grid">{[["Esc", "escape"], ["Tab", "tab"], ["↑", "up"], ["↓", "down"], ["Ctrl-C", "ctrl+c"], ["Enter", "enter"]].map(([label, key]) => <button disabled={props.readOnly || props.sending} onClick={() => props.onKey(key)} key={key}>{label}</button>)}</div></div></section></>}
     </main>
   );
+}
+
+
+export function ManagedGoalControls({ workspaceId }: { workspaceId: string }) {
+  const [plan, setPlan] = useState<PlanDraft | null>(null);
+  const [changes, setChanges] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try {
+      const result = await api<{ plan: PlanDraft | null }>(`/api/goal-sessions/workspace/${encodeURIComponent(workspaceId)}`);
+      setPlan(result.plan); setError("");
+    } catch { setPlan(null); }
+  }, [workspaceId]);
+  useEffect(() => {
+    const kickoff = setTimeout(() => { void load(); }, 0);
+    const poll = setInterval(() => { void load(); }, 2_500);
+    return () => { clearTimeout(kickoff); clearInterval(poll); };
+  }, [load]);
+  async function approve() {
+    if (!plan?.proposalRevision || !plan.goalSessionGeneration) return;
+    setBusy(true); setError("");
+    try {
+      setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/approve`, { method: "POST", body: JSON.stringify({ generation: plan.goalSessionGeneration, revision: plan.proposalRevision }) }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not approve this proposal"); }
+    finally { setBusy(false); }
+  }
+  async function requestChanges() {
+    if (!plan?.proposalRevision || !plan.goalSessionGeneration || !changes.trim()) return;
+    setBusy(true); setError("");
+    try {
+      setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/request-changes`, { method: "POST", body: JSON.stringify({ generation: plan.goalSessionGeneration, revision: plan.proposalRevision, feedback: changes.trim() }) }));
+      setChanges("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not request proposal changes"); }
+    finally { setBusy(false); }
+  }
+  if (!plan) return null;
+  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <section className="planner-delivery-status" aria-label="Managed goal status"><strong>Managed goal</strong><p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "The agent is investigating this goal in the visible conversation.")}</p></section>;
+  return <section className="planner-delivery-status" aria-label="Proposal awaiting approval"><strong>Proposal revision {plan.proposalRevision}</strong><p>{plan.proposal.intendedBehavior || plan.goal}</p>
+    {plan.proposal.scope?.length ? <p>Scope: {plan.proposal.scope.join(" · ")}</p> : null}
+    {plan.proposal.assumptions?.length ? <p>Assumptions: {plan.proposal.assumptions.join(" · ")}</p> : null}
+    {plan.proposal.verification?.length ? <p>Verify: {plan.proposal.verification.join(" · ")}</p> : null}
+    <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} maxLength={4_000} rows={2} onChange={(event) => setChanges(event.target.value)} /></label>
+    {error && <p role="alert">{error}</p>}
+    <div className="planner-actions"><button type="button" disabled={busy || !changes.trim()} onClick={requestChanges}>Request changes</button><button type="button" className="primary-button" disabled={busy} onClick={approve}>{busy ? "Approving…" : "Approve and implement"}</button></div>
+  </section>;
 }
 
 export function PullRequestBanner({ repo }: { repo: Repo | null }) {

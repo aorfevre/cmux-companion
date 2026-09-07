@@ -1562,10 +1562,14 @@ export class WorktreePlanner {
     // before the cache: an aborted goal whose draft is still hot must refuse
     // exactly like one that was reloaded from the database.
     this.#assertNotTerminal(id);
-    const cached = this.drafts.get(id);
-    if (cached) return cached;
     const stored = this.#read(() => this.store?.get(id));
     if (!stored) throw new TypeError("Unknown plan. Start a new goal");
+    // A managed goal owns one visible conversation and revision-bound decision
+    // records. Legacy planner mutations must not create a second provider turn
+    // or turn terminal/inbox text into an implementation approval.
+    if (stored.workflow === "goal_session") throw new TypeError("This goal is managed in its cmux session. Use its proposal controls there");
+    const cached = this.drafts.get(id);
+    if (cached) return cached;
     if (stored.status === "launched") throw new TypeError("This plan is already launched. Start a new goal");
     const draft = draftFromStore(stored);
     this.drafts.set(draft.planId, draft);
