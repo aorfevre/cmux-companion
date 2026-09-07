@@ -1,3 +1,5 @@
+import { ModelSettings } from "./model-settings.mjs";
+import { DEFAULT_MODEL_ROLES, normalizeModelId, roleEngine } from "./model-options.mjs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -14,6 +16,7 @@ import {
 import { normalizeSpecOptions, specOptionsBriefLines, specOptionsPromptLines } from "./spec-options.mjs";
 import { normalizeReviewOptions, safeReviewOptions } from "./review-options.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
+import { resolveDefaultBaseRef } from "./default-base-ref.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
 import { LaunchRuns } from "./launch-runs.mjs";
 import { goalBoardState } from "./goal-board.mjs";
@@ -391,25 +394,16 @@ const MAX_TASKS = 8;
 const MAX_IMAGES = 4;
 const MAX_DRAFTS = 50;
 
-export function normalizePlannerEngine(engine) {
-  if (engine === undefined) return {
-    provider: PLANNER_ENGINES.defaultProvider,
-    model: PLANNER_ENGINES.defaultModel,
-    effort: PLANNER_ENGINES.defaultEffort,
-    reviewer: false,
-  };
+export function normalizePlannerEngine(engine, roles = DEFAULT_MODEL_ROLES) {
+  if (engine === undefined) engine = {};
   if (!engine || typeof engine !== "object" || Array.isArray(engine)) {
     throw new TypeError("Planner engine configuration must be an object");
   }
-  const provider = engine.provider ?? PLANNER_ENGINES.defaultProvider;
+  const provider = engine.provider ?? roles.planner.provider;
   if (typeof provider !== "string" || !Object.hasOwn(PLANNER_ENGINES.providers, provider)) {
     throw new TypeError("Unknown planner provider. Choose Claude or Codex");
   }
-  const providerOptions = PLANNER_ENGINES.providers[provider];
-  const model = engine.model ?? PLANNER_ENGINES.defaultModel;
-  if (!providerOptions.models.some((option) => option.id === model)) {
-    throw new TypeError(`Unknown ${providerOptions.label} planner model`);
-  }
+  const model = normalizeModelId(engine.model ?? roleEngine(roles, "planner", provider).model);
   const effort = engine.effort ?? PLANNER_ENGINES.defaultEffort;
   if (!PLANNER_ENGINES.efforts.some((option) => option.id === effort)) {
     throw new TypeError("Unknown planner effort. Choose Default, Low, Medium, High, or Xhigh");
@@ -461,13 +455,14 @@ function minutes(ms) {
 }
 
 export class WorktreePlanner {
-  constructor({ worktrees, cmux, accountUsage, log = null, execute = streamExecFile, git = null, maxRounds = 6, idleTimeoutMs = ROUND_IDLE_TIMEOUT_MS, ceilingMs = ROUND_CEILING_MS, usageTimeoutMs = 10_000, ttlMs = DRAFT_TTL_MS, store = null, runs = null, launches = null, progress = null, pushService = null, briefs = new AgentBriefs(), onLaunchSettled = null } = {}) {
+  constructor({ worktrees, cmux, accountUsage, modelSettings = new ModelSettings(), log = null, execute = streamExecFile, git = null, maxRounds = 6, idleTimeoutMs = ROUND_IDLE_TIMEOUT_MS, ceilingMs = ROUND_CEILING_MS, usageTimeoutMs = 10_000, ttlMs = DRAFT_TTL_MS, store = null, runs = null, launches = null, progress = null, pushService = null, briefs = new AgentBriefs(), onLaunchSettled = null } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!cmux) throw new TypeError("A cmux client is required");
     this.worktrees = worktrees;
     // The dashboard owns the repo catalog, which owns the injected git runner.
     this.git = git || ((cwd, args, options) => worktrees.repoCatalog.git(cwd, args, options));
     this.cmux = cmux;
+    this.modelSettings = modelSettings;
     this.accountUsage = accountUsage;
     // The full brief goes to a file. cmux caps a prompt at 8,000 characters, so
     // the session gets a short pointer to that file instead of the brief text.
@@ -500,6 +495,7 @@ export class WorktreePlanner {
     // child through it, and every exit path deletes its own entry, so a
     // finished round leaves nothing behind for a later abort to kill.
     this.controllers = new Map();
+    this.taskOperations = new Set();
   }
 
   async start({ repositoryId, goal, images, engine, specOptions, reviewOptions, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", onEvent = null }) {
@@ -518,14 +514,14 @@ export class WorktreePlanner {
     const linkedIssues = normalizeIssueNumbers(issueNumbers);
     const linkedIssueUrls = normalizeIssueUrls(issueUrls);
     const normalizedDeliveryPolicy = deliveryPolicy === "combined" ? "combined" : "auto";
-    const normalizedEngine = normalizePlannerEngine(engine);
+    const normalizedEngine = normalizePlannerEngine(engine, this.modelSettings.roles);
     // Normalized before the repository scan, so an unknown option id refuses
     // the goal instead of leaving an unusable plan row behind.
     const normalizedSpecOptions = normalizeSpecOptions(specOptions);
     // The review request never reaches the planner prompt or a task brief. It
     // describes what happens after the pull request exists, which is nothing
     // the planner can plan for or evidence.
-    const normalizedReviewOptions = normalizeReviewOptions(reviewOptions);
+    const normalizedReviewOptions = normalizeReviewOptions(reviewOptions, this.modelSettings.roles);
     const repository = await this.#repository(repositoryId);
     const draft = {
       planId: randomUUID(),
@@ -555,8 +551,11 @@ export class WorktreePlanner {
       const oldest = [...this.drafts.entries()].sort((left, right) => left[1].at - right[1].at)[0];
       if (oldest) this.drafts.delete(oldest[0]);
     }
-    this.drafts.set(draft.planId, draft);
-    this.#persist(() => this.store?.createPlan({
+    const conflicting = [...this.drafts.values()].find((other) => other.repositoryId === repositoryId && (other.issueNumbers || []).some((number) => linkedIssues.includes(number)));
+    if (conflicting) throw Object.assign(new TypeError("An issue already belongs to a saved goal"), { code: "ISSUE_ALREADY_PLANNED", planId: conflicting.planId });
+    // No model work has been paid for yet. A failed reservation must stop here,
+    // unlike a history write after a completed round.
+    this.store?.createPlan({
       planId: draft.planId,
       repositoryId: draft.repositoryId,
       repositoryName: draft.repositoryName,
@@ -570,7 +569,8 @@ export class WorktreePlanner {
       engine: draft.engine,
       specOptions: draft.specOptions,
       reviewOptions: draft.reviewOptions,
-    }), draft.planId, "create");
+    });
+    this.drafts.set(draft.planId, draft);
     return draft;
   }
 
@@ -925,7 +925,15 @@ export class WorktreePlanner {
   //     and opens a fresh session on it. This is the common case.
   //   - `restart` throws the working tree away and rebuilds from the base.
   //   - `rebranch` preserves it and starts in a newly derived branch.
-  async relaunchTask(planId, taskId, { mode = "continue", closeLive = false } = {}) {
+  async relaunchTask(planId, taskId, options = {}) {
+    const key = `${planId}/${taskId}`;
+    if (this.taskOperations.has(key)) throw new TypeError("This task already has a recovery operation in progress");
+    this.taskOperations.add(key);
+    try { return await this.#relaunchTask(planId, taskId, options); }
+    finally { this.taskOperations.delete(key); }
+  }
+
+  async #relaunchTask(planId, taskId, { mode = "continue", closeLive = false } = {}) {
     if (!new Set(["continue", "restart", "rebranch"]).has(mode)) throw new TypeError("Relaunch mode must be continue, restart, or rebranch");
     const { plan, task } = this.#launchedTask(planId, taskId);
     if (task.deliveryStatus === "integrated") throw new TypeError("This task is already merged into the goal branch");
@@ -949,9 +957,16 @@ export class WorktreePlanner {
       : null;
     if (live && !closeLive) throw new TypeError("This task's cmux session is still open. Close it first, or answer it, before relaunching");
     if (live) {
-      await this.cmux.workspaceClose(task.workspaceId).catch((cause) => {
-        this.log?.warn?.({ err: cause, planId: plan.planId, taskId: task.id }, "closing a relaunched task session failed");
-      });
+      let closeError;
+      try { await this.cmux.workspaceClose(task.workspaceId); }
+      catch (cause) { closeError = cause; }
+      // Even an acknowledged close must become visible in a fresh inventory.
+      // A transport failure is recoverable only when that inventory proves
+      // the old workspace is gone; it is never permission for another writer.
+      const fresh = await this.#workspaces();
+      if (!fresh.available || fresh.workspaces.some((workspace) => workspace?.id === task.workspaceId)) {
+        throw new TypeError(`The previous session could not be confirmed closed. Retry before relaunching${closeError?.message ? `: ${closeError.message}` : ""}`);
+      }
     }
 
     const base = plan.deliveryMode === "combined" && plan.integrationBranch ? plan.integrationBranch : plan.baseRef || "origin/main";
@@ -1004,7 +1019,7 @@ export class WorktreePlanner {
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: sessionTitle(plan, task),
-        agent: task.agent,
+        ...this.modelSettings.workspace("coder", task.agent),
         env: sessionEnv(plan, task),
         prompt: this.briefs.pointerPrompt({
           title: task.title,
@@ -1057,7 +1072,7 @@ export class WorktreePlanner {
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: sessionTitle(plan, effectiveTask),
-        agent: effectiveTask.agent,
+        ...this.modelSettings.workspace("coder", effectiveTask.agent),
         env: sessionEnv(plan, effectiveTask),
         prompt: this.briefs.pointerPrompt({ title: task.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
       });
@@ -1103,7 +1118,7 @@ export class WorktreePlanner {
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: sessionTitle(plan, effectiveTask),
-        agent: effectiveTask.agent,
+        ...this.modelSettings.workspace("coder", effectiveTask.agent),
         env: sessionEnv(plan, effectiveTask),
         prompt: this.briefs.pointerPrompt({ title: effectiveTask.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
       });
@@ -1122,6 +1137,7 @@ export class WorktreePlanner {
     this.#assertNotTerminal(id);
     const plan = this.#read(() => this.store?.get(id));
     if (!plan) throw new TypeError("Unknown plan. Start a new goal");
+    if (plan.workflow === "goal_session") throw new TypeError("This managed goal owns its visible cmux conversation and cannot launch a legacy task recovery");
     if (plan.status !== "launched") throw new TypeError("This goal has not launched yet, so it has no task to recover");
     const task = (plan.tasks || []).find((item) => item.id === String(taskId || ""));
     if (!task) throw new TypeError("Unknown task in this goal");
@@ -1199,7 +1215,10 @@ export class WorktreePlanner {
   }
 
   async launch(planId) {
-    return this.#launchWork(await this.#launchable(planId));
+    const draft = await this.#launchable(planId);
+    if (!this.launches.begin(draft.planId)) throw new TypeError(LAUNCHING);
+    try { return await this.#launchWork(draft); }
+    finally { this.launches.finish(draft.planId); this.#launchSettled(draft.planId); }
   }
 
   // The background entry point. It answers as soon as the launch is registered,
@@ -1318,7 +1337,7 @@ export class WorktreePlanner {
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
         title: sessionTitle(draft, effectiveTask),
-        agent: effectiveTask.agent,
+        ...this.modelSettings.workspace("coder", effectiveTask.agent),
         env: sessionEnv(draft, effectiveTask),
         prompt: this.briefs.pointerPrompt({ title: effectiveTask.title, outcome: draft.spec?.outcome || draft.goal, path: brief.path }),
       });
@@ -1333,27 +1352,7 @@ export class WorktreePlanner {
   // Branch every task from the up-to-date default remote branch, so no task
   // inherits another task's work or a stale local commit.
   async #baseRef(draft) {
-    const repositoryPath = await this.#repositoryPath(draft);
-    let branch = "main";
-    try {
-      const output = await this.git(repositoryPath, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-      branch = String(output).trim().replace(/^refs\/remotes\/origin\//, "").replace(/^origin\//, "") || "main";
-    } catch {
-      // No local origin/HEAD ref. Ask the remote rather than guessing "main",
-      // which aborts the whole launch on a healthy master-default repository.
-      const head = await this.git(repositoryPath, ["ls-remote", "--symref", "origin", "HEAD"]).catch(() => "");
-      branch = String(head).match(/^ref: refs\/heads\/(\S+)\s+HEAD/m)?.[1] || "main";
-    }
-    try {
-      await this.git(repositoryPath, ["fetch", "origin", branch], { timeout: 120_000 });
-    } catch (cause) {
-      const lines = String(cause?.stderr || cause?.message || "").trim().split("\n").map((line) => line.trim()).filter(Boolean);
-      // Git prints the diagnosis first and boilerplate advice last, so prefer
-      // the first fatal or error line over the tail.
-      const detail = (lines.find((line) => /^(fatal|error):/.test(line)) || lines.at(-1) || "").slice(0, 160);
-      throw new TypeError(detail ? `Git could not fetch origin/${branch}: ${detail}` : `Git could not fetch origin/${branch}`);
-    }
-    return `origin/${branch}`;
+    return resolveDefaultBaseRef(this.git, await this.#repositoryPath(draft));
   }
 
   async #repositoryPath(draft) {
@@ -1368,8 +1367,8 @@ export class WorktreePlanner {
   // reused or removed on the fiction that an exception meant "no sessions".
   async #workspaces() {
     try {
-      const payload = await this.cmux.workspaceListDetailed();
-      return { available: true, workspaces: Array.isArray(payload?.workspaces) ? payload.workspaces : [] };
+      const payload = await (this.cmux.loadWorkspaceListDetailed ? this.cmux.loadWorkspaceListDetailed() : this.cmux.workspaceListDetailed());
+      return { available: Array.isArray(payload?.workspaces), workspaces: Array.isArray(payload?.workspaces) ? payload.workspaces : [] };
     } catch (cause) {
       this.log?.warn?.({ err: cause }, "planner could not read the workspace list");
       return { available: false, workspaces: [] };
@@ -1410,7 +1409,7 @@ export class WorktreePlanner {
     let spec = reply.legacy ? { ...reply.spec, outcome: draft.goal } : reply.spec;
     let tasks = reply.tasks;
     if (reply.status === "ready" && draft.engine.reviewer) {
-      const reviewer = reviewerEngine(draft.engine.provider);
+      const reviewer = reviewerEngine(draft.engine.provider, this.modelSettings.roles);
       // The structured stage is what the board reads. The line below it is
       // display text only, and no lifecycle rule may parse it.
       this.runs.setStage(draft.planId, "review_spec");
@@ -1468,7 +1467,7 @@ export class WorktreePlanner {
       "--allowed-tools", ALLOWED_TOOLS,
       "--disallowed-tools", DENIED_TOOLS,
     ];
-    if (engine.model !== PLANNER_ENGINES.defaultModel) args.push("--model", engine.model);
+    if (engine.model !== PLANNER_ENGINES.passthroughModel) args.push("--model", engine.model);
     if (engine.effort !== PLANNER_ENGINES.defaultEffort) args.push("--effort", engine.effort);
     if (sessionId) args.push("--resume", sessionId);
     // `--` is required, not cosmetic: --allowed-tools is variadic, so without a
@@ -1545,10 +1544,17 @@ export class WorktreePlanner {
     // before the cache: an aborted goal whose draft is still hot must refuse
     // exactly like one that was reloaded from the database.
     this.#assertNotTerminal(id);
-    const cached = this.drafts.get(id);
-    if (cached) return cached;
     const stored = this.#read(() => this.store?.get(id));
+    const cached = this.drafts.get(id);
+    // A few supported adapters intentionally keep only an in-memory draft.
+    // A persisted row, when present, still wins for the managed-session guard.
+    if (!stored && cached) return cached;
     if (!stored) throw new TypeError("Unknown plan. Start a new goal");
+    // A managed goal owns one visible conversation and revision-bound decision
+    // records. Legacy planner mutations must not create a second provider turn
+    // or turn terminal/inbox text into an implementation approval.
+    if (stored.workflow === "goal_session") throw new TypeError("This goal is managed in its cmux session. Use its proposal controls there");
+    if (cached) return cached;
     if (stored.status === "launched") throw new TypeError("This plan is already launched. Start a new goal");
     const draft = draftFromStore(stored);
     this.drafts.set(draft.planId, draft);
@@ -1643,6 +1649,8 @@ export class WorktreePlanner {
 
   async remove(planId) {
     const id = String(planId || "");
+    const plan = this.#read(() => this.store?.get(id));
+    if (plan?.workflow === "goal_session") throw new TypeError("Managed goal sessions are retained for their workspace and approval record. Abort it instead");
     this.#assertIdle(id);
     this.drafts.delete(id);
     const deleted = this.#read(() => this.store?.delete(id)) === true;
@@ -1681,7 +1689,7 @@ export class WorktreePlanner {
 // both lists and must not be closed twice.
 function goalWorkspaceIds(plan) {
   const ids = (Array.isArray(plan?.tasks) ? plan.tasks : []).map((task) => task?.workspaceId);
-  ids.push(plan?.mergeWorkspaceId);
+  ids.push(plan?.mergeWorkspaceId, plan?.goalSessionWorkspaceId);
   for (const entry of Array.isArray(plan?.supersededMergeWorkspaces) ? plan.supersededMergeWorkspaces : []) {
     ids.push(typeof entry === "string" ? entry : entry?.workspaceId);
   }
@@ -1809,7 +1817,7 @@ function answeredPairs(draft, answers) {
 
 const SKIP_PROMPT = "Stop asking questions. Decide the remaining details yourself and reply now with the delivery-contract JSON object.";
 
-const SPEC_HEAD = '{"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}]';
+const SPEC_HEAD = '{"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}],"approvalSummary":{"overview":"...","userFlow":["..."],"decisions":[{"choice":"...","consequence":"..."}],"successCriteria":["..."]}';
 const SPEC_TAIL = '},"tasks":[{"id":"T1","title":"...","branch":"feature/...","prompt":"...","type":"feature|bugfix|ui|backend|docs|test|migration|investigation|refactor","criterionIds":["AC-1"],"dependsOn":[],"ownedAreas":["path/or/glob/**"],"verification":["specific command or manual check"]}]}';
 const EVIDENCE_SHAPE = ',"optionEvidence":{"unitTests":{"status":"planned|not_applicable","rationale":"...","taskIds":["T1"],"criterionIds":["AC-1"]}}';
 const ARTIFACT_SHAPE = ',"designArtifacts":[{"id":"F1","kind":"flow|screen","title":"...","summary":"...","nodes":[],"edges":[],"screen":{"name":"...","elements":[]}}]';
@@ -1830,6 +1838,8 @@ const CONTRACT_LINES = [
   "The spec states the user-visible outcome, explicit scope boundaries, constraints, visible assumptions, observable acceptance criteria, and material risks.",
   "Write spec.outcome as one or two short sentences (at most 300 characters) explaining the observable change to a human deciding whether to launch development. Do not copy the issue body, prompt instructions, or implementation checklist into the outcome. Preserve necessary detail in scope, constraints, acceptance criteria, and task prompts.",
   "Name assumptions that need human agreement explicitly, and pair each material risk with a concrete mitigation. Give tasks short, distinct titles; keep implementation details in their prompts.",
+  "Include approvalSummary for every new or revised contract. It is concise plain-language approval copy faithful to the detailed spec: overview is at most 600 characters; userFlow, decisions, and successCriteria each have at most five entries; each entry or decision field is at most 240 characters.",
+  "State consequential choices and their effects in decisions. Do not add requirements, conceal assumptions or blockers, or treat the summary as authoritative: the detailed contract and readiness remain authoritative.",
   "Every acceptance criterion has at least one task. Every task names the criteria it delivers, its owned files or areas, and concrete verification.",
   "Use dependsOn only when ordering is real. Tasks in the same dependency wave must be safe to run in separate worktrees and should not claim the same files.",
   "Each task branch starts with feature/ and uses only letters, digits, dots, dashes and slashes.",
@@ -1860,12 +1870,11 @@ function safeSpecOptions(value) {
   }
 }
 
-// A skipped round on a live session sends one sentence and nothing else. That
-// sentence cannot carry the requested rigor, so the demands travel with it.
-// With no option requested the prompt stays exactly as it was.
+// A skipped round on a live session must still restate the current contract
+// shape. A session can predate a schema addition, so one sentence alone would
+// let it return a task split without the required approval summary.
 function skipPrompt(specOptions) {
-  const demands = specOptionsPromptLines(safeSpecOptions(specOptions));
-  return demands.length ? [SKIP_PROMPT, "", contractText(specOptions)].join("\n") : SKIP_PROMPT;
+  return [SKIP_PROMPT, "", contractText(specOptions)].join("\n");
 }
 
 const OVERRIDES = [
@@ -1944,7 +1953,7 @@ export function taskPrompt(task, spec, images, base, deliveryMode = "single", re
   return [withImages(task.prompt, images), contract, ...rigor, completionReportInstruction(task), finish].join("\n\n");
 }
 
-function normalizeImages(images) {
+export function normalizeImages(images) {
   if (images === undefined || images === null) return [];
   if (!Array.isArray(images)) throw new TypeError("Attached images must be a list");
   if (images.length > MAX_IMAGES) throw new TypeError(`Attach at most ${MAX_IMAGES} images`);
@@ -2053,7 +2062,7 @@ function rejectedTasks(draft) {
   ].join("\n"));
 }
 
-const FEEDBACK_HEADER = "The reviewer read your task split and rejected it. Analyse the goal again and return a better split.";
+const FEEDBACK_HEADER = "The reviewer read your task split and rejected it. Analyse the goal again and return a better split. Regenerate approvalSummary so it faithfully reflects the revised detailed contract without adding requirements; keep real blockers visible in readiness.";
 
 // With a live session the planner still holds the goal and the tasks, so the
 // feedback alone is enough. Without one the next spawn is a fresh conversation,

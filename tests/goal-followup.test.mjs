@@ -60,6 +60,7 @@ function harness(plan, { cmux = true } = {}) {
     },
   };
   const cmuxClient = cmux ? {
+    async workspaceListDetailed() { return { workspaces: [] }; },
     async workspaceCreate(value) {
       workspaceCalls.push(value);
       return { workspace_id: `workspace-${workspaceCalls.length}` };
@@ -103,6 +104,14 @@ test("opens exactly one follow-up session with every selected action in its brie
   assert.equal(store.recorded[0][1].briefPath, briefs.written[0].path);
 });
 
+test("never opens a follow-up writer for a managed goal session", async (t) => {
+  const path = await deliveryDirectory(t);
+  const plan = combinedPlan(path, { workflow: "goal_session" });
+  const { launcher, workspaceCalls } = harness(plan);
+  await assert.rejects(() => launcher.launch(plan.planId, { actions: ["custom"], custom: "Retry it", agent: "codex" }), /Managed goal sessions/);
+  assert.deepEqual(workspaceCalls, []);
+});
+
 test("a single-task goal follows its launched task branch and worktree", async (t) => {
   const path = await deliveryDirectory(t);
   const plan = combinedPlan(null, {
@@ -143,7 +152,7 @@ test("two follow-ups use distinct brief paths and each opens one session", async
   await launcher.launch(plan.planId, { actions: ["tests"] });
   await launcher.launch(plan.planId, { actions: ["review"], agent: "codex" });
   assert.equal(workspaceCalls.length, 2);
-  assert.deepEqual(briefs.written.map((brief) => brief.taskId), ["followup-1", "followup-2"]);
+  assert.ok(briefs.written.every((brief) => /^followup-[a-f0-9-]{36}$/.test(brief.taskId)));
   assert.equal(new Set(briefs.written.map((brief) => brief.path)).size, 2);
 });
 
@@ -185,4 +194,86 @@ test("refuses a cmux response without a workspace id before recording launch", a
   await assert.rejects(launcher.launch(plan.planId, { actions: ["review"] }), /did not return its id/);
   assert.equal(workspaceCalls.length, 1);
   assert.equal(store.recorded.length, 0);
+});
+
+test("review follow-ups and general follow-ups use their separate saved models", async (t) => {
+  const plan = combinedPlan(await deliveryDirectory(t));
+  const { launcher, workspaceCalls } = harness(plan);
+  launcher.modelSettings.configure({ roles: { codeReviewer: { models: { codex: "custom-review" } }, followup: { models: { codex: "custom-followup" } } } });
+  await launcher.launch(plan.planId, { actions: ["review", "tests"], agent: "codex" });
+  await launcher.launch(plan.planId, { actions: ["tests"], agent: "codex" });
+  assert.deepEqual(workspaceCalls.map((call) => call.model), ["custom-review", "custom-followup"]);
+});
+
+test("concurrent launcher instances share ownership and release it after a failed brief", async (t) => {
+  const plan = combinedPlan(await deliveryDirectory(t));
+  const { launcher, store, briefs, workspaceCalls } = harness(plan);
+  const second = new GoalFollowups({ store, briefs, cmux: launcher.cmux });
+  let rejectBrief;
+  let entered;
+  const ready = new Promise((resolve) => { entered = resolve; });
+  const write = briefs.write.bind(briefs);
+  briefs.write = () => { entered(); return new Promise((_, reject) => { rejectBrief = reject; }); };
+  const first = launcher.launch(plan.planId, { actions: ["tests"] });
+  const rejected = assert.rejects(first, /brief failed/);
+  await ready;
+  await assert.rejects(second.launch(plan.planId, { actions: ["review"] }), { code: "GOAL_SESSION_BUSY" });
+  assert.equal(workspaceCalls.length, 0);
+  rejectBrief(new Error("brief failed"));
+  await rejected;
+  briefs.write = write;
+  const result = await second.launch(plan.planId, { actions: ["review"] });
+  assert.equal(workspaceCalls.length, 1);
+  assert.equal(store.recorded[0][1].followupId, result.followupId);
+});
+
+for (const scenario of ["unavailable", "prior-followup", "unrecorded-writer", "writer-during-brief"]) {
+  test(`follow-up refuses ${scenario}`, async (t) => {
+    const plan = combinedPlan(await deliveryDirectory(t));
+    const { launcher, workspaceCalls } = harness(plan);
+    plan.followups.push({ workspaceId: "prior" });
+    let reads = 0;
+    launcher.cmux.workspaceListDetailed = async () => {
+      reads++;
+      if (scenario === "unavailable") return {};
+      if (scenario === "writer-during-brief" && reads === 1) return { workspaces: [] };
+      return { workspaces: [scenario === "prior-followup" ? { id: "prior" } : { id: "unrecorded", current_directory: plan.integrationWorktreePath }] };
+    };
+    await assert.rejects(launcher.launch(plan.planId, { actions: ["tests"] }), /inventory is unavailable|live session already owns/);
+    assert.equal(workspaceCalls.length, 0);
+  });
+}
+
+test("abort during follow-up create closes only its own workspace and records cleanup", async (t) => {
+  const plan = combinedPlan(await deliveryDirectory(t));
+  const { launcher, store } = harness(plan);
+  const cleanup = [];
+  const closed = [];
+  store.recordMergeCleanupRequired = (id, workspaceId) => { cleanup.push([id, workspaceId]); };
+  launcher.cmux.workspaceCreate = async () => {
+    plan.boardStatus = "aborted";
+    return { workspace_id: "cancelled-followup" };
+  };
+  launcher.cmux.workspaceClose = async (id) => { closed.push(id); throw new Error("offline"); };
+  await assert.rejects(launcher.launch(plan.planId, { actions: ["tests"] }), /lifecycle.*still needs cleanup/);
+  assert.deepEqual(cleanup, [[plan.planId, "cancelled-followup"]]);
+  assert.deepEqual(closed, ["cancelled-followup"]);
+  assert.equal(store.recorded.length, 0);
+});
+
+test("another goal can acquire the session claim while this goal is launching", async (t) => {
+  const { withGoalSessionClaim } = await import("../server/goal-session-claim.mjs");
+  const plan = combinedPlan(await deliveryDirectory(t));
+  const { launcher, store } = harness(plan);
+  await withGoalSessionClaim(store, "other-goal", () => launcher.launch(plan.planId, { actions: ["tests"] }));
+});
+
+test("merge session ownership blocks follow-up creation", async (t) => {
+  const { withGoalSessionClaim } = await import("../server/goal-session-claim.mjs");
+  const plan = combinedPlan(await deliveryDirectory(t));
+  const { launcher, store, workspaceCalls } = harness(plan);
+  await withGoalSessionClaim(store, plan.planId, async () => {
+    await assert.rejects(launcher.launch(plan.planId, { actions: ["tests"] }), { code: "GOAL_SESSION_BUSY" });
+  });
+  assert.equal(workspaceCalls.length, 0);
 });

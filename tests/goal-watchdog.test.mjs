@@ -327,7 +327,7 @@ test("a driven tick closes a finished goal's task sessions through the real reap
   const closed = [];
   const cmux = {
     workspaceListDetailed: async () => ({
-      workspaces: ["workspace-0", "workspace-1", "workspace-merge"].map((id) => ({ id, title: id, status: { effective: "idle", signals: {} } })),
+      workspaces: ["workspace-0", "workspace-1", "workspace-merge"].map((id) => ({ id, title: id, status: { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } })),
     }),
     workspaceClose: async (workspaceId) => { closed.push(workspaceId); return { ok: true }; },
   };

@@ -340,3 +340,18 @@ test("falls back to a default title instead of failing on a blank one", async ()
     body: "still delivered",
   });
 });
+
+test("passes a custom model to the agent command and refuses shell syntax before creating a workspace", async (t) => {
+  const repo = mkdtempSync(join(tmpdir(), "cmux-model-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  for (const agent of ["codex", "claude"]) {
+    const calls = [];
+    const client = new CmuxClient({ execute: async (_bin, args) => { calls.push(args); return { stdout: JSON.stringify({ workspace_id: ID }) }; } });
+    await client.workspaceCreate({ cwd: repo, title: "Custom model", agent, model: "provider/custom-v2", prompt: "Do the task" });
+    const text = JSON.parse(calls[1][3]).text;
+    assert.match(text, new RegExp(`^x${agent} --model 'provider/custom-v2' 'Do the task'\\n$`));
+    const before = calls.length;
+    await assert.rejects(() => client.workspaceCreate({ cwd: repo, title: "Bad model", agent, model: "$(touch /tmp/unsafe)" }), /Model must/);
+    assert.equal(calls.length, before);
+  }
+});

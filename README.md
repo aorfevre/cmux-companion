@@ -12,6 +12,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Highlights real cmux status, structured tasks, CPU, memory, and process health
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
 - Launches allow-listed local repositories through the configured `xcodex` or `xclaude` aliases, a shell, or a declared package script
+- Starts one goal as a visible conversation in its own worktree, with questions, revisions, and approval before implementation
 - Turns one goal into a validated Delivery Contract with observable acceptance criteria, scope, assumptions, risks, ownership, verification, and dependency waves; then starts each eligible task in an isolated worktree while balancing Claude and Codex by remaining quota
 - Groups a repository's open GitHub issues into selectable master topics, plans and launches the topics in parallel, and links every final PR back to the issues it closes
 - Delivers a multi-task goal as one verified pull request: task agents push isolated branches, Companion pins their finished commits and cuts one goal branch, and a single merge agent squash-merges them, resolves the conflicts it can, re-runs the repository's own verification against a baseline, and opens the combined PR
@@ -38,6 +39,47 @@ No cloud application server is involved. Terminal output and input travel direct
 - Installs as a standalone PWA on iPhone
 - Waits quietly when cmux is closed and reconnects when it opens
 - Starts automatically at macOS login through a LaunchAgent
+
+## Visible goal sessions
+
+In Worktrees, open **New goal**, describe a small increment and select **Start
+goal session**. Companion saves the goal and opens an isolated worktree with a
+visible cmux conversation. Answer questions there or through the attention inbox.
+Steering during planning is saved for the next turn. Review the proposed scope,
+exclusions, assumptions, acceptance criteria and verification, then choose
+**Request changes** or **Approve and implement**. Approval applies to that exact
+revision and session generation. Phone read-only protection also disables the
+session's approval and recovery controls until input is enabled.
+
+The same owner conversation continues implementation and review. **Open
+conversation** on a saved goal returns to its recorded workspace. **Recover failed
+turn** retries a failed planning turn through its existing owner; it never
+blindly retries an uncertain writable turn. The goal retains its checkout,
+questions and decisions when the bridge restarts. A session with missing or
+uncertain ownership can require manual reconciliation rather than creating
+another writer. The owning conversation stays open while its PR is reviewed.
+
+This conversation uses a line-oriented runner in cmux and CCS with an explicit
+Claude-compatible target for both selected providers. It resumes the saved
+provider conversation between processes; it is not a native Codex or Claude TUI.
+Send terminal replies one line at a time; use the saved goal sheet’s answer or
+request-change text area for multiline feedback. Planning enables only Read, Grep and Glob. Approval enables a bounded writable
+tool configuration without a permission-bypass mode. Unsupported commands can
+still be refused and reported as failed or uncertain turns.
+
+The owner is associated with one task for existing health and PR tracking.
+Companion observes PR state through its GitHub refresh/watch path; provider prose
+or a successful process exit is not delivery evidence. Existing **Plan this
+goal**, bulk issue planning and multi-task delivery retain their separate flow.
+Automated planner/code reviewers remain on that legacy path; a visible-session
+start rejects those selections before allocating resources.
+Merge and deployment remain separate decisions.
+
+See the [feature contract and validation](docs/goal-session-planning.md). Local
+fixtures exercise the workflow, identities and recovery boundaries; real CCS
+permission enforcement, cmux continuity and live GitHub delivery still require
+the explicit live-test opt-in. Product-quality and iteration-speed improvements
+have not yet been measured on real goals.
 
 ## Architecture
 
@@ -97,6 +139,23 @@ Open **Settings → Licence usage** to see the remaining quota for every Claude 
 Worktrees Beta discovers Git's registered worktrees for the configured repository roots, then groups open cmux sessions by their current directory. Each worktree shows its branch, changed-file count, ahead/behind state, latest activity, agent state, and matching open GitHub pull request. **＋ Worktree** on a repository creates or opens a branch in a sibling Git worktree and can immediately start its first agent session. **＋ Session** on an existing worktree starts another cmux session there with Codex through `xcodex` or Claude through `xclaude`. The server derives the worktree path, validates Git refs, and refreshes registered worktrees before each action.
 
 **Plan a goal** on a repository sends one goal to a read-only headless planner. The planner may ask clarifying questions first; answer them, or skip and keep its assumptions visible. A ready plan is a Delivery Contract: outcome, scope and non-goals, constraints, assumptions, risks, observable acceptance criteria, task ownership, expected verification, and explicit dependencies. The Goal Passport shows that contract, readiness warnings, workflow waves, and criterion evidence before and after launch. You can still switch a task's agent, edit it, reject the split with written feedback, or drop it before confirming.
+
+### Approving a goal
+
+The first view of a ready goal is a concise approval summary. It states the
+outcome, the intended user flow, the decisions and their consequences, the
+success criteria, current readiness, and the delivery mode. It also draws the
+workflow waves: tasks in the same wave can run in parallel, while a later wave
+waits for its dependencies. Select a task in that chart to inspect its scope,
+declared files and checks. The chart also names the goal's actual delivery mode.
+
+The concise summary is a review surface, not a replacement contract. Expand
+**Full delivery contract**, **Risks and technical constraints**, **Acceptance
+evidence**, or **Task instructions** to inspect the saved Delivery Contract.
+Readiness warnings and errors stay visible while those sections are collapsed
+or expanded. A saved plan without an approval summary still shows its outcome,
+delivery plan and the same saved-contract sections. Opening either view never
+regenerates the plan or changes its saved contract.
 
 ### Spec depth
 
@@ -438,6 +497,8 @@ Open **Settings → Deployments** to see the running Companion release and the d
 | `CMUX_COMPANION_VAPID_SUBJECT` | Installed private Tailscale HTTPS URL | Web Push sender identity advertised to Apple and other push services |
 | `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
 | `CMUX_COMPANION_QUEUE_FILE` | `~/.config/cmux-companion/prompt-queue.json` | Persistent follow-up prompt queue |
+| `CMUX_COMPANION_REPO_DB` | `~/.config/cmux-companion/repo-identity.db` | Rebuildable SQLite repository/worktree cache |
+| `CMUX_COMPANION_STATUS_TTL_MS` | `30000` | How long displayed worktree status/change counts may be reused, in milliseconds; `0` disables reuse |
 | `CMUX_COMPANION_PLANS_DB` | `~/.config/cmux-companion/goal-plans.db` | SQLite database of saved goal plans |
 | `CMUX_COMPANION_AUTO_CLOSE_SESSIONS` | on | Automatic retirement of finished goal sessions on the supervision timer. Set `0`, `off` or `false` to stop the timer pass; `POST /api/goals/sessions/reap` stays available |
 | `CMUX_PLANNER_IDLE_TIMEOUT_MS` | `240000` | How long a planner round may print nothing before it is killed |
@@ -535,3 +596,50 @@ Use **Check & build combined PR** after resolving a genuine blocker, or
 retirement and worktree deletion retain their separate safety policies and controls.
 The deterministic Cypress suite verifies the recovered board state; backend tests
 exercise the actual recovery decisions without launching agents or deleting real worktrees.
+
+
+### Model defaults
+
+Settings → **Model defaults** stores a model for each provider and role: planner,
+spec reviewer, coder, code reviewer, merge agent, follow-up agent, and GitHub
+issue analyzer. Planning starts with Codex Astra (`gpt-6`); Claude specification
+and code reviews start with Fable 5.1. Coding, merging, follow-ups, and issue analysis retain the provider default.
+The Settings panel also selects the default provider for planning, merging,
+and issue analysis. Task assignment and explicit provider choices still apply.
+
+Choose a model from the full dropdown or select **Custom model…** to enter a
+provider model ID, then **Save model defaults**. `default` explicitly
+lets the provider choose its model. Save applies the choices across paired
+devices and survives restarts. Reset restores one role's built-in values;
+press Save to apply it. A failed save keeps the previous configuration active.
+
+New plans use the saved defaults and retain their resolved planner and requested
+code-review models. Per-goal model choices override Settings. New task launches,
+retries, dependency waves, merge sessions, and follow-ups read the current role
+defaults; existing agent sessions are unchanged. A follow-up containing a code
+review uses the code-review model even when it also requests tests or other work.
+The optional specification reviewer still uses the opposite provider at xhigh
+effort. The issue analyzer has its own defaults, separate from topic planning.
+
+Configuration lives in `~/.config/cmux-companion/model-settings.json` (override
+with `CMUX_COMPANION_MODEL_SETTINGS_FILE`). The paired, same-origin Settings
+API is `GET` / `PATCH /api/settings/models`. Custom IDs are syntax-validated,
+not checked against a live provider catalog; availability depends on the
+configured provider/account. Local Cypress covers the Settings and planner UI;
+backend tests verify persistence and the commands for each role without
+starting live agents.
+
+### Share a goal popup
+
+Opening any saved goal updates the browser address to
+`/?view=sessions&mode=worktrees&plan=<goal-id>`. Copy the address or press
+**Copy goal link** beside the visible goal reference. The link identifies the
+saved goal across planning, review, launch, merge, and completion; reopening it
+uses the goal ID directly, even when the current board list does not include it.
+Pairing and access to the same Companion instance are still required.
+
+Reload and browser Back/Forward restore the popup. Closing it clears the popup
+from the address. New-goal forms use `newGoal=<repository-id>` until saved;
+these links restore the repository/form, not unsaved text or attachments.
+Development-setup links also include `goalTemplate=dev-setup`. A missing goal
+opens an error with a Close button rather than silently opening another goal.

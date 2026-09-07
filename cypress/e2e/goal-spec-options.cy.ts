@@ -98,7 +98,7 @@ function readySummary() {
 
 function readyDetail() {
   return {
-    ...readySummary(), planStatus: "draft", questions: [], tasks: readyTasks, events: [],
+    ...readySummary(), planStatus: "draft", deliveryMode: "combined", questions: [], tasks: readyTasks, events: [],
     specOptions: { unitTests: true, e2eTests: false, edgeCases: true, refactorPass: true, screenMocks: true, flowcharts: true },
     spec: readySpec, readiness: readyReadiness, contractVersion: 2,
   };
@@ -234,6 +234,62 @@ describe("human launch review", () => {
   });
 });
 
+describe("planner engine defaults", () => {
+  it("submits Codex Astra and keeps Default and provider switches valid", () => {
+    installScenario({ plans: [] });
+    cy.intercept("POST", "**/api/worktree-plans", (request) => {
+      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6", effort: "default", reviewer: true });
+      request.reply({ statusCode: 202, body: {
+        planId: "astra-default", repositoryId: "repo-spec", goal: request.body.goal,
+        status: "questions", round: 0, running: true, questions: [], tasks: [],
+      } });
+    }).as("planAstra");
+    visitBoard();
+    cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+    cy.findByRole("combobox", { name: "Planner engine" }).should("have.value", "codex");
+    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6");
+    cy.contains("Codex (xcodex) · Codex Astra").should("be.visible");
+    cy.findByRole("checkbox", { name: "Add a reviewer pass" }).check();
+    cy.contains("Reviewer: Claude Code (xclaude) · Fable 5.1 · xhigh effort").should("be.visible");
+    cy.findByRole("combobox", { name: "Planner model" }).select("default");
+    cy.contains("Codex (xcodex) · CCS default model").should("be.visible");
+    cy.findByRole("combobox", { name: "Planner engine" }).select("claude");
+    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "default");
+    cy.contains("Claude Code (xclaude) · CCS default model").should("be.visible");
+    cy.findByRole("combobox", { name: "Planner model" }).select("claude-opus-5");
+    cy.findByRole("combobox", { name: "Planner engine" }).select("codex");
+    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6");
+    cy.findByRole("textbox", { name: "Goal" }).type("Plan using Astra");
+    cy.findByRole("button", { name: "Plan this goal" }).click();
+    cy.wait("@planAstra");
+    cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
+  });
+});
+
+describe("post-delivery reviewer model", () => {
+  for (const changeModel of [false, true]) {
+    it(`opens with Fable 5.1 and submits the ${changeModel ? "selected" : "default"} reviewer model`, () => {
+      installScenario({ plans: [] });
+      cy.intercept("POST", "**/api/worktree-plans", (request) => {
+        expect(request.body.reviewOptions).to.deep.equal({ codeReview: true, reviewer: changeModel ? "codex" : "claude", reviewerModel: changeModel ? "gpt-6" : "claude-fable-5-1" });
+        request.reply({ statusCode: 202, body: { planId: "review-model", repositoryId: "repo-spec", goal: request.body.goal, status: "questions", round: 0, running: true, questions: [], tasks: [] } });
+      }).as("reviewModel");
+      visitBoard();
+      cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+      cy.findByRole("combobox", { name: "Code-review model" }).should("be.visible").and("have.value", "claude-fable-5-1").find("option:selected").should("have.text", "Fable 5.1");
+      cy.findByRole("combobox", { name: "Code-review reviewer" }).should("have.value", "claude");
+      if (changeModel) {
+        cy.findByRole("combobox", { name: "Code-review reviewer" }).select("codex");
+        cy.findByRole("combobox", { name: "Code-review model" }).select("gpt-6").find('option[value="claude-fable-5-1"]').should("not.exist");
+      }
+      cy.findByRole("checkbox", { name: "Code review" }).check();
+      cy.findByRole("textbox", { name: "Goal" }).type("Review the delivered goal");
+      cy.findByRole("button", { name: "Plan this goal" }).click();
+      cy.wait("@reviewModel");
+    });
+  }
+});
+
 describe("per-project development setup review", () => {
   for (const provider of ["claude", "codex"]) {
     it(`submits an editable project-specific review with ${provider}`, () => {
@@ -303,7 +359,7 @@ describe("specification rigor options", () => {
       });
       // Effort stays the single extended-reasoning control. No second
       // reasoning field may ride along with the requests.
-      expect(request.body.engine).to.deep.equal({ provider: "claude", model: "default", effort: "default", reviewer: false });
+      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6", effort: "default", reviewer: false });
       request.reply({
         planId: "plan-new", repositoryId: "repo-spec", repositoryName: "cmux-e2e-cypress", goal: GOAL,
         status: "questions", stage: "questions", planStatus: "draft", running: true, round: 0,
@@ -346,6 +402,8 @@ describe("specification rigor options", () => {
       cy.contains("Requested flowcharts coverage is missing: the contract holds no flow artifact").should("be.visible");
       cy.contains("Review before launch").should("be.visible");
 
+      // Coverage and design artifacts are authoritative contract detail. The
+      // concise approval surface leaves them collapsed until a reviewer asks.
       cy.contains("Specification coverage").should("be.visible");
       cy.get(".goal-passport-options li").should("have.length", 5);
       // A request the user never made is absent, rather than reported as clean.

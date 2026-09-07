@@ -95,7 +95,7 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
     // The retirement policy refuses to close anything while cmux is
     // unreachable, so the fake answers the liveness read. An empty list is the
     // honest answer here: these fakes open no real workspace.
-    workspaceListDetailed: async () => ({ workspaces: ["workspace-one", "workspace-two", "workspace-merge"].map((id) => ({ id })) }),
+    workspaceListDetailed: async () => ({ workspaces: ["workspace-one", "workspace-two", "workspace-merge"].map((id) => ({ id, status: { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } })) }),
     workspaceCreate: async (options) => { calls.push(["workspaceCreate", options]); return { workspace_id: "workspace-merge" }; },
     rpc: async (method, params) => { calls.push(["rpc", method, params]); return {}; },
     sendWorkspacePrompt: async (workspaceId, text) => { calls.push(["sendWorkspacePrompt", workspaceId, text]); },
@@ -1032,4 +1032,49 @@ test("a new permanent failure during activity checks is not retried", async (t) 
   integrator.cmux.workspaceStatus = async () => { store.recordDeliveryFailure("plan-12345678", "Verification requires a decision"); return status(); };
   assert.deepEqual(await integrator.heal(), []);
   assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 0);
+});
+
+test("merge sessions use the configured provider and model", async (t) => {
+  const { integrator, calls } = fixture(t);
+  integrator.modelSettings.configure({ roles: { merger: { provider: "codex", models: { codex: "custom-merger" } } } });
+  await integrator.assemble("plan-12345678");
+  const created = calls.find(([kind]) => kind === "workspaceCreate")[1];
+  assert.equal(created.agent, "codex");
+  assert.equal(created.model, "custom-merger");
+});
+
+test("abort during merge brief prevents workspace creation", async (t) => {
+  const { integrator, store, calls } = fixture(t);
+  const write = integrator.briefs.write.bind(integrator.briefs);
+  integrator.briefs.write = async (value) => {
+    const brief = await write(value);
+    store.recordGoalAborted("plan-12345678");
+    return brief;
+  };
+  await assert.rejects(integrator.assemble("plan-12345678"), /aborted/i);
+  assert.equal(calls.filter(([kind]) => kind === "workspaceCreate").length, 0);
+  assert.equal(store.get("plan-12345678").boardStatus, "aborted");
+});
+
+for (const closeFails of [false, true]) test(`abort during merge create retains cleanup identity (close failure: ${closeFails})`, async (t) => {
+  const { integrator, store, calls } = fixture(t);
+  integrator.cmux.workspaceCreate = async () => {
+    store.recordGoalAborted("plan-12345678");
+    return { workspace_id: "cancelled-merge" };
+  };
+  integrator.cmux.workspaceClose = async (id) => {
+    calls.push(["workspaceClose", id]);
+    if (closeFails) throw new Error("close unavailable");
+  };
+  await assert.rejects(integrator.assemble("plan-12345678"), /aborted/i);
+  const plan = store.get("plan-12345678");
+  assert.equal(plan.boardStatus, "aborted");
+  assert.equal(plan.mergeWorkspaceId, null);
+  assert.deepEqual(calls.filter(([kind]) => kind === "workspaceClose"), [["workspaceClose", "cancelled-merge"]]);
+  assert.ok(plan.supersededMergeWorkspaces.some((entry) => entry.workspaceId === "cancelled-merge" && !entry.retiredAt));
+  // A restart can recover the durable identity and verify that it is absent.
+  const { GoalSessionReaper } = await import("../server/goal-session-reaper.mjs");
+  const reaper = new GoalSessionReaper({ store, cmux: { workspaceListDetailed: async () => ({ workspaces: [] }) } });
+  await reaper.reap();
+  assert.ok(store.get(plan.planId).supersededMergeWorkspaces.find((entry) => entry.workspaceId === "cancelled-merge").retiredAt);
 });

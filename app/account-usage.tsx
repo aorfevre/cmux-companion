@@ -49,7 +49,7 @@ export function AccountUsageView({ onBack }: { onBack: () => void }) {
     {usage && !usage.available && !error && <div className="usage-error"><strong>CCS usage is unavailable</strong><span>Check that CCS is installed on this Mac, then refresh.</span></div>}
     <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection provider={provider} now={now} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
     {usage?.available && <p className="usage-privacy">Quota comes directly from CCS. OAuth credentials never leave your Mac or appear in this view.</p>}
-    {reconnecting && <ReconnectSheet provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
+    {reconnecting && <ReconnectSheet key={reconnecting.account.id} provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
   </section>;
 }
 
@@ -77,8 +77,16 @@ function ReconnectSheet({ provider, account, onClose, onSuccess }: { provider: U
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const successHandled = useRef(false);
+  const closed = useRef(false);
+  const currentSession = useRef<ReconnectSession | null>(null);
+  const callbacks = useRef(new Set<AbortController>());
   const active = session?.status === "waiting" || session?.status === "processing";
   const adopt = useCallback(async (next: ReconnectSession) => {
+    if (closed.current) return;
+    const current = currentSession.current;
+    if (current && (current.sessionId !== next.sessionId || !["waiting", "processing"].includes(current.status))) return;
+    if (current?.status === "processing" && next.status === "waiting") return;
+    currentSession.current = next;
     setSession(next);
     if (next.status === "success" && !successHandled.current) {
       successHandled.current = true;
@@ -88,49 +96,65 @@ function ReconnectSheet({ provider, account, onClose, onSuccess }: { provider: U
 
   useEffect(() => {
     const controller = new AbortController();
+    closed.current = false;
+    const pendingCallbacks = callbacks.current;
     void (async () => {
       try {
         const response = await fetch(`/api/account-usage/${account.id}/reconnect`, { method: "POST", signal: controller.signal });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(body.error || "Could not start reconnect");
-        await adopt(body as ReconnectSession);
+        if (!controller.signal.aborted) await adopt(body as ReconnectSession);
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Could not start reconnect");
       }
     })();
-    return () => controller.abort();
+    return () => {
+      closed.current = true;
+      controller.abort();
+      for (const callback of pendingCallbacks) callback.abort();
+      pendingCallbacks.clear();
+    };
   }, [account.id, adopt]);
 
   useEffect(() => {
     if (!session || !active) return;
+    const controller = new AbortController();
+    let pending = false;
     const poll = async () => {
+      if (pending || closed.current) return;
+      pending = true;
       try {
-        const response = await fetch(`/api/account-usage/reconnect/${session.sessionId}`);
+        const response = await fetch(`/api/account-usage/reconnect/${session.sessionId}`, { signal: controller.signal });
         const body = await response.json().catch(() => ({}));
-        if (response.ok) await adopt(body as ReconnectSession);
-      } catch { /* Retry while the sheet remains open. */ }
+        if (response.ok && !controller.signal.aborted) await adopt(body as ReconnectSession);
+      } catch { /* Retry while the sheet remains open. */ } finally { pending = false; }
     };
     const timer = window.setInterval(() => void poll(), 1500);
-    return () => window.clearInterval(timer);
+    return () => { window.clearInterval(timer); controller.abort(); };
   }, [active, adopt, session]);
 
   const close = () => {
-    if (session && active) void fetch(`/api/account-usage/reconnect/${session.sessionId}`, { method: "DELETE" });
+    closed.current = true;
+    for (const callback of callbacks.current) callback.abort();
+    if (session && active) void fetch(`/api/account-usage/reconnect/${session.sessionId}`, { method: "DELETE" }).catch(() => {});
     onClose();
   };
   const submit = async () => {
     if (!session || !callbackUrl.trim()) return;
+    if (closed.current) return;
+    const controller = new AbortController();
+    callbacks.current.add(controller);
     setBusy(true); setError("");
     try {
       const response = await fetch(`/api/account-usage/reconnect/${session.sessionId}/callback`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callbackUrl: callbackUrl.trim() }),
+        method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callbackUrl: callbackUrl.trim() }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || "Could not finish reconnect");
-      await adopt(body as ReconnectSession);
+      if (!controller.signal.aborted) await adopt(body as ReconnectSession);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not finish reconnect");
-    } finally { setBusy(false); }
+      if (!closed.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Could not finish reconnect");
+    } finally { callbacks.current.delete(controller); if (!closed.current) setBusy(false); }
   };
 
   return <><button className="reconnect-backdrop" aria-label="Close reconnect" onClick={close} /><section className="reconnect-sheet" role="dialog" aria-modal="true" aria-label={`Reconnect ${provider.label}`}>

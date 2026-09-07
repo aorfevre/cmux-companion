@@ -1,3 +1,5 @@
+import { withGoalSessionClaim } from "./goal-session-claim.mjs";
+import { ModelSettings } from "./model-settings.mjs";
 import { GoalSessionCollector } from "./goal-session-collector.mjs";
 import { resolve, relative } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
@@ -23,7 +25,7 @@ class TerminalGoalError extends TypeError {}
 // branch is ready by reading git, then hands the merge itself to one cmux agent:
 // a conflict needs judgement, which no subprocess can supply.
 export class GoalIntegrator {
-  constructor({ store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS, briefs = new AgentBriefs(), sessionCollector = null } = {}) {
+  constructor({ modelSettings = new ModelSettings(), store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS, briefs = new AgentBriefs(), sessionCollector = null } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
@@ -31,6 +33,7 @@ export class GoalIntegrator {
     this.worktrees = worktrees;
     this.repoCatalog = repoCatalog;
     this.cmux = cmux;
+    this.modelSettings = modelSettings;
     this.sessionCollector = sessionCollector || new GoalSessionCollector({ store, cmux, log });
     // The full brief goes to a file. cmux caps a prompt at 8,000 characters, so
     // every agent session gets a short pointer to that file instead.
@@ -109,6 +112,7 @@ export class GoalIntegrator {
   // The explicit answer. An automatic path never reaches this, because it
   // stops at #terminal before it queues any work.
   #assertNotTerminal(plan) {
+    if (!plan) throw new TerminalGoalError("The goal could not be read. Retry before creating a session");
     if (plan?.boardStatus === "aborted") throw new TerminalGoalError(ABORTED_GOAL);
     if (plan?.boardStatus === "merged") throw new TerminalGoalError(MERGED_GOAL);
   }
@@ -274,7 +278,7 @@ export class GoalIntegrator {
       });
     }
 
-    return this.#guard(plan, async () => {
+    return withGoalSessionClaim(this.store, planId, () => this.#guard(plan, async () => {
       // Without a cmux client there is no agent to merge with, and a half-made
       // worktree would be worse than a clear refusal.
       if (!this.cmux) throw new TypeError("Combined goal delivery needs a cmux connection");
@@ -303,20 +307,36 @@ export class GoalIntegrator {
       if (resumed) plan = this.store.recordMergeLaunched(plan.planId, plan.mergeWorkspaceId);
       else {
         const brief = await this.briefs.write({ planId: plan.planId, taskId: "merge", markdown: mergePrompt(plan) });
+        this.#assertNotTerminal(this.store.get(plan.planId));
         const created = await this.cmux.workspaceCreate({
           cwd: plan.integrationWorktreePath,
           title: mergeSessionTitle(plan),
           env: sessionEnv(plan, null),
-          agent: "claude",
+          ...this.modelSettings.workspace("merger"),
           prompt: this.briefs.pointerPrompt({ title: `Merge: ${plan.goal}`, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });
         const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
         if (!workspaceId) throw new TypeError("cmux created the merge session but did not return its id");
+        try { this.#assertNotTerminal(this.store.get(plan.planId)); }
+        catch (cause) {
+          // Record before compensation so a failed close remains recoverable
+          // after restart. This does not change the terminal board lifecycle.
+          try { this.store.recordMergeCleanupRequired(plan.planId, workspaceId); }
+          catch (recordError) { cause.message += `; cleanup identity could not be saved: ${recordError.message}`; }
+          try {
+            await this.cmux.workspaceClose(workspaceId);
+            // Keep the cleanup identity pending until the reaper verifies absence.
+          } catch (cleanupError) {
+            this.log?.warn?.({ err: cleanupError, planId: plan.planId, workspaceId }, "cancelled merge session needs cleanup");
+            cause.message += `; session ${workspaceId} still needs cleanup: ${cleanupError.message}`;
+          }
+          throw cause;
+        }
         plan = this.store.recordMergeLaunched(plan.planId, workspaceId);
       }
       await this.#publish(plan);
       return deliveryResult(plan);
-    });
+    }));
   }
 
   async #resumeMerge(plan) {
@@ -575,7 +595,7 @@ export class GoalIntegrator {
         const workspace = await this.cmux.workspaceCreate({
           cwd: path,
           title: sessionTitle(plan, effectiveTask),
-          agent: effectiveTask.agent,
+          ...this.modelSettings.workspace("coder", effectiveTask.agent),
           env: sessionEnv(plan, effectiveTask),
           prompt: this.briefs.pointerPrompt({ title: effectiveTask.title, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
         });

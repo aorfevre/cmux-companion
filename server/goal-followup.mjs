@@ -1,4 +1,8 @@
-import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
+import { relative, isAbsolute } from "node:path";
+import { withGoalSessionClaim } from "./goal-session-claim.mjs";
+import { ModelSettings } from "./model-settings.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { goalBoardState } from "./goal-board.mjs";
 import {
@@ -10,10 +14,11 @@ import {
 import { followupSessionTitle, sessionEnv } from "./session-name.mjs";
 
 export class GoalFollowups {
-  constructor({ store, cmux = null, briefs = new AgentBriefs(), log = null } = {}) {
+  constructor({ modelSettings = new ModelSettings(), store, cmux = null, briefs = new AgentBriefs(), log = null } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     this.store = store;
     this.cmux = cmux;
+    this.modelSettings = modelSettings;
     this.briefs = briefs;
     this.log = log;
   }
@@ -23,8 +28,13 @@ export class GoalFollowups {
     // id exists, and before any filesystem or cmux side effect is possible.
     const { actions, question, custom, agent } = normalizeFollowupRequest(body);
     const id = String(planId || "");
+    return withGoalSessionClaim(this.store, id, () => this.#launch(id, { actions, question, custom, agent }));
+  }
+
+  async #launch(id, { actions, question, custom, agent }) {
     const plan = this.store.get(id);
     if (!plan) throw new TypeError("Unknown plan. Start a new goal");
+    if (plan.workflow === "goal_session") throw new TypeError("Managed goal sessions retain their one visible conversation for delivery and review");
     if (goalBoardState(plan) !== "waiting_for_merge") {
       throw new TypeError("Only a goal waiting for merge can take a follow-up action");
     }
@@ -40,13 +50,15 @@ export class GoalFollowups {
     }
     if (!this.cmux) throw new TypeError("Follow-up sessions need a cmux connection");
 
+    await this.#assertCheckoutFree(plan, target);
+    const followupId = `followup-${randomUUID()}`;
     const pullRequest = plan.boardPrUrl
       ? { number: plan.boardPrNumber ?? null, url: plan.boardPrUrl }
       : (plan.finalPrUrl ? { number: plan.finalPrNumber ?? null, url: plan.finalPrUrl } : null);
     const title = followupSessionTitle(plan, actions);
     const brief = await this.briefs.write({
       planId: id,
-      taskId: `followup-${(plan.followups?.length || 0) + 1}`,
+      taskId: followupId,
       markdown: followupPrompt(plan, {
         actions,
         question,
@@ -55,10 +67,12 @@ export class GoalFollowups {
         pullRequest,
       }),
     });
+    await this.#assertCheckoutFree(plan, target);
+    this.#assertCurrent(id, target);
     const created = await this.cmux.workspaceCreate({
       cwd: target.worktreePath,
       title,
-      agent,
+      ...this.modelSettings.workspace(actions.includes("review") ? "codeReviewer" : "followup", agent),
       env: sessionEnv(plan, null),
       prompt: this.briefs.pointerPrompt({
         title: `Follow-up: ${followupActionLabels(actions).join(", ")}`,
@@ -68,15 +82,26 @@ export class GoalFollowups {
     });
     const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
     if (!workspaceId) throw new TypeError("cmux created the follow-up session but did not return its id");
-    await this.store.recordFollowupLaunched(id, {
-      workspaceId,
-      actions,
-      agent,
-      branch: target.branch,
-      worktreePath: target.worktreePath,
-      briefPath: brief.path,
-    });
+    try {
+      this.#assertCurrent(id, target);
+      await this.store.recordFollowupLaunched(id, {
+        followupId,
+        workspaceId,
+        actions,
+        agent,
+        branch: target.branch,
+        worktreePath: target.worktreePath,
+        briefPath: brief.path,
+      });
+    } catch (cause) {
+      try { this.store.recordMergeCleanupRequired(id, workspaceId); }
+      catch (recordError) { cause.message += `; cleanup identity could not be saved: ${recordError.message}`; }
+      try { await this.cmux.workspaceClose(workspaceId); }
+      catch (cleanupError) { cause.message += `; session ${workspaceId} still needs cleanup: ${cleanupError.message}`; }
+      throw cause;
+    }
     return {
+      followupId,
       planId: id,
       workspaceId,
       agent,
@@ -86,6 +111,34 @@ export class GoalFollowups {
       pullRequest,
       title,
     };
+  }
+
+  #assertCurrent(id, target) {
+    const current = this.store.get(id);
+    const delivery = current && deliveryTarget(current);
+    if (!current || goalBoardState(current) !== "waiting_for_merge" || current.mergeStatus === "running" ||
+      delivery.worktreePath !== target.worktreePath || delivery.branch !== target.branch) {
+      throw new TypeError("Goal lifecycle or delivery checkout changed during follow-up launch");
+    }
+  }
+
+  async #assertCheckoutFree(plan, target) {
+    const payload = await (this.cmux.loadWorkspaceListDetailed ? this.cmux.loadWorkspaceListDetailed() : this.cmux.workspaceListDetailed?.());
+    if (!Array.isArray(payload?.workspaces)) throw new TypeError("Fresh cmux inventory is unavailable; follow-up launch refused");
+    const owned = new Set([plan.mergeWorkspaceId, ...(plan.followups || []).map((entry) => entry.workspaceId),
+      ...(plan.tasks || []).filter((task) => task.worktreePath === target.worktreePath).map((task) => task.workspaceId)].filter(Boolean));
+    const root = realpathSync(target.worktreePath);
+    for (const workspace of payload.workspaces) {
+      let sameCheckout = false;
+      if (workspace.current_directory) {
+        let path;
+        try { path = realpathSync(workspace.current_directory); }
+        catch { path = workspace.current_directory; }
+        const child = relative(root, path);
+        sameCheckout = child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith("../"));
+      }
+      if (owned.has(workspace.id) || sameCheckout) throw new TypeError("A live session already owns the delivery checkout; close it before launching a follow-up");
+    }
   }
 }
 

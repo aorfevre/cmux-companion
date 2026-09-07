@@ -6,9 +6,17 @@ import test from "node:test";
 import { RepoIdentityStore } from "../server/repo-identity-store.mjs";
 import { RepositoryArchive } from "../server/repository-archive.mjs";
 import { RepositoryFavorites } from "../server/repository-favorites.mjs";
-import { WorktreeDashboard, countUpdaterArtifacts, isManagedReleasePath, parseWorktreeList, resolveWorktreeAcquisitionPath, worktreePath } from "../server/worktree-dashboard.mjs";
+import { WorktreeDashboard as ProductionWorktreeDashboard, countUpdaterArtifacts, isManagedReleasePath, parseWorktreeList, resolveWorktreeAcquisitionPath, worktreePath } from "../server/worktree-dashboard.mjs";
 import { WORKTREE_REASONS, classifyLegacyWorktreeError, isFreshBranchSafeReason, isWorktreeReason } from "../server/worktree-errors.mjs";
 import { GoalMergeWatch, selectGoalPullRequest } from "../server/goal-merge-watch.mjs";
+
+// Most catalog tests use virtual /repo paths. Production locking is exercised
+// separately with real Git; individual race tests override these dependencies.
+class WorktreeDashboard extends ProductionWorktreeDashboard {
+  constructor(options) {
+    super({ operationLock: async (_path, work) => work(), loadWorkspaces: async () => ({ available: true, workspaces: [] }), ...options });
+  }
+}
 
 const REPO = { id: "repo-1234567890123", name: "sample", root: "karven", path: "/repo/sample", branch: "main" };
 
@@ -402,6 +410,84 @@ test("creates a sibling worktree from a validated branch and base revision", asy
   const add = calls.find(([, args]) => args[0] === "worktree" && args[1] === "add");
   assert.deepEqual(add, ["/repo/sample", ["worktree", "add", "-b", "feature/safe-name", targetPath, "main"], { timeout: 120_000 }]);
   assert.equal(worktreePath("/repo/sample", "feature/safe-name"), targetPath);
+});
+
+// The board's one-click worktree sends no base. The default remote branch is
+// resolved and fetched first, so the new branch starts at that tip and never at
+// a stale local ref.
+test("branches from the fetched default remote branch when useDefaultBase is set", async () => {
+  const calls = [];
+  const targetPath = "/repo/sample-feature-safe-name";
+  let inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0";
+  const repoCatalog = {
+    cache: {},
+    list: async () => [REPO],
+    git: async (cwd, args, options) => {
+      calls.push([cwd, args, options]);
+      if (args[0] === "worktree" && args[1] === "add") {
+        inventory += `worktree ${targetPath}\0HEAD bbbbbbbb\0branch refs/heads/feature/safe-name\0\0`;
+        return "";
+      }
+      if (args[0] === "worktree") return inventory;
+      if (args[0] === "check-ref-format") return "feature/safe-name\n";
+      if (args[0] === "symbolic-ref") return "origin/trunk\n";
+      if (args[0] === "fetch") return "";
+      if (args[0] === "show-ref") throw new Error("missing branch");
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "aaaaaaaa\n";
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd === targetPath ? "feature/safe-name" : "main"}\n`;
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  const result = await dashboard.create(repositoryId, { branch: "feature/safe-name", base: "stale-local", useDefaultBase: true });
+  assert.equal(result.branchCreated, true);
+  const fetched = calls.find(([, args]) => args[0] === "fetch");
+  assert.deepEqual(fetched, ["/repo/sample", ["fetch", "origin", "trunk"], { timeout: 120_000 }]);
+  const add = calls.find(([, args]) => args[0] === "worktree" && args[1] === "add");
+  // The supplied `base` is ignored: the fetched default branch wins.
+  assert.deepEqual(add, ["/repo/sample", ["worktree", "add", "-b", "feature/safe-name", targetPath, "origin/trunk"], { timeout: 120_000 }]);
+});
+
+// A repository with no local origin/HEAD must not fall back to "main" while its
+// default branch is something else, so the remote is asked directly.
+test("asks the remote for the default branch when useDefaultBase finds no local ref", async () => {
+  const calls = [];
+  const targetPath = "/repo/sample-feature-safe-name";
+  let inventory = "worktree /repo/sample\0HEAD aaaaaaaa\0branch refs/heads/main\0\0";
+  const repoCatalog = {
+    cache: {},
+    list: async () => [REPO],
+    git: async (cwd, args, options) => {
+      calls.push([cwd, args, options]);
+      if (args[0] === "worktree" && args[1] === "add") {
+        inventory += `worktree ${targetPath}\0HEAD bbbbbbbb\0branch refs/heads/feature/safe-name\0\0`;
+        return "";
+      }
+      if (args[0] === "worktree") return inventory;
+      if (args[0] === "check-ref-format") return "feature/safe-name\n";
+      if (args[0] === "symbolic-ref") throw new Error("no origin/HEAD");
+      if (args[0] === "ls-remote") return "ref: refs/heads/master\tHEAD\nabc123\tHEAD\n";
+      if (args[0] === "fetch") return "";
+      if (args[0] === "show-ref") throw new Error("missing branch");
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "aaaaaaaa\n";
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return "/repo/sample/.git\n";
+      if (args[0] === "rev-parse") return `${cwd}\n`;
+      if (args[0] === "status") return `# branch.head ${cwd === targetPath ? "feature/safe-name" : "main"}\n`;
+      if (args[0] === "log") return "100\n";
+      throw new Error("unexpected git call");
+    },
+    execute: async () => ({ stdout: "[]" }),
+  };
+  const dashboard = new WorktreeDashboard({ repoCatalog, cacheMs: 0, canonicalize: async (path) => path });
+  const repositoryId = (await dashboard.snapshot()).repositories[0].id;
+  await dashboard.create(repositoryId, { branch: "feature/safe-name", useDefaultBase: true });
+  const add = calls.find(([, args]) => args[0] === "worktree" && args[1] === "add");
+  assert.deepEqual(add, ["/repo/sample", ["worktree", "add", "-b", "feature/safe-name", targetPath, "origin/master"], { timeout: 120_000 }]);
 });
 
 // Goal plans persist the dashboard id (one id for a repository and all of its
@@ -1463,4 +1549,53 @@ test("the selection rule is a pure function of one plan and its observations", (
     selectGoalPullRequest(plan, [observation({ number: 50, url: "https://github.test/pr/50", headBranch: "goal/billing" })]),
     { number: 50, url: "https://github.test/pr/50", state: "OPEN", observedAt: "2026-09-01T06:00:00.000Z" },
   );
+});
+
+for (const mode of ["single", "bulk", "discard"]) {
+  for (const failure of ["git-unavailable", "sessions-unavailable", "new-session"]) {
+    test(`${mode} removal refuses ${failure} after acquiring the launch lock`, async () => {
+      const { repoCatalog, calls, targetPath } = reuseCatalog();
+      let locked = false;
+      const originalGit = repoCatalog.git;
+      repoCatalog.git = async (cwd, args, options) => {
+        if (args.includes("--untracked-files=all") && failure === "git-unavailable") throw new Error("Git disappeared");
+        return originalGit(cwd, args, options);
+      };
+      const dashboard = new WorktreeDashboard({
+        repoCatalog, canonicalize: async (path) => path,
+        operationLock: async (path, work) => {
+          assert.equal(path, targetPath);
+          locked = true;
+          try { return await work(); } finally { locked = false; }
+        },
+        loadWorkspaces: async () => {
+          assert.equal(locked, true, "session evidence must be obtained inside the lock");
+          if (failure === "sessions-unavailable") throw new Error("cmux unavailable");
+          return { available: true, workspaces: failure === "new-session" ? [{ id: "new-session", current_directory: targetPath, terminals: [] }] : [] };
+        },
+      });
+      const initial = await dashboard.snapshot();
+      const repository = initial.repositories[0];
+      const row = repository.worktrees.find((item) => !item.isPrimary);
+      assert.equal(row.dirty, false);
+      const reason = failure === "git-unavailable" ? /Git status could not be checked/ : failure === "sessions-unavailable" ? /Sessions could not be checked/ : /sessions before removing/;
+      if (mode === "bulk") {
+        const result = await dashboard.removeCleanWorktrees(repository.id);
+        assert.equal(result.removed, 0);
+        assert.equal(result.failed, 1);
+        assert.match(result.results[0].error, reason);
+      } else await assert.rejects(() => dashboard.remove(row.id, { discardChanges: mode === "discard" }), reason);
+      assert.equal(calls.some(([, args]) => args[0] === "worktree" && args[1] === "remove"), false);
+    });
+  }
+}
+
+test("manual removal refuses absent inventory capability and explicit failed bootstrap", async () => {
+  const { repoCatalog } = reuseCatalog();
+  const dashboard = new WorktreeDashboard({ repoCatalog, canonicalize: async (path) => path, loadWorkspaces: null });
+  const { repositories: [repository] } = await dashboard.snapshot();
+  const row = repository.worktrees.find((item) => !item.isPrimary);
+  await assert.rejects(() => dashboard.remove(row.id), /Sessions could not be checked/);
+  await assert.rejects(() => dashboard.remove(row.id, { workspacesAvailable: false }), /Sessions could not be checked/);
+  await assert.rejects(() => dashboard.removeCleanWorktrees(repository.id, { workspacesAvailable: false }), /Sessions could not be checked/);
 });

@@ -3,10 +3,12 @@ import test from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildApp, normalizeInbox, withDeadline } from "../server/app.mjs";
+import { normalizeInbox, withDeadline } from "../server/app.mjs";
 import { CmuxCommandError } from "../server/cmux-client.mjs";
 import { deploymentStatus, launchAgentIsRunning } from "../server/deployment-health.mjs";
 import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
+
+import { buildTestApp as buildApp } from "./helpers/api-app.mjs";
 
 const TOKEN = "test-token-that-is-deliberately-long-and-private";
 const WS_ID = "11111111-2222-4333-8444-555555555555";
@@ -65,13 +67,13 @@ async function appWithUpdaterState(t, state, releaseSha = "a".repeat(40), update
   const updaterConfigPath = join(directory, "updater.json");
   if (state !== undefined) await writeFile(updaterStatePath, JSON.stringify(state));
   await writeFile(updaterConfigPath, JSON.stringify({ enabled: updaterEnabled }));
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, updaterStatePath, updaterConfigPath, updaterProcessCheck: async () => true, releaseVersion: { gitSha: releaseSha, builtAt: null } });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, updaterStatePath, updaterConfigPath, updaterProcessCheck: async () => true, releaseVersion: { gitSha: releaseSha, builtAt: null } });
   t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
   return { app, cookie: await pairedCookie(app) };
 }
 
 test("health is public while cmux data requires pairing", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, releaseVersion: { gitSha: "a".repeat(40), builtAt: "2026-08-31T00:00:00.000Z" } });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, releaseVersion: { gitSha: "a".repeat(40), builtAt: "2026-08-31T00:00:00.000Z" } });
   t.after(() => app.close());
   const health = await app.inject({ url: "/api/health" });
   assert.equal(health.statusCode, 200);
@@ -215,7 +217,7 @@ test("reports updater status as unavailable when its state file cannot be read",
 });
 
 test("renews the one-year session cookie during authenticated use", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const response = await app.inject({ url: "/api/bootstrap", headers: { cookie, host: "mac.tail.test", "x-forwarded-proto": "https" } });
@@ -233,7 +235,7 @@ test("serves authenticated CCS account usage and forwards explicit refresh", asy
   const calls = [];
   const value = { source: "CCS", providers: [], summary: {} };
   const accountUsage = { snapshot: async (options) => { calls.push(options); return value; } };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, accountUsage });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, accountUsage });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const response = await app.inject({ url: "/api/account-usage?refresh=1", headers: { cookie } });
@@ -251,7 +253,7 @@ test("protects and serves the CCS reconnect lifecycle", async (t) => {
     submitCallback: async (id, url) => { calls.push(["callback", id, url]); return { ...session, status: "success" }; },
     cancel: (id) => { calls.push(["cancel", id]); return { ...session, status: "cancelled" }; },
   };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, ccsReconnect });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, ccsReconnect });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
@@ -271,7 +273,7 @@ test("paired clients can read state and safely control a terminal", async (t) =>
   const cmux = fakeCmux();
   const savedImages = [];
   const imageAttachments = { save: async (dataUrl, name) => { savedImages.push([dataUrl, name]); return { path: "/private/image.png", name, mime: "image/png", size: 68 }; } };
-  const app = await buildApp({ cmux, token: TOKEN, imageAttachments });
+  const app = await buildApp(t, { cmux, token: TOKEN, imageAttachments });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
 
@@ -325,7 +327,7 @@ test("coalesces concurrent dashboard refreshes", async (t) => {
   cmux.hostStatus = async () => { hostCalls += 1; await new Promise((resolve) => setTimeout(resolve, 10)); return {}; };
   cmux.workspaceList = async () => { workspaceCalls += 1; await new Promise((resolve) => setTimeout(resolve, 10)); return { workspaces: [] }; };
   cmux.capabilities = async () => { capabilityCalls += 1; await new Promise((resolve) => setTimeout(resolve, 10)); return {}; };
-  const app = await buildApp({ cmux, token: TOKEN });
+  const app = await buildApp(t, { cmux, token: TOKEN });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const responses = await Promise.all(Array.from({ length: 5 }, () => app.inject({ url: "/api/bootstrap", headers: { cookie } })));
@@ -347,7 +349,7 @@ test("serves the worktree dashboard and creates worktrees and sessions", async (
     setRepositoryFavorite: async (id, favorite, input) => { calls.push(["favorite", id, favorite, input]); return { repository: { id, favorite } }; },
     invalidate: () => calls.push(["invalidate"]),
   };
-  const app = await buildApp({ cmux, token: TOKEN, worktreeDashboard });
+  const app = await buildApp(t, { cmux, token: TOKEN, worktreeDashboard });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
@@ -366,7 +368,7 @@ test("serves the worktree dashboard and creates worktrees and sessions", async (
   }]);
   const launched = await app.inject({ method: "POST", url: `/api/worktree-dashboard/${target.id}/launch`, headers, payload: { agent: "claude", prompt: "Review mobile UX" } });
   assert.equal(launched.statusCode, 201);
-  assert.deepEqual(cmux.calls.at(-1), ["create", { cwd: target.path, title: "safe: feature/mobile", agent: "claude", prompt: "Review mobile UX" }]);
+  assert.deepEqual(cmux.calls.at(-1), ["create", { cwd: target.path, title: "safe: feature/mobile", agent: "claude", model: "default", prompt: "Review mobile UX" }]);
   const removed = await app.inject({ method: "DELETE", url: `/api/worktree-dashboard/${target.id}`, headers });
   assert.equal(removed.statusCode, 200);
   assert.equal(removed.json().branchPreserved, true);
@@ -384,7 +386,7 @@ test("exposes recognized worktree reasons without changing the TypeError respons
     create: async () => { throw worktreeStateError("That branch already exists locally", WORKTREE_REASONS.BRANCH_EXISTS); },
     invalidate: () => {},
   };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreeDashboard });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreeDashboard });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const response = await app.inject({
@@ -409,7 +411,7 @@ test("analyzes, prepares, and bulk-launches GitHub issue topics through authenti
     launch: async (input) => { calls.push(["launch", input]); return { requested: 1, launchedTopics: 1, launchedWorktrees: 2, results: [] }; },
   };
   const worktreeDashboard = { invalidate: () => calls.push(["invalidate"]) };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, githubIssuePlanner, worktreePlanner: {}, worktreeDashboard });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, githubIssuePlanner, worktreePlanner: {}, worktreeDashboard });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
@@ -431,7 +433,7 @@ test("analyzes, prepares, and bulk-launches GitHub issue topics through authenti
 test("falls back to an authenticated text screen when replay is unavailable", async (t) => {
   const cmux = fakeCmux();
   cmux.terminalReplay = async () => { throw new CmuxCommandError("unsupported"); };
-  const app = await buildApp({ cmux, token: TOKEN });
+  const app = await buildApp(t, { cmux, token: TOKEN });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const fallback = await app.inject({ url: `/api/terminals/${TERM_ID}/replay?scrollback=77`, headers: { cookie } });
@@ -441,7 +443,7 @@ test("falls back to an authenticated text screen when replay is unavailable", as
 });
 
 test("paired clients cannot mutate from a foreign origin", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const response = await app.inject({
@@ -458,7 +460,7 @@ test("keeps the dashboard available while cmux is closed", async (t) => {
   cmux.workspaceList = async () => { throw new Error("socket unavailable"); };
   cmux.hostStatus = async () => { throw new Error("socket unavailable"); };
   cmux.capabilities = async () => { throw new Error("socket unavailable"); };
-  const app = await buildApp({ cmux, token: TOKEN });
+  const app = await buildApp(t, { cmux, token: TOKEN });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const response = await app.inject({ url: "/api/bootstrap", headers: { cookie } });
@@ -480,7 +482,7 @@ test("answers the dashboard without live sessions when cmux stalls", async (t) =
     snapshot: async (input) => { snapshots.push(input); return { summary: { repositories: 2, worktrees: 3, sessions: 0 }, repositories: [], orphanSessions: [] }; },
     invalidate: () => {},
   };
-  const app = await buildApp({ cmux, token: TOKEN, worktreeDashboard, bootstrapTimeoutMs: 25 });
+  const app = await buildApp(t, { cmux, token: TOKEN, worktreeDashboard, bootstrapTimeoutMs: 25 });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const response = await app.inject({ url: "/api/worktree-dashboard", headers: { cookie } });
@@ -495,7 +497,7 @@ test("reports a stalled worktree scan as 503 instead of hanging", async (t) => {
     snapshot: () => new Promise(() => {}),
     invalidate: () => {},
   };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreeDashboard, dashboardTimeoutMs: 25 });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreeDashboard, dashboardTimeoutMs: 25 });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const response = await app.inject({ url: "/api/worktree-dashboard", headers: { cookie } });
@@ -508,7 +510,7 @@ test("answers bootstrap as waiting when cmux never replies", async (t) => {
   cmux.workspaceList = () => new Promise(() => {});
   cmux.hostStatus = () => new Promise(() => {});
   cmux.capabilities = () => new Promise(() => {});
-  const app = await buildApp({ cmux, token: TOKEN, bootstrapTimeoutMs: 25 });
+  const app = await buildApp(t, { cmux, token: TOKEN, bootstrapTimeoutMs: 25 });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const response = await app.inject({ url: "/api/bootstrap", headers: { cookie } });
@@ -536,7 +538,7 @@ test("launches only catalogued repositories and exposes overview/inbox state", a
     diff: async () => ({ file: "x", patch: "diff" }),
     pullRequest: async () => ({ available: true, pullRequest: { number: 7, title: "Open PR" } }),
   };
-  const app = await buildApp({ cmux, token: TOKEN, repoCatalog });
+  const app = await buildApp(t, { cmux, token: TOKEN, repoCatalog });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
@@ -581,7 +583,7 @@ test("serves Markdown, manages private previews, captures feedback, and controls
     remove: (id) => { calls.push(["queue-remove", id]); return { removed: true }; },
   };
   const previewCapture = async (input) => { calls.push(["capture", input]); return { buffer: Buffer.from("captured-png"), viewport: { width: 390, height: 844 }, sourceUrl: "http://localhost:3000/" }; };
-  const app = await buildApp({ cmux, token: TOKEN, repoCatalog, previewManager, promptQueue, previewCapture });
+  const app = await buildApp(t, { cmux, token: TOKEN, repoCatalog, previewManager, promptQueue, previewCapture });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
@@ -608,7 +610,7 @@ test("serves Markdown, manages private previews, captures feedback, and controls
 });
 
 test("every state-changing route requires pairing and same-origin requests", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const mutations = [
@@ -696,7 +698,7 @@ function fakePlanner() {
 
 test("lists, reloads, resumes and deletes saved plans", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -721,7 +723,7 @@ test("lists, reloads, resumes and deletes saved plans", async (t) => {
 
 test("lists every plan when no filter is given", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const listed = await app.inject({ method: "GET", url: "/api/worktree-plans", headers });
@@ -732,7 +734,7 @@ test("lists every plan when no filter is given", async (t) => {
 test("turns an unknown saved plan into a 400", async (t) => {
   const planner = fakePlanner();
   planner.detail = async () => { throw new TypeError("Unknown plan. Start a new goal"); };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const response = await app.inject({ method: "GET", url: "/api/worktree-plans/nope", headers });
@@ -742,7 +744,7 @@ test("turns an unknown saved plan into a 400", async (t) => {
 
 test("starts a background plan round and reports it as running", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -769,7 +771,7 @@ test("starts a background plan round and reports it as running", async (t) => {
 
 test("routes reviewer feedback to a new planner round, awaited or in the background", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -788,7 +790,7 @@ test("routes reviewer feedback to a new planner round, awaited or in the backgro
 test("reports an empty feedback note as a 400 the sheet can show", async (t) => {
   const planner = fakePlanner();
   planner.feedback = async () => { throw new TypeError("Say what is wrong with this plan"); };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/feedback", headers, payload: { text: "  " } });
@@ -799,7 +801,7 @@ test("reports an empty feedback note as a 400 the sheet can show", async (t) => 
 test("refuses a request against a plan whose round is still running", async (t) => {
   const planner = fakePlanner();
   planner.launch = async () => { throw new TypeError("This goal is planning right now. Wait for the round to finish"); };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/launch", headers, payload: {} });
@@ -809,7 +811,7 @@ test("refuses a request against a plan whose round is still running", async (t) 
 
 test("drives a worktree plan from goal to launch", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -849,7 +851,7 @@ test("answers a background launch with 202 and leaves the caches to the settled 
     settled = planner.onLaunchSettled;
     return { planId, launching: true };
   };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -865,7 +867,7 @@ test("answers a background launch with 202 and leaves the caches to the settled 
 
 test("still launches a plan synchronously when no background flag is sent", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/launch", headers, payload: { background: false } });
@@ -882,7 +884,7 @@ test("builds the single combined pull request through the goal integrator", asyn
       return { planId, deliveryMode: "combined", deliveryStatus: "pr_open", finalPrNumber: 42, finalPrUrl: "https://github.test/pr/42" };
     },
   };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalIntegrator });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalIntegrator });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/assemble", headers, payload: {} });
@@ -894,7 +896,7 @@ test("builds the single combined pull request through the goal integrator", asyn
 test("turns a planner rejection into a 400 with its own message", async (t) => {
   const planner = fakePlanner();
   planner.start = async () => { throw new TypeError("Describe the goal for this repository"); };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const response = await app.inject({
     method: "POST",
@@ -907,7 +909,7 @@ test("turns a planner rejection into a 400 with its own message", async (t) => {
 });
 
 test("refuses an unauthenticated plan request", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
   t.after(() => app.close());
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans", payload: { repositoryId: "repository12345678", goal: "Add billing" } });
   assert.equal(response.statusCode, 401);
@@ -915,7 +917,7 @@ test("refuses an unauthenticated plan request", async (t) => {
 
 test("accepts a full eight task plan without hitting the body limit", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const tasks = Array.from({ length: 8 }, (unused, index) => ({
     id: `t${index}`,
@@ -937,7 +939,7 @@ test("accepts a full eight task plan without hitting the body limit", async (t) 
 
 test("passes attached images through to the planner", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const images = [{ path: "/attachments/one.png", name: "one.png" }];
   const response = await app.inject({
@@ -952,7 +954,7 @@ test("passes attached images through to the planner", async (t) => {
 
 test("forwards the specification options on both plan routes", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const specOptions = { unitTests: true, e2eTests: false, edgeCases: true, refactorPass: false, screenMocks: true, flowcharts: true };
@@ -971,7 +973,7 @@ test("forwards the specification options on both plan routes", async (t) => {
 test("turns an unknown specification option into a readable 400", async (t) => {
   const planner = fakePlanner();
   planner.start = async () => { throw new TypeError("Unknown specification option sketches"); };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const response = await app.inject({
     method: "POST",
@@ -995,13 +997,13 @@ function fakeReviewToken({ configured = false, login = null } = {}) {
 
 test("forwards the review request on both plan routes when a token is configured", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({
+  const app = await buildApp(t, {
     cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner,
     githubReviewToken: fakeReviewToken({ configured: true, login: "octo-bot" }),
   });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
-  const reviewOptions = { codeReview: true, reviewer: "codex" };
+  const reviewOptions = { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" };
 
   const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans", headers, payload: { repositoryId: "repository12345678", goal: "Add billing", reviewOptions } });
   assert.equal(awaited.statusCode, 201);
@@ -1014,7 +1016,7 @@ test("forwards the review request on both plan routes when a token is configured
 
 test("refuses a code review when no review token is configured", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({
+  const app = await buildApp(t, {
     cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner,
     githubReviewToken: fakeReviewToken({ configured: false }),
   });
@@ -1033,7 +1035,7 @@ test("refuses a code review when no review token is configured", async (t) => {
 });
 
 test("turns an unknown review option into a readable 400", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
   t.after(() => app.close());
   const response = await app.inject({
     method: "POST",
@@ -1047,7 +1049,7 @@ test("turns an unknown review option into a readable 400", async (t) => {
 
 test("the review token routes never return the token itself", async (t) => {
   const store = fakeReviewToken({ configured: false });
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, githubReviewToken: store });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, githubReviewToken: store });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1072,7 +1074,7 @@ test("the review token routes never return the token itself", async (t) => {
 test("turns a bad images value into a 400", async (t) => {
   const planner = fakePlanner();
   planner.start = async () => { throw new TypeError("Attached images must be a list"); };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const response = await app.inject({
     method: "POST",
@@ -1087,14 +1089,14 @@ test("turns a bad images value into a 400", async (t) => {
 const TRACE = "11111111-2222-4333-8444-555555555555";
 
 test("the progress stream needs the session cookie", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
   t.after(() => app.close());
   const unpaired = await app.inject({ method: "GET", url: `/api/worktree-plans/progress/${TRACE}` });
   assert.equal(unpaired.statusCode, 401);
 });
 
 test("rejects a progress id that is not a uuid", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
   t.after(() => app.close());
   const response = await app.inject({
     method: "GET",
@@ -1113,7 +1115,7 @@ test("streams a tool label to a subscriber, then ends the round", async (t) => {
     options.onEvent?.({ k: "text", t: "Thinking…" });
     return { planId: "plan-1", repositoryId: "repository12345678", goal: "Add billing", round: 1, status: "ready", questions: [], tasks: [] };
   };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   await app.listen({ port: 0, host: "127.0.0.1" });
   const { port } = app.server.address();
@@ -1148,7 +1150,7 @@ test("streams a tool label to a subscriber, then ends the round", async (t) => {
 test("a failed round ends its progress stream with an error", async (t) => {
   const planner = fakePlanner();
   planner.start = async () => { throw new TypeError("Describe the goal for this repository"); };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   await app.listen({ port: 0, host: "127.0.0.1" });
   const { port } = app.server.address();
@@ -1170,7 +1172,7 @@ test("aborting a goal cancels its scheduled work and reports every closure", asy
   const calls = [];
   const goalIntegrator = { cancel: (planId) => { calls.push(["cancel", planId]); return { planId, cancelled: true }; }, assemble: async () => ({}) };
   const worktreeDashboard = { invalidate: () => calls.push(["invalidate"]) };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, goalIntegrator, worktreeDashboard });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, goalIntegrator, worktreeDashboard });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/abort", headers, payload: {} });
@@ -1189,7 +1191,7 @@ test("aborting a goal cancels its scheduled work and reports every closure", asy
 test("a scheduling cancel that throws never stops the abort", async (t) => {
   const planner = fakePlanner();
   const goalIntegrator = { cancel: () => { throw new Error("timer map is gone"); }, assemble: async () => ({}) };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, goalIntegrator });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, goalIntegrator });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/abort", headers, payload: {} });
@@ -1200,7 +1202,7 @@ test("a scheduling cancel that throws never stops the abort", async (t) => {
 test("a planner refusal to abort a merged goal answers 400 with its own sentence", async (t) => {
   const planner = fakePlanner();
   planner.abort = async () => { throw new TypeError("This goal is already merged, so it cannot be aborted"); };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/abort", headers, payload: {} });
@@ -1213,7 +1215,7 @@ test("only an explicit GitHub refresh reconciles the goal board, and only after 
   const value = { generatedAt: "2026-09-01T00:00:00.000Z", summary: { repositories: 0, worktrees: 0, sessions: 0, needsYou: 0, working: 0, dirty: 0, pullRequests: 0 }, repositories: [], orphanSessions: [] };
   const worktreeDashboard = { snapshot: async (input) => { order.push(["snapshot", input.refreshGitHub === true]); return value; }, invalidate: () => {} };
   const goalMergeWatch = { reconcile: async () => { order.push(["reconcile"]); return { recorded: [] }; } };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreeDashboard, goalMergeWatch });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreeDashboard, goalMergeWatch });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
 
@@ -1233,7 +1235,7 @@ test("a failed snapshot reconciles nothing, and a failed reconciliation still re
     invalidate: () => {},
   };
   const goalMergeWatch = { reconcile: async () => { order.push(["reconcile"]); throw new Error("the store is locked"); } };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreeDashboard, goalMergeWatch });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreeDashboard, goalMergeWatch });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
 
@@ -1250,7 +1252,7 @@ test("the plan list and detail carry the lifecycle fields the board reads", asyn
   const planner = fakePlanner();
   planner.list = async () => ({ plans: [{ planId: "plan-1", goal: "Add billing", status: "launched", running: false, runPhase: null, runStage: null, runStep: "", runError: "", boardStatus: null, boardPrState: "OPEN", boardState: "waiting_for_merge" }] });
   planner.detail = async () => ({ planId: "plan-1", status: "launched", running: true, runPhase: "running", runStage: "review_spec", runStep: "Read app/page.tsx", runError: "", boardStatus: null, boardState: "review_spec", events: [] });
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const listed = (await app.inject({ url: "/api/worktree-plans", headers })).json();
@@ -1282,7 +1284,7 @@ function fakeHealth() {
 
 test("reports the health of every launched goal and of one goal alone", async (t) => {
   const health = fakeHealth();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: health });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: health });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1300,7 +1302,7 @@ test("reports the health of every launched goal and of one goal alone", async (t
 test("the forced check runs the same pass the watchdog runs on its timer", async (t) => {
   const calls = [];
   const watchdog = { check: async () => { calls.push("check"); return { checked: true, alerts: [] }; }, start: () => () => {} };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: fakeHealth(), goalWatchdog: watchdog });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: fakeHealth(), goalWatchdog: watchdog });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1312,7 +1314,7 @@ test("the forced check runs the same pass the watchdog runs on its timer", async
 
 test("relaunches one task in either mode, and defaults to continue", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1329,7 +1331,7 @@ test("relaunches one task in either mode, and defaults to continue", async (t) =
 
 test("skips one task and carries its reason", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1353,7 +1355,7 @@ test("checks one goal against GitHub and reports what changed", async (t) => {
     snapshot: async (options) => { refreshes.push(options); return { repositories: [], orphanSessions: [], summary: {} }; },
     invalidate: () => {},
   };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalMergeWatch: mergeWatch, worktreeDashboard });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalMergeWatch: mergeWatch, worktreeDashboard });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1372,7 +1374,7 @@ test("a goal GitHub knows nothing about reports no change rather than an error",
   const store = { get: () => ({ planId: "plan-1", boardPrState: null, boardStatus: null, boardPrUrl: null }) };
   const mergeWatch = { reconcile: async () => ({ recorded: [] }) };
   const worktreeDashboard = { snapshot: async () => ({ repositories: [], orphanSessions: [], summary: {} }), invalidate: () => {} };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalMergeWatch: mergeWatch, worktreeDashboard });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalMergeWatch: mergeWatch, worktreeDashboard });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1400,7 +1402,7 @@ test("launches one goal follow-up and returns its delivery target", async (t) =>
       };
     },
   };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups, worktreeDashboard });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups, worktreeDashboard });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const payload = { actions: ["review"], agent: "codex" };
@@ -1420,7 +1422,7 @@ test("returns a fixed follow-up refusal as INVALID_REQUEST", async (t) => {
   const goalFollowups = {
     launch: async () => { throw new TypeError("Only a goal waiting for merge can take a follow-up action"); },
   };
-  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups });
+  const app = await buildApp(t, { cmux, token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const response = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/followups", headers, payload: { actions: ["tests"] } });
@@ -1435,7 +1437,7 @@ test("returns a fixed follow-up refusal as INVALID_REQUEST", async (t) => {
 test("rejects a goal follow-up from a foreign origin", async (t) => {
   const calls = [];
   const goalFollowups = { launch: async () => { calls.push("launch"); return {}; } };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalFollowups });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
   const response = await app.inject({
@@ -1458,7 +1460,7 @@ test("reports which provider takes the next task and why", async (t) => {
       ],
     }),
   };
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, accountUsage, worktreePlanner: fakePlanner() });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, accountUsage, worktreePlanner: fakePlanner() });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1505,7 +1507,7 @@ function reapableStore() {
 function reapableCmux() {
   const cmux = fakeCmux();
   cmux.workspaceListDetailed = async () => ({
-    workspaces: ["workspace-0", "workspace-1", "workspace-merge"].map((id) => ({ id, title: id, status: { effective: "idle", signals: {} } })),
+    workspaces: ["workspace-0", "workspace-1", "workspace-merge"].map((id) => ({ id, title: id, status: { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } })),
   });
   return cmux;
 }
@@ -1513,7 +1515,7 @@ function reapableCmux() {
 test("closes the finished sessions of a delivered goal on demand and reports what it did", async (t) => {
   const store = reapableStore();
   const cmux = reapableCmux();
-  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store });
+  const app = await buildApp(t, { cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1534,7 +1536,7 @@ test("closes the finished sessions of a delivered goal on demand and reports wha
 test("the dry run reports the same sessions without closing or recording any", async (t) => {
   const store = reapableStore();
   const cmux = reapableCmux();
-  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store });
+  const app = await buildApp(t, { cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1552,7 +1554,7 @@ test("the dry run reports the same sessions without closing or recording any", a
 });
 
 test("both session routes answer 503 when there is no plan store", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner() });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1563,7 +1565,7 @@ test("both session routes answer 503 when there is no plan store", async (t) => 
 // A plan id that is present but unusable must not widen the pass to every goal.
 test("an invalid plan id is a 400 rather than a pass over every goal", async (t) => {
   const store = reapableStore();
-  const app = await buildApp({ cmux: reapableCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store });
+  const app = await buildApp(t, { cmux: reapableCmux(), token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1587,7 +1589,7 @@ test("the kill switch stops the timer pass and leaves the on-demand route workin
 
   const store = reapableStore();
   const cmux = reapableCmux();
-  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalHealthSweep: fakeHealth() });
+  const app = await buildApp(t, { cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalHealthSweep: fakeHealth() });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1612,7 +1614,7 @@ test("the supervision pass retires finished sessions when the switch is unset", 
 
   const store = reapableStore();
   const cmux = reapableCmux();
-  const app = await buildApp({ cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalHealthSweep: fakeHealth() });
+  const app = await buildApp(t, { cmux, token: TOKEN, worktreePlanner: fakePlanner(), worktreePlanStore: store, goalHealthSweep: fakeHealth() });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1624,7 +1626,7 @@ test("the supervision pass retires finished sessions when the switch is unset", 
 });
 
 test("every supervision route requires pairing", async (t) => {
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: fakeHealth() });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: fakePlanner(), goalHealthSweep: fakeHealth() });
   t.after(() => app.close());
   for (const [method, url] of [
     ["GET", "/api/goals/health"],
@@ -1645,7 +1647,7 @@ test("every supervision route requires pairing", async (t) => {
 
 test("routes a contract question to the planner, awaited or in the background", async (t) => {
   const planner = fakePlanner();
-  const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
 
@@ -1663,7 +1665,7 @@ test("routes a contract question to the planner, awaited or in the background", 
   assert.deepEqual(planner.calls[1][2], { text: "And T2?" });
 });
 
-test("reports every contract question refusal as a 400 the sheet can show", async () => {
+test("reports every contract question refusal as a 400 the sheet can show", async (t) => {
   const refusals = [
     "Ask a question about this plan",
     "That question is too long",
@@ -1679,7 +1681,7 @@ test("reports every contract question refusal as a 400 the sheet can show", asyn
     const planner = fakePlanner();
     planner.discuss = async () => { throw new TypeError(sentence); };
     planner.discussBackground = async () => { throw new TypeError(sentence); };
-    const app = await buildApp({ cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
+    const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
     const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
     const awaited = await app.inject({ method: "POST", url: "/api/worktree-plans/plan-1/discuss", headers, payload: { text: "Why?" } });
     assert.equal(awaited.statusCode, 400, sentence);
@@ -1689,4 +1691,76 @@ test("reports every contract question refusal as a 400 the sheet can show", asyn
     assert.equal(background.json().error, sentence);
     await app.close();
   }
+});
+
+test("rejects invalid reviewer models before either planner branch runs", async (t) => {
+  const planner = fakePlanner();
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, githubReviewToken: fakeReviewToken({ configured: true }) });
+  t.after(() => app.close());
+  for (const background of [false, true]) {
+    for (const reviewerModel of ["bad model", 123]) {
+      const response = await app.inject({
+        method: "POST", url: "/api/worktree-plans",
+        headers: { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" },
+        payload: { repositoryId: "repository12345678", goal: "Add billing", background, reviewOptions: { codeReview: true, reviewer: "claude", reviewerModel } },
+      });
+      assert.equal(response.statusCode, 400);
+      assert.match(response.json().error, /Model must/);
+    }
+  }
+  assert.equal(planner.calls.length, 0);
+});
+
+test("model settings require pairing and a safe origin, then affect manual agent launches", async (t) => {
+  const cmux = fakeCmux();
+  const app = await buildApp(t, { cmux, token: TOKEN, worktreePlanner: fakePlanner(), repoCatalog: { get: async () => ({ id: "repo", path: "/repo", name: "Repo", scripts: [] }) } });
+  t.after(() => app.close());
+  assert.equal((await app.inject({ url: "/api/settings/models" })).statusCode, 401);
+  const cookie = await pairedCookie(app);
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const payload = { roles: { coder: { models: { codex: "custom-coder" } } } };
+  assert.equal((await app.inject({ method: "PATCH", url: "/api/settings/models", headers: { ...headers, origin: "https://evil.test" }, payload })).statusCode, 403);
+  const saved = await app.inject({ method: "PATCH", url: "/api/settings/models", headers, payload });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().roles.coder.models.codex, "custom-coder");
+  assert.equal((await app.inject({ url: "/api/settings/models", headers })).json().roles.coder.models.codex, "custom-coder");
+  const launched = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { repoId: "repo", agent: "codex", prompt: "Implement" } });
+  assert.equal(launched.statusCode, 201);
+  assert.equal(cmux.calls.find(([kind]) => kind === "create")[1].model, "custom-coder");
+  const rejected = await app.inject({ method: "PATCH", url: "/api/settings/models", headers, payload: { roles: { coder: { models: { codex: "--help" } } } } });
+  assert.equal(rejected.statusCode, 400);
+  assert.equal((await app.inject({ url: "/api/settings/models", headers })).json().roles.coder.models.codex, "custom-coder");
+});
+
+test("durable goal questions reach the inbox and stale replies never reach cmux", async (t) => {
+  const { WorktreePlanStore } = await import("../server/worktree-plan-store.mjs");
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "inbox-goal", repositoryId: "repo", cwd: "/fixture", goal: "Choose billing" });
+  store.reserveGoalSession("inbox-goal", { branch: "goal-session/inbox", generation: 1 });
+  store.recordGoalSessionStart("inbox-goal", { worktreePath: "/fixture-goal", workspaceId: WS_ID, generation: 1 });
+  store.publishGoalSessionQuestions("inbox-goal", { generation: 1, questions: [{ id: "q1", text: "Card or invoice?", options: ["Card", "Invoice"] }] });
+  const cmux = fakeCmux();
+  const app = await buildApp(t, { token: TOKEN, cmux, worktreePlanStore: store });
+  const cookie = await pairedCookie(app);
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const inbox = (await app.inject({ url: "/api/inbox", headers })).json();
+  assert.equal(inbox.actionableCount, 1);
+  const item = inbox.items[0];
+  assert.equal(item.workspaceId, WS_ID);
+  assert.equal(item.kind, "question");
+  assert.match(item.body, /Card or invoice/);
+  assert.ok(item.questionOptions.includes("Write reply…"));
+  const url = `/api/inbox/${item.requestId}/reply`;
+  assert.equal((await app.inject({ method: "POST", url, headers, payload: { kind: "exitPlan", mode: "autoAccept" } })).statusCode, 400);
+  assert.equal(store.get("inbox-goal").goalSessionState, "awaiting_input");
+  assert.equal((await app.inject({ method: "POST", url, headers, payload: { kind: "question", selections: ["Card"] } })).statusCode, 200);
+  assert.equal(store.get("inbox-goal").goalSessionPendingInput, "Card");
+  assert.equal(store.get("inbox-goal").goalSessionState, "planning");
+  assert.equal((await app.inject({ url: "/api/inbox", headers })).json().actionableCount, 0);
+  store.publishGoalSessionQuestions("inbox-goal", { generation: 1, questions: [{ id: "q1", text: "Card or invoice?", options: ["Card", "Invoice"] }] });
+  const next = (await app.inject({ url: "/api/inbox", headers })).json();
+  assert.notEqual(next.items[0].requestId, item.requestId, "identical questions in a new round have a new durable identity");
+  assert.equal((await app.inject({ method: "POST", url, headers, payload: { kind: "question", selections: ["Invoice"] } })).statusCode, 400);
+  assert.equal(cmux.calls.filter(([kind]) => kind === "reply").length, 0);
 });

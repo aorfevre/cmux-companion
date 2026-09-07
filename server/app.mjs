@@ -2,11 +2,14 @@ import { releaseRetention } from "./release-retention.mjs";
 import { WorktreeCleanup } from "./worktree-cleanup.mjs";
 import { WorktreeInventory, processActivity } from "./worktree-inventory.mjs";
 import { GoalSessionCollector } from "./goal-session-collector.mjs";
+import { GoalSessionService } from "./goal-session-service.mjs";
 import Fastify from "fastify";
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
+import { ModelSettings } from "./model-settings.mjs";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
 import { CmuxEventHub } from "./event-hub.mjs";
 import { PlannerProgress, TRACE_ID } from "./planner-progress.mjs";
@@ -54,6 +57,7 @@ const AUTO_CLOSE_OFF = new Set(["0", "off", "false"]);
 
 export async function buildApp({
   cmux = new CmuxClient(),
+  modelSettings = new ModelSettings(),
   token,
   frontendUpstream = null,
   logger = false,
@@ -63,6 +67,8 @@ export async function buildApp({
   worktreeCleanup = null,
   worktreePlanner = null,
   worktreePlanStore = null,
+  agentBriefs = null,
+  githubIssueStore = null,
   goalIntegrator = null,
   goalFollowups = null,
   githubReviewToken = null,
@@ -109,7 +115,11 @@ export async function buildApp({
   });
   const reconnect = ccsReconnect || new CcsReconnectManager({ accountUsage });
   const hub = eventHub || new CmuxEventHub({ bin: cmux.bin, socketPassword: cmux.socketPassword });
-  const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog, log: app.log });
+  const worktrees = worktreeDashboard || new WorktreeDashboard({ repoCatalog, log: app.log, loadWorkspaces: async () => {
+    // Bypass bootstrap and cmux's shared pending display observation.
+    const payload = await (cmux.loadWorkspaceListDetailed ? cmux.loadWorkspaceListDetailed() : cmux.workspaceList());
+    return { available: Array.isArray(payload?.workspaces), workspaces: payload?.workspaces };
+  } });
   const cleanup = worktreeCleanup || new WorktreeCleanup({ inventory: new WorktreeInventory({ roots: repoCatalog.roots || [], activity: () => processActivity(cmux), goalPlans: () => planStore?.sessionCleanupPlanIds?.().map((id) => planStore.get(id)) || [] }), onRemoved: (path) => planStore?.recordWorktreeRemoved(path), log: app.log });
   const detachCleanup = cleanup.start();
   // The planner and delivery controller share one durable goal record. Tests
@@ -117,9 +127,10 @@ export async function buildApp({
   const planStore = worktreePlanStore || (!worktreePlanner ? new WorktreePlanStore() : null);
   // One brief store for both: every agent session reads its brief from the same
   // directory, and one cleanup pass covers the whole companion.
-  const briefs = new AgentBriefs();
+  const briefs = agentBriefs || new AgentBriefs();
   const planner = worktreePlanner
-    || new WorktreePlanner({ worktrees, cmux, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
+    || new WorktreePlanner({ worktrees, cmux, modelSettings, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
+  const goalSessions = planStore ? new GoalSessionService({ store: planStore, worktrees, cmux, modelSettings, log: app.log }) : null;
   // The one writer in the supervision path. It closes a cmux session only when
   // the plan records it and its work is delivered, so it is always safe to call
   // it; the switch below is about the timer, not about the rule.
@@ -132,9 +143,9 @@ export async function buildApp({
   const autoCloseSessions = !AUTO_CLOSE_OFF.has(String(process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS ?? "").trim().toLowerCase());
   const sessionCollector = planStore ? new GoalSessionCollector({ store: planStore, cmux, reaper, enabled: autoCloseSessions, log: app.log }) : null;
   const integrator = goalIntegrator
-    || (planStore ? new GoalIntegrator({ store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector }) : null);
+    || (planStore ? new GoalIntegrator({ modelSettings, store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector }) : null);
   const followups = goalFollowups
-    || (planStore ? new GoalFollowups({ store: planStore, cmux, log: app.log, briefs }) : null);
+    || (planStore ? new GoalFollowups({ modelSettings, store: planStore, cmux, log: app.log, briefs }) : null);
   // The identity a goal code review posts under. It is separate from the
   // machine's own gh credential on purpose: GitHub refuses a verdict on your
   // own pull request, and the goal pull request is opened with that credential.
@@ -150,11 +161,11 @@ export async function buildApp({
   const health = goalHealthSweep
     || (planStore ? new GoalHealthSweep({ store: planStore, cmux, log: app.log }) : null);
   const issuePlanner = githubIssuePlanner
-    || new GitHubIssuePlanner({ worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+    || new GitHubIssuePlanner({ modelSettings, worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // GitHub Sync owns its own durable store. A test that injects the whole
   // service never opens the production file, exactly like the planner above.
   const issueSync = githubIssueSync
-    || new GitHubIssueSync({ worktrees, planner, store: new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+    || new GitHubIssueSync({ worktrees, planner, store: githubIssueStore || new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // The timer that keeps the issue column current without anyone pressing
   // GitHub Sync. The interval is read here rather than inside the class, so the
   // class stays purely injected and a test never depends on the environment.
@@ -184,7 +195,7 @@ export async function buildApp({
   // goal's health gets worse — so a dead agent reaches the user instead of
   // waiting to be noticed. It moves no goal: every recovery stays explicit.
   const watchdog = goalWatchdog
-    || (health ? new GoalWatchdog({ health, integrator, pushService, mergeWatch, worktrees, sessionReaper: autoCloseSessions ? reaper : null, log: app.log }) : null);
+    || (health ? new GoalWatchdog({ health, store: planStore, integrator, pushService, mergeWatch, worktrees, sessionReaper: autoCloseSessions ? reaper : null, log: app.log }) : null);
   const detachWatchdog = watchdog?.start() || null;
   const detachIssueSyncScheduler = issueSyncScheduler?.start() || null;
   const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
@@ -229,6 +240,7 @@ export async function buildApp({
       return reply.code(400).send({
         error: error.message,
         code: "INVALID_REQUEST",
+        ...(typeof error.planId === "string" ? { planId: error.planId } : {}),
         ...(isWorktreeReason(error.reason) ? { reason: error.reason } : {}),
       });
     }
@@ -388,6 +400,9 @@ export async function buildApp({
     return result;
   });
 
+  app.get("/api/settings/models", async () => modelSettings.status());
+  app.patch("/api/settings/models", async (request) => modelSettings.configure(request.body));
+
   app.get("/api/workspaces", async () => cmux.workspaceList());
 
   app.post("/api/workspaces", async (request, reply) => {
@@ -397,7 +412,7 @@ export async function buildApp({
     const created = await cmux.workspaceCreate({
       cwd: repo.path,
       title: typeof title === "string" && title.trim() ? title : repo.name,
-      agent,
+      ...modelSettings.workspace("coder", agent),
       prompt,
       script,
     });
@@ -486,7 +501,7 @@ export async function buildApp({
     const created = await cmux.workspaceCreate({
       cwd: target.path,
       title: typeof title === "string" && title.trim() ? title : `${target.repoName}: ${target.branch}`,
-      agent,
+      ...modelSettings.workspace("coder", agent),
       prompt,
     });
     bootstrapSnapshot = null;
@@ -501,13 +516,14 @@ export async function buildApp({
     const bootstrap = await loadBootstrap();
     return worktrees.remove(request.params.id, {
       workspaces: bootstrap.workspaces,
+      workspacesAvailable: bootstrap.connected === true,
       discardChanges: request.query?.discardChanges === "1",
     });
   });
 
   app.post("/api/worktree-dashboard/repositories/:id/remove-clean", async (request) => {
     const bootstrap = await loadBootstrap();
-    return worktrees.removeCleanWorktrees(request.params.id, { workspaces: bootstrap.workspaces });
+    return worktrees.removeCleanWorktrees(request.params.id, { workspaces: bootstrap.workspaces, workspacesAvailable: bootstrap.connected === true });
   });
 
   app.patch("/api/worktree-dashboard/repositories/:id/archive", async (request) => {
@@ -550,6 +566,47 @@ export async function buildApp({
     }
     if (request.body?.background === true) return reply.code(202).send(await planner.startBackground(goal));
     return reply.code(201).send(await reportRound(request.body?.traceId, (onEvent) => planner.start({ ...goal, onEvent })));
+  });
+
+  // This path is deliberately separate from legacy bulk planning. It starts
+  // one owned worktree and one visible managed conversation; old plans retain
+  // their saved task-split and launch behavior unchanged.
+  app.post("/api/goal-sessions", async (request, reply) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    const plan = await goalSessions.start(request.body || {});
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return reply.code(201).send(plan);
+  });
+
+  // Workspace detail uses this exact persisted identity to keep proposal
+  // decisions beside the managed terminal, without guessing from a directory
+  // or touching a legacy plan.
+  app.get("/api/goal-sessions/workspace/:workspaceId", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    return { plan: goalSessions.findByWorkspace(request.params.workspaceId) };
+  });
+
+  app.post("/api/goal-sessions/:planId/approve", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    return goalSessions.approve(request.params.planId, request.body || {});
+  });
+
+  app.post("/api/goal-sessions/:planId/answer", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    const result = await goalSessions.answer(request.params.planId, request.body || {});
+    inboxSnapshot = null;
+    return result;
+  });
+
+  app.post("/api/goal-sessions/:planId/recover", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    return goalSessions.recover(request.params.planId);
+  });
+
+  app.post("/api/goal-sessions/:planId/request-changes", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    return goalSessions.requestChanges(request.params.planId, request.body || {});
   });
 
   app.post("/api/worktree-plans/:planId/answers", async (request, reply) => {
@@ -917,9 +974,27 @@ export async function buildApp({
     }
   };
 
-  app.get("/api/inbox", loadInbox);
+  const managedQuestions = () => managedGoalInbox((planStore?.list?.({ limit: 200 }) || [])
+    .filter((plan) => plan.workflow === "goal_session").map((plan) => planStore.get(plan.planId)).filter(Boolean));
+  app.get("/api/inbox", async () => {
+    const inbox = await loadInbox().catch((cause) => {
+      if (!managedQuestions().length) throw cause;
+      return { items: [], actionableCount: 0, unreadCount: 0 };
+    });
+    const questions = managedQuestions();
+    return { ...inbox, items: [...questions, ...inbox.items], actionableCount: inbox.actionableCount + questions.length };
+  });
 
   app.post("/api/inbox/:requestId/reply", async (request) => {
+    if (String(request.params.requestId).startsWith("goal-question-")) {
+      const question = managedQuestions().find((item) => item.requestId === request.params.requestId);
+      if (!question || request.body?.kind !== "question") throw new TypeError("This goal question changed. Open its current conversation");
+      const selections = request.body?.selections;
+      if (!Array.isArray(selections) || selections.length !== 1 || typeof selections[0] !== "string" || !selections[0].trim()) throw new TypeError("Answer the goal question");
+      const result = await goalSessions.answer(question.planId, { generation: question.generation, questionRevision: question.questionRevision, feedback: selections[0].trim() });
+      inboxSnapshot = null;
+      return { ok: true, result };
+    }
     const result = await cmux.feedReply(request.params.requestId, request.body?.kind, request.body || {});
     inboxSnapshot = null;
     return { ok: true, result };
@@ -1115,6 +1190,20 @@ export async function buildApp({
   }
 
   return app;
+}
+
+// IDs name the current durable question set, not a native cmux request. A
+// stale notification must never answer a later turn or grant tool permission.
+export function managedGoalInbox(plans = []) {
+  return plans.filter((plan) => plan.workflow === "goal_session" && !plan.boardStatus && plan.goalSessionState === "awaiting_input" && plan.questions?.length)
+    .map((plan) => {
+      const version = createHash("sha256").update(JSON.stringify([plan.planId, plan.goalSessionGeneration, plan.goalSessionQuestionRevision])).digest("hex");
+      const id = `goal-question-${version}`;
+      return { id, requestId: id, type: "request", kind: "question", planId: plan.planId, generation: plan.goalSessionGeneration, questionRevision: plan.goalSessionQuestionRevision,
+        workspaceId: plan.goalSessionWorkspaceId, title: "Goal needs your answer", subtitle: plan.goal,
+        body: plan.questions.map((question) => question.text).join("\n"),
+        questionOptions: plan.questions.length === 1 ? [...(plan.questions[0].options || []), "Write reply…"] : ["Write reply…"] };
+    });
 }
 
 export function normalizeInbox(feed = {}, notificationPayload = {}) {

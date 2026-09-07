@@ -5,11 +5,15 @@ import { mergeSessionTitle, sessionTitle, projectCode, taskCode, partCode } from
 // title. Never infer completion from the title, age, or a clean checkout.
 export function restoredGoalSessions(plans, workspaces) {
   const recorded = new Set(plans.flatMap((p) => [
-    p.mergeWorkspaceId, ...(p.tasks || []).map((t) => t.workspaceId),
+    p.goalSessionWorkspaceId, p.mergeWorkspaceId, ...(p.tasks || []).map((t) => t.workspaceId),
     ...(p.supersededMergeWorkspaces || []).map((w) => w.workspaceId),
     ...(p.followups || []).map((w) => w.workspaceId),
   ]).filter(Boolean).map((id) => id.toLowerCase()));
   return workspaces.filter((w) => !recorded.has(w.id.toLowerCase())).map((workspace) => {
+    const activeOwner = plans.find((plan) => plan.workflow === "goal_session" && !["merged", "aborted"].includes(plan.boardStatus) && String(plan.boardPrState).toUpperCase() !== "MERGED" && plan.goalSessionWorktreePath === workspace.current_directory);
+    if (activeOwner) return { workspaceId: workspace.id, title: workspace.title, kind: "restored", taskId: null,
+      planId: activeOwner.planId, path: workspace.current_directory, eligible: false,
+      reason: "The goal conversation stays open for review and corrections" };
     const matches = [];
     for (const plan of plans) {
       const path = workspace.current_directory;

@@ -35,7 +35,7 @@ function combined(t, { tasks = TASKS, merge = true } = {}) {
 // Every workspace the fixture opened, all idle. cmux reports a live workspace
 // with no busy signal for an agent that finished its turn.
 function workspaces(ids, overrides = {}) {
-  return ids.map((id) => ({ id, title: id, status: { effective: "idle", signals: {} }, ...(overrides[id] || {}) }));
+  return ids.map((id) => ({ id, title: id, status: { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } }, ...(overrides[id] || {}) }));
 }
 
 function cmux(list) {
@@ -383,4 +383,55 @@ test("restored reconciliation supports current titles and legacy task titles wit
   }
   assert.equal(restoredGoalSessions([plan], [{ id: "new", title: mergeSessionTitle(plan), current_directory: "/repo/goal" }])[0].eligible, true);
   assert.equal(restoredGoalSessions([{ ...plan, boardStatus: null }], [{ id: "new", title: sessionTitle(plan, task), current_directory: "/repo/task" }])[0].eligible, true);
+});
+
+for (const scenario of ["running", "unknown", "dirty", "status-fails", "inventory-fails", "replaced"]) {
+  test(`recorded session is protected when fresh evidence becomes ${scenario}`, async (t) => {
+    const store = combined(t, { tasks: [TASKS[0]], merge: false });
+    store.recordGoalPullRequest("plan-1", { number: 7, url: "https://github.test/pr/7", state: "OPEN" });
+    const client = cmux(workspaces(["workspace-0"]));
+    let reads = 0;
+    client.workspaceListDetailed = async () => {
+      if (++reads > 1 && scenario === "inventory-fails") throw new Error("offline");
+      return { workspaces: workspaces(["workspace-0"]) };
+    };
+    client.workspaceStatus = async () => {
+      if (scenario === "status-fails") throw new Error("status unavailable");
+      if (scenario === "unknown") return {};
+      if (scenario === "replaced") store.recordTaskRelaunch("plan-1", "t1", { status: "launched", path: "/repo/task-0", workspace: { workspace_id: "replacement" } });
+      return { signals: { any_agent_running: scenario === "running", any_agent_needs_input: false, is_git_dirty: scenario === "dirty" } };
+    };
+    const result = await new GoalSessionReaper({ store, cmux: client }).reap();
+    assert.deepEqual(client.closed(), []);
+    assert.equal(result.closed.length, 0);
+    assert.equal(store.get("plan-1").tasks[0].sessionClosedAt, null);
+  });
+}
+
+test("retirement does not stamp a replacement created while old close was awaiting", async (t) => {
+  const store = combined(t, { tasks: [TASKS[0]], merge: false });
+  store.recordGoalPullRequest("plan-1", { number: 7, url: "https://github.test/pr/7", state: "OPEN" });
+  const client = cmux(workspaces(["workspace-0"]));
+  client.workspaceClose = async () => {
+    store.recordTaskRelaunch("plan-1", "t1", { status: "launched", path: "/repo/task-0", workspace: { workspace_id: "replacement" } });
+  };
+  await new GoalSessionReaper({ store, cmux: client }).reap();
+  const task = store.get("plan-1").tasks[0];
+  assert.equal(task.workspaceId, "replacement");
+  assert.equal(task.sessionClosedAt, null);
+});
+
+test("a managed owner stays available through PR review, even without a task row", async () => {
+  const plan = { planId: "managed", workflow: "goal_session", goalSessionWorkspaceId: "owner", goalSessionWorktreePath: "/repo/goal", boardPrState: "OPEN", finalPrUrl: "https://github.test/pr/4", tasks: [] };
+  const live = { available: true, byId: new Map(workspaces(["owner"]).map((workspace) => [workspace.id, workspace])) };
+  for (const tasks of [[], [{ id: "owner-task", workspaceId: "owner", deliveryStatus: "integrated" }]]) {
+    const result = retirableSessions({ ...plan, tasks }, live);
+    assert.deepEqual(result.close, []);
+    assert.match(reasonFor(result.keep, "owner"), /review and corrections/);
+  }
+  const { restoredGoalSessions } = await import("../server/restored-goal-sessions.mjs");
+  const restored = restoredGoalSessions([plan], [{ id: "restored-owner", title: "Restored goal", current_directory: "/repo/goal" }]);
+  assert.equal(restored[0].eligible, false);
+  assert.match(restored[0].reason, /review and corrections/);
+  assert.deepEqual(restoredGoalSessions([plan], [{ id: "owner", title: "Goal", current_directory: "/repo/goal" }]), []);
 });

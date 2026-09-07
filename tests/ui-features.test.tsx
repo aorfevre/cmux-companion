@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
 import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
-import { BottomNav, HomeModeSwitch, InboxView, LastUpdateStamp, PullRequestBanner, TerminalPanel } from "../app/page";
+import { BottomNav, HomeModeSwitch, InboxView, LastUpdateStamp, ManagedGoalControls, PullRequestBanner, TerminalPanel } from "../app/page";
 import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { WorktreeDashboardView } from "../app/worktree-dashboard";
 import { WorktreePlannerSheet } from "../app/worktree-planner";
@@ -405,16 +405,17 @@ describe("contextual mobile features", () => {
       if (url === "/api/worktree-plans/plan-running") return new Response(JSON.stringify(detail), { status: 200 });
       return new Response(JSON.stringify(dashboard), { status: 200 });
     }));
-    const opened = vi.fn();
-    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} initialPlanId="plan-running" onPlanOpened={opened} />);
+    window.history.replaceState(null, "", "/?view=sessions&mode=worktrees&plan=plan-running");
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
 
-    // The deep link picks the tab and the project, then opens the goal.
+    // The deep link resolves the goal independently of board selection.
     const planner = await screen.findByRole("dialog", { name: "Plan a goal" });
     assert.ok(await within(planner).findByRole("region", { name: "Planning in progress" }));
-    assert.equal(opened.mock.calls.length, 1);
+    assert.equal(new URLSearchParams(location.search).get("plan"), "plan-running");
     await userEvent.click(within(planner).getByRole("button", { name: "Close goal planner sheet" }));
 
     const tab = screen.getByRole("tab", { name: /Draft Goals/ });
+    await userEvent.click(tab);
     assert.ok(within(tab).getByText("1 planning"), "the tab counts the running round");
     const goals = screen.getByRole("region", { name: "Draft goals" });
     assert.ok(within(goals).getByText("Planning…"));
@@ -685,16 +686,23 @@ describe("worktree goal planner", () => {
     const model = screen.getByRole("combobox", { name: "Planner model" }) as HTMLSelectElement;
     const effort = screen.getByRole("combobox", { name: "Planner effort" }) as HTMLSelectElement;
     const reviewer = screen.getByRole("checkbox", { name: "Add a reviewer pass" }) as HTMLInputElement;
-    assert.equal(engine.value, "claude");
-    assert.equal(model.value, "default");
+    assert.equal(engine.value, "codex");
+    assert.equal(model.value, "gpt-6");
     assert.equal(effort.value, "default");
     assert.equal(reviewer.checked, false);
+    assert.ok(screen.getByText("Codex (xcodex) · Codex Astra"));
+    assert.ok(within(model).getByRole("option", { name: "Codex Astra" }));
+    await userEvent.selectOptions(model, "default");
+    assert.ok(screen.getByText("Codex (xcodex) · CCS default model"));
+    await userEvent.selectOptions(engine, "claude");
+    assert.equal(model.value, "default");
+    assert.ok(Array.from(model.options).some((option) => option.value === model.value));
     assert.ok(screen.getByText("Claude Code (xclaude) · CCS default model"));
     assert.ok(within(model).getByRole("option", { name: "Opus 5" }));
     assert.ok(within(model).getByRole("option", { name: "Fable 5.1" }));
 
     await userEvent.selectOptions(engine, "codex");
-    assert.equal(model.value, "default");
+    assert.equal(model.value, "gpt-6");
     assert.ok(within(model).getByRole("option", { name: "GPT-5.6 Sol" }));
     assert.equal(within(model).queryByRole("option", { name: "Opus 5" }), null);
     await userEvent.selectOptions(model, "gpt-5.6-terra");
@@ -707,6 +715,32 @@ describe("worktree goal planner", () => {
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
     const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
     assert.deepEqual(body.engine, { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: true });
+  });
+
+  test("defaults code review to Fable and submits a separate provider model", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
+      return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+    const model = screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement;
+    const provider = screen.getByRole("combobox", { name: "Code-review reviewer" }) as HTMLSelectElement;
+    assert.equal(model.value, "claude-fable-5-1");
+    assert.equal(model.selectedOptions[0].textContent, "Fable 5.1");
+    assert.equal(provider.value, "claude");
+    await userEvent.selectOptions(provider, "codex");
+    assert.equal(within(model).queryByRole("option", { name: "Fable 5.1" }), null);
+    assert.ok(Array.from(model.options).some((option) => option.value === model.value));
+    await userEvent.selectOptions(model, "gpt-6");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Code review" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Review this goal");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
+    assert.deepEqual(body.reviewOptions, { codeReview: true, reviewer: "codex", reviewerModel: "gpt-6" });
+    await userEvent.click(screen.getByRole("button", { name: /New goal/ }));
+    assert.equal((screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement).value, "claude-fable-5-1");
+    assert.equal((screen.getByRole("checkbox", { name: "Code review" }) as HTMLInputElement).checked, false);
   });
 
   // AC-1. The six requests are goal-wide, so they must reach the server as one
@@ -904,6 +938,59 @@ describe("worktree goal planner", () => {
     assert.ok(within(passport).getByText("Owns: server/**"));
     assert.ok(within(passport).getByText("Verify: npm run test:ui"));
     assert.ok(screen.getByRole("button", { name: "Start workflow · 1 session in wave 1" }));
+  });
+
+  test("keeps an approval summary and dependency delivery plan concise until details are requested", async () => {
+    const overview = "Review a concise plan before starting work. " + "Keep the saved decision context visible. ".repeat(9);
+    const approvalDraft = {
+      ...readyDraft,
+      deliveryMode: "combined",
+      spec: {
+        version: 2, outcome: "Operators can review every detail before launch", inScope: ["Planner review"], nonGoals: ["Automatic launch"], constraints: ["Keep saved plans compatible"], assumptions: ["A reviewer opens the plan"], risks: [],
+        approvalSummary: {
+          overview,
+          userFlow: ["Read the plan", "Inspect the waves", "Start work"],
+          decisions: [{ choice: "One combined PR", consequence: "The delivery is assembled after every task is ready." }],
+          successCriteria: ["Dependencies are visible before launch."],
+        },
+        acceptanceCriteria: [{ id: "AC-1", text: "The plan is reviewable", verification: "npm run test:ui" }],
+      },
+      readiness: { ready: false, errors: ["Assign a verification command"], warnings: ["One assumption needs approval"], waves: [["task-1"], ["task-2"]], coverage: [] },
+      tasks: [
+        { ...tasks[0], title: "Prepare API", criterionIds: ["AC-1"], ownedAreas: ["server/**"], verification: ["npm test"] },
+        { ...tasks[1], title: "Publish UI", criterionIds: ["AC-1"], dependsOn: ["task-1"], ownedAreas: ["app/**"], verification: ["npm run test:ui"] },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(approvalDraft), { status: 201 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Make approval clearer");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const passport = await screen.findByRole("region", { name: "Goal passport" });
+    assert.ok(within(passport).getByText(overview.trim()));
+    assert.ok(within(passport).getByText("One combined PR"));
+    assert.ok(within(passport).getByText("Assign a verification command"));
+    assert.ok(within(passport).getByText("One assumption needs approval"));
+    const chart = within(passport).getByRole("region", { name: "Delivery plan" });
+    assert.ok(within(chart).getByText("2 tasks · 2 stages"));
+    assert.ok(within(chart).getByText(/One combined pull request/));
+    const task = chart.querySelectorAll(".delivery-plan-task")[1] as HTMLElement;
+    await userEvent.click(within(task).getByText("Scope and checks"));
+    assert.ok(within(task).getByText("Scope: The plan is reviewable"));
+    assert.ok(within(task).getByText("Files: app/**"));
+    const dependencies = within(task).getByText("After task 1").parentElement as HTMLDetailsElement;
+    assert.equal(dependencies.open, false);
+    await userEvent.click(within(task).getByText("After task 1"));
+    assert.equal(dependencies.open, true);
+    assert.ok(within(dependencies).getByText("Prepare API"));
+    assert.ok(within(passport).getByText("Automatic launch"));
+    assert.ok(within(passport).getByText("A reviewer opens the plan"));
+    const fullOutcome = within(passport).getByText("Read the full expected outcome").closest("details") as HTMLDetailsElement;
+    assert.equal(fullOutcome.open, false);
+    await userEvent.click(within(fullOutcome).getByText("Read the full expected outcome"));
+    assert.equal(fullOutcome.open, true);
+    assert.ok(within(fullOutcome).getByText("Operators can review every detail before launch"));
+
   });
 
   test("rejects a plan with written feedback and starts a fresh analysis", async () => {
@@ -1391,6 +1478,50 @@ describe("goals board", () => {
   async function expandColumn(board: HTMLElement, label: string) {
     await userEvent.click(within(board).getByRole("button", { name: `Expand ${label}` }));
   }
+
+  // The board's second creation button. It must reach a repository picker, open
+  // the worktree sheet with a name already filled in, hide the base field, and
+  // ask the server for the default remote branch.
+  test("creates a worktree from the board on the latest default branch and starts an agent", async () => {
+    const launched = vi.fn(async (workspaceId: string) => { void workspaceId; });
+    const created = { worktree: { id: "worktree-new", repoId: "repo-karven", path: "/repo/trust-layer-wt", branch: "wt/board", name: "trust-layer-wt" }, branchCreated: true };
+    const posts: { url: string; body: string }[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.includes("/worktrees")) {
+        posts.push({ url, body: String(init.body) });
+        return new Response(JSON.stringify(created), { status: 201 });
+      }
+      if (init?.method === "POST" && url.endsWith("/launch")) {
+        posts.push({ url, body: String(init.body) });
+        return new Response(JSON.stringify({ workspace: { workspace_id: "ws-board-worktree" } }), { status: 201 });
+      }
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: null, issues: [] }), { status: 200 });
+      if (url === "/api/goals/health") return new Response(JSON.stringify(healthSweep), { status: 200 });
+      if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans: allPlans }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={launched} onNotice={vi.fn()} />);
+    await openBoard();
+    // Two repositories are on the board, so the button opens the picker first.
+    await userEvent.click(screen.getByRole("button", { name: "＋ Worktree" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Create a worktree in trust-layer" }));
+    const sheet = await screen.findByRole("dialog", { name: "Create Git worktree" });
+    const branch = within(sheet).getByRole("textbox", { name: "Branch name" }) as HTMLInputElement;
+    assert.match(branch.value, /^wt\/\d{4}-\d{2}-\d{2}-\d{4}$/);
+    // The base is the server's business in this mode, so no field offers one.
+    assert.equal(within(sheet).queryByRole("textbox", { name: "Base revision" }), null);
+    await userEvent.click(within(sheet).getByRole("button", { name: "New worktree Claude (xclaude)" }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Create & start session" }));
+    await waitFor(() => assert.equal(launched.mock.calls.some(([id]) => id === "ws-board-worktree"), true));
+    const create = posts.find((post) => post.url.includes("/worktrees"));
+    assert.match(String(create?.url), /\/repositories\/repo-karven\/worktrees$/);
+    assert.deepEqual(JSON.parse(String(create?.body)), { branch: branch.value, useDefaultBase: true });
+    const launch = posts.find((post) => post.url.endsWith("/launch"));
+    assert.match(String(launch?.url), /\/api\/worktree-dashboard\/worktree-new\/launch$/);
+    assert.equal(JSON.parse(String(launch?.body)).agent, "claude");
+  });
 
   test("renders ordered columns with Blocked and terminal defaults collapsed and accurate counts", async () => {
     mountBoard();
@@ -2591,5 +2722,30 @@ describe("questioning a delivery contract", () => {
     assert.ok(within(region).getByText("This plan has been questioned 12 times. Reject it and re-plan instead"));
     assert.equal((within(region).getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled, true);
     assert.equal((within(region).getByRole("textbox", { name: "Question about this plan" }) as HTMLTextAreaElement).disabled, true);
+  });
+});
+
+
+describe("managed goal controls in a visible workspace", () => {
+  test("keeps the revision-bound approval card beside its exact conversation", async () => {
+    const proposal = {
+      planId: "goal-1", repositoryId: "repo-1", goal: "Ship billing", round: 0, status: "questions", questions: [], tasks: [],
+      workflow: "goal_session", goalSessionWorkspaceId: "workspace-goal", goalSessionGeneration: 1, goalSessionState: "awaiting_approval", proposalRevision: 3,
+      proposal: { intendedBehavior: "Customers can pay", scope: ["Billing form"], verification: ["npm test"] },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/goal-sessions/workspace/workspace-goal") return new Response(JSON.stringify({ plan: proposal }), { status: 200 });
+      if (url === "/api/goal-sessions/goal-1/approve" && init?.method === "POST") return new Response(JSON.stringify({ ...proposal, goalSessionState: "implementing", proposal: null }), { status: 200 });
+      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ManagedGoalControls workspaceId="workspace-goal" />);
+    assert.ok(await screen.findByRole("region", { name: "Proposal awaiting approval" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve and implement" }));
+    await waitFor(() => assert.ok(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")));
+    const approval = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/approve"));
+    assert.deepEqual(JSON.parse(String(approval?.[1]?.body)), { generation: 1, revision: 3 });
+    assert.ok(await screen.findByText("Implementation is continuing in this conversation."));
   });
 });

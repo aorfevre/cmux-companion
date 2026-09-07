@@ -38,6 +38,19 @@ export function goalBoardState(plan) {
   const prState = text(source.boardPrState).toUpperCase();
   if (boardStatus === "merged" || prState === "MERGED") return "merged";
 
+  // Managed goal sessions have no launched task row while the one owner is
+  // conversing or editing. Their durable lifecycle is therefore the board
+  // authority, never an empty legacy planner round.
+  if (text(source.workflow) === "goal_session") {
+    const session = text(source.goalSessionState);
+    if (session === "unavailable" || text(source.goalSessionError) || source.transitionStatus === "uncertain") return "blocked";
+    if (prState === "OPEN" || (prState !== "CLOSED" && text(source.finalPrUrl) !== "")) return "waiting_for_merge";
+    if (session === "awaiting_input") return "blocked";
+    if (session === "awaiting_approval") return "waiting_for_dev";
+    if (session === "implementing") return "dev_in_progress";
+    return "writing_spec";
+  }
+
   if (!isLaunched(source)) return draftState(source);
 
   if (prState === "OPEN") return "waiting_for_merge";

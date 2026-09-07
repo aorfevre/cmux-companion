@@ -9,7 +9,7 @@ function fixture(t) {
   const store = new WorktreePlanStore({ path: ":memory:" });
   t.after(() => store.close());
   const closed = [];
-  const cmux = { workspaceListDetailed: async () => ({ workspaces: store.sessionCleanupPlanIds().flatMap((id) => store.get(id).tasks.map((task) => ({ id: task.workspaceId }))) }), workspaceClose: async (id) => { closed.push(id); } };
+  const cmux = { workspaceListDetailed: async () => ({ workspaces: store.sessionCleanupPlanIds().flatMap((id) => store.get(id).tasks.map((task) => ({ id: task.workspaceId, status: { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } }))) }), workspaceClose: async (id) => { closed.push(id); } };
   const collector = new GoalSessionCollector({ store, cmux });
   const seed = (id, combined = false) => {
     store.createPlan({ planId: id, repositoryId: "repo", cwd: "/repo", goal: id });
@@ -87,4 +87,28 @@ test("a missing cmux executable does not count as an already-closed workspace", 
   cmux.workspaceClose = async () => { throw new Error("cmux executable not found"); };
   await collector.sweep();
   assert.equal(store.get("offline").tasks[0].sessionClosedAt, null);
+});
+
+test("an approved managed owner gains PR evidence without losing its review conversation", async (t) => {
+  const { store, closed, collector } = fixture(t);
+  const planId = "managed-owner";
+  store.createPlan({ planId, repositoryId: "repo", cwd: "/repo", goal: "Ship billing" });
+  store.reserveGoalSession(planId, { branch: "goal-session/billing", generation: 1 });
+  store.recordGoalSessionStart(planId, { worktreePath: "/repo/billing", workspaceId: "ws-owner", generation: 1 });
+  store.publishProposal(planId, { generation: 1, providerSessionId: "provider-owner", proposal: { intendedBehavior: "Ship billing", scope: ["Billing"] } });
+  store.approveProposal(planId, { generation: 1, revision: 1 });
+  assert.equal(store.get(planId).tasks.length, 1);
+  assert.equal(store.get(planId).boardPrNumber, null);
+  let state = "OPEN";
+  const watch = new GoalMergeWatch({ store, sessionCollector: collector, worktrees: {
+    pullRequestObservations: () => ({ available: true, observations: [{ number: 42, url: "https://github.test/pull/42", state, headBranch: "goal-session/billing" }] }),
+  } });
+  await watch.reconcile();
+  assert.equal(store.get(planId).boardPrNumber, 42);
+  assert.deepEqual(closed, [], "PR creation keeps the owner available for review");
+  assert.equal(store.get(planId).tasks[0].sessionClosedAt, null);
+  state = "MERGED";
+  await watch.reconcile();
+  assert.equal(store.get(planId).boardStatus, "merged");
+  assert.deepEqual(closed, ["ws-owner"]);
 });

@@ -69,8 +69,8 @@ test("stores a goal without specification options as all false", (t) => {
   assert.deepEqual(store.list()[0].specOptions, ALL_FALSE);
 });
 
-const NO_REVIEW = { codeReview: false, reviewer: "claude" };
-const WANTS_REVIEW = { codeReview: true, reviewer: "codex" };
+const NO_REVIEW = { codeReview: false, reviewer: "claude", reviewerModel: "claude-fable-5-1" };
+const WANTS_REVIEW = { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" };
 
 test("round trips the review request through detail, list and the goal event", (t) => {
   const store = memoryStore(t);
@@ -96,7 +96,7 @@ test("stores a goal without a review request as no review", (t) => {
 test("reads a malformed stored review request as no review", (t) => {
   const store = memoryStore(t);
   seed(store);
-  for (const stored of ["", "not json", "[]", '{"unknown":true}', '{"codeReview":"yes"}', '{"reviewer":"gemini"}']) {
+  for (const stored of ["", "not json", "[]", '{"codeReview":false,"reviewer":"claude"}', '{"reviewerModel":"bad model"}', '{"reviewerModel":42}', '{"unknown":true}', '{"codeReview":"yes"}', '{"reviewer":"gemini"}']) {
     store.db.prepare("UPDATE plans SET review_options = ? WHERE plan_id = ?").run(stored, "plan-1");
     assert.deepEqual(store.get("plan-1").reviewOptions, NO_REVIEW, `stored value ${stored}`);
     assert.deepEqual(store.list()[0].reviewOptions, NO_REVIEW, `stored value ${stored}`);
@@ -453,22 +453,24 @@ test("keeps follow-up launches in order and reports their count", (t) => {
   const store = memoryStore(t);
   seed(store);
   store.recordFollowupLaunched("plan-1", {
-    workspaceId: "followup-1", actions: ["question"], agent: "claude",
+    followupId: "followup-unique-one", workspaceId: "followup-1", actions: ["question"], agent: "claude",
     branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-1.md",
   });
   store.recordFollowupLaunched("plan-1", {
-    workspaceId: "followup-2", actions: ["tests", "review"], agent: "codex",
+    followupId: "followup-unique-two", workspaceId: "followup-2", actions: ["tests", "review"], agent: "codex",
     branch: "goal/billing", worktreePath: "/repo/goal", briefPath: "/briefs/followup-2.md",
   });
 
   const plan = store.get("plan-1");
   assert.deepEqual(plan.followups.map((followup) => followup.workspaceId), ["followup-1", "followup-2"]);
+  assert.deepEqual(plan.followups.map((entry) => entry.followupId), ["followup-unique-one", "followup-unique-two"]);
   assert.deepEqual(plan.followups[1].actions, ["tests", "review"]);
   assert.equal(plan.followups[0].agent, "claude");
   assert.ok(plan.followups.every((followup) => followup.launchedAt));
   assert.equal(store.list()[0].followupCount, 2);
   const events = store.events("plan-1").filter((event) => event.kind === "followup_launched");
   assert.equal(events.length, 2);
+  assert.deepEqual(events.map((event) => event.payload.followupId), ["followup-unique-one", "followup-unique-two"]);
   assert.deepEqual(events.map((event) => event.payload.workspaceId), ["followup-1", "followup-2"]);
 });
 
@@ -515,7 +517,15 @@ test("survives a reopen of the same file and keeps mode 0600", (t) => {
   const path = join(directory, "nested", "goal-plans.db");
   const first = new WorktreePlanStore({ path });
   seed(first);
-  first.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "sess-a", tasks: TASKS });
+  first.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "sess-a", tasks: TASKS, spec: {
+    outcome: "Add billing",
+    approvalSummary: {
+      overview: "Users can approve the billing work before launch.",
+      userFlow: ["Review the contract", "Launch the plan"],
+      decisions: [{ choice: "Use the existing billing API", consequence: "Existing clients remain compatible." }],
+      successCriteria: ["The billing flow is covered by the saved criteria."],
+    },
+  } });
   first.close();
 
   assert.equal(statSync(path).mode & 0o777, 0o600);
@@ -525,6 +535,12 @@ test("survives a reopen of the same file and keeps mode 0600", (t) => {
   assert.equal(plan.sessionId, "sess-a");
   assert.equal(plan.round, 1);
   assert.deepEqual(plan.tasks.map((task) => task.branch), ["feature/billing", "feature/invoices"]);
+  assert.deepEqual(plan.spec.approvalSummary, {
+    overview: "Users can approve the billing work before launch.",
+    userFlow: ["Review the contract", "Launch the plan"],
+    decisions: [{ choice: "Use the existing billing API", consequence: "Existing clients remain compatible." }],
+    successCriteria: ["The billing flow is covered by the saved criteria."],
+  });
 });
 
 test("migrates a pre-contract database without losing legacy plans", (t) => {
@@ -1326,4 +1342,63 @@ test("the store refuses a discussion verdict it does not define and writes nothi
   assert.throws(() => store.recordDiscussion("plan-1", { question: "Q?", answer: "A.", contractImpact: "rewrite", round: 1 }), /Unknown discussion impact/);
   assert.deepEqual(store.discussions("plan-1"), []);
   assert.equal(store.get("plan-1").updatedAt, before);
+});
+
+test("issue ownership is atomic across store instances and permits independent repositories", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "cmux-issue-claims-"));
+  let first; let second;
+  t.after(() => { first?.close(); second?.close(); rmSync(directory, { recursive: true, force: true }); });
+  const path = join(directory, "plans.db");
+  first = new WorktreePlanStore({ path });
+  second = new WorktreePlanStore({ path });
+  first.createPlan({ planId: "topic", repositoryId: "repo-a", goal: "Topic", issueNumbers: [78, 79] });
+  assert.throws(() => second.createPlan({ planId: "single", repositoryId: "repo-a", goal: "Duplicate", issueNumbers: [79] }), (cause) => cause.code === "ISSUE_ALREADY_PLANNED" && cause.planId === "topic");
+  assert.equal(first.get("single"), null, "rejected claim leaves no partial plan");
+  second.createPlan({ planId: "other-issue", repositoryId: "repo-a", goal: "Independent issue", issueNumbers: [80] });
+  second.createPlan({ planId: "other-repo", repositoryId: "repo-b", goal: "Independent repository", issueNumbers: [79] });
+  assert.ok(first.get("other-issue"));
+  assert.ok(first.get("other-repo"));
+  first.delete("topic");
+  second.createPlan({ planId: "retry", repositoryId: "repo-a", goal: "Explicitly deleted topic can be planned again", issueNumbers: [79] });
+  assert.ok(first.get("retry"));
+});
+
+test("goal-session approvals are bound to one generation and immutable proposal revision", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.reserveGoalSession("plan-1", { branch: "goal-session/plan-1", generation: 1 });
+  store.recordGoalSessionStart("plan-1", {
+    worktreePath: "/repo/goal-session", workspaceId: "00000000-0000-4000-8000-000000000001", generation: 1,
+  });
+  store.publishProposal("plan-1", { generation: 1, proposal: { intendedBehavior: "Add billing", scope: ["billing"] } });
+  const first = store.get("plan-1");
+  assert.equal(first.goalSessionState, "awaiting_approval");
+  assert.equal(first.proposalRevision, 1);
+  assert.throws(() => store.approveProposal("plan-1", { generation: 2, revision: 1 }), /no longer current/);
+  store.requestProposalChanges("plan-1", { generation: 1, revision: 1, feedback: "Keep invoices out." });
+  store.publishProposal("plan-1", { generation: 1, proposal: { intendedBehavior: "Add billing only", scope: ["billing"] } });
+  assert.equal(store.get("plan-1").proposalRevision, 2);
+  assert.throws(() => store.approveProposal("plan-1", { generation: 1, revision: 1 }), /no longer current/);
+  store.approveProposal("plan-1", { generation: 1, revision: 2 });
+  const approved = store.get("plan-1");
+  assert.equal(approved.status, "launched");
+  assert.equal(approved.tasks.length, 1);
+  assert.deepEqual(approved.tasks[0].workspaceId, "00000000-0000-4000-8000-000000000001");
+  assert.equal(approved.tasks[0].branch, "goal-session/plan-1");
+  assert.equal(store.claimGoalSessionTransition("plan-1", { generation: 1, revision: 2 }).transitionStatus, "dispatching");
+  assert.equal(store.claimGoalSessionTransition("plan-1", { generation: 1, revision: 2 }), null, "a duplicate click cannot dispatch twice");
+  store.recordGoalSessionTransition("plan-1", { generation: 1, revision: 2, error: "Bridge reply was lost" });
+  assert.equal(store.get("plan-1").transitionStatus, "uncertain", "an uncertain handoff is never automatically replayed");
+});
+
+
+test("finds a managed goal only by its persisted workspace identity", (t) => {
+  const store = memoryStore(t);
+  seed(store);
+  store.reserveGoalSession("plan-1", { branch: "goal-session/plan-1", generation: 1 });
+  store.recordGoalSessionStart("plan-1", {
+    worktreePath: "/repo/goal-session", workspaceId: "00000000-0000-4000-8000-000000000001", generation: 1,
+  });
+  assert.equal(store.findGoalSessionByWorkspace("00000000-0000-4000-8000-000000000001")?.planId, "plan-1");
+  assert.equal(store.findGoalSessionByWorkspace("workspace-not-owned"), null);
 });

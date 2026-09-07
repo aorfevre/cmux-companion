@@ -1,6 +1,7 @@
 "use client";
 /* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/label-has-associated-control, @next/next/no-img-element */
 
+import { useOwnedReads } from "./owned-reads";
 import { request as api } from "./api-request";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountUsageView } from "./account-usage";
@@ -11,9 +12,12 @@ import { slashShortcuts } from "./slash-shortcuts.mjs";
 import { isNearBottom, nextFollowState } from "./terminal-follow.mjs";
 import { TerminalGrid, type TerminalView } from "./terminal-grid.tsx";
 import { terminalViewSignature } from "./terminal-grid.mjs";
+import { hasGoalPopup } from "./goal-popup-url";
+import { ModelSettingsPanel } from "./model-settings";
 import { WorktreeCleanupPanel } from "./worktree-cleanup";
 import { WorktreeDashboardView } from "./worktree-dashboard";
 import { DeploymentHealth } from "./deployment-health";
+import type { PlanDraft } from "./worktree-planner";
 
 type Terminal = { id: string; title: string; current_directory?: string | null; is_focused?: boolean; is_ready?: boolean };
 type WorkspaceStatus = { effective?: string; inferred?: string; signals?: Record<string, boolean> };
@@ -46,7 +50,7 @@ export default function Home() {
   const [auth, setAuth] = useState<"loading" | "paired" | "unpaired" | "offline">("loading");
   const [pairingToken, setPairingToken] = useState(""); const [pairingError, setPairingError] = useState("");
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null); const [inbox, setInbox] = useState<Inbox>({ items: [], actionableCount: 0, unreadCount: 0 }); const [repos, setRepos] = useState<Repo[]>([]);
-  const [view, setView] = useState<View>(() => { if (typeof window === "undefined") return "sessions"; const value = new URLSearchParams(location.search).get("view"); return value === "inbox" || value === "launch" || value === "apps" || value === "settings" || value === "usage" ? value : "sessions"; }); const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); return query.has("action") || (!query.has("workspace") && query.has("repo") && query.has("file")) ? null : query.get("workspace"); }); const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("surface")); const [detailTab, setDetailTab] = useState<DetailTab>(() => { if (typeof window === "undefined") return "terminal"; const tab = new URLSearchParams(location.search).get("tab"); return tab === "changes" || tab === "tasks" ? tab : "terminal"; });
+  const [view, setView] = useState<View>(() => { if (typeof window === "undefined") return "sessions"; if (hasGoalPopup(location.search)) return "sessions"; const value = new URLSearchParams(location.search).get("view"); return value === "inbox" || value === "launch" || value === "apps" || value === "settings" || value === "usage" ? value : "sessions"; }); const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); return query.has("action") || (!query.has("workspace") && query.has("repo") && query.has("file")) ? null : query.get("workspace"); }); const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("surface")); const [detailTab, setDetailTab] = useState<DetailTab>(() => { if (typeof window === "undefined") return "terminal"; const tab = new URLSearchParams(location.search).get("tab"); return tab === "changes" || tab === "tasks" ? tab : "terminal"; });
   const [terminalView, setTerminalView] = useState<TerminalView | null>(null); const [screenError, setScreenError] = useState(""); const [draft, setDraft] = useState(""); const [sending, setSending] = useState(false); const [live, setLive] = useState(false); const [notice, setNotice] = useState("");
   const [actionId, setActionId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("action"));
   const [focusedPreviewId, setFocusedPreviewId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("preview"));
@@ -58,11 +62,7 @@ export default function Home() {
   // what is running and what needs a person. `?mode=sessions` and a stored
   // choice both still win, so a phone that prefers the flat session list keeps
   // it and a notification link can still name either view.
-  const [homeMode, setHomeMode] = useState<HomeMode>(() => { if (typeof window === "undefined") return "worktrees"; const query = new URLSearchParams(location.search).get("mode"); if (query === "worktrees" || query === "sessions") return query; return localStorage.getItem("cmux-companion-home-mode") === "sessions" ? "sessions" : "worktrees"; });
-  // A notification about a finished planner round carries its plan id. The
-  // dashboard opens that goal, then clears this so a later render cannot reopen
-  // the sheet the user just closed.
-  const [planTargetId, setPlanTargetId] = useState(() => (typeof window === "undefined" ? "" : new URLSearchParams(location.search).get("plan") || ""));
+  const [homeMode, setHomeMode] = useState<HomeMode>(() => { if (typeof window === "undefined") return "worktrees"; if (hasGoalPopup(location.search)) return "worktrees"; const query = new URLSearchParams(location.search).get("mode"); if (query === "worktrees" || query === "sessions") return query; return localStorage.getItem("cmux-companion-home-mode") === "sessions" ? "sessions" : "worktrees"; });
   const [readOnly, setReadOnly] = useState(() => typeof window === "undefined" || localStorage.getItem("cmux-companion-read-only") !== "false");
   const [installPrompt, setInstallPrompt] = useState<(Event & { prompt?: () => Promise<void> }) | null>(null); const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const detectedUrls = useRef(new Set<string>());
@@ -72,10 +72,22 @@ export default function Home() {
   const selectedRepo = useMemo(() => { const directory = selectedWorkspace?.current_directory || selectedTerminal?.current_directory; if (!directory) return null; return repos.find((repo) => directory === repo.path || directory.startsWith(`${repo.path}/`)) || null; }, [repos, selectedTerminal, selectedWorkspace]);
   const queueWorkspaceId = selectedWorkspace?.id || null; const queueSurfaceId = selectedTerminal?.id || null;
 
+  const selection = `${auth}:${queueWorkspaceId}:${queueSurfaceId}`;
+  const readOwned = useOwnedReads(selection);
+  const [previousSelection, setPreviousSelection] = useState(selection);
+  if (previousSelection !== selection) {
+    setPreviousSelection(selection);
+    setTerminalView(null); setScreenError(""); setQueueItems([]);
+  }
+
   const loadBootstrap = useCallback(async () => { try { const data = await api<Bootstrap>("/api/bootstrap"); setBootstrap(data); setAuth("paired"); return data; } catch (error) { if (error instanceof Error && error.message.includes("Pair")) setAuth("unpaired"); setBootstrap((current) => current ? { ...current, connected: false, error: "Waiting for cmux" } : null); return null; } }, []);
   const loadInbox = useCallback(async () => { try { setInbox(await api<Inbox>("/api/inbox")); } catch { /* cmux reconnects independently */ } }, []);
   const loadRepos = useCallback(async () => { try { setRepos((await api<{ repos: Repo[] }>("/api/repos")).repos); } catch { /* retry later */ } }, []);
-  const loadPromptQueue = useCallback(async () => { if (!queueWorkspaceId || !queueSurfaceId) { setQueueItems([]); return; } try { const query = new URLSearchParams({ workspaceId: queueWorkspaceId, surfaceId: queueSurfaceId }); setQueueItems((await api<{ items: PromptQueueItem[] }>(`/api/prompt-queue?${query}`)).items); } catch { /* queue reconnects with the service */ } }, [queueSurfaceId, queueWorkspaceId]);
+  const loadPromptQueue = useCallback(async (force = false) => {
+    if (!queueWorkspaceId || !queueSurfaceId) return;
+    const query = new URLSearchParams({ workspaceId: queueWorkspaceId, surfaceId: queueSurfaceId });
+    await readOwned("queue", (signal) => api<{ items: PromptQueueItem[] }>(`/api/prompt-queue?${query}`, { signal }), (result) => setQueueItems(result.items), () => {}, force);
+  }, [queueSurfaceId, queueWorkspaceId, readOwned]);
 
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -94,7 +106,13 @@ export default function Home() {
     return () => { stopped = true; clearTimeout(kickoff); clearInterval(poll); if (retry) clearTimeout(retry); if (refreshTimer.current) clearTimeout(refreshTimer.current); socket?.close(); };
   }, [auth, loadBootstrap, loadInbox, loadPromptQueue, loadRepos]);
 
-  const loadTerminal = useCallback(async () => { if (!selectedTerminal) return; try { const result = await api<TerminalView>(`/api/terminals/${selectedTerminal.id}/replay?scrollback=600`); setTerminalView((current) => terminalViewSignature(current) === terminalViewSignature(result) ? current : result); setScreenError(""); } catch (error) { setScreenError(error instanceof Error ? error.message : "Unable to read this terminal"); } }, [selectedTerminal]);
+  const loadTerminal = useCallback(async () => {
+    if (!selectedTerminal) return;
+    await readOwned("terminal", (signal) => api<TerminalView>(`/api/terminals/${selectedTerminal.id}/replay?scrollback=600`, { signal }), (result) => {
+      setTerminalView((current) => terminalViewSignature(current) === terminalViewSignature(result) ? current : result);
+      setScreenError("");
+    }, (error) => setScreenError(error instanceof Error ? error.message : "Unable to read this terminal"));
+  }, [selectedTerminal, readOwned]);
   useEffect(() => { if (!selectedTerminal || detailTab !== "terminal") return; const kickoff = setTimeout(loadTerminal, 0); const poll = setInterval(() => { if (document.visibilityState === "visible") loadTerminal(); }, 1_500); return () => { clearTimeout(kickoff); clearInterval(poll); }; }, [selectedTerminal, detailTab, loadTerminal]);
   useEffect(() => { const timer = setTimeout(loadPromptQueue, 0); return () => clearTimeout(timer); }, [loadPromptQueue]);
 
@@ -121,9 +139,9 @@ export default function Home() {
   async function addImage(file: File) { if (attachments.length >= 4) { setNotice("You can attach up to four images at a time"); return; } if (!file.type.startsWith("image/")) { setNotice("Choose an image file"); return; } if (file.size > 8 * 1024 * 1024) { setNotice("Image must be 8 MB or smaller"); return; } try { const dataUrl = await imageDataUrl(file); const result = await api<{ image: Omit<ImageAttachment, "preview"> }>("/api/attachments/images", { method: "POST", body: JSON.stringify({ dataUrl, name: file.name || "pasted image" }) }); const attached = { ...result.image, preview: URL.createObjectURL(file) }; setAttachments((current) => { if (current.length >= 4) { URL.revokeObjectURL(attached.preview); return current; } return [...current, attached]; }); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not attach image"); } }
   function removeImage(path: string) { setAttachments((current) => current.filter((image) => { if (image.path === path) URL.revokeObjectURL(image.preview); return image.path !== path; })); }
   async function sendPrompt(event: FormEvent) { event.preventDefault(); if (!selectedTerminal || (!draft.trim() && attachments.length === 0) || readOnly) return; const text = composedPrompt(draft, attachments); setSending(true); try { await api(`/api/terminals/${selectedTerminal.id}/input`, { method: "POST", body: JSON.stringify({ text, enter: true }) }); setDraft(""); clearAttachments(); setTimeout(loadTerminal, 200); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not send input"); } finally { setSending(false); } }
-  async function queuePrompt() { if (!selectedWorkspace || !selectedTerminal || (!draft.trim() && attachments.length === 0) || readOnly) return; const text = composedPrompt(draft, attachments); setSending(true); try { await api("/api/prompt-queue", { method: "POST", body: JSON.stringify({ workspaceId: selectedWorkspace.id, surfaceId: selectedTerminal.id, text }) }); setDraft(""); clearAttachments(); await loadPromptQueue(); setNotice("Prompt queued for the next agent stop"); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not queue prompt"); } finally { setSending(false); } }
-  async function queueAction(id: string, action: "update" | "move" | "send" | "remove", value?: string | number) { setSending(true); try { const path = action === "update" || action === "remove" ? `/api/prompt-queue/${id}` : `/api/prompt-queue/${id}/${action}`; const method = action === "update" ? "PATCH" : action === "remove" ? "DELETE" : "POST"; const body = action === "update" ? JSON.stringify({ text: value }) : action === "move" ? JSON.stringify({ direction: value }) : "{}"; await api(path, { method, body }); await loadPromptQueue(); if (action === "send") { setNotice("Queued prompt sent"); setTimeout(loadTerminal, 200); } } catch (error) { setNotice(error instanceof Error ? error.message : "Queue action failed"); } finally { setSending(false); } }
-  async function fixPreview(preview: Preview, prompt: string, queue: boolean) { const workspace = bootstrap?.workspaces.find((item) => item.id === preview.workspaceId); const terminal = workspace?.terminals.find((item) => item.is_focused) || workspace?.terminals[0]; if (!workspace || !terminal) throw new Error("That cmux session is no longer open"); if (queue) await api("/api/prompt-queue", { method: "POST", body: JSON.stringify({ workspaceId: workspace.id, surfaceId: terminal.id, text: prompt }) }); else await api(`/api/terminals/${terminal.id}/input`, { method: "POST", body: JSON.stringify({ text: prompt, enter: true }) }); if (selectedWorkspace?.id === workspace.id) await loadPromptQueue(); setNotice(queue ? "Visual fix queued for the agent" : "Visual fix sent to the agent"); }
+  async function queuePrompt() { if (!selectedWorkspace || !selectedTerminal || (!draft.trim() && attachments.length === 0) || readOnly) return; const text = composedPrompt(draft, attachments); setSending(true); try { await api("/api/prompt-queue", { method: "POST", body: JSON.stringify({ workspaceId: selectedWorkspace.id, surfaceId: selectedTerminal.id, text }) }); setDraft(""); clearAttachments(); await loadPromptQueue(true); setNotice("Prompt queued for the next agent stop"); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not queue prompt"); } finally { setSending(false); } }
+  async function queueAction(id: string, action: "update" | "move" | "send" | "remove", value?: string | number) { setSending(true); try { const path = action === "update" || action === "remove" ? `/api/prompt-queue/${id}` : `/api/prompt-queue/${id}/${action}`; const method = action === "update" ? "PATCH" : action === "remove" ? "DELETE" : "POST"; const body = action === "update" ? JSON.stringify({ text: value }) : action === "move" ? JSON.stringify({ direction: value }) : "{}"; await api(path, { method, body }); await loadPromptQueue(true); if (action === "send") { setNotice("Queued prompt sent"); setTimeout(loadTerminal, 200); } return true; } catch (error) { setNotice(error instanceof Error ? error.message : "Queue action failed"); return false; } finally { setSending(false); } }
+  async function fixPreview(preview: Preview, prompt: string, queue: boolean) { const workspace = bootstrap?.workspaces.find((item) => item.id === preview.workspaceId); const terminal = workspace?.terminals.find((item) => item.is_focused) || workspace?.terminals[0]; if (!workspace || !terminal) throw new Error("That cmux session is no longer open"); if (queue) await api("/api/prompt-queue", { method: "POST", body: JSON.stringify({ workspaceId: workspace.id, surfaceId: terminal.id, text: prompt }) }); else await api(`/api/terminals/${terminal.id}/input`, { method: "POST", body: JSON.stringify({ text: prompt, enter: true }) }); if (selectedWorkspace?.id === workspace.id) await loadPromptQueue(true); setNotice(queue ? "Visual fix queued for the agent" : "Visual fix sent to the agent"); }
   async function sendKey(key: string) { if (!selectedTerminal || readOnly) return; setSending(true); try { await api(`/api/terminals/${selectedTerminal.id}/key`, { method: "POST", body: JSON.stringify({ key }) }); setTimeout(loadTerminal, 150); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not send key"); } finally { setSending(false); } }
   function changeReadOnly(value: boolean) { setReadOnly(value); localStorage.setItem("cmux-companion-read-only", String(value)); }
   function changeHomeMode(mode: HomeMode) { setHomeMode(mode); localStorage.setItem("cmux-companion-home-mode", mode); history.replaceState(null, "", `/?view=sessions&mode=${mode}`); }
@@ -134,10 +152,16 @@ export default function Home() {
   if (auth === "loading") return <LoadingScreen />;
   if (auth === "unpaired" || auth === "offline") return <PairScreen offline={auth === "offline"} token={pairingToken} error={pairingError} onToken={setPairingToken} onPair={pair} />;
   if (documentTarget) return <MarkdownViewer repoId={documentTarget.repoId} path={documentTarget.path} onClose={() => { setDocumentTarget(null); history.replaceState(null, "", selectedWorkspace ? `/?workspace=${encodeURIComponent(selectedWorkspace.id)}` : "/?view=sessions"); }} onAsk={(file) => { const workspace = bootstrap?.workspaces.find((item) => item.current_directory === file.repo.path || item.current_directory?.startsWith(`${file.repo.path}/`)); if (!workspace) { setNotice("Open a session for this repository first"); return; } setDraft(`Please review ${file.path} and help me with it.`); openWorkspace(workspace); }} onOpenWorkspace={openRepoWorkspace} />;
-  if (selectedWorkspace && selectedTerminal) return <WorkspaceDetail workspace={selectedWorkspace} terminal={selectedTerminal} repo={selectedRepo} tab={detailTab} context={notificationContext} terminalView={terminalView} screenError={screenError} draft={draft} attachments={attachments} queueItems={queueItems} sending={sending} readOnly={readOnly} onBack={closeWorkspaceView} onTab={setDetailTab} onTerminal={(id) => { setSelectedTerminalId(id); setTerminalView(null); clearAttachments(); }} onDraft={setDraft} onImage={addImage} onRemoveImage={removeImage} onSubmit={sendPrompt} onQueue={queuePrompt} onQueueUpdate={(id, text) => queueAction(id, "update", text)} onQueueMove={(id, direction) => queueAction(id, "move", direction)} onQueueSend={(id) => queueAction(id, "send")} onQueueRemove={(id) => queueAction(id, "remove")} onKey={sendKey} onReadOnly={() => changeReadOnly(!readOnly)} onRefresh={loadTerminal} onChanged={async () => { await loadBootstrap(); }} onNotice={setNotice} onDismissContext={() => setNotificationContext(null)} onMarkdown={(path) => selectedRepo ? openDocument(selectedRepo.id, path) : setNotice("That file is outside a catalogued repository")} onLocalUrl={(url) => discoverLocalUrl(url, true)} onApps={() => changeView("apps")} />;
+  if (selectedWorkspace && selectedTerminal) return <><Notice message={notice} onDismiss={() => setNotice("")} /><WorkspaceDetail workspace={selectedWorkspace} terminal={selectedTerminal} repo={selectedRepo} tab={detailTab} context={notificationContext} terminalView={terminalView} screenError={screenError} draft={draft} attachments={attachments} queueItems={queueItems} sending={sending} readOnly={readOnly} onBack={closeWorkspaceView} onTab={setDetailTab} onTerminal={(id) => { setSelectedTerminalId(id); setTerminalView(null); clearAttachments(); }} onDraft={setDraft} onImage={addImage} onRemoveImage={removeImage} onSubmit={sendPrompt} onQueue={queuePrompt} onQueueUpdate={(id, text) => queueAction(id, "update", text)} onQueueMove={async (id, direction) => { await queueAction(id, "move", direction); }} onQueueSend={async (id) => { await queueAction(id, "send"); }} onQueueRemove={async (id) => { await queueAction(id, "remove"); }} onKey={sendKey} onReadOnly={() => changeReadOnly(!readOnly)} onRefresh={loadTerminal} onChanged={async () => { await loadBootstrap(); }} onNotice={setNotice} onDismissContext={() => setNotificationContext(null)} onMarkdown={(path) => selectedRepo ? openDocument(selectedRepo.id, path) : setNotice("That file is outside a catalogued repository")} onLocalUrl={(url) => discoverLocalUrl(url, true)} onApps={() => changeView("apps")} /></>;
 
-  return <main className="app-shell"><AppHeader connected={Boolean(bootstrap?.connected)} live={live} device={bootstrap?.host?.mac_display_name || "Your Mac"} />{notice && <button className="toast" onClick={() => setNotice("")}>{notice}<span>×</span></button>}
-    {view === "sessions" && <><HomeModeSwitch mode={homeMode} onMode={changeHomeMode} />{homeMode === "sessions" ? <SessionsView bootstrap={bootstrap} onOpen={openWorkspace} onLaunch={() => changeView("launch")} onRefresh={loadBootstrap} /> : <WorktreeDashboardView onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onLaunched={async () => { await loadBootstrap(); }} onNotice={setNotice} initialPlanId={planTargetId} onPlanOpened={() => setPlanTargetId("")} />}</>}
+  return <main className="app-shell"><AppHeader connected={Boolean(bootstrap?.connected)} live={live} device={bootstrap?.host?.mac_display_name || "Your Mac"} /><Notice message={notice} onDismiss={() => setNotice("")} />
+    {view !== "inbox" && inbox.actionableCount > 0 && <button className="primary-small" onClick={() => changeView("inbox")}>{inbox.actionableCount} {inbox.actionableCount === 1 ? "item needs" : "items need"} your attention</button>}
+    {view === "sessions" && <><HomeModeSwitch mode={homeMode} onMode={changeHomeMode} />{homeMode === "sessions" ? <SessionsView bootstrap={bootstrap} onOpen={openWorkspace} onLaunch={() => changeView("launch")} onRefresh={loadBootstrap} /> : <WorktreeDashboardView onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onLaunched={async () => { await loadBootstrap(); }} onGoalSessionStarted={async (workspaceId) => {
+      const latest = await loadBootstrap();
+      const workspace = latest?.workspaces.find((item) => item.id === workspaceId);
+      if (workspace) openWorkspace(workspace);
+      else setNotice("Goal session started, but cmux has not reported its workspace yet.");
+    }} onNotice={setNotice} />}</>}
     {view === "inbox" && <InboxView inbox={inbox} workspaces={bootstrap?.workspaces || []} repos={repos} focusedId={actionId} onCloseFocus={() => { setActionId(null); history.replaceState(null, "", "/?view=inbox"); }} onDocument={openDocument} onReload={loadInbox} onOpen={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); }} onNotice={setNotice} />}
     {view === "launch" && <LaunchView repos={repos} onReload={loadRepos} onLaunched={async (id) => { const data = await loadBootstrap(); const workspace = data?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else { setView("sessions"); setNotice("Workspace launched. It will appear in a moment."); } }} />}
     {view === "apps" && <AppsView focusedId={focusedPreviewId} onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onNotice={setNotice} onFix={fixPreview} />}
@@ -145,6 +169,8 @@ export default function Home() {
     {view === "usage" && <AccountUsageView onBack={() => changeView("settings")} />}
     <BottomNav view={view} onView={changeView} /></main>;
 }
+
+function Notice({ message, onDismiss }: { message: string; onDismiss: () => void }) { return message ? <div className="toast" role="status">{message}<button aria-label="Dismiss notification" onClick={onDismiss}>×</button></div> : null; }
 
 function AppHeader({ connected, live, device }: { connected: boolean; live: boolean; device: string }) { return <header className="topbar"><div className="brand-mark">c</div><div className="brand-copy"><strong>cmux companion</strong><span><i className={`connection-dot ${connected ? "" : "offline"}`} />{connected ? device : "Waiting for cmux"}</span></div><LastUpdateStamp /><span className={`live-badge ${live ? "" : "sync"}`}>{live ? "LIVE" : "SYNC"}</span></header>; }
 
@@ -210,7 +236,7 @@ function LaunchView({ repos, onReload, onLaunched }: { repos: Repo[]; onReload: 
   return <section className="subpage launch-page"><div className="page-kicker"><div><p className="eyebrow">REPO LAUNCHPAD</p><h1>Start work</h1></div><button className="text-button" onClick={onReload}>Rescan</button></div><p className="subpage-intro">Open an approved local repository directly in a fresh cmux workspace.</p>{!selected ? <><label className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a repository…" autoFocus /></label><div className="repo-list">{filtered.map((repo) => <button key={repo.id} onClick={() => { setSelected(repo); setTitle(repo.name); }}><span className="repo-icon">{repo.name.slice(0, 1).toUpperCase()}</span><div><strong>{repo.name}</strong><span>{repo.root} · {repo.branch}</span></div>{repo.dirty && <em>{repo.changedFiles} changed</em>}<b>›</b></button>)}</div></> : <form className="launch-form" onSubmit={launch}><button type="button" className="inline-back" onClick={() => setSelected(null)}>‹ Choose another repo</button><div className="selected-repo"><span className="repo-icon">{selected.name.slice(0, 1).toUpperCase()}</span><div><strong>{selected.name}</strong><span>{compactPath(selected.path)} · {selected.branch}</span></div></div><label>Workspace name<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} /></label><fieldset><legend>Start with</legend>{["codex", "claude", "shell"].map((value) => <button type="button" className={agent === value && !script ? "selected" : ""} onClick={() => { setAgent(value); setScript(""); }} key={value}>{value === "codex" ? "Codex" : value === "claude" ? "Claude" : "Shell"}</button>)}</fieldset>{selected.scripts.length > 0 && <label>Or run package script<select value={script} onChange={(event) => setScript(event.target.value)}><option value="">No script</option>{selected.scripts.map((value) => <option key={value} value={value}>npm run {value}</option>)}</select></label>}{!script && agent !== "shell" && <label>Initial task<textarea rows={5} value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={8000} placeholder="Describe the outcome you want…" /></label>}{error && <p className="form-error">{error}</p>}<button className="primary-button" disabled={busy}>{busy ? "Launching…" : `Launch ${script ? "script" : agent}`}</button></form>}</section>;
 }
 
-function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo: Repo | null; tab: DetailTab; context: { kind: string; file?: string | null } | null; terminalView: TerminalView | null; screenError: string; draft: string; attachments: ImageAttachment[]; queueItems: PromptQueueItem[]; sending: boolean; readOnly: boolean; onBack: () => void; onTab: (tab: DetailTab) => void; onTerminal: (id: string) => void; onDraft: (value: string) => void; onImage: (file: File) => void; onRemoveImage: (path: string) => void; onSubmit: (event: FormEvent) => void; onQueue: () => void; onQueueUpdate: (id: string, text: string) => Promise<void>; onQueueMove: (id: string, direction: number) => Promise<void>; onQueueSend: (id: string) => Promise<void>; onQueueRemove: (id: string) => Promise<void>; onKey: (key: string) => void; onReadOnly: () => void; onRefresh: () => void; onChanged: () => void; onNotice: (message: string) => void; onDismissContext: () => void; onMarkdown: (path: string) => void; onLocalUrl: (url: string) => void; onApps: () => void }) {
+function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo: Repo | null; tab: DetailTab; context: { kind: string; file?: string | null } | null; terminalView: TerminalView | null; screenError: string; draft: string; attachments: ImageAttachment[]; queueItems: PromptQueueItem[]; sending: boolean; readOnly: boolean; onBack: () => void; onTab: (tab: DetailTab) => void; onTerminal: (id: string) => void; onDraft: (value: string) => void; onImage: (file: File) => void; onRemoveImage: (path: string) => void; onSubmit: (event: FormEvent) => void; onQueue: () => void; onQueueUpdate: (id: string, text: string) => Promise<boolean | void>; onQueueMove: (id: string, direction: number) => Promise<void>; onQueueSend: (id: string) => Promise<void>; onQueueRemove: (id: string) => Promise<void>; onKey: (key: string) => void; onReadOnly: () => void; onRefresh: () => void; onChanged: () => void; onNotice: (message: string) => void; onDismissContext: () => void; onMarkdown: (path: string) => void; onLocalUrl: (url: string) => void; onApps: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [fontSize, setFontSize] = useState(() => typeof window === "undefined" ? 14 : Number(localStorage.getItem("cmux-companion-terminal-font")) || 14);
@@ -221,12 +247,79 @@ function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo
     <main className="detail-shell">
       <header className="detail-header"><button className="back-button" onClick={props.onBack}>‹ <span>Back</span></button><div><strong>{props.workspace.title}</strong><span>{compactPath(props.workspace.current_directory)}</span></div><button className="session-menu-button" aria-label="Session menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><span className={`status-orb ${sessionState(props.workspace).tone}`} />•••</button></header>
       {props.context && <aside className={`notification-context ${props.context.kind}`}><div><strong>{props.context.kind === "failure" ? "A command or test failed" : props.context.kind === "pullRequest" ? "Pull request updated" : props.context.kind === "completion" ? "Work is ready to review" : "Session update"}</strong><span>You opened this session from a notification.</span></div>{props.context.file && <button onClick={() => props.onMarkdown(props.context!.file!)}>Open {props.context.file.split("/").pop()}</button>}<button aria-label="Dismiss notification context" onClick={props.onDismissContext}>×</button></aside>}
+      <ManagedGoalControls workspaceId={props.workspace.id} readOnly={props.readOnly} />
       {props.tab === "terminal" && <TerminalPanel {...props} fontSize={fontSize} fitToPhone={fitToPhone} shortcutsOpen={shortcutsOpen} onShortcuts={setShortcutsOpen} />}
       {props.tab === "tasks" && <HealthPanel workspace={props.workspace} terminal={props.terminal} onChanged={props.onChanged} onNotice={props.onNotice} />}
       {props.tab === "changes" && <ChangesPanel repo={props.repo} onMarkdown={props.onMarkdown} />}
       {menuOpen && <><button className="session-menu-backdrop" aria-label="Close session menu" onClick={() => setMenuOpen(false)} /><section className="session-menu" role="dialog" aria-modal="true" aria-label="Session menu"><header><div><strong>{props.workspace.title}</strong><span>Session controls</span></div><button onClick={() => setMenuOpen(false)}>×</button></header><nav className="session-menu-nav">{(["terminal", "tasks", "changes"] as DetailTab[]).map((tab) => <button className={props.tab === tab ? "active" : ""} onClick={() => { props.onTab(tab); setMenuOpen(false); }} key={tab}>{tab === "tasks" ? "Health" : tab[0].toUpperCase() + tab.slice(1)}</button>)}</nav><PullRequestBanner repo={props.repo} />{props.workspace.terminals.length > 1 && <div className="session-menu-section"><span>Terminals</span><div className="menu-terminal-list">{props.workspace.terminals.map((terminal, index) => <button className={terminal.id === props.terminal.id ? "active" : ""} onClick={() => { props.onTerminal(terminal.id); setMenuOpen(false); }} key={terminal.id}>{index + 1}. {terminal.title}</button>)}</div></div>}<div className="session-menu-section"><span>Display & input</span><div className="menu-action-grid"><button className={fitToPhone ? "active" : ""} onClick={toggleFit}>Fit text <b>{fitToPhone ? "On" : "Off"}</b></button><button onClick={props.onRefresh}>Refresh</button><button onClick={() => changeFont(-1)} disabled={fontSize <= 11}>Text A−</button><button onClick={() => changeFont(1)} disabled={fontSize >= 20}>Text A＋</button><button className={!props.readOnly ? "active" : ""} onClick={props.onReadOnly}>{props.readOnly ? "Enable input" : "Input enabled"}</button><button disabled={props.readOnly} onClick={() => { props.onTab("terminal"); setShortcutsOpen(true); setMenuOpen(false); }}>／ Shortcuts</button><button onClick={() => { setMenuOpen(false); props.onApps(); }}>Local apps <b>›</b></button></div></div><div className="session-menu-section"><span>Special keys</span><div className="menu-key-grid">{[["Esc", "escape"], ["Tab", "tab"], ["↑", "up"], ["↓", "down"], ["Ctrl-C", "ctrl+c"], ["Enter", "enter"]].map(([label, key]) => <button disabled={props.readOnly || props.sending} onClick={() => props.onKey(key)} key={key}>{label}</button>)}</div></div></section></>}
     </main>
   );
+}
+
+
+export function ManagedGoalControls({ workspaceId, readOnly = false }: { workspaceId: string; readOnly?: boolean }) {
+  return <GoalControlsForWorkspace key={workspaceId} workspaceId={workspaceId} readOnly={readOnly} />;
+}
+
+function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: string; readOnly: boolean }) {
+  const [plan, setPlan] = useState<PlanDraft | null>(null);
+  const [changes, setChanges] = useState("");
+  const [busy, setBusy] = useState<"approve" | "changes" | "recover" | null>(null);
+  const [error, setError] = useState("");
+  const [readError, setReadError] = useState("");
+  const ownedRead = useOwnedReads(workspaceId);
+  const mutation = useRef(0);
+  const load = useCallback(() => ownedRead("goal",
+    async (signal) => { const version = mutation.current; const result = await api<{ plan: PlanDraft | null }>(`/api/goal-sessions/workspace/${encodeURIComponent(workspaceId)}`, { signal }); return { ...result, version }; },
+    (result) => { if (result.version === mutation.current) { setPlan(result.plan); setReadError(""); } },
+    () => setReadError("Could not refresh this goal. Refresh before approving.")), [workspaceId, ownedRead]);
+  useEffect(() => {
+    const kickoff = setTimeout(() => { void load(); }, 0);
+    const poll = setInterval(() => { void load(); }, 2_500);
+    return () => { clearTimeout(kickoff); clearInterval(poll); };
+  }, [load]);
+  async function approve() {
+    if (readOnly || busy || readError || !plan?.proposalRevision || !plan.goalSessionGeneration) return;
+    mutation.current += 1;
+    setBusy("approve"); setError("");
+    try {
+      setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/approve`, { method: "POST", body: JSON.stringify({ generation: plan.goalSessionGeneration, revision: plan.proposalRevision }) }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not approve this proposal"); }
+    finally { mutation.current += 1; setBusy(null); }
+  }
+  async function requestChanges() {
+    if (readOnly || busy || readError || !plan?.proposalRevision || !plan.goalSessionGeneration || !changes.trim()) return;
+    mutation.current += 1;
+    setBusy("changes"); setError("");
+    try {
+      setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/request-changes`, { method: "POST", body: JSON.stringify({ generation: plan.goalSessionGeneration, revision: plan.proposalRevision, feedback: changes.trim() }) }));
+      setChanges("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not request proposal changes"); }
+    finally { mutation.current += 1; setBusy(null); }
+  }
+  async function recover() {
+    if (readOnly || busy || !plan) return;
+    mutation.current += 1; setBusy("recover"); setError("");
+    try { setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/recover`, { method: "POST", body: "{}" })); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not recover this goal"); }
+    finally { mutation.current += 1; setBusy(null); }
+  }
+  if (!plan) return readError ? <p role="alert">{readError}</p> : null;
+  const errors = <>{error && <p role="alert">{error}</p>}{readError && <p role="alert">{readError}</p>}</>;
+  if (plan.boardStatus === "aborted" || plan.boardStatus === "merged") return <section className="planner-delivery-status" aria-label="Goal status"><strong>{plan.boardStatus === "aborted" ? "Goal aborted" : "Goal merged"}</strong>{errors}</section>;
+  if (plan.goalSessionState === "awaiting_input") return <section className="planner-delivery-status" aria-label="Managed goal questions"><strong>Goal needs your answer</strong>{plan.questions.map((question) => <p key={question.id}>Question: {question.text}{question.options.length ? ` (${question.options.join(" / ")})` : ""}</p>)}<p>Reply in this visible conversation to continue planning.</p>{errors}</section>;
+  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong><p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "The agent is investigating this goal in the visible conversation.")}</p>{errors}{plan.goalSessionError && <button type="button" disabled={readOnly || Boolean(busy)} onClick={recover}>{busy === "recover" ? "Recovering…" : "Recover failed turn"}</button>}</section>;
+  return <section className="planner-delivery-status" aria-label="Proposal awaiting approval"><strong>Proposal revision {plan.proposalRevision}</strong><p>{plan.proposal.intendedBehavior || plan.goal}</p>
+    {plan.proposal.scope?.length ? <p>Scope: {plan.proposal.scope.join(" · ")}</p> : null}
+    {plan.proposal.exclusions?.length ? <p>Out of scope: {plan.proposal.exclusions.join(" · ")}</p> : null}
+    {plan.proposal.acceptanceCriteria?.length ? <p>Acceptance: {plan.proposal.acceptanceCriteria.map((criterion) => `${criterion.text} (${criterion.verification})`).join(" · ")}</p> : null}
+    {plan.proposal.assumptions?.length ? <p>Assumptions: {plan.proposal.assumptions.join(" · ")}</p> : null}
+    {plan.proposal.verification?.length ? <p>Verify: {plan.proposal.verification.join(" · ")}</p> : null}
+    <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} disabled={readOnly || Boolean(busy)} maxLength={4_000} rows={2} onChange={(event) => setChanges(event.target.value)} /></label>
+    {errors}
+    {readOnly && <p>Enable input in the session menu to approve or request changes.</p>}
+    <div className="planner-actions"><button type="button" disabled={readOnly || Boolean(readError) || Boolean(busy) || !changes.trim()} onClick={requestChanges}>{busy === "changes" ? "Sending…" : "Request changes"}</button><button type="button" className="primary-button" disabled={readOnly || Boolean(readError) || Boolean(busy)} onClick={approve}>{busy === "approve" ? "Approving…" : "Approve and implement"}</button></div>
+  </section>;
 }
 
 export function PullRequestBanner({ repo }: { repo: Repo | null }) {
@@ -248,7 +341,7 @@ export function PullRequestBanner({ repo }: { repo: Repo | null }) {
   return <a className={`pr-banner ${tone}`} href={pullRequest.url} target="_blank" rel="noreferrer"><span className="pr-icon">PR</span><div><strong>#{pullRequest.number} {pullRequest.title}</strong><small>{pullRequest.headBranch} → {pullRequest.baseBranch}</small></div><span className="pr-state"><b>{review}</b><small>{checks}</small></span><em>↗</em></a>;
 }
 
-export function TerminalPanel(props: { workspace: Workspace; terminal: Terminal; terminalView: TerminalView | null; screenError: string; draft: string; attachments: ImageAttachment[]; queueItems: PromptQueueItem[]; sending: boolean; readOnly: boolean; fontSize: number; fitToPhone: boolean; shortcutsOpen: boolean; onTerminal: (id: string) => void; onDraft: (value: string) => void; onImage: (file: File) => void; onRemoveImage: (path: string) => void; onSubmit: (event: FormEvent) => void; onQueue: () => void; onQueueUpdate: (id: string, text: string) => Promise<void>; onQueueMove: (id: string, direction: number) => Promise<void>; onQueueSend: (id: string) => Promise<void>; onQueueRemove: (id: string) => Promise<void>; onKey: (key: string) => void; onReadOnly: () => void; onRefresh: () => void; onShortcuts: (open: boolean) => void; onMarkdown: (path: string) => void; onLocalUrl: (url: string) => void }) {
+export function TerminalPanel(props: { workspace: Workspace; terminal: Terminal; terminalView: TerminalView | null; screenError: string; draft: string; attachments: ImageAttachment[]; queueItems: PromptQueueItem[]; sending: boolean; readOnly: boolean; fontSize: number; fitToPhone: boolean; shortcutsOpen: boolean; onTerminal: (id: string) => void; onDraft: (value: string) => void; onImage: (file: File) => void; onRemoveImage: (path: string) => void; onSubmit: (event: FormEvent) => void; onQueue: () => void; onQueueUpdate: (id: string, text: string) => Promise<boolean | void>; onQueueMove: (id: string, direction: number) => Promise<void>; onQueueSend: (id: string) => Promise<void>; onQueueRemove: (id: string) => Promise<void>; onKey: (key: string) => void; onReadOnly: () => void; onRefresh: () => void; onShortcuts: (open: boolean) => void; onMarkdown: (path: string) => void; onLocalUrl: (url: string) => void }) {
   const screenRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -296,13 +389,35 @@ export function TerminalPanel(props: { workspace: Workspace; terminal: Terminal;
   );
 }
 
-function PromptQueueSheet({ items, busy, onClose, onUpdate, onMove, onSend, onRemove }: { items: PromptQueueItem[]; busy: boolean; onClose: () => void; onUpdate: (id: string, text: string) => Promise<void>; onMove: (id: string, direction: number) => Promise<void>; onSend: (id: string) => Promise<void>; onRemove: (id: string) => Promise<void> }) {
+function PromptQueueSheet({ items, busy, onClose, onUpdate, onMove, onSend, onRemove }: { items: PromptQueueItem[]; busy: boolean; onClose: () => void; onUpdate: (id: string, text: string) => Promise<boolean | void>; onMove: (id: string, direction: number) => Promise<void>; onSend: (id: string) => Promise<void>; onRemove: (id: string) => Promise<void> }) {
   return <><button className="queue-backdrop" aria-label="Close prompt queue" onClick={onClose} /><section className="queue-sheet" role="dialog" aria-modal="true" aria-label="Prompt queue"><header><div><strong>Prompt queue</strong><span>{items.length ? `${items.length} waiting · one sent after each agent stop` : "Send thoughts later without interrupting the agent"}</span></div><button onClick={onClose}>×</button></header>{items.length === 0 ? <div className="queue-empty"><span>⌛</span><strong>Nothing queued</strong><p>Write in the composer and tap the hourglass to send it after the agent finishes its current turn.</p></div> : <div className="queue-list">{items.map((item, index) => <PromptQueueRow item={item} index={index} count={items.length} busy={busy} onUpdate={onUpdate} onMove={onMove} onSend={onSend} onRemove={onRemove} key={item.id} />)}</div>}</section></>;
 }
 
-function PromptQueueRow({ item, index, count, busy, onUpdate, onMove, onSend, onRemove }: { item: PromptQueueItem; index: number; count: number; busy: boolean; onUpdate: (id: string, text: string) => Promise<void>; onMove: (id: string, direction: number) => Promise<void>; onSend: (id: string) => Promise<void>; onRemove: (id: string) => Promise<void> }) {
+function PromptQueueRow({ item, index, count, busy, onUpdate, onMove, onSend, onRemove }: { item: PromptQueueItem; index: number; count: number; busy: boolean; onUpdate: (id: string, text: string) => Promise<boolean | void>; onMove: (id: string, direction: number) => Promise<void>; onSend: (id: string) => Promise<void>; onRemove: (id: string) => Promise<void> }) {
   const [value, setValue] = useState(item.text);
-  return <article className="queue-item"><div className="queue-item-head"><span>Next {index ? `+${index}` : ""}</span>{item.lastError && <em>{item.lastError}</em>}<div><button aria-label="Move prompt earlier" disabled={busy || index === 0} onClick={() => onMove(item.id, -1)}>↑</button><button aria-label="Move prompt later" disabled={busy || index === count - 1} onClick={() => onMove(item.id, 1)}>↓</button></div></div><textarea aria-label={`Queued prompt ${index + 1}`} value={value} maxLength={32_000} onChange={(event) => setValue(event.target.value)} onBlur={() => { if (value.trim() && value.trim() !== item.text) onUpdate(item.id, value); }} /><footer><button className="queue-remove" disabled={busy} onClick={() => onRemove(item.id)}>Remove</button><button className="queue-send" disabled={busy || !value.trim()} onClick={async () => { if (value.trim() !== item.text) await onUpdate(item.id, value); await onSend(item.id); }}>Send now</button></footer></article>;
+  const [error, setError] = useState("");
+  const saving = useRef<Promise<boolean> | null>(null);
+  const saved = useRef(item.text);
+  const save = async () => {
+    if (saving.current) return saving.current;
+    const text = value.trim();
+    if (!text) return false;
+    if (text === saved.current) return true;
+    const pending = (async () => {
+      try {
+        if (await onUpdate(item.id, text) === false) throw new Error("Could not save this prompt. Your edits are kept; retry before sending.");
+        saved.current = text;
+        setError("");
+        return true;
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Could not save this prompt");
+        return false;
+      }
+    })();
+    saving.current = pending;
+    try { return await pending; } finally { if (saving.current === pending) saving.current = null; }
+  };
+  return <article className="queue-item"><div className="queue-item-head"><span>Next {index ? `+${index}` : ""}</span>{item.lastError && <em>{item.lastError}</em>}<div><button aria-label="Move prompt earlier" disabled={busy || index === 0} onClick={() => onMove(item.id, -1)}>↑</button><button aria-label="Move prompt later" disabled={busy || index === count - 1} onClick={() => onMove(item.id, 1)}>↓</button></div></div><textarea aria-label={`Queued prompt ${index + 1}`} value={value} maxLength={32_000} disabled={busy} onChange={(event) => setValue(event.target.value)} onBlur={(event) => { if (!(event.relatedTarget instanceof Element && event.relatedTarget.closest(".queue-send"))) void save(); }} />{error && <p role="alert">{error}</p>}<footer><button className="queue-remove" disabled={busy} onClick={() => onRemove(item.id)}>Remove</button><button className="queue-send" disabled={busy || !value.trim()} onClick={async () => { if (await save()) await onSend(item.id); }}>Send now</button></footer></article>;
 }
 
 function HealthPanel({ workspace, terminal, onChanged, onNotice }: { workspace: Workspace; terminal: Terminal; onChanged: () => void; onNotice: (message: string) => void }) {
@@ -322,7 +437,7 @@ function ChangesPanel({ repo, onMarkdown }: { repo: Repo | null; onMarkdown: (pa
   return <section className="changes-page"><div className="changes-summary"><div><p className="eyebrow">{repo.branch}</p><h2>{changes?.files.length || 0} changed files</h2><span>{changes?.recentCommit ? `Latest: ${changes.recentCommit.hash} ${changes.recentCommit.subject}` : "No commits yet"}</span></div><button onClick={load}>↻</button></div>{loading && !changes ? <div className="detail-loading">Reading Git state…</div> : changes?.files.length === 0 ? <Empty icon="✓" title="Working tree clean" body="There are no staged, unstaged, or untracked changes." /> : <div className="file-list">{changes?.files.map((file) => <button key={file.path} onClick={() => openFile(file)}><span className={`file-status s-${file.status.toLowerCase()}`}>{file.status}</span><div><strong>{file.path.split("/").pop()}</strong><span>{file.path}</span></div><em>{file.areas.join(" + ")}</em><b>›</b></button>)}</div>}</section>;
 }
 
-function SettingsView({ bootstrap, readOnly, installable, onReadOnly, onInstall, onApps, onUsage, onLogout, onNotice }: { bootstrap: Bootstrap | null; readOnly: boolean; installable: boolean; onReadOnly: (value: boolean) => void; onInstall: () => void; onApps: () => void; onUsage: () => void; onLogout: () => void; onNotice: (message: string) => void }) { return <section className="subpage"><p className="eyebrow">COMPANION</p><h1>Settings</h1><div className="settings-list"><div className="setting-row"><div><strong>Connection</strong><span>{bootstrap?.connected ? bootstrap.host?.mac_display_name || "Connected to cmux" : "Waiting for cmux"}</span></div><i className={bootstrap?.connected ? "good" : ""}>{bootstrap?.connected ? "Online" : "Offline"}</i></div><label className="setting-row"><div><strong>Read-only protection</strong><span>Prevent accidental terminal input</span></div><input type="checkbox" checked={readOnly} onChange={(event) => onReadOnly(event.target.checked)} /></label><button className="setting-row setting-button" onClick={onUsage}><div><strong>Licence usage</strong><span>Claude Code and OpenAI quota by account</span></div><i>Open ›</i></button><button className="setting-row setting-button" onClick={onApps}><div><strong>Local apps</strong><span>Manage private Tailscale preview links</span></div><i>Open ›</i></button></div><WorktreeCleanupPanel /><DeploymentHealth /><PushSettings onNotice={onNotice} />{installable && <button className="primary-button install-button" onClick={onInstall}>Add companion to home screen</button>}<div className="privacy-note"><strong>Private by design</strong><p>The backend listens only on this Mac. Access is encrypted and routed through your Tailscale network; pairing is still required per browser.</p></div><button className="logout-button" onClick={onLogout}>Unpair this device</button></section>; }
+function SettingsView({ bootstrap, readOnly, installable, onReadOnly, onInstall, onApps, onUsage, onLogout, onNotice }: { bootstrap: Bootstrap | null; readOnly: boolean; installable: boolean; onReadOnly: (value: boolean) => void; onInstall: () => void; onApps: () => void; onUsage: () => void; onLogout: () => void; onNotice: (message: string) => void }) { return <section className="subpage"><p className="eyebrow">COMPANION</p><h1>Settings</h1><div className="settings-list"><div className="setting-row"><div><strong>Connection</strong><span>{bootstrap?.connected ? bootstrap.host?.mac_display_name || "Connected to cmux" : "Waiting for cmux"}</span></div><i className={bootstrap?.connected ? "good" : ""}>{bootstrap?.connected ? "Online" : "Offline"}</i></div><label className="setting-row"><div><strong>Read-only protection</strong><span>Prevent accidental terminal input</span></div><input type="checkbox" checked={readOnly} onChange={(event) => onReadOnly(event.target.checked)} /></label><button className="setting-row setting-button" onClick={onUsage}><div><strong>Licence usage</strong><span>Claude Code and OpenAI quota by account</span></div><i>Open ›</i></button><button className="setting-row setting-button" onClick={onApps}><div><strong>Local apps</strong><span>Manage private Tailscale preview links</span></div><i>Open ›</i></button></div><ModelSettingsPanel /><WorktreeCleanupPanel /><DeploymentHealth /><PushSettings onNotice={onNotice} />{installable && <button className="primary-button install-button" onClick={onInstall}>Add companion to home screen</button>}<div className="privacy-note"><strong>Private by design</strong><p>The backend listens only on this Mac. Access is encrypted and routed through your Tailscale network; pairing is still required per browser.</p></div><button className="logout-button" onClick={onLogout}>Unpair this device</button></section>; }
 
 function PushSettings({ onNotice }: { onNotice: (message: string) => void }) {
   type AlertSettings = { attention: boolean; completion: boolean; failure: boolean; pullRequest: boolean; preview: boolean; hideContent: boolean; quietEnabled: boolean; quietStart: string; quietEnd: string };

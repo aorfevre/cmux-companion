@@ -53,6 +53,10 @@ export function retirableSessions(plan, live = { available: false, byId: new Map
   // Once the goal PR exists its original task and merge sessions are finished.
   // Follow-up sessions have separate identities and are not owned by this list.
   for (const entry of candidates) {
+    if (plan?.workflow === "goal_session" && !terminal && entry.workspaceId === plan.goalSessionWorkspaceId) {
+      keep.push(kept(entry, "The goal conversation stays open for review and corrections"));
+      continue;
+    }
     if (!terminal && !prOpen && !finishedWithoutPullRequest(entry)) {
       keep.push(kept(entry, entry.kind === "task" ? "This task is not integrated yet" : "This goal is still being assembled"));
       continue;
@@ -119,10 +123,12 @@ export class GoalSessionReaper {
       for (const entry of keep) kept.push({ planId: plan.planId, ...entry });
       const retired = [];
       for (const entry of close) {
-        const outcome = await this.#close(plan, entry, live);
+        const outcome = await this.#close(plan, entry);
         if (outcome.retired) {
           retired.push({ workspaceId: entry.workspaceId, taskId: entry.taskId, kind: entry.kind });
           closed.push({ planId: plan.planId, ...entry, closedInCmux: outcome.closedInCmux });
+        } else if (outcome.kept) {
+          kept.push({ planId: plan.planId, ...entry, reason: outcome.error });
         } else {
           failed.push({ planId: plan.planId, ...entry, error: outcome.error });
         }
@@ -166,10 +172,28 @@ export class GoalSessionReaper {
   // A workspace the live list does not hold is already finished from cmux's
   // point of view. Asking cmux to close it would log a failure for a session
   // that is gone, and the id would come back on every pass for ever.
-  async #close(plan, entry, live) {
+  async #close(plan, entry) {
+    const live = await this.#liveWorkspaces();
+    const currentPlan = this.#plan(plan.planId);
+    if (!live.available || !currentPlan) return { kept: true, error: "Fresh session or goal evidence is unavailable" };
+    const current = retirableSessions(currentPlan, live);
+    if (!current.close.some((candidate) => candidate.workspaceId === entry.workspaceId && candidate.taskId === entry.taskId && candidate.kind === entry.kind)) {
+      return { kept: true, error: current.keep.find((candidate) => candidate.workspaceId === entry.workspaceId)?.reason || "Session ownership or delivery evidence changed during cleanup" };
+    }
     if (!live.byId.has(entry.workspaceId)) return { retired: true, closedInCmux: false, error: null };
     if (!this.cmux?.workspaceClose) return { retired: false, closedInCmux: false, error: "This cmux client cannot close a workspace" };
+    let closing = false;
     try {
+      const workspace = { ...live.byId.get(entry.workspaceId) };
+      if (this.cmux.workspaceStatus) workspace.status = await this.cmux.workspaceStatus(entry.workspaceId);
+      const protection = restoredSessionProtection(workspace);
+      if (protection) return { kept: true, error: protection };
+      // Status itself awaited; recheck the durable identity before closing.
+      const latest = this.#plan(plan.planId);
+      if (!latest || !retirableSessions(latest, live).close.some((candidate) => candidate.workspaceId === entry.workspaceId && candidate.taskId === entry.taskId && candidate.kind === entry.kind)) {
+        return { kept: true, error: "Session ownership or delivery evidence changed during cleanup" };
+      }
+      closing = true;
       await this.cmux.workspaceClose(entry.workspaceId);
       return { retired: true, closedInCmux: true, error: null };
     } catch (cause) {
@@ -179,7 +203,7 @@ export class GoalSessionReaper {
       // never opened. Both are retired, or the same dead id is retried on every
       // pass for the life of the plan. Anything else may be a passing fault and
       // stays pending, so the next pass tries again.
-      if (missingWorkspace(cause)) return { retired: true, closedInCmux: false, error: null };
+      if (closing && missingWorkspace(cause)) return { retired: true, closedInCmux: false, error: null };
       return { retired: false, closedInCmux: false, error: message };
     }
   }
@@ -265,6 +289,9 @@ function ownedSessions(plan) {
       title: text(task?.title) || workspaceId,
       deliveryStatus: text(task?.deliveryStatus) || "pending",
     });
+  }
+  if (plan?.workflow === "goal_session" && !isTerminal(plan) && plan.goalSessionWorkspaceId && !sessions.some((entry) => entry.workspaceId === plan.goalSessionWorkspaceId)) {
+    sessions.push({ workspaceId: plan.goalSessionWorkspaceId, taskId: null, kind: "goal", title: plan.goal || "Goal", deliveryStatus: "pending" });
   }
   const mergeId = text(plan?.mergeWorkspaceId);
   if (mergeId && !plan?.mergeSessionClosedAt) {
