@@ -279,7 +279,7 @@ describe("planner engine defaults", () => {
   it("submits Codex Astra and keeps Default and provider switches valid", () => {
     installScenario({ plans: [] });
     cy.intercept("POST", "**/api/worktree-plans", (request) => {
-      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6", effort: "default", reviewer: true });
+      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: true });
       request.reply({ statusCode: 202, body: {
         planId: "astra-default", repositoryId: "repo-spec", goal: request.body.goal,
         status: "questions", round: 0, running: true, questions: [], tasks: [],
@@ -288,7 +288,7 @@ describe("planner engine defaults", () => {
     visitBoard();
     cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
     cy.findByRole("combobox", { name: "Planner engine" }).should("have.value", "codex");
-    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6");
+    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6-astra");
     cy.contains("Codex (xcodex) · Codex Astra").should("be.visible");
     cy.findByRole("checkbox", { name: "Add a reviewer pass" }).check();
     cy.contains("Reviewer: Claude Code (xclaude) · Fable 5.1 · xhigh effort").should("be.visible");
@@ -299,7 +299,7 @@ describe("planner engine defaults", () => {
     cy.contains("Claude Code (xclaude) · CCS default model").should("be.visible");
     cy.findByRole("combobox", { name: "Planner model" }).select("claude-opus-5");
     cy.findByRole("combobox", { name: "Planner engine" }).select("codex");
-    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6");
+    cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6-astra");
     cy.findByRole("textbox", { name: "Goal" }).type("Plan using Astra");
     cy.findByRole("button", { name: "Plan this goal" }).click();
     cy.wait("@planAstra");
@@ -312,7 +312,7 @@ describe("post-delivery reviewer model", () => {
     it(`opens with Fable 5.1 and submits the ${changeModel ? "selected" : "default"} reviewer model`, () => {
       installScenario({ plans: [] });
       cy.intercept("POST", "**/api/worktree-plans", (request) => {
-        expect(request.body.reviewOptions).to.deep.equal({ codeReview: true, reviewer: changeModel ? "codex" : "claude", reviewerModel: changeModel ? "gpt-6" : "claude-fable-5-1" });
+        expect(request.body.reviewOptions).to.deep.equal({ codeReview: true, reviewer: changeModel ? "codex" : "claude", reviewerModel: changeModel ? "gpt-6-astra" : "claude-fable-5-1" });
         request.reply({ statusCode: 202, body: { planId: "review-model", repositoryId: "repo-spec", goal: request.body.goal, status: "questions", round: 0, running: true, questions: [], tasks: [] } });
       }).as("reviewModel");
       visitBoard();
@@ -321,7 +321,7 @@ describe("post-delivery reviewer model", () => {
       cy.findByRole("combobox", { name: "Code-review reviewer" }).should("have.value", "claude");
       if (changeModel) {
         cy.findByRole("combobox", { name: "Code-review reviewer" }).select("codex");
-        cy.findByRole("combobox", { name: "Code-review model" }).select("gpt-6").find('option[value="claude-fable-5-1"]').should("not.exist");
+        cy.findByRole("combobox", { name: "Code-review model" }).select("gpt-6-astra").find('option[value="claude-fable-5-1"]').should("not.exist");
       }
       cy.findByRole("checkbox", { name: "Code review" }).check();
       cy.findByRole("textbox", { name: "Goal" }).type("Review the delivered goal");
@@ -401,7 +401,7 @@ describe("specification rigor options", () => {
       });
       // Effort stays the single extended-reasoning control. No second
       // reasoning field may ride along with the requests.
-      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6", effort: "default", reviewer: false });
+      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
       request.reply({
         planId: "plan-new", repositoryId: "repo-spec", repositoryName: "cmux-e2e-cypress", goal: GOAL,
         status: "questions", stage: "questions", planStatus: "draft", running: true, round: 0,

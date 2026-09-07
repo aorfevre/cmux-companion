@@ -617,7 +617,7 @@ exercise the actual recovery decisions without launching agents or deleting real
 
 Settings → **Model defaults** stores a model for each provider and role: planner,
 spec reviewer, coder, code reviewer, merge agent, follow-up agent, and GitHub
-issue analyzer. Planning starts with Codex Astra (`gpt-6`); Claude specification
+issue analyzer. Planning starts with Codex Astra (`gpt-6-astra`); Claude specification
 and code reviews start with Fable 5.1. Coding, merging, follow-ups, and issue analysis retain the provider default.
 The Settings panel also selects the default provider for planning, merging,
 and issue analysis. Task assignment and explicit provider choices still apply.
@@ -640,9 +640,11 @@ Configuration lives in `~/.config/cmux-companion/model-settings.json` (override
 with `CMUX_COMPANION_MODEL_SETTINGS_FILE`). The paired, same-origin Settings
 API is `GET` / `PATCH /api/settings/models`. Custom IDs are syntax-validated,
 not checked against a live provider catalog; availability depends on the
-configured provider/account. Local Cypress covers the Settings and planner UI;
-backend tests verify persistence and the commands for each role without
-starting live agents.
+configured provider/account. A model ID that a provider retires is rewritten to
+its replacement when the saved settings and saved goals load, so an existing
+selection does not break planning: `gpt-6` reads as `gpt-6-astra`.
+Local Cypress covers the Settings and planner UI; backend tests verify
+persistence and the commands for each role without starting live agents.
 
 ### Share a goal popup
 

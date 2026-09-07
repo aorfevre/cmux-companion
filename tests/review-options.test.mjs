@@ -67,7 +67,7 @@ test("codeReviewRequested answers only for a valid enabled request", () => {
 });
 
 test("safe custom reviewer models survive normalization", () => {
-  for (const reviewerModel of ["claude-opus-5", "gpt-6", "gpt-5.6-sol", "default", "provider/custom-reviewer"]) {
+  for (const reviewerModel of ["claude-opus-5", "gpt-6-astra", "gpt-5.6-sol", "default", "provider/custom-reviewer"]) {
     const value = { ...DEFAULTS, codeReview: true, reviewerModel };
     assert.deepEqual(normalizeReviewOptions(normalizeReviewOptions(value)), value);
   }
@@ -76,7 +76,12 @@ test("safe custom reviewer models survive normalization", () => {
     assert.deepEqual(safeReviewOptions({ codeReview: true, reviewerModel }), DEFAULTS);
     assert.equal(codeReviewRequested({ codeReview: true, reviewerModel }), true);
   }
-  assert.throws(() => { REVIEW_OPTIONS.defaults.reviewerModel = "gpt-6"; }, TypeError);
+  assert.throws(() => { REVIEW_OPTIONS.defaults.reviewerModel = "gpt-6-astra"; }, TypeError);
   assert.deepEqual(REVIEW_OPTIONS.defaults, DEFAULTS);
   assert.deepEqual(safeReviewOptions({ codeReview: false, reviewer: "claude" }), DEFAULTS);
+});
+
+test("a saved retired reviewer model is rewritten to its current id", () => {
+  assert.equal(normalizeReviewOptions({ codeReview: true, reviewer: "codex", reviewerModel: "gpt-6" }).reviewerModel, "gpt-6-astra");
+  assert.equal(safeReviewOptions({ codeReview: true, reviewer: "codex", reviewerModel: "gpt-6" }).reviewerModel, "gpt-6-astra");
 });

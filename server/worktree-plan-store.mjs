@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { classifyLegacyWorktreeError } from "./worktree-errors.mjs";
 import { normalizeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
+import { currentModelId } from "./model-options.mjs";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db");
 
@@ -1208,7 +1209,7 @@ export class WorktreePlanStore {
       issueNumbers: parse(row.issue_numbers, []),
       issuesReturnedAt: row.issues_returned_at ?? null,
       deliveryPolicy: row.delivery_policy || "auto",
-      engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
+      engine: { provider: row.engine_provider || "claude", model: currentModelId(row.engine_model) || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
       specOptions: safeSpecOptions(parse(row.spec_options, null)),
       reviewOptions: safeReviewOptions(parse(row.review_options, null)),
       reviewStatus: row.review_status ?? null,
@@ -1342,7 +1343,7 @@ function readPlan(row) {
     issuesReturnedAt: row.issues_returned_at ?? null,
     issueUrls: parse(row.issue_urls, []),
     deliveryPolicy: row.delivery_policy || "auto",
-    engine: { provider: row.engine_provider || "claude", model: row.engine_model || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
+    engine: { provider: row.engine_provider || "claude", model: currentModelId(row.engine_model) || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
     specOptions: safeSpecOptions(parse(row.spec_options, null)),
     reviewOptions: safeReviewOptions(parse(row.review_options, null)),
     reviewWorkspaceId: row.review_workspace_id ?? null,

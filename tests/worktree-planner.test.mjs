@@ -238,9 +238,9 @@ test("defaults to Codex Astra and lets ccs choose its effort", async () => {
   const draft = await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
   const args = deps.calls[0][1];
   assert.equal(args[0], "codex");
-  assert.equal(args[args.indexOf("--model") + 1], "gpt-6");
+  assert.equal(args[args.indexOf("--model") + 1], "gpt-6-astra");
   assert.equal(args.includes("--effort"), false);
-  assert.deepEqual(draft.engine, { provider: "codex", model: "gpt-6", effort: "default", reviewer: false });
+  assert.deepEqual(draft.engine, { provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
 });
 
 for (const provider of ["claude", "codex"]) {
@@ -579,13 +579,14 @@ test("a task brief with no requested option keeps its original shape", async () 
 });
 
 test("normalizes omitted engine fields without coercing invalid input", () => {
-  const defaults = { provider: "codex", model: "gpt-6", effort: "default", reviewer: false };
+  const defaults = { provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false };
   assert.deepEqual(normalizePlannerEngine(undefined), defaults);
   assert.deepEqual(normalizePlannerEngine({}), defaults);
   assert.deepEqual(normalizePlannerEngine({ provider: "codex" }), defaults);
+  assert.deepEqual(normalizePlannerEngine({ provider: "codex", model: "gpt-6-astra" }), defaults);
   assert.deepEqual(normalizePlannerEngine({ provider: "codex", model: "gpt-6" }), defaults);
   assert.deepEqual(normalizePlannerEngine({ provider: "claude" }), { provider: "claude", model: "default", effort: "default", reviewer: false });
-  assert.ok(PLANNER_ENGINES.providers.codex.models.some((model) => model.id === "gpt-6" && model.label === "Codex Astra"));
+  assert.ok(PLANNER_ENGINES.providers.codex.models.some((model) => model.id === "gpt-6-astra" && model.label === "Codex Astra"));
   assert.equal(PLANNER_ENGINES.providers.codex.largestModel, "gpt-5.6-sol");
   assert.throws(() => normalizePlannerEngine({ provider: "codex", model: "bad model" }), /Model must/);
   assert.throws(() => normalizePlannerEngine(null), /must be an object/);

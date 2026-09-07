@@ -1,5 +1,5 @@
 import { ModelSettings } from "./model-settings.mjs";
-import { DEFAULT_MODEL_ROLES, normalizeModelId, roleEngine } from "./model-options.mjs";
+import { DEFAULT_MODEL_ROLES, currentModelId, normalizeModelId, roleEngine } from "./model-options.mjs";
 import { parsePlannerReply, parseDiscussionReply } from "./planner-reply.mjs";
 export { parsePlannerReply, parseDiscussionReply } from "./planner-reply.mjs";
 import { streamExecFile, finalEnvelope, progressEvent } from "./planner-process.mjs";
@@ -142,7 +142,7 @@ export function normalizePlannerEngine(engine, roles = DEFAULT_MODEL_ROLES) {
   if (typeof provider !== "string" || !Object.hasOwn(PLANNER_ENGINES.providers, provider)) {
     throw new TypeError("Unknown planner provider. Choose Claude or Codex");
   }
-  const model = normalizeModelId(engine.model ?? roleEngine(roles, "planner", provider).model);
+  const model = normalizeModelId(currentModelId(engine.model ?? roleEngine(roles, "planner", provider).model));
   const effort = engine.effort ?? PLANNER_ENGINES.defaultEffort;
   if (!PLANNER_ENGINES.efforts.some((option) => option.id === effort)) {
     throw new TypeError("Unknown planner effort. Choose Default, Low, Medium, High, or Xhigh");
