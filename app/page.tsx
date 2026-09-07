@@ -264,7 +264,7 @@ export function ManagedGoalControls({ workspaceId, readOnly = false }: { workspa
 function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: string; readOnly: boolean }) {
   const [plan, setPlan] = useState<PlanDraft | null>(null);
   const [changes, setChanges] = useState("");
-  const [busy, setBusy] = useState<"approve" | "changes" | null>(null);
+  const [busy, setBusy] = useState<"approve" | "changes" | "recover" | null>(null);
   const [error, setError] = useState("");
   const [readError, setReadError] = useState("");
   const ownedRead = useOwnedReads(workspaceId);
@@ -297,12 +297,22 @@ function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: stri
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not request proposal changes"); }
     finally { mutation.current += 1; setBusy(null); }
   }
+  async function recover() {
+    if (readOnly || busy || !plan) return;
+    mutation.current += 1; setBusy("recover"); setError("");
+    try { setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/recover`, { method: "POST", body: "{}" })); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not recover this goal"); }
+    finally { mutation.current += 1; setBusy(null); }
+  }
   if (!plan) return readError ? <p role="alert">{readError}</p> : null;
   const errors = <>{error && <p role="alert">{error}</p>}{readError && <p role="alert">{readError}</p>}</>;
+  if (plan.boardStatus === "aborted" || plan.boardStatus === "merged") return <section className="planner-delivery-status" aria-label="Goal status"><strong>{plan.boardStatus === "aborted" ? "Goal aborted" : "Goal merged"}</strong>{errors}</section>;
   if (plan.goalSessionState === "awaiting_input") return <section className="planner-delivery-status" aria-label="Managed goal questions"><strong>Goal needs your answer</strong>{plan.questions.map((question) => <p key={question.id}>Question: {question.text}{question.options.length ? ` (${question.options.join(" / ")})` : ""}</p>)}<p>Reply in this visible conversation to continue planning.</p>{errors}</section>;
-  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong><p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "The agent is investigating this goal in the visible conversation.")}</p>{errors}</section>;
+  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong><p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "The agent is investigating this goal in the visible conversation.")}</p>{errors}{plan.goalSessionError && <button type="button" disabled={readOnly || Boolean(busy)} onClick={recover}>{busy === "recover" ? "Recovering…" : "Recover failed turn"}</button>}</section>;
   return <section className="planner-delivery-status" aria-label="Proposal awaiting approval"><strong>Proposal revision {plan.proposalRevision}</strong><p>{plan.proposal.intendedBehavior || plan.goal}</p>
     {plan.proposal.scope?.length ? <p>Scope: {plan.proposal.scope.join(" · ")}</p> : null}
+    {plan.proposal.exclusions?.length ? <p>Out of scope: {plan.proposal.exclusions.join(" · ")}</p> : null}
+    {plan.proposal.acceptanceCriteria?.length ? <p>Acceptance: {plan.proposal.acceptanceCriteria.map((criterion) => `${criterion.text} (${criterion.verification})`).join(" · ")}</p> : null}
     {plan.proposal.assumptions?.length ? <p>Assumptions: {plan.proposal.assumptions.join(" · ")}</p> : null}
     {plan.proposal.verification?.length ? <p>Verify: {plan.proposal.verification.join(" · ")}</p> : null}
     <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} disabled={readOnly || Boolean(busy)} maxLength={4_000} rows={2} onChange={(event) => setChanges(event.target.value)} /></label>

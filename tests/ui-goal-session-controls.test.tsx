@@ -45,3 +45,10 @@ test("polling does not erase a rejected approval", async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
   assert.match(screen.getByRole("alert").textContent || "", /Proposal changed/);
 });
+
+test("an aborted goal cannot expose a stale proposal approval", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => response({ ...proposal("a"), boardStatus: "aborted" })));
+  render(<ManagedGoalControls workspaceId="a" />);
+  assert.ok(await screen.findByText("Goal aborted"));
+  assert.equal(screen.queryByRole("button", { name: "Approve and implement" }), null);
+});

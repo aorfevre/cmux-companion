@@ -99,6 +99,21 @@ describe("visible goal conversation", () => {
     cy.get("@approval.all").should("have.length", 0);
   });
 
+  it("recovers a failed planning turn in the recorded conversation", () => {
+    const state = scenario({ ...basePlan, questions: [], goalSessionState: "planning", goalSessionError: "Provider connection failed" });
+    cy.intercept("POST", "**/api/goal-sessions/goal-one/recover", (request) => {
+      state.setPlan({ ...state.getPlan(), goalSessionError: null, goalSessionState: "awaiting_approval", proposalRevision: 1, proposal });
+      request.reply(state.getPlan());
+    }).as("recover");
+    start();
+    cy.contains("Provider connection failed").should("be.visible");
+    cy.findByRole("button", { name: "Recover failed turn" }).click(); cy.wait("@recover");
+    cy.findByText("Proposal revision 1").should("be.visible");
+    cy.location("search").should("contain", "workspace=goal-workspace");
+    cy.get("@startGoal.all").should("have.length", 1);
+    cy.get("@approval.all").should("have.length", 0);
+  });
+
   it("keeps stale approval rejection visible and requires review of the new proposal", () => {
     scenario({ ...basePlan, questions: [], goalSessionState: "awaiting_approval", proposalRevision: 1, proposal });
     cy.intercept("POST", "**/api/goal-sessions/goal-one/approve", { statusCode: 409, body: { error: "Proposal changed; review the latest revision" } }).as("stale");
