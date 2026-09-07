@@ -11,7 +11,7 @@
 // The module is data-only and has no storage, no network and no Node
 // built-ins, because both the browser sheet and the server import it.
 
-import { DEFAULT_MODEL_ROLES, normalizeModelId } from "./model-options.mjs";
+import { DEFAULT_MODEL_ROLES, currentModelId, normalizeModelId } from "./model-options.mjs";
 
 export const REVIEW_AGENTS = Object.freeze(["claude", "codex"]);
 export const DEFAULT_REVIEW_AGENT = "claude";
@@ -37,7 +37,7 @@ export function normalizeReviewOptions(value, roles = DEFAULT_MODEL_ROLES) {
   for (const [key, entry] of Object.entries(value)) {
     if (!KEYS.includes(key)) throw new TypeError(`Unknown review option ${key}`);
     if (key === "reviewerModel") {
-      normalized.reviewerModel = normalizeModelId(entry);
+      normalized.reviewerModel = normalizeModelId(currentModelId(entry));
       continue;
     }
     if (key === "reviewer") {

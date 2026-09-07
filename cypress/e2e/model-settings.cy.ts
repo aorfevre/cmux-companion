@@ -42,7 +42,7 @@ describe("model defaults", () => {
   it("saves all roles on mobile, survives a reload, and resets one role without changing the others", () => {
     scenario(); cy.viewport(390, 844); settings();
     cy.findByLabelText("Planner default provider").should("have.value", "codex");
-    cy.findByLabelText("Planner Codex model").should("have.value", "gpt-6");
+    cy.findByLabelText("Planner Codex model").should("have.value", "gpt-6-astra");
     cy.findByRole("region", { name: "Model defaults" }).screenshot("model-defaults-mobile");
     for (const role of ["Planner", "Spec reviewer", "Coder", "Code reviewer", "Merge agent", "Follow-up agent", "Issue analyzer"]) {
       cy.findByLabelText(`${role} Codex model`).select("__custom__");
@@ -60,7 +60,7 @@ describe("model defaults", () => {
     cy.findByRole("button", { name: "Reset planner" }).click();
     cy.findByRole("button", { name: "Save model defaults" }).click(); cy.wait("@saveModels");
     cy.reload(); cy.wait("@loadModels");
-    cy.findByLabelText("Planner Codex model").should("have.value", "gpt-6");
+    cy.findByLabelText("Planner Codex model").should("have.value", "gpt-6-astra");
     cy.findByLabelText("Coder Codex model ID").should("have.value", "custom/coder");
     cy.document().then((doc) => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
   });

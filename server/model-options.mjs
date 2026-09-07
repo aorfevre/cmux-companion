@@ -9,7 +9,7 @@ export const MODEL_CATALOG = {
   ],
   codex: [
     { id: "default", label: "Default" },
-    { id: "gpt-6", label: "Codex Astra" },
+    { id: "gpt-6-astra", label: "Codex Astra" },
     { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
     { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
     { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
@@ -28,8 +28,18 @@ export const DEFAULT_MODEL_ROLES = Object.fromEntries(MODEL_ROLES.map((role) => 
   ...(role.provider ? { provider: role.id === "planner" ? "codex" : "claude" } : {}),
   models: ["specReviewer", "codeReviewer"].includes(role.id)
     ? { claude: "claude-fable-5-1", codex: "gpt-5.6-sol" }
-    : { claude: "default", codex: role.id === "planner" ? "gpt-6" : "default" },
+    : { claude: "default", codex: role.id === "planner" ? "gpt-6-astra" : "default" },
 }]));
+
+// `gpt-6` was published as the Codex Astra id before the provider settled on
+// `gpt-6-astra`. The provider now rejects the old id with an "unknown provider
+// for model" error, so a saved setting that still holds it would break every
+// planning turn. Retired ids are rewritten at load time instead.
+export const RETIRED_MODEL_IDS = Object.freeze({ "gpt-6": "gpt-6-astra" });
+
+export function currentModelId(value) {
+  return typeof value === "string" && Object.hasOwn(RETIRED_MODEL_IDS, value) ? RETIRED_MODEL_IDS[value] : value;
+}
 
 export function normalizeModelId(value) {
   if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}$/.test(value)) {
@@ -61,7 +71,7 @@ export function patchModelRoles(current, patch) {
         if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new TypeError("Models must be an object");
         for (const [provider, model] of Object.entries(entry)) {
           if (!MODEL_PROVIDERS.includes(provider)) throw new TypeError("Choose Claude or Codex");
-          next[id].models[provider] = normalizeModelId(model);
+          next[id].models[provider] = normalizeModelId(currentModelId(model));
         }
       } else throw new TypeError(`Unknown ${role.label} setting ${key}`);
     }

@@ -176,6 +176,14 @@ test("persists the planner engine for a resumed round", (t) => {
   assert.deepEqual(store.events("configured-plan")[0].payload.engine, plan.engine);
 });
 
+test("a plan row that holds a retired engine model reads as its current id", (t) => {
+  const store = memoryStore(t);
+  store.createPlan({ planId: "retired-plan", repositoryId: "repository12345678", goal: "Add billing", engine: { provider: "codex", model: "gpt-6-astra" } });
+  store.db.prepare("UPDATE plans SET engine_model = ? WHERE plan_id = ?").run("gpt-6", "retired-plan");
+  assert.equal(store.get("retired-plan").engine.model, "gpt-6-astra");
+  assert.equal(store.list().find((entry) => entry.planId === "retired-plan").engine.model, "gpt-6-astra");
+});
+
 test("stores GitHub issue provenance on detail, events, and summaries", (t) => {
   const store = memoryStore(t);
   const plan = store.createPlan({

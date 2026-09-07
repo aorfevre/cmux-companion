@@ -14,12 +14,12 @@ function settingsFile(t) {
 
 test("built-in defaults match Astra planning and Fable review without a settings file", (t) => {
   const settings = new ModelSettings({ path: settingsFile(t) });
-  assert.deepEqual(settings.engine("planner"), { provider: "codex", model: "gpt-6" });
+  assert.deepEqual(settings.engine("planner"), { provider: "codex", model: "gpt-6-astra" });
   assert.equal(settings.engine("codeReviewer", "claude").model, "claude-fable-5-1");
   assert.deepEqual(settings.workspace("coder", "shell"), { agent: "shell" });
   const status = settings.status();
   status.roles.planner.models.codex = "changed";
-  assert.equal(settings.engine("planner").model, "gpt-6");
+  assert.equal(settings.engine("planner").model, "gpt-6-astra");
 });
 
 test("saves role overrides atomically, retains other roles, and reloads them after restart", (t) => {
@@ -32,7 +32,7 @@ test("saves role overrides atomically, retains other roles, and reloads them aft
   assert.deepEqual(restarted.engine("merger"), { provider: "claude", model: "default" });
   assert.equal(statSync(path).mode & 0o777, 0o600);
   restarted.configure({ roles: { planner: DEFAULT_MODEL_ROLES.planner } });
-  assert.equal(new ModelSettings({ path }).engine("planner").model, "gpt-6");
+  assert.equal(new ModelSettings({ path }).engine("planner").model, "gpt-6-astra");
   assert.equal(restarted.engine("coder", "codex").model, "custom-coder");
 });
 
@@ -56,9 +56,17 @@ test("reports corrupt storage and retains defaults until explicitly saved", (t) 
   writeFileSync(path, "not json");
   const settings = new ModelSettings({ path });
   assert.match(settings.status().warning, /Built-in defaults/);
-  assert.equal(settings.engine("planner").model, "gpt-6");
+  assert.equal(settings.engine("planner").model, "gpt-6-astra");
   settings.configure({ roles: DEFAULT_MODEL_ROLES });
   assert.equal(settings.status().warning, null);
+});
+
+test("a saved retired model id loads as its current id", (t) => {
+  const path = settingsFile(t);
+  writeFileSync(path, JSON.stringify({ version: 1, roles: { planner: { provider: "codex", models: { codex: "gpt-6" } } } }));
+  const settings = new ModelSettings({ path });
+  assert.equal(settings.status().warning, null);
+  assert.deepEqual(settings.engine("planner"), { provider: "codex", model: "gpt-6-astra" });
 });
 
 test("a failed write does not claim to have saved or change active defaults", (t) => {
@@ -66,5 +74,5 @@ test("a failed write does not claim to have saved or change active defaults", (t
   writeFileSync(path, "parent is a file");
   const settings = new ModelSettings({ path: join(path, "models.json") });
   assert.throws(() => settings.configure({ roles: { planner: { models: { codex: "custom-model" } } } }));
-  assert.equal(settings.engine("planner").model, "gpt-6");
+  assert.equal(settings.engine("planner").model, "gpt-6-astra");
 });

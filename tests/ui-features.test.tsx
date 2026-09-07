@@ -700,7 +700,7 @@ describe("worktree goal planner", () => {
     const effort = screen.getByRole("combobox", { name: "Planner effort" }) as HTMLSelectElement;
     const reviewer = screen.getByRole("checkbox", { name: "Add a reviewer pass" }) as HTMLInputElement;
     assert.equal(engine.value, "codex");
-    assert.equal(model.value, "gpt-6");
+    assert.equal(model.value, "gpt-6-astra");
     assert.equal(effort.value, "default");
     assert.equal(reviewer.checked, false);
     assert.ok(screen.getByText("Codex (xcodex) · Codex Astra"));
@@ -715,7 +715,7 @@ describe("worktree goal planner", () => {
     assert.ok(within(model).getByRole("option", { name: "Fable 5.1" }));
 
     await userEvent.selectOptions(engine, "codex");
-    assert.equal(model.value, "gpt-6");
+    assert.equal(model.value, "gpt-6-astra");
     assert.ok(within(model).getByRole("option", { name: "GPT-5.6 Sol" }));
     assert.equal(within(model).queryByRole("option", { name: "Opus 5" }), null);
     await userEvent.selectOptions(model, "gpt-5.6-terra");
@@ -745,12 +745,12 @@ describe("worktree goal planner", () => {
     await userEvent.selectOptions(provider, "codex");
     assert.equal(within(model).queryByRole("option", { name: "Fable 5.1" }), null);
     assert.ok(Array.from(model.options).some((option) => option.value === model.value));
-    await userEvent.selectOptions(model, "gpt-6");
+    await userEvent.selectOptions(model, "gpt-6-astra");
     await userEvent.click(screen.getByRole("checkbox", { name: "Code review" }));
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Review this goal");
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
     const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
-    assert.deepEqual(body.reviewOptions, { codeReview: true, reviewer: "codex", reviewerModel: "gpt-6" });
+    assert.deepEqual(body.reviewOptions, { codeReview: true, reviewer: "codex", reviewerModel: "gpt-6-astra" });
     await userEvent.click(screen.getByRole("button", { name: /New goal/ }));
     assert.equal((screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement).value, "claude-fable-5-1");
     assert.equal((screen.getByRole("checkbox", { name: "Code review" }) as HTMLInputElement).checked, false);
