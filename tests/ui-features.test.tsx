@@ -894,8 +894,8 @@ describe("worktree goal planner", () => {
     assert.ok(within(passport).getByText("One planner assumption remains visible for approval"));
     assert.ok(within(passport).getByText("Provider outage"));
     assert.ok(within(passport).getByText("Keep retries bounded"));
-    assert.ok(within(passport).getByText("Wave 1"));
-    assert.ok(within(passport).getByText("Wave 2"));
+    assert.ok(within(passport).getByText("Stage 1"));
+    assert.ok(within(passport).getByText("Stage 2"));
     assert.ok(within(passport).getByText("integrated"));
     assert.ok(within(passport).getByText("completed"));
     assert.ok(within(passport).getByText("planned"));

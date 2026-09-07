@@ -871,3 +871,57 @@
 .cleanup-inventory table { width: 100%; border-collapse: collapse; }
 .cleanup-inventory th, .cleanup-inventory td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border, #444); vertical-align: top; }
 .cleanup-inventory small { display: block; overflow-wrap: anywhere; min-width: 160px; }
+
+/* Delivery stages keep dependencies readable without crossing connector lines. */
+.worktree-planner-sheet .delivery-plan{border-top:1px solid #34404a;padding-top:16px;white-space:normal}
+.worktree-planner-sheet .delivery-plan>header{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:18px}
+.worktree-planner-sheet .delivery-plan>header strong{font-size:15px;color:#edf3e5}
+.worktree-planner-sheet .delivery-plan>header span{font-size:12px;color:#a4afb9}
+.worktree-planner-sheet .delivery-stages{list-style:none;padding:0;margin:0}
+.worktree-planner-sheet .delivery-stage{position:relative;padding:0 0 20px 36px;min-width:0}
+.worktree-planner-sheet .delivery-stage:not(:last-child)::before{content:"";position:absolute;left:12px;top:28px;bottom:0;width:1px;background:#3b4a35}
+.worktree-planner-sheet .delivery-stage-heading{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-height:26px;margin-bottom:9px}
+.worktree-planner-sheet .delivery-stage-heading>strong{font-size:12px;color:#c7d4bc}
+.worktree-planner-sheet .delivery-stage-number{position:absolute;left:0;top:0;display:grid;place-items:center;width:25px;height:25px;border:1px solid #52613e;border-radius:50%;background:#252e21;color:#d2e7b5;font-size:12px;font-weight:600}
+.worktree-planner-sheet .delivery-parallel{font-size:11px;color:#afc2d7;background:#24303c;border-radius:5px;padding:3px 6px}
+.worktree-planner-sheet .delivery-stage-tasks{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:8px;list-style:none;margin:0;padding:0}
+.worktree-planner-sheet .delivery-plan-task{min-width:0;border:1px solid #36424c;border-radius:9px;background:#1b2229;padding:12px;overflow-wrap:anywhere}
+.worktree-planner-sheet .delivery-task-title{display:flex;align-items:baseline;gap:8px}
+.worktree-planner-sheet .delivery-task-title strong{color:#e2e8ed;font-size:13px;line-height:1.5}
+.worktree-planner-sheet .delivery-task-number{flex:none;color:#aab9c7;font:11px ui-monospace,monospace}
+.worktree-planner-sheet .delivery-start{margin:7px 0 0;color:#9aaa99;font-size:11px;line-height:1.5}
+.worktree-planner-sheet .delivery-dependencies{margin-top:4px;color:#a9b6c2;font-size:11px;line-height:1.5}
+.worktree-planner-sheet .delivery-dependencies summary{cursor:pointer;padding:8px 0;min-height:32px}
+.worktree-planner-sheet .delivery-dependencies summary:hover{color:#e2e8ed}
+.worktree-planner-sheet .delivery-dependencies summary:focus-visible{outline:2px solid var(--lime);outline-offset:3px;border-radius:3px}
+.worktree-planner-sheet .delivery-dependencies ul{margin:2px 0 0;padding-left:16px;display:grid;gap:5px}
+.worktree-planner-sheet .delivery-plan>footer{display:flex;align-items:center;gap:9px;margin-left:36px;border-top:1px solid #3b4a35;padding-top:12px;color:#cfdfa9;font-size:12px;font-weight:600}
+@media(max-width:480px){.worktree-planner-sheet .delivery-stage{padding-left:32px}.worktree-planner-sheet .delivery-stage-tasks{grid-template-columns:minmax(0,1fr)}.worktree-planner-sheet .delivery-dependencies summary{min-height:44px}.worktree-planner-sheet .delivery-plan>footer{margin-left:32px}}
+
+/* Keep the decision readable on phones as well as the desktop review sheet. */
+.worktree-planner-sheet .goal-passport{padding:16px;gap:16px}
+.worktree-planner-sheet .goal-passport>header{flex-wrap:wrap}
+.worktree-planner-sheet .goal-passport>header small{font-size:11px}
+.worktree-planner-sheet .goal-passport>header strong{font-size:16px}
+.worktree-planner-sheet .goal-passport>header em{font-size:12px;padding:6px 9px}
+.worktree-planner-sheet .goal-passport>header em.review{background:#383123;color:#f0c985}
+.worktree-planner-sheet .goal-review-outcome{margin:0;color:#e0e7ed;font-size:15px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;max-width:85ch}
+.worktree-planner-sheet .goal-review-note{margin:0;color:#a5b2bd;font-size:12px;line-height:1.6;white-space:normal}
+.worktree-planner-sheet .goal-passport-readiness>strong,.worktree-planner-sheet .goal-passport-block>strong,.worktree-planner-sheet .goal-passport-scope strong{font-size:13px;color:#cbd6df}
+.worktree-planner-sheet .goal-passport-readiness p{font-size:12px;line-height:1.6}
+.worktree-planner-sheet .goal-passport-scope{grid-template-columns:repeat(2,minmax(0,1fr))}
+.worktree-planner-sheet .goal-passport-scope>div{padding:12px}
+.worktree-planner-sheet .goal-passport-scope li,.worktree-planner-sheet .goal-passport-scope small{font-size:12px;line-height:1.6}
+.worktree-planner-sheet .goal-passport-criteria span,.worktree-planner-sheet .goal-passport-risks span{font-size:13px;line-height:1.5}
+.worktree-planner-sheet .goal-passport-criteria small,.worktree-planner-sheet .goal-passport-risks small{font-size:12px;line-height:1.5}
+.worktree-planner-sheet .goal-passport-criteria code,.worktree-planner-sheet .goal-passport-criteria em,.worktree-planner-sheet .goal-passport-risks em{font-size:11px}
+.worktree-planner-sheet .goal-passport-criteria div{display:flex;flex-direction:column}
+.worktree-planner-sheet .goal-review-details{border-top:1px solid #34404a;padding-top:8px}
+.worktree-planner-sheet .goal-review-details>summary{padding:12px 0;cursor:pointer;font-size:13px;color:#cbd6df}
+.worktree-planner-sheet .goal-review-details>summary:focus-visible{outline:2px solid var(--lime);outline-offset:3px}
+.worktree-planner-sheet .planner-launch-decision{display:flex;align-items:center;justify-content:space-between;gap:16px;border:1px solid #52613e;border-radius:12px;background:#20271e;padding:16px;margin-top:16px;white-space:normal}
+.worktree-planner-sheet .planner-launch-decision strong{font-size:15px;color:#e0e9d4}
+.worktree-planner-sheet .planner-launch-decision p{margin:6px 0 0;font-size:12px;line-height:1.5;color:#b6c0ac}
+.worktree-planner-sheet .planner-launch-decision .planner-launch-review-count{color:#f0c985}
+.worktree-planner-sheet .planner-launch-decision button{flex-shrink:0;min-height:44px}
+@media(max-width:600px){.worktree-planner-sheet .goal-passport-scope{grid-template-columns:1fr}.worktree-planner-sheet .goal-passport-criteria li{grid-template-columns:minmax(0,1fr) auto}.worktree-planner-sheet .goal-passport-criteria code{grid-column:1/-1}.worktree-planner-sheet .planner-launch-decision{align-items:stretch;flex-direction:column}}

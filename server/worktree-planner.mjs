@@ -1828,6 +1828,8 @@ const CONTRACT_LINES = [
   "It never holds both keys.",
   "Ask questions only while a real ambiguity would change the split. Otherwise return the tasks.",
   "The spec states the user-visible outcome, explicit scope boundaries, constraints, visible assumptions, observable acceptance criteria, and material risks.",
+  "Write spec.outcome as one or two short sentences (at most 300 characters) explaining the observable change to a human deciding whether to launch development. Do not copy the issue body, prompt instructions, or implementation checklist into the outcome. Preserve necessary detail in scope, constraints, acceptance criteria, and task prompts.",
+  "Name assumptions that need human agreement explicitly, and pair each material risk with a concrete mitigation. Give tasks short, distinct titles; keep implementation details in their prompts.",
   "Every acceptance criterion has at least one task. Every task names the criteria it delivers, its owned files or areas, and concrete verification.",
   "Use dependsOn only when ordering is real. Tasks in the same dependency wave must be safe to run in separate worktrees and should not claim the same files.",
   "Each task branch starts with feature/ and uses only letters, digits, dots, dashes and slashes.",

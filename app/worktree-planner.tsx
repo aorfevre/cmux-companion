@@ -147,18 +147,50 @@ function DeliveryTasks({ tasks, planId, health, busy, confirming, onRelaunch, on
 
 type TaskHealth = { health: string; reason: string; launchReason?: string | null; branch?: string; session?: { id: string } | null };
 
+function DeliveryPlan({ tasks, waves }: { tasks: PlanTask[]; waves: string[][] }) {
+  const orderedIds = waves.flat();
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const taskNumber = (id: string) => orderedIds.indexOf(id) + 1;
+  return <section className="delivery-plan" aria-label="Delivery plan">
+    <header><strong>Delivery plan</strong><span>{tasks.length} tasks · {waves.length} stages</span></header>
+    <ol className="delivery-stages">
+      {waves.map((wave, index) => <li className="delivery-stage" key={`${index}-${wave.join("-")}`}>
+        <div className="delivery-stage-heading"><span className="delivery-stage-number" aria-hidden="true">{index + 1}</span><strong>Stage {index + 1}</strong>{wave.length > 1 && <span className="delivery-parallel">{wave.length} tasks can run in parallel</span>}</div>
+        <ol className="delivery-stage-tasks">{wave.map((id) => {
+          const task = taskById.get(id);
+          const dependencies = task?.dependsOn || [];
+          return <li className="delivery-plan-task" key={id}>
+            <div className="delivery-task-title"><span className="delivery-task-number">{taskNumber(id)}</span><strong>{task?.title || id}</strong></div>
+            {dependencies.length ? <details className="delivery-dependencies"><summary>After {dependencies.map((dependency) => taskNumber(dependency) ? `task ${taskNumber(dependency)}` : dependency).join(", ")}</summary><ul>{dependencies.map((dependency) => <li key={dependency}>{taskById.get(dependency)?.title || dependency}</li>)}</ul></details> : <p className="delivery-start">No prerequisites</p>}
+          </li>;
+        })}</ol>
+      </li>)}
+    </ol>
+    {tasks.length > 0 && <footer><span aria-hidden="true">↓</span> {tasks.length > 1 ? "One combined pull request" : "One pull request"}</footer>}
+  </section>;
+}
+
 function GoalPassport({ draft }: { draft: PlanDraft }) {
   const spec = draft.spec;
   if (!spec) return null;
   const readiness = draft.readiness;
-  const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave || 0))].sort().map((wave) => draft.tasks.filter((task) => (task.wave || 0) === wave).map((task) => task.id));
+  const waves = readiness?.waves?.length ? readiness.waves : [...new Set(draft.tasks.map((task) => task.wave || 0))].sort((a, b) => a - b).map((wave) => draft.tasks.filter((task) => (task.wave || 0) === wave).map((task) => task.id));
   // The server already decided each status. Reading the warning strings here
   // would produce a second, drifting source of truth.
   const requestedCoverage = (readiness?.optionCoverage || []).filter((entry) => entry?.requested === true);
   const artifacts = spec.designArtifacts || [];
+  const needsReview = Boolean(readiness?.warnings?.length || spec.assumptions?.length || spec.risks?.length);
+  const reviewStatus = readiness?.ready === false ? "Needs work" : readiness?.ready !== true ? "Plan checks unavailable" : needsReview ? "Review before launch" : "Plan checks passed";
+  const longOutcome = spec.outcome.length > 320;
+  // Old contracts may contain the whole issue. Show an explicitly labelled
+  // excerpt and preserve the exact text; never invent a summary or rewrite it.
+  const outcomePreview = longOutcome ? `${spec.outcome.slice(0, 280).trimEnd()}…` : spec.outcome;
   return <section className="goal-passport" aria-label="Goal passport">
-    <header><div><small>DELIVERY CONTRACT</small><strong>{spec.outcome}</strong></div><em className={readiness?.ready === false ? "blocked" : "ready"}>{readiness?.ready === false ? "Needs work" : "Ready to code"}</em></header>
-    {(readiness?.errors?.length || readiness?.warnings?.length) ? <div className="goal-passport-readiness">
+    <header><div><small>PLAN REVIEW</small><strong>{longOutcome ? "Expected outcome (excerpt)" : "Expected outcome"}</strong></div><em className={readiness?.ready === false ? "blocked" : needsReview || readiness?.ready !== true ? "review" : "ready"}>{reviewStatus}</em></header>
+    <p className="goal-review-outcome">{outcomePreview}</p>
+    {longOutcome && <PromptDisclosure label="Full expected outcome" summary="Read the full expected outcome" text={spec.outcome} />}
+    <p className="goal-review-note">Plan checks validate the contract structure. Review the scope and assumptions before launching; implementation checks are reported below when available.</p>
+    {(readiness?.errors?.length || readiness?.warnings?.length) ? <div className="goal-passport-readiness"><strong>Review notes</strong>
       {readiness.errors?.map((item) => <p className="error" key={item}>{item}</p>)}
       {readiness.warnings?.map((item) => <p className="warning" key={item}>{item}</p>)}
     </div> : null}
@@ -166,22 +198,22 @@ function GoalPassport({ draft }: { draft: PlanDraft }) {
       <PassportList title="In scope" items={spec.inScope} empty="Defined by the outcome" />
       <PassportList title="Non-goals" items={spec.nonGoals} empty="None declared" />
       <PassportList title="Constraints" items={spec.constraints} empty="None declared" />
-      <PassportList title="Assumptions" items={spec.assumptions} empty="None" />
+      <PassportList title="Assumptions to review" items={spec.assumptions} empty="None" />
     </div>
     {spec.risks?.length > 0 && <div className="goal-passport-block"><strong>Risks and mitigations</strong><ul className="goal-passport-risks">{spec.risks.map((risk, index) => <li key={`${index}-${risk.text}-${risk.mitigation}`}><em>{risk.level}</em><div><span>{risk.text}</span><small>{risk.mitigation || "No mitigation recorded"}</small></div></li>)}</ul></div>}
+    <div className="goal-passport-block"><strong>Success criteria and verification</strong><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
+      const tasks = draft.tasks.filter((task) => task.criterionIds?.includes(criterion.id));
+      const state = criterionState(tasks);
+      return <li key={criterion.id}><code>{criterion.id}</code><div><span>{criterion.text}</span><small>Check: {criterion.verification || "Not specified"}</small><small>{tasks.map((task) => task.title).join(" · ") || "No task assigned"}</small></div><em className={state}>{state}</em></li>;
+    })}</ul></div>
+    <DeliveryPlan tasks={draft.tasks} waves={waves} />
     {requestedCoverage.length > 0 && <div className="goal-passport-block"><strong>Specification coverage</strong><ul className="goal-passport-options">{requestedCoverage.map((entry) => <li key={entry.id} className={`coverage-${entry.status}`}>
       <span>{SPEC_OPTION_LABELS[entry.id] || entry.id}</span>
       <small>{entry.message || "No detail recorded"}</small>
       <em className={`coverage-${entry.status}`}>{COVERAGE_LABELS[entry.status] || entry.status}</em>
     </li>)}</ul></div>}
     {artifacts.length > 0 && <div className="goal-passport-block"><strong>Design artifacts</strong><DesignArtifacts artifacts={artifacts} /></div>}
-    <div className="goal-passport-block"><strong>Acceptance evidence</strong><ul className="goal-passport-criteria">{spec.acceptanceCriteria.map((criterion) => {
-      const tasks = draft.tasks.filter((task) => task.criterionIds?.includes(criterion.id));
-      const state = criterionState(tasks);
-      return <li key={criterion.id}><code>{criterion.id}</code><div><span>{criterion.text}</span><small>{criterion.verification}</small><small>{tasks.map((task) => task.title).join(" · ") || "No task assigned"}</small></div><em className={state}>{state}</em></li>;
-    })}</ul></div>
-    <div className="goal-passport-block"><strong>Workflow</strong><ol className="goal-passport-waves">{waves.map((wave, index) => <li key={`${index}-${wave.join("-")}`}><span>Wave {index + 1}</span><div>{wave.map((id) => { const task = draft.tasks.find((item) => item.id === id); return <b key={id}>{task?.title || id}</b>; })}</div></li>)}</ol></div>
-    <div className="goal-passport-block"><strong>Task plan</strong><ul className="goal-passport-task-plan">{draft.tasks.map((task) => <li key={task.id}><span>{task.title}</span><small>Owns: {task.ownedAreas?.join(", ") || "Not declared"}</small><small>Depends on: {task.dependsOn?.join(", ") || "None"}</small><small>Verify: {task.verification?.join(" · ") || "Not declared"}</small></li>)}</ul></div>
+    <details className="goal-review-details"><summary>Task ownership and checks</summary><div className="goal-passport-block"><ul className="goal-passport-task-plan">{draft.tasks.map((task) => <li key={task.id}><span>{task.title}</span><small>Owns: {task.ownedAreas?.join(", ") || "Not declared"}</small><small>Depends on: {task.dependsOn?.join(", ") || "None"}</small><small>Verify: {task.verification?.join(" · ") || "Not declared"}</small></li>)}</ul></div></details>
     {draft.tasks.some((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length) && <div className="goal-passport-block"><strong>Task evidence</strong><ul className="goal-passport-evidence">{draft.tasks.filter((task) => task.completionReport || task.evidenceError || task.scopeWarnings?.length).map((task) => <li key={task.id}><span>{task.title}</span>{task.completionReport?.verification.map((item) => <small key={`${item.check}-${item.status}`}>{item.check}: <b className={item.status}>{item.status}</b></small>)}{task.completionReport?.limitations.map((item) => <small className="limitation" key={item}>Limitation: {item}</small>)}{task.scopeWarnings?.map((item) => <small className="warning" key={item}>Outside ownership: {item}</small>)}{task.evidenceError && <small className="error">{task.evidenceError}</small>}</li>)}</ul></div>}
   </section>;
 }
@@ -620,7 +652,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       {error && <p className="worktree-action-error">{error}</p>}
       {terminal ? <section className="planner-delivery-status" aria-label="Recorded delivery status"><strong>{terminal === "merged" ? "Merged" : "Aborted"}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}</section>
         : launchedPlan ? draft.deliveryMode === "combined" ? <section className="planner-delivery-status" aria-label="Combined delivery status"><strong>{draft.finalPrUrl ? "Combined PR ready" : deliveryLabel(draft.deliveryStatus)}</strong><DeliveryTasks tasks={draft.tasks} planId={draft.planId} health={taskHealth} busy={taskBusy} confirming={confirmTask} onRelaunch={(taskId, mode) => { void relaunchTask(taskId, mode); }} onSkip={(taskId) => { void skipTask(taskId); }} onConfirm={setConfirmTask} />{draft.integrationBranch && <code>{draft.integrationBranch}</code>}{draft.deliveryError && <p>{draft.deliveryError}</p>}{draft.finalPrUrl ? <a href={draft.finalPrUrl} target="_blank" rel="noreferrer">Open PR{draft.finalPrNumber ? ` #${draft.finalPrNumber}` : ""}</a> : <button type="button" className="primary-button" disabled={locked} onClick={() => { void assemble(); }}>{busy === "assemble" ? "Checking branches…" : "Check & build combined PR"}</button>}</section> : <p className="planner-launched-note">This goal was already launched. The saved plan is read-only.</p>
-        : <button type="button" className="primary-button" disabled={locked} onClick={launch}>{launchLabel(draft)}</button>}
+        : <section className="planner-launch-decision" aria-label="Launch decision"><div><strong>{draft.readiness?.ready === false ? "Resolve plan errors before launching" : "Launch development"}</strong><p>{draft.readiness?.ready === false ? "Use “This plan is wrong” to request a revised plan." : "Starts task agents in isolated worktrees. Their work is delivered for pull request review."}</p>{Boolean(draft.spec?.assumptions?.length || draft.readiness?.warnings?.length) && <p className="planner-launch-review-count">Review {draft.spec?.assumptions?.length || 0} assumptions and {draft.readiness?.warnings?.length || 0} warnings above before proceeding.</p>}</div><button type="button" className="primary-button" disabled={locked || draft.readiness?.ready === false} onClick={launch}>{launchLabel(draft)}</button></section>}
     </>}
   </form></>;
 }
