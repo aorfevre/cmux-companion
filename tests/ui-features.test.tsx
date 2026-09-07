@@ -1470,6 +1470,50 @@ describe("goals board", () => {
     await userEvent.click(within(board).getByRole("button", { name: `Expand ${label}` }));
   }
 
+  // The board's second creation button. It must reach a repository picker, open
+  // the worktree sheet with a name already filled in, hide the base field, and
+  // ask the server for the default remote branch.
+  test("creates a worktree from the board on the latest default branch and starts an agent", async () => {
+    const launched = vi.fn(async (workspaceId: string) => { void workspaceId; });
+    const created = { worktree: { id: "worktree-new", repoId: "repo-karven", path: "/repo/trust-layer-wt", branch: "wt/board", name: "trust-layer-wt" }, branchCreated: true };
+    const posts: { url: string; body: string }[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.includes("/worktrees")) {
+        posts.push({ url, body: String(init.body) });
+        return new Response(JSON.stringify(created), { status: 201 });
+      }
+      if (init?.method === "POST" && url.endsWith("/launch")) {
+        posts.push({ url, body: String(init.body) });
+        return new Response(JSON.stringify({ workspace: { workspace_id: "ws-board-worktree" } }), { status: 201 });
+      }
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: null, issues: [] }), { status: 200 });
+      if (url === "/api/goals/health") return new Response(JSON.stringify(healthSweep), { status: 200 });
+      if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans: allPlans }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={launched} onNotice={vi.fn()} />);
+    await openBoard();
+    // Two repositories are on the board, so the button opens the picker first.
+    await userEvent.click(screen.getByRole("button", { name: "＋ Worktree" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Create a worktree in trust-layer" }));
+    const sheet = await screen.findByRole("dialog", { name: "Create Git worktree" });
+    const branch = within(sheet).getByRole("textbox", { name: "Branch name" }) as HTMLInputElement;
+    assert.match(branch.value, /^wt\/\d{4}-\d{2}-\d{2}-\d{4}$/);
+    // The base is the server's business in this mode, so no field offers one.
+    assert.equal(within(sheet).queryByRole("textbox", { name: "Base revision" }), null);
+    await userEvent.click(within(sheet).getByRole("button", { name: "New worktree Claude (xclaude)" }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Create & start session" }));
+    await waitFor(() => assert.equal(launched.mock.calls.some(([id]) => id === "ws-board-worktree"), true));
+    const create = posts.find((post) => post.url.includes("/worktrees"));
+    assert.match(String(create?.url), /\/repositories\/repo-karven\/worktrees$/);
+    assert.deepEqual(JSON.parse(String(create?.body)), { branch: branch.value, useDefaultBase: true });
+    const launch = posts.find((post) => post.url.endsWith("/launch"));
+    assert.match(String(launch?.url), /\/api\/worktree-dashboard\/worktree-new\/launch$/);
+    assert.equal(JSON.parse(String(launch?.body)).agent, "claude");
+  });
+
   test("renders ordered columns with Blocked and terminal defaults collapsed and accurate counts", async () => {
     mountBoard();
     const board = await openBoard();

@@ -448,6 +448,7 @@
 /* New goal: the board spans every repository, so the button picks one first. */
 .board-new-goal{position:relative;display:flex}
 .board-new-goal-button{min-height:32px;border:1px solid #52632f;border-radius:9px;background:#18200f;color:var(--lime);padding:6px 10px;font-size:10px;font-weight:800;white-space:nowrap}
+.board-new-goal-button.board-new-worktree-button{border-color:#3a4a5c;background:#121a22;color:#8fb6dd}
 .board-new-goal-backdrop{position:fixed;z-index:70;inset:0;border:0;background:transparent}
 .board-new-goal-menu{position:absolute;z-index:71;top:calc(100% + 6px);right:0;display:flex;width:min(92vw,300px);max-height:min(60vh,420px);flex-direction:column;gap:6px;border:1px solid #303740;border-radius:12px;background:#12171d;padding:9px;box-shadow:0 18px 40px rgba(0,0,0,.55)}
 .board-new-goal-menu input{width:100%;min-height:34px;border:1px solid var(--line);border-radius:9px;background:#0c1014;color:#e6ebef;padding:0 10px;font-size:12px}
