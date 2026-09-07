@@ -3,6 +3,7 @@
 // Companion can prove the read-only tool surface before approval and can resume
 // the same compatible CCS conversation after a revision-bound decision.
 import { createInterface } from "node:readline";
+import { dirname } from "node:path";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { finalEnvelope, parsePlannerReply, progressEvent, streamExecFile } from "./worktree-planner.mjs";
 
@@ -131,6 +132,8 @@ function command(plan, message, writable) {
   const args = [plan.engine.provider, "--target", "claude", "--print", "--output-format", "stream-json", "--verbose", ...(writable ? WRITABLE : READ_ONLY)];
   if (plan.engine.model && plan.engine.model !== "default") args.push("--model", plan.engine.model);
   if (plan.engine.effort && plan.engine.effort !== "default") args.push("--effort", plan.engine.effort);
+  const attachmentDirectories = [...new Set((plan.images || []).map((image) => typeof image?.path === "string" ? dirname(image.path) : "").filter(Boolean))];
+  for (const directory of attachmentDirectories) args.push("--add-dir", directory);
   const session = plan.goalSessionProviderSessionId;
   if (session) args.push("--resume", session);
   args.push("--", message);
@@ -138,7 +141,10 @@ function command(plan, message, writable) {
 }
 
 function openingMessage(plan) {
-  return `You are planning one small increment for this goal: ${plan.goal}\nInvestigate read-only. Return either focused questions or a structured delivery contract with spec and tasks. Do not implement, run shell commands, edit files, delegate, or ask for tool permissions.`;
+  const images = Array.isArray(plan.images) && plan.images.length
+    ? `\nAttached image${plan.images.length > 1 ? "s" : ""}:\n${plan.images.map((image) => `- ${image.path}`).join("\n")}\nRead each attachment with the Read tool; it provides user context for the proposal.\n`
+    : "";
+  return `You are planning one small increment for this goal: ${plan.goal}${images}Investigate read-only. Return either focused questions or a structured delivery contract with spec and tasks. Do not implement, run shell commands, edit files, delegate, or ask for tool permissions.`;
 }
 
 function implementationMessage(plan) {

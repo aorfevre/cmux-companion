@@ -227,7 +227,7 @@ export function bulkRemovableWorktrees(repo: DashboardRepository) {
   return repo.worktrees.filter((worktree) => !worktree.managedRelease && !worktree.isPrimary && worktree.changedFiles === 0 && !worktree.locked && worktree.sessions.length === 0);
 }
 
-export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice }: { onOpenWorkspace: (id: string) => void; onLaunched: (id: string) => Promise<void>; onNotice: (message: string) => void }) {
+export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessionStarted, onNotice }: { onOpenWorkspace: (id: string) => void; onLaunched: (id: string) => Promise<void>; onGoalSessionStarted?: (id: string) => Promise<void>; onNotice: (message: string) => void }) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [error, setError] = useState("");
   const [goalError, setGoalError] = useState("");
@@ -858,7 +858,12 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onNotice }:
     {launchTarget && <LaunchWorktreeSheet target={launchTarget} onClose={() => setLaunchTarget(null)} onLaunched={async (id) => { setLaunchTarget(null); await load(true); await onLaunched(id); }} onNotice={onNotice} />}
     {createTarget && <CreateWorktreeSheet repo={createTarget} onClose={() => setCreateTarget(null)} onCreated={async (workspaceId) => { setCreateTarget(null); await load(true); if (workspaceId) await onLaunched(workspaceId); }} onNotice={onNotice} />}
     {goalPopup.open && !planTarget && <><div className="session-menu-backdrop" /><section className="worktree-launcher worktree-planner-sheet" role="dialog" aria-modal="true" aria-label="Open goal"><header><strong>{goalPopup.error ? "Goal unavailable" : "Opening goal…"}</strong><button type="button" aria-label="Close goal planner sheet" onClick={closeGoalPopup}>×</button></header>{goalPopup.error && <p role="alert">{goalPopup.error}</p>}</section></>}
-    {planTarget && <WorktreePlannerSheet key={goalPopup.key} repository={planTarget.repository} initialPlanId={planTarget.planId} initialDraft={planTarget.initialDraft} initialGoal={planTarget.initialGoal} onNewGoal={() => openGoalPopup({ repository: planTarget.repository }, true)} onPlanResolved={goalResolved} onClose={() => { closeGoalPopup(); void loadGoalPlans(); }} onNotice={onNotice} />}
+    {planTarget && <WorktreePlannerSheet key={goalPopup.key} repository={planTarget.repository} initialPlanId={planTarget.planId} initialDraft={planTarget.initialDraft} initialGoal={planTarget.initialGoal} onNewGoal={() => openGoalPopup({ repository: planTarget.repository }, true)} onPlanResolved={goalResolved} onGoalSessionStarted={async (plan) => {
+      const workspaceId = plan.goalSessionWorkspaceId;
+      if (!workspaceId) { onNotice("Goal session started, but its workspace identity was unavailable."); return; }
+      if (onGoalSessionStarted) await onGoalSessionStarted(workspaceId);
+      else onOpenWorkspace(workspaceId);
+    }} onClose={() => { closeGoalPopup(); void loadGoalPlans(); }} onNotice={onNotice} />}
     {issuePlanTarget && <GitHubIssuePlannerSheet repository={issuePlanTarget} onClose={() => { setIssuePlanTarget(null); void loadGoalPlans(); }} onLaunched={async () => { await load(true); await loadGoalPlans(); }} onNotice={onNotice} />}
     {followupTarget && <FollowupSheet plan={followupTarget} busy={boardBusy[`followup:${followupTarget.planId}`] === true} onClose={() => setFollowupTarget(null)} onSubmit={(submission) => launchFollowup(followupTarget, submission)} />}
   </>;

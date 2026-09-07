@@ -1959,7 +1959,7 @@ export function taskPrompt(task, spec, images, base, deliveryMode = "single", re
   return [withImages(task.prompt, images), contract, ...rigor, completionReportInstruction(task), finish].join("\n\n");
 }
 
-function normalizeImages(images) {
+export function normalizeImages(images) {
   if (images === undefined || images === null) return [];
   if (!Array.isArray(images)) throw new TypeError("Attached images must be a list");
   if (images.length > MAX_IMAGES) throw new TypeError(`Attach at most ${MAX_IMAGES} images`);

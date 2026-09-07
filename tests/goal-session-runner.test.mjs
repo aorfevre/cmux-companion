@@ -108,7 +108,7 @@ test("only an accepted result from the resumed provider conversation completes a
 
 test("planning is read-only until its durable proposal approval dispatches one writable resume", async (t) => {
   const { databasePath, directory, planId, store } = setupSession(t);
-  store.db.prepare("UPDATE plans SET goal_session_provider_session_id = NULL, proposal_revision = 0, proposal = NULL, goal_session_state = 'planning' WHERE plan_id = ?").run(planId);
+  store.db.prepare("UPDATE plans SET goal_session_provider_session_id = NULL, proposal_revision = 0, proposal = NULL, goal_session_state = 'planning', images = ? WHERE plan_id = ?").run(JSON.stringify([{ path: "/attachments/reference.png", name: "reference.png" }]), planId);
   const calls = [];
   const stop = await runGoalSession({
     planId,
@@ -134,6 +134,9 @@ test("planning is read-only until its durable proposal approval dispatches one w
   assert.equal(planning[planning.indexOf("--tools") + 1], "Read,Grep,Glob");
   assert.equal(planning[planning.indexOf("--permission-mode") + 1], "plan");
   assert.ok(!planning.includes("Bash"));
+  assert.ok(planning.includes("--add-dir"));
+  assert.equal(planning[planning.indexOf("--add-dir") + 1], "/attachments");
+  assert.match(planning.at(-1), /\/attachments\/reference\.png/);
   assert.equal(store.get(planId).goalSessionState, "awaiting_approval");
 
   store.approveProposal(planId, { generation: 1, revision: 1 });

@@ -271,7 +271,7 @@ function TerminalGoalBanner({ status, plan }: { status: GoalBoardStatus; plan: P
   </section>;
 }
 
-export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGoal = "", initialDraft, onNewGoal, onPlanResolved, onClose, onNotice }: { repository: PlannerRepository; initialPlanId?: string; initialGoal?: string; initialDraft?: PlanDraft; onNewGoal?: () => void; onPlanResolved?: (draft: PlanDraft) => void; onClose: () => void; onNotice: (message: string) => void }) {
+export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGoal = "", initialDraft, onNewGoal, onPlanResolved, onGoalSessionStarted, onClose, onNotice }: { repository: PlannerRepository; initialPlanId?: string; initialGoal?: string; initialDraft?: PlanDraft; onNewGoal?: () => void; onPlanResolved?: (draft: PlanDraft) => void; onGoalSessionStarted?: (draft: PlanDraft) => Promise<void> | void; onClose: () => void; onNotice: (message: string) => void }) {
   const [goal, setGoal] = useState(initialGoal);
   const [modelRoles, setModelRoles] = useState<ModelRoles>(BUILTIN_MODEL_ROLES);
   const [modelWarning, setModelWarning] = useState("");
@@ -414,10 +414,11 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   async function startGoalSession() {
     setBusy("plan"); setError("");
     try {
-      const started = await request<PlanDraft>("/api/goal-sessions", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), engine: { provider, model, effort, reviewer }, specOptions, reviewOptions }) });
+      const started = await request<PlanDraft>("/api/goal-sessions", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions, reviewOptions }) });
       receive(started);
       onNotice(`Goal session started in cmux for ${repository.name}.`);
       onClose();
+      await onGoalSessionStarted?.(started);
     } catch (cause) { fail(cause, "Could not start the goal session"); }
     finally { setBusy(""); }
   }

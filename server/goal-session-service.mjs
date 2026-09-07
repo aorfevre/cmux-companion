@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { normalizePlannerEngine } from "./worktree-planner.mjs";
+import { normalizeImages, normalizePlannerEngine } from "./worktree-planner.mjs";
 import { normalizeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
 
@@ -11,13 +11,14 @@ export class GoalSessionService {
     this.store = store; this.worktrees = worktrees; this.cmux = cmux; this.modelSettings = modelSettings; this.log = log;
   }
 
-  async start({ repositoryId, goal, engine = {}, specOptions = {}, reviewOptions = {} } = {}) {
+  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {} } = {}) {
     const text = String(goal || "").trim();
     if (!text || text.length > 4_000) throw new TypeError("Describe the goal for this repository");
     const repository = await this.worktrees.resolveRepository(repositoryId);
     const planId = randomUUID();
+    const attachments = normalizeImages(images);
     const selectedEngine = normalizePlannerEngine(engine, this.modelSettings?.roles);
-    this.store.createPlan({ planId, repositoryId: repository.id, repositoryName: repository.name, cwd: repository.primaryPath, goal: text,
+    this.store.createPlan({ planId, repositoryId: repository.id, repositoryName: repository.name, cwd: repository.primaryPath, goal: text, images: attachments,
       engine: selectedEngine, specOptions: normalizeSpecOptions(specOptions), reviewOptions: safeReviewOptions(reviewOptions) });
     const branch = `goal-session/${planId.slice(0, 12)}`;
     this.store.reserveGoalSession(planId, { branch, generation: 1 });
