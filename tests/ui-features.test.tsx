@@ -832,6 +832,7 @@ describe("worktree goal planner", () => {
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
     const passport = await screen.findByRole("region", { name: "Goal passport" });
+    await userEvent.click(within(passport).getByRole("tab", { name: "Checks" }));
     // Only requested options appear, each with the server's own status word.
     assert.ok(within(passport).getByText("Unit tests"));
     assert.ok(within(passport).getByText("Covered"));
@@ -841,6 +842,7 @@ describe("worktree goal planner", () => {
     assert.ok(within(passport).getByText("no linked task has the refactor type"));
     assert.equal(within(passport).queryByText("End-to-end tests"), null);
 
+    await userEvent.click(within(passport).getByRole("tab", { name: "Design" }));
     // The cyclic and disconnected flow renders, and its diagram is named.
     const diagram = within(passport).getByRole("img", { name: "Flow diagram: Invoice flow" });
     assert.equal(diagram.tagName.toLowerCase(), "svg");
@@ -924,19 +926,23 @@ describe("worktree goal planner", () => {
 
     const passport = await screen.findByRole("region", { name: "Goal passport" });
     assert.ok(within(passport).getByText("Operators can ship billing safely"));
+    assert.equal(within(passport).queryByText("New payment provider"), null);
+    await userEvent.click(within(passport).getByRole("tab", { name: /Impacts/ }));
     assert.ok(within(passport).getByText("New payment provider"));
     assert.ok(within(passport).getByText("One planner assumption remains visible for approval"));
     assert.ok(within(passport).getByText("Provider outage"));
     assert.ok(within(passport).getByText("Keep retries bounded"));
+    await userEvent.click(within(passport).getByRole("tab", { name: "Tasks" }));
     assert.ok(within(passport).getByText("Stage 1"));
     assert.ok(within(passport).getByText("Stage 2"));
+    assert.ok(within(passport).getByText("Owns: server/**"));
+    assert.ok(within(passport).getByText("Verify: npm run test:ui"));
+    await userEvent.click(within(passport).getByRole("tab", { name: "Checks" }));
     assert.ok(within(passport).getByText("integrated"));
     assert.ok(within(passport).getByText("completed"));
     assert.ok(within(passport).getByText("planned"));
     assert.ok(within(passport).getByText("Limitation: Safari was not available"));
     assert.ok(within(passport).getByText("Outside ownership: README.md"));
-    assert.ok(within(passport).getByText("Owns: server/**"));
-    assert.ok(within(passport).getByText("Verify: npm run test:ui"));
     assert.ok(screen.getByRole("button", { name: "Start workflow · 1 session in wave 1" }));
   });
 
@@ -967,10 +973,17 @@ describe("worktree goal planner", () => {
     await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
 
     const passport = await screen.findByRole("region", { name: "Goal passport" });
+    assert.equal(within(passport).getByRole("tab", { name: "Overview" }).getAttribute("aria-selected"), "true");
+    assert.ok((passport.querySelector(".goal-review-outcome")?.textContent?.length || 0) < 300);
+    await userEvent.click(within(passport).getByText("Read the full overview"));
     assert.ok(within(passport).getByText(overview.trim()));
+    await userEvent.click(within(passport).getByRole("tab", { name: /Impacts/ }));
     assert.ok(within(passport).getByText("One combined PR"));
     assert.ok(within(passport).getByText("Assign a verification command"));
     assert.ok(within(passport).getByText("One assumption needs approval"));
+    assert.ok(within(passport).getByText("Automatic launch"));
+    assert.ok(within(passport).getByText("A reviewer opens the plan"));
+    await userEvent.click(within(passport).getByRole("tab", { name: "Tasks" }));
     const chart = within(passport).getByRole("region", { name: "Delivery plan" });
     assert.ok(within(chart).getByText("2 tasks · 2 stages"));
     assert.ok(within(chart).getByText(/One combined pull request/));
@@ -983,13 +996,24 @@ describe("worktree goal planner", () => {
     await userEvent.click(within(task).getByText("After task 1"));
     assert.equal(dependencies.open, true);
     assert.ok(within(dependencies).getByText("Prepare API"));
-    assert.ok(within(passport).getByText("Automatic launch"));
-    assert.ok(within(passport).getByText("A reviewer opens the plan"));
+    await userEvent.click(within(passport).getByRole("tab", { name: "Overview" }));
     const fullOutcome = within(passport).getByText("Read the full expected outcome").closest("details") as HTMLDetailsElement;
     assert.equal(fullOutcome.open, false);
     await userEvent.click(within(fullOutcome).getByText("Read the full expected outcome"));
     assert.equal(fullOutcome.open, true);
     assert.ok(within(fullOutcome).getByText("Operators can review every detail before launch"));
+
+    const overviewTab = within(passport).getByRole("tab", { name: "Overview" });
+    overviewTab.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    assert.equal(within(passport).getByRole("tab", { name: "Design" }).getAttribute("aria-selected"), "true");
+    assert.ok(within(passport).getByRole("list", { name: "User journey" }));
+    assert.ok(within(passport).getByText("No design sketches yet"));
+    await userEvent.keyboard("{End}");
+    assert.equal(within(passport).getByRole("tab", { name: "Checks" }).getAttribute("aria-selected"), "true");
+    assert.ok(within(passport).getByText("Assign a verification command"));
+    await userEvent.keyboard("{Home}{ArrowLeft}");
+    assert.equal(within(passport).getByRole("tab", { name: "Checks" }).getAttribute("aria-selected"), "true");
 
   });
 
@@ -2576,7 +2600,9 @@ describe("questioning a delivery contract", () => {
     // The 202 omits the discussion, so the loaded thread must not disappear.
     assert.ok(await screen.findByText("A questioned contract stays the same contract"));
     assert.ok(screen.getByText("Does task 2 cover the migration?"));
+    await userEvent.click(screen.getByRole("tab", { name: "Tasks" }));
     for (const title of ["Build the sheet", "Wire the routes"]) assert.ok(screen.getAllByText(title).length > 0);
+    await userEvent.click(screen.getByRole("tab", { name: "Overview" }));
     // A discussion is not a planning round, so the full-page view stays away.
     assert.equal(screen.queryByRole("region", { name: "Planning in progress" }), null);
 
@@ -2585,7 +2611,9 @@ describe("questioning a delivery contract", () => {
 
     assert.ok(await screen.findByText("app/features.css belongs to task 1."));
     assert.ok(screen.getByText("A questioned contract stays the same contract"));
+    await userEvent.click(screen.getByRole("tab", { name: "Tasks" }));
     for (const title of ["Build the sheet", "Wire the routes"]) assert.ok(screen.getAllByText(title).length > 0);
+    await userEvent.click(screen.getByRole("tab", { name: "Overview" }));
     // The composer empties only once the question is stored.
     assert.equal((screen.getByRole("textbox", { name: "Question about this plan" }) as HTMLTextAreaElement).value, "");
   });
@@ -2675,13 +2703,17 @@ describe("questioning a delivery contract", () => {
     const region = await screen.findByRole("region", { name: "Question this plan" });
     assert.equal(screen.queryByRole("region", { name: "Planning in progress" }), null);
     assert.ok(screen.getByText("A questioned contract stays the same contract"));
+    await userEvent.click(screen.getByRole("tab", { name: "Tasks" }));
     for (const title of ["Build the sheet", "Wire the routes"]) assert.ok(screen.getAllByText(title).length > 0);
+    await userEvent.click(screen.getByRole("tab", { name: "Overview" }));
     assert.ok(within(region).getByText("Does task 2 cover the migration?"));
     // The progress lives inside the thread, not in a page that replaced it.
     assert.ok(within(region).getByText(/Answering your question against the repository/));
 
     assert.equal((within(region).getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled, true);
     assert.equal((screen.getByRole("button", { name: /^Start workflow|^Launch / }) as HTMLButtonElement).disabled, true);
+    await userEvent.click(screen.getByRole("tab", { name: "Tasks" }));
+    await userEvent.click(screen.getByText("Agents and task prompts"));
     assert.equal((screen.getByRole("button", { name: "Remove Build the sheet" }) as HTMLButtonElement).disabled, true);
     assert.equal((screen.getByRole("button", { name: "Use Claude for Build the sheet" }) as HTMLButtonElement).disabled, true);
     assert.equal((screen.getByRole("button", { name: "This plan is wrong" }) as HTMLButtonElement).disabled, true);

@@ -92,12 +92,15 @@ describe("concise saved-goal approval", () => {
 
     cy.findByRole("region", { name: "Goal passport" }).within(() => {
       cy.contains("Review the outcome, decisions, and parallel delivery before launching.").should("be.visible");
-      cy.contains("User flow").should("be.visible");
+      cy.findByRole("tab", { name: "Design" }).click();
+      cy.findByRole("list", { name: "User journey" }).should("be.visible");
+      cy.findByRole("tab", { name: /Impacts/ }).click();
       cy.contains("Use a concise default").should("be.visible");
       cy.contains("Needs work").should("be.visible");
       cy.contains("A task dependency still needs approval").should("be.visible");
       cy.contains("End-to-end validation is queued after the parallel work").should("be.visible");
 
+      cy.findByRole("tab", { name: "Tasks" }).click();
       cy.findByRole("region", { name: "Delivery plan" }).within(() => {
         cy.contains("One combined pull request").should("be.visible");
         cy.get(".delivery-stage").eq(0).find(".delivery-plan-task").should("have.length", 2);
@@ -117,10 +120,14 @@ describe("concise saved-goal approval", () => {
       });
       cy.screenshot("plan-approval-mobile", { capture: "fullPage" });
 
+      cy.findByRole("tab", { name: /Impacts/ }).click();
       cy.contains("In scope").should("be.visible");
+      cy.findByRole("tab", { name: /Impacts/ }).click();
       cy.contains("Goal passport").should("be.visible");
       cy.contains("A dependency is missed").should("be.visible");
+      cy.findByRole("tab", { name: "Checks" }).click();
       cy.contains("The concise summary is readable").should("be.visible");
+      cy.findByRole("tab", { name: "Tasks" }).click();
       cy.findByText("Task ownership and checks").click();
       cy.contains("Owns: cypress/e2e").should("be.visible");
     });
@@ -133,7 +140,9 @@ describe("concise saved-goal approval", () => {
     cy.findByRole("region", { name: "Goal passport" }).within(() => {
       cy.contains("Older saved contract stays reviewable").should("be.visible");
       cy.contains("Review the outcome, decisions, and parallel delivery before launching.").should("not.exist");
+      cy.findByRole("tab", { name: "Tasks" }).click();
       cy.findByRole("region", { name: "Delivery plan" }).should("contain.text", "1 task pull request");
+      cy.findByRole("tab", { name: /Impacts/ }).click();
       cy.contains("Goal passport").should("be.visible");
       cy.contains("Regenerating saved plans").should("be.visible");
     });
