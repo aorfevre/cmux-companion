@@ -231,6 +231,17 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  recordGoalSessionBase(planId, { baseRef = null, baseSha = null } = {}) {
+    const ref = text(baseRef);
+    const sha = text(baseSha);
+    if (!ref && !sha) return this.get(planId);
+    const changed = this.db.prepare(`UPDATE plans SET base_ref = COALESCE(?, base_ref), base_sha = COALESCE(?, base_sha), updated_at = ?
+      WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_state = 'starting' AND board_status IS NULL`)
+      .run(ref || null, sha || null, this.#stamp(), String(planId)).changes;
+    if (changed !== 1) throw new TypeError("This goal session base can no longer be recorded");
+    return this.get(planId);
+  }
+
   recordGoalSessionStart(planId, { worktreePath, workspaceId: workspaceIdValue, providerSessionId = null, generation = 1 } = {}) {
     const path = text(worktreePath);
     const workspace = text(workspaceIdValue);
@@ -468,9 +479,15 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'implementing', approval_revision = ?, approval_at = ?,
-        transition_status = 'pending', goal_session_error = NULL, updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
-        AND board_status IS NULL AND goal_session_generation = ? AND proposal_revision = ? AND goal_session_state = 'awaiting_approval'`).run(revision, at, at, String(planId), generation, revision).changes;
+        transition_status = 'pending', goal_session_error = NULL, status = 'launched', delivery_mode = 'single', delivery_status = 'implementing',
+        launched_at = COALESCE(launched_at, ?), updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
+        AND board_status IS NULL AND goal_session_generation = ? AND proposal_revision = ? AND goal_session_state = 'awaiting_approval'`).run(revision, at, at, at, String(planId), generation, revision).changes;
       if (changed !== 1) throw new TypeError("This proposal is no longer current or was already approved");
+      this.db.prepare(`INSERT INTO plan_tasks (plan_id, task_id, position, title, branch, prompt, task_type, criterion_ids, depends_on, owned_areas, verification,
+        launch_status, worktree_path, workspace_id, start_sha, delivery_status)
+        SELECT plan_id, 'goal-session', 0, goal, goal_session_branch, goal, 'feature', '[]', '[]', '[]', '[]',
+          'launched', goal_session_worktree_path, goal_session_workspace_id, base_sha, 'pending'
+        FROM plans WHERE plan_id = ? AND NOT EXISTS (SELECT 1 FROM plan_tasks WHERE plan_id = ? AND task_id = 'goal-session')`).run(String(planId), String(planId));
       this.#insertEvent(String(planId), null, "proposal_approved", { generation, revision }, at);
     });
     return this.get(planId);

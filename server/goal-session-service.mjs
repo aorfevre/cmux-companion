@@ -31,6 +31,9 @@ export class GoalSessionService {
         branch, useDefaultBase: true, requireFreshAtBase: true,
         workspaces: inventory.workspaces, workspacesAvailable: true,
       });
+      const baseSha = await this.worktrees.repoCatalog?.git?.(created.worktree.path, ["rev-parse", "HEAD"])
+        .then((value) => String(value).trim(), () => "") || "";
+      this.store.recordGoalSessionBase(planId, { baseRef: created.baseRef || null, baseSha });
       // Durably own the checkout before the cmux side effect. A crash at the
       // next boundary can recover only this path, never create a second writer.
       this.store.recordGoalSessionWorktree(planId, { worktreePath: created.worktree.path, generation: 1 });

@@ -1380,6 +1380,11 @@ test("goal-session approvals are bound to one generation and immutable proposal 
   assert.equal(store.get("plan-1").proposalRevision, 2);
   assert.throws(() => store.approveProposal("plan-1", { generation: 1, revision: 1 }), /no longer current/);
   store.approveProposal("plan-1", { generation: 1, revision: 2 });
+  const approved = store.get("plan-1");
+  assert.equal(approved.status, "launched");
+  assert.equal(approved.tasks.length, 1);
+  assert.deepEqual(approved.tasks[0].workspaceId, "00000000-0000-4000-8000-000000000001");
+  assert.equal(approved.tasks[0].branch, "goal-session/plan-1");
   assert.equal(store.claimGoalSessionTransition("plan-1", { generation: 1, revision: 2 }).transitionStatus, "dispatching");
   assert.equal(store.claimGoalSessionTransition("plan-1", { generation: 1, revision: 2 }), null, "a duplicate click cannot dispatch twice");
   store.recordGoalSessionTransition("plan-1", { generation: 1, revision: 2, error: "Bridge reply was lost" });
