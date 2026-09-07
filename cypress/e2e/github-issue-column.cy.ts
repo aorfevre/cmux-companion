@@ -49,8 +49,8 @@ function installBoard(state: Column) {
   cy.intercept("GET", "**/api/github-issues", (request) => request.reply({ syncedAt: null, issues: state.issues })).as("issues");
 }
 
-function visitBoard() {
-  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
+function visitBoard(editable = false) {
+  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); if (editable) window.localStorage.setItem("cmux-companion-read-only", "false"); } });
   cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
 }
@@ -97,7 +97,49 @@ describe("GitHub Sync and the GitHub Issues column", () => {
       });
   });
 
-  it("starts exactly one goal from one card and moves it into Writing Spec", () => {
+  it("opens the issue's managed conversation and waits for proposal approval", () => {
+    const state: Column = { issues: [starredIssue], plans: [] };
+    installBoard(state);
+    const workspace = { id: "issue-workspace", title: "Goal · Restore the caret", current_directory: "/fixture-issue", terminals: [{ id: "issue-terminal", title: "Issue conversation" }] };
+    let started = false;
+    let approvals = 0;
+    let plan = { planId: "plan-issue-session", repositoryId: starred.id, repositoryName: starred.name,
+      goal: "Resolve GitHub issue #12: Restore the caret", workflow: "goal_session", goalSessionWorkspaceId: workspace.id,
+      goalSessionGeneration: 1, goalSessionState: "awaiting_approval", proposalRevision: 1, status: "ready", round: 1,
+      tasks: [], questions: [], sourceType: "github_issues", issueNumbers: [12], issueUrls: [starredIssue.url],
+      proposal: { intendedBehavior: "The editor retains its caret after playback", scope: ["Caret restoration"], assumptions: [], verification: ["Check playback and resume"] },
+    };
+    cy.intercept("GET", "**/api/bootstrap", (request) => request.reply({ connected: true, host: { mac_display_name: "Fixture Mac" }, workspaces: started ? [workspace] : [], refreshedAt: now }));
+    cy.intercept("GET", "**/api/terminals/issue-terminal/replay*", { text: "Issue planning conversation", grid: null });
+    cy.intercept("GET", "**/api/goal-sessions/workspace/issue-workspace", (request) => request.reply({ plan })).as("conversation");
+    cy.intercept("POST", `**/api/github-issues/${starred.id}/12/goal`, (request) => {
+      started = true;
+      state.plans = [plan];
+      state.issues = [{ ...starredIssue, planId: plan.planId }];
+      request.reply({ issue: state.issues[0], plan, created: true });
+    }).as("managedIssue");
+    cy.intercept("POST", "**/api/goal-sessions/plan-issue-session/approve", (request) => {
+      approvals += 1;
+      expect(request.body).to.deep.equal({ generation: 1, revision: 1 });
+      plan = { ...plan, goalSessionState: "implementing" };
+      request.reply(plan);
+    }).as("approveIssue");
+    visitBoard(true);
+    cy.findByRole("button", { name: "Start a goal for #12 Restore the caret" }).click();
+    cy.wait("@managedIssue");
+    cy.location("search").should("contain", "workspace=issue-workspace");
+    cy.wait("@conversation");
+    cy.contains("The editor retains its caret after playback").should("be.visible");
+    cy.contains("Check playback and resume").should("be.visible");
+    cy.then(() => expect(approvals).to.equal(0));
+    cy.findByRole("button", { name: "Approve and implement" }).click();
+    cy.wait("@approveIssue");
+    cy.contains("Implementation is continuing in this conversation.").should("be.visible");
+    cy.get("@managedIssue.all").should("have.length", 1);
+    cy.location("search").should("contain", "workspace=issue-workspace");
+  });
+
+  it("keeps an existing legacy goal on its original board workflow", () => {
     const state: Column = { issues: [starredIssue], plans: [] };
     installBoard(state);
     let goalCalls = 0;
@@ -110,7 +152,7 @@ describe("GitHub Sync and the GitHub Issues column", () => {
         taskCount: 0, createdAt: now, updatedAt: now, launchedAt: null, boardState: "writing_spec",
         sourceType: "github_issues", issueNumbers: [12], issueUrls: [starredIssue.url],
       }];
-      request.reply({ issue: state.issues[0], plan: { planId: "plan-issue-12" }, created: true });
+      request.reply({ issue: state.issues[0], plan: { planId: "plan-issue-12" }, created: false });
     }).as("startGoal");
     visitBoard();
 

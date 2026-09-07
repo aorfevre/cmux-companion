@@ -1965,7 +1965,7 @@ export function normalizeImages(images) {
   });
 }
 
-function normalizeIssueNumbers(values) {
+export function normalizeIssueNumbers(values) {
   if (values === undefined || values === null) return [];
   if (!Array.isArray(values)) throw new TypeError("GitHub issue numbers must be a list");
   const numbers = [...new Set(values.map(Number))];
@@ -1973,7 +1973,7 @@ function normalizeIssueNumbers(values) {
   return numbers;
 }
 
-function normalizeIssueUrls(values) {
+export function normalizeIssueUrls(values) {
   if (values === undefined || values === null) return [];
   if (!Array.isArray(values)) throw new TypeError("GitHub issue links must be a list");
   return values.map((value) => String(value || "").trim()).filter((value) => /^https:\/\/github\.com\//.test(value)).slice(0, 100);

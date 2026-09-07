@@ -17,7 +17,10 @@ Neither product quality nor iteration-speed improvements have been measured yet.
 
 ## User journey
 
-1. Choose a repository, provider and goal, then **Start goal session**. The form's
+1. Choose a repository, provider and goal, then **Start goal session**, or use
+   **Start a goal** on an individual card in the **GitHub Issues** board column.
+   Issue cards use the saved planner model defaults, keep the issue number and
+   URL on the goal, and open the recorded conversation. The form's
    default submission uses this path; **Plan this goal** remains the explicit
    legacy planner workflow.
 2. Companion saves the goal, acquires an isolated checkout from the fetched
@@ -38,6 +41,14 @@ Automated planner and post-delivery code reviewers remain on the legacy path.
 Visible-session creation refuses these options before allocating resources rather
 than silently ignoring a selected reviewer. Bulk issue planning and existing
 multi-task delivery also retain their existing flow.
+
+Existing issue goals keep their saved workflow; starting the same issue again
+returns its existing goal rather than creating a second session. A failed start
+retains its saved goal and any recorded worktree for inspection and recovery.
+The issue title and body remain explicitly untrusted context. Planning opens
+read-only, and implementation still requires approval of the displayed proposal.
+After approval, the owner references linked issues in its PR and only uses
+closing keywords when the approved scope fully resolves an issue.
 
 ## Implementation and boundaries
 

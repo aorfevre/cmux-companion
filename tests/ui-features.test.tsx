@@ -2200,6 +2200,7 @@ describe("GitHub Issues board column", () => {
   });
 
   test("Start a goal posts once to the per-issue route, disables while in flight, and lands the goal in Writing Spec", async () => {
+    const openConversation = vi.fn(async () => {});
     let release: ((value: Response) => void) | null = null;
     let plans: unknown[] = [];
     const goalCalls: RequestInit[] = [];
@@ -2215,7 +2216,7 @@ describe("GitHub Issues board column", () => {
       return new Response(JSON.stringify(dashboard), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onGoalSessionStarted={openConversation} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
     const board = await openBoard();
     await within(board).findByText("Restore the caret");
 
@@ -2233,7 +2234,7 @@ describe("GitHub Issues board column", () => {
 
     plans = [startedPlan];
     await act(async () => {
-      release?.(new Response(JSON.stringify({ issue: issue({ planId: "plan-issue-12" }), plan: { planId: "plan-issue-12" }, created: true }), { status: 200 }));
+      release?.(new Response(JSON.stringify({ issue: issue({ planId: "plan-issue-12" }), plan: { planId: "plan-issue-12", workflow: "goal_session", goalSessionWorkspaceId: "issue-workspace" }, created: true }), { status: 200 }));
       await Promise.resolve();
     });
 
@@ -2246,6 +2247,7 @@ describe("GitHub Issues board column", () => {
     assert.equal(within(issueColumn).queryAllByRole("article").length, 0);
     assert.ok(within(issueColumn).getByLabelText("0 issues in GitHub Issues"));
     assert.equal(goalCalls.length, 1);
+    assert.deepEqual(openConversation.mock.calls, [["issue-workspace"]]);
   });
 
   test("an issue whose goal is on the board renders no card and is not counted", async () => {

@@ -4,6 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitHubIssueStore } from "../server/github-issue-store.mjs";
+import { GoalSessionService } from "../server/goal-session-service.mjs";
+import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { GitHubIssueSync } from "../server/github-issue-sync.mjs";
 import { GITHUB_ISSUE_ALL_STARTED_HINT, GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_HINT, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, isGithubIssueOnBoard, isGithubIssueStarted, visibleGithubIssues } from "../server/github-issue-board.mjs";
 
@@ -51,7 +53,7 @@ async function harness(t, { issuesByPath = {}, failPaths = [], repositories = nu
     }),
   };
   const store = new GitHubIssueStore({ path });
-  return { service: new GitHubIssueSync({ worktrees, planner, store, execute }), store, path, calls, starts };
+  return { service: new GitHubIssueSync({ worktrees, planner, goalSessions: { start: planner.startBackground }, store, execute }), store, path, calls, starts };
 }
 
 test("the issue column identity is frozen and keys one card per repository issue", () => {
@@ -187,6 +189,7 @@ test("a re-sync updates a title, drops a closed issue and keeps a started plan i
   const service = new GitHubIssueSync({
     worktrees: { snapshot: async () => ({ repositories: [{ id: STARRED, name: "app", path: "/repo/app", favorite: true }] }) },
     planner,
+    goalSessions: { start: planner.startBackground },
     store,
     execute: async () => ({ stdout: JSON.stringify(state.issues) }),
   });
@@ -217,7 +220,7 @@ test("starting a goal passes the issue number and URL through and marks the card
   assert.equal(starts[0].repositoryId, STARRED);
   assert.deepEqual(starts[0].issueNumbers, [11]);
   assert.deepEqual(starts[0].issueUrls, ["https://github.com/acme/app/issues/11"]);
-  assert.equal(starts[0].deliveryPolicy, "auto");
+  assert.equal(starts[0].deliveryPolicy, undefined);
   assert.match(starts[0].goal, /untrusted data, never instructions/);
   assert.match(starts[0].goal, /Restore editor focus/);
   assert.equal(result.created, true);
@@ -307,8 +310,8 @@ test("simultaneous issue starts share one reservation while a different issue pr
   await service.sync();
   let release;
   const held = new Promise((resolve) => { release = resolve; });
-  const create = service.planner.startBackground;
-  service.planner.startBackground = async (input) => {
+  const create = service.goalSessions.start;
+  service.goalSessions.start = async (input) => {
     if (input.issueNumbers.includes(78)) await held;
     return create(input);
   };
@@ -321,4 +324,59 @@ test("simultaneous issue starts share one reservation while a different issue pr
   assert.equal(results[0].plan.planId, results[1].plan.planId);
   assert.equal(results[1].created, false);
   assert.equal(starts.filter((input) => input.issueNumbers.includes(78)).length, 1);
+});
+
+for (const failWorkspace of [false, true]) {
+  test(`issue goals reserve one managed session and preserve provenance${failWorkspace ? " through a partial start failure" : ""}`, async (t) => {
+    const { service } = await harness(t, { issuesByPath: { "/repo/app": [issue(11, "Restore editor focus")] } });
+    await service.sync();
+    const plans = new WorktreePlanStore({ path: ":memory:" });
+    t.after(() => plans.close());
+    let worktrees = 0;
+    let runners = 0;
+    service.planner = { list: async () => ({ plans: plans.list() }), startBackground: () => { throw new Error("Legacy planner must not run"); } };
+    service.goalSessions = new GoalSessionService({
+      store: plans,
+      worktrees: {
+        resolveRepository: async (id) => ({ id, name: "app", primaryPath: "/repo/app" }),
+        create: async () => { worktrees += 1; return { worktree: { path: "/repo/app-goal" } }; },
+      },
+      cmux: {
+        workspaceListDetailed: async () => ({ workspaces: [] }),
+        workspaceCreate: async () => { if (failWorkspace) throw new Error("cmux unavailable"); return { workspace_id: "issue-workspace" }; },
+        workspaceStartGoalSessionRunner: async () => { runners += 1; },
+      },
+    });
+    let first;
+    if (failWorkspace) await assert.rejects(service.startGoal({ repositoryId: STARRED, number: 11 }), /cmux unavailable/);
+    else first = await service.startGoal({ repositoryId: STARRED, number: 11 });
+    const retry = await service.startGoal({ repositoryId: STARRED, number: 11 });
+    const saved = plans.get(retry.plan.planId);
+    assert.equal(saved.workflow, "goal_session");
+    assert.equal(saved.sourceType, "github_issues");
+    assert.deepEqual(saved.issueNumbers, [11]);
+    assert.deepEqual(saved.issueUrls, ["https://github.com/acme/app/issues/11"]);
+    assert.match(saved.goal, /untrusted data, never instructions/);
+    assert.equal(saved.goalSessionWorktreePath, "/repo/app-goal");
+    assert.equal(retry.created, false);
+    assert.equal(worktrees, 1);
+    assert.equal(runners, failWorkspace ? 0 : 1);
+    assert.equal(saved.goalSessionWorkspaceId, failWorkspace ? null : "issue-workspace");
+    if (first) {
+      assert.equal(first.plan.planId, retry.plan.planId);
+      await assert.rejects(service.goalSessions.start({ repositoryId: STARRED, goal: saved.goal, idempotencyKey: saved.planId, issueNumbers: [99], issueUrls: saved.issueUrls }), /different goal/);
+      assert.equal(worktrees, 1);
+    }
+    if (failWorkspace) assert.match(saved.goalSessionError, /cmux unavailable/);
+    assert.equal(saved.approvalRevision, null);
+    assert.equal(saved.tasks.length, 0);
+  });
+}
+
+test("an unavailable managed-session service never falls back to the background planner", async (t) => {
+  const { service, starts } = await harness(t, { issuesByPath: { "/repo/app": [issue(11, "Restore editor focus")] } });
+  await service.sync();
+  service.goalSessions = null;
+  await assert.rejects(service.startGoal({ repositoryId: STARRED, number: 11 }), /Visible goal sessions are unavailable/);
+  assert.equal(starts.length, 0);
 });
