@@ -20,18 +20,20 @@ export async function runGoalSession({ planId, databasePath, generation: generat
   const lines = createInterface({ input, crlfDelay: Infinity });
   let turn = Promise.resolve();
 
-  const planningTurn = async (message) => {
+  const planningTurn = async (message, pendingFeedback = null) => {
     plan = store.get(planId);
-    if (plan.goalSessionGeneration !== generation) throw new Error("This goal session was replaced");
+    if (plan?.goalSessionGeneration !== generation || plan?.boardStatus) throw new Error("This goal session was replaced or closed");
     const reply = parsePlannerReply(await execute(command(plan, message, false), { cwd: plan.goalSessionWorktreePath, out }), plan.specOptions);
     if (!reply.sessionId) throw new Error("The provider did not return a resumable conversation id");
     plan = store.recordGoalSessionProviderSession(planId, { generation, providerSessionId: reply.sessionId });
     if (reply.status === "questions") {
       out(reply.questions.map((question) => `Question: ${question.text}${question.options.length ? ` (${question.options.join(" / ")})` : ""}`).join("\n"));
+      if (pendingFeedback) store.acknowledgeGoalSessionInput(planId, { generation, feedback: pendingFeedback });
       return;
     }
     const proposal = { intendedBehavior: reply.spec?.outcome || plan.goal, scope: reply.tasks.map((task) => task.title), assumptions: reply.spec?.assumptions || [], verification: reply.tasks.flatMap((task) => task.verification || []) };
     store.publishProposal(planId, { generation: plan.goalSessionGeneration, providerSessionId: reply.sessionId, proposal });
+    if (pendingFeedback) store.acknowledgeGoalSessionInput(planId, { generation, feedback: pendingFeedback });
     out(`Proposal revision ${store.get(planId).proposalRevision} is ready in Companion. Approve it there to enable implementation, or type feedback here to revise it.`);
   };
 
@@ -47,11 +49,11 @@ export async function runGoalSession({ planId, databasePath, generation: generat
   const timer = setInterval(() => {
     if (implementationStarted) return;
     const current = store.get(planId);
-    if (!inputQueued && current?.goalSessionGeneration === generation && current?.goalSessionState === "planning" && current.goalSessionPendingInput) {
+    if (!inputQueued && current?.goalSessionGeneration === generation && current?.goalSessionState === "planning" && (current.goalSessionPendingInput || current.goalSessionActiveInput)) {
       inputQueued = true;
       turn = turn.then(async () => {
         const feedback = store.consumeGoalSessionInput(planId, { generation });
-        if (feedback) await planningTurn(`The user requested these changes: ${feedback}\nRevise the proposal. Do not implement anything.`);
+        if (feedback) await planningTurn(`The user requested these changes: ${feedback}\nRevise the proposal. Do not implement anything.`, feedback);
       }).catch((cause) => out(`Planning failed: ${cause?.message || cause}`)).finally(() => { inputQueued = false; });
       return;
     }
@@ -80,12 +82,17 @@ export async function runGoalSession({ planId, databasePath, generation: generat
     const current = store.get(planId);
     if (current?.goalSessionGeneration !== generation) { out("This goal session was replaced; reopen its current workspace."); return; }
     if (current?.transitionStatus === "delivered") {
-      turn = turn.then(() => execute(command(current, `The user requested this in-scope correction: ${feedback}\nThe approved proposal is: ${JSON.stringify(current.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: current.goalSessionWorktreePath, out }));
+      turn = turn.then(() => {
+        const latest = store.get(planId);
+        if (latest?.goalSessionGeneration !== generation || latest?.boardStatus || latest?.transitionStatus !== "delivered") throw new Error("This goal session was closed before the correction could run");
+        return execute(command(latest, `The user requested this in-scope correction: ${feedback}\nThe approved proposal is: ${JSON.stringify(latest.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: latest.goalSessionWorktreePath, out });
+      }).catch((cause) => out(`Correction was not run: ${cause?.message || cause}`));
       return;
     }
     if (current?.goalSessionState === "awaiting_approval") {
       try { store.requestProposalChanges(planId, { generation, revision: current.proposalRevision, feedback }); }
       catch (cause) { out(String(cause?.message || cause)); return; }
+      return;
     }
     turn = turn.then(() => planningTurn(`The user responded: ${feedback}\nRevise the proposal. Do not implement anything.`)).catch((cause) => out(`Planning failed: ${cause.message}`));
   });

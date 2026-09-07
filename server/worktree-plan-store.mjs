@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS plans (
   ,transition_status TEXT
   ,goal_session_error TEXT
   ,goal_session_pending_input TEXT
+  ,goal_session_active_input TEXT
 );
 CREATE TABLE IF NOT EXISTS plan_tasks (
   plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
@@ -278,13 +279,23 @@ export class WorktreePlanStore {
 
   consumeGoalSessionInput(planId, { generation } = {}) {
     const id = String(planId);
-    const row = this.db.prepare(`SELECT goal_session_pending_input FROM plans WHERE plan_id = ? AND workflow = 'goal_session'
+    const row = this.db.prepare(`SELECT goal_session_pending_input, goal_session_active_input FROM plans WHERE plan_id = ? AND workflow = 'goal_session'
       AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state = 'planning'`).get(id, generation);
-    const feedback = text(row?.goal_session_pending_input);
+    const feedback = text(row?.goal_session_active_input) || text(row?.goal_session_pending_input);
     if (!feedback) return null;
-    const changed = this.db.prepare(`UPDATE plans SET goal_session_pending_input = NULL, updated_at = ? WHERE plan_id = ?
-      AND workflow = 'goal_session' AND goal_session_generation = ? AND goal_session_pending_input = ?`).run(this.#stamp(), id, generation, feedback).changes;
-    return changed === 1 ? feedback : null;
+    // Keep it durable until the provider turn publishes a replacement. A
+    // runner crash or provider rejection must replay this exact request rather
+    // than silently dropping the user's correction.
+    return feedback;
+  }
+
+  acknowledgeGoalSessionInput(planId, { generation, feedback } = {}) {
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_active_input = NULL,
+      goal_session_pending_input = CASE WHEN goal_session_pending_input = ? THEN NULL ELSE goal_session_pending_input END,
+      updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_generation = ?
+      AND (goal_session_pending_input = ? OR goal_session_active_input = ?)`)
+      .run(text(feedback), this.#stamp(), String(planId), generation, text(feedback), text(feedback)).changes;
+    return changed === 1;
   }
 
   recordGoalSessionProviderSession(planId, { generation, providerSessionId } = {}) {
@@ -1223,6 +1234,7 @@ export class WorktreePlanStore {
     ensure("plans", "transition_status", "TEXT");
     ensure("plans", "goal_session_error", "TEXT");
     ensure("plans", "goal_session_pending_input", "TEXT");
+    ensure("plans", "goal_session_active_input", "TEXT");
     ensure("plans", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'");
     ensure("plans", "delivery_status", "TEXT NOT NULL DEFAULT 'planning'");
     ensure("plans", "integration_branch", "TEXT");
@@ -1344,6 +1356,7 @@ function readPlan(row) {
     transitionStatus: row.transition_status ?? null,
     goalSessionError: row.goal_session_error ?? null,
     goalSessionPendingInput: row.goal_session_pending_input ?? null,
+    goalSessionActiveInput: row.goal_session_active_input ?? null,
     sessionId: row.session_id,
     round: row.round,
     status: row.status,
