@@ -29,9 +29,9 @@ describe("review safety boundaries", () => {
     const sent: string[] = [];
     cy.intercept("PATCH", "**/api/prompt-queue/queue-safety", (request) => {
       if (fail) request.reply(503, { error: "Save unavailable" });
-      else { saved = request.body.text; request.reply({}); }
+      else { saved = request.body.text; request.reply({ statusCode: 200, body: {} }); }
     }).as("save");
-    cy.intercept("POST", "**/api/prompt-queue/queue-safety/send", (request) => { sent.push(saved); request.reply({}); }).as("send");
+    cy.intercept("POST", "**/api/prompt-queue/queue-safety/send", (request) => { sent.push(saved); request.reply({ statusCode: 200, body: {} }); }).as("send");
     cy.intercept("GET", "**/api/prompt-queue?*", (request) => request.reply({ items: [{ ...item, text: saved }] }));
     visitSession();
     cy.findByRole("button", { name: "Prompt queue, 1 waiting" }).click();

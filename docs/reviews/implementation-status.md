@@ -104,3 +104,34 @@ fixtures; they prove the specific HTTP/WS/service-worker behaviors described
 above, not an operating-system network sandbox. Experimental SQLite and large
 client-chunk build warnings remain visible. The checked-JSDoc pilot does not
 claim that the entire backend is statically typed.
+
+## PR #93 integration with current main
+
+The recovered cleanup was rebased onto `b2773eb` (main), resolving all nine
+conflicted files while preserving managed goal-session endpoints and SQLite
+columns/migrations, issue return-to-backlog behavior, model settings, goal URLs,
+notices, and the newer argv-based Git boundary. Read ownership includes auth,
+workspace and terminal identity; mutation refreshes bypass pending reads.
+Two additional UI regressions cover identity changes and mutation refreshes.
+The old explicit-test-list guard now checks automatic discovery, and unused
+exports introduced on main were demoted or removed. AGENTS.md matches the
+runtime and discovery commands.
+
+Validation after integration:
+
+- `npm ci` and `npm run verify`: passed locally on Node 22.23.1; 1,027 backend
+  tests (zero skips), 123 UI tests, lint, frontend/backend types and build.
+- Local Cypress: 86/86 passed across 19 specs. An initial run failed the overload
+  assertion while source edits could trigger HMR, and a queue-save fixture
+  returned an empty successful body. Explicit JSON fixture responses fixed the
+  latter; the complete clean run passed both scenarios without weakened checks.
+- Knip: clean. npm audit: zero advisories. `git diff --check`: passed.
+- Hosted Ubuntu verification passed for implementation commit `455d44d`:
+  1,024 backend tests passed, three Chrome-dependent tests skipped, 123 UI tests
+  passed, lint/types/build passed. Those three browser tests passed locally.
+  The follow-up commit changes only Cypress fixtures and this evidence.
+
+The SPA comparison remains an experiment; its historical measurements and test
+results above were not rerun during this conflict-resolution pass. Installed
+services, live cmux/LLMs/Tailscale/GitHub delivery and deployment remain unverified.
+No merge or deployment was performed. The original recovery stash is preserved.
