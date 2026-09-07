@@ -116,7 +116,8 @@ function ProgressSteps({ steps, waiting }: { steps: string[]; waiting: string })
   return <div className="planner-waiting"><span>{waiting}</span>{steps.length > 0 && <ul className="planner-progress">{steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ul>}</div>;
 }
 
-function GoalSessionProposal({ draft, busy, onApprove }: { draft: PlanDraft; busy: boolean; onApprove: () => void }) {
+function GoalSessionProposal({ draft, busy, onApprove, onRequestChanges }: { draft: PlanDraft; busy: boolean; onApprove: () => void; onRequestChanges: (text: string) => void }) {
+  const [changes, setChanges] = useState("");
   const proposal = draft.proposal;
   if (!proposal || draft.goalSessionState !== "awaiting_approval") {
     const message = draft.goalSessionError || (draft.transitionStatus === "uncertain"
@@ -130,7 +131,8 @@ function GoalSessionProposal({ draft, busy, onApprove }: { draft: PlanDraft; bus
     {proposal.assumptions?.length ? <p>Assumptions: {proposal.assumptions.join(" · ")}</p> : null}
     {proposal.verification?.length ? <p>Try and verify: {proposal.verification.join(" · ")}</p> : null}
     <p>Approve this exact revision to enable implementation. Type feedback in the goal session to request a revision.</p>
-    <button type="button" className="primary-button" disabled={busy} onClick={onApprove}>{busy ? "Approving…" : "Approve and implement"}</button>
+    <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} maxLength={4_000} rows={3} onChange={(event) => setChanges(event.target.value)} /></label>
+    <div className="planner-actions"><button type="button" disabled={busy || !changes.trim()} onClick={() => onRequestChanges(changes.trim())}>Request changes</button><button type="button" className="primary-button" disabled={busy} onClick={onApprove}>{busy ? "Approving…" : "Approve and implement"}</button></div>
   </section>;
 }
 
@@ -358,6 +360,15 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
     return () => clearInterval(poll);
   }, [running, draft, reload]);
 
+  // The managed runner is a cmux process, not a PlannerRuns child. Poll its
+  // durable state while this sheet is open so a published proposal becomes an
+  // actionable card without pretending an SSE stream owns the terminal.
+  useEffect(() => {
+    if (draft?.workflow !== "goal_session") return;
+    const poll = setInterval(() => { void reload(draft.planId); }, 2_500);
+    return () => clearInterval(poll);
+  }, [draft?.workflow, draft?.planId, reload]);
+
   const fail = useCallback((cause: unknown, fallback: string) => {
     const message = cause instanceof Error ? cause.message : fallback;
     if (message.startsWith(LOST_SESSION)) { setDraft(null); setAnswers({}); }
@@ -416,6 +427,14 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
     setBusy("plan"); setError("");
     try { receive(await request<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(draft.planId)}/approve`, { method: "POST", body: JSON.stringify({ generation: draft.goalSessionGeneration, revision: draft.proposalRevision }) })); }
     catch (cause) { fail(cause, "Could not approve this proposal"); }
+    finally { setBusy(""); }
+  }
+
+  async function requestProposalChanges(text: string) {
+    if (!draft || !draft.proposalRevision || !draft.goalSessionGeneration) return;
+    setBusy("feedback"); setError("");
+    try { receive(await request<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(draft.planId)}/request-changes`, { method: "POST", body: JSON.stringify({ generation: draft.goalSessionGeneration, revision: draft.proposalRevision, feedback: text }) })); }
+    catch (cause) { fail(cause, "Could not request proposal changes"); }
     finally { setBusy(""); }
   }
 
@@ -653,7 +672,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       {error && <p className="worktree-action-error">{error}</p>}
       <div className="planner-actions"><button type="button" className="primary-button" disabled={busy !== ""} onClick={() => { void rerun(); }}>{busy === "plan" ? "Starting…" : "Plan this goal again"}</button></div>
     </section>}
-    {draft && draft.workflow === "goal_session" && <GoalSessionProposal draft={draft} busy={busy !== ""} onApprove={() => { void approveProposal(); }} />}
+    {draft && draft.workflow === "goal_session" && <GoalSessionProposal draft={draft} busy={busy !== ""} onApprove={() => { void approveProposal(); }} onRequestChanges={(text) => { void requestProposalChanges(text); }} />}
     {draft && draft.workflow !== "goal_session" && !running && !stalled && draft.status === "questions" && <>
       <p className="planner-round">Round {draft.round}</p>
       <ContextReview goal={reviewGoal} images={reviewImages} />

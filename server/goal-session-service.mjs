@@ -22,7 +22,9 @@ export class GoalSessionService {
     const branch = `goal-session/${planId.slice(0, 12)}`;
     this.store.reserveGoalSession(planId, { branch, generation: 1 });
     try {
-      const created = await this.worktrees.create(repository.id, { branch, base: "HEAD", requireFreshAtBase: true, workspaces: [], workspacesAvailable: true });
+      const inventory = await (this.cmux.loadWorkspaceListDetailed ? this.cmux.loadWorkspaceListDetailed() : this.cmux.workspaceListDetailed());
+      if (!Array.isArray(inventory?.workspaces)) throw new TypeError("cmux sessions could not be checked before starting this goal");
+      const created = await this.worktrees.create(repository.id, { branch, base: "HEAD", requireFreshAtBase: true, workspaces: inventory.workspaces, workspacesAvailable: true });
       const workspace = await this.cmux.workspaceCreate({ cwd: created.worktree.path, title: `Goal · ${text.slice(0, 72)}`, agent: "shell" });
       const plan = this.store.recordGoalSessionStart(planId, { worktreePath: created.worktree.path, workspaceId: workspace.workspace_id, generation: 1 });
       // Binding is durable before the terminal process starts. A crashed runner

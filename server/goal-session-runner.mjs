@@ -35,11 +35,26 @@ export async function runGoalSession({ planId, databasePath, generation: generat
     out(`Proposal revision ${store.get(planId).proposalRevision} is ready in Companion. Approve it there to enable implementation, or type feedback here to revise it.`);
   };
 
-  void (turn = turn.then(() => planningTurn(openingMessage(plan))).catch((cause) => out(`Planning failed: ${cause.message}`)));
+  if (!plan.goalSessionProviderSessionId) {
+    void (turn = turn.then(() => planningTurn(openingMessage(plan))).catch((cause) => out(`Planning failed: ${cause.message}`)));
+  } else if (plan.goalSessionState === "planning" && !plan.goalSessionPendingInput) {
+    void (turn = turn.then(() => planningTurn("Resume the saved goal conversation. Reconstruct the next proposal from the goal and saved decisions. Do not implement anything.")).catch((cause) => out(`Planning failed: ${cause.message}`)));
+  } else if (plan.goalSessionState === "awaiting_approval") {
+    out(`Proposal revision ${plan.proposalRevision} is still awaiting a decision in Companion.`);
+  }
   let implementationStarted = false;
+  let inputQueued = false;
   const timer = setInterval(() => {
     if (implementationStarted) return;
     const current = store.get(planId);
+    if (!inputQueued && current?.goalSessionGeneration === generation && current?.goalSessionState === "planning" && current.goalSessionPendingInput) {
+      inputQueued = true;
+      turn = turn.then(async () => {
+        const feedback = store.consumeGoalSessionInput(planId, { generation });
+        if (feedback) await planningTurn(`The user requested these changes: ${feedback}\nRevise the proposal. Do not implement anything.`);
+      }).catch((cause) => out(`Planning failed: ${cause?.message || cause}`)).finally(() => { inputQueued = false; });
+      return;
+    }
     if (current?.goalSessionGeneration !== generation || current?.transitionStatus !== "pending" || !current.approvalRevision) return;
     implementationStarted = true;
     turn = turn.then(async () => {
@@ -92,7 +107,7 @@ function openingMessage(plan) {
 }
 
 function implementationMessage(plan) {
-  return `The user approved proposal revision ${plan.approvalRevision}. Implement only its displayed scope in this worktree. Report concrete manual verification and changes when finished.`;
+  return `The user approved proposal revision ${plan.approvalRevision}. The immutable approved proposal is:\n${JSON.stringify(plan.proposal)}\nImplement only that displayed scope in this worktree. Do not expand it without another proposal. When finished, commit the change, push the branch, open one pull request against the recorded base, and report concrete manual verification and changed files.`;
 }
 
 function runCcs(args, { cwd, out = null }) {
@@ -103,12 +118,25 @@ function runCcs(args, { cwd, out = null }) {
     child.stdout.on("data", (chunk) => {
       stdout += chunk; partial += chunk;
       const rows = partial.split("\n"); partial = rows.pop() || "";
-      for (const row of rows) { const progress = progressEvent(row); if (progress?.t) out?.(progress.t); }
+      for (const row of rows) {
+        const prose = assistantProse(row);
+        if (prose) out?.(prose);
+        else { const progress = progressEvent(row); if (progress?.t) out?.(progress.t); }
+      }
     });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.once("error", reject);
     child.once("close", (code) => code === 0 ? resolve(finalEnvelope(stdout)) : reject(new Error(stderr.trim() || "CCS exited without completing the goal turn")));
   });
+}
+
+function assistantProse(row) {
+  try {
+    const value = JSON.parse(row);
+    if (value?.type !== "assistant") return "";
+    return (value.message?.content || []).filter((block) => block?.type === "text")
+      .map((block) => String(block.text || "").trim()).filter(Boolean).join("\n").slice(0, 8_000);
+  } catch { return ""; }
 }
 
 if (process.argv[1]?.endsWith("goal-session-runner.mjs")) {
