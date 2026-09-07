@@ -940,6 +940,50 @@ describe("worktree goal planner", () => {
     assert.ok(screen.getByRole("button", { name: "Start workflow · 1 session in wave 1" }));
   });
 
+  test("keeps an approval summary and dependency delivery plan concise until details are requested", async () => {
+    const approvalDraft = {
+      ...readyDraft,
+      deliveryMode: "combined",
+      spec: {
+        version: 2, outcome: "Operators can review every detail before launch", inScope: ["Planner review"], nonGoals: ["Automatic launch"], constraints: ["Keep saved plans compatible"], assumptions: ["A reviewer opens the plan"], risks: [],
+        approvalSummary: {
+          overview: "Review a concise plan before starting work.",
+          userFlow: ["Read the plan", "Inspect the waves", "Start work"],
+          decisions: [{ choice: "One combined PR", consequence: "The delivery is assembled after every task is ready." }],
+          successCriteria: ["Dependencies are visible before launch."],
+        },
+        acceptanceCriteria: [{ id: "AC-1", text: "The plan is reviewable", verification: "npm run test:ui" }],
+      },
+      readiness: { ready: false, errors: ["Assign a verification command"], warnings: ["One assumption needs approval"], waves: [["task-1"], ["task-2"]], coverage: [] },
+      tasks: [
+        { ...tasks[0], title: "Prepare API", criterionIds: ["AC-1"], ownedAreas: ["server/**"], verification: ["npm test"] },
+        { ...tasks[1], title: "Publish UI", criterionIds: ["AC-1"], dependsOn: ["task-1"], ownedAreas: ["app/**"], verification: ["npm run test:ui"] },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(approvalDraft), { status: 201 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Make approval clearer");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const passport = await screen.findByRole("region", { name: "Goal passport" });
+    assert.ok(within(passport).getByText("Review a concise plan before starting work."));
+    assert.ok(within(passport).getByText("One combined PR"));
+    assert.ok(within(passport).getByText("Assign a verification command"));
+    assert.ok(within(passport).getByText("One assumption needs approval"));
+    const chart = within(passport).getByRole("region", { name: "Delivery plan" });
+    assert.ok(within(chart).getByText("2 tasks · 2 waves"));
+    assert.ok(within(chart).getByText(/1 combined pull request/));
+    assert.equal(chart.querySelectorAll(".delivery-flowchart-edges > path").length, 1);
+    await userEvent.click(within(chart).getByRole("button", { name: /Publish UI/ }));
+    assert.ok(within(chart).getByText("Scope: The plan is reviewable"));
+    assert.ok(within(chart).getByText("Files: app/**"));
+    const contractDetails = within(passport).getByText(/Full delivery contract/).parentElement as HTMLDetailsElement;
+    assert.equal(contractDetails.open, false);
+    await userEvent.click(within(contractDetails).getByText(/Full delivery contract/));
+    assert.equal(contractDetails.open, true);
+    assert.ok(within(contractDetails).getByText("Automatic launch"));
+  });
+
   test("rejects a plan with written feedback and starts a fresh analysis", async () => {
     const revised = { ...readyDraft, round: 3, running: true, tasks: [] };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1425,6 +1469,50 @@ describe("goals board", () => {
   async function expandColumn(board: HTMLElement, label: string) {
     await userEvent.click(within(board).getByRole("button", { name: `Expand ${label}` }));
   }
+
+  // The board's second creation button. It must reach a repository picker, open
+  // the worktree sheet with a name already filled in, hide the base field, and
+  // ask the server for the default remote branch.
+  test("creates a worktree from the board on the latest default branch and starts an agent", async () => {
+    const launched = vi.fn(async (workspaceId: string) => { void workspaceId; });
+    const created = { worktree: { id: "worktree-new", repoId: "repo-karven", path: "/repo/trust-layer-wt", branch: "wt/board", name: "trust-layer-wt" }, branchCreated: true };
+    const posts: { url: string; body: string }[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.includes("/worktrees")) {
+        posts.push({ url, body: String(init.body) });
+        return new Response(JSON.stringify(created), { status: 201 });
+      }
+      if (init?.method === "POST" && url.endsWith("/launch")) {
+        posts.push({ url, body: String(init.body) });
+        return new Response(JSON.stringify({ workspace: { workspace_id: "ws-board-worktree" } }), { status: 201 });
+      }
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: null, issues: [] }), { status: 200 });
+      if (url === "/api/goals/health") return new Response(JSON.stringify(healthSweep), { status: 200 });
+      if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans: allPlans }), { status: 200 });
+      return new Response(JSON.stringify(dashboard), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={launched} onNotice={vi.fn()} />);
+    await openBoard();
+    // Two repositories are on the board, so the button opens the picker first.
+    await userEvent.click(screen.getByRole("button", { name: "＋ Worktree" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Create a worktree in trust-layer" }));
+    const sheet = await screen.findByRole("dialog", { name: "Create Git worktree" });
+    const branch = within(sheet).getByRole("textbox", { name: "Branch name" }) as HTMLInputElement;
+    assert.match(branch.value, /^wt\/\d{4}-\d{2}-\d{2}-\d{4}$/);
+    // The base is the server's business in this mode, so no field offers one.
+    assert.equal(within(sheet).queryByRole("textbox", { name: "Base revision" }), null);
+    await userEvent.click(within(sheet).getByRole("button", { name: "New worktree Claude (xclaude)" }));
+    await userEvent.click(within(sheet).getByRole("button", { name: "Create & start session" }));
+    await waitFor(() => assert.equal(launched.mock.calls.some(([id]) => id === "ws-board-worktree"), true));
+    const create = posts.find((post) => post.url.includes("/worktrees"));
+    assert.match(String(create?.url), /\/repositories\/repo-karven\/worktrees$/);
+    assert.deepEqual(JSON.parse(String(create?.body)), { branch: branch.value, useDefaultBase: true });
+    const launch = posts.find((post) => post.url.endsWith("/launch"));
+    assert.match(String(launch?.url), /\/api\/worktree-dashboard\/worktree-new\/launch$/);
+    assert.equal(JSON.parse(String(launch?.body)).agent, "claude");
+  });
 
   test("renders ordered columns with Blocked and terminal defaults collapsed and accurate counts", async () => {
     mountBoard();

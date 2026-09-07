@@ -517,7 +517,15 @@ test("survives a reopen of the same file and keeps mode 0600", (t) => {
   const path = join(directory, "nested", "goal-plans.db");
   const first = new WorktreePlanStore({ path });
   seed(first);
-  first.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "sess-a", tasks: TASKS });
+  first.recordRound("plan-1", { round: 1, stage: "ready", sessionId: "sess-a", tasks: TASKS, spec: {
+    outcome: "Add billing",
+    approvalSummary: {
+      overview: "Users can approve the billing work before launch.",
+      userFlow: ["Review the contract", "Launch the plan"],
+      decisions: [{ choice: "Use the existing billing API", consequence: "Existing clients remain compatible." }],
+      successCriteria: ["The billing flow is covered by the saved criteria."],
+    },
+  } });
   first.close();
 
   assert.equal(statSync(path).mode & 0o777, 0o600);
@@ -527,6 +535,12 @@ test("survives a reopen of the same file and keeps mode 0600", (t) => {
   assert.equal(plan.sessionId, "sess-a");
   assert.equal(plan.round, 1);
   assert.deepEqual(plan.tasks.map((task) => task.branch), ["feature/billing", "feature/invoices"]);
+  assert.deepEqual(plan.spec.approvalSummary, {
+    overview: "Users can approve the billing work before launch.",
+    userFlow: ["Review the contract", "Launch the plan"],
+    decisions: [{ choice: "Use the existing billing API", consequence: "Existing clients remain compatible." }],
+    successCriteria: ["The billing flow is covered by the saved criteria."],
+  });
 });
 
 test("migrates a pre-contract database without losing legacy plans", (t) => {

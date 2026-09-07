@@ -98,6 +98,23 @@ Worktrees Beta discovers Git's registered worktrees for the configured repositor
 
 **Plan a goal** on a repository sends one goal to a read-only headless planner. The planner may ask clarifying questions first; answer them, or skip and keep its assumptions visible. A ready plan is a Delivery Contract: outcome, scope and non-goals, constraints, assumptions, risks, observable acceptance criteria, task ownership, expected verification, and explicit dependencies. The Goal Passport shows that contract, readiness warnings, workflow waves, and criterion evidence before and after launch. You can still switch a task's agent, edit it, reject the split with written feedback, or drop it before confirming.
 
+### Approving a goal
+
+The first view of a ready goal is a concise approval summary. It states the
+outcome, the intended user flow, the decisions and their consequences, the
+success criteria, current readiness, and the delivery mode. It also draws the
+workflow waves: tasks in the same wave can run in parallel, while a later wave
+waits for its dependencies. Select a task in that chart to inspect its scope,
+declared files and checks. The chart also names the goal's actual delivery mode.
+
+The concise summary is a review surface, not a replacement contract. Expand
+**Full delivery contract**, **Risks and technical constraints**, **Acceptance
+evidence**, or **Task instructions** to inspect the saved Delivery Contract.
+Readiness warnings and errors stay visible while those sections are collapsed
+or expanded. A saved plan without an approval summary still shows its outcome,
+delivery plan and the same saved-contract sections. Opening either view never
+regenerates the plan or changes its saved contract.
+
 ### Spec depth
 
 **Spec depth** on the Plan a goal sheet holds six independent requests. All six are off by default. Each request you enable becomes a written requirement in every planning round and in every task brief. The six are:

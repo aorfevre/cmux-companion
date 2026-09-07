@@ -176,6 +176,47 @@ function repoChipStyle(name: string) {
 
 // The product a goal belongs to, as a label rather than a footnote. The board
 // and the rail both lead with it.
+// A flat list of every repository is unusable once there are thirty of them.
+// With no search term the picker offers only the ones the user actually works
+// in — favourites and anything with a live session — and says how many more a
+// search would reach. A search term reaches all of them.
+function repositoryPickerMatches(repositories: DashboardRepository[], query: string) {
+  const needle = query.trim().toLowerCase();
+  const shortlist = repositories.filter((repo) => repo.favorite === true || repo.summary.sessions > 0);
+  return (needle
+    ? repositories.filter((repo) => repo.name.toLowerCase().includes(needle) || compactPath(repo.path).toLowerCase().includes(needle))
+    // A project with no favourite and no live session would otherwise open an
+    // empty picker, which reads as broken rather than as "start typing".
+    : (shortlist.length ? shortlist : repositories)
+  ).slice(0, 12);
+}
+
+// One button and one repository picker, shared by every board action that needs
+// a repository first. A single repository skips the picker entirely.
+function BoardRepositoryButton({ label, action, repositories, className, onPick }: { label: string; action: string; repositories: DashboardRepository[]; className?: string; onPick: (repo: DashboardRepository) => void }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const matches = repositoryPickerMatches(repositories, query);
+  if (repositories.length === 0) return null;
+  const single = repositories.length === 1;
+  function close() { setOpen(false); setQuery(""); }
+  function pick(repo: DashboardRepository) { close(); onPick(repo); }
+  return <div className="board-new-goal">
+    <button type="button" className={`board-new-goal-button${className ? ` ${className}` : ""}`} aria-label={single ? `${action} ${repositories[0].name}` : label} aria-expanded={single ? undefined : open} aria-haspopup={single ? undefined : "menu"} onClick={() => { if (single) onPick(repositories[0]); else setOpen((current) => !current); }}>{label}</button>
+    {open && !single && <>
+      <button type="button" className="board-new-goal-backdrop" aria-label="Close the repository picker" onClick={close} />
+      <div className="board-new-goal-menu" aria-label={`Pick a repository: ${label}`}>
+        {/* eslint-disable-next-line jsx-a11y/no-autofocus -- the picker opens for typing: a search box nobody can type into is the problem this replaced */}
+        <input type="search" autoFocus aria-label="Find a repository" placeholder="Find a repository…" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") close(); if (event.key === "Enter" && matches.length > 0) pick(matches[0]); }} />
+        {matches.length === 0
+          ? <p className="board-new-goal-empty">No repository matches that.</p>
+          : <div role="menu">{matches.map((repo) => <button type="button" role="menuitem" aria-label={`${action} ${repo.name}`} onClick={() => pick(repo)} key={repo.id}><RepoChip name={repo.name} />{repo.summary.sessions > 0 && <em>{repo.summary.sessions} session{repo.summary.sessions === 1 ? "" : "s"}</em>}</button>)}</div>}
+        {query === "" && repositories.length > matches.length && <p className="board-new-goal-empty">Type to reach the other {repositories.length - matches.length}.</p>}
+      </div>
+    </>}
+  </div>;
+}
+
 function RepoChip({ name }: { name: string }) { return <span className="goal-repo-chip" style={repoChipStyle(name)}>{name}</span>; }
 
 // The generated cmux title carries the stable task identity as one of its
@@ -258,8 +299,6 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
   const [nowTick, setNowTick] = useState(() => Date.now());
   // Picking a repository for a new goal. The planner sheet needs one, and the
   // board spans every repository in the project, so it cannot guess.
-  const [newGoalOpen, setNewGoalOpen] = useState(false);
-  const [newGoalQuery, setNewGoalQuery] = useState("");
   // One key per operation. A shared busy string would disable every Continue
   // button on the rail while a single task was relaunching.
   const [relaunchModes, setRelaunchModes] = useState<Record<string, string>>({});
@@ -283,6 +322,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
   const [actionError, setActionError] = useState<{ id: string; message: string } | null>(null);
   const [launchTarget, setLaunchTarget] = useState<{ repo: DashboardRepository; worktree: DashboardWorktree } | null>(null);
   const [createTarget, setCreateTarget] = useState<DashboardRepository | null>(null);
+  const [boardWorktreeTarget, setBoardWorktreeTarget] = useState<DashboardRepository | null>(null);
   const goalPopup = useGoalPopup(dashboard?.repositories);
   const planTarget = goalPopup.target;
   const goalResolved = useCallback((draft: PlanDraft) => {
@@ -661,18 +701,6 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
   const planningCount = rootProjectPlans.filter((plan) => plan.running).length;
   // An archived repository takes no new goals, so it never reaches the picker.
   const goalRepositories = projectRepositories.filter((repo) => !repo.archived);
-  // A flat list of every repository is unusable once there are thirty of them.
-  // With no search term the picker offers only the ones the user actually works
-  // in — favourites and anything with a live session — and says how many more a
-  // search would reach. A search term reaches all of them.
-  const newGoalNeedle = newGoalQuery.trim().toLowerCase();
-  const newGoalShortlist = goalRepositories.filter((repo) => repo.favorite === true || repo.summary.sessions > 0);
-  const newGoalMatches = (newGoalNeedle
-    ? goalRepositories.filter((repo) => repo.name.toLowerCase().includes(newGoalNeedle) || compactPath(repo.path).toLowerCase().includes(newGoalNeedle))
-    // A project with no favourite and no live session would otherwise open an
-    // empty picker, which reads as broken rather than as "start typing".
-    : (newGoalShortlist.length ? newGoalShortlist : goalRepositories)
-  ).slice(0, 12);
   const isGoalView = dashboardFilter === "draft-goals" || dashboardFilter === "launched-goals" || isBoardView;
   // The search box sits in the shared header, so one query narrows whichever
   // list the current tab shows.
@@ -776,8 +804,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
     {!isBoardView && <section className="hero worktree-hero"><p className="eyebrow">BETA · PARALLEL WORK</p><h1>{isGoalView ? goalHeroHeading : visibleNeedsYou ? `${visibleNeedsYou} agent${visibleNeedsYou > 1 ? "s" : ""} need you.` : visibleWorking ? "Your workstreams are moving." : "Worktrees at a glance."}</h1><p>{isBoardView ? "Follow every goal in this project through its eight lifecycle states." : isGoalView ? "Resume plans and inspect launches across every repository in this project." : "Supervise isolated branches, agents, changes, and pull requests without watching every terminal."}</p><div className="summary-row">{isGoalView ? <><div><strong>{dashboard ? visiblePlans.length : "–"}</strong><span>goals</span></div><div><strong className="accent-number">{dashboard ? goalTaskCount : "–"}</strong><span>tasks</span></div><div><strong>{dashboard ? goalRepositoryCount : "–"}</strong><span>repositories</span></div></> : <><div><strong>{dashboard ? visibleWorktrees.length : "–"}</strong><span>worktrees</span></div><div><strong>{dashboard ? visibleReleases.length : "–"}</strong><span>releases</span></div><div><strong className="accent-number">{dashboard ? visibleNeedsYou : "–"}</strong><span>needs you</span></div><div><strong>{dashboard ? visibleWorking : "–"}</strong><span>working</span></div></>}</div></section>}
     <section className="content-section worktree-content">
       {!isBoardView && <div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={project === "karven"} className={project === "karven" ? "active" : ""} onClick={() => setProject("karven")}><span>K</span>Karven</button><button role="tab" aria-selected={project === "rekord"} className={project === "rekord" ? "active" : ""} onClick={() => setProject("rekord")}><span>R</span>Rekord</button></div>}
-      {isBoardView && <div className="board-bar"><div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={boardProject === "all"} className={boardProject === "all" ? "active" : ""} onClick={() => setBoardProject("all")}><span aria-hidden="true">∞</span>All</button><button role="tab" aria-selected={boardProject === "karven"} className={boardProject === "karven" ? "active" : ""} onClick={() => setBoardProject("karven")}><span aria-hidden="true">K</span>Karven</button><button role="tab" aria-selected={boardProject === "rekord"} className={boardProject === "rekord" ? "active" : ""} onClick={() => setBoardProject("rekord")}><span aria-hidden="true">R</span>Rekord</button></div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div><AgentCapacityChip capacity={capacity} error={capacityError} now={nowTick} open={capacityOpen} onToggle={() => setCapacityOpen((open) => !open)} />{goalRepositories.length > 0 && <div className="board-new-goal"><button type="button" className="board-new-goal-button" aria-label={goalRepositories.length === 1 ? `Plan a goal for ${goalRepositories[0].name}` : "Plan a new goal"} aria-expanded={goalRepositories.length === 1 ? undefined : newGoalOpen} aria-haspopup={goalRepositories.length === 1 ? undefined : "menu"} onClick={() => { if (goalRepositories.length === 1) openGoalPopup({ repository: goalRepositories[0] }); else setNewGoalOpen((open) => !open); }}>＋ New goal</button>{newGoalOpen && goalRepositories.length > 1 && <><button type="button" className="board-new-goal-backdrop" aria-label="Close the repository picker" onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); }} /><div className="board-new-goal-menu" aria-label="Pick a repository for the new goal">{/* eslint-disable-next-line jsx-a11y/no-autofocus -- the picker opens for typing: a search box nobody can type into is the problem this replaced */}
-        <input type="search" autoFocus aria-label="Find a repository" placeholder="Find a repository…" value={newGoalQuery} onChange={(event) => setNewGoalQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setNewGoalOpen(false); setNewGoalQuery(""); } if (event.key === "Enter" && newGoalMatches.length > 0) { setNewGoalOpen(false); setNewGoalQuery(""); openGoalPopup({ repository: newGoalMatches[0] }); } }} />{newGoalMatches.length === 0 ? <p className="board-new-goal-empty">No repository matches that.</p> : <div role="menu">{newGoalMatches.map((repo) => <button type="button" role="menuitem" aria-label={`Plan a goal for ${repo.name}`} onClick={() => { setNewGoalOpen(false); setNewGoalQuery(""); openGoalPopup({ repository: repo }); }} key={repo.id}><RepoChip name={repo.name} />{repo.summary.sessions > 0 && <em>{repo.summary.sessions} session{repo.summary.sessions === 1 ? "" : "s"}</em>}</button>)}</div>}{newGoalQuery === "" && goalRepositories.length > newGoalMatches.length && <p className="board-new-goal-empty">Type to reach the other {goalRepositories.length - newGoalMatches.length}.</p>}</div></>}</div>}<button className="text-button" disabled={issueSyncing} onClick={() => { void syncGitHubIssues(); }}>{issueSyncing ? "Syncing GitHub issues…" : "GitHub Sync"}</button><button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button><button type="button" className="text-button board-reap-button" disabled={boardBusy.reap === true || retirableCount === 0} aria-label={retirableCount === 0 ? "Close finished sessions. No sessions currently qualify for safe cleanup." : `Close ${retirableCount} finished session${retirableCount === 1 ? "" : "s"}`} onClick={() => { void closeFinishedSessions(); }}>{boardBusy.reap === true ? "Closing finished sessions…" : `Close finished sessions (${retirableCount})`}</button></div>}
+      {isBoardView && <div className="board-bar"><div className="worktree-project-tabs" role="tablist" aria-label="Project"><button role="tab" aria-selected={boardProject === "all"} className={boardProject === "all" ? "active" : ""} onClick={() => setBoardProject("all")}><span aria-hidden="true">∞</span>All</button><button role="tab" aria-selected={boardProject === "karven"} className={boardProject === "karven" ? "active" : ""} onClick={() => setBoardProject("karven")}><span aria-hidden="true">K</span>Karven</button><button role="tab" aria-selected={boardProject === "rekord"} className={boardProject === "rekord" ? "active" : ""} onClick={() => setBoardProject("rekord")}><span aria-hidden="true">R</span>Rekord</button></div><div className="dashboard-search"><input type="search" aria-label="Search projects" placeholder="Search projects" value={search} onChange={(event) => setSearch(event.target.value)} />{search !== "" && <button type="button" className="dashboard-search-clear" aria-label="Clear the project search" onClick={() => setSearch("")}>×</button>}</div><AgentCapacityChip capacity={capacity} error={capacityError} now={nowTick} open={capacityOpen} onToggle={() => setCapacityOpen((open) => !open)} /><BoardRepositoryButton label="＋ New goal" action="Plan a goal for" repositories={goalRepositories} onPick={(repo) => openGoalPopup({ repository: repo })} /><BoardRepositoryButton label="＋ Worktree" action="Create a worktree in" className="board-new-worktree-button" repositories={goalRepositories} onPick={(repo) => setBoardWorktreeTarget(repo)} /><button className="text-button" disabled={issueSyncing} onClick={() => { void syncGitHubIssues(); }}>{issueSyncing ? "Syncing GitHub issues…" : "GitHub Sync"}</button><button className="text-button" disabled={busy !== ""} onClick={() => { void refreshGitHub(); }}>{busy === "github" ? "Refreshing GitHub…" : "Refresh GitHub"}</button><button type="button" className="text-button board-reap-button" disabled={boardBusy.reap === true || retirableCount === 0} aria-label={retirableCount === 0 ? "Close finished sessions. No sessions currently qualify for safe cleanup." : `Close ${retirableCount} finished session${retirableCount === 1 ? "" : "s"}`} onClick={() => { void closeFinishedSessions(); }}>{boardBusy.reap === true ? "Closing finished sessions…" : `Close finished sessions (${retirableCount})`}</button></div>}
       {/* Stuck and needs-you are the only two numbers here a person acts on, so
           they are the two that reach the rail. The rest are read-only totals. */}
       {isBoardView && <div className="board-counts">{healthSummary.stuck > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.stuck} stuck goals. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.stuck}</b>stuck</button> : <span aria-label="0 stuck goals"><b>0</b>stuck</span>}{healthSummary.needsYou > 0 ? <button type="button" className="attention" aria-label={`${healthSummary.needsYou} goals need you. Show the tasks that need you`} onClick={focusAttentionRail}><b>{healthSummary.needsYou}</b>needs you</button> : <span aria-label="0 goals need you"><b>0</b>needs you</span>}<span aria-label={`${healthSummary.working} goals working`}><b>{healthSummary.working}</b>working</span><span aria-label={`${boardLiveSessions} live cmux sessions`}><b>{boardLiveSessions}</b>sessions</span>{dashboard && <small>{visiblePlans.length} shown · {projectPlans.length} total · {dashboard.github?.checkedAt ? `GitHub checked ${githubCheckedTime(dashboard.github.checkedAt)}${dashboard.github.status === "partial" ? " · partial" : ""}` : "GitHub refresh is manual"}</small>}</div>}
@@ -857,6 +884,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
     {bulkTarget && <BulkRemoveSheet repo={bulkTarget} onClose={() => setBulkTarget(null)} onConfirm={() => removeCleanWorktrees(bulkTarget)} />}
     {launchTarget && <LaunchWorktreeSheet target={launchTarget} onClose={() => setLaunchTarget(null)} onLaunched={async (id) => { setLaunchTarget(null); await load(true); await onLaunched(id); }} onNotice={onNotice} />}
     {createTarget && <CreateWorktreeSheet repo={createTarget} onClose={() => setCreateTarget(null)} onCreated={async (workspaceId) => { setCreateTarget(null); await load(true); if (workspaceId) await onLaunched(workspaceId); }} onNotice={onNotice} />}
+    {boardWorktreeTarget && <CreateWorktreeSheet repo={boardWorktreeTarget} baseMode="default" onClose={() => setBoardWorktreeTarget(null)} onCreated={async (workspaceId) => { setBoardWorktreeTarget(null); await load(true); if (workspaceId) await onLaunched(workspaceId); }} onNotice={onNotice} />}
     {goalPopup.open && !planTarget && <><div className="session-menu-backdrop" /><section className="worktree-launcher worktree-planner-sheet" role="dialog" aria-modal="true" aria-label="Open goal"><header><strong>{goalPopup.error ? "Goal unavailable" : "Opening goal…"}</strong><button type="button" aria-label="Close goal planner sheet" onClick={closeGoalPopup}>×</button></header>{goalPopup.error && <p role="alert">{goalPopup.error}</p>}</section></>}
     {planTarget && <WorktreePlannerSheet key={goalPopup.key} repository={planTarget.repository} initialPlanId={planTarget.planId} initialDraft={planTarget.initialDraft} initialGoal={planTarget.initialGoal} onNewGoal={() => openGoalPopup({ repository: planTarget.repository }, true)} onPlanResolved={goalResolved} onGoalSessionStarted={async (plan) => {
       const workspaceId = plan.goalSessionWorkspaceId;
@@ -1087,9 +1115,21 @@ function DeploymentReleases({ releases }: { releases: DashboardWorktree[] }) {
   return <details className="deployment-releases"><summary><strong>Deployment releases ({releases.length})</strong><span>Updater-owned infrastructure</span><b>⌄</b></summary><p>The local updater owns these checkouts; Companion will not remove them.</p><div className="deployment-release-list">{releases.map((release) => <div className="deployment-release" key={release.id}><strong>{release.shortSha || release.name.slice(0, 7)}</strong><time>{relativeTime(release.lastActivity)}</time><span>{compactPath(release.path)}</span>{release.locked && <em>Locked</em>}</div>)}</div></details>;
 }
 
-function CreateWorktreeSheet({ repo, onClose, onCreated, onNotice }: { repo: DashboardRepository; onClose: () => void; onCreated: (workspaceId?: string) => Promise<void>; onNotice: (message: string) => void }) {
+// A branch name nobody has to invent. Two clicks in the same minute produce the
+// same name; the server refuses the second one and the field stays editable.
+function generatedBranchName(now = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `wt/${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+}
+
+// `baseMode` is the only difference between the two entry points. "manual" is
+// the per-repository sheet: the user picks the base. "default" is the board
+// button: the server fetches the default remote branch and branches from its
+// tip, so the sheet shows no base field at all.
+function CreateWorktreeSheet({ repo, baseMode = "manual", onClose, onCreated, onNotice }: { repo: DashboardRepository; baseMode?: "manual" | "default"; onClose: () => void; onCreated: (workspaceId?: string) => Promise<void>; onNotice: (message: string) => void }) {
+  const defaultBase = baseMode === "default";
   const primary = repo.worktrees.find((worktree) => worktree.isPrimary) || repo.worktrees[0];
-  const [branch, setBranch] = useState("");
+  const [branch, setBranch] = useState(() => (defaultBase ? generatedBranchName() : ""));
   const [base, setBase] = useState(primary?.branch || "main");
   const [startSession, setStartSession] = useState(true);
   const [agent, setAgent] = useState("codex");
@@ -1101,7 +1141,7 @@ function CreateWorktreeSheet({ repo, onClose, onCreated, onNotice }: { repo: Das
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const result = await request<{ worktree: DashboardWorktree; branchCreated: boolean }>(`/api/worktree-dashboard/repositories/${repo.id}/worktrees`, { method: "POST", body: JSON.stringify({ branch, base }) });
+      const result = await request<{ worktree: DashboardWorktree; branchCreated: boolean }>(`/api/worktree-dashboard/repositories/${repo.id}/worktrees`, { method: "POST", body: JSON.stringify(defaultBase ? { branch, useDefaultBase: true } : { branch, base }) });
       onNotice(`${result.branchCreated ? "Created" : "Opened"} worktree ${result.worktree.branch}`);
       if (!startSession) { await onCreated(); return; }
       try {
@@ -1117,7 +1157,7 @@ function CreateWorktreeSheet({ repo, onClose, onCreated, onNotice }: { repo: Das
     finally { setBusy(false); }
   }
 
-  return <><button className="session-menu-backdrop" aria-label="Close new worktree dialog" onClick={onClose} /><form className="worktree-launcher new-worktree-sheet" role="dialog" aria-modal="true" aria-label="Create Git worktree" onSubmit={create}><header><div><strong>Create worktree</strong><span>{repo.name}</span></div><button type="button" onClick={onClose}>×</button></header><p>Creates a sibling folder next to {compactPath(repo.path)}</p><label><span>Branch name</span><input aria-label="Branch name" value={branch} onChange={(event) => setBranch(event.target.value)} maxLength={200} placeholder="feature/my-change" required /></label><label><span>Base revision</span><input aria-label="Base revision" value={base} onChange={(event) => setBase(event.target.value)} maxLength={200} placeholder={primary?.branch || "main"} required /><small>Used only when the branch does not already exist.</small></label><label className="worktree-start-session"><input type="checkbox" checked={startSession} onChange={(event) => setStartSession(event.target.checked)} /><span>Start a session<small>Open an agent in the new worktree after creation.</small></span></label>{startSession && <><fieldset><legend>Agent</legend><button type="button" aria-label="New worktree Codex (xcodex)" className={agent === "codex" ? "selected" : ""} onClick={() => setAgent("codex")}>Codex<small>xcodex</small></button><button type="button" aria-label="New worktree Claude (xclaude)" className={agent === "claude" ? "selected" : ""} onClick={() => setAgent("claude")}>Claude<small>xclaude</small></button></fieldset><label><span>Initial task <small>optional</small></span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={8_000} placeholder="Describe the outcome for this workstream…" /></label></>}{error && <p className="worktree-action-error">{error}</p>}<button className="primary-button" disabled={busy || !branch.trim() || !base.trim()}>{busy ? "Creating…" : startSession ? "Create & start session" : "Create worktree"}</button></form></>;
+  return <><button className="session-menu-backdrop" aria-label="Close new worktree dialog" onClick={onClose} /><form className="worktree-launcher new-worktree-sheet" role="dialog" aria-modal="true" aria-label="Create Git worktree" onSubmit={create}><header><div><strong>Create worktree</strong><span>{repo.name}</span></div><button type="button" onClick={onClose}>×</button></header><p>Creates a sibling folder next to {compactPath(repo.path)}{defaultBase ? ", branched from the latest default branch" : ""}</p><label><span>Branch name</span><input aria-label="Branch name" value={branch} onChange={(event) => setBranch(event.target.value)} maxLength={200} placeholder="feature/my-change" required /></label>{!defaultBase && <label><span>Base revision</span><input aria-label="Base revision" value={base} onChange={(event) => setBase(event.target.value)} maxLength={200} placeholder={primary?.branch || "main"} required /><small>Used only when the branch does not already exist.</small></label>}<label className="worktree-start-session"><input type="checkbox" checked={startSession} onChange={(event) => setStartSession(event.target.checked)} /><span>Start a session<small>Open an agent in the new worktree after creation.</small></span></label>{startSession && <><fieldset><legend>Agent</legend><button type="button" aria-label="New worktree Codex (xcodex)" className={agent === "codex" ? "selected" : ""} onClick={() => setAgent("codex")}>Codex<small>xcodex</small></button><button type="button" aria-label="New worktree Claude (xclaude)" className={agent === "claude" ? "selected" : ""} onClick={() => setAgent("claude")}>Claude<small>xclaude</small></button></fieldset><label><span>Initial task <small>optional</small></span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={8_000} placeholder="Describe the outcome for this workstream…" /></label></>}{error && <p className="worktree-action-error">{error}</p>}<button className="primary-button" disabled={busy || !branch.trim() || (!defaultBase && !base.trim())}>{busy ? "Creating…" : startSession ? "Create & start session" : "Create worktree"}</button></form></>;
 }
 
 type RemovalStage = "remove" | "discard";

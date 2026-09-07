@@ -4,6 +4,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { normalizePullRequest, parsePorcelainV2 } from "./repo-catalog.mjs";
 import { RepositoryArchive } from "./repository-archive.mjs";
 import { RepositoryFavorites } from "./repository-favorites.mjs";
+import { resolveDefaultBaseRef } from "./default-base-ref.mjs";
 import { WORKTREE_REASONS, worktreeStateError } from "./worktree-errors.mjs";
 import { parseWorktreePorcelain, withWorkspaceLaunch } from "./worktree-operations.mjs";
 
@@ -631,8 +632,13 @@ export class WorktreeDashboard {
       throw new TypeError("Choose a valid Git branch name");
     }
 
+    // `useDefaultBase` is the board's one-click path: it fetches the default
+    // remote branch and branches from that tip, so the caller never sends a
+    // base and a stale local branch can never become the base by accident.
     const primary = repository.worktrees.find((item) => item.isPrimary) || repository.worktrees[0];
-    const baseRef = normalizedGitInput(base || primary?.branch || "HEAD", "Enter a base revision");
+    const baseRef = options.useDefaultBase === true
+      ? await resolveDefaultBaseRef((cwd, args, gitOptions) => this.repoCatalog.git(cwd, args, gitOptions), repository.path)
+      : normalizedGitInput(base || primary?.branch || "HEAD", "Enter a base revision");
     const existing = repository.worktrees.find((item) => item.branch === branchName);
     let retiredExisting = null;
     if (existing) {

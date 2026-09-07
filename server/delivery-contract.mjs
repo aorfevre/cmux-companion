@@ -22,6 +22,9 @@ const MAX_SUMMARY = 600;
 const MAX_LABEL = 120;
 const MAX_NOTE = 240;
 const MAX_RATIONALE = 500;
+const MAX_APPROVAL_OVERVIEW = 600;
+const MAX_APPROVAL_ITEMS = 5;
+const MAX_APPROVAL_ITEM_TEXT = 240;
 const MAX_ARTIFACT_TEXT = 16_000;
 const NODE_KINDS = ["start", "step", "decision", "end"];
 const ELEMENT_KINDS = ["header", "text", "input", "button", "list", "image", "note"];
@@ -38,6 +41,7 @@ export function normalizeDeliveryContract(raw, goal = "") {
   const acceptanceCriteria = list(source.acceptanceCriteria, MAX_LIST)
     .map((item, index) => normalizeCriterion(item, index))
     .filter((item) => item.text);
+  const approvalSummary = normalizeApprovalSummary(source.approvalSummary);
   return {
     version: DELIVERY_CONTRACT_VERSION,
     outcome: clean(source.outcome || goal, 2_000),
@@ -49,6 +53,28 @@ export function normalizeDeliveryContract(raw, goal = "") {
     risks: list(source.risks, 12).map(normalizeRisk).filter((item) => item.text),
     optionEvidence: normalizeOptionEvidence(source.optionEvidence),
     designArtifacts: normalizeDesignArtifacts(source.designArtifacts),
+    // Approval copy is intentionally optional. Older saved contracts did not
+    // have it, and inventing a summary while reading them would misrepresent
+    // what their planner actually returned.
+    ...(approvalSummary ? { approvalSummary } : {}),
+  };
+}
+
+function normalizeApprovalSummary(raw) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : null;
+  if (!source) return null;
+  const overview = clean(source.overview, MAX_APPROVAL_OVERVIEW);
+  // A summary without an overview is not useful approval copy. Drop it rather
+  // than leaving a blank field that can obscure the authoritative outcome.
+  if (!overview) return null;
+  return {
+    overview,
+    userFlow: strings(source.userFlow, MAX_APPROVAL_ITEMS, MAX_APPROVAL_ITEM_TEXT),
+    decisions: list(source.decisions, MAX_APPROVAL_ITEMS).map((item) => ({
+      choice: clean(item?.choice, MAX_APPROVAL_ITEM_TEXT),
+      consequence: clean(item?.consequence, MAX_APPROVAL_ITEM_TEXT),
+    })).filter((item) => item.choice && item.consequence),
+    successCriteria: strings(source.successCriteria, MAX_APPROVAL_ITEMS, MAX_APPROVAL_ITEM_TEXT),
   };
 }
 

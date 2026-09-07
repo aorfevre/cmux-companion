@@ -16,6 +16,7 @@ import {
 import { normalizeSpecOptions, specOptionsBriefLines, specOptionsPromptLines } from "./spec-options.mjs";
 import { normalizeReviewOptions, safeReviewOptions } from "./review-options.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
+import { resolveDefaultBaseRef } from "./default-base-ref.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
 import { LaunchRuns } from "./launch-runs.mjs";
 import { goalBoardState } from "./goal-board.mjs";
@@ -1350,27 +1351,7 @@ export class WorktreePlanner {
   // Branch every task from the up-to-date default remote branch, so no task
   // inherits another task's work or a stale local commit.
   async #baseRef(draft) {
-    const repositoryPath = await this.#repositoryPath(draft);
-    let branch = "main";
-    try {
-      const output = await this.git(repositoryPath, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-      branch = String(output).trim().replace(/^refs\/remotes\/origin\//, "").replace(/^origin\//, "") || "main";
-    } catch {
-      // No local origin/HEAD ref. Ask the remote rather than guessing "main",
-      // which aborts the whole launch on a healthy master-default repository.
-      const head = await this.git(repositoryPath, ["ls-remote", "--symref", "origin", "HEAD"]).catch(() => "");
-      branch = String(head).match(/^ref: refs\/heads\/(\S+)\s+HEAD/m)?.[1] || "main";
-    }
-    try {
-      await this.git(repositoryPath, ["fetch", "origin", branch], { timeout: 120_000 });
-    } catch (cause) {
-      const lines = String(cause?.stderr || cause?.message || "").trim().split("\n").map((line) => line.trim()).filter(Boolean);
-      // Git prints the diagnosis first and boilerplate advice last, so prefer
-      // the first fatal or error line over the tail.
-      const detail = (lines.find((line) => /^(fatal|error):/.test(line)) || lines.at(-1) || "").slice(0, 160);
-      throw new TypeError(detail ? `Git could not fetch origin/${branch}: ${detail}` : `Git could not fetch origin/${branch}`);
-    }
-    return `origin/${branch}`;
+    return resolveDefaultBaseRef(this.git, await this.#repositoryPath(draft));
   }
 
   async #repositoryPath(draft) {
@@ -1832,7 +1813,7 @@ function answeredPairs(draft, answers) {
 
 const SKIP_PROMPT = "Stop asking questions. Decide the remaining details yourself and reply now with the delivery-contract JSON object.";
 
-const SPEC_HEAD = '{"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}]';
+const SPEC_HEAD = '{"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}],"approvalSummary":{"overview":"...","userFlow":["..."],"decisions":[{"choice":"...","consequence":"..."}],"successCriteria":["..."]}';
 const SPEC_TAIL = '},"tasks":[{"id":"T1","title":"...","branch":"feature/...","prompt":"...","type":"feature|bugfix|ui|backend|docs|test|migration|investigation|refactor","criterionIds":["AC-1"],"dependsOn":[],"ownedAreas":["path/or/glob/**"],"verification":["specific command or manual check"]}]}';
 const EVIDENCE_SHAPE = ',"optionEvidence":{"unitTests":{"status":"planned|not_applicable","rationale":"...","taskIds":["T1"],"criterionIds":["AC-1"]}}';
 const ARTIFACT_SHAPE = ',"designArtifacts":[{"id":"F1","kind":"flow|screen","title":"...","summary":"...","nodes":[],"edges":[],"screen":{"name":"...","elements":[]}}]';
@@ -1851,6 +1832,8 @@ const CONTRACT_LINES = [
   "It never holds both keys.",
   "Ask questions only while a real ambiguity would change the split. Otherwise return the tasks.",
   "The spec states the user-visible outcome, explicit scope boundaries, constraints, visible assumptions, observable acceptance criteria, and material risks.",
+  "Include approvalSummary for every new or revised contract. It is concise plain-language approval copy faithful to the detailed spec: overview is at most 600 characters; userFlow, decisions, and successCriteria each have at most five entries; each entry or decision field is at most 240 characters.",
+  "State consequential choices and their effects in decisions. Do not add requirements, conceal assumptions or blockers, or treat the summary as authoritative: the detailed contract and readiness remain authoritative.",
   "Every acceptance criterion has at least one task. Every task names the criteria it delivers, its owned files or areas, and concrete verification.",
   "Use dependsOn only when ordering is real. Tasks in the same dependency wave must be safe to run in separate worktrees and should not claim the same files.",
   "Each task branch starts with feature/ and uses only letters, digits, dots, dashes and slashes.",
@@ -1881,12 +1864,11 @@ function safeSpecOptions(value) {
   }
 }
 
-// A skipped round on a live session sends one sentence and nothing else. That
-// sentence cannot carry the requested rigor, so the demands travel with it.
-// With no option requested the prompt stays exactly as it was.
+// A skipped round on a live session must still restate the current contract
+// shape. A session can predate a schema addition, so one sentence alone would
+// let it return a task split without the required approval summary.
 function skipPrompt(specOptions) {
-  const demands = specOptionsPromptLines(safeSpecOptions(specOptions));
-  return demands.length ? [SKIP_PROMPT, "", contractText(specOptions)].join("\n") : SKIP_PROMPT;
+  return [SKIP_PROMPT, "", contractText(specOptions)].join("\n");
 }
 
 const OVERRIDES = [
@@ -2074,7 +2056,7 @@ function rejectedTasks(draft) {
   ].join("\n"));
 }
 
-const FEEDBACK_HEADER = "The reviewer read your task split and rejected it. Analyse the goal again and return a better split.";
+const FEEDBACK_HEADER = "The reviewer read your task split and rejected it. Analyse the goal again and return a better split. Regenerate approvalSummary so it faithfully reflects the revised detailed contract without adding requirements; keep real blockers visible in readiness.";
 
 // With a live session the planner still holds the goal and the tasks, so the
 // feedback alone is enough. Without one the next spawn is a fresh conversation,
