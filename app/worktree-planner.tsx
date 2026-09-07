@@ -388,6 +388,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   const [taskHealth, setTaskHealth] = useState<Record<string, TaskHealth>>({});
   const [confirmTask, setConfirmTask] = useState("");
   const [error, setError] = useState("");
+  const goalSessionRequestId = useRef("");
   // The reviewer's rejection. It is cleared by receive(), so a finished round
   // never leaves the previous complaint in the box.
   const [feedback, setFeedback] = useState("");
@@ -489,10 +490,13 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   }
 
   async function startGoalSession() {
+    if (draft || busy || modelDefaultsLoading || uploading > 0 || !goal.trim() || !model.trim() || !reviewOptions.reviewerModel.trim()) return;
     setBusy("plan"); setError("");
     try {
-      const started = await request<PlanDraft>("/api/goal-sessions", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions, reviewOptions }) });
+      if (!goalSessionRequestId.current) goalSessionRequestId.current = crypto.randomUUID();
+      const started = await request<PlanDraft>("/api/goal-sessions", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions, reviewOptions, idempotencyKey: goalSessionRequestId.current }) });
       receive(started);
+      goalSessionRequestId.current = "";
       onNotice(`Goal session started in cmux for ${repository.name}.`);
       onClose();
       await onGoalSessionStarted?.(started);
@@ -707,7 +711,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   // A goal takes minutes to write and a round takes minutes to answer, so a
   // mis-tap outside the sheet must not throw both away. The header button is
   // the way out.
-  return <><div className="session-menu-backdrop" /><form className="worktree-launcher worktree-planner-sheet" role="dialog" aria-modal="true" aria-label="Plan a goal" onSubmit={(event) => event.preventDefault()}>
+  return <><div className="session-menu-backdrop" /><form className="worktree-launcher worktree-planner-sheet" role="dialog" aria-modal="true" aria-label="Plan a goal" onSubmit={(event) => { event.preventDefault(); void startGoalSession(); }}>
     <header><div><strong>{heading}</strong><span>{repository.name}</span></div><button type="button" aria-label="Close goal planner sheet" onClick={onClose}>×</button></header>
     {draft && <div className="planner-goal-reference"><span>Goal reference: <code>{draft.planId}</code></span><button type="button" onClick={async () => { const url = goalPopupUrl({ planId: draft.planId }).href; try { await navigator.clipboard.writeText(url); onNotice("Goal link copied"); } catch { onNotice("Copy the goal URL from the address bar"); } }}>Copy goal link</button></div>}
     {draft && <button type="button" className="planner-new-goal" disabled={busy !== ""} onClick={newGoal}>← New goal</button>}

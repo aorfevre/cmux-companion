@@ -12,15 +12,23 @@ export class GoalSessionService {
     this.processAlive = processAlive;
   }
 
-  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {} } = {}) {
+  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, idempotencyKey = null } = {}) {
     const text = String(goal || "").trim();
     if (!text || text.length > 4_000) throw new TypeError("Describe the goal for this repository");
     const repository = await this.worktrees.resolveRepository(repositoryId);
-    const planId = randomUUID();
+    const planId = validIdempotencyKey(idempotencyKey) || randomUUID();
     const attachments = normalizeImages(images);
     const selectedEngine = normalizePlannerEngine(engine, this.modelSettings?.roles);
+    const selectedReview = safeReviewOptions(reviewOptions);
+    if (selectedReview.codeReview || selectedEngine.reviewer) throw new TypeError("Managed goal sessions do not support automated reviewers. Use Plan this goal for reviewed delivery");
+    const selectedOptions = normalizeSpecOptions(specOptions);
+    const existing = this.store.get(planId);
+    if (existing) {
+      if (existing.workflow !== "goal_session" || existing.repositoryId !== repository.id || existing.goal !== text || !same(existing.images, attachments) || !same(existing.engine, selectedEngine) || !same(existing.specOptions, selectedOptions) || !same(existing.reviewOptions, selectedReview)) throw new TypeError("This goal-session request key belongs to a different goal");
+      return existing;
+    }
     this.store.createPlan({ planId, repositoryId: repository.id, repositoryName: repository.name, cwd: repository.primaryPath, goal: text, images: attachments,
-      engine: selectedEngine, specOptions: normalizeSpecOptions(specOptions), reviewOptions: safeReviewOptions(reviewOptions) });
+      engine: selectedEngine, specOptions: selectedOptions, reviewOptions: selectedReview });
     const branch = `goal-session/${planId.slice(0, 12)}`;
     this.store.reserveGoalSession(planId, { branch, generation: 1 });
     try {
@@ -31,12 +39,12 @@ export class GoalSessionService {
         branch, useDefaultBase: true, requireFreshAtBase: true,
         workspaces: inventory.workspaces, workspacesAvailable: true,
       });
+      // This is the first irreversible external boundary. Persist the path
+      // before any subsequent Git read can fail or the process can restart.
+      this.store.recordGoalSessionWorktree(planId, { worktreePath: created.worktree.path, generation: 1 });
       const baseSha = await this.worktrees.repoCatalog?.git?.(created.worktree.path, ["rev-parse", "HEAD"])
         .then((value) => String(value).trim(), () => "") || "";
       this.store.recordGoalSessionBase(planId, { baseRef: created.baseRef || null, baseSha });
-      // Durably own the checkout before the cmux side effect. A crash at the
-      // next boundary can recover only this path, never create a second writer.
-      this.store.recordGoalSessionWorktree(planId, { worktreePath: created.worktree.path, generation: 1 });
       const workspace = await this.cmux.workspaceCreate({ cwd: created.worktree.path, title: `Goal · ${text.slice(0, 72)}`, agent: "shell" });
       const plan = this.store.recordGoalSessionStart(planId, { worktreePath: created.worktree.path, workspaceId: workspace.workspace_id, generation: 1 });
       await this.#startRunner(plan);
@@ -81,14 +89,12 @@ export class GoalSessionService {
     if (!plan?.goalSessionWorkspaceId || !plan?.goalSessionGeneration) throw new TypeError("This goal session has no durable workspace");
     const dispatchId = randomUUID();
     this.store.claimGoalSessionRunnerDispatch(plan.planId, { generation: plan.goalSessionGeneration, dispatchId });
-    try {
-      await this.cmux.workspaceStartGoalSessionRunner(plan.goalSessionWorkspaceId, {
-        planId: plan.planId, databasePath: this.store.path, generation: plan.goalSessionGeneration, dispatchId,
-      });
-    } catch (cause) {
-      this.store.releaseGoalSessionRunnerDispatch(plan.planId, { generation: plan.goalSessionGeneration, dispatchId });
-      throw cause;
-    }
+    // A transport error can arrive after cmux accepted surface.send_text. The
+    // durable dispatch remains uncertain instead of permitting a retry to
+    // inject a second runner into the visible workspace.
+    await this.cmux.workspaceStartGoalSessionRunner(plan.goalSessionWorkspaceId, {
+      planId: plan.planId, databasePath: this.store.path, generation: plan.goalSessionGeneration, dispatchId,
+    });
   }
 
   findByWorkspace(workspaceId) { return this.store.findGoalSessionByWorkspace(workspaceId); }
@@ -103,7 +109,16 @@ function isProcessAlive(pid) {
 }
 
 function withPlanId(cause, planId) {
-  const error = cause instanceof Error ? cause : new Error(String(cause || "Goal session could not start"));
+  const error = new TypeError(cause?.message || String(cause || "Goal session could not start"));
   error.planId = planId;
   return error;
 }
+
+function validIdempotencyKey(value) {
+  const key = typeof value === "string" ? value.trim() : "";
+  if (!key) return null;
+  if (!/^[0-9a-f-]{36}$/i.test(key)) throw new TypeError("Invalid goal-session request key");
+  return key;
+}
+
+function same(left, right) { return JSON.stringify(left) === JSON.stringify(right); }

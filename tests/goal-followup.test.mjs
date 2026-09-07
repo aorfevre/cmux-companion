@@ -104,6 +104,14 @@ test("opens exactly one follow-up session with every selected action in its brie
   assert.equal(store.recorded[0][1].briefPath, briefs.written[0].path);
 });
 
+test("never opens a follow-up writer for a managed goal session", async (t) => {
+  const path = await deliveryDirectory(t);
+  const plan = combinedPlan(path, { workflow: "goal_session" });
+  const { launcher, workspaceCalls } = harness(plan);
+  await assert.rejects(() => launcher.launch(plan.planId, { actions: ["custom"], custom: "Retry it", agent: "codex" }), /Managed goal sessions/);
+  assert.deepEqual(workspaceCalls, []);
+});
+
 test("a single-task goal follows its launched task branch and worktree", async (t) => {
   const path = await deliveryDirectory(t);
   const plan = combinedPlan(null, {

@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { finalEnvelope, parsePlannerReply, progressEvent, streamExecFile } from "./worktree-planner.mjs";
+import { specOptionsPromptLines } from "./spec-options.mjs";
 
 // `--tools` is the enforced provider tool surface. `--allowed-tools` only
 // answers permission prompts for this narrow subset; it is deliberately never
@@ -191,11 +192,13 @@ function openingMessage(plan) {
   const images = Array.isArray(plan.images) && plan.images.length
     ? `\nAttached image${plan.images.length > 1 ? "s" : ""}:\n${plan.images.map((image) => `- ${image.path}`).join("\n")}\nRead each attachment with the Read tool; it provides user context for the proposal.\n`
     : "";
-  return `You are planning one small increment for this goal: ${plan.goal}${images}Investigate read-only. Reply with exactly one JSON object and no other prose. Return either {"questions":[{"text":"...","options":["..."]}]} or {"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}]},"tasks":[{"id":"T1","title":"...","branch":"feature/...","prompt":"self-contained outcome, scope and verification","type":"feature|bugfix|ui|backend|docs|test|migration|investigation|refactor","criterionIds":["AC-1"],"dependsOn":[],"ownedAreas":["path/or/glob/**"],"verification":["specific command or manual check"]}]}. Never return both questions and tasks. Do not implement, run shell commands, edit files, delegate, or ask for tool permissions.`;
+  const options = specOptionsPromptLines(plan.specOptions);
+  return `You are planning one small increment for this goal: ${plan.goal}${images}Investigate read-only. Reply with exactly one JSON object and no other prose. Return either {"questions":[{"text":"...","options":["..."]}]} or {"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}],"optionEvidence":{}},"tasks":[{"id":"T1","title":"...","branch":"feature/...","prompt":"self-contained outcome, scope and verification","type":"feature|bugfix|ui|backend|docs|test|migration|investigation|refactor","criterionIds":["AC-1"],"dependsOn":[],"ownedAreas":["path/or/glob/**"],"verification":["specific command or manual check"]}]}. Never return both questions and tasks.${options.length ? `\n${options.join("\n")}` : ""} Do not implement, run shell commands, edit files, delegate, or ask for tool permissions.`;
 }
 
 function implementationMessage(plan) {
-  return `The user approved proposal revision ${plan.approvalRevision}. The immutable approved proposal is:\n${JSON.stringify(plan.proposal)}\nImplement only that displayed scope in this worktree. Do not expand it without another proposal. When finished, commit the change, push the branch, open one pull request against the recorded base, and report concrete manual verification and changed files.`;
+  const base = plan.baseRef || plan.baseSha || "the recorded repository base";
+  return `The user approved proposal revision ${plan.approvalRevision}. The immutable approved proposal is:\n${JSON.stringify(plan.proposal)}\nImplement only that displayed scope in this worktree. Do not expand it without another proposal. When finished, commit the change, push branch ${plan.goalSessionBranch}, open one pull request against ${base}, and report concrete manual verification and changed files.`;
 }
 
 function runCcs(args, { cwd, out = null } = {}) {

@@ -43,8 +43,8 @@ export function goalBoardState(plan) {
   // authority, never an empty legacy planner round.
   if (text(source.workflow) === "goal_session") {
     const session = text(source.goalSessionState);
-    if (session === "unavailable" || source.transitionStatus === "uncertain") return "blocked";
-    if (prState === "OPEN" || prState === "CLOSED" || text(source.finalPrUrl) !== "") return "waiting_for_merge";
+    if (session === "unavailable" || text(source.goalSessionError) || source.transitionStatus === "uncertain") return "blocked";
+    if (prState === "OPEN" || (prState !== "CLOSED" && text(source.finalPrUrl) !== "")) return "waiting_for_merge";
     if (session === "awaiting_input") return "blocked";
     if (session === "awaiting_approval") return "waiting_for_dev";
     if (session === "implementing") return "dev_in_progress";

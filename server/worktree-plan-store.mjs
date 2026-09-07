@@ -276,7 +276,8 @@ export class WorktreePlanStore {
   recordGoalSessionStartFailure(planId, error) {
     const at = this.#stamp();
     this.db.prepare(`UPDATE plans SET goal_session_error = ?, updated_at = ?
-      WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_state = 'starting'`).run(text(error).slice(0, 2_000) || "Goal session could not start", at, String(planId));
+      WHERE plan_id = ? AND workflow = 'goal_session' AND goal_session_state IN ('starting', 'planning')
+        AND goal_session_runner_pid IS NULL AND transition_status IS NULL`).run(text(error).slice(0, 2_000) || "Goal session could not start", at, String(planId));
     return this.get(planId);
   }
 
@@ -1342,6 +1343,7 @@ export class WorktreePlanStore {
       workflow: row.workflow || "planned",
       goalSessionState: row.goal_session_state ?? null,
       goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,
+      goalSessionError: row.goal_session_error ?? null,
       proposalRevision: Number(row.proposal_revision) || 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

@@ -255,7 +255,7 @@ export class CmuxClient {
     return withWorkspaceLaunch(options.cwd, () => this.createWorkspaceLocked(options));
   }
 
-  async createWorkspaceLocked({ cwd, title, agent = "shell", model = "default", prompt = "", script = null, env = null, goalSession = null }) {
+  async createWorkspaceLocked({ cwd, title, agent = "shell", model = "default", prompt = "", script = null, env = null }) {
     if (typeof cwd !== "string" || !cwd.startsWith("/")) throw new TypeError("Invalid repository path");
     // cmux accepts a cwd that does not exist and creates the workspace anyway.
     // Its shell then cannot enter the directory and silently keeps the one cmux
@@ -266,7 +266,6 @@ export class CmuxClient {
     if (typeof title !== "string" || !title.trim() || title.trim().length > 100) throw new TypeError("Invalid workspace title");
     if (typeof prompt !== "string" || prompt.length > 8_000) throw new TypeError("Prompt is too long");
     if (script !== null && !/^[a-zA-Z0-9:_-]{1,64}$/.test(script)) throw new TypeError("Invalid package script");
-    if (goalSession !== null && (!/^[0-9a-f-]{36}$/i.test(String(goalSession?.planId || "")) || typeof goalSession?.databasePath !== "string" || !goalSession.databasePath.startsWith("/"))) throw new TypeError("Invalid goal session runner");
 
     // A title is what a person reads, and a person can rename it. These stamps
     // are the identity that survives that, so a later sweep can still say which
@@ -280,8 +279,7 @@ export class CmuxClient {
     const workspaceId = created.workspace_id || created.workspace_ref;
     assertTarget(workspaceId);
     let command = "";
-    if (goalSession) throw new TypeError("Start a goal session runner after its workspace is recorded");
-    else if (script) command = `npm run ${script}`;
+    if (script) command = `npm run ${script}`;
     else if (agent === "codex" || agent === "claude") command = `${agent === "codex" ? "xcodex" : "xclaude"}${modelFlag}${prompt.trim() ? ` ${shellQuote(prompt.trim())}` : ""}`;
     else if (prompt.trim()) command = `printf '%s\\n' ${shellQuote(prompt.trim())}`;
     const text = `${exports}${command}`;

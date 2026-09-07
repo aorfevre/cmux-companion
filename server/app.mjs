@@ -240,6 +240,7 @@ export async function buildApp({
       return reply.code(400).send({
         error: error.message,
         code: "INVALID_REQUEST",
+        ...(typeof error.planId === "string" ? { planId: error.planId } : {}),
         ...(isWorktreeReason(error.reason) ? { reason: error.reason } : {}),
       });
     }

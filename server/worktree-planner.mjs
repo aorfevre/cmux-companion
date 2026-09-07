@@ -1137,6 +1137,7 @@ export class WorktreePlanner {
     this.#assertNotTerminal(id);
     const plan = this.#read(() => this.store?.get(id));
     if (!plan) throw new TypeError("Unknown plan. Start a new goal");
+    if (plan.workflow === "goal_session") throw new TypeError("This managed goal owns its visible cmux conversation and cannot launch a legacy task recovery");
     if (plan.status !== "launched") throw new TypeError("This goal has not launched yet, so it has no task to recover");
     const task = (plan.tasks || []).find((item) => item.id === String(taskId || ""));
     if (!task) throw new TypeError("Unknown task in this goal");

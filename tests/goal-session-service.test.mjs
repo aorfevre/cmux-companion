@@ -78,6 +78,13 @@ test("records the worktree before cmux creates a workspace and recovers the exac
 
   const restarted = [];
   service.cmux.workspaceStartGoalSessionRunner = async (...args) => { restarted.push(args); };
+  await assert.rejects(() => service.recover(planId), /still uncertain/);
+  // The cmux transport failure could have delivered the command, so ordinary
+  // recovery refuses another writer. This simulates an operator proving it
+  // never reached cmux before clearing the dispatch record.
+  const dispatchId = store.get(planId).goalSessionRunnerDispatchId;
+  assert.ok(dispatchId);
+  store.releaseGoalSessionRunnerDispatch(planId, { generation: 1, dispatchId });
   const recovered = await service.recover(planId);
   assert.equal(recovered.goalSessionWorkspaceId, "workspace-goal");
   assert.equal(restarted.length, 1);
