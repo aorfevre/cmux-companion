@@ -17,7 +17,7 @@ import { GITHUB_ISSUE_ALL_STARTED_HINT, GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_
 import { GitHubIssuePlannerSheet } from "./github-issue-planner";
 // The quota countdown already exists on the licence page. Reusing it keeps one
 // reset time from reading two different ways on two screens.
-import { resetText } from "./account-usage";
+import { AgentCapacityChip, AgentCapacityStrip, WeeklyOpportunities, type AgentCapacity } from "./agent-capacity";
 
 type DeliveryState = { label: string; tone: "attention" | "working" | "done" | "ready" };
 type WorktreeSession = { id: string; title: string; preview: string; directory?: string | null; terminalCount: number; lastActivityAt: number; provider: string; state: DeliveryState };
@@ -36,10 +36,6 @@ type HealthGoal = { planId: string; goal: string; repositoryId: string; reposito
 type HealthSummary = { goals: number; tasks: number; stuck: number; needsYou: number; working: number; deadTasks: number; idleTasks: number; failedTasks: number };
 // GET /api/goals/capacity. The dispatcher's own verdict, rendered: nothing here
 // recomputes which provider is next.
-type CapacityWindow = { cadence: "5h" | "weekly"; label: string; remainingPercent: number; resetAt: string | null };
-type CapacityAccount = { id: string | null; label: string; status: string; headroom: number | null; windows: CapacityWindow[] };
-type CapacityProvider = { id: "claude" | "codex"; label: string; available: boolean; headroom: number | null; bestPercent: number | null; resetAt: string | null; accounts: CapacityAccount[] };
-type AgentCapacity = { providers: CapacityProvider[]; next: "claude" | "codex" | null; reason: string; nextReset: string | null; available: boolean };
 // POST /api/worktree-plans/:planId/check-merge. `changed` is the only field
 // that says the board moved; the rest explains why it did not.
 type MergeCheck = { planId: string; changed: boolean; state: "OPEN" | "CLOSED" | "MERGED" | null; boardStatus: "merged" | "aborted" | null; pullRequest: { number: number; url: string } | null; checked: true };
@@ -266,7 +262,7 @@ function bulkRemovableWorktrees(repo: DashboardRepository) {
   return repo.worktrees.filter((worktree) => !worktree.managedRelease && !worktree.isPrimary && worktree.changedFiles === 0 && !worktree.locked && worktree.sessions.length === 0);
 }
 
-export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessionStarted, onNotice }: { onOpenWorkspace: (id: string) => void; onLaunched: (id: string) => Promise<void>; onGoalSessionStarted?: (id: string) => Promise<void>; onNotice: (message: string) => void }) {
+export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessionStarted, onUsage, onNotice }: { onOpenWorkspace: (id: string) => void; onLaunched: (id: string) => Promise<void>; onGoalSessionStarted?: (id: string) => Promise<void>; onNotice: (message: string) => void; onUsage?: () => void }) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [error, setError] = useState("");
   const [goalError, setGoalError] = useState("");
@@ -843,7 +839,8 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
       {isGoalView && !isBoardView && dashboard && visiblePlans.length === 0 && !goalError && query && <div className="empty-card filtered-empty"><span>⌕</span><strong>No goal matches “{search.trim()}”</strong><p>Clear the search to see every goal again.</p><button type="button" className="text-button" onClick={() => setSearch("")}>Clear search</button></div>}
       {isGoalView && !isBoardView && dashboard && visiblePlans.length === 0 && !goalError && !query && <div className="empty-card filtered-empty"><span>{dashboardFilter === "draft-goals" ? "◇" : "✓"}</span><strong>No {dashboardFilter === "draft-goals" ? "draft" : "launched"} {project === "karven" ? "Karven" : "Rekord"} goals</strong><p>{dashboardFilter === "draft-goals" ? "New and interrupted plans will appear here." : "Goals appear here after their worktree sessions are launched."}</p></div>}
       {isGoalView && !isBoardView && <section className="worktree-goals" aria-label={dashboardFilter === "draft-goals" ? "Draft goals" : "Launched goals"}>{visiblePlans.map((plan) => { const repo = projectRepositories.find((item) => item.id === plan.repositoryId); if (!repo) return null; const closed = terminalStatus(plan); return <article className={`worktree-goal-card ${closed || (plan.running ? "planning" : plan.status)}`} key={plan.planId}><header><span className="repo-icon">{repo.name.slice(0, 1).toUpperCase()}</span><div><strong>{plan.goal}</strong><small>{repo.name}</small></div><em>{closed === "merged" ? "Merged" : closed === "aborted" ? "Aborted" : plan.running ? "Planning…" : plan.launching ? "Launching…" : plan.status === "draft" ? "Draft" : "Launched"}</em></header><div className="worktree-goal-meta"><span>{closed ? closed === "merged" ? "The goal pull request is merged" : "Stopped. Branches and worktrees were kept." : plan.running ? plan.runStep || "Reading the repository…" : plan.launching ? LAUNCHING_EVIDENCE : plan.runPhase === "failed" ? plan.runError || "The last round failed" : plan.round === 0 ? "Planning stopped before it produced anything" : plan.stage === "questions" ? `Round ${plan.round} · waiting for answers` : `${plan.taskCount} task${plan.taskCount === 1 ? "" : "s"}`}</span><span>Updated {relativePlanTime(plan.updatedAt)}</span></div>{confirmDeleteGoalId === plan.planId ? <footer className="worktree-goal-delete"><span>Delete this saved goal?</span><button type="button" aria-label={`Cancel deleting ${plan.goal}`} disabled={deletingGoalId === plan.planId} onClick={() => setConfirmDeleteGoalId("")}>Cancel</button><button type="button" className="confirm-delete" aria-label={`Confirm delete ${plan.goal}`} disabled={deletingGoalId === plan.planId} onClick={() => { void deleteGoal(plan); }}>{deletingGoalId === plan.planId ? "Deleting…" : "Confirm delete"}</button></footer> : <footer><button type="button" className="worktree-goal-open" aria-label={`${goalOpenLabel(plan)} ${plan.goal}`} onClick={() => openGoalPopup({ repository: repo, planId: plan.planId })}>{goalOpenLabel(plan)}</button><button type="button" className="worktree-goal-delete-button" aria-label={`Delete ${plan.goal}`} disabled={plan.running === true} onClick={() => setConfirmDeleteGoalId(plan.planId)}>Delete</button></footer>}</article>; })}</section>}
-      {isBoardView && capacityOpen && <AgentCapacityStrip capacity={capacity} error={capacityError} now={nowTick} onRetry={() => { void loadCapacity(true); }} />}
+      {isBoardView && <WeeklyOpportunities onUsage={onUsage} capacity={capacity} error={capacityError} now={nowTick} />}
+      {isBoardView && capacityOpen && <AgentCapacityStrip onUsage={onUsage} capacity={capacity} error={capacityError} now={nowTick} onRetry={() => { void loadCapacity(true); }} />}
       {isBoardView && dashboard && <AttentionRail
         railRef={attentionRef}
         rows={attentionRows}
@@ -985,37 +982,6 @@ function GoalBoardCard({ returningIssues, confirmingReturn, onRequestReturn, onC
 
 // Which provider takes the next task, and what would change that answer. The
 // verdict is the server's; this renders it and never recomputes it.
-function AgentCapacityStrip({ capacity, error, now, onRetry }: { capacity: AgentCapacity | null; error: string; now: number; onRetry: () => void }) {
-  return <section className="agent-capacity" aria-label="Agent capacity">
-    <header><h3>Agent capacity</h3>{capacity && <span className={`agent-capacity-verdict${capacity.available ? "" : " exhausted"}`}>{capacity.available ? capacity.next ? `${labelOf(capacity, capacity.next)} takes the next task` : "No provider chosen" : `Both exhausted · ${resetText(capacity.nextReset, now)}`}</span>}{error && <button type="button" className="text-button" aria-label="Retry the agent capacity check" onClick={onRetry}>Retry</button>}</header>
-    {error && <p className="agent-capacity-note">{error}</p>}
-    {/* The reason is written to be read as one sentence. It is the only line
-        that explains an alternation between two near-equal providers. */}
-    {capacity?.reason && <p className="agent-capacity-reason">{capacity.reason}</p>}
-    {!capacity && !error && <p className="agent-capacity-note">Reading agent quota…</p>}
-    {capacity && <div className="agent-capacity-providers">{capacity.providers.map((provider) => <ProviderCapacity provider={provider} next={capacity.next === provider.id} now={now} key={provider.id} />)}</div>}
-  </section>;
-}
-
-function labelOf(capacity: AgentCapacity, id: "claude" | "codex") { return capacity.providers.find((provider) => provider.id === id)?.label || id; }
-
-function ProviderCapacity({ provider, next, now }: { provider: CapacityProvider; next: boolean; now: number }) {
-  // `headroom` is null for a provider the dispatcher will not offer work to.
-  // `bestPercent` still carries its real number, so a provider at 3% reads as
-  // three percent rather than as no data at all.
-  const percent = provider.headroom ?? provider.bestPercent;
-  const windows = provider.accounts.flatMap((account) => account.windows);
-  const attention = provider.accounts.filter((account) => account.status !== "ready");
-  return <article className={`agent-capacity-provider${next ? " next" : ""}${provider.headroom === null ? " blocked" : ""}`}>
-    <header><strong>{provider.label}</strong>{next && <em>Next task</em>}<b>{percent === null ? "—" : `${percent}%`}</b></header>
-    <p className="agent-capacity-bar" aria-label={`${provider.label} headroom ${percent === null ? "unknown" : `${percent} percent`}`}><i style={{ width: `${Math.max(0, Math.min(100, percent ?? 0))}%` }} /></p>
-    {windows.length === 0
-      ? <p className="agent-capacity-window-empty">No deciding window reported.</p>
-      : <ul className="agent-capacity-windows">{windows.map((window, index) => <li key={`${window.cadence}:${index}`}><span>{window.label}</span><b>{window.remainingPercent}%</b><small>{resetText(window.resetAt, now)}</small></li>)}</ul>}
-    {attention.map((account) => <p className={`agent-capacity-account ${account.status}`} key={account.id || account.label}><span>{account.label}</span><b>{account.status}</b></p>)}
-  </article>;
-}
-
 function emptyHealthSummary(): HealthSummary {
   return { goals: 0, tasks: 0, stuck: 0, needsYou: 0, working: 0, deadTasks: 0, idleTasks: 0, failedTasks: 0 };
 }
@@ -1037,22 +1003,7 @@ function summarizeHealthGoals(goals: HealthGoal[]): HealthSummary {
   return summary;
 }
 
-// The strip's verdict as one chip, so the board bar answers "who takes the next
-// task and is there room" without the panel. Clicking it opens the same strip.
-function AgentCapacityChip({ capacity, error, now, open, onToggle }: { capacity: AgentCapacity | null; error: string; now: number; open: boolean; onToggle: () => void }) {
-  const next = capacity?.next ? capacity.providers.find((provider) => provider.id === capacity.next) : null;
-  // `headroom` is null for a provider the dispatcher will not offer work to;
-  // `bestPercent` still carries the real number, exactly as the strip reads it.
-  const percent = next ? next.headroom ?? next.bestPercent : null;
-  // Low is the same threshold the strip's bar makes visible: a fifth left is
-  // where the next wave starts queueing rather than launching.
-  const low = capacity ? !capacity.available || capacity.providers.some((provider) => provider.headroom === null) || (percent !== null && percent <= 20) : false;
-  const label = error ? "Agent capacity unavailable"
-    : !capacity ? "Reading agent quota…"
-      : !capacity.available ? `Both exhausted · ${resetText(capacity.nextReset, now)}`
-        : next ? `${next.label} ${percent === null ? "—" : `${percent}%`}` : "No provider chosen";
-  return <button type="button" className={`agent-capacity-chip${low ? " warn" : ""}${open ? " open" : ""}`} aria-label={`${label}. ${open ? "Hide" : "Show"} agent capacity`} aria-expanded={open} onClick={onToggle}><span aria-hidden="true">⚡</span>{label}<b aria-hidden="true">⌄</b></button>;
-}
+
 
 // Every task a person must answer for, across every repository, on one screen.
 // Restart and Skip both destroy something, so each confirms inline first.

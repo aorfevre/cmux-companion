@@ -626,3 +626,16 @@ test("concurrent recovery requests cannot create competing writers for one task"
   await first;
   assert.equal(deps.calls.filter(([kind]) => kind === "workspace").length, 1);
 });
+
+test("blocked quota prevents every relaunch mode before closing the old session", async (t) => {
+  for (const mode of ["continue", "restart", "rebranch"]) {
+    const deps = recoveryDeps();
+    deps.cmux.workspaceListDetailed = async () => ({ workspaces: [{ id: "ws-old" }] });
+    deps.accountUsage.snapshot = async () => ({ providers: [{ id: "claude", available: true,
+      accounts: [{ status: "exhausted", windows: [{ category: "usage", cadence: "weekly", remainingPercent: 0 }] }] }] });
+    const { planner, store } = launched(t, { deps });
+    await assert.rejects(() => planner.relaunchTask("plan-1", "t1", { mode, closeLive: true }), /no usable quota/);
+    assert.deepEqual(deps.calls, [], "no close, worktree mutation or new session");
+    assert.equal(store.get("plan-1").tasks[0].workspaceId, "ws-old");
+  }
+});

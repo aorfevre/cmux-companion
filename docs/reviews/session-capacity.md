@@ -2,8 +2,42 @@
 
 Reviewed 2026-09-07 against origin/main `3a0518a`, in the separate worktree
 `cmux-companion-session-capacity`, branch `feature/session-capacity`.
-Scope: source review, deterministic verification and a concrete proposal.
-No product behavior, installed configuration or live sessions were changed.
+The initial review covered source, deterministic verification and a concrete
+proposal. The implementation below follows the user’s subsequent instruction.
+Installed configuration and live sessions remain unchanged.
+
+## Implementation: first delivery
+
+The first product increment implements visible weekly reset opportunities (within
+24 hours, at least 20% remaining), account-grouped windows, upstream observation
+age, and navigation to full account usage. Opportunities expire from the screen
+when their reset passes and are hidden after a failed refresh. Stale data remains
+labelled rather than silently appearing current. Quota remains account-level;
+no session-to-account mapping is invented.
+
+A shared policy now excludes paused/reconnect accounts from provider scores,
+respects provider fetch availability and all reported core usage windows, and
+separates unknown telemetry from known blocks. Automatic task assignment refuses
+an all-blocked set. The existing unknown-telemetry fallback remains available,
+explicitly labelled unverified, and cannot select a known-blocked provider.
+Saved legacy tasks refresh the usage snapshot before worktree creation; all
+relaunch modes check before closing an existing session or mutating its worktree.
+They preserve the saved provider instead of silently switching it.
+
+No storage migration or new background service was needed. Existing polling and
+AccountUsage caching remain; launch/relaunch asks for a refreshed snapshot. The
+API uses the existing authenticated capacity route. No credentials, wrapper
+configuration, installed services or live sessions were changed.
+
+Reset urgency does **not** yet change automatic routing: per-invocation account
+affinity is unverified. Durable reservations, cross-goal rotation, usage history,
+model-specific bucket selection and automatic engine selection for new managed
+goal conversations remain separate work. Existing goal conversations retain
+their selected engine. Current recommendations use reported capacity, including
+observations labelled stale; freshness is not yet an allocation eligibility gate.
+
+The findings below describe the reviewed baseline; the items above identify
+which parts are now implemented.
 
 ## Recommendation
 
@@ -156,3 +190,30 @@ for the opportunity on the collapsed dashboard, account labels, unknown versus
 exhausted, refresh after reset, and narrow mobile layout. Run `npm run verify`
 and `npm run test:e2e:local`; verify external account affinity separately before
 making promises about which account receives work.
+
+## Implementation verification
+
+- `npm run verify` passed: 1,035 backend tests, 126 UI tests, lint, both type
+  checks and production build. After the final countdown/readability adjustments,
+  UI (126), lint, types and production build passed again.
+- A subsequent recovery regression passed with all 45 tests in
+  `tests/goal-recovery.test.mjs`, including the new check that blocked quota cannot
+  close an existing session in any relaunch mode.
+- The full deterministic Cypress suite passed: 98 tests across 20 specs. The
+  standard runner initially refused occupied port 3221; an isolated frontend on
+  localhost:3297 ran the same suite with `--config baseUrl=http://localhost:3297`.
+  No existing port owner or installed companion was stopped.
+- Final focused Cypress coverage passed all 15 tests at 390px, 1100px and
+  1440px, checking mobile and desktop opportunity visibility,
+  account grouping, paused/unknown states, quota refresh and account-usage
+  navigation, plus panel bounds. Screenshots prompted larger quota labels and
+  reset countdowns with explicit units rather than an ambiguous clock.
+- Initial targeted assertions described the previous monthly-window policy and
+  “next task” wording; they were updated to check the new behavior. Initial lint
+  failures on native links were fixed by using the existing view-navigation
+  callback. No test coverage was dropped and no unresolved check failures remain.
+
+External account affinity, live provider usage and the installed dashboard were
+not exercised. There is no merge, deployment or live automatic routing change.
+The existing Sites configuration is build scaffolding; repository instructions
+keep publishing separate from this PR.
