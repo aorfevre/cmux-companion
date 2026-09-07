@@ -91,14 +91,18 @@ test("an exit-zero provider error envelope leaves approval transition uncertain"
   assert.equal(args[args.indexOf("--permission-mode") + 1], "manual");
   assert.ok(args.includes("--restricted"));
   assert.ok(args.includes("--permission-prompts"));
+  assert.match(args[args.indexOf("--allowed-tools") + 1], /Bash\(gh pr create \*\)/);
+  assert.match(args[args.indexOf("--allowed-tools") + 1], /Bash\(cargo test \*\)/);
   assert.ok(!args.some((arg) => arg.includes("dangerously-skip-permissions") || arg.includes("bypassPermissions")));
   assert.equal(store.get(planId).transitionStatus, "uncertain");
   assert.match(store.get(planId).goalSessionError || "", /permission denied/);
 });
 
-test("only a successful provider envelope completes a writable turn", () => {
-  assert.equal(validateGoalSessionExecution(resultEnvelope()).session_id, "provider-session-1");
-  assert.throws(() => validateGoalSessionExecution(resultEnvelope({ subtype: "error", result: "permission denied", isError: true })), /permission denied/);
+test("only an accepted result from the resumed provider conversation completes a writable turn", () => {
+  assert.equal(validateGoalSessionExecution(resultEnvelope(), "provider-session-1").session_id, "provider-session-1");
+  assert.throws(() => validateGoalSessionExecution(resultEnvelope({ subtype: "error", result: "permission denied", isError: true }), "provider-session-1"), /permission denied/);
+  assert.throws(() => validateGoalSessionExecution(JSON.stringify({ type: "result", subtype: "success", session_id: "provider-session-1", result: "denied", permission_denials: ["Edit"] }), "provider-session-1"), /denied/);
+  assert.throws(() => validateGoalSessionExecution(resultEnvelope({ sessionId: "other-provider-session" }), "provider-session-1"), /different conversation id/);
   assert.throws(() => validateGoalSessionExecution("not an envelope"), /completion envelope/);
 });
 

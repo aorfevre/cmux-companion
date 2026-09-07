@@ -21,6 +21,9 @@ const WRITABLE_TOOL_ALLOWLIST = [
   "Bash(git status *)", "Bash(git diff *)", "Bash(git add *)", "Bash(git commit *)", "Bash(git push *)",
   "Bash(git rev-parse *)", "Bash(git log *)", "Bash(git show *)", "Bash(git branch --show-current)", "Bash(git fetch *)",
   "Bash(npm ci)", "Bash(npm test)", "Bash(npm run *)", "Bash(npx cypress run *)", "Bash(node --test *)",
+  "Bash(pnpm install)", "Bash(pnpm test)", "Bash(pnpm run *)", "Bash(yarn install)", "Bash(yarn test)", "Bash(yarn run *)",
+  "Bash(bun test *)", "Bash(bun run *)", "Bash(cargo test *)", "Bash(go test *)", "Bash(pytest *)", "Bash(python -m pytest *)",
+  "Bash(gh auth status)", "Bash(gh pr create *)", "Bash(gh pr view *)", "Bash(gh pr list *)",
 ].join(",");
 const WRITABLE = [
   "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--restricted",
@@ -91,7 +94,7 @@ export async function runGoalSession({ planId, databasePath, generation: generat
       if (!claimed) { implementationStarted = false; return; }
       try {
         out("Approval recorded. Resuming this provider conversation with implementation tools enabled.");
-        validateGoalSessionExecution(await execute(command(claimed, implementationMessage(claimed), true), { cwd: claimed.goalSessionWorktreePath, out }));
+        validateGoalSessionExecution(await execute(command(claimed, implementationMessage(claimed), true), { cwd: claimed.goalSessionWorktreePath, out }), claimed.goalSessionProviderSessionId);
         store.recordGoalSessionTransition(planId, { generation, revision: claimed.approvalRevision });
         out("Implementation turn completed. Review the workspace and request an in-scope correction here if needed.");
       } catch (cause) {
@@ -110,7 +113,7 @@ export async function runGoalSession({ planId, databasePath, generation: generat
       turn = turn.then(() => {
         const latest = store.get(planId);
         if (latest?.goalSessionGeneration !== generation || latest?.boardStatus || latest?.transitionStatus !== "delivered") throw new Error("This goal session was closed before the correction could run");
-        return execute(command(latest, `The user requested this in-scope correction: ${feedback}\nThe approved proposal is: ${JSON.stringify(latest.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: latest.goalSessionWorktreePath, out }).then(validateGoalSessionExecution);
+        return execute(command(latest, `The user requested this in-scope correction: ${feedback}\nThe approved proposal is: ${JSON.stringify(latest.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: latest.goalSessionWorktreePath, out }).then((output) => validateGoalSessionExecution(output, latest.goalSessionProviderSessionId));
       }).catch((cause) => out(`Correction was not run: ${cause?.message || cause}`));
       return;
     }
@@ -161,12 +164,18 @@ function runCcs(args, { cwd, out = null } = {}) {
 // permission denials are emitted as stream-json result envelopes with that same
 // exit code, so a writable transition must validate the provider result before
 // it becomes delivered.
-export function validateGoalSessionExecution(output) {
+export function validateGoalSessionExecution(output, expectedSessionId = null) {
   const raw = finalEnvelope(String(output || "")).trim();
   let envelope;
   try { envelope = JSON.parse(raw); } catch { throw new TypeError("The provider did not return a completion envelope"); }
-  if (envelope?.type !== "result" || envelope?.subtype !== "success" || envelope?.is_error === true || typeof envelope.session_id !== "string" || !envelope.session_id.trim()) {
-    const detail = String(envelope?.result || envelope?.error || "provider execution was not successful").replace(/\s+/g, " ").trim().slice(0, 500);
+  const denied = [envelope?.permission_denials, envelope?.permission_denied, envelope?.denied_tools]
+    .some((value) => Array.isArray(value) ? value.length > 0 : Boolean(value));
+  const sessionId = typeof envelope?.session_id === "string" ? envelope.session_id.trim() : "";
+  const wrongSession = expectedSessionId && sessionId !== expectedSessionId;
+  if (envelope?.type !== "result" || envelope?.subtype !== "success" || envelope?.is_error === true || denied || !sessionId || wrongSession) {
+    const detail = wrongSession
+      ? "the provider returned a different conversation id"
+      : String(envelope?.result || envelope?.error || "provider execution was not successful").replace(/\s+/g, " ").trim().slice(0, 500);
     throw new TypeError(`The provider did not complete the writable turn: ${detail}`);
   }
   return envelope;
