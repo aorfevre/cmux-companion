@@ -143,6 +143,7 @@ test("planning is read-only until its durable proposal approval dispatches one w
   assert.ok(planning.includes("--add-dir"));
   assert.equal(planning[planning.indexOf("--add-dir") + 1], "/attachments");
   assert.match(planning.at(-1), /\/attachments\/reference\.png/);
+  assert.match(planning.at(-1), /"acceptanceCriteria"/);
   assert.equal(store.get(planId).goalSessionState, "awaiting_approval");
 
   store.approveProposal(planId, { generation: 1, revision: 1 });
@@ -152,6 +153,19 @@ test("planning is read-only until its durable proposal approval dispatches one w
   assert.equal(calls[1][calls[1].indexOf("--resume") + 1], "provider-session-2");
   assert.equal(store.get(planId).goalSessionWorktreePath, directory);
   assert.equal(store.get(planId).transitionStatus, "delivered");
+});
+
+test("prints a provider completion that has no assistant prose", async (t) => {
+  const { databasePath, planId, store } = setupSession(t);
+  const output = [];
+  const stop = await runGoalSession({
+    planId, databasePath, generation: 1, input: new PassThrough(), out: (line) => output.push(line), intervalMs: 10,
+    execute: async () => resultEnvelope({ result: "Committed 123abc and opened PR #42." }),
+  });
+  t.after(stop);
+  store.approveProposal(planId, { generation: 1, revision: 1 });
+  await wait(60);
+  assert.ok(output.some((line) => /opened PR #42/.test(line)));
 });
 
 test("provider questions become durable attention and the terminal answer resumes the same conversation", async (t) => {

@@ -106,8 +106,10 @@ export async function runGoalSession({ planId, databasePath, generation: generat
       if (!claimed) { implementationStarted = false; return; }
       try {
         out("Approval recorded. Resuming this provider conversation with implementation tools enabled.");
-        validateGoalSessionExecution(await execute(command(claimed, implementationMessage(claimed), true), { cwd: claimed.goalSessionWorktreePath, out }), claimed.goalSessionProviderSessionId);
+        const completed = validateGoalSessionExecution(await execute(command(claimed, implementationMessage(claimed), true), { cwd: claimed.goalSessionWorktreePath, out }), claimed.goalSessionProviderSessionId);
         store.recordGoalSessionTransition(planId, { generation, revision: claimed.approvalRevision });
+        const report = completionText(completed);
+        if (report) out(report);
         out("Implementation turn completed. Review the workspace and request an in-scope correction here if needed.");
       } catch (cause) {
         store.recordGoalSessionTransition(planId, { generation, revision: claimed.approvalRevision, error: String(cause?.message || cause) });
@@ -126,7 +128,11 @@ export async function runGoalSession({ planId, databasePath, generation: generat
       turn = turn.then(() => {
         const latest = store.get(planId);
         if (latest?.goalSessionGeneration !== generation || latest?.boardStatus || latest?.transitionStatus !== "delivered") throw new Error("This goal session was closed before the correction could run");
-        return execute(command(latest, `The user requested this in-scope correction: ${feedback}\nThe approved proposal is: ${JSON.stringify(latest.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: latest.goalSessionWorktreePath, out }).then((output) => validateGoalSessionExecution(output, latest.goalSessionProviderSessionId));
+        return execute(command(latest, `The user requested this in-scope correction: ${feedback}\nThe approved proposal is: ${JSON.stringify(latest.proposal)}\nImplement only this approved scope and report verification.`, true), { cwd: latest.goalSessionWorktreePath, out }).then((output) => {
+          const completed = validateGoalSessionExecution(output, latest.goalSessionProviderSessionId);
+          const report = completionText(completed);
+          if (report) out(report);
+        });
       }).catch((cause) => out(`Correction was not run: ${cause?.message || cause}`));
       return;
     }
@@ -161,7 +167,7 @@ function openingMessage(plan) {
   const images = Array.isArray(plan.images) && plan.images.length
     ? `\nAttached image${plan.images.length > 1 ? "s" : ""}:\n${plan.images.map((image) => `- ${image.path}`).join("\n")}\nRead each attachment with the Read tool; it provides user context for the proposal.\n`
     : "";
-  return `You are planning one small increment for this goal: ${plan.goal}${images}Investigate read-only. Return either focused questions or a structured delivery contract with spec and tasks. Do not implement, run shell commands, edit files, delegate, or ask for tool permissions.`;
+  return `You are planning one small increment for this goal: ${plan.goal}${images}Investigate read-only. Reply with exactly one JSON object and no other prose. Return either {"questions":[{"text":"...","options":["..."]}]} or {"spec":{"outcome":"...","inScope":["..."],"nonGoals":["..."],"constraints":["..."],"assumptions":["..."],"acceptanceCriteria":[{"id":"AC-1","text":"observable result","verification":"specific check"}],"risks":[{"text":"...","mitigation":"...","level":"low|medium|high"}]},"tasks":[{"id":"T1","title":"...","branch":"feature/...","prompt":"self-contained outcome, scope and verification","type":"feature|bugfix|ui|backend|docs|test|migration|investigation|refactor","criterionIds":["AC-1"],"dependsOn":[],"ownedAreas":["path/or/glob/**"],"verification":["specific command or manual check"]}]}. Never return both questions and tasks. Do not implement, run shell commands, edit files, delegate, or ask for tool permissions.`;
 }
 
 function implementationMessage(plan) {
@@ -222,6 +228,11 @@ function assistantProse(row) {
     return (value.message?.content || []).filter((block) => block?.type === "text")
       .map((block) => String(block.text || "").trim()).filter(Boolean).join("\n").slice(0, 8_000);
   } catch { return ""; }
+}
+
+function completionText(envelope) {
+  const text = String(envelope?.result || "").replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 8_000) : "";
 }
 
 if (process.argv[1]?.endsWith("goal-session-runner.mjs")) {
