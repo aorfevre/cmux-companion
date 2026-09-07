@@ -53,6 +53,7 @@ export async function runGoalSession({ planId, databasePath, generation: generat
     if (!reply.sessionId) throw new Error("The provider did not return a resumable conversation id");
     plan = store.recordGoalSessionProviderSession(planId, { generation, providerSessionId: reply.sessionId });
     if (reply.status === "questions") {
+      store.publishGoalSessionQuestions(planId, { generation, providerSessionId: reply.sessionId, questions: reply.questions });
       out(reply.questions.map((question) => `Question: ${question.text}${question.options.length ? ` (${question.options.join(" / ")})` : ""}`).join("\n"));
       if (pendingFeedback) store.acknowledgeGoalSessionInput(planId, { generation, feedback: pendingFeedback });
       return;

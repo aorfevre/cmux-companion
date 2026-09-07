@@ -247,11 +247,31 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  publishGoalSessionQuestions(planId, { generation, questions, providerSessionId = null } = {}) {
+    if (!Number.isInteger(generation) || generation < 1 || !Array.isArray(questions) || !questions.length) throw new TypeError("Invalid goal-session questions");
+    const cleaned = questions.map((question, index) => ({
+      id: text(question?.id) || `q${index + 1}`,
+      text: text(question?.text).slice(0, 2_000),
+      options: Array.isArray(question?.options) ? question.options.map((option) => text(option).slice(0, 500)).filter(Boolean).slice(0, 6) : [],
+    })).filter((question) => question.text);
+    if (!cleaned.length) throw new TypeError("Invalid goal-session questions");
+    const at = this.#stamp();
+    this.#transaction(() => {
+      const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'awaiting_input', questions = ?,
+        goal_session_provider_session_id = COALESCE(?, goal_session_provider_session_id), goal_session_error = NULL, updated_at = ?
+        WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ?
+        AND goal_session_state IN ('planning', 'awaiting_input')`).run(json(cleaned), text(providerSessionId) || null, at, String(planId), generation).changes;
+      if (changed !== 1) throw new TypeError("These questions belong to an unavailable goal session");
+      this.#insertEvent(String(planId), null, "questions", { generation, questions: cleaned }, at);
+    });
+    return this.get(planId);
+  }
+
   publishProposal(planId, { generation, proposal, providerSessionId = null } = {}) {
     if (!Number.isInteger(generation) || generation < 1 || !proposal || typeof proposal !== "object" || Array.isArray(proposal)) throw new TypeError("Invalid goal-session proposal");
     const at = this.#stamp();
     this.#transaction(() => {
-      const row = this.db.prepare("SELECT proposal_revision FROM plans WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state IN ('planning', 'awaiting_approval')").get(String(planId), generation);
+      const row = this.db.prepare("SELECT proposal_revision FROM plans WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state IN ('planning', 'awaiting_input', 'awaiting_approval')").get(String(planId), generation);
       if (!row) throw new TypeError("This proposal belongs to an unavailable goal session");
       const revision = Number(row.proposal_revision || 0) + 1;
       this.db.prepare(`UPDATE plans SET goal_session_state = 'awaiting_approval', proposal_revision = ?, proposal = ?,
@@ -322,7 +342,7 @@ export class WorktreePlanStore {
     if (!Number.isInteger(generation) || generation < 1 || !session) throw new TypeError("Invalid provider conversation identity");
     const at = this.#stamp();
     const changed = this.db.prepare(`UPDATE plans SET goal_session_provider_session_id = ?, updated_at = ? WHERE plan_id = ?
-      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state IN ('planning', 'awaiting_approval')`).run(session, at, String(planId), generation).changes;
+      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state IN ('planning', 'awaiting_input', 'awaiting_approval')`).run(session, at, String(planId), generation).changes;
     if (changed !== 1) throw new TypeError("This provider conversation belongs to an unavailable goal session");
     return this.get(planId);
   }

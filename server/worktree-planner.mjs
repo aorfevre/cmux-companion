@@ -1664,6 +1664,8 @@ export class WorktreePlanner {
 
   async remove(planId) {
     const id = String(planId || "");
+    const plan = this.#read(() => this.store?.get(id));
+    if (plan?.workflow === "goal_session") throw new TypeError("Managed goal sessions are retained for their workspace and approval record. Abort it instead");
     this.#assertIdle(id);
     this.drafts.delete(id);
     const deleted = this.#read(() => this.store?.delete(id)) === true;
@@ -1702,7 +1704,7 @@ export class WorktreePlanner {
 // both lists and must not be closed twice.
 function goalWorkspaceIds(plan) {
   const ids = (Array.isArray(plan?.tasks) ? plan.tasks : []).map((task) => task?.workspaceId);
-  ids.push(plan?.mergeWorkspaceId);
+  ids.push(plan?.mergeWorkspaceId, plan?.goalSessionWorkspaceId);
   for (const entry of Array.isArray(plan?.supersededMergeWorkspaces) ? plan.supersededMergeWorkspaces : []) {
     ids.push(typeof entry === "string" ? entry : entry?.workspaceId);
   }

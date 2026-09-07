@@ -290,6 +290,7 @@ export function ManagedGoalControls({ workspaceId }: { workspaceId: string }) {
     finally { setBusy(false); }
   }
   if (!plan) return null;
+  if (plan.goalSessionState === "awaiting_input") return <section className="planner-delivery-status" aria-label="Managed goal questions"><strong>Goal needs your answer</strong>{plan.questions.map((question) => <p key={question.id}>Question: {question.text}{question.options.length ? ` (${question.options.join(" / ")})` : ""}</p>)}<p>Reply in this visible conversation to continue planning.</p></section>;
   if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <section className="planner-delivery-status" aria-label="Managed goal status"><strong>Managed goal</strong><p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "The agent is investigating this goal in the visible conversation.")}</p></section>;
   return <section className="planner-delivery-status" aria-label="Proposal awaiting approval"><strong>Proposal revision {plan.proposalRevision}</strong><p>{plan.proposal.intendedBehavior || plan.goal}</p>
     {plan.proposal.scope?.length ? <p>Scope: {plan.proposal.scope.join(" · ")}</p> : null}

@@ -147,3 +147,29 @@ test("planning is read-only until its durable proposal approval dispatches one w
   assert.equal(store.get(planId).goalSessionWorktreePath, directory);
   assert.equal(store.get(planId).transitionStatus, "delivered");
 });
+
+test("provider questions become durable attention and the terminal answer resumes the same conversation", async (t) => {
+  const { databasePath, planId, store } = setupSession(t);
+  store.db.prepare("UPDATE plans SET goal_session_provider_session_id = NULL, proposal_revision = 0, proposal = NULL, questions = '[]', goal_session_state = 'planning' WHERE plan_id = ?").run(planId);
+  const input = new PassThrough();
+  const calls = [];
+  const stop = await runGoalSession({
+    planId, databasePath, generation: 1, input, out: () => {}, intervalMs: 10,
+    execute: async (args) => {
+      calls.push(args);
+      return calls.length === 1
+        ? resultEnvelope({ sessionId: "provider-session-questions", result: JSON.stringify({ questions: [{ text: "Which API?", options: ["REST", "GraphQL"] }] }) })
+        : resultEnvelope({ sessionId: "provider-session-questions", result: JSON.stringify({ tasks: [{ title: "Billing", branch: "feature/billing", prompt: "Implement billing" }] }) });
+    },
+  });
+  t.after(stop);
+
+  await wait(60);
+  assert.equal(store.get(planId).goalSessionState, "awaiting_input");
+  assert.deepEqual(store.get(planId).questions, [{ id: "q1", text: "Which API?", options: ["REST", "GraphQL"] }]);
+  input.write("REST\n");
+  await wait(60);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][calls[1].indexOf("--resume") + 1], "provider-session-questions");
+  assert.equal(store.get(planId).goalSessionState, "awaiting_approval");
+});
