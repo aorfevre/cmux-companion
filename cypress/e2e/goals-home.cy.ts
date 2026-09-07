@@ -38,7 +38,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       cy.contains("summary", "Board tools").click();
       cy.findByRole("tab", { name: /^Inactive/ }).click();
       cy.findByRole("region", { name: "Goals board" }).should("not.exist");
-      cy.findByRole("button", { name: "Goals", exact: true }).click();
+      cy.findByRole("button", { name: "Goals" }).click();
       cy.findByRole("region", { name: "Goals board" }).should("be.visible");
       cy.get('.worktree-filter-tabs').should("not.be.visible");
       cy.contains("summary", "Tools").click();
@@ -46,8 +46,8 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
         cy.findByRole("button", { name: "Local apps" }).should("be.visible");
         cy.findByRole("button", { name: "Sessions" }).click();
       });
-      cy.findByRole("heading", { name: "Sessions", exact: true }).should("be.visible");
-      cy.findByRole("button", { name: "Goals", exact: true }).click();
+      cy.findByRole("heading", { name: "Sessions", level: 1 }).should("be.visible");
+      cy.findByRole("button", { name: "Goals" }).click();
       cy.findByRole("region", { name: "Goals board" }).should("be.visible");
       cy.reload();
       cy.findByRole("region", { name: "Goals board" }).should("be.visible");
@@ -55,9 +55,9 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
 
     it("preserves explicit session links and returns to Goals", () => {
       cy.visit("/?mode=sessions");
-      cy.findByRole("heading", { name: "Sessions", exact: true }).should("be.visible");
+      cy.findByRole("heading", { name: "Sessions", level: 1 }).should("be.visible");
       cy.findByRole("region", { name: "Goals board" }).should("not.exist");
-      cy.findByRole("button", { name: "Goals", exact: true }).click();
+      cy.findByRole("button", { name: "Goals" }).click();
       cy.findByRole("region", { name: "Goals board" }).should("be.visible");
     });
   });

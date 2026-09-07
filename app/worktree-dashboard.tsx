@@ -1057,14 +1057,14 @@ function AgentCapacityChip({ capacity, error, now, open, onToggle }: { capacity:
 // Every task a person must answer for, across every repository, on one screen.
 // Restart and Skip both destroy something, so each confirms inline first.
 function AttentionRail({ relaunchModes, railRef, rows, sessionsAvailable, loaded, error, busy, confirming, onRetry, onRequestConfirm, onRelaunch, onSkip, onFocus }: { relaunchModes: Record<string, string>; railRef: RefObject<HTMLElement | null>; rows: { goal: HealthGoal; item: HealthTask | HealthMerge; kind: "task" | "merge" }[]; sessionsAvailable: boolean; loaded: boolean; error: string; busy: Record<string, boolean>; confirming: string; onRetry: () => void; onRequestConfirm: (key: string) => void; onRelaunch: (goal: HealthGoal, task: HealthTask, mode: "continue" | "restart" | "rebranch") => void; onSkip: (goal: HealthGoal, task: HealthTask) => void; onFocus: (workspaceId: string, label: string) => void }) {
-  return <section className="goal-attention" ref={railRef} tabIndex={-1} aria-label="Goals needing attention">
+  return <section className={`goal-attention${rows.length === 0 && loaded && sessionsAvailable && !error ? " clear" : ""}`} ref={railRef} tabIndex={-1} aria-label="Goals needing attention">
     <header><h3>Needs you</h3><b aria-label={`${rows.length} task${rows.length === 1 ? "" : "s"} need you`}>{rows.length}</b>{error && <button type="button" className="text-button" aria-label="Retry the goal health check" onClick={onRetry}>Retry</button>}</header>
     {error && <p className="goal-attention-note">{error}</p>}
     {/* An unreachable cmux proves nothing about the agents. Saying "dead" here
         would send the user to relaunch work that is still running. */}
     {loaded && !sessionsAvailable && <p className="goal-attention-note">cmux could not be reached, so agent liveness is unknown. Nothing below is reported as dead.</p>}
     {rows.length === 0
-      ? <p className="goal-attention-empty">{loaded ? "Nothing needs you. Every launched agent is working, ready or merged." : "Checking every launched agent…"}</p>
+      ? <p className="goal-attention-empty">{!loaded ? "Checking goal tasks…" : !sessionsAvailable || error ? "Goal attention could not be fully checked." : "No goal tasks need your attention."}</p>
       : <ul className="goal-attention-rows">{rows.map(({ goal, item, kind }) => {
         const task = item as HealthTask;
         const relaunchKey = `relaunch:${goal.planId}:${task.id}`;
