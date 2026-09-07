@@ -93,11 +93,14 @@ describe("the board reports finished goal session cleanup", () => {
     const state: Scenario = { retirable: report({ closed: [restored] }), reap: report({ closed: [restored] }), liveSessions: 2 };
     installScenario(state);
     visitBoard();
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Close 1 finished session" }).should("be.enabled");
     cy.then(() => { state.liveSessions = 1; state.retirable = report({ closed: [] }); });
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Close 1 finished session" }).click();
     cy.wait("@reap");
     cy.contains("Closed 1 finished session, 1 kept.").should("be.visible");
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Close finished sessions. No sessions currently qualify for safe cleanup." }).should("be.disabled");
   });
 
@@ -108,11 +111,13 @@ describe("the board reports finished goal session cleanup", () => {
 
     // The count is read before the button is pressed, so the label is honest
     // about what a pass would do.
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Close 2 finished sessions" })
       .should("be.enabled")
       .and("contain.text", "Close finished sessions (2)");
 
     cy.then(() => { state.liveSessions = 1; state.retirable = report({ closed: [] }); });
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Close 2 finished sessions" }).click();
     cy.wait("@reap");
     cy.wait(["@dashboard", "@plans", "@health", "@retirable"]);
@@ -121,6 +126,7 @@ describe("the board reports finished goal session cleanup", () => {
     cy.contains("This session's agent is running").should("be.visible");
     // Nothing is finished after the pass, so the button disables rather than
     // disappearing: the action is still there, it just has nothing to do.
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Close finished sessions. No sessions currently qualify for safe cleanup." }).should("be.disabled");
     cy.findByLabelText("1 live cmux sessions").should("exist");
   });
@@ -137,11 +143,13 @@ describe("the board reports finished goal session cleanup", () => {
     // before the click rather than after it. The button's label at click time
     // came from the read the board already made.
     cy.then(() => { state.retirable = unreachable; });
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Close 2 finished sessions" }).click();
     cy.wait("@reap");
 
     cy.contains("cmux could not be reached, so agent liveness is unknown. No session was closed.").should("be.visible");
     cy.contains("Closed 0 finished sessions").should("not.exist");
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Close finished sessions. No sessions currently qualify for safe cleanup." }).should("be.disabled");
   });
 
@@ -154,6 +162,7 @@ describe("the board reports finished goal session cleanup", () => {
     installScenario(state);
     visitBoard();
 
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Close 2 finished sessions" }).click();
     cy.wait("@reap");
 

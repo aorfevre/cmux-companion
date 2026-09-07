@@ -108,6 +108,8 @@ describe("goal board matches live cmux evidence", () => {
         cy.findByRole("heading", { name: /^Settings$/ }).should("be.visible");
       } else {
         visitBoard();
+        cy.findByRole("button", { name: "Worktree cleanup" }).should("not.exist");
+        cy.findByRole("button", { name: /^Settings$/ }).click();
       }
       cy.findByRole("button", { name: "Worktree cleanup" }).click();
       cy.wait("@cleanupStatus");
@@ -179,6 +181,7 @@ describe("goal board matches live cmux evidence", () => {
           reason: "The merge agent is running", session: { id: "merge-recovered", title: "Goal merge", effective: "working" } } })];
       state.liveSessions = 2;
     });
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Refresh GitHub" }).click();
     cy.wait("@plans");
     cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", "Recover existing task work");
@@ -253,6 +256,7 @@ describe("goal board matches live cmux evidence", () => {
     const expectColumn = (name: string) => cy.findByRole("region", { name }).should("contain.text", goal);
     const advance = (next: ReturnType<typeof plan>, goals: ReturnType<typeof healthGoal>[] = [], liveSessions = 0) => {
       cy.then(() => { state.plans = [next]; state.goals = goals; state.liveSessions = liveSessions; });
+      cy.openBoardTools();
       cy.findByRole("button", { name: "Refresh GitHub" }).click();
       cy.wait("@plans");
     };
@@ -409,6 +413,7 @@ describe("goal board matches live cmux evidence", () => {
       state.goals = [healthGoal(advanced, activeTasks, { health: "working", readyCount: 2, launchedCount: 4 })];
       state.liveSessions = 2;
     });
+    cy.openBoardTools();
     cy.findByRole("button", { name: "Refresh GitHub" }).click();
     cy.wait("@plans");
 

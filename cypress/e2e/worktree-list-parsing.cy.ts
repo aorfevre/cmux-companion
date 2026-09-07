@@ -38,6 +38,7 @@ describe("worktree list compatibility", () => {
 
     cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
     cy.wait("@dashboard");
+    cy.contains("summary", "Board tools").click();
     cy.findByRole("tab", { name: /^Inactive/ }).click();
     cy.contains(".worktree-card", branch).should("be.visible").within(() => {
       cy.get("header strong").should("have.text", branch);

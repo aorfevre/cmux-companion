@@ -101,11 +101,12 @@ describe("contextual mobile features", () => {
     const navigate = vi.fn();
     render(<BottomNav view="usage" onView={navigate} />);
     assert.ok(screen.getByRole("button", { name: "Licence Usage" }).classList.contains("active"));
-    assert.ok(screen.getByRole("button", { name: "Apps" }));
+    assert.equal(screen.queryByRole("button", { name: "Apps" }), null);
+    assert.equal(screen.queryByRole("button", { name: "Sessions" }), null);
     assert.equal(screen.queryByRole("button", { name: "Inbox" }), null);
     assert.equal(screen.queryByRole("button", { name: "Launch" }), null);
-    await userEvent.click(screen.getByRole("button", { name: "Apps" }));
-    assert.deepEqual(navigate.mock.calls[0], ["apps"]);
+    await userEvent.click(screen.getByRole("button", { name: "Goals" }));
+    assert.deepEqual(navigate.mock.calls[0], ["sessions"]);
   });
 
   test("shows CCS quota by account while treating absent windows as unreported", async () => {
@@ -184,11 +185,12 @@ describe("contextual mobile features", () => {
     assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("?refresh=1")), true);
   });
 
-  test("keeps classic sessions available while the worktree visualization is opt-in", async () => {
+  test("keeps session tools secondary to the Goals board", async () => {
     const mode = vi.fn();
     render(<HomeModeSwitch mode="sessions" onMode={mode} />);
-    assert.equal(screen.getByRole("button", { name: "Sessions" }).getAttribute("aria-pressed"), "true");
-    await userEvent.click(screen.getByRole("button", { name: /Worktrees Beta/ }));
+    assert.ok(screen.getByRole("heading", { name: "Sessions" }));
+    await userEvent.click(screen.getByText("Tools"));
+    await userEvent.click(screen.getByRole("button", { name: "Goals board" }));
     assert.deepEqual(mode.mock.calls[0], ["worktrees"]);
   });
 
@@ -215,10 +217,12 @@ describe("contextual mobile features", () => {
     render(<WorktreeDashboardView onOpenWorkspace={open} onLaunched={launched} onNotice={notice} />);
     // The board is the landing view now, so a worktree test opens the Active
     // tab first, exactly as a user would.
+    await openOtherViews();
     await userEvent.click(await screen.findByRole("tab", { name: /Active/ }));
     assert.ok(await screen.findByText("feature/mobile"));
     assert.ok(screen.getByText(/GitHub refresh is manual/));
     assert.equal(fetchMock.mock.calls.some(([url]) => String(url).includes("github=1")), false);
+    await openOtherViews();
     await userEvent.click(screen.getByRole("button", { name: "Refresh GitHub" }));
     await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("?refresh=1&github=1")), true));
     await userEvent.click(screen.getByRole("tab", { name: /Rekord/ }));
@@ -263,6 +267,7 @@ describe("contextual mobile features", () => {
     await userEvent.click(screen.getByRole("button", { name: "Archive companion" }));
     assert.ok(screen.getByText("No active Karven projects"));
     assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/repositories/repo-1/archive") && init?.method === "PATCH"), true);
+    await openOtherViews();
     await userEvent.click(screen.getByRole("tab", { name: /Archived/ }));
     assert.ok(screen.getByRole("button", { name: "Unarchive companion" }));
     await userEvent.click(screen.getByRole("button", { name: "Unarchive companion" }));
@@ -288,13 +293,15 @@ describe("contextual mobile features", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
     // The board is the landing view now, so this opens Active first.
+    await openOtherViews();
     await userEvent.click(await screen.findByRole("tab", { name: /^Active/ }));
     // The favorite has no session, yet Active lists it above the busy project.
     assert.ok(await screen.findByText("trust-layer"));
     assert.ok(screen.getByText("companion"));
     assert.equal(screen.queryByText("quiet-tools"), null);
+    await openOtherViews();
     assert.equal(screen.getByRole("tab", { name: /^Active/ }).textContent?.includes("2"), true);
-    assert.deepEqual(screen.getAllByRole("group").map((item) => item.querySelector("strong")?.textContent), ["trust-layer", "companion"]);
+    assert.deepEqual(screen.getAllByRole("group").filter((item) => item.classList.contains("worktree-repository")).map((item) => item.querySelector("strong")?.textContent), ["trust-layer", "companion"]);
     assert.ok(screen.getByText(/2 shown · 3 total/));
 
     const searchBox = screen.getByRole("searchbox", { name: "Search projects" });
@@ -311,6 +318,7 @@ describe("contextual mobile features", () => {
     await userEvent.click(screen.getByRole("button", { name: "Unfavorite trust-layer" }));
     await waitFor(() => assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/repositories/repo-star/favorite") && init?.method === "PATCH"), true));
     await waitFor(() => assert.equal(screen.queryByText("trust-layer"), null));
+    await openOtherViews();
     await userEvent.click(screen.getByRole("tab", { name: /^Inactive/ }));
     assert.ok(screen.getByRole("button", { name: "Favorite trust-layer" }));
     assert.ok(screen.getByText("quiet-tools"));
@@ -337,6 +345,7 @@ describe("contextual mobile features", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
 
+    await openOtherViews();
     await userEvent.click(await screen.findByRole("tab", { name: /Draft Goals 1/ }));
     const draftGoals = screen.getByRole("region", { name: "Draft goals" });
     assert.ok(within(draftGoals).getByText("Improve the LLM flow"));
@@ -349,6 +358,7 @@ describe("contextual mobile features", () => {
     assert.ok(within(planner).getByText("Round 2 · 1 task"));
     await userEvent.click(within(planner).getByRole("button", { name: "Close goal planner sheet" }));
 
+    await openOtherViews();
     await userEvent.click(screen.getByRole("tab", { name: /Launched Goals 1/ }));
     const launchedGoals = screen.getByRole("region", { name: "Launched goals" });
     assert.ok(within(launchedGoals).getByText("Ship prompt analytics"));
@@ -377,6 +387,7 @@ describe("contextual mobile features", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
 
+    await openOtherViews();
     await userEvent.click(await screen.findByRole("tab", { name: /Draft Goals 2/ }));
     const goals = screen.getByRole("region", { name: "Draft goals" });
     // Deleting a goal is irreversible, so the first click only arms it.
@@ -414,6 +425,7 @@ describe("contextual mobile features", () => {
     assert.equal(new URLSearchParams(location.search).get("plan"), "plan-running");
     await userEvent.click(within(planner).getByRole("button", { name: "Close goal planner sheet" }));
 
+    await openOtherViews();
     const tab = screen.getByRole("tab", { name: /Draft Goals/ });
     await userEvent.click(tab);
     assert.ok(within(tab).getByText("1 planning"), "the tab counts the running round");
@@ -449,6 +461,7 @@ describe("contextual mobile features", () => {
     vi.stubGlobal("fetch", fetchMock);
     const notice = vi.fn();
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={notice} />);
+    await openOtherViews();
     await userEvent.click(await screen.findByRole("tab", { name: /Inactive/ }));
 
     // Only the clean, unlocked, session-free, non-primary worktree counts.
@@ -1471,6 +1484,7 @@ describe("goals board", () => {
   ];
 
   async function openBoard() {
+    await openOtherViews();
     await userEvent.click(await screen.findByRole("tab", { name: /Goals board/ }));
     return screen.getByRole("region", { name: "Goals board" });
   }
@@ -1505,6 +1519,7 @@ describe("goals board", () => {
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={launched} onNotice={vi.fn()} />);
     await openBoard();
     // Two repositories are on the board, so the button opens the picker first.
+    await openOtherViews();
     await userEvent.click(screen.getByRole("button", { name: "＋ Worktree" }));
     await userEvent.click(screen.getByRole("menuitem", { name: "Create a worktree in trust-layer" }));
     const sheet = await screen.findByRole("dialog", { name: "Create Git worktree" });
@@ -1526,6 +1541,7 @@ describe("goals board", () => {
   test("renders ordered columns with Blocked and terminal defaults collapsed and accurate counts", async () => {
     mountBoard();
     const board = await openBoard();
+    await openOtherViews();
     assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("9"), true);
     const headings = within(board).getAllByRole("heading", { level: 3 }).map((item) => item.textContent);
     // GitHub Issues is the leftmost column, ahead of the eight goal columns.
@@ -1643,6 +1659,7 @@ describe("goals board", () => {
     const rekordBoard = screen.getByRole("region", { name: "Goals board" });
     assert.ok(within(rekordBoard).getByText("Improve recording search"));
     assert.equal(within(rekordBoard).queryByText("Ready to launch work"), null);
+    await openOtherViews();
     assert.equal(screen.getByRole("tab", { name: /Goals board/ }).textContent?.includes("1"), true);
     await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
 
@@ -1661,6 +1678,7 @@ describe("goals board", () => {
     await userEvent.clear(searchBox);
 
     // Draft and Launched still count and list by plan.status alone.
+    await openOtherViews();
     const draftTab = screen.getByRole("tab", { name: /Draft Goals/ });
     assert.equal(draftTab.textContent?.includes("4"), true);
     await userEvent.click(draftTab);
@@ -1671,6 +1689,7 @@ describe("goals board", () => {
     assert.ok(within(draftGoals).getByText("Aborted"));
     assert.ok(within(draftGoals).getByRole("button", { name: "Resume Ready to launch work" }));
 
+    await openOtherViews();
     const launchedTab = screen.getByRole("tab", { name: /Launched Goals/ });
     // Four launched Karven goals now: the blocked one is launched too.
     assert.equal(launchedTab.textContent?.includes("4"), true);
@@ -2032,8 +2051,10 @@ describe("goals board", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    await openOtherViews();
     await screen.findByRole("tab", { name: /Goals board/ });
     order.length = 0;
+    await openOtherViews();
     await userEvent.click(screen.getByRole("button", { name: "Refresh GitHub" }));
     await waitFor(() => assert.equal(order[0], "dashboard-start"));
     // No plan request may start while the reconciliation is still open.
@@ -2111,6 +2132,7 @@ describe("GitHub Issues board column", () => {
   }
 
   async function openBoard() {
+    await openOtherViews();
     await userEvent.click(await screen.findByRole("tab", { name: /Goals board/ }));
     return screen.getByRole("region", { name: "Goals board" });
   }
@@ -2160,9 +2182,11 @@ describe("GitHub Issues board column", () => {
     vi.stubGlobal("fetch", held);
     await openBoard();
 
+    await openOtherViews();
     await userEvent.click(screen.getByRole("button", { name: "GitHub Sync" }));
     assert.ok(await screen.findByRole("button", { name: "Syncing GitHub issues…" }));
     // Refresh GitHub keeps its own label and its own request.
+    await openOtherViews();
     assert.ok(screen.getByRole("button", { name: "Refresh GitHub" }));
     const syncCall = held.mock.calls.find(([url]) => String(url) === "/api/github-issues/sync");
     assert.equal(syncCall?.[1]?.method, "POST");
@@ -2172,6 +2196,7 @@ describe("GitHub Issues board column", () => {
       await Promise.resolve();
     });
     assert.ok(await screen.findByText("Restore the caret"));
+    await openOtherViews();
     assert.ok(screen.getByRole("button", { name: "GitHub Sync" }));
   });
 
@@ -2182,6 +2207,7 @@ describe("GitHub Issues board column", () => {
         : null),
     });
     await openBoard();
+    await openOtherViews();
     await userEvent.click(screen.getByRole("button", { name: "GitHub Sync" }));
     assert.ok(await screen.findByText("No starred repositories. Star a repository first; GitHub Sync reads starred repositories only."));
     assert.equal(notice.mock.calls.at(-1)?.[0], "No starred repositories. Star a repository first; GitHub Sync reads starred repositories only.");
@@ -2194,6 +2220,7 @@ describe("GitHub Issues board column", () => {
         : null),
     });
     await openBoard();
+    await openOtherViews();
     await userEvent.click(screen.getByRole("button", { name: "GitHub Sync" }));
     assert.ok(await screen.findByText(/could not read 1 starred repository: trust-layer \(gh: not authenticated\)/));
     assert.equal(notice.mock.calls.length > 0, true);
@@ -2311,6 +2338,7 @@ describe("GitHub Issues board column", () => {
     const { fetchMock } = mountIssues({
       extra: (url) => (url === "/api/github-issues" ? new Response(JSON.stringify({ syncedAt: now, issues: served }), { status: 200 }) : null),
     });
+    await openOtherViews();
     await user.click(await screen.findByRole("tab", { name: /Goals board/ }));
     const column = () => within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "GitHub Issues" });
     await within(column()).findByText("Restore the caret");
@@ -2323,6 +2351,7 @@ describe("GitHub Issues board column", () => {
     assert.ok(await within(column()).findByText("Speed up the indexer"));
 
     // The board is no longer the active view, so its clock stops with it.
+    await openOtherViews();
     await user.click(screen.getByRole("tab", { name: /Draft Goals/ }));
     const readsWhenClosed = issueReads();
     served = [issue(), issue({ number: 44, title: "Fix the sync", labels: [], url: "https://github.test/acme/trust-layer/issues/44" })];
@@ -2751,3 +2780,8 @@ describe("managed goal controls in a visible workspace", () => {
     assert.ok(await screen.findByText("Implementation is continuing in this conversation."));
   });
 });
+
+async function openOtherViews() {
+  const summary = await screen.findByText("Board tools");
+  if (!summary.closest("details")?.open) await userEvent.click(summary);
+}
