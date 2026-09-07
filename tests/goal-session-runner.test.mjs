@@ -8,12 +8,12 @@ import test from "node:test";
 import { runGoalSession, validateGoalSessionExecution, validateGoalSessionPlanning } from "../server/goal-session-runner.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 
-function setupSession(t) {
+function setupSession(t, issueNumbers = []) {
   const directory = mkdtempSync(join(tmpdir(), "cmux-goal-session-runner-"));
   const databasePath = join(directory, "plans.db");
   const store = new WorktreePlanStore({ path: databasePath });
   const planId = "goal-session-plan";
-  store.createPlan({ planId, repositoryId: "repo", cwd: directory, goal: "Add billing" });
+  store.createPlan({ planId, repositoryId: "repo", cwd: directory, goal: "Add billing", issueNumbers });
   store.reserveGoalSession(planId, { branch: "goal-session/test", generation: 1 });
   store.recordGoalSessionStart(planId, {
     worktreePath: directory,
@@ -213,4 +213,19 @@ test("provider questions become durable attention and the terminal answer resume
   assert.equal(calls.length, 2);
   assert.equal(calls[1][calls[1].indexOf("--resume") + 1], "provider-session-questions");
   assert.equal(store.get(planId).goalSessionState, "awaiting_approval");
+});
+
+test("approved issue work retains PR references without authorizing extra scope", async (t) => {
+  const { databasePath, planId, store } = setupSession(t, [12, 15]);
+  let prompt;
+  const stop = await runGoalSession({ planId, databasePath, generation: 1, input: new PassThrough(), out: () => {}, intervalMs: 10,
+    execute: async (args) => { prompt = args.at(-1); return resultEnvelope(); },
+  });
+  t.after(stop);
+  assert.equal(prompt, undefined);
+  store.approveProposal(planId, { generation: 1, revision: 1 });
+  for (let attempt = 0; attempt < 100 && !prompt; attempt += 1) await wait(10);
+  assert.match(prompt, /Linked GitHub issues: #12, #15/);
+  assert.match(prompt, /only for issues fully resolved by the approved scope/);
+  assert.match(prompt, /Do not close issues directly or expand scope/);
 });

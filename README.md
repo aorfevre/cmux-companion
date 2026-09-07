@@ -194,6 +194,14 @@ Every string in an artifact comes from a model, so all of it is capped and treat
 
 Tasks with no dependencies launch together from the freshly fetched default remote branch. Dependent tasks wait. Once a wave is clean, pushed, and carries valid completion evidence, the merge agent composes its pinned commits on the goal branch; Companion then creates the next wave's worktrees from that exact integrated commit. Downstream agents therefore see their dependencies without duplicating their work.
 
+On the board, **Start a goal** on an individual **GitHub Issues** card opens the
+same visible cmux planning conversation as **Start goal session**, using the
+saved planner model defaults. The goal retains its issue links. Review the
+proposal and choose **Approve and implement** before development starts.
+Existing issue goals keep their original workflow and are reused on retries.
+
+The repository's bulk issue-planning sheet remains a separate workflow:
+
 **GitHub Issues** loads up to 100 open tickets from the repository selected by the local checkout's `origin`, then asks an isolated Claude analyzer to group every ticket exactly once into delivery-sized master topics. Select the topics to deliver, answer topic-level clarifications, and create the saved goal plans. Any repository-planner follow-up questions stay in the same sheet. Once every selected plan is ready, one action launches all topic worktrees; their agents then run in parallel.
 
 Each selected topic is an independent delivery unit. Tickets likely to touch the same files are grouped into the same topic, where Plan a Goal can sequence or split the implementation. Even a one-task issue topic uses Companion's generated delivery branch and verification gate. Its final PR contains one `Closes #N` line per linked ticket, so GitHub closes those issues only when the PR merges. Companion never closes an issue directly. The sheet refreshes selected tickets before planning and refuses tickets that changed, closed, or already belong to another saved goal.

@@ -10,12 +10,13 @@ const COMMAND_TIMEOUT_MS = 30_000;
 // store, and turns one issue into one goal plan. Every dependency is injected,
 // exactly like GitHubIssuePlanner, so the tests need no network and no `gh`.
 export class GitHubIssueSync {
-  constructor({ worktrees, planner, store, execute = streamExecFile, log = null } = {}) {
+  constructor({ worktrees, planner, goalSessions, store, execute = streamExecFile, log = null } = {}) {
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!planner) throw new TypeError("A worktree planner is required");
     if (!store) throw new TypeError("A GitHub issue store is required");
     this.worktrees = worktrees;
     this.planner = planner;
+    this.goalSessions = goalSessions;
     this.store = store;
     this.execute = execute;
     this.log = log;
@@ -97,13 +98,15 @@ export class GitHubIssueSync {
     }
 
     let plan;
-    try { plan = await this.planner.startBackground({
-      repositoryId: id,
-      goal: issueGoal(issue),
-      issueNumbers: [issueNumber],
-      issueUrls: issue.url ? [issue.url] : [],
-      deliveryPolicy: "auto",
-    }); } catch (cause) {
+    try {
+      if (!this.goalSessions) throw new TypeError("Visible goal sessions are unavailable");
+      plan = await this.goalSessions.start({
+        repositoryId: id,
+        goal: issueGoal(issue),
+        issueNumbers: [issueNumber],
+        issueUrls: issue.url ? [issue.url] : [],
+      });
+    } catch (cause) {
       if (cause?.code !== "ISSUE_ALREADY_PLANNED") throw cause;
       const existing = await this.#existingPlan(id, issueNumber);
       if (!existing) throw cause;

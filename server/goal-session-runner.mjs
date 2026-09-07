@@ -198,7 +198,9 @@ function openingMessage(plan) {
 
 function implementationMessage(plan) {
   const base = plan.baseRef || plan.baseSha || "the recorded repository base";
-  return `The user approved proposal revision ${plan.approvalRevision}. The immutable approved proposal is:\n${JSON.stringify(plan.proposal)}\nImplement only that displayed scope in this worktree. Do not expand it without another proposal. When finished, commit the change, push branch ${plan.goalSessionBranch}, open one pull request against ${base}, and report concrete manual verification and changed files.`;
+  const issues = (plan.issueNumbers || []).filter((number) => Number.isInteger(number) && number > 0);
+  const issueDelivery = issues.length ? ` Linked GitHub issues: ${issues.map((number) => `#${number}`).join(", ")}. Reference these issues in the pull request. Add a Closes #N line only for issues fully resolved by the approved scope; otherwise explain the remaining work. Do not close issues directly or expand scope to close them.` : "";
+  return `The user approved proposal revision ${plan.approvalRevision}. The immutable approved proposal is:\n${JSON.stringify(plan.proposal)}\nImplement only that displayed scope in this worktree. Do not expand it without another proposal. When finished, commit the change, push branch ${plan.goalSessionBranch}, open one pull request against ${base}, and report concrete manual verification and changed files.${issueDelivery}`;
 }
 
 function runCcs(args, { cwd, out = null } = {}) {

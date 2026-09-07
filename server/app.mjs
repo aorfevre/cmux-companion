@@ -165,7 +165,7 @@ export async function buildApp({
   // GitHub Sync owns its own durable store. A test that injects the whole
   // service never opens the production file, exactly like the planner above.
   const issueSync = githubIssueSync
-    || new GitHubIssueSync({ worktrees, planner, store: githubIssueStore || new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
+    || new GitHubIssueSync({ worktrees, planner, goalSessions, store: githubIssueStore || new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // The timer that keeps the issue column current without anyone pressing
   // GitHub Sync. The interval is read here rather than inside the class, so the
   // class stays purely injected and a test never depends on the environment.

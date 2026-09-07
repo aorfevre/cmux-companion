@@ -58,7 +58,7 @@ type GitHubIssueCard = { repositoryId: string; repositoryName: string; number: n
 type GitHubIssueColumnPayload = { syncedAt: string | null; issues: GitHubIssueCard[] };
 type GitHubIssueSyncRepository = { repositoryId: string; name: string; status: string; issueCount: number; truncated: boolean; error: string | null };
 type GitHubIssueSyncResult = { syncedAt: string; status: string; message: string | null; repositories: GitHubIssueSyncRepository[]; issues: GitHubIssueCard[] };
-type GitHubIssueGoalResult = { issue: GitHubIssueCard; plan: { planId: string }; created: boolean };
+type GitHubIssueGoalResult = { issue: GitHubIssueCard; plan: { planId: string; workflow?: string; goalSessionWorkspaceId?: string | null }; created: boolean };
 type FollowupAgent = "claude" | "codex";
 type FollowupSubmission = { actions: string[]; question?: string; custom?: string; agent: FollowupAgent };
 type FollowupResult = { planId: string; workspaceId: string; agent: FollowupAgent; actions: string[]; branch: string; worktreePath: string; pullRequest: { number: number; url: string } | null; title: string };
@@ -661,6 +661,13 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
         )));
         await loadGoalPlans();
         setIssueNotice("");
+        const workspaceId = result.plan?.goalSessionWorkspaceId;
+        if (result.plan?.workflow === "goal_session" && workspaceId) {
+          onNotice(result.created ? `Started a planning conversation for issue #${issue.number}.` : `Opening the existing conversation for issue #${issue.number}.`);
+          if (onGoalSessionStarted) await onGoalSessionStarted(workspaceId);
+          else onOpenWorkspace(workspaceId);
+          return;
+        }
         onNotice(result?.created === false
           ? `Issue #${issue.number} already has a goal. Nothing new was created.`
           : `Started a goal for issue #${issue.number}. It is in Writing Spec.`);

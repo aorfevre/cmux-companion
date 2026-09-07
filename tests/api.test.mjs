@@ -1764,3 +1764,44 @@ test("durable goal questions reach the inbox and stale replies never reach cmux"
   assert.equal((await app.inject({ method: "POST", url, headers, payload: { kind: "question", selections: ["Invoice"] } })).statusCode, 400);
   assert.equal(cmux.calls.filter(([kind]) => kind === "reply").length, 0);
 });
+
+test("an authenticated issue-card start creates a managed planning workspace with durable issue links", async (t) => {
+  const repositoryId = "starredRepoABCDEFG";
+  let worktreeCalls = 0;
+  let runnerCalls = 0;
+  const cmux = { ...fakeCmux(), workspaceListDetailed: async () => ({ workspaces: [] }),
+    workspaceStartGoalSessionRunner: async () => { runnerCalls += 1; },
+  };
+  const worktreeDashboard = {
+    invalidate: () => {},
+    resolveRepository: async (id) => ({ id, name: "sample", primaryPath: "/fixture/sample" }),
+    create: async () => { worktreeCalls += 1; return { worktree: { path: "/fixture/issue-goal" } }; },
+  };
+  const githubIssueStore = {
+    get: () => ({ repositoryId, number: 12, title: "Restore caret", body: "Keep selection after playback", url: "https://github.com/acme/sample/issues/12", labels: [] }),
+    setPlanId: (_id, _number, planId) => ({ repositoryId, number: 12, planId }),
+  };
+  const app = await buildApp(t, { cmux, token: TOKEN, worktreeDashboard, githubIssueStore });
+  const url = `/api/github-issues/${repositoryId}/12/goal`;
+  const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  assert.equal((await app.inject({ method: "POST", url })).statusCode, 401);
+  assert.equal((await app.inject({ method: "POST", url, headers: { ...headers, origin: "https://other.example" } })).statusCode, 403);
+  assert.equal(worktreeCalls, 0);
+  const response = await app.inject({ method: "POST", url, headers });
+  assert.equal(response.statusCode, 200, response.body);
+  const result = response.json();
+  assert.equal(result.created, true);
+  assert.equal(result.plan.workflow, "goal_session");
+  assert.equal(result.plan.goalSessionWorkspaceId, WS_ID);
+  assert.equal(result.plan.sourceType, "github_issues");
+  assert.deepEqual(result.plan.issueNumbers, [12]);
+  assert.deepEqual(result.plan.issueUrls, ["https://github.com/acme/sample/issues/12"]);
+  assert.equal(result.plan.approvalRevision, null);
+  const repeated = await app.inject({ method: "POST", url, headers });
+  assert.equal(repeated.statusCode, 200, repeated.body);
+  assert.equal(repeated.json().created, false);
+  assert.equal(repeated.json().plan.planId, result.plan.planId);
+  assert.equal(repeated.json().plan.goalSessionWorkspaceId, WS_ID);
+  assert.equal(worktreeCalls, 1);
+  assert.equal(runnerCalls, 1);
+});

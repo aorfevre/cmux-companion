@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { normalizeImages, normalizePlannerEngine } from "./worktree-planner.mjs";
+import { normalizeImages, normalizePlannerEngine, normalizeIssueNumbers, normalizeIssueUrls } from "./worktree-planner.mjs";
 import { normalizeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
 
@@ -12,23 +12,26 @@ export class GoalSessionService {
     this.processAlive = processAlive;
   }
 
-  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, idempotencyKey = null } = {}) {
+  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, idempotencyKey = null, issueNumbers = [], issueUrls = [] } = {}) {
     const text = String(goal || "").trim();
     if (!text || text.length > 4_000) throw new TypeError("Describe the goal for this repository");
     const repository = await this.worktrees.resolveRepository(repositoryId);
     const planId = validIdempotencyKey(idempotencyKey) || randomUUID();
     const attachments = normalizeImages(images);
+    const linkedIssues = normalizeIssueNumbers(issueNumbers);
+    const linkedUrls = normalizeIssueUrls(issueUrls);
     const selectedEngine = normalizePlannerEngine(engine, this.modelSettings?.roles);
     const selectedReview = safeReviewOptions(reviewOptions);
     if (selectedReview.codeReview || selectedEngine.reviewer) throw new TypeError("Managed goal sessions do not support automated reviewers. Use Plan this goal for reviewed delivery");
     const selectedOptions = normalizeSpecOptions(specOptions);
     const existing = this.store.get(planId);
     if (existing) {
-      if (existing.workflow !== "goal_session" || existing.repositoryId !== repository.id || existing.goal !== text || !same(existing.images, attachments) || !same(existing.engine, selectedEngine) || !same(existing.specOptions, selectedOptions) || !same(existing.reviewOptions, selectedReview)) throw new TypeError("This goal-session request key belongs to a different goal");
+      if (existing.workflow !== "goal_session" || existing.repositoryId !== repository.id || existing.goal !== text || !same(existing.issueNumbers, linkedIssues) || !same(existing.issueUrls, linkedUrls) || !same(existing.images, attachments) || !same(existing.engine, selectedEngine) || !same(existing.specOptions, selectedOptions) || !same(existing.reviewOptions, selectedReview)) throw new TypeError("This goal-session request key belongs to a different goal");
       return existing;
     }
     this.store.createPlan({ planId, repositoryId: repository.id, repositoryName: repository.name, cwd: repository.primaryPath, goal: text, images: attachments,
-      engine: selectedEngine, specOptions: selectedOptions, reviewOptions: selectedReview });
+      engine: selectedEngine, specOptions: selectedOptions, reviewOptions: selectedReview,
+      sourceType: linkedIssues.length ? "github_issues" : null, issueNumbers: linkedIssues, issueUrls: linkedUrls });
     const branch = `goal-session/${planId.slice(0, 12)}`;
     this.store.reserveGoalSession(planId, { branch, generation: 1 });
     try {
