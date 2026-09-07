@@ -1064,7 +1064,7 @@ function AttentionRail({ relaunchModes, railRef, rows, sessionsAvailable, loaded
         would send the user to relaunch work that is still running. */}
     {loaded && !sessionsAvailable && <p className="goal-attention-note">cmux could not be reached, so agent liveness is unknown. Nothing below is reported as dead.</p>}
     {rows.length === 0
-      ? <p className="goal-attention-empty">{!loaded ? "Checking goal tasks…" : !sessionsAvailable || error ? "Goal attention could not be fully checked." : "No goal tasks need your attention."}</p>
+      ? <p className="goal-attention-empty">{error || (loaded && !sessionsAvailable) ? "Goal attention could not be fully checked." : !loaded ? "Checking goal tasks…" : "No goal tasks need your attention."}</p>
       : <ul className="goal-attention-rows">{rows.map(({ goal, item, kind }) => {
         const task = item as HealthTask;
         const relaunchKey = `relaunch:${goal.planId}:${task.id}`;

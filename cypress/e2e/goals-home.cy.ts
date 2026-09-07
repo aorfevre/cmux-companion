@@ -34,6 +34,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
         cy.findByRole("button", { name: "Licence Usage" }).should("be.visible");
         cy.findByRole("button", { name: "Settings" }).should("be.visible");
       });
+      cy.findByRole("region", { name: "Goals needing attention" }).should("contain.text", "No goal tasks need your attention.");
       cy.get('.worktree-filter-tabs').should("not.be.visible");
       cy.contains("summary", "Board tools").click();
       cy.findByRole("tab", { name: /^Inactive/ }).click();
@@ -51,6 +52,13 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       cy.findByRole("region", { name: "Goals board" }).should("be.visible");
       cy.reload();
       cy.findByRole("region", { name: "Goals board" }).should("be.visible");
+    });
+
+    it("reports unavailable goal attention without claiming everything is clear", () => {
+      cy.intercept("GET", "**/api/goals/health", { statusCode: 503, body: { error: "Goal supervision unavailable" } });
+      cy.visit("/");
+      cy.findByRole("region", { name: "Goals needing attention" }).should("contain.text", "Goal attention could not be fully checked.")
+        .and("not.contain.text", "No goal tasks need your attention.");
     });
 
     it("preserves explicit session links and returns to Goals", () => {
