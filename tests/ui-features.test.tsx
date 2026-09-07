@@ -940,6 +940,50 @@ describe("worktree goal planner", () => {
     assert.ok(screen.getByRole("button", { name: "Start workflow · 1 session in wave 1" }));
   });
 
+  test("keeps an approval summary and dependency delivery plan concise until details are requested", async () => {
+    const approvalDraft = {
+      ...readyDraft,
+      deliveryMode: "combined",
+      spec: {
+        version: 2, outcome: "Operators can review every detail before launch", inScope: ["Planner review"], nonGoals: ["Automatic launch"], constraints: ["Keep saved plans compatible"], assumptions: ["A reviewer opens the plan"], risks: [],
+        approvalSummary: {
+          overview: "Review a concise plan before starting work.",
+          userFlow: ["Read the plan", "Inspect the waves", "Start work"],
+          decisions: [{ choice: "One combined PR", consequence: "The delivery is assembled after every task is ready." }],
+          successCriteria: ["Dependencies are visible before launch."],
+        },
+        acceptanceCriteria: [{ id: "AC-1", text: "The plan is reviewable", verification: "npm run test:ui" }],
+      },
+      readiness: { ready: false, errors: ["Assign a verification command"], warnings: ["One assumption needs approval"], waves: [["task-1"], ["task-2"]], coverage: [] },
+      tasks: [
+        { ...tasks[0], title: "Prepare API", criterionIds: ["AC-1"], ownedAreas: ["server/**"], verification: ["npm test"] },
+        { ...tasks[1], title: "Publish UI", criterionIds: ["AC-1"], dependsOn: ["task-1"], ownedAreas: ["app/**"], verification: ["npm run test:ui"] },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(approvalDraft), { status: 201 })));
+    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Make approval clearer");
+    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+
+    const passport = await screen.findByRole("region", { name: "Goal passport" });
+    assert.ok(within(passport).getByText("Review a concise plan before starting work."));
+    assert.ok(within(passport).getByText("One combined PR"));
+    assert.ok(within(passport).getByText("Assign a verification command"));
+    assert.ok(within(passport).getByText("One assumption needs approval"));
+    const chart = within(passport).getByRole("region", { name: "Delivery plan" });
+    assert.ok(within(chart).getByText("2 tasks · 2 waves"));
+    assert.ok(within(chart).getByText(/1 combined pull request/));
+    assert.equal(chart.querySelectorAll(".delivery-flowchart-edges > path").length, 1);
+    await userEvent.click(within(chart).getByRole("button", { name: /Publish UI/ }));
+    assert.ok(within(chart).getByText("Scope: The plan is reviewable"));
+    assert.ok(within(chart).getByText("Files: app/**"));
+    const contractDetails = within(passport).getByText(/Full delivery contract/).parentElement as HTMLDetailsElement;
+    assert.equal(contractDetails.open, false);
+    await userEvent.click(within(contractDetails).getByText(/Full delivery contract/));
+    assert.equal(contractDetails.open, true);
+    assert.ok(within(contractDetails).getByText("Automatic launch"));
+  });
+
   test("rejects a plan with written feedback and starts a fresh analysis", async () => {
     const revised = { ...readyDraft, round: 3, running: true, tasks: [] };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

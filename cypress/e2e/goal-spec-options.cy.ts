@@ -308,6 +308,9 @@ describe("specification rigor options", () => {
       cy.contains("Requested flowcharts coverage is missing: the contract holds no flow artifact").should("be.visible");
       cy.contains("Ready to code").should("be.visible");
 
+      // Coverage and design artifacts are authoritative contract detail. The
+      // concise approval surface leaves them collapsed until a reviewer asks.
+      cy.findByText("Risks and technical constraints").click();
       cy.contains("Specification coverage").should("be.visible");
       cy.get(".goal-passport-options li").should("have.length", 5);
       // A request the user never made is absent, rather than reported as clean.
