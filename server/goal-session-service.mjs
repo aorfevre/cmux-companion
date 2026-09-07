@@ -6,9 +6,10 @@ import { safeReviewOptions } from "./review-options.mjs";
 // Owns only the visible, one-worktree session path. Legacy saved plans keep
 // their existing planner/launch flow and never enter this service.
 export class GoalSessionService {
-  constructor({ store, worktrees, cmux, modelSettings, log = null } = {}) {
+  constructor({ store, worktrees, cmux, modelSettings, log = null, processAlive = isProcessAlive } = {}) {
     if (!store || !worktrees || !cmux) throw new TypeError("Goal sessions need plan storage, worktrees and cmux");
     this.store = store; this.worktrees = worktrees; this.cmux = cmux; this.modelSettings = modelSettings; this.log = log;
+    this.processAlive = processAlive;
   }
 
   async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {} } = {}) {
@@ -23,23 +24,75 @@ export class GoalSessionService {
     const branch = `goal-session/${planId.slice(0, 12)}`;
     this.store.reserveGoalSession(planId, { branch, generation: 1 });
     try {
-      const inventory = await (this.cmux.loadWorkspaceListDetailed ? this.cmux.loadWorkspaceListDetailed() : this.cmux.workspaceListDetailed());
-      if (!Array.isArray(inventory?.workspaces)) throw new TypeError("cmux sessions could not be checked before starting this goal");
-      const created = await this.worktrees.create(repository.id, { branch, base: "HEAD", requireFreshAtBase: true, workspaces: inventory.workspaces, workspacesAvailable: true });
+      const inventory = await this.#inventory();
+      // WorktreeDashboard resolves and fetches the actual default remote
+      // branch. Never start this isolated checkout from stale local HEAD.
+      const created = await this.worktrees.create(repository.id, {
+        branch, useDefaultBase: true, requireFreshAtBase: true,
+        workspaces: inventory.workspaces, workspacesAvailable: true,
+      });
+      // Durably own the checkout before the cmux side effect. A crash at the
+      // next boundary can recover only this path, never create a second writer.
+      this.store.recordGoalSessionWorktree(planId, { worktreePath: created.worktree.path, generation: 1 });
       const workspace = await this.cmux.workspaceCreate({ cwd: created.worktree.path, title: `Goal · ${text.slice(0, 72)}`, agent: "shell" });
       const plan = this.store.recordGoalSessionStart(planId, { worktreePath: created.worktree.path, workspaceId: workspace.workspace_id, generation: 1 });
-      // Binding is durable before the terminal process starts. A crashed runner
-      // can therefore be resumed in this exact workspace without creating a
-      // second writer for the worktree.
-      await this.cmux.workspaceStartGoalSessionRunner(workspace.workspace_id, { planId, databasePath: this.store.path, generation: plan.goalSessionGeneration });
+      await this.#startRunner(plan);
       return this.store.get(planId);
     } catch (cause) {
       this.store.recordGoalSessionStartFailure(planId, cause?.message || "Goal session could not start");
-      throw cause;
+      throw withPlanId(cause, planId);
     }
+  }
+
+  // Recovery is explicit and reuses only durable ids. It never looks at a
+  // title or transcript and refuses a second runner while its recorded local
+  // process is live.
+  async recover(planId) {
+    let plan = this.store.get(planId);
+    if (!plan || plan.workflow !== "goal_session" || plan.boardStatus) throw new TypeError("This managed goal session is unavailable");
+    if (!plan.goalSessionWorktreePath) throw new TypeError("This goal stopped before its worktree was recorded. Start a new goal rather than risking a second checkout");
+    if (!plan.goalSessionWorkspaceId) {
+      if (plan.goalSessionState !== "starting") throw new TypeError("This goal session has no recoverable workspace");
+      const workspace = await this.cmux.workspaceCreate({ cwd: plan.goalSessionWorktreePath, title: `Goal · ${plan.goal.slice(0, 72)}`, agent: "shell" });
+      plan = this.store.recordGoalSessionStart(plan.planId, {
+        worktreePath: plan.goalSessionWorktreePath, workspaceId: workspace.workspace_id, generation: plan.goalSessionGeneration,
+      });
+    }
+    const activePid = plan.goalSessionRunnerPid;
+    if (activePid && this.processAlive(activePid)) throw new TypeError("This goal session runner is still active in its workspace");
+    if (activePid) this.store.clearDeadGoalSessionRunner(plan.planId, { generation: plan.goalSessionGeneration, pid: activePid });
+    plan = this.store.get(plan.planId);
+    if (plan.goalSessionError && plan.goalSessionState === "planning") plan = this.store.retryGoalSessionTurn(plan.planId, { generation: plan.goalSessionGeneration });
+    await this.#startRunner(plan);
+    return this.store.get(plan.planId);
+  }
+
+  async #inventory() {
+    const inventory = await (this.cmux.loadWorkspaceListDetailed ? this.cmux.loadWorkspaceListDetailed() : this.cmux.workspaceListDetailed());
+    if (!Array.isArray(inventory?.workspaces)) throw new TypeError("cmux sessions could not be checked before starting this goal");
+    return inventory;
+  }
+
+  async #startRunner(plan) {
+    if (!plan?.goalSessionWorkspaceId || !plan?.goalSessionGeneration) throw new TypeError("This goal session has no durable workspace");
+    await this.cmux.workspaceStartGoalSessionRunner(plan.goalSessionWorkspaceId, {
+      planId: plan.planId, databasePath: this.store.path, generation: plan.goalSessionGeneration,
+    });
   }
 
   findByWorkspace(workspaceId) { return this.store.findGoalSessionByWorkspace(workspaceId); }
   approve(planId, decision) { return this.store.approveProposal(planId, decision); }
   requestChanges(planId, decision) { return this.store.requestProposalChanges(planId, decision); }
+  answer(planId, answer) { return this.store.submitGoalSessionAnswer(planId, answer); }
+}
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (cause) { return cause?.code === "EPERM"; }
+}
+
+function withPlanId(cause, planId) {
+  const error = cause instanceof Error ? cause : new Error(String(cause || "Goal session could not start"));
+  error.planId = planId;
+  return error;
 }

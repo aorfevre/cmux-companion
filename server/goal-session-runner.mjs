@@ -42,6 +42,7 @@ export async function runGoalSession({ planId, databasePath, generation: generat
   if (!plan || plan.workflow !== "goal_session" || !plan.goalSessionWorktreePath) throw new Error("This goal session is unavailable");
   const generation = Number.isInteger(generationArg) ? generationArg : plan.goalSessionGeneration;
   if (generation !== plan.goalSessionGeneration) throw new Error("This goal session was replaced; reopen its current workspace");
+  store.claimGoalSessionRunner(planId, { generation, pid: process.pid });
   out("Goal session started. I can investigate and refine the proposal here. Companion will require an approval card before implementation tools are enabled.");
   const lines = createInterface({ input, crlfDelay: Infinity });
   let turn = Promise.resolve();
@@ -49,7 +50,9 @@ export async function runGoalSession({ planId, databasePath, generation: generat
   const planningTurn = async (message, pendingFeedback = null) => {
     plan = store.get(planId);
     if (plan?.goalSessionGeneration !== generation || plan?.boardStatus) throw new Error("This goal session was replaced or closed");
-    const reply = parsePlannerReply(await execute(command(plan, message, false), { cwd: plan.goalSessionWorktreePath, out }), plan.specOptions);
+    const output = await execute(command(plan, message, false), { cwd: plan.goalSessionWorktreePath, out });
+    validateGoalSessionPlanning(output, plan.goalSessionProviderSessionId);
+    const reply = parsePlannerReply(output, plan.specOptions);
     if (!reply.sessionId) throw new Error("The provider did not return a resumable conversation id");
     plan = store.recordGoalSessionProviderSession(planId, { generation, providerSessionId: reply.sessionId });
     if (reply.status === "questions") {
@@ -58,16 +61,23 @@ export async function runGoalSession({ planId, databasePath, generation: generat
       if (pendingFeedback) store.acknowledgeGoalSessionInput(planId, { generation, feedback: pendingFeedback });
       return;
     }
-    const proposal = { intendedBehavior: reply.spec?.outcome || plan.goal, scope: reply.tasks.map((task) => task.title), assumptions: reply.spec?.assumptions || [], verification: reply.tasks.flatMap((task) => task.verification || []) };
+    const proposal = {
+      intendedBehavior: reply.spec?.outcome || plan.goal,
+      scope: reply.spec?.inScope || reply.tasks.map((task) => task.title),
+      exclusions: reply.spec?.nonGoals || [],
+      assumptions: reply.spec?.assumptions || [],
+      acceptanceCriteria: (reply.spec?.acceptanceCriteria || []).map((criterion) => ({ text: criterion.text, verification: criterion.verification })),
+      verification: reply.tasks.flatMap((task) => task.verification || []),
+    };
     store.publishProposal(planId, { generation: plan.goalSessionGeneration, providerSessionId: reply.sessionId, proposal });
     if (pendingFeedback) store.acknowledgeGoalSessionInput(planId, { generation, feedback: pendingFeedback });
     out(`Proposal revision ${store.get(planId).proposalRevision} is ready in Companion. Approve it there to enable implementation, or type feedback here to revise it.`);
   };
 
   if (!plan.goalSessionProviderSessionId) {
-    void (turn = turn.then(() => planningTurn(openingMessage(plan))).catch((cause) => out(`Planning failed: ${cause.message}`)));
-  } else if (plan.goalSessionState === "planning" && !plan.goalSessionPendingInput) {
-    void (turn = turn.then(() => planningTurn("Resume the saved goal conversation. Reconstruct the next proposal from the goal and saved decisions. Do not implement anything.")).catch((cause) => out(`Planning failed: ${cause.message}`)));
+    void (turn = turn.then(() => planningTurn(openingMessage(plan))).catch((cause) => { store.recordGoalSessionPlanningFailure(planId, { generation, error: cause?.message || cause }); out(`Planning failed: ${cause.message}`); }));
+  } else if (plan.goalSessionState === "planning" && !plan.goalSessionPendingInput && !plan.goalSessionError) {
+    void (turn = turn.then(() => planningTurn("Resume the saved goal conversation. Reconstruct the next proposal from the goal and saved decisions. Do not implement anything.")).catch((cause) => { store.recordGoalSessionPlanningFailure(planId, { generation, error: cause?.message || cause }); out(`Planning failed: ${cause.message}`); }));
   } else if (plan.goalSessionState === "awaiting_approval") {
     out(`Proposal revision ${plan.proposalRevision} is still awaiting a decision in Companion.`);
   }
@@ -108,7 +118,8 @@ export async function runGoalSession({ planId, databasePath, generation: generat
   timer.unref?.();
   lines.on("line", (line) => {
     const feedback = String(line || "").trim();
-    if (!feedback || implementationStarted && store.get(planId)?.transitionStatus !== "delivered") return;
+    if (!feedback) return;
+    if (implementationStarted && store.get(planId)?.transitionStatus !== "delivered") { out("Implementation is still running. Wait for its recorded result before sending another request."); return; }
     const current = store.get(planId);
     if (current?.goalSessionGeneration !== generation) { out("This goal session was replaced; reopen its current workspace."); return; }
     if (current?.transitionStatus === "delivered") {
@@ -124,9 +135,14 @@ export async function runGoalSession({ planId, databasePath, generation: generat
       catch (cause) { out(String(cause?.message || cause)); return; }
       return;
     }
-    turn = turn.then(() => planningTurn(`The user responded: ${feedback}\nRevise the proposal. Do not implement anything.`)).catch((cause) => out(`Planning failed: ${cause.message}`));
+    if (current?.goalSessionState === "awaiting_input") {
+      try { store.submitGoalSessionAnswer(planId, { generation, feedback }); }
+      catch (cause) { out(String(cause?.message || cause)); }
+      return;
+    }
+    out("This goal is not waiting for an answer. Use the approval card or wait for the current proposal turn.");
   });
-  return () => { clearInterval(timer); lines.close(); store.close(); };
+  return () => { clearInterval(timer); lines.close(); store.releaseGoalSessionRunner(planId, { generation, pid: process.pid }); store.close(); };
 }
 
 function command(plan, message, writable) {
@@ -172,6 +188,17 @@ function runCcs(args, { cwd, out = null } = {}) {
 // exit code, so a writable transition must validate the provider result before
 // it becomes delivered.
 export function validateGoalSessionExecution(output, expectedSessionId = null) {
+  return validateGoalSessionEnvelope(output, expectedSessionId, "writable");
+}
+
+// Planning remains read-only, but it is still a continuation of one recorded
+// provider conversation. A success-shaped error or a changed session id must
+// never replace the durable resume id before an approval is evaluated.
+export function validateGoalSessionPlanning(output, expectedSessionId = null) {
+  return validateGoalSessionEnvelope(output, expectedSessionId, "planning");
+}
+
+function validateGoalSessionEnvelope(output, expectedSessionId, turn) {
   const raw = finalEnvelope(String(output || "")).trim();
   let envelope;
   try { envelope = JSON.parse(raw); } catch { throw new TypeError("The provider did not return a completion envelope"); }
@@ -183,7 +210,7 @@ export function validateGoalSessionExecution(output, expectedSessionId = null) {
     const detail = wrongSession
       ? "the provider returned a different conversation id"
       : String(envelope?.result || envelope?.error || "provider execution was not successful").replace(/\s+/g, " ").trim().slice(0, 500);
-    throw new TypeError(`The provider did not complete the writable turn: ${detail}`);
+    throw new TypeError(`The provider did not complete the ${turn} turn: ${detail}`);
   }
   return envelope;
 }

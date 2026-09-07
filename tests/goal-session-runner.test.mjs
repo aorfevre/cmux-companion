@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { runGoalSession, validateGoalSessionExecution } from "../server/goal-session-runner.mjs";
+import { runGoalSession, validateGoalSessionExecution, validateGoalSessionPlanning } from "../server/goal-session-runner.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 
 function setupSession(t) {
@@ -104,6 +104,12 @@ test("only an accepted result from the resumed provider conversation completes a
   assert.throws(() => validateGoalSessionExecution(JSON.stringify({ type: "result", subtype: "success", session_id: "provider-session-1", result: "denied", permission_denials: ["Edit"] }), "provider-session-1"), /denied/);
   assert.throws(() => validateGoalSessionExecution(resultEnvelope({ sessionId: "other-provider-session" }), "provider-session-1"), /different conversation id/);
   assert.throws(() => validateGoalSessionExecution("not an envelope"), /completion envelope/);
+});
+
+test("planning rejects provider failures and a changed resumed conversation id", () => {
+  assert.equal(validateGoalSessionPlanning(resultEnvelope(), "provider-session-1").session_id, "provider-session-1");
+  assert.throws(() => validateGoalSessionPlanning(resultEnvelope({ subtype: "error", isError: true, result: "permission denied" }), "provider-session-1"), /planning turn: permission denied/);
+  assert.throws(() => validateGoalSessionPlanning(resultEnvelope({ sessionId: "other-provider-session" }), "provider-session-1"), /different conversation id/);
 });
 
 test("planning is read-only until its durable proposal approval dispatches one writable resume", async (t) => {
