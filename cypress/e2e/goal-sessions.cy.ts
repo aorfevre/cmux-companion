@@ -61,6 +61,39 @@ function start() {
 }
 
 describe("visible goal conversation", () => {
+  it("keeps discovery on the board and labels a published proposal ready for review", () => {
+    const state = scenario({ ...basePlan, goalSessionState: "planning", questions: [] });
+    cy.intercept("GET", "**/api/worktree-plans*", (request) => request.reply({ plans: [{ ...state.getPlan(), status: "draft", stage: "questions", taskCount: 0, launchedCount: 0, createdAt: now, updatedAt: now }] }));
+    cy.visit("/?mode=worktrees");
+    cy.contains("Discovery is open in the conversation").should("be.visible");
+    cy.contains("Planning stopped before it produced anything").should("not.exist");
+    cy.then(() => state.setPlan({ ...state.getPlan(), goalSessionState: "awaiting_approval", proposalRevision: 1, proposal }));
+    cy.reload();
+    cy.contains("Ready for review").should("be.visible");
+    cy.screenshot("native-goal-review-ready", { capture: "viewport" });
+    cy.contains("Ready to launch").should("not.exist");
+  });
+
+  it("keeps native discovery open after exit and resumes the recorded conversation", () => {
+    const state = scenario({ ...basePlan, questions: [], goalSessionState: "planning", goalSessionError: null, goalSessionRunnerPid: null, goalSessionRunnerDispatchId: null });
+    cy.intercept("POST", "**/api/goal-sessions/goal-one/recover", (request) => {
+      state.setPlan({ ...state.getPlan(), goalSessionRunnerPid: 123 });
+      request.reply(state.getPlan());
+    }).as("resumeNative");
+    start();
+    cy.contains("Conversation closed. Discovery and saved proposals are preserved.").should("be.visible");
+    cy.screenshot("native-goal-discovery-resume", { capture: "viewport" });
+    cy.findByRole("button", { name: "Recover failed turn" }).should("not.exist");
+    cy.findByRole("button", { name: "Approve and implement" }).should("not.exist");
+    cy.findByRole("button", { name: "Resume conversation" }).click();
+    cy.wait("@resumeNative");
+    cy.findByRole("button", { name: "Resume conversation" }).should("not.exist");
+    cy.contains("Discovery is open in the interactive conversation.").should("be.visible");
+    cy.location("search").should("contain", "workspace=goal-workspace");
+    cy.get("@startGoal.all").should("have.length", 1);
+    cy.get("@approval.all").should("have.length", 0);
+  });
+
   it("opens its exact session, answers a question, revises scope and approves the latest revision", () => {
     scenario(); start();
     cy.findByText("Goal needs your answer").should("be.visible");

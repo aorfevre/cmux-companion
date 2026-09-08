@@ -52,3 +52,25 @@ test("an aborted goal cannot expose a stale proposal approval", async () => {
   assert.ok(await screen.findByText("Goal aborted"));
   assert.equal(screen.queryByRole("button", { name: "Approve and implement" }), null);
 });
+
+test("exited discovery stays open and can resume without a blocker or approval", async () => {
+  const plan = { ...proposal("native"), goalSessionState: "planning", proposal: null, goalSessionRunnerPid: null, goalSessionRunnerDispatchId: null, goalSessionError: null };
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => init?.method === "POST"
+    ? new Response(JSON.stringify({ ...plan, goalSessionRunnerPid: 123 }), { status: 200 }) : response(plan));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<ManagedGoalControls workspaceId="native" />);
+  await screen.findByText("Conversation closed. Discovery and saved proposals are preserved.");
+  assert.equal(screen.queryByRole("button", { name: "Recover failed turn" }), null);
+  assert.equal(screen.queryByRole("button", { name: "Approve and implement" }), null);
+  fireEvent.click(screen.getByRole("button", { name: "Resume conversation" }));
+  await waitFor(() => assert.ok(!screen.queryByRole("button", { name: "Resume conversation" })));
+  assert.ok(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/native/recover") && init?.method === "POST"));
+});
+
+test("saved proposal remains reviewable after exit and read-only input disables resume", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => response({ ...proposal("native"), goalSessionRunnerPid: null, goalSessionRunnerDispatchId: null })));
+  render(<ManagedGoalControls workspaceId="native" readOnly />);
+  await screen.findByText("Ready for review. Approve this revision, then tell the agent to continue here.");
+  assert.equal((screen.getByRole("button", { name: "Resume conversation" }) as HTMLButtonElement).disabled, true);
+  assert.equal((screen.getByRole("button", { name: "Approve and implement" }) as HTMLButtonElement).disabled, true);
+});

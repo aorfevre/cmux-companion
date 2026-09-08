@@ -1,8 +1,6 @@
 # A visible session for each goal
 
-Implementation branch: `feature/goal-session-planning`, in the dedicated
-`cmux-companion-feature-goal-session-planning` worktree. Main through `a28167c`
-has been integrated. The original checkout and its user changes were not modified.
+The native discovery flow replaces the original line-oriented goal runner.
 
 ## Outcome
 
@@ -25,14 +23,17 @@ Neither product quality nor iteration-speed improvements have been measured yet.
    legacy planner workflow.
 2. Companion saves the goal, acquires an isolated checkout from the fetched
    default remote branch and records its identity before starting cmux.
-3. The visible runner investigates with read-only tools. Questions are durable,
-   appear beside the conversation and enter the action inbox. An attention
-   button exposes pending inbox actions from Home.
+3. A native interactive Claude-compatible CLI owns the cmux terminal. The user
+   discusses the problem, answers questions and interrupts directly. The agent
+   publishes a structured proposal through a dedicated local MCP tool when the
+   discovery is ready; schema and contract validation determine review readiness.
 4. Review intended behavior, scope, exclusions, assumptions, acceptance criteria
-   and verification. **Request changes** continues planning; **Approve and
-   implement** applies to the displayed proposal revision and session generation.
-5. The same provider conversation resumes with implementation tools. Its owner
-   becomes exactly one launched task for existing health and PR tracking.
+   and verification. **Request changes** saves feedback for the next native turn;
+   **Approve and implement** applies to the displayed revision and generation.
+   A direct discovery message before approval withdraws the old proposal.
+5. After approving, tell the agent to continue in the same conversation. Per-tool
+   approval checks now permit implementation, subject to native permission prompts.
+   The owner becomes one launched task for existing health and PR tracking.
 6. Open the saved goal's **Open conversation** action to return to its recorded
    workspace. The conversation stays available during PR review and accepts
    corrections within approved scope. Merge remains a separate decision.
@@ -52,18 +53,34 @@ closing keywords when the approved scope fully resolves an issue.
 
 ## Implementation and boundaries
 
-`server/goal-session-runner.mjs` is a managed, line-oriented terminal program.
-Both provider selections use CCS with `--target claude`, explicit tool controls
-and a saved provider conversation ID. Provider processes restart between turns;
-this is not native Codex/Claude TUI continuity or a durable transcript platform.
+`server/goal-session-runner.mjs` is a fixed entry point for
+`server/goal-session-interactive.mjs`. CCS still uses `--target claude` for either
+selected provider, but without `--print`, stream-json parsing, per-turn process
+restarts or terminal input interception. The native CLI inherits stdin/stdout/stderr
+and resumes the recorded session ID. This is the Claude-compatible native UI;
+it does not launch the native Codex CLI.
 
-Planning supplies only Read, Grep and Glob, disables other tool sources and
-cannot obtain writable tools through a textual approval. The authenticated,
-same-origin-checked proposal endpoint records approval before the runner claims
-one writable transition. Writable turns use a bounded tool configuration without
-a permission-bypass mode. Process duration, idle time and retained output are
-bounded. Error envelopes, denied permissions and changed conversation IDs are
-rejected even when the provider process exits successfully.
+`server/goal-session-bridge.mjs` exposes only `get_status` and `publish_proposal`
+over local stdio MCP. Proposal validation reuses delivery-contract checks,
+including requested spec options. Publishing compares the revision, provider
+identity and pending feedback atomically; it cannot approve a proposal. Validation
+errors go back to the agent for correction without setting a blocked state.
+
+Explicit CLI settings install a PreToolUse hook bound to the goal, generation and
+provider session. Discovery permits reading, questions and the two goal tools;
+Bash, Edit and Write require a current durable approval. Unknown tools fail closed.
+The hook leaves native permission decisions intact and never grants write access
+itself. A UserPromptSubmit hook carries phone feedback and approval context into
+the conversation and invalidates an unapproved proposal when discussion resumes.
+Custom settings and MCP sources are isolated; the prompt supplies the `/goal`
+workflow without depending on an installed slash command.
+
+The supervisor transfers its durable process ownership to the spawned CCS
+process, so a supervisor exit cannot by itself authorize a duplicate launch.
+Native exit releases ownership and preserves discovery/proposals. Spawn failures
+are visible in the terminal and leave the goal resumable; they do not fabricate a
+provider completion failure. The first approved mutation records that the native
+session received authorization, not successful implementation or PR delivery.
 
 The existing SQLite plan store owns the workflow discriminator, worktree and
 base, workspace, provider ID, generation, proposal and question revisions,
@@ -90,15 +107,19 @@ successful planning. The start-error UI currently shows the error text; inspect
 the saved failed goal on the board rather than opening it directly from that
 error.
 
-**Recover failed turn** can queue a failed planning input on the live owner.
-Restart requires proven ownership and no live recorded runner. A durable dispatch
-claim prevents concurrent restart requests from injecting another command. A
-failed writable transition or correction remains uncertain and is not replayed.
-Missing workspace identity or an ambiguous dispatch can require manual
-reconciliation; the recovery endpoint does not guess a replacement workspace.
-Terminal closure does not erase saved decisions or delete the checkout. Terminal
-input is line-oriented: use one line per terminal turn, or the saved goal
-sheet’s answer/request-change text area for multiline feedback.
+**Resume conversation** is available when the recorded process and dispatch
+are absent. It reuses the same workspace and provider identity; a live owner or
+ambiguous dispatch refuses a second launch. Native exit does not erase decisions,
+block the goal, delete the checkout, or automatically restart implementation.
+Old uncertain writable transitions remain uncertain and require reconciliation;
+this change does not reinterpret existing saved failures. Existing legacy question
+and recovery API behavior remains available for older records.
+
+Phone proposal feedback is durable and delivered on the next user turn or status
+tool call. It does not auto-type into a running native prompt. After approval,
+the user tells the agent to continue. Discovery questions are native conversation
+interactions, not synthetic Companion inbox records. Native CLI permission and
+question prompts can also be handled through the existing terminal view.
 
 The checked-in CLI configuration and fake-process tests establish the requested
 permission surface and lifecycle behavior. They cannot establish that a live CCS
@@ -120,9 +141,6 @@ Local Cypress covers creation into the exact workspace, questions, scope changes
 revision-bound approval, inbox answering without approval, stale approval errors
 and recovery without creating another goal. Existing browser coverage is retained.
 
-Validation: 994 backend tests, 110 UI tests and lint passed; the full local
-Cypress suite passed all 77 tests. Typecheck passed during focused validation;
-final build confirmation is recorded in the PR. During integration, the full suite exposed an in-memory legacy planner regression and
-older UI fixtures missing the new workspace-goal lookup. These were fixed while
-retaining their original assertions. Live CCS/cmux/GitHub behavior, installation,
-merge and deployment remain unverified and were not performed.
+Current change evidence and interventions are recorded in the PR completion
+report. Live CCS/cmux/GitHub behavior, installation, merge and deployment require
+separate authorization and are not established by mocked browser tests.

@@ -190,6 +190,14 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
+  transferGoalSessionRunner(planId, { generation, fromPid, toPid } = {}) {
+    if (!Number.isInteger(toPid) || toPid < 1) throw new TypeError("Invalid native agent process");
+    const changed = this.db.prepare(`UPDATE plans SET goal_session_runner_pid = ? WHERE plan_id = ?
+      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_runner_pid = ?`)
+      .run(toPid, String(planId), generation, fromPid).changes;
+    if (changed !== 1) throw new TypeError("This goal session owner changed before the native agent started");
+  }
+
   releaseGoalSessionRunner(planId, { generation, pid } = {}) {
     if (!Number.isInteger(generation) || !Number.isInteger(pid)) return false;
     return this.db.prepare(`UPDATE plans SET goal_session_runner_pid = NULL, goal_session_runner_started_at = NULL, updated_at = ?
@@ -239,16 +247,18 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
-  publishProposal(planId, { generation, proposal, providerSessionId = null } = {}) {
+  publishProposal(planId, { generation, proposal, providerSessionId = null, expectedRevision, expectedFeedback } = {}) {
     if (!Number.isInteger(generation) || generation < 1 || !proposal || typeof proposal !== "object" || Array.isArray(proposal)) throw new TypeError("Invalid goal-session proposal");
     const at = this.#stamp();
     this.#transaction(() => {
-      const row = this.db.prepare("SELECT proposal_revision FROM plans WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state IN ('planning', 'awaiting_input', 'awaiting_approval')").get(String(planId), generation);
+      const row = this.db.prepare("SELECT proposal_revision, goal_session_pending_input, goal_session_active_input, goal_session_provider_session_id FROM plans WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state IN ('planning', 'awaiting_input', 'awaiting_approval')").get(String(planId), generation);
       if (!row) throw new TypeError("This proposal belongs to an unavailable goal session");
+      if (expectedRevision !== undefined && (row.goal_session_provider_session_id !== providerSessionId || row.proposal_revision !== expectedRevision || (row.goal_session_pending_input || row.goal_session_active_input || "") !== expectedFeedback)) throw new TypeError("The proposal or feedback changed before publication");
       const revision = Number(row.proposal_revision || 0) + 1;
       this.db.prepare(`UPDATE plans SET goal_session_state = 'awaiting_approval', proposal_revision = ?, proposal = ?,
         goal_session_provider_session_id = COALESCE(?, goal_session_provider_session_id), approval_revision = NULL,
         approval_at = NULL, transition_status = NULL, goal_session_error = NULL, updated_at = ? WHERE plan_id = ?`).run(revision, json(proposal), text(providerSessionId) || null, at, String(planId));
+      if (expectedRevision !== undefined) this.db.prepare("UPDATE plans SET goal_session_pending_input = NULL, goal_session_active_input = NULL WHERE plan_id = ?").run(String(planId));
       this.#insertEvent(String(planId), null, "proposal_published", { generation, revision, proposal }, at);
     });
     return this.get(planId);
