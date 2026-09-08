@@ -254,4 +254,5 @@ function migratePlanSchema(db) {
     ensure("plan_tasks", "delivery_status", "TEXT NOT NULL DEFAULT 'pending'");
     ensure("plan_tasks", "integrated_commit_sha", "TEXT");
     ensure("plan_tasks", "session_closed_at", "TEXT");
+    ensure("plans", "burst", "INTEGER NOT NULL DEFAULT 0");
 }

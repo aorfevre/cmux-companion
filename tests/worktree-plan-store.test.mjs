@@ -1432,3 +1432,15 @@ test("returning aborted issues retains history and releases the reservation exac
   store.recordGoalAborted("no-issue");
   assert.throws(() => store.returnIssuesToBacklog("no-issue"), /no linked/);
 });
+
+test("burst is stored, read back and listed; it defaults to off", (t) => {
+  const store = memoryStore(t);
+  const plain = seed(store, "plan-plain");
+  assert.equal(plain.burst, false);
+  const burst = store.createPlan({ planId: "plan-burst", repositoryId: "repository12345678", goal: "Burst goal", burst: true });
+  assert.equal(burst.burst, true);
+  assert.equal(store.get("plan-burst").burst, true);
+  const listed = store.list({}).find((plan) => plan.planId === "plan-burst");
+  assert.equal(listed.burst, true);
+  assert.throws(() => store.createPlan({ planId: "plan-bad", repositoryId: "repository12345678", goal: "x", burst: "yes" }), /Burst must be true or false/);
+});

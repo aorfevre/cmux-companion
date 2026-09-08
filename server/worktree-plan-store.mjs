@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { classifyLegacyWorktreeError } from "./worktree-errors.mjs";
 import { safeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
+import { normalizeBurst } from "./burst-options.mjs";
 import { currentModelId } from "./model-options.mjs";
 import { normalizeGoalType, plannerReviewReady } from "./goal-options.mjs";
 import { GoalOutcomeStore } from "./goal-outcome-store.mjs";
@@ -67,11 +68,12 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, discoveryContext = null, goalType = "coding", sourceAnalysis = null }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, burst = false, discoveryContext = null, goalType = "coding", sourceAnalysis = null }) {
     const at = this.#stamp();
     const options = safeSpecOptions(specOptions);
     const review = safeReviewOptions(reviewOptions);
     const type = normalizeGoalType(goalType);
+    const burstOn = normalizeBurst(burst);
     this.#transaction(() => {
       // Reservation and plan creation are one transaction, before any planner
       // process starts. Both single-issue and topic planning use this boundary.
@@ -83,12 +85,12 @@ export class WorktreePlanStore {
       }
 
       this.db.prepare(`
-        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), json(review), at, at);
+        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, burst, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), json(review), burstOn ? 1 : 0, at, at);
       this.db.prepare("UPDATE plans SET goal_type = ?, source_analysis = ? WHERE plan_id = ?").run(type, sourceAnalysis ? json(sourceAnalysis) : null, planId);
       if (discoveryContext) this.db.prepare("UPDATE plans SET discovery_context = ? WHERE plan_id = ?").run(json(discoveryContext), planId);
-      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review }, at);
+      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review, burst: burstOn }, at);
     });
     this.#prune();
     return this.get(planId);
@@ -1239,6 +1241,7 @@ export class WorktreePlanStore {
       engine: { provider: row.engine_provider || "claude", model: currentModelId(row.engine_model) || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
       specOptions: safeSpecOptions(parse(row.spec_options, null)),
       reviewOptions: safeReviewOptions(parse(row.review_options, null)),
+      burst: row.burst === 1,
       reviewStatus: row.review_status ?? null,
       lastError: row.last_error ?? null,
       lastErrorAt: row.last_error_at ?? null,
@@ -1376,6 +1379,7 @@ function readPlan(row) {
     engine: { provider: row.engine_provider || "claude", model: currentModelId(row.engine_model) || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
     specOptions: safeSpecOptions(parse(row.spec_options, null)),
     reviewOptions: safeReviewOptions(parse(row.review_options, null)),
+    burst: row.burst === 1,
     reviewWorkspaceId: row.review_workspace_id ?? null,
     reviewStatus: row.review_status ?? null,
     reviewBriefPath: row.review_brief_path ?? null,
