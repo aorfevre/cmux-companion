@@ -1,6 +1,6 @@
 import { finalEnvelope, streamExecFile } from "./planner-process.mjs";
 import { describeRunFailure, describeTimeout } from "./worktree-planner.mjs";
-import { normalizeProposal } from "./burst-store.mjs";
+import { normalizeProposal } from "./burst-contract.mjs";
 import { PLANNER_ENGINES } from "./worktree-planner-options.mjs";
 import { ModelSettings } from "./model-settings.mjs";
 

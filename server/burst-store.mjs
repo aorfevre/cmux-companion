@@ -2,14 +2,12 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { BURST_ID, CANDIDATE_STATUSES, MAX_BURST_GOAL, REPOSITORY_ID, normalizeProposal } from "./burst-contract.mjs";
 
 // One burst is one scan of the starred repositories. Its candidates live in
 // their own file, separate from goal-plans.db: a burst is a proposal set, and
 // a goal it approves is an ordinary plan row over there.
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "bursts.db");
-const CANDIDATE_STATUSES = new Set(["scanning", "proposed", "failed", "approved", "declined"]);
-const SIZE_ESTIMATES = new Set(["small", "medium", "large"]);
-const REPOSITORY_ID = /^[A-Za-z0-9_-]{18}$/;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS burst_plans (
@@ -86,7 +84,7 @@ export class BurstStore {
     if (current.status !== "proposed") throw new TypeError("Only a proposed candidate can be approved");
     const text = String(goal ?? current.goal ?? "").trim();
     if (!text) throw new TypeError("An approved candidate needs a goal");
-    return this.#updateCandidate(burstId, repositoryId, ["proposed"], "approved", { plan_id: String(planId), goal: text.slice(0, 8_000) });
+    return this.#updateCandidate(burstId, repositoryId, ["proposed"], "approved", { plan_id: String(planId), goal: text.slice(0, MAX_BURST_GOAL) });
   }
 
   recordDecline(burstId, repositoryId) {
@@ -120,7 +118,7 @@ export class BurstStore {
   // Every transition names the states it may leave, so a stale caller (a scan
   // that finishes after a rescan reset the row) fails instead of overwriting.
   #updateCandidate(burstId, repositoryId, fromStatuses, toStatus, fields) {
-    if (!CANDIDATE_STATUSES.has(toStatus)) throw new TypeError(`Unknown candidate status ${toStatus}`);
+    if (!CANDIDATE_STATUSES.includes(toStatus)) throw new TypeError(`Unknown candidate status ${toStatus}`);
     const at = this.#stamp();
     const keys = Object.keys(fields);
     const assignments = ["status = ?", "updated_at = ?", ...keys.map((key) => `${key} = ?`)].join(", ");
@@ -144,20 +142,9 @@ export class BurstStore {
   #stamp() { return this.now().toISOString(); }
 }
 
-export function normalizeProposal(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("The scan returned no proposal object");
-  const goal = String(value.goal || "").trim();
-  if (!goal || goal.length > 8_000) throw new TypeError("The scan returned no usable goal");
-  const rationale = String(value.rationale || "").trim().slice(0, 4_000);
-  if (!rationale) throw new TypeError("The scan returned no rationale");
-  const evidence = Array.isArray(value.evidence) ? value.evidence.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 20) : [];
-  const sizeEstimate = SIZE_ESTIMATES.has(value.sizeEstimate) ? value.sizeEstimate : "medium";
-  return { goal, rationale, evidence, sizeEstimate };
-}
-
 function identifier(value) {
   const id = String(value || "");
-  if (!/^burst-[A-Za-z0-9-]{1,64}$/.test(id)) throw new TypeError("Invalid burst id");
+  if (!BURST_ID.test(id)) throw new TypeError("Invalid burst id");
   return id;
 }
 

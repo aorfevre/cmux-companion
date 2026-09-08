@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { agentCapacity } from "./agent-capacity.mjs";
 import { assignAgents } from "./worktree-planner.mjs";
+import { REPOSITORY_ID } from "./burst-contract.mjs";
 
 export const BURST_NO_FAVORITES = "No starred repositories. Star a repository first; Burst scans starred repositories only.";
-const REPOSITORY_ID = /^[A-Za-z0-9_-]{18}$/;
 
 // Owns one burst at a time. Scans run after the request returns; `settled`
 // exists so a test, or a route that wants to wait, can join the running scan.
