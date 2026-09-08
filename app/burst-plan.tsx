@@ -51,7 +51,7 @@ export function BurstPlanSheet({ readOnly, onClose, onOpenGoal, autoStart = fals
       if (!active.current || generation.current !== gen) return;
       applyDetail(detail);
     } catch (cause) {
-      if (active.current) setError(cause instanceof Error ? cause.message : "Could not read bursts");
+      if (active.current && generation.current === gen) setError(cause instanceof Error ? cause.message : "Could not read bursts");
     } finally {
       if (active.current) setLoaded(true);
     }
@@ -59,6 +59,7 @@ export function BurstPlanSheet({ readOnly, onClose, onOpenGoal, autoStart = fals
 
   const start = useCallback(async () => {
     if (readOnly) return;
+    generation.current += 1;
     setBusy("create"); setError(""); setNotice(""); setGoals({});
     try {
       const result = await request<CreateResult>("/api/bursts", { method: "POST", body: "{}" });
@@ -81,10 +82,11 @@ export function BurstPlanSheet({ readOnly, onClose, onOpenGoal, autoStart = fals
     return () => clearTimeout(timer);
   }, [autoStart, readOnly, loaded, burst, start]);
   useEffect(() => {
-    if (burst?.status !== "scanning") return;
+    const scanning = burst?.status === "scanning" || (burst?.candidates || []).some((c) => c.status === "scanning");
+    if (!scanning) return;
     const poll = setInterval(() => { void load(); }, 5_000);
     return () => clearInterval(poll);
-  }, [burst?.status, load]);
+  }, [burst?.status, burst?.candidates, load]);
 
   async function act(burstId: string, candidate: BurstCandidate, action: "approve" | "decline" | "rescan") {
     generation.current += 1;

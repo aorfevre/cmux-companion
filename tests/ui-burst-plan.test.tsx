@@ -22,7 +22,8 @@ function stubFetch(handlers: Record<string, (init?: RequestInit) => unknown>) {
     const key = `${(init?.method || "GET").toUpperCase()} ${url}`;
     const handler = handlers[key];
     if (!handler) return new Response(JSON.stringify({ error: `no handler for ${key}` }), { status: 501 });
-    return new Response(JSON.stringify(handler(init)), { status: 200 });
+    const result = await handler(init);
+    return result instanceof Response ? result : new Response(JSON.stringify(result), { status: 200 });
   }));
   return calls;
 }
@@ -95,24 +96,48 @@ test("polling refreshes a scanning burst into its proposed state after 5 seconds
 });
 
 test("a failed approve keeps the candidate proposed with Approve enabled and shows the error", async () => {
-  const handlers: Record<string, () => Response> = {
-    "GET /api/bursts": () => new Response(JSON.stringify({ bursts: [burst] }), { status: 200 }),
-    "GET /api/bursts/burst-1": () => new Response(JSON.stringify(burst), { status: 200 }),
+  stubFetch({
+    "GET /api/bursts": () => ({ bursts: [burst] }),
+    "GET /api/bursts/burst-1": () => burst,
     [`POST /api/bursts/burst-1/candidates/${REPO}/approve`]: () => new Response(JSON.stringify({ error: "Goal session already running" }), { status: 500 }),
-  };
-  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input).replace(/^https?:\/\/[^/]+/, "");
-    const key = `${(init?.method || "GET").toUpperCase()} ${url}`;
-    const handler = handlers[key];
-    if (!handler) return new Response(JSON.stringify({ error: `no handler for ${key}` }), { status: 501 });
-    return handler();
-  }));
+  });
   render(<BurstPlanSheet readOnly={false} onClose={() => {}} onOpenGoal={() => {}} />);
   await userEvent.click(await screen.findByRole("button", { name: "Approve trust-layer" }));
   const alert = await screen.findByRole("alert");
   assert.match(alert.textContent || "", /Goal session already running/);
   const approve = screen.getByRole("button", { name: "Approve trust-layer" });
   assert.equal(approve.hasAttribute("disabled"), false);
+});
+
+test("a new burst preempts a stale rescan detail read", async () => {
+  const LEDGER = "repoBBBBBBBBBBBBBB";
+  const newBurst = { burstId: "burst-2", status: "ready" as const, createdAt: "2026-09-08T11:00:00Z", updatedAt: "2026-09-08T11:00:00Z", capacitySnapshot: null,
+    candidates: [
+      { repositoryId: "repoCCCCCCCCCCCCCC", repositoryName: "new-repo", goal: "Add integration tests", rationale: "No coverage", evidence: [], sizeEstimate: "small", status: "proposed", reason: null, planId: null, updatedAt: "2026-09-08T11:00:00Z" },
+    ] };
+  let resolveStaleDetail: (response: Response) => void = () => {};
+  const staleDetail = new Promise<Response>((resolve) => { resolveStaleDetail = resolve; });
+  let detailBurst1Calls = 0;
+  stubFetch({
+    "GET /api/bursts": () => ({ bursts: [burst] }),
+    "GET /api/bursts/burst-1": () => { detailBurst1Calls += 1; return detailBurst1Calls === 1 ? burst : staleDetail; },
+    [`POST /api/bursts/burst-1/candidates/${LEDGER}/rescan`]: () => ({ ...burst.candidates[1], status: "scanning" }),
+    "POST /api/bursts": () => newBurst,
+    "GET /api/bursts/burst-2": () => newBurst,
+  });
+
+  render(<BurstPlanSheet readOnly={false} onClose={() => {}} onOpenGoal={() => {}} />);
+  await screen.findByText("Cover the plan store");
+
+  await userEvent.click(screen.getByRole("button", { name: "Rescan ledger" }));
+  await waitFor(() => assert.equal(detailBurst1Calls, 2));
+
+  await userEvent.click(screen.getByRole("button", { name: "Start a new burst" }));
+  await waitFor(() => assert.ok(screen.getByText("Add integration tests")));
+
+  resolveStaleDetail(new Response(JSON.stringify(burst), { status: 200 }));
+  await waitFor(() => assert.equal(screen.queryByText("Cover the plan store"), null));
+  assert.ok(screen.getByText("Add integration tests"));
 });
 
 test("the banner shows only for a live weekly opportunity", () => {
