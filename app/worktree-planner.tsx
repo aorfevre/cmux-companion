@@ -407,7 +407,6 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       goalSessionRequestId.current = "";
       onNotice(`Goal session started in cmux for ${repository.name}.`);
       onClose();
-      await onGoalSessionStarted?.(started);
     } catch (cause) { fail(cause, "Could not start the goal session"); }
     finally { setBusy(""); }
   }
@@ -443,7 +442,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       const restarted = await request<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(draft.planId)}/continue`, { method: "POST", body: "{}" });
       receive(restarted);
       onNotice("Opened interactive discovery. Previous context remains saved.");
-      if (restarted.goalSessionWorkspaceId) { onClose(); await onGoalSessionStarted?.(restarted); }
+      onClose();
     } catch (cause) { fail(cause, "Could not restart discovery"); }
     finally { setBusy(""); }
   }
@@ -454,7 +453,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
     try {
       const recovered = await request<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(draft.planId)}/recover`, { method: "POST", body: "{}" });
       receive(recovered);
-      if (recovered.goalSessionWorkspaceId) await onGoalSessionStarted?.(recovered);
+      onNotice("Goal conversation recovery requested.");
     } catch (cause) { fail(cause, "Could not recover this goal session"); }
     finally { setBusy(""); }
   }
