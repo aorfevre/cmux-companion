@@ -67,6 +67,30 @@ function start() {
 }
 
 describe("visible goal conversation", () => {
+  for (const width of [390, 1280]) it(`keeps a long proposal readable and its decision controls reachable at ${width}px`, () => {
+    cy.viewport(width, 900);
+    scenario({ ...basePlan, questions: [], goalSessionState: "awaiting_approval", proposalRevision: 1, proposal: {
+      ...proposal,
+      scope: Array.from({ length: 12 }, (_, index) => `Scope item ${index + 1}: Preserve saved preferences and show the resulting behavior clearly in the conversation and board.`),
+      exclusions: ["No automatic merge or deployment"],
+      acceptanceCriteria: [{ text: "The customer receives a receipt", verification: "Complete a sandbox payment and inspect the receipt" }],
+    } });
+    cy.visit("/?plan=goal-one");
+    cy.findByRole("heading", { name: "Proposal revision 1" }).should("be.visible");
+    cy.findByRole("region", { name: "Proposal details" }).as("details").should("be.visible").then(($region) => {
+      expect($region[0].scrollHeight).to.be.greaterThan($region[0].clientHeight);
+      expect($region[0].scrollWidth).to.be.at.most($region[0].clientWidth);
+    });
+    cy.get("@details").find("li").should("have.length", 16);
+    cy.findByRole("button", { name: "Approve and implement" }).should("be.visible");
+    cy.findByRole("button", { name: "Approve and implement" }).scrollIntoView();
+    cy.screenshot(`proposal-review-${width}`, { capture: "viewport" });
+    cy.get("@details").scrollTo("bottom");
+    cy.contains("How to verify").should("be.visible");
+    cy.findByRole("button", { name: "Approve and implement" }).should("be.visible");
+    cy.get("@approval.all").should("have.length", 0);
+  });
+
   it("keeps discovery on the board and labels a published proposal ready for review", () => {
     const state = scenario({ ...basePlan, goalSessionState: "planning", questions: [] });
     cy.intercept("GET", "**/api/worktree-plans*", (request) => request.reply({ plans: [{ ...state.getPlan(), status: "draft", stage: "questions", taskCount: 0, launchedCount: 0, createdAt: now, updatedAt: now }] }));

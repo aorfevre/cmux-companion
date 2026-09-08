@@ -1061,3 +1061,29 @@
 .worktree-overview-list .eligible{color:var(--lime)}
 .worktree-overview-list .retained{color:var(--muted)}
 @media(max-width:600px){.worktree-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.worktree-overview .page-kicker{flex-wrap:wrap;gap:12px}}
+
+/* Saved native proposals share a readable review surface in the sheet and session. */
+.planner-delivery-status.proposal-review{padding:clamp(12px,2vw,24px);min-width:0}
+.planner-delivery-status.proposal-review>h2{margin:0 0 16px;font-size:20px;color:var(--text);line-height:1.3}
+.proposal-review .proposal-reading-area{max-height:55dvh;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;border:1px solid var(--line);border-radius:12px;background:#11161b;padding:clamp(16px,3vw,28px);overflow-wrap:anywhere}
+.proposal-review .proposal-reading-area:focus-visible{outline:2px solid #9fc4ff;outline-offset:2px}
+.proposal-review .proposal-section{max-width:78ch;margin:0 auto;padding:22px 0;border-bottom:1px solid var(--line);font-size:15px;line-height:1.7;color:#d0d8e0;white-space:pre-wrap}
+.proposal-review .proposal-section:first-child{padding-top:0}
+.proposal-review .proposal-section:last-child{border-bottom:0;padding-bottom:0}
+.proposal-review .proposal-section h3{display:flex;align-items:center;gap:10px;margin:0 0 12px;font-size:16px;line-height:1.4;color:#f0f4f8}
+.proposal-review .proposal-section h3 span{border-radius:6px;background:#28333f;padding:2px 7px;color:#b9cde3;font-size:12px}
+.planner-delivery-status.proposal-review .proposal-section p{margin:0;color:#d0d8e0;font-size:16px;line-height:1.7}
+.proposal-review .proposal-section ul,.proposal-review .proposal-section ol{margin:0;padding-left:24px}
+.proposal-review .proposal-section li{padding-left:5px;margin:0 0 14px}
+.proposal-review .proposal-section li:last-child{margin-bottom:0}
+.proposal-review .proposal-evidence{margin-top:10px;border-left:2px solid #52677e;padding-left:12px;color:#aebdcb;font-size:14px}
+.proposal-review .proposal-evidence strong{font-size:12px;color:#9fc4ff}
+.planner-delivery-status.proposal-review .proposal-decision>p{font-size:13px;line-height:1.6;margin:14px 0}
+.planner-delivery-status.proposal-review .proposal-decision>label{display:grid;gap:6px;font-size:13px}
+.planner-delivery-status.proposal-review textarea{font-size:14px;min-height:60px}
+.planner-delivery-status.proposal-review .planner-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.planner-delivery-status.proposal-review .planner-actions button{min-height:44px;font-size:13px;padding:10px 16px;flex:1}
+@media(max-width:600px){.proposal-review .proposal-reading-area{max-height:40dvh;padding:14px}.proposal-review .proposal-section{font-size:14px}.planner-delivery-status.proposal-review .proposal-section p{font-size:15px}}
+
+.proposal-layout{min-width:0}.proposal-decision{min-width:0}
+@media(min-width:900px){.proposal-layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:24px;align-items:start}.planner-delivery-status.proposal-review .proposal-decision>p{margin-top:0}.planner-delivery-status.proposal-review .planner-actions{flex-direction:column}}

@@ -1,4 +1,5 @@
 "use client";
+import { ProposalReview } from "./proposal-review";
 import { relativeTime as relativeTimestamp } from "./relative-time";
 
 import { goalPopupUrl } from "./goal-popup-url";
@@ -93,15 +94,12 @@ function GoalSessionProposal({ draft, busy, onApprove, onRequestChanges, onAnswe
         : "Discovery is open in the interactive cmux conversation. Ask questions and steer the agent there.");
     return <section className="planner-delivery-status" aria-label="Goal session status"><strong>Goal session</strong><p>{message}</p>{resume}<div className="planner-actions">{open}{draft.goalSessionError && <button type="button" className="primary-button" disabled={busy} onClick={onRecover}>Recover failed turn</button>}</div></section>;
   }
-  return <section className="planner-delivery-status" aria-label="Proposal awaiting approval"><strong>Proposal revision {draft.proposalRevision}</strong>{resume}<p>{proposal.intendedBehavior || draft.goal}</p>
-    {proposal.scope?.length ? <p>Scope: {proposal.scope.join(" · ")}</p> : null}
-    {proposal.exclusions?.length ? <p>Out of scope: {proposal.exclusions.join(" · ")}</p> : null}
-    {proposal.assumptions?.length ? <p>Assumptions: {proposal.assumptions.join(" · ")}</p> : null}
-    {proposal.acceptanceCriteria?.length ? <p>Acceptance: {proposal.acceptanceCriteria.map((criterion) => `${criterion.text} (${criterion.verification})`).join(" · ")}</p> : null}
-    {proposal.verification?.length ? <p>Try and verify: {proposal.verification.join(" · ")}</p> : null}
+  return <section className="planner-delivery-status proposal-review" aria-label="Proposal awaiting approval"><h2>Proposal revision {draft.proposalRevision}</h2>{resume}
+    <div className="proposal-layout"><ProposalReview proposal={proposal} goal={draft.goal} /><div className="proposal-decision">
     <p>Ready for review. Approve this exact revision, then tell the agent to continue in the conversation. You can keep discussing to revise it.</p>
     <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} maxLength={4_000} rows={3} onChange={(event) => setChanges(event.target.value)} /></label>
     <div className="planner-actions">{open}<button type="button" disabled={busy || !changes.trim()} onClick={() => onRequestChanges(changes.trim())}>Request changes</button><button type="button" className="primary-button" disabled={busy} onClick={onApprove}>{busy ? "Approving…" : "Approve and implement"}</button></div>
+    </div></div>
   </section>;
 }
 
