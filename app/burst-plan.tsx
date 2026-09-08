@@ -37,7 +37,11 @@ export function BurstPlanSheet({ readOnly, onClose, onOpenGoal, autoStart = fals
 
   const applyDetail = useCallback((detail: Burst) => {
     setBurst(detail);
-    setGoals((current) => Object.fromEntries(detail.candidates.map((c) => [c.repositoryId, current[c.repositoryId] ?? c.goal ?? ""])));
+    // A candidate's goal starts null while it scans, which seeds this field
+    // with "". A later poll must still be able to fill that field in once
+    // the scan proposes a goal, so an already-typed value wins only when it
+    // is non-empty; `??` would keep that stale "" forever.
+    setGoals((current) => Object.fromEntries(detail.candidates.map((c) => [c.repositoryId, current[c.repositoryId] || c.goal || ""])));
   }, []);
 
   const load = useCallback(async () => {
