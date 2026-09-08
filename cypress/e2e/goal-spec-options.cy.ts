@@ -175,6 +175,8 @@ describe("native analysis outcomes and advisory reviews", () => {
       request.reply(detail);
     }).as("challenge");
     visitBoard(); cy.findByRole("button", { name: `Resume ${READY_GOAL}` }).click(); cy.wait("@analysisDetail");
+    cy.findByRole("heading", { name: "Proposal revision 1" }).should("be.visible");
+    cy.findByRole("region", { name: "Proposal details" }).should("contain.text", "Read repository evidence");
     cy.findByRole("button", { name: "Approve analysis" }).should("be.disabled");
     cy.findByRole("button", { name: "Acknowledge failed review" }).click(); cy.wait("@acknowledge");
     cy.findByRole("button", { name: "Approve analysis" }).should("be.enabled").click(); cy.wait("@approveAnalysis");

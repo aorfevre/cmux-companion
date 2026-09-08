@@ -469,7 +469,8 @@ describe("goal board matches live cmux evidence", () => {
 
     cy.wait("@submit");
     cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
-    cy.contains("Goal session started, but cmux has not reported its workspace yet.").should("be.visible");
+    cy.contains("Goal session started in cmux for cmux-e2e-cypress.").should("be.visible");
+    cy.location("search").should("not.contain", "workspace=");
     cy.findByRole("region", { name: "Writing Spec" }).should("contain.text", "Close every stale cmux session");
   });
 
