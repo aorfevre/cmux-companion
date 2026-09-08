@@ -1089,3 +1089,16 @@
 @media(min-width:900px){.proposal-layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:24px;align-items:start}.planner-delivery-status.proposal-review .proposal-decision>p{margin-top:0}.planner-delivery-status.proposal-review .planner-actions{flex-direction:column}}
 
 .goal-burst-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:8px;background:#5a3c12;color:#ffd58a;font-size:10px;font-style:normal;vertical-align:middle}
+.burst-banner{margin-top:14px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;border:1px solid #7a5a1e;border-radius:14px;background:#21190c;padding:14px}
+.burst-banner p{margin:4px 0 0;font-size:13px;line-height:1.5;color:#d8c7a3}
+.burst-sheet .burst-candidates{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:12px}
+.burst-candidate{border:1px solid #2c343c;border-radius:12px;padding:12px;background:#151a1f}
+.burst-candidate>header{display:flex;align-items:center;gap:8px}
+.burst-candidate>header em{margin-left:auto;font-style:normal;font-size:12px;color:#96a0aa}
+.burst-candidate.failed{border-color:#6a2b2b}
+.burst-candidate.approved{border-color:#3d6b3d}
+.burst-reason{color:#ff9d9d}
+.burst-rationale{font-size:13px;line-height:1.5;color:#c9d1d9}
+.burst-evidence{margin:6px 0;padding-left:18px;font-size:12px}
+.burst-candidate>footer{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.burst-readonly,.burst-status{font-size:13px;color:#96a0aa}
