@@ -1,3 +1,5 @@
+import { readCommitTime } from "./commit-time.mjs";
+import { sessionState } from "./session-state.mjs";
 import { createHash } from "node:crypto";
 import { lstat, readdir, realpath, rmdir } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -222,15 +224,7 @@ export class WorktreeDashboard {
   // The same memo the catalog uses, reached through the catalog rather than
   // injected separately, so one store serves both and a catalog without one is
   // fully live on both sides.
-  async #commitTime(path, sha) {
-    const store = this.repoCatalog.identityStore;
-    const stored = sha ? store?.commitTime(sha) : null;
-    if (stored) return stored;
-    const output = await this.repoCatalog.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0");
-    const commitTime = Number(String(output).trim()) || 0;
-    if (sha && commitTime > 0) store?.rememberCommitTimes([{ sha, commitTime }]);
-    return commitTime;
-  }
+  #commitTime(path, sha) { return readCommitTime(this.repoCatalog, path, sha); }
 
   async #uniqueRepositoryCandidates(repos) {
     const identified = await mapWithConcurrency(repos, this.repositoryConcurrency, async (repo) => {
@@ -799,26 +793,23 @@ export class WorktreeDashboard {
     return null;
   }
 
-  async setRepositoryArchived(id, archived, { workspaces = [] } = {}) {
-    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid repository");
-    if (typeof archived !== "boolean") throw new TypeError("Archived must be true or false");
-    const dashboard = await this.snapshot({ workspaces, refresh: true });
-    const repository = dashboard.repositories.find((item) => item.id === id);
-    if (!repository) throw new TypeError("Unknown repository");
-    const saved = this.repositoryArchive.set(id, archived);
-    this.invalidate();
-    return { repository: { id: repository.id, name: repository.name, archived: saved } };
+  setRepositoryArchived(id, archived, options) {
+    return this.#setRepositoryFlag(id, "archived", archived, this.repositoryArchive, options);
   }
 
-  async setRepositoryFavorite(id, favorite, { workspaces = [] } = {}) {
+  setRepositoryFavorite(id, favorite, options) {
+    return this.#setRepositoryFlag(id, "favorite", favorite, this.repositoryFavorites, options);
+  }
+
+  async #setRepositoryFlag(id, key, value, store, { workspaces = [] } = {}) {
     if (typeof id !== "string" || !/^[A-Za-z0-9_-]{18}$/.test(id)) throw new TypeError("Invalid repository");
-    if (typeof favorite !== "boolean") throw new TypeError("Favorite must be true or false");
+    if (typeof value !== "boolean") throw new TypeError(`${key === "archived" ? "Archived" : "Favorite"} must be true or false`);
     const dashboard = await this.snapshot({ workspaces, refresh: true });
     const repository = dashboard.repositories.find((item) => item.id === id);
     if (!repository) throw new TypeError("Unknown repository");
-    const saved = this.repositoryFavorites.set(id, favorite);
+    const saved = store.set(id, value);
     this.invalidate();
-    return { repository: { id: repository.id, name: repository.name, favorite: saved } };
+    return { repository: { id: repository.id, name: repository.name, [key]: saved } };
   }
 
   invalidate() {
@@ -1021,12 +1012,7 @@ function normalizeSession(workspace) {
   };
 }
 
-function sessionState(workspace) {
-  if (workspace.has_unread || workspace.status?.signals?.any_agent_needs_input) return { label: "Needs you", tone: "attention" };
-  if (workspace.status?.effective === "working" || workspace.status?.signals?.any_agent_running) return { label: "Working", tone: "working" };
-  if (workspace.status?.effective === "done") return { label: "Done", tone: "done" };
-  return { label: "Ready", tone: "ready" };
-}
+
 
 function finalizeWorktree(worktree) {
   worktree.sessions.sort((left, right) => right.lastActivityAt - left.lastActivityAt);

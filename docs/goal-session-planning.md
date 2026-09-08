@@ -19,8 +19,8 @@ Neither product quality nor iteration-speed improvements have been measured yet.
    **Start a goal** on an individual card in the **GitHub Issues** board column.
    Issue cards use the saved planner model defaults, keep the issue number and
    URL on the goal, and open the recorded conversation. The form's
-   default submission uses this path; **Plan this goal** remains the explicit
-   legacy planner workflow.
+   submission, repository issue picker and **Continue discovery** all use this
+   path. The headless planner and topic planner have been retired.
 2. Companion saves the goal, acquires an isolated checkout from the fetched
    default remote branch and records its identity before starting cmux.
 3. A native interactive Claude-compatible CLI owns the cmux terminal. The user

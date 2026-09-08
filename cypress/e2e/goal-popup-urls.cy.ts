@@ -37,7 +37,7 @@ describe("shareable goal popups", () => {
     scenario(); visit();
     cy.findByRole("button", { name: "View Review the whole project" }).click();
     cy.location("search").should("contain", "plan=goal-launched");
-    sheet().should("contain.text", "Launched goal").and("contain.text", "goal-launched");
+    sheet().should("contain.text", "Saved discovery").and("contain.text", "goal-launched");
     cy.window().then((window) => { cy.stub(window.navigator.clipboard, "writeText").as("copyLink").resolves(); });
     cy.findByRole("button", { name: "Copy goal link" }).click();
     cy.get("@copyLink").should("have.been.calledOnce").then((stub) => {
@@ -67,9 +67,9 @@ describe("shareable goal popups", () => {
     cy.location("search").should("contain", "newGoal=repo-links");
     cy.reload(); sheet().should("contain.text", "Goal links");
     cy.findByLabelText("Goal").type("Create a shareable goal");
-    cy.intercept("POST", "**/api/worktree-plans", { statusCode: 202, body: { ...goals[1], planId: "goal-created", status: "questions", running: true } }).as("created");
+    cy.intercept("POST", "**/api/goal-sessions", { statusCode: 202, body: { ...goals[1], planId: "goal-created", status: "questions", running: true } }).as("created");
     cy.intercept("GET", "**/api/worktree-plans/goal-created", { ...goals[1], planId: "goal-created", status: "questions", running: true });
-    cy.findByRole("button", { name: "Plan this goal" }).click(); cy.wait("@created");
+    cy.findByRole("button", { name: "Start goal session" }).click(); cy.wait("@created");
     cy.findByRole("dialog").should("not.exist");
     cy.location("search").should("not.contain", "plan=").and("not.contain", "newGoal=");
     cy.go("forward");
@@ -89,16 +89,14 @@ describe("shareable goal popups", () => {
 
   it("keeps polling a running goal while the board clock updates", () => {
     scenario(false);
-    let reads = 0;
     cy.intercept("GET", "**/api/worktree-plans/goal-draft", (request) => {
-      reads += 1;
-      request.reply({ ...goals[1], status: "questions", running: reads === 1 });
+      request.reply({ ...goals[1], status: "questions", workflow: "goal_session", goalSessionState: "planning", running: false });
     }).as("runningGoal");
     visit("/?plan=goal-draft");
     cy.wait("@runningGoal");
-    cy.findByRole("region", { name: "Planning in progress" }).should("be.visible");
+    cy.findByRole("region", { name: "Goal session status" }).should("be.visible");
     cy.wait("@runningGoal", { timeout: 12000 });
-    sheet().should("contain.text", "Which behavior should change?");
+    sheet().should("contain.text", "Goal conversation");
     cy.location("search").should("contain", "plan=goal-draft");
   });
 

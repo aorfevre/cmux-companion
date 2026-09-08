@@ -1,8 +1,6 @@
-import { readPrivateJson } from "./private-json-state.mjs";
-import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { readPrivateJson, writePrivateJson } from "./private-json-state.mjs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import webpush from "web-push";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "push.json");
@@ -290,13 +288,7 @@ export class PushService {
     return { vapid: value.vapid || null, subscriptions: Array.isArray(value.subscriptions) ? value.subscriptions.map((item) => ({ ...item, settings: normalizeSettings(item.settings) })) : [], delivered: Array.isArray(value.delivered) ? value.delivered.filter((item) => typeof item === "string").slice(-500) : [] };
   }
 
-  save() {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    const temporary = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
-    writeFileSync(temporary, JSON.stringify(this.state, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-    renameSync(temporary, this.path);
-    chmodSync(this.path, 0o600);
-  }
+  save() { writePrivateJson(this.path, this.state); }
 }
 
 export function classifyEventText(text) {

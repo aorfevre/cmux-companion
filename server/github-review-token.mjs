@@ -1,6 +1,7 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { writePrivateJson } from "./private-json-state.mjs";
+import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "github-review-token.json");
 // A GitHub token is opaque. The bound is a sanity check on user input, not a
@@ -111,13 +112,7 @@ export class GitHubReviewToken {
     return login;
   }
 
-  #write() {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    const temporary = `${this.path}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify(this.state, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-    renameSync(temporary, this.path);
-    chmodSync(this.path, 0o600);
-  }
+  #write() { writePrivateJson(this.path, this.state); }
 }
 
 function text(value, limit) {

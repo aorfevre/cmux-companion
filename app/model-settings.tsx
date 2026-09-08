@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DEFAULT_MODEL_ROLES, MODEL_CATALOG, MODEL_PROVIDERS, MODEL_ROLES } from "../server/model-options.mjs";
+import { DEFAULT_MODEL_ROLES, MODEL_CATALOG, MODEL_PROVIDERS, ACTIVE_MODEL_ROLES } from "../server/model-options.mjs";
 import { request } from "./image-attachments";
 
 export type ModelProvider = "claude" | "codex";
@@ -53,7 +53,7 @@ export function ModelSettingsPanel() {
     {roles && <form onSubmit={save}>
       <fieldset disabled={busy}>
         <legend className="sr-only">Defaults by agent role</legend>
-        {MODEL_ROLES.map((role) => <div className="model-settings-role" key={role.id}>
+        {ACTIVE_MODEL_ROLES.map((role) => <div className="model-settings-role" key={role.id}>
           <div><h3>{role.label}</h3><p>{role.description}</p></div>
           <div className="model-settings-controls">
             {role.provider && <label><span>Provider</span><select aria-label={`${role.label} default provider`} value={roles[role.id].provider} onChange={(event) => { setNotice(""); setRoles({ ...roles, [role.id]: { ...roles[role.id], provider: event.target.value as ModelProvider } }); }}>

@@ -448,41 +448,41 @@ describe("goal board matches live cmux evidence", () => {
   // Submitting a goal is fire and forget. The companion answers as soon as the
   // plan row exists, so the sheet must not sit on a "Planning…" button while a
   // round that outlives it runs on the companion.
-  it("closes the sheet and confirms with a notice when a goal is submitted", () => {
+  it("closes the sheet and preserves the new goal while cmux inventory catches up", () => {
     const state: Scenario = { plans: [], goals: [], liveSessions: 0 };
     installScenario(state);
     const planning = plan("goal-new", "Close every stale cmux session", 0, {
       status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0,
       running: true, runStage: "writing_spec", runStep: "Reading the repository…", boardState: "writing_spec",
     });
-    cy.intercept("POST", "**/api/worktree-plans", (request) => {
+    cy.intercept("POST", "**/api/goal-sessions", (request) => {
       state.plans = [planning];
-      request.reply({ statusCode: 202, body: { ...planning, planId: "goal-new", questions: [], tasks: [], running: true } });
+      request.reply({ statusCode: 202, body: { ...planning, workflow: "goal_session", goalSessionWorkspaceId: "workspace-new", goalSessionState: "planning", planId: "goal-new", questions: [], tasks: [], running: true } });
     }).as("submit");
     visitBoard();
 
     cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
     cy.findByRole("dialog", { name: "Plan a goal" }).within(() => {
       cy.findByRole("textbox", { name: "Goal" }).type("Close every stale cmux session");
-      cy.findByRole("button", { name: "Plan this goal" }).click();
+      cy.findByRole("button", { name: "Start goal session" }).click();
     });
 
     cy.wait("@submit");
     cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
-    cy.contains("Planning this goal on cmux-e2e-cypress").should("be.visible");
+    cy.contains("Goal session started, but cmux has not reported its workspace yet.").should("be.visible");
     cy.findByRole("region", { name: "Writing Spec" }).should("contain.text", "Close every stale cmux session");
   });
 
   it("keeps the sheet open and reports the reason when a submit fails", () => {
     const state: Scenario = { plans: [], goals: [], liveSessions: 0 };
     installScenario(state);
-    cy.intercept("POST", "**/api/worktree-plans", { statusCode: 500, body: { error: "The companion could not reach that repository" } }).as("submit");
+    cy.intercept("POST", "**/api/goal-sessions", { statusCode: 500, body: { error: "The companion could not reach that repository" } }).as("submit");
     visitBoard();
 
     cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
     cy.findByRole("dialog", { name: "Plan a goal" }).within(() => {
       cy.findByRole("textbox", { name: "Goal" }).type("Close every stale cmux session");
-      cy.findByRole("button", { name: "Plan this goal" }).click();
+      cy.findByRole("button", { name: "Start goal session" }).click();
     });
 
     cy.wait("@submit");

@@ -1,3 +1,4 @@
+import { readCommitTime } from "./commit-time.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
@@ -158,14 +159,7 @@ export class RepoCatalog {
   // A commit's time is part of what its sha hashes, so a stored answer for a
   // known sha cannot be wrong. Without a usable sha — an unborn branch, or a
   // status read that failed — this is exactly the previous behaviour.
-  async #commitTime(path, sha) {
-    const stored = sha ? this.identityStore?.commitTime(sha) : null;
-    if (stored) return stored;
-    const output = await this.git(path, ["log", "-1", "--format=%ct"]).catch(() => "0");
-    const commitTime = Number(String(output).trim()) || 0;
-    if (sha && commitTime > 0) this.identityStore?.rememberCommitTimes([{ sha, commitTime }]);
-    return commitTime;
-  }
+  #commitTime(path, sha) { return readCommitTime(this, path, sha); }
 
   // Every caller that changes a working tree — a worktree created, removed, or
   // handed to an agent — must reach this. Six of them used to assign

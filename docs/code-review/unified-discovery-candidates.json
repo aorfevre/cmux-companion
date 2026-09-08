@@ -1,0 +1,268 @@
+{
+  "roots": [
+    "app",
+    "server",
+    "scripts"
+  ],
+  "minimumTokens": 60,
+  "threshold": 0.65,
+  "files": 122,
+  "functions": 1072,
+  "candidates": [
+    {
+      "score": 0.881,
+      "a": {
+        "file": "server/worktree-planner.mjs",
+        "line": 443,
+        "name": "#relaunchClean",
+        "tokens": 511
+      },
+      "b": {
+        "file": "server/worktree-planner.mjs",
+        "line": 492,
+        "name": "#relaunchRebranch",
+        "tokens": 475
+      }
+    },
+    {
+      "score": 0.871,
+      "a": {
+        "file": "server/cmux-client.mjs",
+        "line": 562,
+        "name": "matchLocalWorkspace",
+        "tokens": 104
+      },
+      "b": {
+        "file": "server/cmux-client.mjs",
+        "line": 570,
+        "name": "matchMobileWorkspace",
+        "tokens": 83
+      }
+    },
+    {
+      "score": 0.868,
+      "a": {
+        "file": "app/worktree-dashboard.tsx",
+        "line": 907,
+        "name": "(callback)",
+        "tokens": 170
+      },
+      "b": {
+        "file": "app/worktree-dashboard.tsx",
+        "line": 1096,
+        "name": "(callback)",
+        "tokens": 193
+      }
+    },
+    {
+      "score": 0.857,
+      "a": {
+        "file": "app/worktree-planner.tsx",
+        "line": 415,
+        "name": "approveProposal",
+        "tokens": 125
+      },
+      "b": {
+        "file": "app/worktree-planner.tsx",
+        "line": 423,
+        "name": "requestProposalChanges",
+        "tokens": 131
+      }
+    },
+    {
+      "score": 0.786,
+      "a": {
+        "file": "app/worktree-planner.tsx",
+        "line": 415,
+        "name": "approveProposal",
+        "tokens": 125
+      },
+      "b": {
+        "file": "app/worktree-planner.tsx",
+        "line": 431,
+        "name": "answerGoalSession",
+        "tokens": 120
+      }
+    },
+    {
+      "score": 0.782,
+      "a": {
+        "file": "app/image-attachments.tsx",
+        "line": 21,
+        "name": "imagePromptLines",
+        "tokens": 67
+      },
+      "b": {
+        "file": "server/worktree-planner.mjs",
+        "line": 1068,
+        "name": "imageBlock",
+        "tokens": 82
+      }
+    },
+    {
+      "score": 0.773,
+      "a": {
+        "file": "app/worktree-planner.tsx",
+        "line": 423,
+        "name": "requestProposalChanges",
+        "tokens": 131
+      },
+      "b": {
+        "file": "app/worktree-planner.tsx",
+        "line": 431,
+        "name": "answerGoalSession",
+        "tokens": 120
+      }
+    },
+    {
+      "score": 0.772,
+      "a": {
+        "file": "server/push-service.mjs",
+        "line": 125,
+        "name": "(callback)",
+        "tokens": 89
+      },
+      "b": {
+        "file": "server/push-service.mjs",
+        "line": 130,
+        "name": "(callback)",
+        "tokens": 85
+      }
+    },
+    {
+      "score": 0.75,
+      "a": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 98,
+        "name": "recordGoalSessionWorktree",
+        "tokens": 163
+      },
+      "b": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 140,
+        "name": "reserveGoalSession",
+        "tokens": 157
+      }
+    },
+    {
+      "score": 0.747,
+      "a": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 309,
+        "name": "recordGoalSessionInputFailure",
+        "tokens": 94
+      },
+      "b": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 316,
+        "name": "recordGoalSessionPlanningFailure",
+        "tokens": 98
+      }
+    },
+    {
+      "score": 0.737,
+      "a": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 606,
+        "name": "recordTaskReady",
+        "tokens": 222
+      },
+      "b": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 621,
+        "name": "recordTaskPending",
+        "tokens": 221
+      }
+    },
+    {
+      "score": 0.731,
+      "a": {
+        "file": "app/page.tsx",
+        "line": 278,
+        "name": "approve",
+        "tokens": 150
+      },
+      "b": {
+        "file": "app/page.tsx",
+        "line": 287,
+        "name": "requestChanges",
+        "tokens": 174
+      }
+    },
+    {
+      "score": 0.691,
+      "a": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 389,
+        "name": "recordGoalSessionTransition",
+        "tokens": 207
+      },
+      "b": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 414,
+        "name": "recordGoalSessionCorrection",
+        "tokens": 154
+      }
+    },
+    {
+      "score": 0.688,
+      "a": {
+        "file": "server/github-issue-sync-scheduler.mjs",
+        "line": 33,
+        "name": "start",
+        "tokens": 186
+      },
+      "b": {
+        "file": "server/goal-watchdog.mjs",
+        "line": 60,
+        "name": "start",
+        "tokens": 135
+      }
+    },
+    {
+      "score": 0.688,
+      "a": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 608,
+        "name": "(callback)",
+        "tokens": 191
+      },
+      "b": {
+        "file": "server/worktree-plan-store.mjs",
+        "line": 623,
+        "name": "(callback)",
+        "tokens": 190
+      }
+    },
+    {
+      "score": 0.687,
+      "a": {
+        "file": "server/account-usage.mjs",
+        "line": 23,
+        "name": "snapshot",
+        "tokens": 97
+      },
+      "b": {
+        "file": "server/cmux-client.mjs",
+        "line": 119,
+        "name": "workspaceListDetailed",
+        "tokens": 91
+      }
+    },
+    {
+      "score": 0.671,
+      "a": {
+        "file": "app/page.tsx",
+        "line": 278,
+        "name": "approve",
+        "tokens": 150
+      },
+      "b": {
+        "file": "app/page.tsx",
+        "line": 297,
+        "name": "recover",
+        "tokens": 124
+      }
+    }
+  ]
+}

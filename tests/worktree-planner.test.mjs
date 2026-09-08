@@ -1,3 +1,4 @@
+import { seedLegacyPlan } from "./helpers/legacy-plan-fixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -8,7 +9,7 @@ import { selectTaskBranchCandidate, taskBranchCandidates } from "../server/task-
 import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
 import { LaunchRuns } from "../server/launch-runs.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
-import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, describeTimeout, finalEnvelope, normalizePlannerEngine, parseDiscussionReply, parsePlannerReply, progressEvent, reviewerEngine, streamExecFile } from "../server/worktree-planner.mjs";
+import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, describeTimeout, finalEnvelope, normalizePlannerEngine, parseDiscussionReply, parsePlannerReply, progressEvent, streamExecFile } from "../server/worktree-planner.mjs";
 
 function envelope(text, sessionId = "session-1") {
   return `[i] Preparing CLIProxy...\n[OK] CLIProxy binary ready\n${JSON.stringify({ session_id: sessionId, result: text })}\n`;
@@ -147,25 +148,6 @@ test("survives a null usage snapshot", () => {
   assert.deepEqual(tasks.map((task) => task.agent), ["claude", "claude", "claude"]);
 });
 
-test("a hanging usage snapshot cannot strand a ready plan", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a")] });
-  const warnings = [];
-  deps.accountUsage.snapshot = () => new Promise(() => {});
-  const planner = new WorktreePlanner({
-    ...deps,
-    usageTimeoutMs: 20,
-    log: { warn: (detail, message) => warnings.push([detail, message]) },
-  });
-
-  const started = Date.now();
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-
-  assert.equal(draft.status, "ready");
-  assert.equal(draft.tasks[0].agent, "claude");
-  assert.ok(Date.now() - started < 500, "the ready plan should not wait for a stuck quota provider");
-  assert.deepEqual(warnings, [[{ timeoutMs: 20 }, "planner usage snapshot timed out"]]);
-});
-
 test("takes the best usable account when a provider has several", () => {
   const usage = usageFor(30, 20);
   usage.providers[0].accounts.push({
@@ -220,230 +202,7 @@ function fakeDeps({ replies = [] }) {
     },
   };
 }
-
-test("a first round returns questions and records the session id", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
-  const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  assert.equal(draft.status, "questions");
-  assert.equal(draft.round, 1);
-  assert.equal(draft.questions[0].text, "Which database?");
-  assert.equal(deps.calls[0][0], "ccs");
-  assert.ok(!deps.calls[0][1].includes("--resume"));
-  assert.ok(deps.calls[0][1].includes("--print"));
-});
-
-test("defaults to Codex Astra and lets ccs choose its effort", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  const draft = await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const args = deps.calls[0][1];
-  assert.equal(args[0], "codex");
-  assert.equal(args[args.indexOf("--model") + 1], "gpt-6-astra");
-  assert.equal(args.includes("--effort"), false);
-  assert.deepEqual(draft.engine, { provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
-});
-
-for (const provider of ["claude", "codex"]) {
-  test(`${provider} Default model lets ccs choose without a --model argument`, async () => {
-    const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-    const draft = await new WorktreePlanner(deps).start({
-      repositoryId: REPO_ID, goal: "Add billing", engine: { provider, model: "default" },
-    });
-    assert.equal(deps.calls[0][1][0], provider);
-    assert.equal(deps.calls[0][1].includes("--model"), false);
-    assert.equal(draft.engine.model, "default");
-  });
-}
-
-test("the shipped planner default derives a Claude Fable reviewer", async () => {
-  assert.deepEqual(reviewerEngine(PLANNER_ENGINES.defaultProvider), {
-    provider: "claude", model: "claude-fable-5-1", effort: "xhigh", reviewer: false,
-  });
-  const ready = envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "s");
-  const deps = fakeDeps({ replies: [ready, ready] });
-  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: true } });
-  const args = deps.calls[1][1];
-  assert.equal(args[0], "claude");
-  assert.equal(args[args.indexOf("--model") + 1], "claude-fable-5-1");
-  assert.equal(args[args.indexOf("--effort") + 1], "xhigh");
-});
-
-test("runs Codex with the selected model and effort before the prompt", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(deps).start({
-    repositoryId: REPO_ID,
-    goal: "Add billing",
-    engine: { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: false },
-  });
-  const args = deps.calls[0][1];
-  const terminator = args.indexOf("--");
-  assert.equal(args[0], "codex");
-  assert.equal(args[args.indexOf("--model") + 1], "gpt-5.6-terra");
-  assert.equal(args[args.indexOf("--effort") + 1], "high");
-  assert.ok(args.indexOf("--model") < terminator);
-  assert.ok(args.indexOf("--effort") < terminator);
-  assert.equal(args.at(-1).includes("Add billing"), true);
-});
-
-test("strictly rejects unknown engine values before ccs sees them", async () => {
-  const deps = fakeDeps({ replies: [] });
-  const planner = new WorktreePlanner(deps);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "gemini" } }), /Unknown planner provider/);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { provider: "claude", model: "bad model" } }), /Model must/);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { effort: "maximum" } }), /Unknown planner effort/);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: "yes" } }), /must be on or off/);
-  assert.equal(deps.calls.length, 0);
-});
-
-test("the other provider reviews and replaces a ready plan at its largest model and highest effort", async () => {
-  const proposed = envelope('{"tasks":[{"title":"Rough billing","branch":"feature/rough-billing","prompt":"Add it."}]}', "planner-session");
-  const improved = envelope('{"tasks":[{"title":"Reviewed billing","branch":"feature/billing","prompt":"Add billing and verify it."}]}', "review-session");
-  const deps = fakeDeps({ replies: [proposed, improved] });
-  const draft = await new WorktreePlanner(deps).start({
-    repositoryId: REPO_ID,
-    goal: "Add billing",
-    engine: { provider: "claude", model: "claude-opus-5", effort: "medium", reviewer: true },
-  });
-  assert.equal(deps.calls.length, 2);
-  assert.equal(draft.tasks[0].title, "Reviewed billing");
-  const reviewerArgs = deps.calls[1][1];
-  assert.equal(reviewerArgs[0], "codex");
-  assert.equal(reviewerArgs[reviewerArgs.indexOf("--model") + 1], PLANNER_ENGINES.providers.codex.largestModel);
-  assert.equal(reviewerArgs[reviewerArgs.indexOf("--effort") + 1], PLANNER_ENGINES.reviewerEffort);
-  assert.equal(reviewerArgs.includes("--resume"), false);
-  assert.match(reviewerArgs.at(-1), /Critique the proposed delivery contract/);
-  assert.deepEqual(reviewerEngine("codex"), { provider: "claude", model: PLANNER_ENGINES.providers.claude.largestModel, effort: "xhigh", reviewer: false });
-});
-
-// --- specification options ------------------------------------------------
-
-const NO_OPTIONS = { unitTests: false, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: false, flowcharts: false };
-const TEST_OPTIONS = { unitTests: true, e2eTests: true, edgeCases: false, refactorPass: false, screenMocks: false, flowcharts: false };
 const DESIGN_OPTIONS = { unitTests: false, e2eTests: false, edgeCases: false, refactorPass: false, screenMocks: true, flowcharts: true };
-
-function lastPrompt(deps) {
-  return deps.calls.filter((call) => call[0] === "ccs").at(-1)[1].at(-1);
-}
-
-test("refuses an unknown specification option before any plan row is created", async (t) => {
-  const { store, deps, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
-  t.after(() => store.close());
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: { sketches: true } }), /Unknown specification option sketches/);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: { unitTests: "yes" } }), /must be true or false/);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: [] }), /must be an object/);
-  assert.equal(deps.calls.length, 0);
-  assert.deepEqual(store.list(), []);
-});
-
-test("returns and reloads the requested specification options", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: TEST_OPTIONS });
-  assert.deepEqual(draft.specOptions, TEST_OPTIONS);
-  assert.deepEqual(store.get(draft.planId).specOptions, TEST_OPTIONS);
-  planner.drafts.clear();
-  assert.deepEqual((await planner.resume(draft.planId)).specOptions, TEST_OPTIONS);
-});
-
-test("a goal with no options sends exactly the prompt an explicit all-false goal sends", async () => {
-  const omitted = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(omitted).start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const explicit = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(explicit).start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: NO_OPTIONS });
-  assert.equal(lastPrompt(explicit), lastPrompt(omitted));
-  assert.equal(lastPrompt(omitted).includes("optionEvidence"), false);
-  assert.equal(lastPrompt(omitted).includes("designArtifacts"), false);
-  assert.equal(lastPrompt(omitted).includes("specification rigor"), false);
-});
-
-test("the opening prompt carries the enabled demands and the evidence schema only", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: TEST_OPTIONS });
-  const prompt = lastPrompt(deps);
-  assert.match(prompt, /The user requested explicit specification rigor for this goal:/);
-  assert.match(prompt, /- Unit tests: Cover the new logic with unit tests\./);
-  assert.match(prompt, /- End-to-end tests: Cover the user-visible flow with end-to-end tests\./);
-  assert.match(prompt, /"optionEvidence"/);
-  assert.match(prompt, /"approvalSummary"/);
-  assert.match(prompt, /faithful to the detailed spec/);
-  // No design request was made, so the artifact schema stays out of the prompt.
-  assert.equal(prompt.includes('"designArtifacts"'), false);
-  assert.equal(prompt.includes("Edge cases"), false);
-});
-
-test("a screen or flow request adds the design artifact schema", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: DESIGN_OPTIONS });
-  const prompt = lastPrompt(deps);
-  assert.match(prompt, /"designArtifacts"/);
-  assert.match(prompt, /"optionEvidence"/);
-  assert.match(prompt, /Return the requested design artifacts in spec\.designArtifacts/);
-});
-
-test("every later round keeps demanding the enabled options", async (t) => {
-  const { store, deps, planner } = storedPlanner({
-    replies: [QUESTIONS_REPLY, QUESTIONS_REPLY, TASKS_REPLY, TASKS_REPLY],
-  });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: TEST_OPTIONS });
-
-  await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
-  assert.match(lastPrompt(deps), /- Unit tests: Cover the new logic with unit tests\./);
-
-  await planner.answer(draft.planId, { skip: true });
-  const skipped = lastPrompt(deps);
-  assert.match(skipped, /^Stop asking questions\./);
-  assert.match(skipped, /- End-to-end tests: Cover the user-visible flow with end-to-end tests\./);
-
-  await planner.feedback(draft.planId, { text: "These tasks share a file." });
-  assert.match(lastPrompt(deps), /- Unit tests: Cover the new logic with unit tests\./);
-  assert.match(lastPrompt(deps), /Regenerate approvalSummary so it faithfully reflects the revised detailed contract/);
-});
-
-test("a skipped round with no option carries the current contract schema", async (t) => {
-  const { store, deps, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.answer(draft.planId, { skip: true });
-  const prompt = lastPrompt(deps);
-  assert.match(prompt, /^Stop asking questions\. Decide the remaining details yourself and reply now with the delivery-contract JSON object\./);
-  assert.match(prompt, /"approvalSummary"/);
-  assert.match(prompt, /Include approvalSummary for every new or revised contract/);
-  assert.equal(prompt.includes("optionEvidence"), false);
-  assert.equal(prompt.includes("designArtifacts"), false);
-});
-
-test("a resumed session whose ccs session is gone still demands the options", async (t) => {
-  const { store, deps, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: DESIGN_OPTIONS });
-  // A companion restart drops the cache, and the reloaded draft has no live
-  // session id, so the answer round restates the whole opening context.
-  planner.drafts.clear();
-  store.db.prepare("UPDATE plans SET session_id = NULL WHERE plan_id = ?").run(draft.planId);
-  await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
-  const prompt = lastPrompt(deps);
-  assert.match(prompt, /- Screen wireframes: Return a screen wireframe for each new or changed screen\./);
-  assert.match(prompt, /"designArtifacts"/);
-  assert.match(prompt, /Include approvalSummary for every new or revised contract/);
-});
-
-test("the reviewer round demands the same options as the round it reviews", async () => {
-  const proposed = envelope('{"tasks":[{"title":"Rough billing","branch":"feature/rough-billing","prompt":"Add it."}]}', "planner-session");
-  const improved = envelope('{"tasks":[{"title":"Reviewed billing","branch":"feature/billing","prompt":"Add billing and verify it."}]}', "review-session");
-  const deps = fakeDeps({ replies: [proposed, improved] });
-  await new WorktreePlanner(deps).start({
-    repositoryId: REPO_ID,
-    goal: "Add billing",
-    specOptions: TEST_OPTIONS,
-    engine: { provider: "claude", model: "default", effort: "default", reviewer: true },
-  });
-  const prompt = lastPrompt(deps);
-  assert.match(prompt, /Critique the proposed delivery contract/);
-  assert.match(prompt, /- Unit tests: Cover the new logic with unit tests\./);
-  assert.match(prompt, /"optionEvidence"/);
-  assert.match(prompt, /Include approvalSummary for every new or revised contract/);
-});
 
 test("the review request never reaches a planner prompt or a task brief", async () => {
   // A code review happens after the pull request exists. The planner can
@@ -452,7 +211,7 @@ test("the review request never reaches a planner prompt or a task brief", async 
   const reviewOptions = { codeReview: true, reviewer: "codex", reviewerModel: "gpt-5.6-sol" };
   const deps = launchDeps();
   const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", reviewOptions });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing", reviewOptions });
 
   const prompts = deps.calls.filter((call) => call[0] === "ccs").map((call) => String(call[1].at(-1)));
   for (const prompt of prompts) {
@@ -491,34 +250,6 @@ test("parsePlannerReply applies the option-aware contract limits", () => {
   assert.throws(() => parsePlannerReply(reply, DESIGN_OPTIONS), /oversized brief file/);
 });
 
-test("an option-dependent oversized reply is retried and never stored as ready", async (t) => {
-  const spec = {
-    outcome: "Ship billing",
-    acceptanceCriteria: [{ id: "AC-1", text: "Billing works", verification: "npm test" }],
-    designArtifacts: [{
-      id: "F1",
-      kind: "flow",
-      title: "Checkout",
-      nodes: Array.from({ length: 24 }, (unused, index) => ({ id: `n${index + 1}`, label: "x".repeat(120), kind: "step" })),
-      edges: Array.from({ length: 23 }, (unused, index) => ({ from: `n${index + 1}`, to: `n${index + 2}`, label: "y".repeat(120) })),
-    }],
-  };
-  const tasks = [{
-    id: "T1", title: "Billing", branch: "feature/billing", prompt: "x".repeat(11_700), type: "feature",
-    criterionIds: ["AC-1"], dependsOn: [], ownedAreas: ["server/**"], verification: ["npm test"],
-  }];
-  const oversized = envelope(JSON.stringify({ spec, tasks }));
-  const { store, deps, planner } = storedPlanner({ replies: [oversized, oversized] });
-  t.after(() => store.close());
-  await assert.rejects(
-    () => planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: DESIGN_OPTIONS }),
-    /unusable answer\. Try again: Task T1 would produce an oversized brief file/,
-  );
-  // The retry path ran, and no ready plan was written.
-  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 2);
-  assert.equal(store.list()[0].stage, "questions");
-});
-
 test("a task brief carries the enabled instructions, the evidence and every artifact", async () => {
   const spec = {
     outcome: "Ship billing",
@@ -540,7 +271,7 @@ test("a task brief carries the enabled instructions, the evidence and every arti
   });
   const deps = launchDeps({ reply });
   const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", specOptions: options });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing", specOptions: options });
   await planner.launch(draft.planId);
   const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
 
@@ -570,7 +301,7 @@ test("a task brief carries the enabled instructions, the evidence and every arti
 test("a task brief with no requested option keeps its original shape", async () => {
   const deps = launchDeps();
   const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
   assert.equal(brief.includes("Requested specification rigor"), false);
@@ -592,143 +323,15 @@ test("normalizes omitted engine fields without coercing invalid input", () => {
   assert.throws(() => normalizePlannerEngine(null), /must be an object/);
 });
 
-test("an answer round resumes the recorded session", async () => {
-  const deps = fakeDeps({ replies: [
-    envelope('{"questions":[{"text":"Which database?"}]}', "sess-a"),
-    envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a"),
-  ] });
-  const planner = new WorktreePlanner(deps);
-  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const second = await planner.answer(first.planId, { answers: [{ id: "q1", text: "Postgres" }] });
-  assert.equal(second.status, "ready");
-  assert.equal(second.round, 2);
-  assert.equal(second.tasks[0].agent, "claude");
-  assert.equal(second.tasks[0].branch, "feature/billing");
-  const resumeArgs = deps.calls.at(-1)[1];
-  assert.ok(resumeArgs.includes("--resume"));
-  assert.equal(resumeArgs[resumeArgs.indexOf("--resume") + 1], "sess-a");
-});
-
-test("the skip action asks the planner to finish on its own assumptions", async () => {
-  const deps = fakeDeps({ replies: [
-    envelope('{"questions":[{"text":"Which database?"}]}', "sess-a"),
-    envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a"),
-  ] });
-  const planner = new WorktreePlanner(deps);
-  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const second = await planner.answer(first.planId, { skip: true });
-  assert.equal(second.status, "ready");
-  const prompt = deps.calls.at(-1)[1].at(-1);
-  assert.match(prompt, /Stop asking questions/);
-});
-
-test("the round cap forces a ready plan", async () => {
-  const questions = envelope('{"questions":[{"text":"Again?"}]}', "sess-a");
-  const deps = fakeDeps({ replies: Array.from({ length: 8 }, () => questions) });
-  const planner = new WorktreePlanner({ ...deps, maxRounds: 3 });
-  let draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  draft = await planner.answer(draft.planId, { answers: [{ id: "q1", text: "yes" }] });
-  draft = await planner.answer(draft.planId, { answers: [{ id: "q1", text: "yes" }] });
-  assert.equal(draft.round, 3);
-  await assert.rejects(
-    () => planner.answer(draft.planId, { answers: [{ id: "q1", text: "yes" }] }),
-    /could not produce a plan/,
-  );
-});
-
-test("retries once when the planner returns unusable output", async () => {
-  const deps = fakeDeps({ replies: [
-    "no json here",
-    envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a"),
-  ] });
-  const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  assert.equal(draft.status, "ready");
-  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 2);
-});
-
-test("gives up after a second unusable answer", async () => {
-  const deps = fakeDeps({ replies: ["no json here", "still no json"] });
-  const planner = new WorktreePlanner(deps);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }), /unusable answer/);
-});
-
-test("reports a missing ccs binary in plain words", async () => {
-  const missing = Object.assign(new Error("spawn ccs ENOENT"), { code: "ENOENT" });
-  const deps = fakeDeps({ replies: [missing] });
-  const planner = new WorktreePlanner(deps);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }), /needs the ccs CLI/);
-  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 1);
-});
-
-test("names the missing claude CLI when ccs reports E301", async () => {
-  const stderr = [
-    "   \u001b[31m\u2554\u2550\u2550 ERROR \u2550\u2550\u2557\u001b[0m",
-    "   \u2551   Claude CLI not found   \u2551",
-    "   \u2551   CCS requires Claude CLI to be installed   \u2551",
-    "   \u2551   and available in PATH.   \u2551",
-    "   \u255a\u2550\u2550\u2550\u255d",
-    "",
-    "Error: E301",
-    "https://docs.ccs.kaitran.ca/reference/error-codes#e301",
-  ].join("\n");
-  const failed = Object.assign(new Error("Command failed"), { stderr });
-  const deps = fakeDeps({ replies: [failed] });
-  const planner = new WorktreePlanner(deps);
-  await assert.rejects(
-    () => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }),
-    /cannot find the claude CLI on PATH/,
-  );
-  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 1);
-});
-
 test("describeRunFailure keeps the last real line and drops the docs URL", () => {
   const stderr = "\u2500\u2500 ERROR \u2500\u2500\nThe account is out of quota\nhttps://example.com/docs";
   assert.equal(describeRunFailure(stderr), "The planner could not run: The account is out of quota");
   assert.equal(describeRunFailure(""), "The planner could not run. Try again");
 });
 
-test("reports a timeout in plain words and does not run twice", async () => {
-  const timedOut = Object.assign(new Error("timeout"), { killed: true, signal: "SIGTERM" });
-  const deps = fakeDeps({ replies: [timedOut] });
-  const planner = new WorktreePlanner(deps);
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }), /did not answer in time/);
-  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 1);
-});
-
-// The two kills need different words, because the user acts on them
-// differently: silence means try again, the ceiling means the goal is too big.
-test("names which limit killed the round", async () => {
-  const idle = Object.assign(new Error("timeout"), { killed: true, signal: "SIGTERM", reason: "idle" });
-  await assert.rejects(
-    () => new WorktreePlanner({ ...fakeDeps({ replies: [idle] }), idleTimeoutMs: 240_000 }).start({ repositoryId: REPO_ID, goal: "Add billing" }),
-    /stopped answering: no output for 4 minutes/,
-  );
-  const ceiling = Object.assign(new Error("timeout"), { killed: true, signal: "SIGTERM", reason: "ceiling" });
-  await assert.rejects(
-    () => new WorktreePlanner({ ...fakeDeps({ replies: [ceiling] }), ceilingMs: 1_800_000 }).start({ repositoryId: REPO_ID, goal: "Add billing" }),
-    /ran for 30 minutes without finishing/,
-  );
-});
-
 test("describeTimeout falls back when no limit is named", () => {
   assert.match(describeTimeout("", 60_000, 60_000), /did not answer in time/);
   assert.match(describeTimeout("idle", 60_000, 900_000), /no output for 1 minute\b/);
-});
-
-// Round 1 is the slow one and no longer gets a doubled budget: both rounds take
-// the same idle limit, because length is not what makes a round stuck.
-test("gives every round the idle limit and the ceiling", async () => {
-  const deps = fakeDeps({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
-  const planner = new WorktreePlanner({ ...deps, idleTimeoutMs: 1_000, ceilingMs: 9_000 });
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.answer(draft.planId, { skip: true });
-  const options = deps.calls.filter((call) => call[0] === "ccs").map((call) => call[2]);
-  assert.equal(options.length, 2);
-  for (const option of options) {
-    assert.equal(option.idleTimeout, 1_000);
-    assert.equal(option.timeout, 9_000);
-  }
 });
 
 // The regression itself. A child that keeps printing must outlive an idle limit
@@ -757,30 +360,10 @@ test("streamExecFile kills a chatty child at the ceiling", async () => {
   );
 });
 
-test("rejects an empty goal and an unknown repository", async () => {
-  const planner = new WorktreePlanner(fakeDeps({ replies: [] }));
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "   " }), /Describe the goal/);
-  await assert.rejects(() => planner.start({ repositoryId: "bogus", goal: "Add billing" }), /Invalid repository/);
-  await assert.rejects(() => planner.start({ repositoryId: "aaaaaaaaaaaaaaaaaa", goal: "Add billing" }), /Unknown repository/);
-});
-
-test("rejects an unknown plan id", async () => {
-  const planner = new WorktreePlanner(fakeDeps({ replies: [] }));
-  await assert.rejects(() => planner.answer("missing", { skip: true }), /Unknown plan/);
-});
-
-test("runs the planner inside the primary worktree", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
-  const planner = new WorktreePlanner(deps);
-  await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const options = deps.calls.find((call) => call[0] === "ccs")[2];
-  assert.equal(options.cwd, "/repo/sample");
-});
-
 test("stores edited tasks and rejects a bad branch name", async () => {
   const deps = fakeDeps({ replies: [envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a")] });
   const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   const updated = await planner.update(draft.planId, { tasks: [
     { id: "t1", title: "Billing", branch: "feature/renamed", prompt: "Add billing.", agent: "codex" },
   ] });
@@ -793,98 +376,6 @@ test("stores edited tasks and rejects a bad branch name", async () => {
     { id: "t1", title: "A", branch: "feature/same", prompt: "x" },
     { id: "t2", title: "B", branch: "feature/same", prompt: "y" },
   ] }), /share a branch name/);
-});
-
-test("forgets a draft after its time to live", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a")] });
-  const planner = new WorktreePlanner({ ...deps, ttlMs: -1 });
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await assert.rejects(() => planner.update(draft.planId, { tasks: [] }), /Unknown plan/);
-});
-
-test("terminates the flags so the prompt is never parsed as one", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const args = deps.calls[0][1];
-  assert.equal(args.at(-2), "--", "the prompt must follow a -- terminator");
-  assert.ok(args.indexOf("--allowed-tools") < args.indexOf("--"));
-});
-
-test("denies every tool that can write or execute", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const args = deps.calls[0][1];
-  const denied = args[args.indexOf("--disallowed-tools") + 1].split(",");
-  for (const tool of ["Bash", "Write", "Edit", "Task"]) {
-    assert.ok(denied.includes(tool), `${tool} must be denied`);
-  }
-  // Skill needs no entry: --disable-slash-commands loads no skill at all, so the
-  // tool is absent from the session rather than merely refused.
-  assert.ok(!denied.includes("Skill"));
-  const allowed = args[args.indexOf("--allowed-tools") + 1].split(",");
-  assert.deepEqual(allowed, ["Read", "Grep", "Glob"]);
-});
-
-test("runs the planner with no plugin, no skill and no MCP server", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const args = deps.calls[0][1];
-  assert.ok(args.includes("--strict-mcp-config"), "no MCP server may load");
-  assert.ok(args.includes("--disable-slash-commands"), "no skill may load");
-  assert.ok(args.includes("--setting-sources"), "no settings file may load");
-});
-
-test("passes an empty setting source rather than dropping the flag", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const args = deps.calls[0][1];
-  // A missing value would silently un-isolate the planner: the next flag would
-  // become the source list, and the user's plugins would load again.
-  assert.equal(args[args.indexOf("--setting-sources") + 1], "");
-});
-
-test("puts every isolation flag before the prompt terminator", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Q?"}]}', "s")] });
-  await new WorktreePlanner(deps).start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const args = deps.calls[0][1];
-  const terminator = args.indexOf("--");
-  assert.equal(args.at(-2), "--");
-  for (const flag of ["--setting-sources", "--strict-mcp-config", "--disable-slash-commands"]) {
-    assert.ok(args.indexOf(flag) < terminator, `${flag} must precede the terminator`);
-  }
-});
-
-test("rejects an answer whose question no longer exists", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
-  const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await assert.rejects(
-    () => planner.answer(draft.planId, { answers: [{ id: "q9", text: "Postgres" }] }),
-    /no longer matches the question/,
-  );
-});
-
-test("refuses to resume a session the planner stopped reporting", async () => {
-  const deps = fakeDeps({ replies: [
-    envelope('{"questions":[{"text":"Which database?"}]}', "sess-a"),
-    JSON.stringify({ result: '{"questions":[{"text":"And the cache?"}]}' }),
-  ] });
-  const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await assert.rejects(
-    () => planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] }),
-    /lost its session/,
-  );
-});
-
-test("drops the oldest draft instead of growing without limit", async () => {
-  const reply = envelope('{"questions":[{"text":"Q?"}]}', "sess-a");
-  const deps = fakeDeps({ replies: Array.from({ length: 60 }, () => reply) });
-  const planner = new WorktreePlanner(deps);
-  for (let index = 0; index < 60; index += 1) {
-    await planner.start({ repositoryId: REPO_ID, goal: `Goal ${index}` });
-  }
-  assert.ok(planner.drafts.size <= 50, `held ${planner.drafts.size} drafts`);
 });
 
 // cmux caps a prompt at this many characters, so a launched session gets a
@@ -926,7 +417,7 @@ function launchDeps({ createFails = null, gitFails = null, reply = '{"tasks":[{"
 }
 
 async function readyDraft(planner) {
-  return planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  return seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
 }
 
 test("creates one worktree and one session per task", async () => {
@@ -1151,7 +642,7 @@ test("falls back to main when the default branch cannot be read", async () => {
 test("rejects a launch while questions are still open", async () => {
   const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
   const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await assert.rejects(() => planner.launch(draft.planId), /not ready/i);
 });
 
@@ -1238,46 +729,10 @@ const IMAGES = [
   { path: "/attachments/two.png", name: "two.png" },
 ];
 
-test("rejects more than four attached images", async () => {
-  const planner = new WorktreePlanner(fakeDeps({ replies: [] }));
-  const images = Array.from({ length: 5 }, (_, index) => ({ path: `/attachments/${index}.png`, name: `${index}.png` }));
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", images }), /at most 4 images/);
-});
-
-test("rejects an images value that is not a list", async () => {
-  const planner = new WorktreePlanner(fakeDeps({ replies: [] }));
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", images: "one.png" }), /must be a list/);
-});
-
-test("rejects an image entry with no string path", async () => {
-  const planner = new WorktreePlanner(fakeDeps({ replies: [] }));
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing", images: [{ name: "one.png" }] }), /needs a file path/);
-});
-
-test("puts the image paths into the planner prompt", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
-  const planner = new WorktreePlanner(deps);
-  await planner.start({ repositoryId: REPO_ID, goal: "Add billing", images: IMAGES });
-  const prompt = deps.calls.find((call) => call[0] === "ccs")[1].at(-1);
-  assert.match(prompt, /Attached images:/);
-  assert.match(prompt, /- \/attachments\/one\.png/);
-  assert.match(prompt, /- \/attachments\/two\.png/);
-  assert.match(prompt, /Read each image with the Read tool/);
-});
-
-test("a goal with no images produces the prompt that exists today", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
-  const planner = new WorktreePlanner(deps);
-  await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const prompt = deps.calls.find((call) => call[0] === "ccs")[1].at(-1);
-  assert.ok(!prompt.includes("Attached image"));
-  assert.match(prompt, /Repository: sample at \/repo\/sample\nGoal: Add billing\n\nRead the repository/);
-});
-
 test("appends the image paths to every launched task prompt", async () => {
   const deps = launchDeps();
   const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", images: IMAGES });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing", images: IMAGES });
   await planner.update(draft.planId, { tasks: [
     { id: "t1", title: "Good", branch: "feature/good", prompt: "Do it.", agent: "claude" },
     { id: "t2", title: "Also", branch: "feature/also", prompt: "Do that.", agent: "codex" },
@@ -1298,82 +753,12 @@ test("appends the image paths to every launched task prompt", async () => {
 test("a launched task keeps its own prompt when no image is attached", async () => {
   const deps = launchDeps();
   const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   const workspace = deps.calls.find((call) => call[0] === "workspace");
   const brief = briefText(workspace[1].prompt);
   assert.ok(brief.startsWith("Add billing."));
   assert.ok(!brief.includes("Attached image"));
-});
-
-test("multi-task goals push task branches without opening individual pull requests", async () => {
-  const deps = launchDeps();
-  const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.update(draft.planId, { tasks: [
-    { id: "t1", title: "Good", branch: "feature/good", prompt: "Do it.", agent: "claude" },
-    { id: "t2", title: "Also", branch: "feature/also", prompt: "Do that.", agent: "codex" },
-  ] });
-  await planner.launch(draft.planId);
-  const briefs = deps.calls.filter((call) => call[0] === "workspace").map((call) => {
-    assertPointer(call[1].prompt);
-    return briefText(call[1].prompt);
-  });
-  assert.equal(briefs.length, 2);
-  for (const brief of briefs) {
-    assert.match(brief, /Finish your task branch for combined delivery:/);
-    assert.match(brief, /Push this task branch to origin/);
-    assert.match(brief, /Do not open a pull request/);
-    assert.match(brief, /Cmux-Goal-Ready: .+\/t[12]/);
-    assert.ok(!brief.includes("gh pr create"));
-  }
-});
-
-test("single-task goals keep the direct pull request workflow", async () => {
-  const deps = launchDeps();
-  const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const result = await planner.launch(draft.planId);
-  const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
-  assert.equal(result.deliveryMode, "single");
-  assert.match(brief, /Finish with a pull request:/);
-  assert.match(brief, /gh pr create/);
-  assert.match(brief, /pull request against main\b/);
-});
-
-test("a one-task issue topic is forced through Companion's combined delivery branch", async () => {
-  const deps = launchDeps();
-  const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Fix linked issues", issueNumbers: [54, 55], issueUrls: ["https://github.com/acme/app/issues/54"], deliveryPolicy: "combined" });
-  assert.deepEqual(draft.issueNumbers, [54, 55]);
-  assert.equal(draft.deliveryMode, "combined");
-  const result = await planner.launch(draft.planId);
-  const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
-  assert.equal(result.deliveryMode, "combined");
-  assert.match(brief, /Finish your task branch for combined delivery/);
-  assert.doesNotMatch(brief, /Closes #54|gh pr create/);
-});
-
-test("names a master default branch rather than assuming main", async () => {
-  const deps = launchDeps();
-  deps.git = async (cwd, args) => {
-    deps.calls.push(["git", args]);
-    if (args[0] === "symbolic-ref") return "origin/master\n";
-    return "";
-  };
-  const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const result = await planner.launch(draft.planId);
-  assert.equal(result.base, "origin/master");
-  assert.match(briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt), /pull request against master\b/);
-});
-
-test("tells the planner not to write its own pull request instructions", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
-  const planner = new WorktreePlanner(deps);
-  await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const prompt = deps.calls.find((call) => call[0] === "ccs")[1].at(-1);
-  assert.match(prompt, /Do not tell a task to commit, push, or open a pull request/);
 });
 
 function streamLine(value) { return JSON.stringify(value); }
@@ -1429,71 +814,6 @@ test("still parses the plain envelope a non-streaming run produces", () => {
   assert.equal(parsePlannerReply(finalEnvelope(plain)).status, "questions");
 });
 
-test("asks ccs for stream-json with verbose and still terminates the flags", async () => {
-  const deps = fakeDeps({ replies: [envelope('{"questions":[{"text":"Which database?"}]}', "sess-a")] });
-  const planner = new WorktreePlanner(deps);
-  await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const args = deps.calls.find((call) => call[0] === "ccs")[1];
-  assert.equal(args[args.indexOf("--output-format") + 1], "stream-json");
-  assert.ok(args.includes("--verbose"));
-  assert.equal(args.at(-2), "--");
-});
-
-// A fake execute that feeds NDJSON lines through onLine, the way the real
-// streaming runner does, then resolves with the whole buffer.
-function streamingDeps(lines) {
-  const deps = fakeDeps({ replies: [] });
-  deps.execute = async (bin, args, options) => {
-    deps.calls.push([bin, args, options]);
-    for (const line of lines) options.onLine?.(line);
-    return { stdout: `${lines.join("\n")}\n` };
-  };
-  return deps;
-}
-
-test("reports each tool call before the round resolves", async () => {
-  const lines = [
-    streamLine({ type: "system", subtype: "init", session_id: "sess-a" }),
-    assistantLine({ type: "tool_use", name: "Read", input: { file_path: "/repo/sample/server/app.mjs" } }),
-    assistantLine({ type: "tool_use", name: "Grep", input: { pattern: "worktree-plans" } }),
-    resultLine('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}'),
-  ];
-  const seen = [];
-  let resolved = false;
-  const planner = new WorktreePlanner(streamingDeps(lines));
-  const pending = planner.start({ repositoryId: REPO_ID, goal: "Add billing", onEvent: (event) => { seen.push([event, resolved]); } });
-  const draft = await pending;
-  resolved = true;
-  assert.equal(draft.status, "ready");
-  assert.deepEqual(seen.map(([event]) => event.t), ["Read server/app.mjs", 'Grep "worktree-plans"']);
-  assert.deepEqual(seen.map(([, after]) => after), [false, false], "every step must arrive before the round resolves");
-});
-
-test("sends no progress when the caller asked for none", async () => {
-  const deps = streamingDeps([resultLine('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}')]);
-  const planner = new WorktreePlanner(deps);
-  await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  assert.equal(deps.calls.find((call) => call[0] === "ccs")[2].onLine, undefined);
-});
-
-test("a throwing progress consumer never fails the round", async () => {
-  const lines = [
-    assistantLine({ type: "tool_use", name: "Read", input: { file_path: "/repo/sample/package.json" } }),
-    resultLine('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}'),
-  ];
-  const planner = new WorktreePlanner(streamingDeps(lines));
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", onEvent: () => { throw new Error("the browser went away"); } });
-  assert.equal(draft.status, "ready");
-});
-
-test("says it is retrying when the first sample was unusable", async () => {
-  const deps = fakeDeps({ replies: [envelope("no json here"), envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a")] });
-  const planner = new WorktreePlanner(deps);
-  const seen = [];
-  await planner.start({ repositoryId: REPO_ID, goal: "Add billing", onEvent: (event) => seen.push(event.t) });
-  assert.deepEqual(seen, ["Retrying…"]);
-});
-
 // --- persistence ---------------------------------------------------------
 
 function storedPlanner(options = {}) {
@@ -1506,45 +826,10 @@ function storedPlanner(options = {}) {
 const TASKS_REPLY = envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "sess-a");
 const QUESTIONS_REPLY = envelope('{"questions":[{"text":"Which database?"}]}', "sess-a");
 
-test("saves the goal, the session id and the questions of a first round", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const saved = store.get(draft.planId);
-  assert.equal(saved.goal, "Add billing");
-  assert.equal(saved.repositoryId, REPO_ID);
-  assert.equal(saved.cwd, "/repo/sample");
-  assert.equal(saved.sessionId, "sess-a");
-  assert.equal(saved.round, 1);
-  assert.equal(saved.stage, "questions");
-  assert.equal(saved.questions[0].text, "Which database?");
-  assert.deepEqual(store.events(draft.planId).map((event) => event.kind), ["goal", "questions"]);
-});
-
-test("saves the submitted answers with their question text", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
-  const answers = store.events(draft.planId).find((event) => event.kind === "answers");
-  assert.equal(answers.payload.answers[0].question, "Which database?");
-  assert.equal(answers.payload.answers[0].text, "Postgres");
-  assert.equal(answers.payload.skipped, false);
-});
-
-test("saves a skipped round as skipped", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.answer(draft.planId, { skip: true });
-  const answers = store.events(draft.planId).find((event) => event.kind === "answers");
-  assert.equal(answers.payload.skipped, true);
-});
-
 test("saves the assigned tasks of a ready round", async (t) => {
   const { store, planner } = storedPlanner({ replies: [TASKS_REPLY] });
   t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   const saved = store.get(draft.planId);
   assert.equal(saved.stage, "ready");
   assert.equal(saved.tasks.length, 1);
@@ -1556,7 +841,7 @@ test("saves the assigned tasks of a ready round", async (t) => {
 test("saves a user edit as its own event", async (t) => {
   const { store, planner } = storedPlanner({ replies: [TASKS_REPLY] });
   t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.update(draft.planId, { tasks: [{ id: "t1", title: "Renamed", branch: "feature/renamed", prompt: "Add billing.", agent: "codex" }] });
   const saved = store.get(draft.planId);
   assert.equal(saved.tasks[0].title, "Renamed");
@@ -1568,7 +853,7 @@ test("saves the launch outcome of each task", async (t) => {
   const store = new WorktreePlanStore({ path: ":memory:" });
   t.after(() => store.close());
   const planner = new WorktreePlanner({ ...launchDeps(), store });
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   const saved = store.get(draft.planId);
   assert.equal(saved.status, "launched");
@@ -1584,7 +869,7 @@ test("saves a failed launch with its reason and keeps the plan a draft", async (
   const store = new WorktreePlanStore({ path: ":memory:" });
   t.after(() => store.close());
   const planner = new WorktreePlanner({ ...launchDeps({ createFails: "feature/billing" }), store });
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   const saved = store.get(draft.planId);
   assert.equal(saved.status, "draft");
@@ -1592,71 +877,11 @@ test("saves a failed launch with its reason and keeps the plan a draft", async (
   assert.match(saved.tasks[0].launchError, /already has a worktree/);
 });
 
-test("answers a plan the memory cache has forgotten", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY], planner: { ttlMs: -1 } });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const next = await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
-  assert.equal(next.status, "ready");
-  assert.equal(next.round, 2);
-});
-
-test("resumes a forgotten plan on the same ccs session", async (t) => {
-  const { store, deps, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY], planner: { ttlMs: -1 } });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const resumed = await planner.resume(draft.planId);
-  assert.equal(resumed.planId, draft.planId);
-  assert.equal(resumed.goal, "Add billing");
-  assert.equal(resumed.round, 1);
-  assert.equal(resumed.questions[0].text, "Which database?");
-  await planner.answer(draft.planId, { skip: true });
-  const args = deps.calls.filter((call) => call[0] === "ccs").at(-1)[1];
-  assert.ok(args.includes("--resume"));
-  assert.equal(args[args.indexOf("--resume") + 1], "sess-a");
-});
-
-test("a new planner reloads a plan the previous process started", async (t) => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  const first = new WorktreePlanner({ ...fakeDeps({ replies: [QUESTIONS_REPLY] }), store });
-  const draft = await first.start({ repositoryId: REPO_ID, goal: "Add billing" });
-
-  const second = new WorktreePlanner({ ...fakeDeps({ replies: [TASKS_REPLY] }), store });
-  const resumed = await second.resume(draft.planId);
-  assert.equal(resumed.goal, "Add billing");
-  assert.equal(resumed.status, "questions");
-  const next = await second.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
-  assert.equal(next.status, "ready");
-  assert.equal(next.tasks[0].branch, "feature/billing");
-});
-
-test("a resumed plan with no session restates the goal instead of asking for one", async (t) => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  store.createPlan({ planId: "plan-lost", repositoryId: REPO_ID, repositoryName: "sample", cwd: "/repo/sample", goal: "Add billing", images: [{ path: "/tmp/shot.png", name: "shot.png" }] });
-  // A round that never reached the model leaves the plan with questions and no
-  // session id, which is the state the failed resume produced.
-  store.recordRound("plan-lost", { round: 1, stage: "questions", sessionId: null, questions: [{ id: "q1", text: "Which database?", options: [] }] });
-
-  const deps = fakeDeps({ replies: [TASKS_REPLY] });
-  const planner = new WorktreePlanner({ ...deps, store });
-  const next = await planner.answer("plan-lost", { answers: [{ id: "q1", text: "Postgres" }] });
-
-  assert.equal(next.status, "ready");
-  const prompt = deps.calls[0][1].at(-1);
-  assert.ok(prompt.includes("Goal: Add billing"));
-  assert.ok(prompt.includes("/tmp/shot.png"));
-  assert.ok(prompt.includes("Q: Which database?"));
-  assert.ok(prompt.includes("A: Postgres"));
-  assert.ok(!deps.calls[0][1].includes("--resume"));
-});
-
 test("refuses to resume a plan that already launched", async (t) => {
   const store = new WorktreePlanStore({ path: ":memory:" });
   t.after(() => store.close());
   const planner = new WorktreePlanner({ ...launchDeps(), store });
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   await assert.rejects(() => planner.resume(draft.planId), /already launched/);
 });
@@ -1667,163 +892,22 @@ test("lists saved plans newest first", async (t) => {
   let tick = 0;
   store.now = () => new Date(1_700_000_000_000 + (tick += 1_000));
   const planner = new WorktreePlanner({ ...fakeDeps({ replies: [QUESTIONS_REPLY, QUESTIONS_REPLY] }), store });
-  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const second = await planner.start({ repositoryId: REPO_ID, goal: "Add invoices" });
+  const first = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
+  const second = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add invoices" });
   const { plans } = await planner.list();
   assert.deepEqual(plans.map((plan) => plan.planId), [second.planId, first.planId]);
   assert.equal(plans[0].goal, "Add invoices");
   assert.equal(plans[0].taskCount, 0);
 });
 
-test("returns a saved plan with its whole event log", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY, TASKS_REPLY] });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.answer(draft.planId, { answers: [{ id: "q1", text: "Postgres" }] });
-  const detail = await planner.detail(draft.planId);
-  assert.equal(detail.goal, "Add billing");
-  assert.equal(detail.tasks[0].branch, "feature/billing");
-  assert.deepEqual(detail.events.map((event) => event.kind), ["goal", "questions", "answers", "tasks"]);
-});
-
 test("deletes a plan and forgets it", async (t) => {
   const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
   t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   assert.deepEqual(await planner.remove(draft.planId), { planId: draft.planId, deleted: true });
   assert.equal(store.get(draft.planId), null);
   await assert.rejects(() => planner.remove(draft.planId), /Unknown plan/);
   await assert.rejects(() => planner.resume(draft.planId), /Unknown plan/);
-});
-
-test("rejects an unknown plan id", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [] });
-  t.after(() => store.close());
-  await assert.rejects(() => planner.detail("nope"), /Unknown plan/);
-  await assert.rejects(() => planner.resume("nope"), /Unknown plan/);
-});
-
-test("still answers the round when the store write fails", async (t) => {
-  const warnings = [];
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  store.recordRound = () => { throw new Error("disk is full"); };
-  const planner = new WorktreePlanner({
-    ...fakeDeps({ replies: [QUESTIONS_REPLY] }),
-    store,
-    log: { warn: (...args) => warnings.push(args) },
-  });
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  assert.equal(draft.status, "questions");
-  assert.equal(warnings.length, 1);
-  assert.match(String(warnings[0][1]), /plan store write failed/);
-});
-
-test("runs without a store at all", async () => {
-  const planner = new WorktreePlanner(fakeDeps({ replies: [QUESTIONS_REPLY] }));
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  assert.equal(draft.status, "questions");
-  assert.deepEqual((await planner.list()).plans, []);
-  await assert.rejects(() => planner.detail(draft.planId), /Unknown plan/);
-});
-
-// --- Reviewer feedback: a rejected split starts a new round -------------------
-
-const REVISED_REPLY = envelope('{"tasks":[{"title":"One unit","branch":"feature/one-unit","prompt":"Do it all together."}]}', "sess-a");
-
-test("feedback runs a new round that quotes the rejection and restates the contract", async () => {
-  const deps = fakeDeps({ replies: [TASKS_REPLY, REVISED_REPLY] });
-  const planner = new WorktreePlanner(deps);
-  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  assert.equal(first.status, "ready");
-
-  const revised = await planner.feedback(first.planId, { text: "These two tasks touch the same file." });
-  assert.equal(revised.status, "ready");
-  assert.equal(revised.round, 2);
-  assert.equal(revised.tasks[0].branch, "feature/one-unit");
-
-  const prompt = deps.calls.at(-1)[1].at(-1);
-  assert.match(prompt, /rejected it/);
-  assert.ok(prompt.includes("These two tasks touch the same file."));
-  assert.match(prompt, /Reply with exactly one JSON object/);
-  // A live session still holds the goal, so the round resumes rather than
-  // restating the whole opening context.
-  const args = deps.calls.at(-1)[1];
-  assert.ok(args.includes("--resume"));
-  assert.ok(!prompt.includes("Goal: Add billing"));
-});
-
-test("feedback on a plan with no session restates the goal and the rejected split", async (t) => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  store.createPlan({ planId: "plan-lost", repositoryId: REPO_ID, repositoryName: "sample", cwd: "/repo/sample", goal: "Add billing" });
-  store.recordRound("plan-lost", { round: 1, stage: "ready", sessionId: null, tasks: [
-    { id: "t1", title: "Billing API", branch: "feature/billing-api", prompt: "Add the billing API.", agent: "claude" },
-    { id: "t2", title: "Billing UI", branch: "feature/billing-ui", prompt: "Add the billing screen.", agent: "claude" },
-  ] });
-
-  const deps = fakeDeps({ replies: [REVISED_REPLY] });
-  const planner = new WorktreePlanner({ ...deps, store });
-  const revised = await planner.feedback("plan-lost", { text: "The UI cannot land without the API." });
-
-  assert.equal(revised.status, "ready");
-  const prompt = deps.calls[0][1].at(-1);
-  assert.ok(prompt.includes("Goal: Add billing"));
-  assert.ok(prompt.includes("feature/billing-api"));
-  assert.ok(prompt.includes("Add the billing screen."));
-  assert.ok(prompt.includes("The UI cannot land without the API."));
-  assert.ok(prompt.includes("Include approvalSummary for every new or revised contract"));
-  assert.ok(!deps.calls[0][1].includes("--resume"));
-});
-
-test("feedback refuses an empty note, an over-long note and a plan with no split", async () => {
-  const deps = fakeDeps({ replies: [TASKS_REPLY] });
-  const planner = new WorktreePlanner(deps);
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await assert.rejects(() => planner.feedback(draft.planId, { text: "   " }), /Say what is wrong/);
-  await assert.rejects(() => planner.feedback(draft.planId, { text: "x".repeat(2_001) }), /too long/);
-
-  const asking = fakeDeps({ replies: [QUESTIONS_REPLY] });
-  const second = new WorktreePlanner(asking);
-  const questioned = await second.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await assert.rejects(() => second.feedback(questioned.planId, { text: "wrong" }), /no task split to reject/);
-});
-
-test("feedback obeys the round cap", async () => {
-  const deps = fakeDeps({ replies: [TASKS_REPLY, REVISED_REPLY] });
-  const planner = new WorktreePlanner({ ...deps, maxRounds: 2 });
-  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.feedback(first.planId, { text: "Split it differently." });
-  await assert.rejects(() => planner.feedback(first.planId, { text: "Again." }), /could not produce a plan/);
-});
-
-test("feedback saves the rejection beside the split that replaced it", async (t) => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  const deps = fakeDeps({ replies: [TASKS_REPLY, REVISED_REPLY] });
-  const planner = new WorktreePlanner({ ...deps, store });
-  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.feedback(first.planId, { text: "Merge these into one unit." });
-
-  const events = store.events(first.planId);
-  assert.deepEqual(events.map((event) => event.kind), ["goal", "tasks", "feedback", "tasks"]);
-  const rejection = events.find((event) => event.kind === "feedback");
-  assert.equal(rejection.payload.feedback, "Merge these into one unit.");
-  assert.equal(rejection.round, 2);
-});
-
-test("a background feedback round answers before it runs", async () => {
-  const deps = fakeDeps({ replies: [TASKS_REPLY, REVISED_REPLY] });
-  const planner = new WorktreePlanner(deps);
-  const first = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  const started = await planner.feedbackBackground(first.planId, { text: "Wrong split." });
-  assert.equal(started.running, true);
-  for (let index = 0; index < 500 && planner.isRunning(first.planId); index += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  const revised = await planner.resume(first.planId);
-  assert.equal(revised.round, 2);
-  assert.equal(revised.tasks[0].branch, "feature/one-unit");
 });
 
 test("a retry launches a task whose worktree a failed launch left behind", async () => {
@@ -1872,75 +956,15 @@ function launchablePlanner(replies = 1) {
   return { store, deps, planner, replies };
 }
 
-// The reviewer pass must be legible to the board as a structured stage. This
-// test deliberately never reads the display line, so a reworded progress
-// message cannot make it pass or fail.
-test("the reviewer pass sets the structured review_spec run stage", async (t) => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  const deps = fakeDeps({ replies: [] });
-  let releaseReview = () => {};
-  const reviewStarted = new Promise((resolve) => {
-    let round = 0;
-    deps.execute = async () => {
-      round += 1;
-      if (round === 1) return { stdout: envelope(READY_TASKS, "sess-a") };
-      resolve();
-      await new Promise((done) => { releaseReview = done; });
-      return { stdout: envelope(READY_TASKS, "sess-a") };
-    };
-  });
-  const planner = new WorktreePlanner({ ...deps, store });
-  const draft = await planner.startBackground({
-    repositoryId: REPO_ID, goal: "Add billing",
-    engine: { provider: "claude", model: "default", effort: "default", reviewer: true },
-  });
-  await reviewStarted;
-  const running = await planner.detail(draft.planId);
-  assert.equal(running.running, true);
-  assert.equal(running.runStage, "review_spec");
-  assert.equal(running.boardState, "review_spec");
-  const listed = (await planner.list()).plans.find((plan) => plan.planId === draft.planId);
-  assert.equal(listed.runStage, "review_spec");
-  assert.equal(listed.boardState, "review_spec");
-  releaseReview();
-  for (let index = 0; index < 500 && planner.isRunning(draft.planId); index += 1) await new Promise((resolve) => setImmediate(resolve));
-  const finished = await planner.detail(draft.planId);
-  assert.equal(finished.running, false);
-  assert.equal(finished.boardState, "waiting_for_dev");
-});
-
-test("a live first round reads as writing_spec in both the list and the detail", async (t) => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  const deps = fakeDeps({ replies: [] });
-  let release = () => {};
-  const started = new Promise((resolve) => {
-    deps.execute = async () => {
-      resolve();
-      await new Promise((done) => { release = done; });
-      return { stdout: envelope(READY_TASKS, "sess-a") };
-    };
-  });
-  const planner = new WorktreePlanner({ ...deps, store });
-  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
-  await started;
-  assert.equal((await planner.detail(draft.planId)).runStage, "writing_spec");
-  assert.equal((await planner.detail(draft.planId)).boardState, "writing_spec");
-  assert.equal((await planner.list()).plans[0].boardState, "writing_spec");
-  release();
-  for (let index = 0; index < 500 && planner.isRunning(draft.planId); index += 1) await new Promise((resolve) => setImmediate(resolve));
-});
-
 test("list and detail place a launched, a merged and an aborted goal in their own columns", async (t) => {
   const { store, planner } = launchablePlanner();
   t.after(() => store.close());
-  const launched = await planner.start({ repositoryId: REPO_ID, goal: "Launch this" });
+  const launched = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Launch this" });
   await planner.launch(launched.planId);
-  const merged = await planner.start({ repositoryId: REPO_ID, goal: "Merge this" });
+  const merged = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Merge this" });
   await planner.launch(merged.planId);
   store.recordGoalMerged(merged.planId, { number: 5, url: "https://github.test/pr/5" });
-  const aborted = await planner.start({ repositoryId: REPO_ID, goal: "Abort this" });
+  const aborted = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Abort this" });
   store.recordGoalAborted(aborted.planId);
 
   const byId = new Map((await planner.list({ status: "all" })).plans.map((plan) => [plan.planId, plan]));
@@ -1953,88 +977,12 @@ test("list and detail place a launched, a merged and an aborted goal in their ow
   assert.equal((await planner.detail(merged.planId)).boardState, "merged");
 });
 
-test("an aborted goal refuses every mutation and stays readable and deletable", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.abort(draft.planId);
-  const refused = /This goal was aborted/;
-  await assert.rejects(() => planner.resume(draft.planId), refused);
-  await assert.rejects(() => planner.run(draft.planId), refused);
-  await assert.rejects(() => planner.answer(draft.planId, { skip: true }), refused);
-  await assert.rejects(() => planner.answerBackground(draft.planId, { skip: true }), refused);
-  await assert.rejects(() => planner.feedback(draft.planId, { text: "wrong" }), refused);
-  await assert.rejects(() => planner.feedbackBackground(draft.planId, { text: "wrong" }), refused);
-  await assert.rejects(() => planner.update(draft.planId, { tasks: [{ id: "t1", title: "x", branch: "feature/x", prompt: "x" }] }), refused);
-  await assert.rejects(() => planner.launch(draft.planId), refused);
-  assert.equal((await planner.detail(draft.planId)).boardState, "aborted");
-  assert.deepEqual(await planner.remove(draft.planId), { planId: draft.planId, deleted: true });
-});
-
-test("a merged goal refuses every mutation and refuses to be aborted", async (t) => {
-  const { store, planner } = launchablePlanner();
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await planner.launch(draft.planId);
-  store.recordGoalMerged(draft.planId, { number: 7, url: "https://github.test/pr/7" });
-  await assert.rejects(() => planner.resume(draft.planId), /already merged/);
-  await assert.rejects(() => planner.launch(draft.planId), /already merged/);
-  await assert.rejects(() => planner.abort(draft.planId), /already merged, so it cannot be aborted/);
-  assert.equal((await planner.detail(draft.planId)).boardState, "merged");
-});
-
-test("abort cancels the live round, kills its child and clears its controller", async (t) => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  const deps = fakeDeps({ replies: [] });
-  const signals = [];
-  let started = () => {};
-  const running = new Promise((resolve) => { started = resolve; });
-  deps.execute = async (bin, args, options) => {
-    signals.push(options.signal);
-    started();
-    // A real child rejects the way streamExecFile does when it is killed.
-    await new Promise((resolve, reject) => {
-      options.signal.addEventListener("abort", () => reject(Object.assign(new Error("Command failed"), { killed: true, reason: "aborted" })), { once: true });
-    });
-    return { stdout: "" };
-  };
-  const planner = new WorktreePlanner({ ...deps, store });
-  const draft = await planner.startBackground({ repositoryId: REPO_ID, goal: "Add billing" });
-  await running;
-  assert.equal(planner.controllers.has(draft.planId), true);
-  const result = await planner.abort(draft.planId);
-  assert.equal(result.aborted, true);
-  assert.equal(result.alreadyAborted, false);
-  assert.equal(signals[0].aborted, true, "the round must receive the abort on its own signal");
-  assert.equal(planner.controllers.has(draft.planId), false, "the controller must not outlive the abort");
-  assert.equal(planner.isRunning(draft.planId), false);
-  for (let index = 0; index < 500 && planner.controllers.has(draft.planId); index += 1) await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(store.get(draft.planId).boardStatus, "aborted");
-});
-
-test("a finished round leaves no controller behind for a later abort", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [TASKS_REPLY] });
-  t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  assert.equal(planner.controllers.size, 0);
-  const result = await planner.abort(draft.planId);
-  assert.deepEqual(result, { planId: draft.planId, aborted: true, alreadyAborted: false, closedSessionIds: [], failedSessionIds: [] });
-});
-
-test("a failed round also clears its controller", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [new Error("boom"), new Error("boom")] });
-  t.after(() => store.close());
-  await assert.rejects(() => planner.start({ repositoryId: REPO_ID, goal: "Add billing" }));
-  assert.equal(planner.controllers.size, 0);
-});
-
 test("abort closes every distinct task and merge session exactly once", async (t) => {
   const { store, planner, deps } = launchablePlanner();
   t.after(() => store.close());
   const closed = [];
   deps.cmux.workspaceClose = async (id) => { closed.push(id); };
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   store.recordIntegrationStarted(draft.planId, { branch: "goal/billing", path: "/repo/sample-goal" });
   store.recordMergeLaunched(draft.planId, "merge-one");
@@ -2051,7 +999,7 @@ test("abort reports the sessions cmux refused to close", async (t) => {
   const { store, planner, deps } = launchablePlanner();
   t.after(() => store.close());
   deps.cmux.workspaceClose = async (id) => { if (id === "merge-one") throw new Error("cmux is down"); };
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   store.recordIntegrationStarted(draft.planId, { branch: "goal/billing", path: "/repo/sample-goal" });
   store.recordMergeLaunched(draft.planId, "merge-one");
@@ -2066,7 +1014,7 @@ test("a repeated abort retries the closures and appends no second event", async 
   t.after(() => store.close());
   let attempts = 0;
   deps.cmux.workspaceClose = async () => { attempts += 1; if (attempts === 1) throw new Error("cmux is down"); };
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   const first = await planner.abort(draft.planId);
   assert.deepEqual(first.failedSessionIds, ["ws-1"]);
@@ -2080,7 +1028,7 @@ test("a repeated abort retries the closures and appends no second event", async 
 test("abort leaves the worktrees, the branches and the plan row untouched", async (t) => {
   const { store, planner, deps } = launchablePlanner();
   t.after(() => store.close());
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
   await planner.launch(draft.planId);
   const before = store.get(draft.planId);
   deps.worktrees.remove = () => { throw new Error("a worktree must never be removed by an abort"); };
@@ -2090,12 +1038,6 @@ test("abort leaves the worktrees, the branches and the plan row untouched", asyn
   assert.deepEqual(after.tasks.map((task) => [task.branch, task.worktreePath, task.launchStatus]), before.tasks.map((task) => [task.branch, task.worktreePath, task.launchStatus]));
   assert.equal(after.status, before.status);
   assert.equal(after.goal, before.goal);
-});
-
-test("abort refuses a plan that does not exist", async (t) => {
-  const { store, planner } = storedPlanner({ replies: [] });
-  t.after(() => store.close());
-  await assert.rejects(() => planner.abort("no-such-plan"), /Unknown plan/);
 });
 
 // --- the launch registry -------------------------------------------------
@@ -2134,20 +1076,6 @@ function discussionEnvelope(payload, sessionId = "discussion-session") {
 
 const GOOD_ANSWER = { answer: "T2 waits for T1 because both write the invoice model.", contractImpact: "none" };
 
-// A ready plan on a durable store, which every discussion test needs before it
-// can ask anything.
-async function readyPlan(t, planner, store) {
-  t.after(() => store.close());
-  return planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-}
-
-function discussPlanner(replies) {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  const deps = fakeDeps({ replies: [TASKS_REPLY, ...replies] });
-  const planner = new WorktreePlanner({ ...deps, store });
-  return { store, deps, planner };
-}
-
 test("parses a valid discussion answer and normalizes an absent suggestion", () => {
   const reply = parseDiscussionReply(discussionEnvelope(GOOD_ANSWER));
   assert.deepEqual(reply, { answer: GOOD_ANSWER.answer, contractImpact: "none", suggestion: "" });
@@ -2179,186 +1107,6 @@ test("refuses every unusable discussion payload", () => {
     assert.throws(() => parseDiscussionReply(discussionEnvelope(payload)), /unusable answer/, label);
   }
   assert.throws(() => parseDiscussionReply("no json at all"), /unusable answer/);
-});
-
-test("a discussion answers, stores one event, and changes nothing else", async (t) => {
-  const { store, planner } = discussPlanner([discussionEnvelope(GOOD_ANSWER)]);
-  const draft = await readyPlan(t, planner, store);
-  const before = store.get(draft.planId);
-  const eventsBefore = store.events(draft.planId).length;
-
-  const result = await planner.discuss(draft.planId, { text: "Why does T2 wait for T1?" });
-  assert.equal(result.answer, GOOD_ANSWER.answer);
-  assert.equal(result.contractImpact, "none");
-  assert.equal(result.suggestion, "");
-  assert.equal(result.round, before.round);
-
-  const after = store.get(draft.planId);
-  assert.deepEqual(after.tasks, before.tasks);
-  for (const field of ["round", "stage", "sessionId", "spec", "readiness", "questions", "status", "lastError", "lastErrorAt"]) {
-    assert.deepEqual(after[field], before[field], `${field} must not change`);
-  }
-  assert.equal(store.events(draft.planId).length, eventsBefore + 1);
-  assert.equal(store.events(draft.planId).at(-1).kind, "discussion");
-  // The reply's own session id must never replace the plan's.
-  assert.equal(after.sessionId, "sess-a");
-  assert.deepEqual(store.discussions(draft.planId).map((entry) => entry.question), ["Why does T2 wait for T1?"]);
-});
-
-// A live session holds the contract of the round that created it. A task edit
-// and a reviewer-produced task never entered that session, so the prompt has to
-// carry the contract the user is actually looking at.
-test("a discussion prompt carries the current contract even on a resumed session", async (t) => {
-  const { store, deps, planner } = discussPlanner([discussionEnvelope(GOOD_ANSWER)]);
-  const draft = await readyPlan(t, planner, store);
-  await planner.update(draft.planId, { tasks: [{ ...draft.tasks[0], title: "Edited billing", prompt: "Add edited billing." }] });
-
-  await planner.discuss(draft.planId, { text: "Does the edit still cover AC-1?" });
-  const args = deps.calls.filter((call) => call[0] === "ccs").at(-1)[1];
-  const prompt = args.at(-1);
-  assert.equal(args[args.indexOf("--resume") + 1], "sess-a", "a live session must still be resumed");
-  assert.match(prompt, /Edited billing/);
-  assert.match(prompt, /Add edited billing\./);
-  assert.match(prompt, /branch: feature\/billing/);
-  assert.match(prompt, /Current specification:/);
-  assert.match(prompt, /Current readiness:/);
-  assert.match(prompt, /criteria: AC-1/);
-  assert.match(prompt, /Does the edit still cover AC-1\?/);
-  assert.match(prompt, /"answer":"\.\.\.","contractImpact":"none\|revision_suggested","suggestion":"\.\.\."/);
-  assert.match(prompt, /Add billing/, "the goal travels with the question");
-});
-
-test("an unusable discussion answer is retried once and then refused without a write", async (t) => {
-  const { store, deps, planner } = discussPlanner([
-    discussionEnvelope({ answer: "Fine.", contractImpact: "maybe" }),
-    discussionEnvelope({ answer: "Fine.", contractImpact: "none", tasks: [] }),
-  ]);
-  const draft = await readyPlan(t, planner, store);
-  const before = store.get(draft.planId);
-
-  await assert.rejects(() => planner.discuss(draft.planId, { text: "Is this right?" }), /unusable answer/);
-  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 3, "one opening round plus exactly two discussion attempts");
-  assert.deepEqual(store.discussions(draft.planId), []);
-  assert.equal(store.get(draft.planId).updatedAt, before.updatedAt);
-  assert.equal(store.get(draft.planId).lastError, null);
-});
-
-test("a second discussion attempt that parses is accepted", async (t) => {
-  const { store, deps, planner } = discussPlanner([
-    discussionEnvelope({ answer: "Fine.", contractImpact: "maybe" }),
-    discussionEnvelope(GOOD_ANSWER),
-  ]);
-  const draft = await readyPlan(t, planner, store);
-  const result = await planner.discuss(draft.planId, { text: "Is this right?" });
-  assert.equal(result.contractImpact, "none");
-  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, 3);
-  assert.equal(store.discussions(draft.planId).length, 1);
-});
-
-test("a discussion refuses every boundary in its own sentence and writes nothing", async (t) => {
-  const { store, deps, planner } = discussPlanner([]);
-  const draft = await readyPlan(t, planner, store);
-  const before = store.get(draft.planId);
-  const spawns = deps.calls.filter((call) => call[0] === "ccs").length;
-
-  await assert.rejects(() => planner.discuss(draft.planId, { text: "   " }), /^TypeError: Ask a question about this plan$/);
-  await assert.rejects(() => planner.discuss(draft.planId, { text: "q".repeat(2_001) }), /^TypeError: That question is too long$/);
-  await assert.rejects(() => planner.discuss("no-such-plan", { text: "Why?" }), /Unknown plan\. Start a new goal/);
-
-  assert.equal(deps.calls.filter((call) => call[0] === "ccs").length, spawns, "no refusal may reach ccs");
-  assert.deepEqual(store.discussions(draft.planId), []);
-  assert.equal(store.get(draft.planId).updatedAt, before.updatedAt);
-});
-
-test("a plan with no task split cannot be questioned yet", async (t) => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  const deps = fakeDeps({ replies: [QUESTIONS_REPLY] });
-  const planner = new WorktreePlanner({ ...deps, store });
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing" });
-  await assert.rejects(() => planner.discuss(draft.planId, { text: "Why?" }), /^TypeError: This goal has no plan to question yet\. Answer its questions first$/);
-  assert.deepEqual(store.discussions(draft.planId), []);
-});
-
-test("a launched, an aborted and a merged plan keep their own refusal sentences", async (t) => {
-  const { store, planner } = discussPlanner([TASKS_REPLY]);
-  const draft = await readyPlan(t, planner, store);
-  store.recordLaunch(draft.planId, { base: "origin/main", results: [{ id: draft.tasks[0].id, status: "launched" }] });
-  planner.drafts.delete(draft.planId);
-  await assert.rejects(() => planner.discuss(draft.planId, { text: "Why?" }), /This plan is already launched\. Start a new goal/);
-
-  store.recordGoalAborted(draft.planId);
-  await assert.rejects(() => planner.discuss(draft.planId, { text: "Why?" }), /This goal was aborted\. Start a new goal/);
-
-  const other = await planner.start({ repositoryId: REPO_ID, goal: "Add invoices" });
-  store.recordGoalMerged(other.planId, { url: "https://github.test/pr/1" });
-  await assert.rejects(() => planner.discuss(other.planId, { text: "Why?" }), /This goal is already merged\. Start a new goal/);
-});
-
-test("the twelfth answered discussion is the last one", async (t) => {
-  const { store, planner } = discussPlanner([]);
-  const draft = await readyPlan(t, planner, store);
-  for (let index = 0; index < 12; index += 1) {
-    store.recordDiscussion(draft.planId, { question: `Q${index}?`, answer: "A.", contractImpact: "none", round: draft.round });
-  }
-  await assert.rejects(() => planner.discuss(draft.planId, { text: "One more?" }), /^TypeError: This plan has been questioned 12 times\. Reject it and re-plan instead$/);
-  assert.equal(store.discussions(draft.planId).length, 12);
-});
-
-// A failed attempt costs the planner a round but writes nothing, so it must not
-// spend one of the twelve either.
-test("a failed discussion does not consume the cap and does not consume maxRounds", async (t) => {
-  const { store, planner } = discussPlanner([
-    discussionEnvelope({ answer: "Fine.", contractImpact: "maybe" }),
-    discussionEnvelope({ answer: "Fine.", contractImpact: "maybe" }),
-    discussionEnvelope(GOOD_ANSWER),
-  ]);
-  const draft = await readyPlan(t, planner, store);
-  await assert.rejects(() => planner.discuss(draft.planId, { text: "First try?" }), /unusable answer/);
-  assert.deepEqual(store.discussions(draft.planId), []);
-  await planner.discuss(draft.planId, { text: "Second try?" });
-  assert.equal(store.discussions(draft.planId).length, 1);
-  assert.equal(store.get(draft.planId).round, 1, "a discussion never advances the round");
-});
-
-test("detail returns every discussion oldest first beside the generic events", async (t) => {
-  const { store, planner } = discussPlanner([discussionEnvelope(GOOD_ANSWER)]);
-  const draft = await readyPlan(t, planner, store);
-  store.recordDiscussion(draft.planId, { question: "Older?", answer: "Older answer.", contractImpact: "revision_suggested", suggestion: "Split T1.", round: 1 });
-  await planner.discuss(draft.planId, { text: "Newer?" });
-
-  const detail = await planner.detail(draft.planId);
-  assert.deepEqual(detail.discussion.map((entry) => entry.question), ["Older?", "Newer?"]);
-  assert.deepEqual(detail.discussion.map((entry) => entry.contractImpact), ["revision_suggested", "none"]);
-  assert.deepEqual(detail.discussion.map((entry) => entry.suggestion), ["Split T1.", ""]);
-  assert.deepEqual(detail.discussion.map((entry) => entry.round), [1, 1]);
-  assert.equal(detail.discussion.every((entry) => typeof entry.createdAt === "string"), true);
-  assert.equal(detail.events.filter((event) => event.kind === "discussion").length, 2);
-  assert.equal(detail.boardState, "waiting_for_dev");
-});
-
-test("saved planner and reviewer models reach CCS while explicit goal choices win", async () => {
-  const { ModelSettings } = await import("../server/model-settings.mjs");
-  const modelSettings = new ModelSettings();
-  modelSettings.configure({ roles: {
-    planner: { provider: "claude", models: { claude: "custom-planner" } },
-    specReviewer: { models: { codex: "custom-spec-reviewer" } },
-    codeReviewer: { models: { claude: "custom-code-reviewer" } },
-  } });
-  const ready = envelope('{"tasks":[{"title":"Billing","branch":"feature/billing","prompt":"Add billing."}]}', "s");
-  const deps = fakeDeps({ replies: [ready, ready] });
-  const planner = new WorktreePlanner({ ...deps, modelSettings });
-  const draft = await planner.start({ repositoryId: REPO_ID, goal: "Add billing", engine: { reviewer: true }, reviewOptions: { codeReview: true } });
-  const models = deps.calls.filter(([bin]) => bin === "ccs").map(([, args]) => [args[0], args[args.indexOf("--model") + 1]]);
-  assert.deepEqual(models, [["claude", "custom-planner"], ["codex", "custom-spec-reviewer"]]);
-  assert.equal(draft.reviewOptions.reviewerModel, "custom-code-reviewer");
-  modelSettings.configure({ roles: { planner: { models: { claude: "new-default" } } } });
-  assert.equal(draft.engine.model, "custom-planner");
-  const explicitDeps = fakeDeps({ replies: [ready] });
-  const explicit = await new WorktreePlanner({ ...explicitDeps, modelSettings }).start({ repositoryId: REPO_ID, goal: "Explicit", engine: { provider: "codex", model: "custom-override" }, reviewOptions: { reviewerModel: "review-override" } });
-  assert.equal(explicit.engine.model, "custom-override");
-  assert.equal(explicit.reviewOptions.reviewerModel, "review-override");
-  assert.equal(explicitDeps.calls[0][1][explicitDeps.calls[0][1].indexOf("--model") + 1], "custom-override");
 });
 
 test("coder defaults reach task workspace launches", async () => {
@@ -2402,4 +1150,97 @@ test("a saved task whose provider became blocked fails before creating a worktre
   assert.equal(result.results[0].status, "failed");
   assert.match(result.results[0].error, /no usable quota/);
   assert.equal(deps.calls.some((call) => ["create", "workspace"].includes(call[0])), false);
+});
+
+test("multi-task goals push task branches without opening individual pull requests", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.update(draft.planId, { tasks: [
+    { id: "t1", title: "Good", branch: "feature/good", prompt: "Do it.", agent: "claude" },
+    { id: "t2", title: "Also", branch: "feature/also", prompt: "Do that.", agent: "codex" },
+  ] });
+  await planner.launch(draft.planId);
+  const briefs = deps.calls.filter((call) => call[0] === "workspace").map((call) => {
+    assertPointer(call[1].prompt);
+    return briefText(call[1].prompt);
+  });
+  assert.equal(briefs.length, 2);
+  for (const brief of briefs) {
+    assert.match(brief, /Finish your task branch for combined delivery:/);
+    assert.match(brief, /Push this task branch to origin/);
+    assert.match(brief, /Do not open a pull request/);
+    assert.match(brief, /Cmux-Goal-Ready: .+\/t[12]/);
+    assert.ok(!brief.includes("gh pr create"));
+  }
+});
+
+test("single-task goals keep the direct pull request workflow", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
+  const result = await planner.launch(draft.planId);
+  const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
+  assert.equal(result.deliveryMode, "single");
+  assert.match(brief, /Finish with a pull request:/);
+  assert.match(brief, /gh pr create/);
+  assert.match(brief, /pull request against main\b/);
+});
+
+test("a one-task issue topic is forced through Companion's combined delivery branch", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Fix linked issues", issueNumbers: [54, 55], issueUrls: ["https://github.com/acme/app/issues/54"], deliveryPolicy: "combined" });
+  assert.deepEqual(draft.issueNumbers, [54, 55]);
+  assert.equal(draft.deliveryMode, "combined");
+  const result = await planner.launch(draft.planId);
+  const brief = briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt);
+  assert.equal(result.deliveryMode, "combined");
+  assert.match(brief, /Finish your task branch for combined delivery/);
+  assert.doesNotMatch(brief, /Closes #54|gh pr create/);
+});
+
+test("names a master default branch rather than assuming main", async () => {
+  const deps = launchDeps();
+  deps.git = async (cwd, args) => {
+    deps.calls.push(["git", args]);
+    if (args[0] === "symbolic-ref") return "origin/master\n";
+    return "";
+  };
+  const planner = new WorktreePlanner(deps);
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
+  const result = await planner.launch(draft.planId);
+  assert.equal(result.base, "origin/master");
+  assert.match(briefText(deps.calls.find((call) => call[0] === "workspace")[1].prompt), /pull request against master\b/);
+});
+
+test("an aborted goal refuses every mutation and stays readable and deletable", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [QUESTIONS_REPLY] });
+  t.after(() => store.close());
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.abort(draft.planId);
+  const refused = /This goal was aborted/;
+  await assert.rejects(() => planner.resume(draft.planId), refused);
+  await assert.rejects(() => planner.update(draft.planId, { tasks: [{ id: "t1", title: "x", branch: "feature/x", prompt: "x" }] }), refused);
+  await assert.rejects(() => planner.launch(draft.planId), refused);
+  assert.equal((await planner.detail(draft.planId)).boardState, "aborted");
+  assert.deepEqual(await planner.remove(draft.planId), { planId: draft.planId, deleted: true });
+});
+
+test("a merged goal refuses every mutation and refuses to be aborted", async (t) => {
+  const { store, planner } = launchablePlanner();
+  t.after(() => store.close());
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  store.recordGoalMerged(draft.planId, { number: 7, url: "https://github.test/pr/7" });
+  await assert.rejects(() => planner.resume(draft.planId), /already merged/);
+  await assert.rejects(() => planner.launch(draft.planId), /already merged/);
+  await assert.rejects(() => planner.abort(draft.planId), /already merged, so it cannot be aborted/);
+  assert.equal((await planner.detail(draft.planId)).boardState, "merged");
+});
+
+test("abort refuses a plan that does not exist", async (t) => {
+  const { store, planner } = storedPlanner({ replies: [] });
+  t.after(() => store.close());
+  await assert.rejects(() => planner.abort("no-such-plan"), /Unknown plan/);
 });

@@ -5,7 +5,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { classifyLegacyWorktreeError } from "./worktree-errors.mjs";
-import { normalizeSpecOptions } from "./spec-options.mjs";
+import { safeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
 import { currentModelId } from "./model-options.mjs";
 
@@ -64,7 +64,7 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {} }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, discoveryContext = null }) {
     const at = this.#stamp();
     const options = safeSpecOptions(specOptions);
     const review = safeReviewOptions(reviewOptions);
@@ -82,6 +82,7 @@ export class WorktreePlanStore {
         INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), json(review), at, at);
+      if (discoveryContext) this.db.prepare("UPDATE plans SET discovery_context = ? WHERE plan_id = ?").run(json(discoveryContext), planId);
       this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review }, at);
     });
     this.#prune();
@@ -1366,6 +1367,7 @@ function readPlan(row) {
     goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,
     goalSessionWorktreePath: row.goal_session_worktree_path ?? null,
     goalSessionBranch: row.goal_session_branch ?? null,
+    discoveryContext: parse(row.discovery_context, null),
     goalSessionGeneration: Number(row.goal_session_generation) || 0,
     goalSessionProviderSessionId: row.goal_session_provider_session_id ?? null,
     proposalRevision: Number(row.proposal_revision) || 0,
@@ -1460,17 +1462,6 @@ function deliveryMode(tasks) {
 
 function policy(value) {
   return value === "combined" ? "combined" : "auto";
-}
-
-// A plan row must stay readable. A blank column, a legacy row, hand-edited
-// JSON or an unknown key therefore reads as all options off instead of
-// throwing and hiding the whole plan.
-function safeSpecOptions(value) {
-  try {
-    return normalizeSpecOptions(value ?? undefined);
-  } catch {
-    return normalizeSpecOptions();
-  }
 }
 
 // A stored lifecycle value that is neither terminal state reads as unset. A

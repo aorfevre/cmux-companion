@@ -231,7 +231,7 @@ test("starting a goal passes the issue number and URL through and marks the card
 test("starting the same issue twice returns the existing plan", async (t) => {
   const { service, starts } = await harness(t, {
     issuesByPath: { "/repo/app": [issue(11, "Restore editor focus")] },
-    existingPlans: [{ planId: "existing-plan", issueNumbers: [11] }],
+    existingPlans: [{ planId: "existing-plan", workflow: "goal_session", issueNumbers: [11] }],
   });
   await service.sync();
 

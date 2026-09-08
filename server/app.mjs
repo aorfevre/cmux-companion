@@ -31,7 +31,6 @@ import { GoalHealthSweep } from "./goal-health.mjs";
 import { GoalWatchdog } from "./goal-watchdog.mjs";
 import { GoalSessionReaper } from "./goal-session-reaper.mjs";
 import { GoalMergeWatch } from "./goal-merge-watch.mjs";
-import { GitHubIssuePlanner } from "./github-issue-planner.mjs";
 import { GitHubIssueStore } from "./github-issue-store.mjs";
 import { GitHubIssueSync } from "./github-issue-sync.mjs";
 import { GitHubIssueSyncScheduler } from "./github-issue-sync-scheduler.mjs";
@@ -82,7 +81,6 @@ export async function buildApp({
   // grouping can be restored, and injected, without another API change here.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   cmuxGroups = null,
-  githubIssuePlanner = null,
   githubIssueSync = null,
   githubIssueSyncScheduler = null,
   plannerProgress = new PlannerProgress(),
@@ -133,7 +131,7 @@ export async function buildApp({
   const briefs = agentBriefs || new AgentBriefs();
   const planner = worktreePlanner
     || new WorktreePlanner({ worktrees, cmux, modelSettings, accountUsage, log: app.log, store: planStore, progress: plannerProgress, pushService, briefs });
-  const goalSessions = planStore ? new GoalSessionService({ store: planStore, worktrees, cmux, modelSettings, log: app.log }) : null;
+  const goalSessions = planStore ? new GoalSessionService({ store: planStore, worktrees, cmux, modelSettings, log: app.log, stopGoal: async (id) => { integrator?.cancel?.(id); return planner.abort(id); } }) : null;
   // The one writer in the supervision path. It closes a cmux session only when
   // the plan records it and its work is delivered, so it is always safe to call
   // it; the switch below is about the timer, not about the rule.
@@ -163,10 +161,6 @@ export async function buildApp({
   // on its own.
   const health = goalHealthSweep
     || (planStore ? new GoalHealthSweep({ store: planStore, cmux, log: app.log }) : null);
-  const issuePlanner = githubIssuePlanner
-    || new GitHubIssuePlanner({ modelSettings, worktrees, planner, execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
-  // GitHub Sync owns its own durable store. A test that injects the whole
-  // service never opens the production file, exactly like the planner above.
   const issueSync = githubIssueSync
     || new GitHubIssueSync({ worktrees, planner, goalSessions, store: githubIssueStore || new GitHubIssueStore(), execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // The timer that keeps the issue column current without anyone pressing
@@ -540,16 +534,15 @@ export async function buildApp({
     return worktrees.setRepositoryFavorite(request.params.id, request.body?.favorite, { workspaces: bootstrap.workspaces });
   });
 
-  // This path is deliberately separate from legacy bulk planning. It starts
-  // one owned worktree and one visible managed conversation; old plans retain
-  // their saved task-split and launch behavior unchanged.
-  app.post("/api/goal-sessions", async (request, reply) => {
+  // Both creation URLs enter the same owned interactive conversation.
+  const startGoalSession = async (request, reply) => {
     if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
     const plan = await goalSessions.start(request.body || {});
     bootstrapSnapshot = null;
     worktrees.invalidate();
     return reply.code(201).send(plan);
-  });
+  };
+  for (const url of ["/api/goal-sessions", "/api/worktree-plans"]) app.post(url, { schema: WRITE_SCHEMAS.createGoal }, startGoalSession);
 
   // Workspace detail uses this exact persisted identity to keep proposal
   // decisions beside the managed terminal, without guessing from a directory
@@ -569,6 +562,14 @@ export async function buildApp({
     const result = await goalSessions.answer(request.params.planId, request.body || {});
     inboxSnapshot = null;
     return result;
+  });
+
+  app.post("/api/goal-sessions/:planId/continue", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    const plan = await goalSessions.continueDiscovery(request.params.planId);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return plan;
   });
 
   app.post("/api/goal-sessions/:planId/restart", async (request) => {
@@ -595,7 +596,7 @@ export async function buildApp({
     return { planId: plan.planId, issuesReturnedAt: plan.issuesReturnedAt };
   });
 
-  const { reportRound } = registerPlannerRoutes(app, { planner, plannerProgress, reviewToken, health, invalidate: () => {
+  registerPlannerRoutes(app, { planner, goalSessions, plannerProgress, reviewToken, health, invalidate: () => {
     bootstrapSnapshot = null;
     worktrees.invalidate();
   } });
@@ -726,30 +727,11 @@ export async function buildApp({
     return result;
   });
 
-  app.post("/api/github-topic-plans/analyze", async (request) => (
-    reportRound(request.body?.traceId, (onEvent) => issuePlanner.analyze({
-      repositoryId: request.body?.repositoryId,
-      ...(onEvent ? { onEvent } : {}),
-    }))
-  ));
-
-  app.post("/api/github-topic-plans/prepare", { bodyLimit: 64 * 1024 }, async (request) => (
-    reportRound(request.body?.traceId, (onEvent) => issuePlanner.prepare({
-      analysisId: request.body?.analysisId,
-      topics: request.body?.topics,
-      ...(onEvent ? { onEvent } : {}),
-    }))
-  ));
-
-  app.post("/api/github-topic-plans/launch", async (request) => {
-    const result = await reportRound(request.body?.traceId, (onEvent) => issuePlanner.launch({
-      planIds: request.body?.planIds,
-      ...(onEvent ? { onEvent } : {}),
-    }));
-    bootstrapSnapshot = null;
-    worktrees.invalidate();
-    return result;
+  // Older topic-planner clients cannot start a separate headless workflow.
+  for (const action of ["analyze", "prepare", "launch"]) app.post(`/api/github-topic-plans/${action}`, async () => {
+    throw Object.assign(new Error("Use GitHub Issues to start an interactive goal conversation"), { statusCode: 410 });
   });
+  app.get("/api/github-issues/repository/:repositoryId", async (request) => issueSync.readRepository(request.params.repositoryId));
 
   // GitHub Sync. The board reads the stored column here, so a reload shows the
   // last sync without touching GitHub again.

@@ -44,7 +44,7 @@ describe("model defaults", () => {
     cy.findByLabelText("Planner default provider").should("have.value", "codex");
     cy.findByLabelText("Planner Codex model").should("have.value", "gpt-6-astra");
     cy.findByRole("region", { name: "Model defaults" }).screenshot("model-defaults-mobile");
-    for (const role of ["Planner", "Spec reviewer", "Coder", "Code reviewer", "Merge agent", "Follow-up agent", "Issue analyzer"]) {
+    for (const role of ["Planner", "Coder", "Code reviewer", "Merge agent", "Follow-up agent"]) {
       cy.findByLabelText(`${role} Codex model`).select("__custom__");
       cy.findByLabelText(`${role} Codex model ID`).type(`custom/${role.toLowerCase().replaceAll(" ", "-")}`);
     }
@@ -67,7 +67,7 @@ describe("model defaults", () => {
 
   it("offers all models while provider default is selected and persists concrete choices", () => {
     scenario(); settings();
-    for (const role of ["Planner", "Spec reviewer", "Coder", "Code reviewer", "Merge agent", "Follow-up agent", "Issue analyzer"]) {
+    for (const role of ["Planner", "Coder", "Code reviewer", "Merge agent", "Follow-up agent"]) {
       cy.findByLabelText(`${role} Claude model`).find("option").should("contain.text", "Provider default").and("contain.text", "Opus 5").and("contain.text", "Fable 5.1");
       cy.findByLabelText(`${role} Claude model`).select("claude-fable-5-1");
       cy.findByLabelText(`${role} Codex model`).find("option").should("contain.text", "Codex Astra").and("contain.text", "GPT-5.6 Sol").and("contain.text", "GPT-5.6 Terra").and("contain.text", "GPT-5.6 Luna");
@@ -104,11 +104,11 @@ describe("model defaults", () => {
     cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
     cy.findByRole("button", { name: "Plan a goal for Model fixture" }).click();
     cy.findByLabelText("Goal").type("Keep my choice");
-    cy.findByRole("button", { name: "Plan this goal" }).should("be.disabled");
+    cy.findByRole("button", { name: "Start goal session" }).should("be.disabled");
     cy.findByLabelText("Planner model").select("gpt-5.6-terra");
     cy.wait("@delayedModels");
     cy.findByLabelText("Planner model").should("have.value", "gpt-5.6-terra");
-    cy.findByRole("button", { name: "Plan this goal" }).should("be.enabled");
+    cy.findByRole("button", { name: "Start goal session" }).should("be.enabled");
   });
 
   for (const override of [false, true]) it(`loads custom defaults in the planner and submits ${override ? "explicit overrides" : "saved choices"}`, () => {
@@ -116,21 +116,18 @@ describe("model defaults", () => {
     state.roles.planner = { provider: "codex", models: { claude: "custom-claude", codex: "custom-planner" } };
     state.roles.specReviewer.models.claude = "custom-spec-review";
     state.roles.codeReviewer.models.claude = "custom-code-review";
-    cy.intercept("POST", "**/api/worktree-plans", (request) => {
+    cy.intercept("POST", "**/api/goal-sessions", (request) => {
       expect(request.body.engine.model).to.equal(override ? "custom-override" : "custom-planner");
-      expect(request.body.reviewOptions.reviewerModel).to.equal(override ? "custom-review-override" : "custom-code-review");
       request.reply({ statusCode: 202, body: { planId: "model-plan", repositoryId: repo.id, goal: request.body.goal, running: true, status: "questions", round: 0, questions: [], tasks: [] } });
     }).as("plan");
     planner();
     cy.findByLabelText("Planner model ID").should("have.value", "custom-planner");
-    cy.findByLabelText("Code-review model ID").should("have.value", "custom-code-review");
-    cy.findByLabelText("Add a reviewer pass").check();
-    cy.contains("custom-spec-review").should("be.visible");
+    cy.contains("custom-spec-review").should("not.exist");
+    cy.findByRole("checkbox", { name: "Add a reviewer pass" }).should("not.exist");
     if (override) {
       cy.findByLabelText("Planner model ID").clear().type("custom-override");
-      cy.findByLabelText("Code-review model ID").clear().type("custom-review-override");
     }
     cy.findByLabelText("Goal").type("Use the configured models");
-    cy.findByRole("button", { name: "Plan this goal" }).click(); cy.wait("@plan");
+    cy.findByRole("button", { name: "Start goal session" }).click(); cy.wait("@plan");
   });
 });

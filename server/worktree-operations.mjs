@@ -59,7 +59,7 @@ export async function withOperationLock(key, work, directory = join(cleanupHome(
   await plainPath(directory);
   const path = join(directory, digest(key));
   try { await mkdir(path, { mode: 0o700 }); }
-  catch (error) { if (error.code === "EEXIST") throw new Error("Another worktree operation holds this lock; retry after it finishes"); throw error; }
+  catch (error) { if (error.code === "EEXIST") throw Object.assign(new Error("Another worktree operation holds this lock; retry after it finishes. If this persists, its recorded owner needs to be checked before recovery"), { statusCode: 409 }); throw error; }
   try {
     await writeJson(join(path, "owner.json"), { pid: process.pid, key, createdAt: new Date().toISOString() });
     return await work();

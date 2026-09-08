@@ -56,3 +56,8 @@ export function specOptionsBriefLines(options) {
     "Honour every request that applies to your owned areas. State in your completion limitations any request you could not meet.",
   ];
 }
+
+// Tolerant recovery is shared; fresh requests still use strict normalization.
+export function safeSpecOptions(value) {
+  try { return normalizeSpecOptions(value ?? undefined); } catch { return normalizeSpecOptions(); }
+}
