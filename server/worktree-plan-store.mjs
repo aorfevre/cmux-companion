@@ -673,7 +673,7 @@ export class WorktreePlanStore {
       if (row.burst_review_status === "blocked_twice" || row.burst_review_status === "pass") throw new TypeError("This task needs no further review");
       if (row.burst_review_status === "running") throw new TypeError("A burst review is already running for this task");
       const round = Number(row.burst_review_round) + 1;
-      this.db.prepare("UPDATE plan_tasks SET burst_review_status = 'running', burst_review_round = ?, burst_review_workspace_id = ?, burst_review_head_sha = ? WHERE plan_id = ? AND task_id = ?")
+      this.db.prepare("UPDATE plan_tasks SET burst_review_status = 'running', burst_review_round = ?, burst_review_workspace_id = ?, burst_review_head_sha = ?, burst_review_session_closed_at = NULL WHERE plan_id = ? AND task_id = ?")
         .run(round, text(workspaceId), text(headSha), id, String(taskId));
       this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
       this.#insertEvent(id, null, "burst_review_launched", { taskId, workspaceId: text(workspaceId), headSha: text(headSha), round }, at);
@@ -943,6 +943,12 @@ export class WorktreePlanStore {
         "UPDATE plan_tasks SET session_closed_at = ? WHERE plan_id = ? AND task_id = ? AND workspace_id = ? AND session_closed_at IS NULL",
       );
       for (const entry of wanted) if (entry.kind === "task" && entry.taskId) close.run(at, id, entry.taskId, entry.workspaceId);
+      // A burst reviewer has its own column on the task row, so the task's own
+      // stamp is never confused with its reviewer's.
+      const closeReview = this.db.prepare(
+        "UPDATE plan_tasks SET burst_review_session_closed_at = ? WHERE plan_id = ? AND task_id = ? AND burst_review_workspace_id = ? AND burst_review_session_closed_at IS NULL",
+      );
+      for (const entry of wanted) if (entry.kind === "review" && entry.taskId) closeReview.run(at, id, entry.taskId, entry.workspaceId);
       // The live merge session has no row of its own, so the plan carries its
       // stamp. Only the id the plan currently points at may claim that column.
       if (wanted.some((entry) => entry.kind === "merge" && entry.workspaceId === liveMerge)) {
@@ -1272,7 +1278,9 @@ export class WorktreePlanStore {
         (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.agent = 'claude') AS claude_count,
         (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.agent = 'codex') AS codex_count,
         (SELECT group_concat(t.workspace_id) FROM plan_tasks t WHERE t.plan_id = p.plan_id
-           AND t.workspace_id IS NOT NULL AND t.session_closed_at IS NULL) AS open_workspace_ids
+           AND t.workspace_id IS NOT NULL AND t.session_closed_at IS NULL) AS open_workspace_ids,
+        (SELECT group_concat(t.burst_review_workspace_id) FROM plan_tasks t WHERE t.plan_id = p.plan_id
+           AND t.burst_review_workspace_id IS NOT NULL AND t.burst_review_session_closed_at IS NULL) AS open_review_workspace_ids
       FROM plans p ${where} ORDER BY p.updated_at DESC, p.plan_id DESC LIMIT ?
     `).all(...values).map((row) => ({
       planId: row.plan_id,
@@ -1316,7 +1324,7 @@ export class WorktreePlanStore {
       // Every session this goal still owns, so one card can offer Open in cmux
       // without a second request. The merge session is included because it is
       // the one the user opens when a merge is blocked.
-      workspaceIds: splitIds([row.open_workspace_ids, row.merge_workspace_id, row.goal_session_workspace_id].filter(Boolean).join(","), null),
+      workspaceIds: splitIds([row.open_workspace_ids, row.open_review_workspace_ids, row.merge_workspace_id, row.goal_session_workspace_id].filter(Boolean).join(","), null),
       goalType: row.goal_type || "coding",
       sourceAnalysis: parse(row.source_analysis, null),
       plannerReviewStatus: this.outcomes.reviews(row.plan_id).find((review) => review.kind === "planner" && review.target === String(row.proposal_revision))?.status || null,
@@ -1403,6 +1411,7 @@ export class WorktreePlanStore {
       AND NOT EXISTS (
         SELECT 1 FROM plan_tasks t WHERE t.plan_id = plans.plan_id
           AND ((t.workspace_id IS NOT NULL AND t.session_closed_at IS NULL)
+            OR (t.burst_review_workspace_id IS NOT NULL AND t.burst_review_session_closed_at IS NULL)
             OR (t.worktree_path IS NOT NULL AND t.worktree_removed_at IS NULL))
       )
       AND NOT EXISTS (
@@ -1537,6 +1546,7 @@ function readTask(row) {
     burstReviewWorkspaceId: row.burst_review_workspace_id ?? null,
     burstReviewFindings: parse(row.burst_review_findings, []),
     burstReviewHeadSha: row.burst_review_head_sha ?? null,
+    burstReviewSessionClosedAt: row.burst_review_session_closed_at ?? null,
   };
 }
 
@@ -1564,7 +1574,7 @@ function splitIds(joined, mergeWorkspaceId) {
 // say which column holds its stamp. An entry with no kind is read the old way,
 // so the relaunch caller keeps working unchanged.
 function sessionKind(value, taskId, workspaceIdValue, liveMergeWorkspaceId) {
-  if (value === "task" || value === "merge" || value === "superseded") return value;
+  if (value === "task" || value === "merge" || value === "superseded" || value === "review") return value;
   if (taskId) return "task";
   return workspaceIdValue && workspaceIdValue === liveMergeWorkspaceId ? "merge" : "superseded";
 }

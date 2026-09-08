@@ -949,7 +949,11 @@ export class WorktreePlanner {
 // deduplicated, because a merge session that was later superseded appears in
 // both lists and must not be closed twice.
 function goalWorkspaceIds(plan) {
-  const ids = (Array.isArray(plan?.tasks) ? plan.tasks : []).map((task) => task?.workspaceId);
+  const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+  const ids = tasks.map((task) => task?.workspaceId);
+  // A burst reviewer is the goal's session too: it opened on the task's
+  // worktree and nothing but this goal will ever close it.
+  ids.push(...tasks.map((task) => task?.burstReviewWorkspaceId));
   ids.push(plan?.mergeWorkspaceId, plan?.goalSessionWorkspaceId);
   for (const entry of Array.isArray(plan?.supersededMergeWorkspaces) ? plan.supersededMergeWorkspaces : []) {
     ids.push(typeof entry === "string" ? entry : entry?.workspaceId);

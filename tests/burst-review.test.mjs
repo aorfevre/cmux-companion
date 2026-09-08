@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BurstReview, burstReviewPrompt, reviewerProvider } from "../server/burst-review.mjs";
+import { BurstReview, BurstReviewTerminalError, burstReviewPrompt, reviewerProvider } from "../server/burst-review.mjs";
 
 async function directory(t) {
   const path = await mkdtemp(join(tmpdir(), "burst-review-"));
@@ -44,11 +44,13 @@ function harness(t, dir, current) {
       return this.plan;
     },
     recordTaskPending(id, taskId, value) { calls.push(["pending", taskId, value.error]); return this.plan; },
+    recordMergeCleanupRequired(id, workspaceId) { calls.push(["cleanup", workspaceId]); return this.plan; },
     findTaskByBurstReviewWorkspace(ws) { const task = this.plan.tasks.find((x) => x.burstReviewWorkspaceId === ws); return task ? { planId: this.plan.planId, taskId: task.id } : null; },
   };
   const cmux = {
     workspaceCreate: async (options) => { calls.push(["create", options]); created += 1; return { workspace_id: `review-${created}` }; },
     sendWorkspacePrompt: async (ws, text) => { calls.push(["prompt", ws, text]); },
+    workspaceClose: async (ws) => { calls.push(["close", ws]); },
   };
   const review = new BurstReview({ store, cmux, briefs: fakeBriefs(dir), modelSettings: { workspace: (role, agent) => ({ agent, model: "default" }) } });
   return { review, calls, store, cmux };
@@ -206,12 +208,14 @@ function goalHarness(t, dir, current) {
     recordReviewLaunched(id, { workspaceId, agent, briefPath }) { calls.push(["review-launched", workspaceId, agent, briefPath]); current.reviewStatus = "running"; current.reviewWorkspaceId = workspaceId; return current; },
     releaseGoalReview() { calls.push(["release"]); if (!current.reviewWorkspaceId) current.reviewStatus = null; return current; },
     recordReviewSessionClosed() { calls.push(["closed"]); current.reviewSessionClosedAt = "now"; return current; },
+    recordMergeCleanupRequired(id, workspaceId) { calls.push(["cleanup", workspaceId]); return current; },
     findTaskByBurstReviewWorkspace: () => null,
     findPlanByReviewWorkspace: (ws) => (current.reviewWorkspaceId === ws ? current : null),
   };
   const cmux = {
     workspaceCreate: async (options) => { calls.push(["create", options]); return { workspace_id: "review-g" }; },
     sendWorkspacePrompt: async (ws, text) => { calls.push(["prompt", ws, text]); },
+    workspaceClose: async (ws) => { calls.push(["close", ws]); },
   };
   const review = new BurstReview({ store, cmux, briefs: fakeBriefs(dir), modelSettings: { workspace: (role, agent) => ({ agent, model: "default" }) } });
   return { review, calls, store, cmux };
@@ -294,4 +298,57 @@ test("a failed goal reviewer launch releases the claim so a later pass can retry
   cmux.workspaceCreate = async () => ({});
   await assert.rejects(() => review.reviewGoal("plan-g"), /did not return its id/);
   assert.equal(current.reviewStatus, null);
+});
+
+test("no reviewer opens on a goal that ended, before or during the cmux call", async (t) => {
+  const dir = await directory(t);
+  const aborted = harness(t, dir, plan({ boardStatus: "aborted" }));
+  await assert.rejects(() => aborted.review.reviewTask("plan-1", "t1"), BurstReviewTerminalError);
+  assert.equal(aborted.calls.some(([k]) => k === "create"), false);
+  assert.equal(aborted.calls.some(([k]) => k === "launched"), false);
+  // The abort lands while cmux is creating the session: the session is closed,
+  // its id recorded first so a failed close is still recoverable.
+  const racing = harness(t, dir, plan());
+  racing.cmux.workspaceCreate = async () => { racing.store.plan.boardStatus = "aborted"; return { workspace_id: "review-late" }; };
+  await assert.rejects(() => racing.review.reviewTask("plan-1", "t1"), /aborted/);
+  assert.deepEqual(racing.calls.filter(([k]) => k === "cleanup" || k === "close"), [["cleanup", "review-late"], ["close", "review-late"]]);
+  assert.equal(racing.calls.some(([k]) => k === "launched"), false);
+  const failing = harness(t, dir, plan());
+  failing.cmux.workspaceCreate = async () => { failing.store.plan.boardStatus = "merged"; return { workspace_id: "review-late" }; };
+  failing.cmux.workspaceClose = async () => { throw new Error("cmux is down"); };
+  await assert.rejects(() => failing.review.reviewTask("plan-1", "t1"), /merged.*still needs cleanup: cmux is down/s);
+  assert.deepEqual(failing.calls.filter(([k]) => k === "cleanup"), [["cleanup", "review-late"]]);
+});
+
+test("no goal reviewer opens on a goal that ended, and the claim is released", async (t) => {
+  const dir = await directory(t);
+  const current = goalSessionPlan();
+  const { review, calls, cmux } = goalHarness(t, dir, current);
+  cmux.workspaceCreate = async () => { current.boardStatus = "aborted"; return { workspace_id: "review-late" }; };
+  await assert.rejects(() => review.reviewGoal("plan-g"), BurstReviewTerminalError);
+  assert.deepEqual(calls.map(([k]) => k), ["claim", "cleanup", "close", "release"]);
+  assert.equal(current.reviewStatus, null);
+});
+
+test("the verdict path is sanitised so a hostile task id stays inside the briefs directory", async (t) => {
+  const dir = await directory(t);
+  const { review } = harness(t, dir, plan());
+  const path = review.verdictPath("plan-1", "t1", 1);
+  assert.equal(path, join(dir, "plan-1-t1-burst-review-1.json"));
+  assert.throws(() => review.verdictPath("plan-1", "../../etc/passwd", 1), /must not contain a path/);
+  assert.throws(() => review.verdictPath("../plan", "t1", 1), /must not contain a path/);
+  const odd = review.verdictPath("plan-1", "t 1/x".replace("/", ""), 1);
+  assert.ok(odd.startsWith(`${dir}/`));
+  assert.doesNotMatch(odd, /\s/);
+});
+
+test("a verdict file larger than 64 KiB is treated as malformed", async (t) => {
+  const dir = await directory(t);
+  const { review, calls } = harness(t, dir, plan());
+  await review.reviewTask("plan-1", "t1");
+  await writeFile(join(dir, "plan-1-t1-burst-review-1.json"), JSON.stringify({ verdict: "pass", findings: ["x".repeat(70_000)] }));
+  assert.equal(await review.onWorkspaceStopped("review-1"), true);
+  const verdict = calls.find(([k]) => k === "verdict");
+  assert.equal(verdict[2], "block");
+  assert.match(verdict[3][0], /malformed.*larger than 65536 bytes/);
 });

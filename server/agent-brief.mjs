@@ -9,7 +9,9 @@ const DEFAULT_BRIEF_DIRECTORY = join(homedir(), ".config", "cmux-companion", "br
 
 const MAX_POINTER_CHARACTERS = 1_900;
 
-function identifier(value, label) {
+// The one rule for a file name under the briefs directory. Exported so a
+// sibling file (a burst verdict) can be named the same way and never escape.
+export function identifier(value, label) {
   if (typeof value !== "string") throw new TypeError(`${label} must be a string`);
   const raw = value.trim();
   if (!raw) throw new TypeError(`${label} must not be empty`);

@@ -1485,6 +1485,13 @@ test("burst review state moves running → pass or block, and the second block i
   assert.equal(plan.tasks.find((item) => item.id === "t2").burstReviewStatus, "pass");
   assert.throws(() => store.recordBurstReviewLaunched("plan-b", "t2", { workspaceId: "review-4" }), /no further review/);
   assert.deepEqual(store.findTaskByBurstReviewWorkspace("review-2"), { planId: "plan-b", taskId: "t1" });
+  // The board's Open in cmux list carries the reviewer until it is retired.
+  const summary = () => store.list({ repositoryId: "repository12345678" }).find((item) => item.planId === "plan-b");
+  assert.ok(summary().workspaceIds.includes("review-2"));
+  store.recordSessionsRetired("plan-b", [{ workspaceId: "review-2", taskId: "t1", kind: "review" }]);
+  assert.equal(summary().workspaceIds.includes("review-2"), false);
+  assert.ok(store.get("plan-b").tasks.find((item) => item.id === "t1").burstReviewSessionClosedAt);
+  assert.equal(store.get("plan-b").tasks.find((item) => item.id === "t1").sessionClosedAt, null);
   assert.equal(store.findTaskByBurstReviewWorkspace("review-1"), null, "the first round's workspace is superseded");
   assert.equal(store.findTaskByBurstReviewWorkspace(""), null);
   const kinds = store.events("plan-b").map((event) => event.kind);

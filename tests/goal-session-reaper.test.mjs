@@ -435,3 +435,66 @@ test("a managed owner stays available through PR review, even without a task row
   assert.match(restored[0].reason, /review and corrections/);
   assert.deepEqual(restoredGoalSessions([plan], [{ id: "owner", title: "Goal", current_directory: "/repo/goal" }]), []);
 });
+
+// --- burst reviewers --------------------------------------------------------
+
+// A burst reviewer lives on the task row beside the task's own session. It is
+// finished by its verdict, never by the pull request, and the goal's end
+// finishes it like everything else.
+function burstCombined(t) {
+  const store = combined(t, { merge: false });
+  const plan = store.get("plan-1");
+  // The fixture creates a plain goal; the burst flag is what makes reviewers exist.
+  store.db.prepare("UPDATE plans SET burst = 1 WHERE plan_id = ?").run(plan.planId);
+  store.recordBurstReviewLaunched("plan-1", "t1", { workspaceId: "review-0" });
+  return store;
+}
+
+test("a reviewer still reading stays open while its task's pull request opens", async (t) => {
+  const store = burstCombined(t);
+  store.recordGoalPullRequest("plan-1", { number: 7, url: "https://github.test/pr/7", state: "OPEN" });
+  const client = cmux(workspaces(["workspace-0", "workspace-1", "review-0"]));
+  const result = await new GoalSessionReaper({ store, cmux: client }).reap();
+  assert.equal(client.closed().includes("review-0"), false);
+  assert.match(reasonFor(result.kept, "review-0"), /has not delivered its verdict/);
+  assert.equal(result.kept.find((entry) => entry.workspaceId === "review-0").kind, "review");
+});
+
+test("a reviewer that delivered its verdict retires before any pull request, and only once", async (t) => {
+  const store = burstCombined(t);
+  store.recordBurstReviewVerdict("plan-1", "t1", { verdict: "pass" });
+  const client = cmux(workspaces(["workspace-0", "workspace-1", "review-0"]));
+  const reaper = new GoalSessionReaper({ store, cmux: client });
+  const first = await reaper.reap();
+  assert.deepEqual(client.closed(), ["review-0"]);
+  const entry = first.closed.find((item) => item.workspaceId === "review-0");
+  assert.equal(entry.kind, "review");
+  assert.equal(entry.taskId, "t1");
+  assert.match(entry.reason, /delivered its verdict/);
+  assert.ok(store.get("plan-1").tasks[0].burstReviewSessionClosedAt);
+  assert.equal(store.get("plan-1").tasks[0].sessionClosedAt, null, "the task's own session is untouched");
+  await reaper.reap();
+  assert.deepEqual(client.closed(), ["review-0"]);
+});
+
+test("an aborted burst goal retires a reviewer that is still reading", async (t) => {
+  const store = burstCombined(t);
+  store.recordGoalAborted("plan-1");
+  const client = cmux(workspaces(["workspace-0", "workspace-1", "review-0"]));
+  const result = await new GoalSessionReaper({ store, cmux: client }).reap();
+  assert.deepEqual(client.closed().sort(), ["review-0", "workspace-0", "workspace-1"]);
+  assert.equal(result.closed.find((item) => item.workspaceId === "review-0").reason, "This goal was aborted");
+  assert.ok(store.get("plan-1").tasks[0].burstReviewSessionClosedAt);
+});
+
+test("a second review round reopens the reviewer column for its new session", async (t) => {
+  const store = burstCombined(t);
+  store.recordBurstReviewVerdict("plan-1", "t1", { verdict: "block", findings: ["x"] });
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "review-0", taskId: "t1", kind: "review" }]);
+  assert.ok(store.get("plan-1").tasks[0].burstReviewSessionClosedAt);
+  store.recordBurstReviewLaunched("plan-1", "t1", { workspaceId: "review-1" });
+  assert.equal(store.get("plan-1").tasks[0].burstReviewSessionClosedAt, null);
+  const { close, keep } = retirableSessions(store.get("plan-1"), { available: true, byId: new Map(workspaces(["review-1"]).map((item) => [item.id, item])) });
+  assert.deepEqual(close, []);
+  assert.equal(keep.find((entry) => entry.workspaceId === "review-1").kind, "review");
+});

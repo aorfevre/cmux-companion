@@ -1151,6 +1151,20 @@ test("a blocked task waits for its head to move, gets one more review, and then 
   assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false);
 });
 
+test("a passed reviewer is retired by the assemble that follows its verdict", async (t) => {
+  const { store, integrator, calls } = fixture(t, { burst: true });
+  const burstReview = fakeBurstReview(store);
+  integrator.burstReview = burstReview;
+  integrator.cmux.workspaceListDetailed = async () => ({ workspaces: ["workspace-one", "workspace-two", "review-t1-1", "review-t2-1"].map((id) => ({ id, status: { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } })) });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review/);
+  assert.deepEqual(closedWorkspaces(calls), [], "a reviewer still reading is never closed");
+  store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "pass" });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 1 task/);
+  assert.deepEqual(closedWorkspaces(calls), ["review-t1-1"]);
+  assert.ok(store.get("plan-12345678").tasks[0].burstReviewSessionClosedAt);
+  assert.equal(store.get("plan-12345678").tasks[0].sessionClosedAt, null, "the task's own session waits for integration");
+});
+
 test("a plan without the burst flag never consults the reviewer", async (t) => {
   const { store, integrator } = fixture(t);
   const burstReview = fakeBurstReview(store);
@@ -1190,4 +1204,14 @@ test("a reviewer's own Stop reaches the reviewer first and then schedules its pl
   await tick(5);
   assert.equal(scheduled.length, seen + 1);
   assert.equal(burstReview.stops.length, 2);
+  // A reviewer that throws must not swallow a task owner's Stop.
+  burstReview.onWorkspaceStopped = async () => { throw new Error("verdict store is down"); };
+  events.emit({ name: "agent.hook.Stop", workspace_id: "workspace-two" });
+  await tick(5);
+  assert.deepEqual(scheduled.at(-1), ["workspace", "workspace-two"]);
+  // A goal reviewer's stop is handled and schedules nothing here.
+  burstReview.onWorkspaceStopped = async () => true;
+  events.emit({ name: "agent.hook.Stop", workspace_id: "review-goal" });
+  await tick(5);
+  assert.equal(scheduled.length, seen + 2);
 });

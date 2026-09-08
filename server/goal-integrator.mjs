@@ -56,13 +56,20 @@ export class GoalIntegrator {
       if (event?.name !== "agent.hook.Stop") return;
       const workspaceId = event.workspace_id || event.payload?.workspace_id || event.data?.workspace_id;
       if (!workspaceId) return;
-      // A reviewer's own stop is read first, then its plan is scheduled: a
-      // pass leads straight into assembly and a block into the owner's turn.
+      // A reviewer's own stop is read first. A task reviewer's stop then
+      // schedules its plan, so a pass leads straight into assembly and a block
+      // into the owner's next turn. A goal reviewer's stop schedules nothing:
+      // the goal session owns its pull request and the merge watch owns the
+      // rest. Every other stop takes the integrator's own path, and so does
+      // any stop the reviewer failed on, so a task owner's stop is never lost.
       Promise.resolve(this.burstReview?.onWorkspaceStopped?.(workspaceId)).then((handled) => {
-        const found = handled ? this.store.findTaskByBurstReviewWorkspace?.(workspaceId) : null;
+        if (!handled) return this.scheduleWorkspace(workspaceId);
+        const found = this.store.findTaskByBurstReviewWorkspace?.(workspaceId);
         if (found) this.schedulePlan(found.planId);
-        else this.scheduleWorkspace(workspaceId);
-      }).catch((cause) => this.log?.warn?.({ err: cause, workspaceId }, "burst review stop handling failed"));
+      }).catch((cause) => {
+        this.log?.warn?.({ err: cause, workspaceId }, "burst review stop handling failed");
+        this.scheduleWorkspace(workspaceId);
+      });
     };
     hub.on("event", onEvent);
     hub.addConsumer();
@@ -284,6 +291,9 @@ export class GoalIntegrator {
       throw new TypeError(`${failed.length} task${failed.length === 1 ? "" : "s"} never launched (${names}). Relaunch each one, or skip it, before Companion can build the combined pull request`);
     }
     if (pending.length) {
+      // A reviewer whose verdict just landed is finished even while the goal
+      // waits on its siblings, and the policy closes nothing unfinished.
+      if (plan.burst === true) await this.#retireSessions(plan.planId);
       const message = pendingMessage(plan, pending);
       if (automatic) throw new TasksNotReadyError(message);
       throw new TypeError(message);

@@ -1,10 +1,18 @@
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
+import { identifier } from "./agent-brief.mjs";
 import { sessionEnv } from "./session-name.mjs";
 
 const SETTLED = new Set(["running", "pass", "blocked_twice"]);
 // The task id a goal session's single review files under.
 const GOAL_TASK = "goal";
+// A verdict is a sentence or two per finding. Anything past this is not a
+// verdict, whatever it is, and must not be parsed as one.
+const MAX_VERDICT_BYTES = 64 * 1024;
+
+// A reviewer must never open on a goal that ended. Automatic paths swallow
+// this error by name; see the integrator's TerminalGoalError for the twin.
+export class BurstReviewTerminalError extends TypeError {}
 
 // The extra reviewer a burst goal buys. One session per finished task, on the
 // task's own worktree, with the other provider. It writes a verdict file and
@@ -37,17 +45,44 @@ export class BurstReview {
     const round = (Number(task.burstReviewRound) || 0) + 1;
     const verdictPath = this.verdictPath(plan.planId, task.id, round);
     const brief = await this.briefs.write({ planId: plan.planId, taskId: `${task.id}-burst-review-${round}`, markdown: burstReviewPrompt(plan, task, verdictPath) });
-    const created = await this.cmux.workspaceCreate({
+    const workspaceId = await this.#createGuarded(plan.planId, {
       cwd: task.worktreePath,
       title: `Burst review ${round}: ${String(task.title || task.id).slice(0, 60)}`,
       ...this.modelSettings.workspace("codeReviewer", reviewerProvider(task.agent)),
       env: sessionEnv(plan, task),
       prompt: this.briefs.pointerPrompt({ title: `Burst review: ${task.title || task.id}`, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
     });
-    const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
-    if (!workspaceId) throw new TypeError("cmux created the review session but did not return its id");
     this.store.recordBurstReviewLaunched(plan.planId, task.id, { workspaceId, headSha: task.headSha || null });
     return true;
+  }
+
+  // The abort race, handled the way the merge session handles it: read the
+  // lifecycle right before cmux is asked, and again right after it answers. A
+  // session created in that gap is closed here, and its id is recorded first
+  // so a failed close is still the reaper's to finish after a restart.
+  async #createGuarded(planId, options) {
+    this.#assertNotTerminal(this.store.get(planId));
+    const created = await this.cmux.workspaceCreate(options);
+    const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
+    if (!workspaceId) throw new TypeError("cmux created the review session but did not return its id");
+    try { this.#assertNotTerminal(this.store.get(planId)); }
+    catch (cause) {
+      try { this.store.recordMergeCleanupRequired(planId, workspaceId); }
+      catch (recordError) { cause.message += `; cleanup identity could not be saved: ${recordError.message}`; }
+      try { await this.cmux.workspaceClose?.(workspaceId); }
+      catch (closeError) {
+        this.log?.warn?.({ err: closeError, planId, workspaceId }, "cancelled burst review session needs cleanup");
+        cause.message += `; session ${workspaceId} still needs cleanup: ${closeError.message}`;
+      }
+      throw cause;
+    }
+    return workspaceId;
+  }
+
+  #assertNotTerminal(plan) {
+    if (!plan) throw new BurstReviewTerminalError("The goal could not be read. Retry before creating a review session");
+    if (plan.boardStatus === "aborted") throw new BurstReviewTerminalError("This goal was aborted, so no burst review will be opened for it");
+    if (plan.boardStatus === "merged") throw new BurstReviewTerminalError("This goal is already merged, so no burst review will be opened for it");
   }
 
   // The goal-session counterpart of reviewTask: one reviewer on the goal's own
@@ -65,15 +100,13 @@ export class BurstReview {
       const verdictPath = this.verdictPath(plan.planId, GOAL_TASK, 1);
       const task = { id: GOAL_TASK, title: plan.goal, branch: plan.goalSessionBranch, criterionIds: (plan.spec?.acceptanceCriteria || []).map((criterion) => criterion.id), ownedAreas: [] };
       const brief = await this.briefs.write({ planId: plan.planId, taskId: `${GOAL_TASK}-burst-review-1`, markdown: burstReviewPrompt(plan, task, verdictPath) });
-      const created = await this.cmux.workspaceCreate({
+      const workspaceId = await this.#createGuarded(plan.planId, {
         cwd: plan.goalSessionWorktreePath,
         title: `Burst review: ${String(plan.goal).slice(0, 60)}`,
         ...this.modelSettings.workspace("codeReviewer", provider),
         env: sessionEnv(plan, null),
         prompt: this.briefs.pointerPrompt({ title: `Burst review: ${plan.goal}`, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
       });
-      const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
-      if (!workspaceId) throw new TypeError("cmux created the review session but did not return its id");
       this.store.recordReviewLaunched(plan.planId, { workspaceId, agent: provider, briefPath: brief.path });
       return true;
     } catch (cause) {
@@ -124,15 +157,18 @@ export class BurstReview {
     return true;
   }
 
+  // The same sanitiser the brief file goes through, so the verdict always
+  // sits beside its brief and never outside the briefs directory.
   verdictPath(planId, taskId, round) {
-    return join(this.briefs.directory, `${planId}-${taskId}-burst-review-${round}.json`);
+    return join(this.briefs.directory, `${identifier(planId, "planId")}-${identifier(taskId, "taskId")}-burst-review-${Math.max(1, Number(round) || 1)}.json`);
   }
 
   async #readVerdict(path) {
     let raw;
-    try { raw = await readFile(path, "utf8"); }
+    try { raw = await readCapped(path, MAX_VERDICT_BYTES); }
     catch { return { verdict: "block", findings: ["The reviewer stopped without writing a verdict file; no verdict file was found"] }; }
     try {
+      if (raw === null) throw new Error(`the file is larger than ${MAX_VERDICT_BYTES} bytes`);
       const value = JSON.parse(raw);
       if (value?.verdict !== "pass" && value?.verdict !== "block") throw new Error("verdict must be pass or block");
       const findings = Array.isArray(value.findings) ? value.findings.map((item) => String(item || "").trim()).filter(Boolean) : [];
@@ -140,6 +176,18 @@ export class BurstReview {
     } catch (cause) {
       return { verdict: "block", findings: [`The verdict file is malformed: ${String(cause?.message || cause).slice(0, 200)}`] };
     }
+  }
+}
+
+// Reads at most `limit` bytes; null when the file holds more than that.
+async function readCapped(path, limit) {
+  const handle = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(limit + 1);
+    const { bytesRead } = await handle.read(buffer, 0, limit + 1, 0);
+    return bytesRead > limit ? null : buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    await handle.close();
   }
 }
 

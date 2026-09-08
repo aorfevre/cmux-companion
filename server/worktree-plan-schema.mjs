@@ -260,4 +260,5 @@ function migratePlanSchema(db) {
     ensure("plan_tasks", "burst_review_workspace_id", "TEXT");
     ensure("plan_tasks", "burst_review_findings", "TEXT NOT NULL DEFAULT '[]'");
     ensure("plan_tasks", "burst_review_head_sha", "TEXT");
+    ensure("plan_tasks", "burst_review_session_closed_at", "TEXT");
 }

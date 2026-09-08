@@ -20,6 +20,9 @@ import { agentBusyState } from "./goal-health.mjs";
 // The sessions one goal can own. `merge` is the session the plan currently
 // points at; `superseded` is a merge session a newer merge agent replaced.
 const MERGE_TITLE = "Goal merge";
+const REVIEW_TITLE = "Burst review";
+// A reviewer that has delivered its verdict has nothing left to say.
+const REVIEW_DONE = new Set(["pass", "block", "blocked_twice"]);
 const SUPERSEDED_TITLE = "Goal merge (replaced)";
 
 // The one policy. It calls nothing, so a caller can ask what would happen
@@ -55,6 +58,12 @@ export function retirableSessions(plan, live = { available: false, byId: new Map
   for (const entry of candidates) {
     if (plan?.workflow === "goal_session" && !terminal && entry.workspaceId === plan.goalSessionWorkspaceId) {
       keep.push(kept(entry, "The goal conversation stays open for review and corrections"));
+      continue;
+    }
+    // A reviewer still reading is finished by its verdict, not by the pull
+    // request, so an open pull request must not retire it.
+    if (entry.kind === "review" && !terminal && !REVIEW_DONE.has(entry.reviewStatus)) {
+      keep.push(kept(entry, "This burst reviewer has not delivered its verdict"));
       continue;
     }
     if (!terminal && !prOpen && !finishedWithoutPullRequest(entry)) {
@@ -290,6 +299,18 @@ function ownedSessions(plan) {
       deliveryStatus: text(task?.deliveryStatus) || "pending",
     });
   }
+  for (const task of Array.isArray(plan?.tasks) ? plan.tasks : []) {
+    const workspaceId = text(task?.burstReviewWorkspaceId);
+    if (!workspaceId || task?.burstReviewSessionClosedAt) continue;
+    sessions.push({
+      workspaceId,
+      taskId: text(task?.id) || null,
+      kind: "review",
+      title: `${REVIEW_TITLE}: ${text(task?.title) || workspaceId}`,
+      deliveryStatus: null,
+      reviewStatus: text(task?.burstReviewStatus) || null,
+    });
+  }
   if (plan?.workflow === "goal_session" && !isTerminal(plan) && plan.goalSessionWorkspaceId && !sessions.some((entry) => entry.workspaceId === plan.goalSessionWorkspaceId)) {
     sessions.push({ workspaceId: plan.goalSessionWorkspaceId, taskId: null, kind: "goal", title: plan.goal || "Goal", deliveryStatus: "pending" });
   }
@@ -326,11 +347,14 @@ function hasOpenPullRequest(plan) {
 // What a session may be retired for while the goal is still being assembled.
 // Both are proven finished by their own state, whatever the pull request says.
 function finishedWithoutPullRequest(entry) {
-  return entry.kind === "superseded" || (entry.kind === "task" && entry.deliveryStatus === "integrated");
+  return entry.kind === "superseded"
+    || (entry.kind === "task" && entry.deliveryStatus === "integrated")
+    || (entry.kind === "review" && REVIEW_DONE.has(entry.reviewStatus));
 }
 
 function closeReason(entry, { terminal, prOpen, plan }) {
   if (entry.kind === "superseded") return "A newer merge agent replaced this session";
+  if (entry.kind === "review" && !terminal) return "This burst reviewer delivered its verdict";
   if (terminal) return plan?.boardStatus === "aborted" ? "This goal was aborted" : "This goal is merged";
   if (entry.kind === "task" && entry.deliveryStatus === "integrated") return "This task is merged into the goal branch";
   return prOpen ? "This goal's pull request is open, so this task's work is delivered" : "This session has no work left";

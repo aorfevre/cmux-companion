@@ -995,6 +995,20 @@ test("abort closes every distinct task and merge session exactly once", async (t
   assert.equal(new Set(closed).size, closed.length, "no session id may be closed twice");
 });
 
+test("abort closes a burst reviewer that is still reading", async (t) => {
+  const { store, planner, deps } = launchablePlanner();
+  t.after(() => store.close());
+  const closed = [];
+  deps.cmux.workspaceClose = async (id) => { closed.push(id); };
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  const taskId = store.get(draft.planId).tasks[0].id;
+  store.recordBurstReviewLaunched(draft.planId, taskId, { workspaceId: "review-1" });
+  const result = await planner.abort(draft.planId);
+  assert.deepEqual(closed.slice().sort(), ["review-1", "ws-1"]);
+  assert.deepEqual(result.closedSessionIds.slice().sort(), ["review-1", "ws-1"]);
+});
+
 test("abort reports the sessions cmux refused to close", async (t) => {
   const { store, planner, deps } = launchablePlanner();
   t.after(() => store.close());
