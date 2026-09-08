@@ -3,7 +3,7 @@
 // module has no storage, no network, and no Node built-ins because both
 // runtimes import it directly.
 
-export const GOAL_FOLLOWUP_COLUMN_STATE = "waiting_for_merge";
+export const GOAL_FOLLOWUP_COLUMN_STATE = "in_review";
 
 export const GOAL_FOLLOWUP_ACTIONS = Object.freeze([
   Object.freeze({

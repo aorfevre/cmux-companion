@@ -268,7 +268,7 @@ test("the launching marker is reported while the launch runs and dropped once it
   // must not read as a plan that is being written.
   assert.equal(listed.running, false);
   assert.equal(listed.runStage, null);
-  assert.notEqual(listed.boardState, "writing_spec");
+  assert.notEqual(listed.boardState, "discovering");
   assert.equal((await planner.detail(draft.planId)).launching, true);
 
   release();

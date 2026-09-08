@@ -117,7 +117,7 @@ test("coding sessions do not expose or permit report publication", (t) => {
 
 test("planner reviews run independently, gate only completion and cannot approve for the user", async (t) => {
   const { store, worktrees, publish, approve, get } = setup(t, { reviewer: true });
-  publish(); assert.equal(get().reviews[0].status, "queued"); assert.equal(goalBoardState(get()), "review_spec");
+  publish(); assert.equal(get().reviews[0].status, "queued"); assert.equal(goalBoardState(get()), "discovering");
   assert.throws(approve, /Wait for planner review/);
   let calls = 0;
   const reviews = new GoalReviews({ store, worktrees, execute: async (bin, args, options) => {

@@ -5,6 +5,7 @@ import { normalizeSpecOptions } from "./spec-options.mjs";
 import { normalizeReviewOptions } from "./review-options.mjs";
 import { normalizeGoalType, applicableSpecOptions, NEW_GOAL_SPEC_OPTIONS, NEW_GOAL_REVIEWER, NEW_GOAL_REVIEW_OPTIONS } from "./goal-options.mjs";
 import { MAX_GOAL_TEXT } from "./goal-limits.mjs";
+import { normalizeIntake } from "./goal-intake.mjs";
 
 // Owns every new discovery conversation. Historical delivery recovery remains
 // separate; continuing unlaunched discovery creates one durable successor.
@@ -15,8 +16,9 @@ export class GoalSessionService {
     this.processAlive = processAlive; this.stopGoal = stopGoal;
   }
 
-  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, burst = false, idempotencyKey = null, issueNumbers = [], issueUrls = [], discoveryContext = null, goalType = "coding", sourceAnalysis = null } = {}) {
+  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, burst = false, idempotencyKey = null, issueNumbers = [], issueUrls = [], discoveryContext = null, goalType = "coding", sourceAnalysis = null, intake = null } = {}) {
     const type = normalizeGoalType(goalType);
+    const answers = normalizeIntake(intake);
     const text = String(goal || "").trim();
     if (!text || text.length > MAX_GOAL_TEXT) throw new TypeError("Describe the goal for this repository");
     const repository = await this.worktrees.resolveRepository(repositoryId);
@@ -34,12 +36,12 @@ export class GoalSessionService {
     const burstOn = normalizeBurst(burst);
     const existing = this.store.get(planId);
     if (existing) {
-      if (existing.burst !== burstOn || existing.workflow !== "goal_session" || existing.goalType !== type || !same(existing.sourceAnalysis, sourceAnalysis) || existing.repositoryId !== repository.id || existing.goal !== text || !same(existing.issueNumbers, linkedIssues) || !same(existing.issueUrls, linkedUrls) || !same(existing.images, attachments) || !same(existing.engine, selectedEngine) || !same(existing.specOptions, selectedOptions) || !same(existing.reviewOptions, selectedReview)) throw new TypeError("This goal-session request key belongs to a different goal");
+      if (existing.burst !== burstOn || !same(existing.intake, answers) || existing.workflow !== "goal_session" || existing.goalType !== type || !same(existing.sourceAnalysis, sourceAnalysis) || existing.repositoryId !== repository.id || existing.goal !== text || !same(existing.issueNumbers, linkedIssues) || !same(existing.issueUrls, linkedUrls) || !same(existing.images, attachments) || !same(existing.engine, selectedEngine) || !same(existing.specOptions, selectedOptions) || !same(existing.reviewOptions, selectedReview)) throw new TypeError("This goal-session request key belongs to a different goal");
       return existing;
     }
     this.store.createPlan({ planId, repositoryId: repository.id, repositoryName: repository.name, cwd: repository.primaryPath, goal: text, images: attachments,
       goalType: type, sourceAnalysis, burst: burstOn, engine: selectedEngine, specOptions: selectedOptions, reviewOptions: selectedReview,
-      sourceType: linkedIssues.length ? "github_issues" : null, issueNumbers: linkedIssues, issueUrls: linkedUrls, discoveryContext });
+      sourceType: linkedIssues.length ? "github_issues" : null, issueNumbers: linkedIssues, issueUrls: linkedUrls, discoveryContext, intake: answers });
     const branch = `goal-session/${planId.slice(0, 12)}`;
     this.store.reserveGoalSession(planId, { branch, generation: 1 });
     try {

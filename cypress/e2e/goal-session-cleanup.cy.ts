@@ -19,7 +19,7 @@ const plan = {
   taskCount: 2, launchedCount: 2, readyCount: 2, agentSplit: { claude: 1, codex: 1 },
   workspaceIds: ["ws-t1", "ws-t2", "ws-merge"], deliveryStatus: "pr_open",
   boardPrState: "OPEN", boardPrNumber: 12, boardPrUrl: "https://github.test/pull/12",
-  boardState: "waiting_for_merge", createdAt: now, updatedAt: now, launchedAt: now,
+  boardState: "in_review", createdAt: now, updatedAt: now, launchedAt: now,
 };
 
 const closedTask = (id: string, taskId: string, title: string) => ({
@@ -81,7 +81,7 @@ function installScenario(state: Scenario) {
 }
 
 function visitBoard() {
-  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
+  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); window.localStorage.setItem("cmux-companion-read-only", "false"); } });
   cy.wait(["@dashboard", "@plans", "@health", "@retirable"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
 }

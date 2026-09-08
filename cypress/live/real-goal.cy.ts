@@ -29,7 +29,7 @@ function refreshGoal(planId: string, wanted: string[], attempts = 120): Cypress.
     .then(({ body }) => {
       const plan = (body.plans || []).find((item: Json) => item.planId === planId);
       if (plan && wanted.includes(plan.boardState)) return plan;
-      if (plan?.boardState === "blocked") throw new Error(`Real goal became blocked: ${plan.healthReason || plan.deliveryError || "no detail"}`);
+      if (plan?.boardState === "stopped") throw new Error(`Real goal became blocked: ${plan.healthReason || plan.deliveryError || "no detail"}`);
       return cy.wait(10_000).then(() => refreshGoal(planId, wanted, attempts - 1));
     });
 }
@@ -39,7 +39,7 @@ function waitForPullRequest(planId: string, attempts = 120): Cypress.Chainable<J
   return cy.request<Json>("/api/worktree-plans?status=all&limit=200&health=1")
     .then(({ body }) => {
       const plan = (body.plans || []).find((item: Json) => item.planId === planId);
-      if (plan?.boardState === "blocked") throw new Error(`Real goal became blocked: ${plan.healthReason || plan.deliveryError || "no detail"}`);
+      if (plan?.boardState === "stopped") throw new Error(`Real goal became blocked: ${plan.healthReason || plan.deliveryError || "no detail"}`);
       if (/^https:\/\/github\.com\/aorfevre\/cmux-e2e-cypress\/pull\/\d+$/.test(plan?.boardPrUrl || "")) return plan;
       return cy.wait(10_000).then(() => waitForPullRequest(planId, attempts - 1));
     });
@@ -51,7 +51,7 @@ function refreshMergedGoal(planId: string, attempts = 60): Cypress.Chainable<Jso
     .then(() => cy.request<Json>("/api/worktree-plans?status=all&limit=200&health=1"))
     .then(({ body }) => {
       const plan = (body.plans || []).find((item: Json) => item.planId === planId);
-      if (plan?.boardState === "merged") return plan;
+      if (plan?.boardState === "shipped") return plan;
       return cy.wait(5_000).then(() => refreshMergedGoal(planId, attempts - 1));
     });
 }
@@ -115,7 +115,7 @@ describe("real local goal lifecycle", { testIsolation: false }, () => {
     }).then(({ body }) => {
       activePlanId = body.planId;
       cy.visit("/?mode=worktrees");
-      assertCardInColumn("Writing Spec");
+      assertCardInColumn("Discovering");
       return waitForPlan(body.planId);
     }).then((draft) => {
       expect(draft.tasks, "planner task count").to.have.length(taskCount);
@@ -123,7 +123,7 @@ describe("real local goal lifecycle", { testIsolation: false }, () => {
       return cy.request<Json>("PATCH", `/api/worktree-plans/${encodeURIComponent(draft.planId)}`, { tasks });
     }).then(({ body: draft }) => {
       cy.reload();
-      assertCardInColumn("Waiting for dev");
+      assertCardInColumn("Needs you");
       return cy.request<Json>("POST", `/api/worktree-plans/${encodeURIComponent(draft.planId)}/launch`, {}).then(({ body }) => ({ draft, launch: body }));
     }).then(({ draft, launch }) => {
       expect(launch.launched, "real cmux sessions launched").to.equal(taskCount);
@@ -133,18 +133,18 @@ describe("real local goal lifecycle", { testIsolation: false }, () => {
         const live = new Set(workspaces.map((item) => item.id));
         for (const id of workspaceIds) expect(live.has(id), `workspace ${id} exists directly in cmux`).to.equal(true);
         cy.reload();
-        assertCardInColumn("Dev in progress");
-        return refreshGoal(draft.planId, ["waiting_for_merge"]).then(() => waitForPullRequest(draft.planId));
+        assertCardInColumn("Building");
+        return refreshGoal(draft.planId, ["in_review"]).then(() => waitForPullRequest(draft.planId));
       });
     }).then((plan) => {
       expect(plan.boardPrUrl, "goal pull request").to.match(/^https:\/\/github\.com\/aorfevre\/cmux-e2e-cypress\/pull\/\d+$/);
       cy.reload();
-      assertCardInColumn("Waiting for merge");
+      assertCardInColumn("In review");
       return cy.task("mergeFixturePullRequest", { url: plan.boardPrUrl, runId }).then(() => refreshMergedGoal(plan.planId));
     }).then((plan) => {
       reachedMerged = true;
       cy.reload();
-      assertCardInColumn("Merged");
+      assertCardInColumn("Shipped");
       cy.log(`Real goal ${plan.planId} traversed the Kanban and merged its fixture pull request`);
     });
   });

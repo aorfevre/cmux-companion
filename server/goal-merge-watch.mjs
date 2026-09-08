@@ -11,7 +11,7 @@
 const PREFERENCE = { MERGED: 3, OPEN: 2, CLOSED: 1 };
 
 export class GoalMergeWatch {
-  constructor({ store, worktrees, sessionCollector = null, worktreeCleanup = null, burstReview = null, log = null } = {}) {
+  constructor({ store, worktrees, sessionCollector = null, worktreeCleanup = null, burstReview = null, verification = null, log = null } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     this.store = store;
@@ -22,6 +22,9 @@ export class GoalMergeWatch {
     // Asked once per open pull request on every pass; it decides for itself
     // whether the goal is a burst goal and whether a reviewer already runs.
     this.burstReview = burstReview;
+    // Asked once per open pull request on every pass; it runs the contract's
+    // declared check once per head commit and records the result on the plan.
+    this.verification = verification;
   }
 
   #plans() {
@@ -99,6 +102,8 @@ export class GoalMergeWatch {
       if (match.state === "OPEN") {
         Promise.resolve().then(() => this.burstReview?.reviewGoal?.(plan.planId))
           .catch((cause) => this.log?.warn?.({ err: cause, planId: plan.planId }, "burst goal review could not start"));
+        Promise.resolve().then(() => this.verification?.verify?.(plan.planId))
+          .catch((cause) => this.log?.warn?.({ err: cause, planId: plan.planId }, "goal verification could not run"));
       }
     }
     return { recorded };

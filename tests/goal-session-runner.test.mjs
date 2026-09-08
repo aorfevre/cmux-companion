@@ -44,7 +44,7 @@ test("native CLI owns the terminal and resumes the same conversation without env
   child.emit("exit", 0, null); await run;
   assert.equal(get().goalSessionRunnerPid, null);
   assert.equal(get().goalSessionError, null);
-  assert.equal(goalBoardState(get()), "writing_spec");
+  assert.equal(goalBoardState(get()), "discovering");
 });
 
 test("fresh session identity is durable on spawn, and native failure preserves discovery", async (t) => {
@@ -59,7 +59,7 @@ test("fresh session identity is durable on spawn, and native failure preserves d
   assert.equal(args.at(-2), "--");
   child.emit("exit", 1, null); await run;
   assert.equal(get().goalSessionError, null);
-  assert.equal(goalBoardState(get()), "writing_spec");
+  assert.equal(goalBoardState(get()), "discovering");
 });
 
 test("spawn failure releases ownership without inventing a provider session or blocking the goal", async (t) => {
@@ -71,7 +71,7 @@ test("spawn failure releases ownership without inventing a provider session or b
   await assert.rejects(run, /ccs missing/);
   assert.equal(get().goalSessionProviderSessionId, null);
   assert.equal(get().goalSessionRunnerPid, null);
-  assert.equal(goalBoardState(get()), "writing_spec");
+  assert.equal(goalBoardState(get()), "discovering");
 });
 
 test("command config binds mandatory approval hooks and only the dedicated MCP server", (t) => {
@@ -94,7 +94,7 @@ test("questions and reading stay interactive; no tool permission mode bypasses u
   const { hook, get } = setup(t);
   for (const tool of ["Read", "Grep", "Glob", "AskUserQuestion", "mcp__companion_goal__get_status"]) assert.deepEqual(hook(tool), {});
   for (const tool of ["Bash", "Write", "Edit", "ExitPlanMode", "Agent", "mcp__other__run"]) assert.equal(hook(tool).hookSpecificOutput.permissionDecision, "deny");
-  assert.equal(goalBoardState(get()), "writing_spec");
+  assert.equal(goalBoardState(get()), "discovering");
 });
 
 test("validated publication makes review ready; stale or invalid proposals stay in the conversation", (t) => {
@@ -199,6 +199,6 @@ test("CLI modes that disable approval hooks cannot start a native agent", async 
   for (const flag of ["CLAUDE_CODE_SAFE_MODE", "CLAUDE_CODE_SIMPLE"]) {
     await assert.rejects(runInteractiveGoalSession({ ...binding, databasePath, out: () => {}, env: { [flag]: "1" }, spawnAgent: () => assert.fail("must not spawn without hooks") }), /require approval hooks/);
     assert.equal(get().goalSessionRunnerPid, null);
-    assert.equal(goalBoardState(get()), "writing_spec");
+    assert.equal(goalBoardState(get()), "discovering");
   }
 });

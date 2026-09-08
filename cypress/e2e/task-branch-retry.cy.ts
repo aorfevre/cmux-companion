@@ -12,7 +12,7 @@ const tasks = [
   { id: "T1 / blocked", title: "Blocked task", branch: "feature/blocked", agent: "codex", prompt: "Build", agentReason: "", wave: 1, launchStatus: "failed", launchReason: "running-session", launchError: "That branch already has a worktree with a running session", deliveryStatus: "pending", health: "failed", reason: "Branch is occupied", session: null, workspaceId: null },
   { id: "T2", title: "Sync failure", branch: "feature/sync", agent: "codex", prompt: "Build", agentReason: "", wave: 1, launchStatus: "failed", launchReason: "add-failure", deliveryStatus: "pending", health: "failed", reason: "Project sync failed", session: null, workspaceId: null },
 ];
-const plan = { planId: "goal-retry", repositoryId: repository.id, repositoryName: repository.name, goal: "Recover blocked work", status: "launched", planStatus: "launched", stage: "ready", deliveryMode: "combined", deliveryStatus: "blocked", boardState: "blocked", round: 1, taskCount: 2, launchedCount: 0, createdAt: now, updatedAt: now, launchedAt: now, tasks, questions: [] };
+const plan = { planId: "goal-retry", repositoryId: repository.id, repositoryName: repository.name, goal: "Recover blocked work", status: "launched", planStatus: "launched", stage: "ready", deliveryMode: "combined", deliveryStatus: "blocked", boardState: "stopped", round: 1, taskCount: 2, launchedCount: 0, createdAt: now, updatedAt: now, launchedAt: now, tasks, questions: [] };
 
 describe("retry a blocked task on a fresh branch", () => {
   it("preserves the blocked branch, disables competing actions, and refreshes the effective branch", () => {
@@ -40,7 +40,7 @@ describe("retry a blocked task on a fresh branch", () => {
       expect(request.body).to.deep.equal({ mode: "rebranch", closeLive: false });
       return new Promise<void>((resolve) => { release = () => { refreshed = true; request.reply({ branch: "feature/retry-2" }); resolve(); }; });
     }).as("rebranch");
-    cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
+    cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); window.localStorage.setItem("cmux-companion-read-only", "false"); } });
     cy.wait(["@dashboard", "@plans", "@health"]);
     cy.findByRole("button", { name: "1 stuck goals. Show the tasks that need you" }).click();
     cy.findByRole("region", { name: "Goals needing attention" }).should("have.focus").within(() => {

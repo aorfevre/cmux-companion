@@ -142,24 +142,28 @@ export class GoalWatchdog {
   // Returns true only when a device actually received the alert. With no push
   // service at all it returns true: there is nothing to retry, and retrying
   // every tick forever would be worse than reporting once.
-  // Managed goal questions do not originate from a native cmux inbox card.
-  // The runner records them in SQLite, and this existing attention channel
-  // wakes a closed phone once without inferring any approval from the text.
+  // Managed goal sessions do not originate from a native cmux inbox card. The
+  // runner records their state in SQLite, and this existing attention channel
+  // wakes a closed phone once per event without inferring any approval from
+  // the text. Two events wait on the person: a question, and a published
+  // contract. The contract is the one that blocks every later step, so it is
+  // alerted the tick it appears and again for every new revision.
   async #managedInputAlerts() {
     const plans = this.store?.list?.({ limit: 200 }) || [];
     const alerts = [];
     const active = new Set();
+    this.managedInputAlerted ||= new Set();
     for (const plan of plans) {
-      if (plan?.workflow !== "goal_session" || plan?.goalSessionState !== "awaiting_input" || plan?.boardStatus) continue;
-      const key = `managed-input:${plan.planId}`;
-      active.add(key);
-      if (this.managedInputAlerted?.has(key)) continue;
-      const delivered = await this.#push({ planId: plan.planId, goal: plan.goal, tasks: [] }, { kind: "attention", label: "needs your answer" });
-      if (!this.managedInputAlerted) this.managedInputAlerted = new Set();
-      if (delivered) this.managedInputAlerted.add(key);
+      if (plan?.workflow !== "goal_session" || plan?.boardStatus) continue;
+      const event = managedInputEvent(plan);
+      if (!event) continue;
+      active.add(event.key);
+      if (this.managedInputAlerted.has(event.key)) continue;
+      const delivered = await this.#push({ planId: plan.planId, goal: plan.goal, tasks: [], reason: event.reason(this.store) }, event.rule);
+      if (delivered) this.managedInputAlerted.add(event.key);
       alerts.push({ planId: plan.planId, health: "needs_you", goal: plan.goal, stuckCount: 1, delivered });
     }
-    for (const key of this.managedInputAlerted || []) if (!active.has(key)) this.managedInputAlerted.delete(key);
+    for (const key of this.managedInputAlerted) if (!active.has(key)) this.managedInputAlerted.delete(key);
     return alerts;
   }
 
@@ -191,9 +195,9 @@ export class GoalWatchdog {
   async #push(goal, rule) {
     if (!this.pushService?.send) return true;
     try {
-      const reason = firstReason(goal);
+      const reason = goal.reason || firstReason(goal);
       const result = await this.pushService.send({
-        title: `A goal ${rule.label}`,
+        title: rule.title || `A goal ${rule.label}`,
         body: [oneLine(goal.goal, 120), reason ? oneLine(reason, 140) : ""].filter(Boolean).join(" — "),
         kind: rule.kind,
         planId: goal.planId,
@@ -207,4 +211,23 @@ export class GoalWatchdog {
       return false;
     }
   }
+}
+
+// Which managed event waits on the person, keyed so one revision alerts once.
+// The contract text lives on the plan detail, not the list summary, so its
+// outcome line is read only when an alert is actually sent.
+function managedInputEvent(plan) {
+  if (plan.goalSessionState === "awaiting_input") {
+    return { key: `managed-input:${plan.planId}:${plan.goalSessionQuestionRevision || 0}`, rule: { kind: "attention", label: "needs your answer" }, reason: () => "" };
+  }
+  if (plan.goalSessionState === "awaiting_approval") {
+    return {
+      key: `managed-approval:${plan.planId}:${plan.proposalRevision || 0}`,
+      rule: { kind: "attention", label: "is ready to approve", title: "A contract is ready to approve" },
+      reason: (store) => {
+        try { return String(store?.get?.(plan.planId)?.proposal?.intendedBehavior || ""); } catch { return ""; }
+      },
+    };
+  }
+  return null;
 }

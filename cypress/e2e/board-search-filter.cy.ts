@@ -24,7 +24,7 @@ const issues = [
 const goalPlan = {
   planId: "plan-search", repositoryId: starred.id, repositoryName: starred.name, goal: "Ship the caret rewrite",
   status: "draft", stage: "ready", round: 1, taskCount: 1, createdAt: now, updatedAt: now, launchedAt: null,
-  boardState: "waiting_for_dev",
+  boardState: "needs_you",
 };
 
 function installBoard() {
@@ -79,14 +79,14 @@ describe("the board search filters the GitHub Issues column", () => {
     });
 
     // The same query narrows a goal column too, and clearing restores both.
-    cy.findByRole("region", { name: "Waiting for dev" }).should("contain.text", "Ship the caret rewrite");
+    cy.findByRole("region", { name: "Needs you" }).should("contain.text", "Ship the caret rewrite");
     search().clear().type("indexer");
     issueColumn().findByLabelText("1 issue in GitHub Issues").should("exist");
-    cy.findByRole("region", { name: "Waiting for dev" }).should("not.contain.text", "Ship the caret rewrite");
+    cy.findByRole("region", { name: "Needs you" }).should("not.contain.text", "Ship the caret rewrite");
 
     cy.findByRole("button", { name: "Clear the project search" }).click();
     issueColumn().findByLabelText("3 issues in GitHub Issues").should("exist");
-    cy.findByRole("region", { name: "Waiting for dev" }).should("contain.text", "Ship the caret rewrite");
+    cy.findByRole("region", { name: "Needs you" }).should("contain.text", "Ship the caret rewrite");
   });
 
   it("matches a label and an issue number typed with or without the hash", () => {

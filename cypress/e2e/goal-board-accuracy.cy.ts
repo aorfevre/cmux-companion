@@ -25,7 +25,7 @@ function plan(id: string, goal: string, count: number, overrides: Record<string,
     planId: id, repositoryId: "repo-e2e", repositoryName: "cmux-e2e-cypress", goal,
     status: "launched", stage: "ready", round: 1, taskCount: count, launchedCount: count, readyCount: 0,
     agentSplit: { claude: count === 2 ? 1 : 0, codex: 1 }, workspaceIds: [] as string[], deliveryStatus: "implementing",
-    boardState: "dev_in_progress", createdAt: now, updatedAt: now, launchedAt: now,
+    boardState: "building", createdAt: now, updatedAt: now, launchedAt: now,
     ...overrides,
   };
 }
@@ -75,10 +75,10 @@ function installScenario(state: Scenario) {
 }
 
 function visitBoard() {
-  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
+  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); window.localStorage.setItem("cmux-companion-read-only", "false"); } });
   cy.wait(["@dashboard", "@plans", "@health"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
-  cy.findByRole("button", { name: "Expand Blocked" }).click();
+  cy.findByRole("button", { name: "Expand Stopped" }).click();
 }
 
 describe("goal board matches live cmux evidence", () => {
@@ -163,7 +163,7 @@ describe("goal board matches live cmux evidence", () => {
 
   it("removes a repaired launch failure when the recovered goal resumes integration", () => {
     const source = plan("goal-recovered", "Recover existing task work", 1, {
-      launchedCount: 0, health: "failed", boardState: "blocked", stuckCount: 1,
+      launchedCount: 0, health: "failed", boardState: "stopped", stuckCount: 1,
       healthReason: "That branch already has a worktree with a running session",
     });
     const state: Scenario = { plans: [source], goals: [healthGoal(source, [
@@ -171,8 +171,8 @@ describe("goal board matches live cmux evidence", () => {
     ], { health: "failed", stuckCount: 1 })], liveSessions: 1 };
     installScenario(state);
     visitBoard();
-    cy.findByRole("region", { name: "Blocked" }).should("contain.text", "Recover existing task work");
-    const recovered = { ...source, launchedCount: 1, readyCount: 1, health: "working", boardState: "dev_in_progress", stuckCount: 0,
+    cy.findByRole("region", { name: "Stopped" }).should("contain.text", "Recover existing task work");
+    const recovered = { ...source, launchedCount: 1, readyCount: 1, health: "working", boardState: "building", stuckCount: 0,
       healthReason: "The merge agent is running", deliveryStatus: "assembling", mergeStatus: "running", mergeWorkspaceId: "merge-recovered" };
     cy.then(() => {
       state.plans = [recovered];
@@ -184,34 +184,34 @@ describe("goal board matches live cmux evidence", () => {
     cy.openBoardTools();
     cy.findByRole("button", { name: "Refresh GitHub" }).click();
     cy.wait("@plans");
-    cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", "Recover existing task work");
-    cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", "Recover existing task work");
+    cy.findByRole("region", { name: "Stopped" }).should("not.contain.text", "Recover existing task work");
+    cy.findByRole("region", { name: "Building" }).should("contain.text", "Recover existing task work");
     cy.contains("That branch already has a worktree with a running session").should("not.exist");
   });
 
   it("clears a stale lock failure after the watchdog observes the delivery PR", () => {
     const source = plan("goal-lock", "Delivery recovered automatically", 1, {
-      health: "failed", boardState: "blocked", stuckCount: 1, deliveryStatus: "blocked", mergeStatus: "blocked",
+      health: "failed", boardState: "stopped", stuckCount: 1, deliveryStatus: "blocked", mergeStatus: "blocked",
       deliveryError: "Another worktree operation holds this lock", healthReason: "Another worktree operation holds this lock",
     });
     const state: Scenario = { plans: [source], goals: [healthGoal(source, [], { health: "failed", stuckCount: 1 })], liveSessions: 0 };
     installScenario(state);
     visitBoard();
-    cy.findByRole("region", { name: "Blocked" }).should("contain.text", source.goal);
+    cy.findByRole("region", { name: "Stopped" }).should("contain.text", source.goal);
     cy.then(() => {
-      state.plans = [{ ...source, health: "ready", boardState: "waiting_for_merge", stuckCount: 0,
+      state.plans = [{ ...source, health: "ready", boardState: "in_review", stuckCount: 0,
         deliveryStatus: "pr_open", mergeStatus: "done", deliveryError: null, healthReason: "The goal pull request is open",
         boardPrState: "OPEN", boardPrNumber: 73, boardPrUrl: "https://github.test/pull/73" }];
       state.goals = [];
     });
     cy.reload();
     cy.wait(["@plans", "@health"]);
-    cy.findByRole("region", { name: "Waiting for merge" }).should("contain.text", source.goal);
-    cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", source.goal);
+    cy.findByRole("region", { name: "In review" }).should("contain.text", source.goal);
+    cy.findByRole("region", { name: "Stopped" }).should("not.contain.text", source.goal);
     cy.contains("Another worktree operation holds this lock").should("not.exist");
   });
 
-  it("launches one multi-action follow-up from a Waiting for merge card", () => {
+  it("launches one multi-action follow-up from an In review card", () => {
     const goal = "Review the open delivery";
     const waitingMerge = plan("goal-followup", goal, 1, {
       readyCount: 1,
@@ -220,7 +220,7 @@ describe("goal board matches live cmux evidence", () => {
       boardPrState: "OPEN",
       boardPrNumber: 19,
       boardPrUrl: "https://github.test/pull/19",
-      boardState: "waiting_for_merge",
+      boardState: "in_review",
     });
     const state: Scenario = { plans: [waitingMerge], goals: [], liveSessions: 0 };
     installScenario(state);
@@ -230,7 +230,7 @@ describe("goal board matches live cmux evidence", () => {
     }).as("followup");
     visitBoard();
 
-    cy.findByRole("region", { name: "Waiting for merge" }).within(() => {
+    cy.findByRole("region", { name: "In review" }).within(() => {
       cy.findByRole("button", { name: `More actions for ${goal}` }).click();
     });
     cy.findByRole("dialog", { name: `More actions for ${goal}` }).within(() => {
@@ -248,7 +248,7 @@ describe("goal board matches live cmux evidence", () => {
 
   it("moves one goal through every successful Kanban column", () => {
     const goal = "Kanban lifecycle fixture";
-    const writing = plan("goal-kanban", goal, 0, { status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, running: true, runStage: "writing_spec", runStep: "Reading the repository…", boardState: "writing_spec" });
+    const writing = plan("goal-kanban", goal, 0, { status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, running: true, runStage: "writing_spec", runStep: "Reading the repository…", boardState: "discovering" });
     const state: Scenario = { plans: [writing], goals: [], liveSessions: 0 };
     installScenario(state);
     visitBoard();
@@ -261,30 +261,30 @@ describe("goal board matches live cmux evidence", () => {
       cy.wait("@plans");
     };
 
-    expectColumn("Writing Spec");
-    const review = { ...writing, running: true, runStage: "review_spec", runStep: "Reviewing the specification…", boardState: "review_spec" };
+    expectColumn("Discovering");
+    const review = { ...writing, running: true, runStage: "review_spec", runStep: "Reviewing the specification…", boardState: "discovering" };
     advance(review);
-    expectColumn("Review Spec");
+    expectColumn("Discovering");
 
-    const waiting = plan("goal-kanban", goal, 1, { status: "draft", stage: "ready", running: false, boardState: "waiting_for_dev" });
+    const waiting = plan("goal-kanban", goal, 1, { status: "draft", stage: "ready", running: false, boardState: "needs_you" });
     advance(waiting);
-    expectColumn("Waiting for dev");
+    expectColumn("Needs you");
 
     const session = { id: "ws-kanban", title: "E2E · Kanban lifecycle (kanb) · T1-code · Implement fixture", effective: "working" };
-    const developing = plan("goal-kanban", goal, 1, { workspaceIds: [session.id], health: "working", boardState: "dev_in_progress" });
+    const developing = plan("goal-kanban", goal, 1, { workspaceIds: [session.id], health: "working", boardState: "building" });
     advance(developing, [healthGoal(developing, [task("T1", "working", session)])], 1);
-    expectColumn("Dev in progress");
+    expectColumn("Building");
 
-    const waitingMerge = plan("goal-kanban", goal, 1, { workspaceIds: [], mergeWorkspaceId: null, readyCount: 1, health: "ready", deliveryStatus: "pr_open", boardPrState: "OPEN", boardPrNumber: 7, boardPrUrl: "https://github.test/pull/7", boardState: "waiting_for_merge" });
+    const waitingMerge = plan("goal-kanban", goal, 1, { workspaceIds: [], mergeWorkspaceId: null, readyCount: 1, health: "ready", deliveryStatus: "pr_open", boardPrState: "OPEN", boardPrNumber: 7, boardPrUrl: "https://github.test/pull/7", boardState: "in_review" });
     advance(waitingMerge, [healthGoal(waitingMerge, [task("T1", "ready", null)], { health: "ready", readyCount: 1 })], 0);
-    expectColumn("Waiting for merge");
+    expectColumn("In review");
     cy.findByLabelText("0 live cmux sessions").should("exist");
     cy.findByRole("button", { name: `Open ${goal} in cmux` }).should("not.exist");
 
-    const merged = { ...waitingMerge, health: null, boardStatus: "merged", boardPrState: "MERGED", boardState: "merged" };
+    const merged = { ...waitingMerge, health: null, boardStatus: "merged", boardPrState: "MERGED", boardState: "shipped" };
     advance(merged);
-    cy.findByRole("button", { name: "Expand Merged" }).click();
-    expectColumn("Merged");
+    cy.findByRole("button", { name: "Expand Shipped" }).click();
+    expectColumn("Shipped");
     cy.findAllByText(goal).should("have.length", 1);
   });
 
@@ -297,18 +297,18 @@ describe("goal board matches live cmux evidence", () => {
     installScenario(state);
     visitBoard();
 
-    cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", "One task lifecycle");
+    cy.findByRole("region", { name: "Building" }).should("contain.text", "One task lifecycle");
     cy.findByLabelText("1 live cmux sessions").should("exist");
     cy.findByLabelText("T1-code: Implement the fixture").should("exist");
 
     cy.then(() => {
       state.liveSessions = 0;
-      state.plans = [{ ...source, boardState: "blocked", health: "dead", healthReason: "This task session is no longer open in cmux", stuckCount: 1 }];
+      state.plans = [{ ...source, boardState: "stopped", health: "dead", healthReason: "This task session is no longer open in cmux", stuckCount: 1 }];
       state.goals = [healthGoal(source, [task("T1", "dead", null)], { health: "dead", stuckCount: 1 })];
     });
     cy.wait(10_500);
 
-    cy.findByRole("region", { name: "Blocked" }).should("contain.text", "One task lifecycle");
+    cy.findByRole("region", { name: "Stopped" }).should("contain.text", "One task lifecycle");
     cy.findByRole("button", { name: "1 stuck goals. Show the tasks that need you" }).should("exist");
     cy.findByRole("region", { name: "Goals needing attention" }).should("contain.text", "This task session is no longer open in cmux");
     cy.findByLabelText("0 live cmux sessions").should("exist");
@@ -320,7 +320,7 @@ describe("goal board matches live cmux evidence", () => {
     const mergeSession = { id: "ws-merge", title: "E2E · Two task merge lifecycle (two) · MERGE", effective: "todo" };
     const source = plan("goal-two", "Two task merge lifecycle", 2, {
       deliveryStatus: "blocked", deliveryError: "The merge agent stopped before opening the pull request", mergeStatus: "blocked", mergeWorkspaceId: mergeSession.id,
-      readyCount: 2, workspaceIds: [taskSession.id, mergeSession.id], health: "failed", healthReason: "The merge agent stopped before opening the pull request", boardState: "blocked", stuckCount: 1,
+      readyCount: 2, workspaceIds: [taskSession.id, mergeSession.id], health: "failed", healthReason: "The merge agent stopped before opening the pull request", boardState: "stopped", stuckCount: 1,
     });
     const tasks = [task("T1", "ready", taskSession), task("T2", "ready", null)];
     const merge = { id: "merge", kind: "merge", title: "Goal merge", workspaceId: mergeSession.id, health: "failed", reason: "The merge agent stopped before opening the pull request", session: { id: mergeSession.id, title: mergeSession.title, lastActivityAt: Date.parse(now), effective: "todo" }, observedHealth: "working" };
@@ -329,7 +329,7 @@ describe("goal board matches live cmux evidence", () => {
     cy.intercept("POST", "**/api/workspaces/ws-merge/select", { selected: true }).as("selectMerge");
     visitBoard();
 
-    cy.findByRole("region", { name: "Blocked" }).within(() => {
+    cy.findByRole("region", { name: "Stopped" }).within(() => {
       cy.contains("Two task merge lifecycle");
       cy.findByLabelText("2 of 2 launched tasks ready").should("exist");
       cy.contains("The merge agent stopped before opening the pull request");
@@ -351,7 +351,7 @@ describe("goal board matches live cmux evidence", () => {
       { id: "ws-first", title: "First agent", effective: "todo" },
       { id: "ws-second", title: "Second agent", effective: "todo" },
     ];
-    const source = plan("goal-attention", "Two waiting agents", 2, { boardState: "blocked", workspaceIds: sessions.map((session) => session.id) });
+    const source = plan("goal-attention", "Two waiting agents", 2, { boardState: "stopped", workspaceIds: sessions.map((session) => session.id) });
     const tasks = sessions.map((session, index) => task(`T${index + 1}`, "needs_you", session));
     installScenario({ plans: [source], goals: [healthGoal(source, tasks)], liveSessions: 2 });
     cy.intercept("POST", "**/api/workspaces/ws-first/select", { ok: true }).as("selectFirst");
@@ -374,7 +374,7 @@ describe("goal board matches live cmux evidence", () => {
     const mergeSession = { id: "ws-wave-merge", title: "E2E · Automatic dependency waves (wave) · MERGE", effective: "working" };
     const source = plan("goal-waves", "Automatic dependency waves", 4, {
       launchedCount: 2, readyCount: 2, deliveryStatus: "assembling", mergeStatus: "running", mergeWorkspaceId: mergeSession.id,
-      workspaceIds: [mergeSession.id], health: "working", boardState: "dev_in_progress",
+      workspaceIds: [mergeSession.id], health: "working", boardState: "building",
     });
     const waitingTasks = [
       task("T1", "ready", null),
@@ -390,7 +390,7 @@ describe("goal board matches live cmux evidence", () => {
     installScenario(state);
     visitBoard();
 
-    cy.findByRole("region", { name: "Dev in progress" }).within(() => {
+    cy.findByRole("region", { name: "Building" }).within(() => {
       cy.contains("Automatic dependency waves");
       cy.findByLabelText("2 of 2 launched tasks ready").should("exist");
       cy.contains("Agents are working on the launched tasks");
@@ -417,7 +417,7 @@ describe("goal board matches live cmux evidence", () => {
     cy.findByRole("button", { name: "Refresh GitHub" }).click();
     cy.wait("@plans");
 
-    cy.findByRole("region", { name: "Dev in progress" }).within(() => {
+    cy.findByRole("region", { name: "Building" }).within(() => {
       cy.contains("Automatic dependency waves");
       cy.findByLabelText("2 of 4 launched tasks ready").should("exist");
       // New shape: the mid-string task-part segment. Legacy shape: the
@@ -428,7 +428,7 @@ describe("goal board matches live cmux evidence", () => {
       cy.findByLabelText("T3: Continue workflow").should("not.exist");
       cy.findByLabelText("T4: Verify workflow").should("not.exist");
     });
-    cy.findByRole("region", { name: "Blocked" }).should("not.contain.text", "Automatic dependency waves");
+    cy.findByRole("region", { name: "Stopped" }).should("not.contain.text", "Automatic dependency waves");
     cy.findByLabelText("2 live cmux sessions").should("exist");
   });
 
@@ -440,7 +440,7 @@ describe("goal board matches live cmux evidence", () => {
     installScenario(state);
     visitBoard();
 
-    cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", "Two task question lifecycle");
+    cy.findByRole("region", { name: "Building" }).should("contain.text", "Two task question lifecycle");
     cy.findByRole("button", { name: "1 goals need you. Show the tasks that need you" }).should("exist");
     cy.findByRole("region", { name: "Goals needing attention" }).should("contain.text", "This task agent is waiting for an answer");
   });
@@ -453,7 +453,7 @@ describe("goal board matches live cmux evidence", () => {
     installScenario(state);
     const planning = plan("goal-new", "Close every stale cmux session", 0, {
       status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0,
-      running: true, runStage: "writing_spec", runStep: "Reading the repository…", boardState: "writing_spec",
+      running: true, runStage: "writing_spec", runStep: "Reading the repository…", boardState: "discovering",
     });
     cy.intercept("POST", "**/api/goal-sessions", (request) => {
       state.plans = [planning];
@@ -471,7 +471,7 @@ describe("goal board matches live cmux evidence", () => {
     cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
     cy.contains("Goal session started in cmux for cmux-e2e-cypress.").should("be.visible");
     cy.location("search").should("not.contain", "workspace=");
-    cy.findByRole("region", { name: "Writing Spec" }).should("contain.text", "Close every stale cmux session");
+    cy.findByRole("region", { name: "Discovering" }).should("contain.text", "Close every stale cmux session");
   });
 
   it("keeps the sheet open and reports the reason when a submit fails", () => {

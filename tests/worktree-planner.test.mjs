@@ -968,13 +968,13 @@ test("list and detail place a launched, a merged and an aborted goal in their ow
   store.recordGoalAborted(aborted.planId);
 
   const byId = new Map((await planner.list({ status: "all" })).plans.map((plan) => [plan.planId, plan]));
-  assert.equal(byId.get(launched.planId).boardState, "dev_in_progress");
-  assert.equal(byId.get(merged.planId).boardState, "merged");
+  assert.equal(byId.get(launched.planId).boardState, "building");
+  assert.equal(byId.get(merged.planId).boardState, "shipped");
   assert.equal(byId.get(aborted.planId).boardState, "aborted");
   assert.equal(byId.get(merged.planId).boardStatus, "merged");
   assert.equal(byId.get(merged.planId).boardPrNumber, 5);
   assert.equal((await planner.detail(aborted.planId)).boardState, "aborted");
-  assert.equal((await planner.detail(merged.planId)).boardState, "merged");
+  assert.equal((await planner.detail(merged.planId)).boardState, "shipped");
 });
 
 test("abort closes every distinct task and merge session exactly once", async (t) => {
@@ -1264,7 +1264,7 @@ test("a merged goal refuses every mutation and refuses to be aborted", async (t)
   await assert.rejects(() => planner.resume(draft.planId), /already merged/);
   await assert.rejects(() => planner.launch(draft.planId), /already merged/);
   await assert.rejects(() => planner.abort(draft.planId), /already merged, so it cannot be aborted/);
-  assert.equal((await planner.detail(draft.planId)).boardState, "merged");
+  assert.equal((await planner.detail(draft.planId)).boardState, "shipped");
 });
 
 test("abort refuses a plan that does not exist", async (t) => {

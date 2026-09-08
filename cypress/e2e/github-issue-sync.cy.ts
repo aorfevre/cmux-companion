@@ -1,7 +1,7 @@
 // The starred-project GitHub sync, end to end through the real UI against
 // deterministic fixtures. It walks the whole path a person sees: star a
 // project, press GitHub Sync, read the issue cards in the leftmost column,
-// press Start a goal, and find the goal in Writing Spec.
+// press Start a goal, and find the goal in Discovering.
 //
 // The suite is local-only. No `gh` runs, no cmux runs, and no request leaves
 // the fixtures: a catch-all intercept answers 501 for every un-fixtured call,
@@ -72,14 +72,14 @@ function started(card: IssueCard, planId: string): IssueCard {
 }
 
 // One plan summary, in the shape GET /api/worktree-plans returns for a goal
-// the planner has only just started. `boardState` places it in Writing Spec.
+// the planner has only just started. `boardState` places it in Discovering.
 function writingSpecPlan(card: IssueCard, planId: string) {
   return {
     planId, repositoryId: card.repositoryId, repositoryName: card.repositoryName,
     goal: `Resolve GitHub issue #${card.number}: ${card.title}`,
     status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, readyCount: 0,
     agentSplit: { claude: 0, codex: 0 }, workspaceIds: [] as string[], deliveryStatus: "pending",
-    boardState: "writing_spec", createdAt: now, updatedAt: now, launchedAt: null,
+    boardState: "discovering", createdAt: now, updatedAt: now, launchedAt: null,
     sourceType: "github_issues", issueNumbers: [card.number], issueUrls: [card.url],
   };
 }
@@ -117,7 +117,7 @@ function installBoard(state: Board) {
 }
 
 function visitBoard() {
-  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
+  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); window.localStorage.setItem("cmux-companion-read-only", "false"); } });
   cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
 }
@@ -178,7 +178,7 @@ describe("GitHub Sync covers the starred projects end to end", () => {
     cy.contains(plain.name).should("not.exist");
   });
 
-  it("places the GitHub Issues column before Writing Spec in the board's DOM order", () => {
+  it("places the GitHub Issues column before Discovering in the board's DOM order", () => {
     const state: Board = { repositories: [starred, plain], issues: [caretIssue], plans: [] };
     installBoard(state);
     visitBoard();
@@ -189,12 +189,12 @@ describe("GitHub Sync covers the starred projects end to end", () => {
         .map((heading) => (heading.textContent || "").trim());
       // Leftmost means first in the board's own child order.
       expect(labels[0]).to.equal("GitHub Issues");
-      expect(labels.indexOf("GitHub Issues")).to.be.lessThan(labels.indexOf("Writing Spec"));
-      expect(labels).to.include("Writing Spec");
+      expect(labels.indexOf("GitHub Issues")).to.be.lessThan(labels.indexOf("Discovering"));
+      expect(labels).to.include("Discovering");
     });
   });
 
-  it("starts exactly one goal from one card and moves that goal into Writing Spec", () => {
+  it("starts exactly one goal from one card and moves that goal into Discovering", () => {
     const planId = "plan-issue-12";
     const state: Board = { repositories: [starred, plain], issues: [caretIssue, scrollIssue], plans: [] };
     installBoard(state);
@@ -220,7 +220,7 @@ describe("GitHub Sync covers the starred projects end to end", () => {
     cy.then(() => { state.plans = [writingSpecPlan(caretIssue, planId)]; });
     refreshBoard();
 
-    cy.findByRole("region", { name: "Writing Spec" })
+    cy.findByRole("region", { name: "Discovering" })
       .should("contain.text", `Resolve GitHub issue #${caretIssue.number}: ${caretIssue.title}`);
 
     cy.findByRole("region", { name: "GitHub Issues" }).within(() => {
@@ -259,7 +259,7 @@ describe("GitHub Sync covers the starred projects end to end", () => {
       cy.contains(caretIssue.title).should("not.exist");
       cy.findByRole("button", { name: `Start a goal for #${caretIssue.number} ${caretIssue.title}` }).should("not.exist");
     });
-    cy.findByRole("region", { name: "Writing Spec" }).should("contain.text", `Resolve GitHub issue #${caretIssue.number}: ${caretIssue.title}`);
+    cy.findByRole("region", { name: "Discovering" }).should("contain.text", `Resolve GitHub issue #${caretIssue.number}: ${caretIssue.title}`);
     // The column came from GET alone. No sync ran.
     cy.then(() => expect(syncCalls).to.equal(0));
   });

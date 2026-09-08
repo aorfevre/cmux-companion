@@ -9,7 +9,7 @@
 export const GITHUB_ISSUE_COLUMN = Object.freeze({
   id: "github_issues",
   label: "GitHub Issues",
-  description: "Open GitHub issues from your starred repositories. Start a goal to move one into Writing Spec.",
+  description: "Open GitHub issues from your starred repositories. Start a goal to move one into Discovering.",
 });
 
 // Shown when the column is empty because nothing was synced yet.

@@ -397,3 +397,66 @@ test("recovery runs before health assessment and recovery failures do not stop t
   assert.equal((await watchdog.check()).checked, true);
   assert.deepEqual(order, ["heal", "health"]);
 });
+
+// A published contract is the one event that blocks every later step, so it
+// must wake the phone at once, with the outcome line, not only after a health
+// sweep finds the goal quiet. One alert per revision: a republished contract is
+// news again, an unchanged one is not.
+test("pushes one alert per question revision and one per contract revision, then stops after approval", async (t) => {
+  const { WorktreePlanStore } = await import("../server/worktree-plan-store.mjs");
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "goal-1", repositoryId: "repository12345678", cwd: "/repo", goal: "Ship billing" });
+  store.reserveGoalSession("goal-1", { branch: "goal-session/billing", generation: 1 });
+  store.recordGoalSessionStart("goal-1", { worktreePath: "/repo/billing", workspaceId: "ws-1", generation: 1 });
+  const pushService = push();
+  const watchdog = new GoalWatchdog({ health: sweep([]), store, pushService });
+
+  await watchdog.check();
+  assert.equal(pushService.sent.length, 0);
+
+  // A question alerts once per revision, not once per tick.
+  store.publishGoalSessionQuestions("goal-1", { generation: 1, questions: [{ id: "q1", text: "Which card networks?" }] });
+  let result = await watchdog.check();
+  assert.deepEqual(result.alerts.map((alert) => [alert.planId, alert.health]), [["goal-1", "needs_you"]]);
+  await watchdog.check();
+  assert.equal(pushService.sent.length, 1);
+  assert.equal(pushService.sent[0].title, "A goal needs your answer");
+  store.publishGoalSessionQuestions("goal-1", { generation: 1, questions: [{ id: "q2", text: "Which currencies?" }] });
+  await watchdog.check();
+  assert.equal(pushService.sent.length, 2);
+
+  // The contract is the event that blocks every later step: it alerts the tick
+  // it appears, with the outcome line, and again only for a new revision.
+  store.publishProposal("goal-1", { generation: 1, providerSessionId: "p-1", proposal: { intendedBehavior: "Customers can pay by card", scope: ["Card form"] } });
+  result = await watchdog.check();
+  assert.deepEqual(result.alerts.map((alert) => [alert.planId, alert.health]), [["goal-1", "needs_you"]]);
+  assert.equal(pushService.sent.length, 3);
+  assert.equal(pushService.sent[2].title, "A contract is ready to approve");
+  assert.match(pushService.sent[2].body, /Ship billing — Customers can pay by card/);
+  assert.equal(pushService.sent[2].planId, "goal-1");
+  assert.equal(pushService.sent[2].tag, "goal-health:goal-1");
+  result = await watchdog.check();
+  assert.deepEqual(result.alerts, []);
+  assert.equal(pushService.sent.length, 3);
+
+  // Approval ends the wait on the person.
+  store.approveProposal("goal-1", { generation: 1, revision: 1 });
+  await watchdog.check();
+  assert.equal(pushService.sent.length, 3);
+});
+
+test("a contract alert that reached no device is retried on the next tick", async (t) => {
+  const { WorktreePlanStore } = await import("../server/worktree-plan-store.mjs");
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "goal-2", repositoryId: "repository12345678", cwd: "/repo", goal: "Ship search" });
+  store.reserveGoalSession("goal-2", { branch: "goal-session/search", generation: 1 });
+  store.recordGoalSessionStart("goal-2", { worktreePath: "/repo/search", workspaceId: "ws-2", generation: 1 });
+  store.publishProposal("goal-2", { generation: 1, providerSessionId: "p-2", proposal: { intendedBehavior: "Search works", scope: ["Index"] } });
+  const pushService = push({ sent: 0 });
+  const watchdog = new GoalWatchdog({ health: sweep([]), store, pushService });
+  await watchdog.check();
+  await watchdog.check();
+  assert.equal(pushService.sent.length, 2);
+});

@@ -92,7 +92,7 @@ function readySummary() {
   return {
     planId: "plan-spec", repositoryId: "repo-spec", repositoryName: "cmux-e2e-cypress", goal: READY_GOAL,
     status: "draft", stage: "ready", round: 2, taskCount: readyTasks.length, launchedCount: 0, readyCount: 0,
-    boardState: "waiting_for_dev", createdAt: now, updatedAt: now, launchedAt: null,
+    boardState: "needs_you", createdAt: now, updatedAt: now, launchedAt: null,
   };
 }
 
@@ -156,7 +156,7 @@ describe("native analysis outcomes and advisory reviews", () => {
   it("requires failed-review acknowledgment before analysis approval, then preserves report history and critiques", () => {
     const review = { id: "a".repeat(64), kind: "planner", target: "1", status: "failed", result: null as string | null, error: "Provider timeout", acknowledgedAt: null as string | null };
     const report = { planId: "plan-spec", version: 1, approvalRevision: 1, title: "Boundary analysis", markdown: "## Evidence\nImmutable first report.\n\n## Next steps\nChallenge the analysis or launch coding goal.", baseSha: "a".repeat(40), createdAt: now, codingGoalId: null };
-    const summary = { ...readySummary(), workflow: "goal_session", goalType: "analysis", goalSessionGeneration: 1, goalSessionState: "awaiting_approval", boardState: "waiting_for_dev" };
+    const summary = { ...readySummary(), workflow: "goal_session", goalType: "analysis", goalSessionGeneration: 1, goalSessionState: "awaiting_approval", boardState: "needs_you" };
     const state = { plans: [summary] };
     let detail = { ...readyDetail(), ...summary, tasks: [], engine: { provider: "claude", model: "default", effort: "default", reviewer: true }, proposalRevision: 1, proposal: { intendedBehavior: "Read repository evidence" }, reviews: [review], analysisReports: [] as typeof report[] };
     installScenario(state);
@@ -480,7 +480,7 @@ describe("specification rigor options", () => {
     installScenario({ plans: [readySummary()] });
     visitBoard();
 
-    cy.findByRole("region", { name: "Waiting for dev" }).findByRole("button", { name: `Resume ${READY_GOAL}` }).click();
+    cy.findByRole("region", { name: "Needs you" }).findByRole("button", { name: `Resume ${READY_GOAL}` }).click();
     cy.wait("@detail");
 
     cy.findByRole("region", { name: "Goal passport" }).should("be.visible").within(() => {

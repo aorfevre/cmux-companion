@@ -13,7 +13,7 @@ import {
 } from "../server/goal-followup-actions.mjs";
 
 test("exports the waiting-for-merge state and four ordered actions", () => {
-  assert.equal(GOAL_FOLLOWUP_COLUMN_STATE, "waiting_for_merge");
+  assert.equal(GOAL_FOLLOWUP_COLUMN_STATE, "in_review");
   assert.deepEqual(GOAL_FOLLOWUP_ACTIONS.map((action) => action.id), ["question", "tests", "review", "custom"]);
   assert.deepEqual(GOAL_FOLLOWUP_ACTIONS.map((action) => action.label), [
     "Ask a question",

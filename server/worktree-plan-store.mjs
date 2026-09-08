@@ -10,6 +10,7 @@ import { safeReviewOptions } from "./review-options.mjs";
 import { normalizeBurst } from "./burst-options.mjs";
 import { currentModelId } from "./model-options.mjs";
 import { normalizeGoalType, plannerReviewReady } from "./goal-options.mjs";
+import { normalizeIntake } from "./goal-intake.mjs";
 import { GoalOutcomeStore } from "./goal-outcome-store.mjs";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db");
@@ -31,7 +32,7 @@ const PLAN_EVENT_KINDS = new Set([
   "task_relaunched", "task_skipped", "followup_launched", "task_associated",
   "review_claimed", "review_launched", "discussion", "merge_cleanup_required",
   "goal_session_started", "proposal_published", "proposal_changes_requested", "proposal_approved", "goal_session_transition", "goal_session_correction",
-  "burst_review_launched", "burst_review_verdict", "burst_review_reset",
+  "burst_review_launched", "burst_review_verdict", "burst_review_reset", "goal_verification",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -69,7 +70,7 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, burst = false, discoveryContext = null, goalType = "coding", sourceAnalysis = null }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, burst = false, discoveryContext = null, goalType = "coding", sourceAnalysis = null, intake = null }) {
     const at = this.#stamp();
     const options = safeSpecOptions(specOptions);
     const review = safeReviewOptions(reviewOptions);
@@ -89,7 +90,7 @@ export class WorktreePlanStore {
         INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, burst, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), json(review), burstOn ? 1 : 0, at, at);
-      this.db.prepare("UPDATE plans SET goal_type = ?, source_analysis = ? WHERE plan_id = ?").run(type, sourceAnalysis ? json(sourceAnalysis) : null, planId);
+      this.db.prepare("UPDATE plans SET goal_type = ?, source_analysis = ?, intake = ? WHERE plan_id = ?").run(type, sourceAnalysis ? json(sourceAnalysis) : null, json(normalizeIntake(intake)), planId);
       if (discoveryContext) this.db.prepare("UPDATE plans SET discovery_context = ? WHERE plan_id = ?").run(json(discoveryContext), planId);
       this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review, burst: burstOn }, at);
     });
@@ -849,6 +850,21 @@ export class WorktreePlanStore {
     return claimed ? this.get(id) : null;
   }
 
+  // The result of running the contract's own check on the goal branch. One
+  // record per plan, replaced on every run: the newest head is the evidence
+  // that matters, and history lives in the event log.
+  recordGoalVerification(planId, verification) {
+    const id = String(planId);
+    const entry = normalizeVerification(verification);
+    if (!entry) throw new TypeError("Invalid goal verification");
+    const at = this.#stamp();
+    this.#transaction(() => {
+      this.db.prepare("UPDATE plans SET verification = ?, updated_at = ? WHERE plan_id = ?").run(json(entry), at, id);
+      this.#insertEvent(id, null, "goal_verification", entry, at);
+    });
+    return this.get(id);
+  }
+
   recordReviewLaunched(planId, { workspaceId, agent, briefPath }) {
     const at = this.#stamp();
     const id = String(planId);
@@ -1372,6 +1388,7 @@ export class WorktreePlanStore {
       boardPrUrl: row.board_pr_url ?? null,
       boardPrState: boardPrState(row.board_pr_state),
       boardPrObservedAt: row.board_pr_observed_at ?? null,
+      verification: normalizeVerification(parse(row.verification, null)),
       followupCount: parse(row.followups, []).length,
       taskCount: row.task_count,
       launchedCount: row.launched_count,
@@ -1391,6 +1408,7 @@ export class WorktreePlanStore {
       goalSessionState: row.goal_session_state ?? null,
       goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,
       goalSessionError: row.goal_session_error ?? null,
+      goalSessionQuestionRevision: Number(row.goal_session_question_revision) || 0,
       proposalRevision: Number(row.proposal_revision) || 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -1515,6 +1533,7 @@ function readPlan(row) {
     goalSessionWorktreePath: row.goal_session_worktree_path ?? null,
     goalSessionBranch: row.goal_session_branch ?? null,
     discoveryContext: parse(row.discovery_context, null),
+    intake: normalizeIntake(parse(row.intake, null)),
     goalSessionGeneration: Number(row.goal_session_generation) || 0,
     goalSessionProviderSessionId: row.goal_session_provider_session_id ?? null,
     proposalRevision: Number(row.proposal_revision) || 0,
@@ -1565,6 +1584,7 @@ function readPlan(row) {
     boardPrUrl: row.board_pr_url ?? null,
     boardPrState: boardPrState(row.board_pr_state),
     boardPrObservedAt: row.board_pr_observed_at ?? null,
+    verification: normalizeVerification(parse(row.verification, null)),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     launchedAt: row.launched_at,
@@ -1683,4 +1703,22 @@ function clampLimit(value, max) {
   const limit = Number(value);
   if (!Number.isFinite(limit) || limit <= 0) return max;
   return Math.min(Math.floor(limit), max);
+}
+
+const VERIFICATION_STATUSES = new Set(["passed", "failed", "unavailable"]);
+function normalizeVerification(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const clip = (input, max) => (typeof input === "string" && input ? input.slice(0, max) : null);
+  const status = clip(value.status, 20);
+  if (!VERIFICATION_STATUSES.has(status)) return null;
+  return {
+    status,
+    script: clip(value.script, 64),
+    source: clip(value.source, 500),
+    headSha: clip(value.headSha, 64),
+    reason: clip(value.reason, 500),
+    output: typeof value.output === "string" && value.output ? value.output.slice(-4_000) : null,
+    startedAt: clip(value.startedAt, 40),
+    finishedAt: clip(value.finishedAt, 40),
+  };
 }
