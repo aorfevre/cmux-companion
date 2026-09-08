@@ -61,7 +61,10 @@ const AGENTS: PlanAgent[] = ["codex", "claude"];
 // One typed view of the shared catalog. The module is plain JavaScript, so the
 // cast happens once here rather than at every use.
 const SPEC_OPTION_CATALOG = SPEC_OPTIONS.options as readonly SpecOptionCatalogEntry[];
-const SPEC_OPTION_DEFAULTS = SPEC_OPTIONS.defaults as SpecOptions;
+// Fresh forms opt into review and rigor without changing legacy/API defaults.
+const FORM_REVIEWER_DEFAULT = true;
+const FORM_REVIEW_DEFAULTS: ReviewOptions = { ...REVIEW_OPTIONS.defaults, codeReview: true };
+const FORM_SPEC_DEFAULTS: SpecOptions = { ...SPEC_OPTIONS.defaults, unitTests: true, e2eTests: true, edgeCases: true, refactorPass: true };
 const SPEC_OPTION_LABELS: Record<SpecOptionId, string> = SPEC_OPTION_CATALOG.reduce((labels, option) => ({ ...labels, [option.id]: option.label }), {} as Record<SpecOptionId, string>);
 const COVERAGE_LABELS: Record<string, string> = { covered: "Covered", not_applicable: "Not applicable", missing: "Missing" };
 // The server refuses the thirteenth question, so the sheet stops offering one
@@ -367,8 +370,8 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   const [provider, setProvider] = useState<PlannerProvider>(PLANNER_ENGINES.defaultProvider as PlannerProvider);
   const [model, setModel] = useState<string>(PLANNER_ENGINES.defaultModel);
   const [effort, setEffort] = useState<string>(PLANNER_ENGINES.defaultEffort);
-  const [reviewer, setReviewer] = useState(false);
-  const [reviewOptions, setReviewOptions] = useState<ReviewOptions>({ ...REVIEW_OPTIONS.defaults });
+  const [reviewer, setReviewer] = useState(FORM_REVIEWER_DEFAULT);
+  const [reviewOptions, setReviewOptions] = useState<ReviewOptions>({ ...FORM_REVIEW_DEFAULTS });
   useEffect(() => {
     let active = true;
     request<ModelSettingsStatus>("/api/settings/models").then((value) => {
@@ -387,7 +390,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   }, []);
   // All six requests live in one object so the POST body, the reset and the
   // checkbox row can never disagree about which keys exist.
-  const [specOptions, setSpecOptions] = useState<SpecOptions>(() => ({ ...SPEC_OPTION_DEFAULTS }));
+  const [specOptions, setSpecOptions] = useState<SpecOptions>(() => ({ ...FORM_SPEC_DEFAULTS }));
   const [draft, setDraft] = useState<PlanDraft | null>(() => initialDraft ? normalizedDraft(initialDraft) : null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "assemble" | "feedback" | "discuss" | "recover">("");
@@ -479,7 +482,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
     if (onNewGoal) { onNewGoal(); return; }
-    setGoal(""); setDraft(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); setQuestion(""); setSpecOptions({ ...SPEC_OPTION_DEFAULTS }); setReviewOptions({ ...REVIEW_OPTIONS.defaults });
+    setGoal(""); setDraft(null); setAnswers({}); setError(""); setFeedback(""); setRejecting(false); setQuestion(""); setSpecOptions({ ...FORM_SPEC_DEFAULTS }); setReviewOptions({ ...FORM_REVIEW_DEFAULTS }); setReviewer(FORM_REVIEWER_DEFAULT);
   }
 
   // The round runs in the background, so this answers as soon as the plan row

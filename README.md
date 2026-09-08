@@ -160,7 +160,9 @@ regenerates the plan or changes its saved contract.
 
 ### Spec depth
 
-**Spec depth** on the Plan a goal sheet holds six independent requests. All six are off by default. Each request you enable becomes a written requirement in every planning round and in every task brief. The six are:
+New goal forms enable **Add a reviewer pass** and **Request a code review** by default. Both remain optional: turn either off before submitting to skip that review.
+
+**Spec depth** on the Plan a goal sheet holds six independent requests. **Unit tests**, **End-to-end tests**, **Edge cases**, and **Refactor review** are on by default; **Screen wireframes** and **Flowcharts** remain off. Each selected request becomes a written requirement in every planning round and in every task brief. All six remain independently editable. Choosing **New goal** restores these form defaults, without changing existing saved goals or defaults for API callers that omit options. The six are:
 
 - **Unit tests** — cover the new logic with unit tests.
 - **End-to-end tests** — cover the user-visible flow with end-to-end tests.
