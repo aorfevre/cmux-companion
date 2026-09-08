@@ -136,8 +136,8 @@ test("restarts aborted discovery once, retaining context and moving GitHub owner
   assert.equal(created, 1);
   assert.equal(first.workflow, "goal_session");
   for (const key of ["goal", "images", "specOptions", "issueNumbers", "issueUrls"]) assert.deepEqual(first[key], source[key]);
-  assert.deepEqual(first.engine, { ...source.engine, reviewer: false });
-  assert.equal(first.reviewOptions.codeReview, false);
+  assert.deepEqual(first.engine, source.engine);
+  assert.equal(first.reviewOptions.codeReview, true);
   assert.equal(store.get("old").boardStatus, "aborted");
   assert.ok(store.get("old").issuesReturnedAt);
   assert.throws(() => store.createPlan({ planId: "duplicate", repositoryId: "repo", goal: "Duplicate", issueNumbers: [8] }), /already belongs/);
@@ -193,7 +193,7 @@ test("continuing legacy discovery stops it once and preserves its full unapprove
   assert.equal(next.discoveryContext.tasks[0].title, "Saved task");
   assert.equal(next.discoveryContext.discussion[0].answer, "Yes");
   assert.deepEqual(next.images, source.images); assert.deepEqual(next.issueNumbers, [8]);
-  assert.equal(next.engine.reviewer, false);
+  assert.equal(next.engine.reviewer, true);
   assert.equal(store.get("legacy").boardStatus, "aborted");
   assert.equal((await service.continueDiscovery("legacy")).planId, next.planId);
   assert.equal((await service.continueDiscovery(next.planId)).planId, next.planId);

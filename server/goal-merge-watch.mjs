@@ -42,7 +42,7 @@ export class GoalMergeWatch {
       if (!summary || summary.boardStatus) continue;
       try {
         const plan = this.store.get(summary.planId);
-        if (plan?.status === "launched" && !plan.boardStatus && plan.repositoryId) ids.add(String(plan.repositoryId));
+        if (plan?.status === "launched" && plan.goalType !== "analysis" && !plan.boardStatus && plan.repositoryId) ids.add(String(plan.repositoryId));
       } catch (cause) {
         this.log?.warn?.({ err: cause, planId: summary.planId }, "goal merge watch could not read a plan");
       }
@@ -73,7 +73,7 @@ export class GoalMergeWatch {
         this.log?.warn?.({ err: cause, planId: summary.planId }, "goal merge watch could not read a plan");
         continue;
       }
-      if (!plan || plan.status !== "launched" || plan.boardStatus) continue;
+      if (!plan || plan.status !== "launched" || plan.goalType === "analysis" || plan.boardStatus) continue;
       const repositoryId = String(plan.repositoryId || "");
       if (!byRepository.has(repositoryId)) byRepository.set(repositoryId, this.#observations(repositoryId));
       const { available, observations } = byRepository.get(repositoryId);

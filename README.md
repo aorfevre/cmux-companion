@@ -177,7 +177,21 @@ regenerates the plan or changes its saved contract.
 
 ### Spec depth
 
-New goal forms use the owning interactive agent for discovery and implementation. Separate automated reviewer controls are not offered.
+New coding goals enable independent planner and post-PR code review, unit tests,
+end-to-end tests, edge cases and refactor review. Both reviewer controls are
+editable; extra passes add provider usage and latency. Historical saved choices
+and explicit opt-outs remain unchanged. Planner findings are advisory; a failed
+pass must be retried or explicitly acknowledged before approval. Code findings
+are saved in Companion and posted as an advisory comment to the observed PR.
+
+Choose **Analysis** for a repository-read-only outcome instead of code. Approve its
+scope, then receive a versioned Markdown report in Companion, with download,
+**Challenge the analysis** and **Launch coding goal** actions. Challenge saves an
+independent critique without rewriting the report. Coding opens a separate linked
+discovery that requires fresh approval. No commit or PR is required for analysis;
+Bash, Edit and Write stay unavailable after analysis approval. See the
+[goal workflow](docs/goal-session-planning.md#analysis-outcomes) for applicability,
+version history, reviewer failure/reconciliation and recovery limits.
 
 **Spec depth** on the Plan a goal sheet holds six independent requests. **Unit tests**, **End-to-end tests**, **Edge cases**, and **Refactor review** are on by default; **Screen wireframes** and **Flowcharts** remain off. Each selected request becomes a written requirement in every planning round and in every task brief. All six remain independently editable. Choosing **New goal** restores these form defaults, without changing existing saved goals or defaults for API callers that omit options. The six are:
 
@@ -655,10 +669,10 @@ exercise the actual recovery decisions without launching agents or deleting real
 
 ### Model defaults
 
-Settings → **Model defaults** exposes planner, coder, code reviewer, merge agent
-and follow-up agent roles. The planner model owns the interactive discovery and
-implementation conversation. Retired spec-reviewer and issue-analyzer settings
-remain stored for compatibility but are hidden. Planning starts with Codex Astra
+Settings → **Model defaults** exposes planner, spec reviewer, coder, code reviewer,
+merge agent and follow-up agent roles. The planner model owns the interactive
+discovery and implementation conversation. The issue-analyzer role remains stored
+for compatibility but is hidden. Planning starts with Codex Astra
 (`gpt-6-astra`). Explicit provider and model choices still apply.
 
 Choose a model from the full dropdown or select **Custom model…** to enter a
@@ -672,7 +686,9 @@ code-review models. Per-goal model choices override Settings. New task launches,
 retries, dependency waves, merge sessions, and follow-ups read the current role
 defaults; existing agent sessions are unchanged. A follow-up containing a code
 review uses the code-review model even when it also requests tests or other work.
-New native goals do not start a separate specification reviewer or issue analyzer.
+New native goals enable an independent specification reviewer by default; it uses
+the opposite provider's saved spec-reviewer model. Analysis challenges use the
+saved code-reviewer selection. No separate issue analyzer is started.
 
 Configuration lives in `~/.config/cmux-companion/model-settings.json` (override
 with `CMUX_COMPANION_MODEL_SETTINGS_FILE`). The paired, same-origin Settings

@@ -310,7 +310,7 @@ function ownedSessions(plan) {
 
 // Merged or aborted: the goal is over, so no session it owns has work left.
 function isTerminal(plan) {
-  return plan?.boardStatus === "merged" || plan?.boardStatus === "aborted" || text(plan?.boardPrState).toUpperCase() === "MERGED";
+  return plan?.boardStatus === "merged" || plan?.boardStatus === "aborted" || (plan?.goalType !== "analysis" && text(plan?.boardPrState).toUpperCase() === "MERGED");
 }
 
 // The delivery pull request is open, so every task's work is in it. A closed

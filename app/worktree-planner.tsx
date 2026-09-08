@@ -4,7 +4,8 @@ import { relativeTime as relativeTimestamp } from "./relative-time";
 
 import { goalPopupUrl } from "./goal-popup-url";
 import { BUILTIN_MODEL_ROLES, ModelRoles, ModelSelect, ModelSettingsStatus } from "./model-settings";
-import { REVIEW_OPTIONS } from "../server/review-options.mjs";
+import { NEW_GOAL_SPEC_OPTIONS, NEW_GOAL_REVIEW_OPTIONS, NEW_GOAL_REVIEWER, ANALYSIS_INAPPLICABLE, applicableSpecOptions, plannerReviewReady } from "../server/goal-options.mjs";
+import { GoalOutcomes, type AnalysisReport, type GoalReview } from "./goal-outcomes";
 import { DEV_SETUP_GOAL } from "./dev-setup-goal";
 import { ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { isFreshBranchSafeReason } from "../server/worktree-errors.mjs";
@@ -42,7 +43,7 @@ export type PlannerProvider = "claude" | "codex";
 type PlannerEngine = { provider: PlannerProvider; model: string; effort: string; reviewer: boolean };
 // The eight lifecycle ids come from server/goal-board.mjs. The board and the
 // planner sheet read the same ids, so a card and its sheet never disagree.
-export type GoalBoardStateId = "writing_spec" | "review_spec" | "waiting_for_dev" | "dev_in_progress" | "waiting_for_merge" | "blocked" | "merged" | "aborted";
+export type GoalBoardStateId = "writing_spec" | "review_spec" | "waiting_for_dev" | "dev_in_progress" | "analysis_in_progress" | "analysis_ready" | "waiting_for_merge" | "blocked" | "merged" | "aborted";
 // Every verdict server/goal-health.mjs can return, worst first. The sweep and
 // the plan list both send one of these words and nothing else.
 export type GoalHealth = "failed" | "dead" | "idle" | "needs_you" | "working" | "ready" | "integrated" | "queued" | "unknown";
@@ -51,9 +52,9 @@ type GoalBoardPrState = "OPEN" | "CLOSED" | "MERGED";
 // Every plan payload carries these. `boardState` is the server's derivation,
 // and the other fields are the structured evidence behind it.
 type GoalBoardFields = { boardState?: GoalBoardStateId | null; boardStatus?: GoalBoardStatus | null; boardChangedAt?: string | null; boardPrNumber?: number | null; boardPrUrl?: string | null; boardPrState?: GoalBoardPrState | null; boardPrObservedAt?: string | null; runStage?: string | null };
-export type PlanSummary = { workflow?: "planned" | "goal_session"; goalSessionState?: string | null; planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; issueNumbers?: number[]; issuesReturnedAt?: string | null; followupCount?: number; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; mergeStatus?: string | null; mergeWorkspaceId?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; readyCount?: number; failedCount?: number; skippedCount?: number; queuedCount?: number; agentSplit?: { claude: number; codex: number }; workspaceIds?: string[]; health?: GoalHealth | null; healthReason?: string | null; stuckCount?: number | null; createdAt: string; updatedAt: string; launchedAt: string | null } & GoalBoardFields;
+export type PlanSummary = { goalType?: "coding" | "analysis"; plannerReviewStatus?: string | null; workflow?: "planned" | "goal_session"; goalSessionState?: string | null; planId: string; repositoryId: string; repositoryName: string; goal: string; status: "draft" | "launched"; stage: "questions" | "ready"; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; issueNumbers?: number[]; issuesReturnedAt?: string | null; followupCount?: number; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; mergeStatus?: string | null; mergeWorkspaceId?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; round: number; taskCount: number; launchedCount: number; readyCount?: number; failedCount?: number; skippedCount?: number; queuedCount?: number; agentSplit?: { claude: number; codex: number }; workspaceIds?: string[]; health?: GoalHealth | null; healthReason?: string | null; stuckCount?: number | null; createdAt: string; updatedAt: string; launchedAt: string | null } & GoalBoardFields;
 type GoalProposal = { intendedBehavior?: string; scope?: string[]; exclusions?: string[]; assumptions?: string[]; acceptanceCriteria?: { text: string; verification: string }[]; verification?: string[] };
-export type PlanDraft = { planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; images?: PlanImage[]; issueNumbers?: number[]; issuesReturnedAt?: string | null; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; specOptions?: SpecOptions; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; discussion?: PlanDiscussion[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[]; workflow?: "planned" | "goal_session"; goalSessionState?: string | null; goalSessionWorkspaceId?: string | null; goalSessionGeneration?: number; goalSessionQuestionRevision?: number; proposalRevision?: number; proposal?: GoalProposal | null; approvalRevision?: number | null; transitionStatus?: string | null; goalSessionError?: string | null; goalSessionRunnerPid?: number | null; goalSessionRunnerDispatchId?: string | null } & GoalBoardFields;
+export type PlanDraft = { goalType?: "coding" | "analysis"; sourceAnalysis?: { planId: string; version: number } | null; analysisReports?: AnalysisReport[]; reviews?: GoalReview[]; reviewOptions?: ReviewOptions; planId: string; repositoryId: string; repositoryName?: string; goal: string; running?: boolean; launching?: boolean; runPhase?: string | null; runStep?: string; runError?: string; lastError?: string | null; lastErrorAt?: string | null; images?: PlanImage[]; issueNumbers?: number[]; issuesReturnedAt?: string | null; issueUrls?: string[]; deliveryPolicy?: "auto" | "combined"; engine?: PlannerEngine; specOptions?: SpecOptions; round: number; status: "questions" | "ready"; stage?: "questions" | "ready"; planStatus?: "draft" | "launched"; contractVersion?: number; spec?: PlanSpec | null; readiness?: PlanReadiness | null; deliveryMode?: "single" | "combined"; deliveryStatus?: string; deliveryError?: string | null; integrationBranch?: string | null; integrationWorktreePath?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null; questions: PlanQuestion[]; tasks: PlanTask[]; discussion?: PlanDiscussion[]; createdAt?: string; updatedAt?: string; launchedAt?: string | null; base?: string; history?: unknown[]; workflow?: "planned" | "goal_session"; goalSessionState?: string | null; goalSessionWorkspaceId?: string | null; goalSessionGeneration?: number; goalSessionQuestionRevision?: number; proposalRevision?: number; proposal?: GoalProposal | null; approvalRevision?: number | null; transitionStatus?: string | null; goalSessionError?: string | null; goalSessionRunnerPid?: number | null; goalSessionRunnerDispatchId?: string | null } & GoalBoardFields;
 export type TaskRelaunchResult = { branch?: string; launchReason?: string | null };
 type DeliveryResult = { planId: string; deliveryMode: "combined"; deliveryStatus: string; integrationBranch?: string | null; finalPrNumber?: number | null; finalPrUrl?: string | null; verifiedAt?: string | null };
 type PlannerRepository = { id: string; name: string };
@@ -62,10 +63,10 @@ const LOST_SESSION = "The planner lost its session";
 // One typed view of the shared catalog. The module is plain JavaScript, so the
 // cast happens once here rather than at every use.
 const SPEC_OPTION_CATALOG = SPEC_OPTIONS.options as readonly SpecOptionCatalogEntry[];
-// Native forms request spec rigor without unsupported automated reviewers.
-const FORM_REVIEWER_DEFAULT = false;
-const FORM_REVIEW_DEFAULTS: ReviewOptions = { ...REVIEW_OPTIONS.defaults, codeReview: false };
-const FORM_SPEC_DEFAULTS: SpecOptions = { ...SPEC_OPTIONS.defaults, unitTests: true, e2eTests: true, edgeCases: true, refactorPass: true };
+// Creation policy is shared with API and issue quick-start; saved goals keep their choices.
+const FORM_REVIEWER_DEFAULT = NEW_GOAL_REVIEWER;
+const FORM_REVIEW_DEFAULTS: ReviewOptions = { ...NEW_GOAL_REVIEW_OPTIONS };
+const FORM_SPEC_DEFAULTS: SpecOptions = { ...NEW_GOAL_SPEC_OPTIONS };
 const SPEC_OPTION_LABELS: Record<SpecOptionId, string> = SPEC_OPTION_CATALOG.reduce((labels, option) => ({ ...labels, [option.id]: option.label }), {} as Record<SpecOptionId, string>);
 const COVERAGE_LABELS: Record<string, string> = { covered: "Covered", not_applicable: "Not applicable", missing: "Missing" };
 function modelLabel(provider: PlannerProvider, model: string) { return PLANNER_ENGINES.providers[provider].models.find((option) => option.id === model)?.label || model; }
@@ -83,6 +84,7 @@ function GoalSessionProposal({ draft, busy, onApprove, onRequestChanges, onAnswe
   const [changes, setChanges] = useState("");
   const [answer, setAnswer] = useState("");
   const proposal = draft.proposal;
+  const reviewReady = plannerReviewReady(draft);
   const disconnected = draft.goalSessionRunnerPid === null && draft.goalSessionRunnerDispatchId === null && !draft.goalSessionError && draft.transitionStatus !== "uncertain";
   const resume = disconnected ? <><p>Conversation closed. Discovery and saved proposals are preserved.</p><button type="button" disabled={busy} onClick={onRecover}>Resume conversation</button></> : null;
   const open = draft.goalSessionWorkspaceId ? <button type="button" onClick={onOpenConversation}>Open conversation</button> : null;
@@ -90,15 +92,17 @@ function GoalSessionProposal({ draft, busy, onApprove, onRequestChanges, onAnswe
   if (!proposal || draft.goalSessionState !== "awaiting_approval") {
     const message = draft.goalSessionError || (draft.transitionStatus === "uncertain"
       ? "The implementation handoff is uncertain. Companion will not send it again automatically."
-      : draft.goalSessionState === "implementing" ? "Implementation is continuing in the same managed goal session."
+      : draft.goalSessionState === "analysis_ready" ? "The analysis report is saved below. Return to the analyst conversation to request a revision."
+        : draft.goalSessionState === "analyzing" ? "Analysis is continuing read-only in the same conversation; its report will appear here."
+        : draft.goalSessionState === "implementing" ? "Implementation is continuing in the same managed goal session."
         : "Discovery is open in the interactive cmux conversation. Ask questions and steer the agent there.");
     return <section className="planner-delivery-status" aria-label="Goal session status"><strong>Goal session</strong><p>{message}</p>{resume}<div className="planner-actions">{open}{draft.goalSessionError && <button type="button" className="primary-button" disabled={busy} onClick={onRecover}>Recover failed turn</button>}</div></section>;
   }
   return <section className="planner-delivery-status proposal-review" aria-label="Proposal awaiting approval"><h2>Proposal revision {draft.proposalRevision}</h2>{resume}
     <div className="proposal-layout"><ProposalReview proposal={proposal} goal={draft.goal} /><div className="proposal-decision">
-    <p>Ready for review. Approve this exact revision, then tell the agent to continue in the conversation. You can keep discussing to revise it.</p>
+    <p>{reviewReady ? "Ready for your decision. Review findings are advisory. Approve this exact revision, then tell the agent to continue in the conversation." : "Independent planner review must finish before approval. If it fails, retry or explicitly acknowledge the failure below."} You can keep discussing to revise it.</p>
     <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} maxLength={4_000} rows={3} onChange={(event) => setChanges(event.target.value)} /></label>
-    <div className="planner-actions">{open}<button type="button" disabled={busy || !changes.trim()} onClick={() => onRequestChanges(changes.trim())}>Request changes</button><button type="button" className="primary-button" disabled={busy} onClick={onApprove}>{busy ? "Approving…" : "Approve and implement"}</button></div>
+    <div className="planner-actions">{open}<button type="button" disabled={busy || !changes.trim()} onClick={() => onRequestChanges(changes.trim())}>Request changes</button><button type="button" className="primary-button" disabled={busy || !reviewReady} onClick={onApprove}>{busy ? "Approving…" : draft.goalType === "analysis" ? "Approve analysis" : "Approve and implement"}</button></div>
     </div></div>
   </section>;
 }
@@ -313,6 +317,7 @@ function TerminalGoalBanner({ status, plan }: { status: GoalBoardStatus; plan: P
 
 export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGoal = "", initialDraft, onNewGoal, onPlanResolved, onGoalSessionStarted, onClose, onNotice }: { repository: PlannerRepository; initialPlanId?: string; initialGoal?: string; initialDraft?: PlanDraft; onNewGoal?: () => void; onPlanResolved?: (draft: PlanDraft) => void; onGoalSessionStarted?: (draft: PlanDraft) => Promise<void> | void; onClose: () => void; onNotice: (message: string) => void }) {
   const [goal, setGoal] = useState(initialGoal);
+  const [goalType, setGoalType] = useState<"coding" | "analysis">("coding");
   const [modelRoles, setModelRoles] = useState<ModelRoles>(BUILTIN_MODEL_ROLES);
   const [modelWarning, setModelWarning] = useState("");
   const [modelDefaultsLoading, setModelDefaultsLoading] = useState(true);
@@ -392,7 +397,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
     if (onNewGoal) { onNewGoal(); return; }
-    setGoal(""); setDraft(null); setError(""); setSpecOptions({ ...FORM_SPEC_DEFAULTS }); setReviewOptions({ ...FORM_REVIEW_DEFAULTS }); setReviewer(FORM_REVIEWER_DEFAULT);
+    setGoal(""); setGoalType("coding"); goalSessionRequestId.current = ""; setDraft(null); setError(""); setSpecOptions({ ...FORM_SPEC_DEFAULTS }); setReviewOptions({ ...FORM_REVIEW_DEFAULTS }); setReviewer(FORM_REVIEWER_DEFAULT);
   }
 
   async function startGoalSession() {
@@ -400,7 +405,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
     setBusy("plan"); setError("");
     try {
       if (!goalSessionRequestId.current) goalSessionRequestId.current = crypto.randomUUID();
-      const started = await request<PlanDraft>("/api/goal-sessions", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions, reviewOptions, idempotencyKey: goalSessionRequestId.current }) });
+      const started = await request<PlanDraft>("/api/goal-sessions", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goalType, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions: applicableSpecOptions(goalType, specOptions), reviewOptions: { ...reviewOptions, codeReview: goalType === "coding" && reviewOptions.codeReview }, idempotencyKey: goalSessionRequestId.current }) });
       receive(started);
       goalSessionRequestId.current = "";
       onNotice(`Goal session started in cmux for ${repository.name}.`);
@@ -566,6 +571,8 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       {modelWarning && <p role="status">{modelWarning}</p>}
+      <label><span>Goal type</span><select aria-label="Goal type" value={goalType} onChange={(event) => setGoalType(event.target.value as "coding" | "analysis")}><option value="coding">Coding</option><option value="analysis">Analysis</option></select></label>
+      <p>{goalType === "coding" ? "Outcome: code delivered through a pull request." : "Outcome: a versioned Markdown report in Companion. Repository files stay read-only; no PR is required."}</p>
       <section className="planner-engine-config" aria-label="Planner configuration">
         <header><strong>Planner</strong><span>{providerOptions.label} ({providerOptions.family}) · {model === PLANNER_ENGINES.passthroughModel ? "CCS default model" : modelLabel(provider, model)}</span></header>
         <div className="planner-engine-controls">
@@ -573,16 +580,24 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
           <ModelSelect label="Planner model" provider={provider} value={model} onChange={(value) => { engineEdited.current = true; setModel(value); }} />
           <label><span>Effort</span><select aria-label="Planner effort" value={effort} onChange={(event) => setEffort(event.target.value)}>{PLANNER_ENGINES.efforts.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
         </div>
-        <p>One interactive conversation owns discovery, proposal review and approved implementation.</p>
+        <label><input type="checkbox" aria-label="Add reviewer pass" checked={reviewer} onChange={(event) => setReviewer(event.target.checked)} /> Add reviewer pass</label>
+        <p>An independent read-only reviewer uses the other provider before your approval. Adds provider usage and waiting time; findings are advisory.</p>
       </section>
       <section className="planner-spec-options" aria-label="Spec depth">
         <header><strong>Spec depth</strong><span>Each request becomes a written requirement in every planning round and task brief.</span></header>
         <ul>{SPEC_OPTION_CATALOG.map((option) => <li key={option.id}>
           <label>
-            <input type="checkbox" aria-label={option.label} checked={specOptions[option.id]} onChange={(event) => setSpecOptions((current) => ({ ...current, [option.id]: event.target.checked }))} />
-            <span><b>{option.label}</b><small>{option.hint}</small></span>
+            <input type="checkbox" aria-label={option.label} checked={goalType === "analysis" && ANALYSIS_INAPPLICABLE.includes(option.id) ? false : specOptions[option.id]} disabled={goalType === "analysis" && ANALYSIS_INAPPLICABLE.includes(option.id)} onChange={(event) => setSpecOptions((current) => ({ ...current, [option.id]: event.target.checked }))} />
+            <span><b>{option.label}</b><small>{goalType === "analysis" && ANALYSIS_INAPPLICABLE.includes(option.id) ? "Not applicable to read-only analysis" : option.hint}</small></span>
           </label>
         </li>)}</ul>
+      </section>
+      <section className="planner-engine-config" aria-label="Code review configuration">
+        <strong>Code review</strong>
+        <label><input type="checkbox" aria-label="Code review" checked={goalType === "coding" && reviewOptions.codeReview} disabled={goalType === "analysis"} onChange={(event) => { reviewEdited.current = true; setReviewOptions((current) => ({ ...current, codeReview: event.target.checked })); }} /> Add reviewer pass after PR creation</label>
+        <p>{goalType === "analysis" ? "Not applicable to analysis. Challenge the saved report instead." : "A separate read-only agent reviews the observed PR commit and posts advisory findings to GitHub. Adds provider usage and waiting time; never fixes or merges automatically."}</p>
+        <label><span>Reviewer</span><select aria-label="Code reviewer" disabled={goalType === "analysis"} value={reviewOptions.reviewer} onChange={(event) => { reviewEdited.current = true; const selected = event.target.value as PlannerProvider; setReviewOptions((current) => ({ ...current, reviewer: selected, reviewerModel: modelRoles.codeReviewer.models[selected] })); }}><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+        <ModelSelect label={goalType === "analysis" ? "Analysis critique model" : "Code reviewer model"} provider={reviewOptions.reviewer} value={reviewOptions.reviewerModel} onChange={(value) => { reviewEdited.current = true; setReviewOptions((current) => ({ ...current, reviewerModel: value })); }} />
       </section>
       {error && <p className="worktree-action-error">{error}</p>}
       {busy === "plan" && <p className="planner-waiting">Starting the round…</p>}
@@ -595,6 +610,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
 
     </section>}
     {draft && draft.workflow === "goal_session" && <GoalSessionProposal draft={draft} busy={busy !== ""} onApprove={() => { void approveProposal(); }} onRequestChanges={(text) => { void requestProposalChanges(text); }} onAnswer={(text) => { void answerGoalSession(text); }} onRecover={() => { void recoverGoalSession(); }} onOpenConversation={() => { if (draft.goalSessionWorkspaceId) void onGoalSessionStarted?.(draft); }} />}
+    {draft?.workflow === "goal_session" && <GoalOutcomes draft={draft} onReceive={receive} onLinked={async (linked) => { receive(linked); await onGoalSessionStarted?.(linked); }} />}
     {draft && draft.workflow !== "goal_session" && !stalled && <>
       <ContextReview goal={reviewGoal} images={reviewImages} />
       <p className="planner-round">Round {draft.round} · {draft.tasks.length} task{draft.tasks.length === 1 ? "" : "s"}</p>

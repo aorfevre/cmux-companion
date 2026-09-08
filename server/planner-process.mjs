@@ -12,14 +12,26 @@ import { createInterface } from "node:readline";
 // silence says it is stuck. A single wall-clock limit killed those rounds every
 // time and could never be raised high enough. `reason` says which limit fired,
 // so the caller can name the real cause instead of guessing.
-export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, maxBuffer = 4 * 1024 * 1024, env, onLine, signal = null } = {}) {
+export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, maxBuffer = 4 * 1024 * 1024, strictBuffer = false, killGrace = 1000, processGroup = false, env, onLine, onSpawn, signal = null } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const grouped = processGroup && process.platform !== "win32";
+    const child = spawn(bin, args, { cwd, env, detached: grouped, stdio: ["ignore", "pipe", "pipe"] });
+    const kill = (signal) => {
+      if (!grouped || !child.pid) return child.kill(signal);
+      try { process.kill(-child.pid, signal); } catch (cause) { if (cause.code !== "ESRCH") throw cause; }
+    };
     let stdout = "";
     let stderr = "";
     let killed = false;
     let reason = "";
-    const stop = (why) => { killed = true; reason = why; child.kill("SIGTERM"); };
+    let forceKill = null;
+    let spawnError = null;
+    const stop = (why) => {
+      if (killed) return;
+      killed = true; reason = why; kill("SIGTERM");
+      forceKill = setTimeout(() => kill("SIGKILL"), killGrace);
+      forceKill.unref?.();
+    };
     const ceiling = timeout ? setTimeout(() => stop("ceiling"), timeout) : null;
     ceiling?.unref?.();
     let idle = null;
@@ -41,11 +53,17 @@ export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, m
     const cleanup = () => {
       clearTimeout(ceiling);
       clearTimeout(idle);
+      clearTimeout(forceKill);
       signal?.removeEventListener?.("abort", onAbort);
     };
     if (signal?.aborted) stop("aborted");
     else signal?.addEventListener?.("abort", onAbort, { once: true });
     restartIdle();
+    let stdoutBytes = 0;
+    child.stdout.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
+      if (strictBuffer && stdoutBytes > maxBuffer) stop("buffer");
+    });
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {
       restartIdle();
@@ -58,10 +76,12 @@ export function streamExecFile(bin, args, { cwd, timeout = 0, idleTimeout = 0, m
     // stderr is progress too. ccs writes its startup and its warnings there, so
     // a round that only complains is still alive and must not be called idle.
     child.stderr.on("data", (chunk) => { restartIdle(); if (stderr.length < 64 * 1024) stderr += chunk; });
+    child.once("spawn", () => { try { onSpawn?.(child.pid); } catch (cause) { spawnError = cause; stop("identity"); } });
     child.once("error", (cause) => { cleanup(); lines.close(); reject(cause); });
     child.once("close", (code, closeSignal) => {
       cleanup();
       lines.close();
+      if (spawnError) return reject(spawnError);
       if (killed || closeSignal) return reject(Object.assign(new Error("Command failed"), { killed, reason, signal: closeSignal || "SIGTERM", stderr, code }));
       if (code !== 0) return reject(Object.assign(new Error("Command failed"), { code, stderr, killed: false }));
       return resolve({ stdout, stderr });

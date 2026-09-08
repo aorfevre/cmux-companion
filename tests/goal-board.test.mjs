@@ -6,12 +6,12 @@ import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../s
 const SUMMARY = { planId: "plan-1", repositoryId: "repo-1", goal: "Ship the board", status: "draft", stage: "questions", round: 1 };
 const LAUNCHED = { ...SUMMARY, planId: "plan-2", status: "launched", stage: "ready", deliveryStatus: "implementing" };
 
-test("exports the eight ordered columns with labels and descriptions", () => {
+test("exports the ten ordered coding and analysis columns with labels and descriptions", () => {
   assert.deepEqual(GOAL_BOARD_COLUMNS.map((column) => column.id), [
-    "writing_spec", "review_spec", "waiting_for_dev", "dev_in_progress", "waiting_for_merge", "blocked", "merged", "aborted",
+    "writing_spec", "review_spec", "waiting_for_dev", "dev_in_progress", "analysis_in_progress", "analysis_ready", "waiting_for_merge", "blocked", "merged", "aborted",
   ]);
   assert.deepEqual(GOAL_BOARD_COLUMNS.map((column) => column.label), [
-    "Writing Spec", "Review Spec", "Waiting for dev", "Dev in progress", "Waiting for merge", "Blocked", "Merged", "Aborted",
+    "Writing Spec", "Review Spec", "Waiting for dev", "Dev in progress", "Analysis in progress", "Analysis ready", "Waiting for merge", "Blocked", "Merged", "Aborted",
   ]);
   assert.equal(GOAL_BOARD_COLUMNS.every((column) => typeof column.description === "string" && column.description.length > 0), true);
   assert.deepEqual(GOAL_BOARD_COLUMNS.filter((column) => column.collapsedByDefault).map((column) => column.id), ["blocked", "merged", "aborted"]);
@@ -127,6 +127,8 @@ test("groups goals into every column, including the empty ones", () => {
     review_spec: ["plan-review"],
     waiting_for_dev: ["plan-ready"],
     dev_in_progress: ["plan-2"],
+    analysis_in_progress: [],
+    analysis_ready: [],
     waiting_for_merge: ["plan-open"],
     blocked: ["plan-blocked", "plan-dead"],
     merged: ["plan-merged"],

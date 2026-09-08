@@ -9,6 +9,8 @@ import { parsePlannerReply } from "./planner-reply.mjs";
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "AskUserQuestion", "mcp__companion_goal__get_status", "mcp__companion_goal__publish_proposal"]);
 const WRITE_TOOLS = new Set(["Edit", "Write", "Bash"]);
 const MAX_INPUT = 256 * 1024;
+const ANALYSIS_TOOL = { name: "publish_analysis", description: "Save an immutable Markdown analysis report after approval of its scope. Never changes repository files. Include populated Evidence, Assumptions, Limitations and Recommendations level-two headings; Companion appends the next-step actions.", inputSchema: { type: "object", required: ["revision", "expectedVersion", "title", "markdown"], additionalProperties: false, properties: { revision: { type: "integer", minimum: 1 }, expectedVersion: { type: "integer", minimum: 0 }, title: { type: "string", minLength: 1, maxLength: 200 }, markdown: { type: "string", minLength: 1, maxLength: 98304 } } } };
+
 const TOOL_DEFINITIONS = [
   { name: "get_status", description: "Read this goal's current proposal revision, pending feedback and immutable approval. Call before publishing or implementation.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
   { name: "publish_proposal", description: "Save a validated delivery contract for user review. Never approves implementation. On validation failure, keep discussing and correct the contract.", inputSchema: { type: "object", required: ["basedOnRevision", "addressedFeedback", "spec", "tasks"], properties: {
@@ -25,15 +27,24 @@ export function boundGoal(store, { planId, generation, sessionId }) {
 }
 
 export function goalStatus(plan) {
-  return { goal: plan.goal, state: plan.goalSessionState, basedOnRevision: plan.proposalRevision,
+  return { goal: plan.goal, goalType: plan.goalType || "coding", state: plan.goalSessionState, basedOnRevision: plan.proposalRevision,
+    analysisVersion: plan.analysisReports?.[0]?.version || 0,
+    latestAnalysis: plan.analysisReports?.[0] || null,
+    analysisVersions: (plan.analysisReports || []).map(({ version, title, approvalRevision }) => ({ version, title, approvalRevision })),
+    reviews: (plan.reviews || []).filter((review) => review.kind === "planner" ? review.target === String(plan.proposalRevision) : review.kind === "analysis" ? review.target === String(plan.analysisReports?.[0]?.version) : true).slice(0, 4),
     addressedFeedback: plan.goalSessionPendingInput || plan.goalSessionActiveInput || "",
-    approved: plan.goalSessionState === "implementing" && plan.approvalRevision === plan.proposalRevision && Boolean(plan.approvalAt) && !plan.goalSessionError && ["pending", "delivered"].includes(plan.transitionStatus),
+    approved: (plan.goalType === "analysis" ? ["analyzing", "analysis_ready"].includes(plan.goalSessionState) : plan.goalSessionState === "implementing") && plan.approvalRevision === plan.proposalRevision && Boolean(plan.approvalAt) && !plan.goalSessionError && ["pending", "delivered"].includes(plan.transitionStatus),
     proposal: plan.proposal, branch: plan.goalSessionBranch, baseRef: plan.baseRef, issueNumbers: plan.issueNumbers };
 }
 
 export function callGoalTool(store, binding, name, args = {}) {
   const plan = boundGoal(store, binding);
   if (name === "get_status") return goalStatus(plan);
+  if (name === "publish_analysis") {
+    if (plan.goalType !== "analysis" || !goalStatus(plan).approved) throw new Error("Analysis publication requires approval of the analysis scope");
+    const report = store.outcomes.publishReport(binding.planId, { ...args, generation: binding.generation, sessionId: binding.sessionId });
+    return { ...goalStatus(store.get(binding.planId)), report, message: "Analysis saved in Companion. The user can challenge it or launch a linked coding discovery." };
+  }
   if (name !== "publish_proposal") throw new Error("Unknown goal tool");
   if (!args.spec || typeof args.spec !== "object" || Array.isArray(args.spec) || !Array.isArray(args.tasks) || !args.tasks.length || args.tasks.length > 8) throw new Error("Provide a spec and one to eight implementation tasks");
   if (args.basedOnRevision !== plan.proposalRevision || args.addressedFeedback !== goalStatus(plan).addressedFeedback) throw new Error("The proposal or feedback changed. Read get_status and incorporate the latest feedback before publishing");
@@ -60,8 +71,9 @@ export function goalHook(store, binding, event) {
   }
   if (event.hook_event_name !== "PreToolUse") throw new Error("Unexpected goal hook event");
   const allowRead = READ_TOOLS.has(event.tool_name);
-  const allowWrite = WRITE_TOOLS.has(event.tool_name) && goalStatus(plan).approved;
-  if (!allowRead && !allowWrite) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Implementation requires approval of the current saved proposal in Companion. Keep discovery interactive with Read, Grep, Glob, AskUserQuestion and companion_goal tools." } };
+  const allowArtifact = event.tool_name === "mcp__companion_goal__publish_analysis" && plan.goalType === "analysis" && goalStatus(plan).approved;
+  const allowWrite = plan.goalType !== "analysis" && WRITE_TOOLS.has(event.tool_name) && goalStatus(plan).approved;
+  if (!allowRead && !allowWrite && !allowArtifact) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Implementation requires approval of the current saved proposal in Companion. Keep discovery interactive with Read, Grep, Glob, AskUserQuestion and companion_goal tools." } };
   // This records authorization reaching the native session, not completion.
   // No output envelope or exit code is interpreted as delivery success.
   if (allowWrite && plan.transitionStatus === "pending") {
@@ -77,7 +89,7 @@ export function handleGoalRpc(store, binding, request) {
   const respond = (result) => ({ jsonrpc: "2.0", id: request.id, result });
   if (request.method === "initialize") return respond({ protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "companion-goal", version: "1.0.0" } });
   if (request.method === "ping") return respond({});
-  if (request.method === "tools/list") return respond({ tools: TOOL_DEFINITIONS });
+  if (request.method === "tools/list") return respond({ tools: boundGoal(store, binding).goalType === "analysis" ? [...TOOL_DEFINITIONS, ANALYSIS_TOOL] : TOOL_DEFINITIONS });
   if (request.method === "tools/call") {
     try { return respond({ content: [{ type: "text", text: JSON.stringify(callGoalTool(store, binding, request.params?.name, request.params?.arguments)) }] }); }
     catch (cause) { return respond({ isError: true, content: [{ type: "text", text: String(cause?.message || cause) }] }); }

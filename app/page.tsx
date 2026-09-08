@@ -24,6 +24,8 @@ import { WorktreeCleanupPanel } from "./worktree-cleanup";
 import { WorktreeDashboardView } from "./worktree-dashboard";
 import { DeploymentHealth } from "./deployment-health";
 import type { PlanDraft } from "./worktree-planner";
+import { GoalOutcomes } from "./goal-outcomes";
+import { plannerReviewReady } from "../server/goal-options.mjs";
 
 type Terminal = { id: string; title: string; current_directory?: string | null; is_focused?: boolean; is_ready?: boolean };
 type WorkspaceStatus = { effective?: string; inferred?: string; signals?: Record<string, boolean> };
@@ -277,7 +279,7 @@ function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: stri
     return () => { clearTimeout(kickoff); clearInterval(poll); };
   }, [load]);
   async function approve() {
-    if (readOnly || busy || readError || !plan?.proposalRevision || !plan.goalSessionGeneration) return;
+    if (readOnly || busy || readError || !plan?.proposalRevision || !plan.goalSessionGeneration || !plannerReviewReady(plan)) return;
     mutation.current += 1;
     setBusy("approve"); setError("");
     try {
@@ -303,21 +305,26 @@ function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: stri
     finally { mutation.current += 1; setBusy(null); }
   }
   if (!plan) return readError ? <p role="alert">{readError}</p> : null;
+  const outcomes = <GoalOutcomes key={plan.planId} draft={plan} readOnly={readOnly || Boolean(readError) || Boolean(busy)} onReceive={(next) => { mutation.current += 1; setPlan(next); }} onLinked={(linked) => {
+    if (!linked.goalSessionWorkspaceId) throw new Error("Linked coding discovery is still starting. Retry to open its saved conversation.");
+    window.location.assign(`/?workspace=${encodeURIComponent(linked.goalSessionWorkspaceId)}`);
+  }} />;
+  const reviewReady = plannerReviewReady(plan);
   const errors = <>{error && <p role="alert">{error}</p>}{readError && <p role="alert">{readError}</p>}</>;
   const disconnected = plan.goalSessionRunnerPid === null && plan.goalSessionRunnerDispatchId === null && !plan.goalSessionError && plan.transitionStatus !== "uncertain";
   const resume = disconnected ? <><p>Conversation closed. Discovery and saved proposals are preserved.</p><button type="button" disabled={readOnly || Boolean(readError) || Boolean(busy)} onClick={recover}>Resume conversation</button></> : null;
-  if (plan.boardStatus === "aborted" || plan.boardStatus === "merged") return <section className="planner-delivery-status" aria-label="Goal status"><strong>{plan.boardStatus === "aborted" ? "Goal aborted" : "Goal merged"}</strong>{errors}</section>;
+  if (plan.boardStatus === "aborted" || plan.boardStatus === "merged") return <><section className="planner-delivery-status" aria-label="Goal status"><strong>{plan.boardStatus === "aborted" ? "Goal aborted" : "Goal merged"}</strong>{errors}</section>{outcomes}</>;
   if (plan.goalSessionState === "awaiting_input") return <section className="planner-delivery-status" aria-label="Managed goal questions"><strong>Goal needs your answer</strong>{plan.questions.map((question) => <p key={question.id}>Question: {question.text}{question.options.length ? ` (${question.options.join(" / ")})` : ""}</p>)}<p>Reply in this visible conversation to continue planning.</p>{errors}</section>;
-  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong>{resume}<p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "Discovery is open in the interactive conversation. Ask questions and steer the agent here.")}</p>{errors}{plan.goalSessionError && <button type="button" disabled={readOnly || Boolean(busy)} onClick={recover}>{busy === "recover" ? "Recovering…" : "Recover failed turn"}</button>}</section>;
-  return <section className="planner-delivery-status proposal-review" aria-label="Proposal awaiting approval"><h2>Proposal revision {plan.proposalRevision}</h2>{resume}
+  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <><section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong>{resume}<p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "analysis_ready" ? "Analysis saved. Read the report, challenge it or launch linked coding discovery below." : plan.goalSessionState === "analyzing" ? "Analysis is continuing read-only in this conversation." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "Discovery is open in the interactive conversation. Ask questions and steer the agent here.")}</p>{errors}{plan.goalSessionError && <button type="button" disabled={readOnly || Boolean(busy)} onClick={recover}>{busy === "recover" ? "Recovering…" : "Recover failed turn"}</button>}</section>{outcomes}</>;
+  return <><section className="planner-delivery-status proposal-review" aria-label="Proposal awaiting approval"><h2>Proposal revision {plan.proposalRevision}</h2>{resume}
     <div className="proposal-layout"><ProposalReview proposal={plan.proposal} goal={plan.goal} /><div className="proposal-decision">
-    <p>Ready for review. Approve this revision, then tell the agent to continue here.</p>
+    <p>{reviewReady ? "Ready for review. Approve this revision, then tell the agent to continue here." : "Wait for the independent planner review. On failure, retry or acknowledge it before approving."}</p>
     <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} disabled={readOnly || Boolean(busy)} maxLength={4_000} rows={2} onChange={(event) => setChanges(event.target.value)} /></label>
     {errors}
     {readOnly && <p>Enable input in the session menu to approve or request changes.</p>}
-    <div className="planner-actions"><button type="button" disabled={readOnly || Boolean(readError) || Boolean(busy) || !changes.trim()} onClick={requestChanges}>{busy === "changes" ? "Sending…" : "Request changes"}</button><button type="button" className="primary-button" disabled={readOnly || Boolean(readError) || Boolean(busy)} onClick={approve}>{busy === "approve" ? "Approving…" : "Approve and implement"}</button></div>
+    <div className="planner-actions"><button type="button" disabled={readOnly || Boolean(readError) || Boolean(busy) || !changes.trim()} onClick={requestChanges}>{busy === "changes" ? "Sending…" : "Request changes"}</button><button type="button" className="primary-button" disabled={readOnly || Boolean(readError) || Boolean(busy) || !reviewReady} onClick={approve}>{busy === "approve" ? "Approving…" : plan.goalType === "analysis" ? "Approve analysis" : "Approve and implement"}</button></div>
     </div></div>
-  </section>;
+  </section>{outcomes}</>;
 }
 
 export function PullRequestBanner({ repo }: { repo: Repo | null }) {

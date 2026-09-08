@@ -1504,13 +1504,54 @@ async function nativeDiscoveryFixture(t) {
   const { WorktreePlanStore } = await import("../server/worktree-plan-store.mjs");
   const store = new WorktreePlanStore({ path: ":memory:" }); t.after(() => store.close());
   const calls = [];
-  const app = await buildApp(t, { token: TOKEN, worktreePlanStore: store, cmux: { ...fakeCmux(), workspaceListDetailed: async () => ({ workspaces: [] }), workspaceStartGoalSessionRunner: async (...args) => calls.push(args) }, worktreeDashboard: {
+  const app = await buildApp(t, { token: TOKEN, worktreePlanStore: store, goalReviews: { start: () => () => {} }, cmux: { ...fakeCmux(), workspaceListDetailed: async () => ({ workspaces: [] }), workspaceStartGoalSessionRunner: async (...args) => calls.push(args) }, worktreeDashboard: {
     resolveRepository: async (id) => { if (id !== "repository12345678") throw new TypeError("Unknown repository"); return { id, name: "Fixture", primaryPath: "/repo/fixture" }; },
     create: async () => ({ worktree: { path: "/repo/new-goal" } }), invalidate: () => {},
   } });
   const headers = { cookie: await pairedCookie(app), host: "mac.tail.test", origin: "https://mac.tail.test" };
   return { app, store, headers, calls };
 }
+
+test("analysis and review routes require pairing, same origin, strict bodies and repository authorization", async (t) => {
+  const { app, headers, store } = await nativeDiscoveryFixture(t);
+  const routes = ["challenge-analysis", "launch-coding", "reviews/retry", "reviews/acknowledge", "reviews/reconcile", "reviews/code"];
+  for (const action of routes) {
+    const url = `/api/goal-sessions/missing/${action}`;
+    assert.equal((await app.inject({ method: "POST", url, payload: {} })).statusCode, 401);
+    assert.equal((await app.inject({ method: "POST", url, headers: { ...headers, origin: "https://evil.test" }, payload: {} })).statusCode, 403);
+    assert.equal((await app.inject({ method: "POST", url, headers, payload: { version: "1", unexpected: true } })).statusCode, 400);
+  }
+  const download = "/api/goal-sessions/outside/analysis/1/download";
+  assert.equal((await app.inject({ url: download })).statusCode, 401);
+  store.createPlan({ planId: "outside", repositoryId: "outside-allowlist", goal: "Forbidden", goalType: "analysis" });
+  const denied = await app.inject({ url: download, headers });
+  assert.equal(denied.statusCode, 400); assert.match(denied.body, /Unknown repository/);
+});
+
+test("fresh API defaults and analysis artifact actions preserve approval and stored provenance", async (t) => {
+  const { app, headers, store, calls } = await nativeDiscoveryFixture(t);
+  const coding = await app.inject({ method: "POST", url: "/api/goal-sessions", headers, payload: { repositoryId: "repository12345678", goal: "New coding goal" } });
+  assert.equal(coding.statusCode, 201, coding.body);
+  assert.equal(coding.json().engine.reviewer, true); assert.equal(coding.json().reviewOptions.codeReview, true);
+  for (const option of ["unitTests", "e2eTests", "edgeCases", "refactorPass"]) assert.equal(coding.json().specOptions[option], true);
+  const created = await app.inject({ method: "POST", url: "/api/goal-sessions", headers, payload: { repositoryId: "repository12345678", goal: "Analyze boundaries", goalType: "analysis", engine: { reviewer: false } } });
+  assert.equal(created.statusCode, 201, created.body);
+  const plan = created.json(), id = plan.planId, generation = plan.goalSessionGeneration;
+  assert.equal(plan.goalType, "analysis"); assert.equal(plan.reviewOptions.codeReview, false);
+  store.recordGoalSessionProviderSession(id, { generation, providerSessionId: "analysis-session" });
+  store.publishProposal(id, { generation, providerSessionId: "analysis-session", proposal: { intendedBehavior: "Read repository boundaries" } });
+  store.approveProposal(id, { generation, revision: 1 });
+  store.outcomes.publishReport(id, { generation, sessionId: "analysis-session", revision: 1, expectedVersion: 0, title: "Boundary report", markdown: "## Evidence\nserver/app.mjs\n## Assumptions\nSingle owner\n## Limitations\nNo live verification\n## Recommendations\nValidate boundaries" });
+  const downloaded = await app.inject({ url: `/api/goal-sessions/${id}/analysis/1/download`, headers });
+  assert.equal(downloaded.statusCode, 200); assert.match(downloaded.headers["content-disposition"], /attachment; filename="analysis-v1.md"/); assert.match(downloaded.body, /Challenge the analysis/);
+  const challenge = await app.inject({ method: "POST", url: `/api/goal-sessions/${id}/challenge-analysis`, headers, payload: { version: 1 } });
+  assert.equal(challenge.statusCode, 200, challenge.body); assert.equal(challenge.json().reviews[0].target, "1");
+  const launch = () => app.inject({ method: "POST", url: `/api/goal-sessions/${id}/launch-coding`, headers, payload: { version: 1 } });
+  const child = await launch(); assert.equal(child.statusCode, 200, child.body);
+  assert.deepEqual(child.json().sourceAnalysis, { planId: id, version: 1 }); assert.equal(child.json().approvalRevision, null);
+  assert.equal((await launch()).json().planId, child.json().planId); assert.equal(calls.length, 3);
+  assert.equal(store.get(id).analysisReports[0].codingGoalId, child.json().planId);
+});
 
 for (const url of ["/api/goal-sessions", "/api/worktree-plans"]) test(`${url} starts the same native process and preserves submitted context`, async (t) => {
   const { app, store, headers, calls } = await nativeDiscoveryFixture(t);
@@ -1524,7 +1565,7 @@ for (const url of ["/api/goal-sessions", "/api/worktree-plans"]) test(`${url} st
   assert.equal(calls.length, 1);
 });
 
-for (const patch of [{ goal: "" }, { repositoryId: "missing" }, { images: [{ name: "missing path" }] }, { specOptions: { invented: true } }, { engine: { provider: "unknown" } }, { reviewOptions: { codeReview: true } }, { engine: { reviewer: true } }, { reviewOptions: { reviewerModel: "" } }, { reviewOptions: { unknown: true } }]) test(`native discovery rejects invalid or unsupported setup: ${JSON.stringify(patch)}`, async (t) => {
+for (const patch of [{ goal: "" }, { repositoryId: "missing" }, { images: [{ name: "missing path" }] }, { specOptions: { invented: true } }, { engine: { provider: "unknown" } }, { reviewOptions: { codeReview: "true" } }, { engine: { reviewer: "true" } }, { goalType: "other" }, { reviewOptions: { reviewerModel: "" } }, { reviewOptions: { unknown: true } }]) test(`native discovery rejects invalid or unsupported setup: ${JSON.stringify(patch)}`, async (t) => {
   const { app, headers, calls } = await nativeDiscoveryFixture(t);
   for (const url of ["/api/goal-sessions", "/api/worktree-plans"]) {
     const result = await app.inject({ method: "POST", url, headers, payload: { repositoryId: "repository12345678", goal: "Test validation", ...patch } });

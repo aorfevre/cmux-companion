@@ -10,7 +10,7 @@ export function restoredGoalSessions(plans, workspaces) {
     ...(p.followups || []).map((w) => w.workspaceId),
   ]).filter(Boolean).map((id) => id.toLowerCase()));
   return workspaces.filter((w) => !recorded.has(w.id.toLowerCase())).map((workspace) => {
-    const activeOwner = plans.find((plan) => plan.workflow === "goal_session" && !["merged", "aborted"].includes(plan.boardStatus) && String(plan.boardPrState).toUpperCase() !== "MERGED" && plan.goalSessionWorktreePath === workspace.current_directory);
+    const activeOwner = plans.find((plan) => plan.workflow === "goal_session" && !["merged", "aborted"].includes(plan.boardStatus) && (plan.goalType === "analysis" || String(plan.boardPrState).toUpperCase() !== "MERGED") && plan.goalSessionWorktreePath === workspace.current_directory);
     if (activeOwner) return { workspaceId: workspace.id, title: workspace.title, kind: "restored", taskId: null,
       planId: activeOwner.planId, path: workspace.current_directory, eligible: false,
       reason: "The goal conversation stays open for review and corrections" };

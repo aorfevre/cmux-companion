@@ -140,6 +140,70 @@ function visitBoard() {
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
 }
 
+describe("native analysis outcomes and advisory reviews", () => {
+  it("keeps coding preferences while analysis masks coding-only checks", () => {
+    installScenario({ plans: [] }); visitBoard();
+    cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
+    cy.findByRole("checkbox", { name: "Add reviewer pass" }).should("be.checked");
+    cy.findByRole("checkbox", { name: "Code review" }).should("be.checked");
+    cy.findByRole("combobox", { name: "Goal type" }).select("analysis");
+    for (const name of ["Unit tests", "End-to-end tests", "Refactor review", "Code review"]) cy.findByRole("checkbox", { name }).should("be.disabled").and("not.be.checked");
+    cy.findByRole("checkbox", { name: "Edge cases" }).should("be.checked");
+    cy.findByRole("combobox", { name: "Goal type" }).select("coding");
+    for (const name of ["Unit tests", "End-to-end tests", "Refactor review", "Code review"]) cy.findByRole("checkbox", { name }).should("be.enabled").and("be.checked");
+  });
+
+  it("requires failed-review acknowledgment before analysis approval, then preserves report history and critiques", () => {
+    const review = { id: "a".repeat(64), kind: "planner", target: "1", status: "failed", result: null as string | null, error: "Provider timeout", acknowledgedAt: null as string | null };
+    const report = { planId: "plan-spec", version: 1, approvalRevision: 1, title: "Boundary analysis", markdown: "## Evidence\nImmutable first report.\n\n## Next steps\nChallenge the analysis or launch coding goal.", baseSha: "a".repeat(40), createdAt: now, codingGoalId: null };
+    const summary = { ...readySummary(), workflow: "goal_session", goalType: "analysis", goalSessionGeneration: 1, goalSessionState: "awaiting_approval", boardState: "waiting_for_dev" };
+    const state = { plans: [summary] };
+    let detail = { ...readyDetail(), ...summary, tasks: [], engine: { provider: "claude", model: "default", effort: "default", reviewer: true }, proposalRevision: 1, proposal: { intendedBehavior: "Read repository evidence" }, reviews: [review], analysisReports: [] as typeof report[] };
+    installScenario(state);
+    cy.intercept("GET", "**/api/worktree-plans/plan-spec", (request) => request.reply(detail)).as("analysisDetail");
+    cy.intercept("POST", "**/api/goal-sessions/plan-spec/reviews/acknowledge", (request) => {
+      expect(request.body.reviewId).to.equal(review.id); review.acknowledgedAt = now; request.reply(detail);
+    }).as("acknowledge");
+    cy.intercept("POST", "**/api/goal-sessions/plan-spec/approve", (request) => {
+      expect(review.acknowledgedAt).to.equal(now);
+      detail = { ...detail, goalSessionState: "analysis_ready", analysisReports: [{ ...report, version: 2, markdown: "Latest report evidence" }, report] };
+      request.reply(detail);
+    }).as("approveAnalysis");
+    cy.intercept("POST", "**/api/goal-sessions/plan-spec/challenge-analysis", (request) => {
+      expect(request.body.version).to.equal(1);
+      detail.reviews.push({ ...review, id: "b".repeat(64), kind: "analysis", status: "completed", result: "Independent critique of report one" } as typeof review);
+      request.reply(detail);
+    }).as("challenge");
+    visitBoard(); cy.findByRole("button", { name: `Resume ${READY_GOAL}` }).click(); cy.wait("@analysisDetail");
+    cy.findByRole("heading", { name: "Proposal revision 1" }).should("be.visible");
+    cy.findByRole("region", { name: "Proposal details" }).should("contain.text", "Read repository evidence");
+    cy.findByRole("button", { name: "Approve analysis" }).should("be.disabled");
+    cy.findByRole("button", { name: "Acknowledge failed review" }).click(); cy.wait("@acknowledge");
+    cy.findByRole("button", { name: "Approve analysis" }).should("be.enabled").click(); cy.wait("@approveAnalysis");
+    cy.findByRole("region", { name: "Analysis report" }).should("contain.text", "Latest report evidence");
+    cy.findByRole("combobox", { name: "Analysis report version" }).select("1");
+    cy.findByRole("link", { name: "Download Markdown" }).should("have.attr", "href", "/api/goal-sessions/plan-spec/analysis/1/download");
+    cy.findByRole("button", { name: "Challenge the analysis" }).click(); cy.wait("@challenge");
+    cy.contains("Independent critique of report one").should("be.visible");
+    cy.contains("Immutable first report.").should("be.visible");
+    cy.reload(); cy.wait(["@plans", "@analysisDetail"]);
+    cy.findByRole("combobox", { name: "Analysis report version" }).select("1");
+    cy.contains("Immutable first report.").should("be.visible");
+    const workspace = { id: "analysis-coding-child", title: "Goal · Implement analysis", current_directory: "/fixture-child", terminals: [{ id: "child-terminal", title: "Coding discovery" }] };
+    const child = { ...detail, planId: "linked-coding", goalType: "coding", goalSessionWorkspaceId: workspace.id, goalSessionState: "planning", proposal: null, proposalRevision: 0, approvalRevision: null, reviews: [], analysisReports: [], sourceAnalysis: { planId: "plan-spec", version: 1 } };
+    cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "Fixture Mac" }, workspaces: [workspace], refreshedAt: now });
+    cy.intercept("GET", "**/api/terminals/child-terminal/replay*", { text: "New coding discovery", grid: null });
+    cy.intercept("GET", "**/api/goal-sessions/workspace/analysis-coding-child", { plan: child }).as("childState");
+    cy.intercept("POST", "**/api/goal-sessions/plan-spec/launch-coding", (request) => {
+      expect(request.body).to.deep.equal({ version: 1 }); request.reply(child);
+    }).as("launchCoding");
+    cy.findByRole("button", { name: "Launch coding goal" }).should("be.enabled").click(); cy.wait("@launchCoding");
+    cy.location("search").should("contain", "workspace=analysis-coding-child"); cy.wait("@childState");
+    cy.contains("This coding goal requires its own approval.").should("be.visible");
+    cy.findByRole("button", { name: "Approve and implement" }).should("not.exist");
+  });
+});
+
 describe("delivery plan readability", () => {
   for (const width of [390, 1280]) {
     it(`shows parallel stages and expandable dependencies at ${width}px`, () => {
@@ -274,7 +338,7 @@ describe("planner engine defaults", () => {
   it("submits Codex Astra and keeps Default and provider switches valid", () => {
     installScenario({ plans: [] });
     cy.intercept("POST", "**/api/goal-sessions", (request) => {
-      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
+      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: true });
       request.reply({ statusCode: 202, body: {
         planId: "astra-default", repositoryId: "repo-spec", goal: request.body.goal,
         status: "questions", round: 0, running: true, questions: [], tasks: [],
@@ -373,9 +437,9 @@ describe("specification rigor options", () => {
           } : {
             unitTests: true, e2eTests: true, edgeCases: true, refactorPass: true, screenMocks: false, flowcharts: false,
           });
-          // Effort remains the only reasoning control.
-          expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
-          expect(request.body.reviewOptions).to.deep.equal({ codeReview: false, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
+          // Explicit opt-outs are retained; untouched reviewer defaults are on.
+          expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: !changed });
+          expect(request.body.reviewOptions).to.deep.equal({ codeReview: !changed, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
           request.reply({
             planId: "plan-new", repositoryId: "repo-spec", repositoryName: "cmux-e2e-cypress", goal: GOAL,
             status: "questions", stage: "questions", planStatus: "draft", running: true, round: 0,
@@ -389,10 +453,12 @@ describe("specification rigor options", () => {
           cy.findByRole("region", { name: "Spec depth" }).should("be.visible");
           SPEC_CONTROLS.forEach((label, index) => cy.findByRole("checkbox", { name: label }).should(index < 4 ? "be.checked" : "not.be.checked"));
           cy.findByRole("region", { name: "Spec depth" }).findAllByRole("checkbox").should("have.length", SPEC_CONTROLS.length);
-          cy.findByRole("checkbox", { name: "Add a reviewer pass" }).should("not.exist");
-          cy.findByRole("checkbox", { name: "Code review" }).should("not.exist");
+          cy.findByRole("checkbox", { name: "Add reviewer pass" }).should("be.checked");
+          cy.findByRole("checkbox", { name: "Code review" }).should("be.checked");
 
           if (changed) {
+            cy.findByRole("checkbox", { name: "Add reviewer pass" }).uncheck();
+            cy.findByRole("checkbox", { name: "Code review" }).uncheck();
             for (const name of ["Unit tests", "End-to-end tests", "Refactor review"]) {
               cy.findByRole("checkbox", { name }).uncheck().should("not.be.checked");
             }

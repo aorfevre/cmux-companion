@@ -405,7 +405,7 @@ export class WorktreeDashboard {
     const fields = [
       "number", "title", "url", "state", "isDraft", "reviewDecision",
       ...(checks ? ["statusCheckRollup"] : []),
-      "headRefName", "baseRefName", "mergeStateStatus", "updatedAt", "author", "createdAt", "closedAt", "mergedAt",
+      "headRefName", "headRefOid", "baseRefName", "mergeStateStatus", "updatedAt", "author", "createdAt", "closedAt", "mergedAt",
     ].join(",");
     const { stdout = "" } = await this.repoCatalog.execute("gh", [
       "pr", "list", "--state", "all", "--limit", "100", "--json", fields,
