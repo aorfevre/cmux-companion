@@ -353,3 +353,80 @@ test("PR head changes during code review preserve stale findings without posting
   } });
   await runner.tick(); assert.equal(get().reviews[0].status, "stale"); assert.equal(postings(), 0);
 });
+
+test("a queued review whose target moved on before its turn is marked stale without running", async (t) => {
+  const { store, worktrees, publish, get } = setup(t, { reviewer: true });
+  publish();
+  store.requestProposalChanges("goal", { generation: 1, revision: 1, feedback: "Cover the missing case" });
+  let launched = 0;
+  const runner = new GoalReviews({ store, worktrees, execute: async () => { launched++; return { stdout: "" }; } });
+  await runner.tick();
+  assert.equal(launched, 0);
+  const review = get().reviews.find((entry) => entry.target === "1");
+  assert.equal(review.status, "stale"); assert.match(review.error, /changed before review/);
+});
+
+test("an uncertain reviewer whose recorded process is dead is failed on reconcile so retry becomes available", async (t) => {
+  const { store, worktrees, publish, get } = setup(t, { reviewer: true });
+  publish();
+  const claimed = store.outcomes.claim(get().reviews[0].id);
+  store.outcomes.recordPid(claimed.id, claimed.attempt, 987_654);
+  store.outcomes.finish(claimed.id, claimed.attempt, { status: "uncertain", error: "Lost track of the reviewer" });
+  const stillRunning = new GoalReviews({ store, worktrees, processAlive: () => true });
+  await assert.rejects(stillRunning.reconcile("goal", claimed.id), /still uncertain/);
+  await assert.rejects(stillRunning.reconcile("other", claimed.id), /no uncertain action/);
+  const runner = new GoalReviews({ store, worktrees, processAlive: () => false });
+  await runner.reconcile("goal", claimed.id);
+  assert.equal(get().reviews[0].status, "failed"); assert.match(get().reviews[0].error, /retry is available/);
+  store.outcomes.retry("goal", claimed.id);
+  assert.equal(get().reviews[0].status, "queued");
+});
+
+test("a posting owner that died before recording its process is resolved only by the exact saved comment", async (t) => {
+  const { store, worktrees, execute, get, comments, postings, pr } = codeFixture(t);
+  const runner = new GoalReviews({ store, worktrees, execute, processAlive: () => false });
+  await runner.observeCode();
+  const claimed = store.outcomes.claim(get().reviews[0].id);
+  store.outcomes.finish(claimed.id, claimed.attempt, { status: "posting", result: "Saved critique" });
+  assert.equal(store.outcomes.claimPost(claimed.id, claimed.attempt), true);
+  store.outcomes.finish(claimed.id, claimed.attempt, { status: "uncertain", error: "Crashed between spawn and pid" });
+  await assert.rejects(runner.reconcile("goal", claimed.id), /Posting dispatch remains uncertain/);
+  assert.equal(postings(), 0, "no second comment is ever sent on a guess");
+  assert.equal(get().reviews[0].status, "uncertain");
+  comments.push({ body: `<!-- companion-review:${claimed.id} -->\n## Advisory code review\n\nReviewed commit: ${claimed.target}\n\nSaved critique` });
+  await runner.reconcile("goal", claimed.id);
+  assert.equal(get().reviews[0].status, "completed"); assert.equal(postings(), 0);
+  // The same evidence on a moved head records the review as stale, not done.
+  // A completed review is final, so the crashed owner is restored directly.
+  store.outcomes.db.prepare("UPDATE goal_reviews SET status = 'uncertain', post_owner = 4242, post_pid = NULL WHERE id = ?").run(claimed.id);
+  pr.headRefOid = "c".repeat(40);
+  await runner.reconcile("goal", claimed.id);
+  assert.equal(get().reviews[0].status, "stale");
+});
+
+test("a dead posting process with a recorded pid releases ownership and the post is retried once", async (t) => {
+  const { store, worktrees, execute, get, postings } = codeFixture(t);
+  const runner = new GoalReviews({ store, worktrees, execute, processAlive: () => false });
+  await runner.observeCode();
+  const claimed = store.outcomes.claim(get().reviews[0].id);
+  store.outcomes.finish(claimed.id, claimed.attempt, { status: "posting", result: "Saved critique" });
+  assert.equal(store.outcomes.claimPost(claimed.id, claimed.attempt), true);
+  store.outcomes.recordPostPid(claimed.id, claimed.attempt, 987_654);
+  store.outcomes.finish(claimed.id, claimed.attempt, { status: "uncertain", error: "Lost the posting process" });
+  await runner.reconcile("goal", claimed.id);
+  assert.equal(get().reviews[0].status, "completed"); assert.equal(postings(), 1);
+  assert.equal(store.outcomes.review(claimed.id).postOwner, null);
+});
+
+test("a head that moves while comments are reconciled leaves the review stale and unposted", async (t) => {
+  const { store, worktrees, execute, get, pr, postings } = codeFixture(t);
+  const runner = new GoalReviews({ store, worktrees, execute: async (...args) => {
+    const result = await execute(...args);
+    if (args[0] === "gh" && args[1].at(-1) === "comments") pr.headRefOid = "d".repeat(40);
+    return result;
+  } });
+  await runner.tick();
+  assert.equal(get().reviews[0].status, "stale"); assert.match(get().reviews[0].error, /while reconciling comments/);
+  assert.equal(postings(), 0);
+  assert.equal(get().reviews[0].result, "Advisory: add a missing-input test.", "the findings are kept for the person");
+});

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import * as catalogExports from "../server/repo-catalog.mjs";
 import { normalizePullRequest, parseGitHubRepository, parseNameStatus, RepoCatalog } from "../server/repo-catalog.mjs";
 import { RepoIdentityStore } from "../server/repo-identity-store.mjs";
 
@@ -282,4 +283,124 @@ test("Git process limit is shared across callers and releases slots after failur
   assert.equal(results.filter((r) => r.status === "fulfilled").length, 11);
   assert.equal(catalog.gitActive, 0);
   assert.equal(catalog.gitQueue.length, 0);
+});
+
+test("a fresh cache is served without a scan, a missing root is skipped, and nested directories are not repositories", async (t) => {
+  const { root, repo, catalog } = await fixture(t);
+  await mkdir(join(root, "not-a-repo"));
+  await mkdir(join(repo, "nested"));
+  const [record] = await catalog.list();
+  assert.equal(record.name, "sample");
+  catalog.roots.push(join(root, "missing-root"));
+  catalog.cacheMs = 60_000;
+  let scans = 0;
+  const original = catalog.scan.bind(catalog);
+  catalog.scan = async (generation) => { scans++; return original(generation); };
+  assert.equal(await catalog.list(), await catalog.list());
+  assert.equal(scans, 0, "a warm cache answers without a scan");
+  const refreshed = await catalog.list({ refresh: true });
+  assert.equal(scans, 1);
+  assert.deepEqual(refreshed.map((item) => item.name), ["sample"], "plain directories, nested paths and missing roots are not repositories");
+  assert.equal(await catalog.inspect({ root, path: join(root, "not-a-repo") }), null);
+});
+
+test("a read that joins a scan already invalidated by a newer generation scans again", async (t) => {
+  const { catalog } = await fixture(t);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let scans = 0;
+  const original = catalog.scan.bind(catalog);
+  catalog.scan = async (generation) => { scans++; if (scans === 1) await gate; return original(generation); };
+  const first = catalog.list();
+  const second = catalog.list();
+  catalog.invalidate();
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(scans, 2, "the joined reader noticed the invalidation and scanned again");
+  assert.deepEqual(a.map((item) => item.name), ["sample"]);
+  assert.deepEqual(b.map((item) => item.name), ["sample"]);
+});
+
+test("parses tracking information and ignores an unborn branch oid", () => {
+  const { parsePorcelainV2 } = catalogExports;
+  const tracked = parsePorcelainV2("# branch.oid " + "a".repeat(40) + "\n# branch.head feature/x\n# branch.upstream origin/feature/x\n# branch.ab +3 -2\n1 .M N... 100644 100644 100644 abc def file.txt\n? new.txt\n");
+  assert.deepEqual(tracked, { branch: "feature/x", ahead: 3, behind: 2, changedFiles: 2, oid: "a".repeat(40) });
+  assert.deepEqual(parsePorcelainV2("# branch.oid (initial)\n# branch.head main\n# branch.ab garbage\n"), { branch: "main", ahead: 0, behind: 0, changedFiles: 0, oid: null });
+});
+
+test("merges a file that is staged and unstaged into one row marked staged", async (t) => {
+  const { repo, catalog } = await fixture(t);
+  await writeFile(join(repo, "tracked.txt"), "staged part\n");
+  await git(repo, "add", "tracked.txt");
+  await writeFile(join(repo, "tracked.txt"), "staged part\nunstaged part\n");
+  const [record] = await catalog.list();
+  const changes = await catalog.changes(record.id);
+  const tracked = changes.files.find((file) => file.path === "tracked.txt");
+  assert.equal(tracked.area, "staged");
+  assert.deepEqual(tracked.areas, ["unstaged", "staged"]);
+  assert.equal(tracked.status, "M");
+  assert.match((await catalog.diff(record.id, "tracked.txt", { staged: true })).patch, /\+staged part/);
+  assert.equal(changes.recentCommit.subject, "initial");
+  await assert.rejects(catalog.diff(record.id, "missing.txt"), /not part of the current changes/);
+});
+
+test("pull request lookups use gh, distinguish no pull request from a broken gh, and cache the answer", async (t) => {
+  const { catalog } = await fixture(t);
+  const calls = [];
+  let behaviour = "open";
+  catalog.execute = async (command, args, options) => {
+    calls.push([command, args[0], options.cwd]);
+    if (command === "git") return exec("git", args, { encoding: "utf8" });
+    if (behaviour === "open") return { stdout: JSON.stringify({ number: 3, title: "Open", url: "https://github.com/x/y/pull/3", state: "OPEN", headRefOid: "b".repeat(40), statusCheckRollup: [{ state: "SUCCESS" }, { conclusion: "TIMED_OUT" }] }) };
+    if (behaviour === "none") throw Object.assign(new Error("gh failed"), { stderr: "no pull requests found for branch" });
+    throw new Error("gh: command not found");
+  };
+  const [record] = await catalog.list();
+  const open = await catalog.pullRequest(record.id);
+  assert.equal(open.available, true);
+  assert.equal(open.pullRequest.number, 3);
+  assert.equal(open.pullRequest.headSha, "b".repeat(40));
+  assert.deepEqual(open.pullRequest.checks, { passed: 1, failed: 1, pending: 0, total: 2 });
+  assert.equal(calls.filter(([command]) => command === "gh").length, 1);
+  behaviour = "none";
+  assert.equal((await catalog.pullRequest(record.id)).pullRequest.number, 3, "a fresh answer is served from the cache");
+  assert.deepEqual(await catalog.pullRequest(record.id, { refresh: true }), { available: true, pullRequest: null });
+  behaviour = "broken";
+  assert.deepEqual(await catalog.pullRequest(record.id, { refresh: true }), { available: false, pullRequest: null });
+  assert.equal(calls.filter(([command]) => command === "gh").length, 3);
+});
+
+test("normalizes a minimal pull request payload with defaults", () => {
+  const pullRequest = normalizePullRequest({ number: "8", headRefOid: "short" });
+  assert.equal(pullRequest.number, 8);
+  assert.equal(pullRequest.title, "Untitled pull request");
+  assert.equal(pullRequest.state, "OPEN");
+  assert.equal(pullRequest.reviewDecision, "REVIEW_REQUIRED");
+  assert.equal(pullRequest.mergeState, "UNKNOWN");
+  assert.equal(pullRequest.headSha, null);
+  assert.equal(pullRequest.author, null);
+  assert.deepEqual(pullRequest.checks, { passed: 0, failed: 0, pending: 0, total: 0 });
+});
+
+test("repository roots come from the environment when configured", async (t) => {
+  const previous = process.env.CMUX_COMPANION_REPO_ROOTS;
+  t.after(() => { if (previous === undefined) delete process.env.CMUX_COMPANION_REPO_ROOTS; else process.env.CMUX_COMPANION_REPO_ROOTS = previous; });
+  process.env.CMUX_COMPANION_REPO_ROOTS = " /tmp/one : :/tmp/two ";
+  assert.deepEqual(new RepoCatalog().roots, ["/tmp/one", "/tmp/two"]);
+  process.env.CMUX_COMPANION_REPO_ROOTS = " : ";
+  assert.equal(new RepoCatalog().roots.length, 2, "an empty list falls back to the defaults");
+  delete process.env.CMUX_COMPANION_REPO_ROOTS;
+  assert.equal(new RepoCatalog({ inspectConcurrency: 0, gitConcurrency: "x" }).inspectConcurrency, 8);
+});
+
+test("rejects unsafe file arguments and refuses non-regular or oversized files", async (t) => {
+  const { repo, catalog } = await fixture(t);
+  await mkdir(join(repo, "docs"));
+  await writeFile(join(repo, "docs", "big.md"), "x".repeat(768 * 1024 + 1));
+  const [record] = await catalog.list();
+  for (const file of ["", "   ", "docs/\0.md", "x".repeat(1_025), 42]) await assert.rejects(catalog.markdown(record.id, file), /Invalid repository file/);
+  await assert.rejects(catalog.markdown(record.id, "docs/missing.md"), /does not exist/);
+  await assert.rejects(catalog.markdown(record.id, "docs/big.md"), /too large/);
+  await assert.rejects(catalog.asset(record.id, "docs/big.md"), /asset type is not supported/);
+  await assert.rejects(catalog.markdown(record.id, "docs"), /not supported/);
 });

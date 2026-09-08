@@ -56,3 +56,29 @@ test("capture blocks cross-port HTTP, WebSockets, popups and service-worker bypa
   assert.equal(upgrades, 0);
   assert.equal(serviceWorkers, 0);
 });
+
+test("default ports, credentials and dimension fallbacks are normalized", () => {
+  assert.equal(validatePreviewUrl("https://localhost/secure", 443).href, "https://localhost/secure");
+  assert.equal(validatePreviewUrl("http://user:secret@localhost:3000/", 3000).href, "http://localhost:3000/");
+  assert.throws(() => validatePreviewUrl("not a url", 3000), /Invalid local preview URL/);
+  assert.throws(() => validatePreviewUrl("http://[::1]:3000/", 3001), /restricted to its registered localhost port/);
+  assert.equal(validatePreviewUrl("http://[::1]:3000/", 3000).hostname, "[::1]");
+});
+
+test("capture refuses to run without a Chrome executable", async () => {
+  await assert.rejects(capturePreview({ sourceUrl: "http://localhost:3000/", targetPort: 3000, executablePath: "/nonexistent/chrome" }), /Chrome is required/);
+  await assert.rejects(capturePreview({ sourceUrl: "https://example.com/", targetPort: 443, executablePath: "/nonexistent/chrome" }), /restricted to its registered localhost port/);
+});
+
+test("capture reports an unreachable app and a server error as actionable errors", { skip: !existsSync(CHROME) }, async (t) => {
+  const closed = createServer(() => {});
+  await new Promise((resolve) => closed.listen(0, "127.0.0.1", resolve));
+  const { port } = closed.address();
+  await new Promise((resolve) => closed.close(resolve));
+  await assert.rejects(capturePreview({ sourceUrl: `http://127.0.0.1:${port}/`, targetPort: port, executablePath: CHROME }), /Could not capture that local app/);
+  const failing = createServer((_request, response) => { response.statusCode = 503; response.end("down"); });
+  await new Promise((resolve) => failing.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => failing.close(resolve)));
+  const failingPort = failing.address().port;
+  await assert.rejects(capturePreview({ sourceUrl: `http://127.0.0.1:${failingPort}/`, targetPort: failingPort, width: "wide", height: 1.5, executablePath: CHROME }), /did not render successfully/);
+});
