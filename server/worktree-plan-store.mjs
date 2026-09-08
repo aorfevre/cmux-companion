@@ -10,6 +10,7 @@ import { safeReviewOptions } from "./review-options.mjs";
 import { normalizeBurst } from "./burst-options.mjs";
 import { currentModelId } from "./model-options.mjs";
 import { normalizeGoalType, plannerReviewReady } from "./goal-options.mjs";
+import { normalizeIntake } from "./goal-intake.mjs";
 import { GoalOutcomeStore } from "./goal-outcome-store.mjs";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db");
@@ -69,7 +70,7 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, burst = false, discoveryContext = null, goalType = "coding", sourceAnalysis = null }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, burst = false, discoveryContext = null, goalType = "coding", sourceAnalysis = null, intake = null }) {
     const at = this.#stamp();
     const options = safeSpecOptions(specOptions);
     const review = safeReviewOptions(reviewOptions);
@@ -89,7 +90,7 @@ export class WorktreePlanStore {
         INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, burst, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), json(review), burstOn ? 1 : 0, at, at);
-      this.db.prepare("UPDATE plans SET goal_type = ?, source_analysis = ? WHERE plan_id = ?").run(type, sourceAnalysis ? json(sourceAnalysis) : null, planId);
+      this.db.prepare("UPDATE plans SET goal_type = ?, source_analysis = ?, intake = ? WHERE plan_id = ?").run(type, sourceAnalysis ? json(sourceAnalysis) : null, json(normalizeIntake(intake)), planId);
       if (discoveryContext) this.db.prepare("UPDATE plans SET discovery_context = ? WHERE plan_id = ?").run(json(discoveryContext), planId);
       this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review, burst: burstOn }, at);
     });
@@ -1516,6 +1517,7 @@ function readPlan(row) {
     goalSessionWorktreePath: row.goal_session_worktree_path ?? null,
     goalSessionBranch: row.goal_session_branch ?? null,
     discoveryContext: parse(row.discovery_context, null),
+    intake: normalizeIntake(parse(row.intake, null)),
     goalSessionGeneration: Number(row.goal_session_generation) || 0,
     goalSessionProviderSessionId: row.goal_session_provider_session_id ?? null,
     proposalRevision: Number(row.proposal_revision) || 0,

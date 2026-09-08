@@ -349,6 +349,8 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   // checkbox row can never disagree about which keys exist.
   const [specOptions, setSpecOptions] = useState<SpecOptions>(() => ({ ...FORM_SPEC_DEFAULTS }));
   const [burst, setBurst] = useState(false);
+  const [exclusions, setExclusions] = useState("");
+  const [verification, setVerification] = useState("");
   const [draft, setDraft] = useState<PlanDraft | null>(() => initialDraft ? normalizedDraft(initialDraft) : null);
   const [busy, setBusy] = useState<"" | "plan" | "answer" | "edit" | "assemble" | "feedback" | "discuss" | "recover">("");
   // Keyed per task, not one shared string: one task relaunching must not
@@ -399,7 +401,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
   function newGoal() {
     attachments.forEach((attachment) => removeImage(attachment.path));
     if (onNewGoal) { onNewGoal(); return; }
-    setBurst(false); setGoal(""); setGoalType("coding"); goalSessionRequestId.current = ""; setDraft(null); setError(""); setSpecOptions({ ...FORM_SPEC_DEFAULTS }); setReviewOptions({ ...FORM_REVIEW_DEFAULTS }); setReviewer(FORM_REVIEWER_DEFAULT);
+    setBurst(false); setGoal(""); setExclusions(""); setVerification(""); setGoalType("coding"); goalSessionRequestId.current = ""; setDraft(null); setError(""); setSpecOptions({ ...FORM_SPEC_DEFAULTS }); setReviewOptions({ ...FORM_REVIEW_DEFAULTS }); setReviewer(FORM_REVIEWER_DEFAULT);
   }
 
   async function startGoalSession() {
@@ -407,7 +409,7 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
     setBusy("plan"); setError("");
     try {
       if (!goalSessionRequestId.current) goalSessionRequestId.current = crypto.randomUUID();
-      const started = await request<PlanDraft>("/api/goal-sessions", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goalType, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions: applicableSpecOptions(goalType, specOptions), reviewOptions: { ...reviewOptions, codeReview: goalType === "coding" && reviewOptions.codeReview }, burst, idempotencyKey: goalSessionRequestId.current }) });
+      const started = await request<PlanDraft>("/api/goal-sessions", { method: "POST", body: JSON.stringify({ repositoryId: repository.id, goalType, goal: goal.trim(), images: imageReferences(attachments), engine: { provider, model, effort, reviewer }, specOptions: applicableSpecOptions(goalType, specOptions), reviewOptions: { ...reviewOptions, codeReview: goalType === "coding" && reviewOptions.codeReview }, burst, idempotencyKey: goalSessionRequestId.current, ...(exclusions.trim() || verification.trim() ? { intake: { exclusions: exclusions.trim(), verification: verification.trim() } } : {}) }) });
       receive(started);
       goalSessionRequestId.current = "";
       onNotice(`Goal session started in cmux for ${repository.name}.`);
@@ -571,6 +573,12 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
         <p>{goal.trim() ? "The goal below is editable. Clear it to use the review starting point." : "Start with an editable review goal. Planning does not change project files; review the plan before launching work."}</p>
       </section>
       <label className="worktree-task"><span>Goal</span><textarea aria-label="Goal" value={goal} onChange={(event) => setGoal(event.target.value)} onPaste={pasteImages} rows={5} maxLength={4_000} placeholder="Describe the outcome you want across parallel worktrees…" /></label>
+      {/* The two optional answers are the contract's exclusions and verification,
+          asked up front so the agent confirms them instead of inventing them. */}
+      <div className="planner-intake">
+        <label className="worktree-task"><span>What must not change</span><textarea aria-label="What must not change" value={exclusions} onChange={(event) => setExclusions(event.target.value)} rows={2} maxLength={4_000} placeholder="One per line. Files, behaviour or data the agent must leave alone…" /></label>
+        <label className="worktree-task"><span>How you will know it worked</span><textarea aria-label="How you will know it worked" value={verification} onChange={(event) => setVerification(event.target.value)} rows={2} maxLength={4_000} placeholder="One per line. A check you can run, or a thing you can see…" /></label>
+      </div>
       <AttachmentStrip attachments={attachments} onRemove={removeImage} />
       {modelWarning && <p role="status">{modelWarning}</p>}
       <label><span>Goal type</span><select aria-label="Goal type" value={goalType} onChange={(event) => setGoalType(event.target.value as "coding" | "analysis")}><option value="coding">Coding</option><option value="analysis">Analysis</option></select></label>

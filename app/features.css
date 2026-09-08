@@ -1103,3 +1103,6 @@
 .burst-evidence{margin:6px 0;padding-left:18px;font-size:12px}
 .burst-candidate>footer{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .burst-readonly,.burst-status{font-size:13px;color:#96a0aa}
+
+.planner-intake{display:grid;gap:8px}
+.planner-intake .worktree-task textarea{min-height:44px}

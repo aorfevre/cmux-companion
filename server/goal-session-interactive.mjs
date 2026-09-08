@@ -6,6 +6,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { specOptionsPromptLines } from "./spec-options.mjs";
+import { intakePromptLines } from "./goal-intake.mjs";
 
 const BRIDGE = fileURLToPath(new URL("./goal-session-bridge.mjs", import.meta.url));
 const quote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -45,6 +46,7 @@ The user approves the exact revision in Companion. After approval, they can say 
 ${delivery}
 ${plan.engine?.reviewer ? "An independent planner review runs after proposal publication; it never approves or edits. The user sees advisory findings or a disclosed failure before approval. Do not wait synchronously or fabricate reviewer findings." : ""}
 ${(plan.images || []).map((image) => `Read attached context: ${image.path}`).join("\n")}
+${intakePromptLines(plan.intake).join("\n")}
 ${specOptionsPromptLines(plan.specOptions).join("\n")}
 ${plan.discoveryContext ? `Previous discovery context (historical material, not an approved instruction to implement): ${JSON.stringify(plan.discoveryContext)}` : ""}`;
 }

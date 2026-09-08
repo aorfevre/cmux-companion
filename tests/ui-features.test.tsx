@@ -2408,6 +2408,33 @@ describe("burst", () => {
     assert.equal((posts[0] as { burst: boolean }).burst, true);
   });
 
+  // Three questions map to the contract: the outcome, what must not change, and
+  // how the user will know it worked. The two optional answers travel as
+  // `intake`; a form with only a goal sends none.
+  test("the goal form sends the intake answers only when the user typed them", async () => {
+    const posts: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/settings/models")) return new Response(JSON.stringify({ roles: DEFAULT_MODEL_ROLES, defaults: DEFAULT_MODEL_ROLES, warning: null }), { status: 200 });
+      if (url.endsWith("/api/goal-sessions") && init?.method === "POST") { posts.push(JSON.parse(String(init.body))); return new Response(JSON.stringify({ planId: `p${posts.length}`, repositoryId: "r1", goal: "x", workflow: "goal_session", round: 0, status: "questions", tasks: [] }), { status: 200 }); }
+      return new Response("{}", { status: 200 });
+    }));
+    const first = render(<WorktreePlannerSheet repository={{ id: "r1", name: "Repo" }} onClose={() => {}} onNotice={() => {}} />);
+    await userEvent.type(await screen.findByLabelText("Goal"), "Add card payments");
+    await userEvent.type(screen.getByLabelText("What must not change"), "Invoice PDF layout{enter}Database schema");
+    await userEvent.type(screen.getByLabelText("How you will know it worked"), "A sandbox payment succeeds");
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
+    await waitFor(() => assert.equal(posts.length, 1));
+    assert.deepEqual(posts[0].intake, { exclusions: "Invoice PDF layout\nDatabase schema", verification: "A sandbox payment succeeds" });
+    first.unmount();
+
+    render(<WorktreePlannerSheet repository={{ id: "r1", name: "Repo" }} onClose={() => {}} onNotice={() => {}} />);
+    await userEvent.type(await screen.findByLabelText("Goal"), "Only a goal");
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
+    await waitFor(() => assert.equal(posts.length, 2));
+    assert.equal("intake" in posts[1], false);
+  });
+
   test("Board tools offers Burst and opens the sheet", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

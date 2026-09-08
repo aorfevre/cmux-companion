@@ -222,3 +222,47 @@ test("start persists burst and includes it in the idempotency identity", async (
   assert.equal(plan.burst, true);
   await assert.rejects(() => service.start({ repositoryId: "repo-1", goal: "Burst it", burst: false, idempotencyKey: key }), /belongs to a different goal/);
 });
+
+// The goal form asks three questions that map to the contract: the outcome, what
+// must not change, and how the user will know it worked. The last two are
+// optional. They persist with the plan, reach the discovery prompt, and count
+// in the idempotency identity so a retry with different answers is refused.
+test("start persists the intake answers and puts them in the discovery prompt", async (t) => {
+  const { goalDiscoveryPrompt } = await import("../server/goal-session-interactive.mjs");
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const service = new GoalSessionService({
+    store,
+    modelSettings: { roles: undefined },
+    worktrees: { resolveRepository: async (id) => ({ id, name: "sample", primaryPath: "/repo/sample" }), create: async () => ({ worktree: { path: "/repo/sample-goal" } }) },
+    cmux: { workspaceListDetailed: async () => ({ workspaces: [] }), workspaceCreate: async () => ({ workspace_id: "ws" }), workspaceStartGoalSessionRunner: async () => {} },
+  });
+  const key = "11111111-2222-4333-8444-555555555555";
+  const plan = await service.start({ repositoryId: "repo-1", goal: "Add card payments", idempotencyKey: key,
+    intake: { exclusions: " Do not touch the invoice PDF \n\nNo schema change ", verification: "A sandbox payment succeeds" } });
+  assert.deepEqual(plan.intake, { exclusions: ["Do not touch the invoice PDF", "No schema change"], verification: ["A sandbox payment succeeds"] });
+  assert.deepEqual(store.get(plan.planId).intake, plan.intake);
+  const prompt = goalDiscoveryPrompt(store.get(plan.planId));
+  assert.match(prompt, /must not change:\n- Do not touch the invoice PDF\n- No schema change/);
+  assert.match(prompt, /know it worked:\n- A sandbox payment succeeds/);
+  assert.match(prompt, /Confirm these with the user/);
+  // The same key with the same answers is the same goal; different answers are not.
+  assert.equal((await service.start({ repositoryId: "repo-1", goal: "Add card payments", idempotencyKey: key, intake: { exclusions: "Do not touch the invoice PDF\nNo schema change", verification: ["A sandbox payment succeeds"] } })).planId, plan.planId);
+  await assert.rejects(() => service.start({ repositoryId: "repo-1", goal: "Add card payments", idempotencyKey: key, intake: { exclusions: "Something else" } }), /different goal/);
+});
+
+test("a goal with no intake answers stores an empty intake and an unchanged prompt", async (t) => {
+  const { goalDiscoveryPrompt } = await import("../server/goal-session-interactive.mjs");
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const service = new GoalSessionService({
+    store,
+    modelSettings: { roles: undefined },
+    worktrees: { resolveRepository: async (id) => ({ id, name: "sample", primaryPath: "/repo/sample" }), create: async () => ({ worktree: { path: "/repo/sample-goal" } }) },
+    cmux: { workspaceListDetailed: async () => ({ workspaces: [] }), workspaceCreate: async () => ({ workspace_id: "ws" }), workspaceStartGoalSessionRunner: async () => {} },
+  });
+  const plan = await service.start({ repositoryId: "repo-1", goal: "Add card payments" });
+  assert.deepEqual(plan.intake, { exclusions: [], verification: [] });
+  assert.doesNotMatch(goalDiscoveryPrompt(store.get(plan.planId)), /must not change/);
+  await assert.rejects(() => service.start({ repositoryId: "repo-1", goal: "x", intake: { exclusions: "a".repeat(5_000) } }), /intake/i);
+});
