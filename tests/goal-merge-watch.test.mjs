@@ -60,23 +60,25 @@ test("a review that failed to start is asked for again on the next pass, with no
     workspaceClose: async () => {},
   };
   const briefs = { directory: dir, async write({ planId: id, taskId, markdown }) { const path = join(dir, `${id}-${taskId}.md`); await writeFile(path, markdown); return { path }; }, pointerPrompt: ({ path }) => `Read ${path}` };
-  watch.burstReview = new BurstReview({ store, cmux, briefs, modelSettings: { workspace: (role, agent) => ({ agent, model: "default" }) } });
+  const reviewer = new BurstReview({ store, cmux, briefs, modelSettings: { workspace: (role, agent) => ({ agent, model: "default" }) } });
+  let reviewRun;
+  watch.burstReview = { reviewGoal: (...args) => { reviewRun = reviewer.reviewGoal(...args); return reviewRun; } };
   const first = await watch.reconcile();
   assert.equal(first.recorded.length, 1, "the pull request is recorded on the first pass");
-  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  await assert.rejects(reviewRun, /cmux is down/);
   assert.deepEqual(warnings, ["burst goal review could not start"]);
   assert.equal(store.get(planId).reviewStatus, null, "the failed launch released its claim");
   const events = () => store.events(planId).filter((event) => event.kind === "board_pull_request").length;
   assert.equal(events(), 1);
   await watch.reconcile();
   assert.equal(events(), 1, "nothing changed on GitHub, so nothing new is written");
-  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  await reviewRun;
   assert.deepEqual(created, ["/repo/billing"]);
   assert.equal(store.get(planId).reviewStatus, "running");
   assert.equal(store.get(planId).reviewWorkspaceId, "review-g");
   // A third pass finds the claim and opens nothing.
   await watch.reconcile();
-  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  await reviewRun;
   assert.equal(created.length, 1);
   assert.deepEqual(warnings, ["burst goal review could not start"]);
 });
