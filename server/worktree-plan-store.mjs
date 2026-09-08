@@ -31,6 +31,7 @@ const PLAN_EVENT_KINDS = new Set([
   "task_relaunched", "task_skipped", "followup_launched", "task_associated",
   "review_claimed", "review_launched", "discussion", "merge_cleanup_required",
   "goal_session_started", "proposal_published", "proposal_changes_requested", "proposal_approved", "goal_session_transition", "goal_session_correction",
+  "burst_review_launched", "burst_review_verdict",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -649,6 +650,49 @@ export class WorktreePlanStore {
       this.#insertEvent(String(planId), null, "task_pending", { taskId, error }, at);
     });
     return this.get(planId);
+  }
+
+  // One reviewer per finished task, at most twice. The second block is final:
+  // the task waits for a person, and no third session is ever opened.
+  recordBurstReviewLaunched(planId, taskId, { workspaceId }) {
+    const at = this.#stamp();
+    const id = String(planId);
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT burst_review_status, burst_review_round FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get(id, String(taskId));
+      if (!row) throw new TypeError("Unknown task");
+      if (row.burst_review_status === "blocked_twice" || row.burst_review_status === "pass") throw new TypeError("This task needs no further review");
+      if (row.burst_review_status === "running") throw new TypeError("A burst review is already running for this task");
+      const round = Number(row.burst_review_round) + 1;
+      this.db.prepare("UPDATE plan_tasks SET burst_review_status = 'running', burst_review_round = ?, burst_review_workspace_id = ? WHERE plan_id = ? AND task_id = ?")
+        .run(round, text(workspaceId), id, String(taskId));
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
+      this.#insertEvent(id, null, "burst_review_launched", { taskId, workspaceId: text(workspaceId), round }, at);
+    });
+    return this.get(id);
+  }
+
+  recordBurstReviewVerdict(planId, taskId, { verdict, findings = [] } = {}) {
+    if (verdict !== "pass" && verdict !== "block") throw new TypeError("A burst review verdict is pass or block");
+    const at = this.#stamp();
+    const id = String(planId);
+    const list = (Array.isArray(findings) ? findings : []).map((item) => String(item || "").slice(0, 1_000)).filter(Boolean).slice(0, 50);
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT burst_review_round FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get(id, String(taskId));
+      if (!row) throw new TypeError("Unknown task");
+      const status = verdict === "pass" ? "pass" : Number(row.burst_review_round) >= 2 ? "blocked_twice" : "block";
+      this.db.prepare("UPDATE plan_tasks SET burst_review_status = ?, burst_review_findings = ? WHERE plan_id = ? AND task_id = ?")
+        .run(status, json(list), id, String(taskId));
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
+      this.#insertEvent(id, null, "burst_review_verdict", { taskId, verdict, status, findings: list }, at);
+    });
+    return this.get(id);
+  }
+
+  findTaskByBurstReviewWorkspace(workspaceId) {
+    const value = text(workspaceId);
+    if (!value) return null;
+    const row = this.db.prepare("SELECT plan_id, task_id FROM plan_tasks WHERE burst_review_workspace_id = ? LIMIT 1").get(value);
+    return row ? { planId: row.plan_id, taskId: row.task_id } : null;
   }
 
   recordIntegrationStarted(planId, { branch, path }) {
@@ -1478,6 +1522,10 @@ function readTask(row) {
     deliveryStatus: row.delivery_status || "pending",
     integratedCommitSha: row.integrated_commit_sha,
     sessionClosedAt: row.session_closed_at ?? null,
+    burstReviewStatus: row.burst_review_status ?? null,
+    burstReviewRound: Number(row.burst_review_round) || 0,
+    burstReviewWorkspaceId: row.burst_review_workspace_id ?? null,
+    burstReviewFindings: parse(row.burst_review_findings, []),
   };
 }
 

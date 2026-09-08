@@ -255,4 +255,8 @@ function migratePlanSchema(db) {
     ensure("plan_tasks", "integrated_commit_sha", "TEXT");
     ensure("plan_tasks", "session_closed_at", "TEXT");
     ensure("plans", "burst", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plan_tasks", "burst_review_status", "TEXT");
+    ensure("plan_tasks", "burst_review_round", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plan_tasks", "burst_review_workspace_id", "TEXT");
+    ensure("plan_tasks", "burst_review_findings", "TEXT NOT NULL DEFAULT '[]'");
 }
