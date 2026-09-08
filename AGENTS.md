@@ -91,6 +91,15 @@ live or release services and require explicit task authorization.
 Agents must not merge, deploy, expose secrets or alter external accounts/services
 without explicit task authorization. Worker/build scaffolding is not permission to publish.
 
+## Specs and plans
+A design spec in `docs/superpowers/specs/` is the single place a product decision
+lives. A plan in `docs/superpowers/plans/` implements a spec and may not deviate
+from it. When a plan or an implementation finds a spec error, amend the spec first,
+in its own commit, then change the plan. Do not record a deviation inside the plan.
+Write every spec as a delivery contract: outcome, user journey, non-goals,
+acceptance criteria with one verification each, and one success measure. Leave at
+least one review of the spec by a person between the spec commit and the plan commit.
+
 ## Delivery
 Inspect the touched flow and checks, then make one bounded change with one owner
 accountable for its observable outcome, integration and cleanup. Delegate only
