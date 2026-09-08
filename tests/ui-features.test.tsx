@@ -561,12 +561,14 @@ describe("worktree goal planner", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...readyDraft, running: true }), { status: 202 })));
     const close = vi.fn();
     const notice = vi.fn();
-    render(<WorktreePlannerSheet repository={repository} onClose={close} onNotice={notice} />);
+    const openConversation = vi.fn();
+    render(<WorktreePlannerSheet repository={repository} onClose={close} onNotice={notice} onGoalSessionStarted={openConversation} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
     await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
 
     await waitFor(() => assert.equal(close.mock.calls.length, 1));
     assert.match(String(notice.mock.calls[0][0]), /Goal session started in cmux for companion/);
+    assert.equal(openConversation.mock.calls.length, 0);
   });
 
   // The submit fails before any plan row exists, so this sheet is the only
@@ -2040,7 +2042,7 @@ describe("GitHub Issues board column", () => {
     assert.equal(within(issueColumn).queryAllByRole("article").length, 0);
     assert.ok(within(issueColumn).getByLabelText("0 issues in GitHub Issues"));
     assert.equal(goalCalls.length, 1);
-    assert.deepEqual(openConversation.mock.calls, [["issue-workspace"]]);
+    assert.deepEqual(openConversation.mock.calls, []);
   });
 
   test("an issue whose goal is on the board renders no card and is not counted", async () => {

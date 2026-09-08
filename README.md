@@ -79,7 +79,10 @@ required, and no provider prose is treated as proof of successful delivery.
 The owner is associated with one task for existing health and PR tracking.
 Companion observes PR state through its GitHub refresh/watch path; provider prose
 or a successful process exit is not delivery evidence. All new goals, GitHub issue
-goals and restarted discovery use this same process. Old unlaunched goals offer
+goals and restarted discovery use this same process. Starting or restarting discovery
+shows a toast and returns to the board without opening the terminal; recovery
+keeps the current sheet open. Choose **Open conversation** explicitly to enter it.
+Old unlaunched goals offer
 **Continue discovery**, which stops the old run and opens one recorded successor
 with its saved contract, questions and discussion as historical context. Previously
 launched deliveries retain their recovery controls. Automated planner/code-review

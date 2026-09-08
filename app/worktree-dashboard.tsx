@@ -671,9 +671,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
         opened = true;
         const workspaceId = result.plan?.goalSessionWorkspaceId;
         if (result.plan?.workflow === "goal_session" && workspaceId) {
-          onNotice(result.created ? `Started a planning conversation for issue #${issue.number}.` : `Opening the existing conversation for issue #${issue.number}.`);
-          if (onGoalSessionStarted) await onGoalSessionStarted(workspaceId);
-          else onOpenWorkspace(workspaceId);
+          onNotice(result.created ? `Started a planning conversation for issue #${issue.number}.` : `Issue #${issue.number} already has a planning conversation.`);
           return;
         }
         onNotice(result?.created === false

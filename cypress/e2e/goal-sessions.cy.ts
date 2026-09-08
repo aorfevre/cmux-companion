@@ -24,7 +24,8 @@ function scenario(initial: Record<string, unknown> = basePlan) {
   cy.intercept("GET", "**/api/goals/health", { checkedAt: now, goals: [], summary: { goals: 0, tasks: 0, stuck: 0, needsYou: 0, working: 0 } });
   cy.intercept("GET", "**/api/worktree-dashboard*", { generatedAt: now, github: { status: "ready" }, summary: { repositories: 1, ...repo.summary }, repositories: [repo], orphanSessions: [] });
   cy.intercept("GET", "**/api/settings/models", { roles: DEFAULT_MODEL_ROLES, defaults: DEFAULT_MODEL_ROLES, warning: null });
-  cy.intercept("GET", "**/api/worktree-plans*", { plans: [] });
+  cy.intercept("GET", "**/api/worktree-plans*", (request) => request.reply({ plans: started ? [{ ...plan, status: "draft", stage: "questions", taskCount: 0, launchedCount: 0, createdAt: now, updatedAt: now }] : [] }));
+  cy.intercept("GET", "**/api/worktree-plans/goal-one", (request) => request.reply(plan));
   cy.intercept("GET", "**/api/terminals/goal-terminal/replay*", { text: "Visible goal conversation", grid: null });
   cy.intercept("GET", "**/api/goal-sessions/workspace/goal-workspace", (request) => request.reply({ plan })).as("goalState");
   cy.intercept("POST", "**/api/goal-sessions", (request) => {
@@ -56,6 +57,11 @@ function start() {
   cy.findByLabelText("Goal").type("Add billing");
   cy.findByRole("button", { name: "Start goal session" }).click();
   cy.wait("@startGoal");
+  cy.location("search").should("not.contain", "workspace=");
+  cy.contains("Goal session started in cmux for Goal app.").should("be.visible");
+  cy.findByRole("button", { name: "Expand Blocked" }).click();
+  cy.findByRole("button", { name: "Resume Add billing" }).click();
+  cy.findByRole("button", { name: "Open conversation" }).click();
   cy.location("search").should("contain", "workspace=goal-workspace");
   cy.wait("@goalState");
 }
@@ -172,9 +178,9 @@ describe("one discovery process", () => {
     cy.findByRole("button", { name: "Plan this goal again" }).should("not.exist");
     cy.get("@continueDiscovery.all").should("have.length", 0);
     cy.findByRole("button", { name: "Continue discovery" }).click(); cy.wait("@continueDiscovery");
-    cy.location("search").should("contain", "workspace=goal-workspace");
-    cy.wait("@goalState");
-    cy.contains("Discovery is open in the interactive conversation.").should("be.visible");
+    cy.location("search").should("not.contain", "workspace=");
+    cy.findByRole("dialog").should("not.exist");
+    cy.contains("Opened interactive discovery. Previous context remains saved.").should("be.visible");
     cy.get("@startGoal.all").should("have.length", 0);
     cy.get("@continueDiscovery.all").should("have.length", 1);
     cy.screenshot(`unified-discovery-${width}`, { capture: "viewport" });

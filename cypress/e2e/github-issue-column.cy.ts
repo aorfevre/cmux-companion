@@ -132,7 +132,7 @@ describe("GitHub Sync and the GitHub Issues column", () => {
     cy.then(() => expect(returns).to.equal(2));
   });
 
-  it("opens the issue's managed conversation and waits for proposal approval", () => {
+  it("starts issue discovery on the board and opens its conversation only on request", () => {
     const state: Column = { issues: [starredIssue], plans: [] };
     installBoard(state);
     const workspace = { id: "issue-workspace", title: "Goal · Restore the caret", current_directory: "/fixture-issue", terminals: [{ id: "issue-terminal", title: "Issue conversation" }] };
@@ -145,6 +145,7 @@ describe("GitHub Sync and the GitHub Issues column", () => {
       proposal: { intendedBehavior: "The editor retains its caret after playback", scope: ["Caret restoration"], assumptions: [], verification: ["Check playback and resume"] },
     };
     cy.intercept("GET", "**/api/bootstrap", (request) => request.reply({ connected: true, host: { mac_display_name: "Fixture Mac" }, workspaces: started ? [workspace] : [], refreshedAt: now }));
+    cy.intercept("GET", "**/api/worktree-plans/plan-issue-session", (request) => request.reply(plan));
     cy.intercept("GET", "**/api/terminals/issue-terminal/replay*", { text: "Issue planning conversation", grid: null });
     cy.intercept("GET", "**/api/goal-sessions/workspace/issue-workspace", (request) => request.reply({ plan })).as("conversation");
     cy.intercept("POST", `**/api/github-issues/${starred.id}/12/goal`, (request) => {
@@ -162,6 +163,10 @@ describe("GitHub Sync and the GitHub Issues column", () => {
     visitBoard(true);
     cy.findByRole("button", { name: "Start a goal for #12 Restore the caret" }).click();
     cy.wait("@managedIssue");
+    cy.location("search").should("not.contain", "workspace=");
+    cy.contains("Started a planning conversation for issue #12.").should("be.visible");
+    cy.findByRole("button", { name: "View Resolve GitHub issue #12: Restore the caret" }).click();
+    cy.findByRole("button", { name: "Open conversation" }).click();
     cy.location("search").should("contain", "workspace=issue-workspace");
     cy.wait("@conversation");
     cy.contains("The editor retains its caret after playback").should("be.visible");
