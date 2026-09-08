@@ -2208,7 +2208,8 @@ describe("GitHub Issues board column", () => {
     disabled("Restart Dead task");
     disabled("Skip Dead task");
     disabled("GitHub Sync");
-    disabled("Burst");
+    // Opening the burst sheet is a read; the sheet disables its own decisions.
+    assert.equal(screen.getByRole("button", { name: "Burst" }).hasAttribute("disabled"), false);
     assert.ok(screen.getByRole("button", { name: /Close finished sessions/ }).hasAttribute("disabled"));
     assert.ok(screen.getByRole("button", { name: /Create a worktree in/ }).hasAttribute("disabled"));
     // Reads stay open: the board is still the place to look.

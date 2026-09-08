@@ -72,7 +72,7 @@ describe("collapsible goal board columns", () => {
     visitBoard();
 
     column("Shipped").within(() => {
-      cy.findByLabelText("2 goals in Merged").should("be.visible");
+      cy.findByLabelText("2 goals in Shipped").should("be.visible");
       cy.findByRole("button", { name: "Expand Shipped" }).should("have.attr", "aria-expanded", "false");
       cy.contains("Merged terminal one").should("not.exist");
       cy.contains("The goal pull request is merged.").should("not.exist");
@@ -85,13 +85,13 @@ describe("collapsible goal board columns", () => {
     });
 
     column("Stopped").within(() => {
-      cy.findByLabelText("1 goal in Blocked").should("be.visible");
-      cy.findByRole("button", { name: "Expand Blocked" }).should("have.attr", "aria-expanded", "false");
+      cy.findByLabelText("1 goal in Stopped").should("be.visible");
+      cy.findByRole("button", { name: "Expand Stopped" }).should("have.attr", "aria-expanded", "false");
       cy.contains("Repair the blocked implementation").should("not.exist");
     });
-    cy.findByRole("button", { name: "Expand Blocked" }).click();
+    cy.findByRole("button", { name: "Expand Stopped" }).click();
     column("Stopped").should("contain.text", "Repair the blocked implementation");
-    cy.findByRole("button", { name: "Collapse Blocked" }).click();
+    cy.findByRole("button", { name: "Collapse Stopped" }).click();
 
     const expandedCards = [
       ["GitHub Issues", "Keep the issue lane expanded"],
@@ -114,11 +114,11 @@ describe("collapsible goal board columns", () => {
   it("persists expansion, re-collapse, and a working-column choice across reloads", () => {
     visitBoard();
     cy.findByRole("button", { name: "Expand Shipped" }).click();
-    cy.findByRole("button", { name: "Expand Blocked" }).click();
+    cy.findByRole("button", { name: "Expand Stopped" }).click();
     cy.reload();
     cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
     column("Stopped").should("contain.text", "Repair the blocked implementation");
-    cy.findByRole("button", { name: "Collapse Blocked" }).click();
+    cy.findByRole("button", { name: "Collapse Stopped" }).click();
     column("Shipped").should("contain.text", "Merged terminal one");
     cy.findByRole("button", { name: "Collapse Shipped" }).should("have.attr", "aria-expanded", "true").click();
 
@@ -141,10 +141,10 @@ describe("collapsible goal board columns", () => {
       window.localStorage.setItem(preferenceKey, JSON.stringify({ blocked: true, merged: true, waiting_for_dev: false }));
     } });
     cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
-    cy.findByRole("button", { name: "Expand Blocked" }).should("have.attr", "aria-expanded", "false");
+    cy.findByRole("button", { name: "Expand Stopped" }).should("have.attr", "aria-expanded", "false");
     column("Shipped").should("contain.text", "Merged terminal one");
     cy.findByRole("button", { name: "Expand Needs you" }).should("exist");
-    cy.findByRole("button", { name: "Expand Blocked" }).click();
+    cy.findByRole("button", { name: "Expand Stopped" }).click();
     cy.reload();
     cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
     column("Stopped").should("contain.text", "Repair the blocked implementation");

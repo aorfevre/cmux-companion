@@ -10,7 +10,7 @@ const spaExperiment = process.argv.includes("--spa-experiment");
 // numeric host. Use the URL it actually advertises, or readiness waits forever
 // while the frontend is already serving on IPv6 loopback.
 const host = "localhost";
-const port = 3221;
+const port = Number(process.env.CMUX_COMPANION_CYPRESS_PORT) || 3221;
 const baseUrl = `http://${host}:${port}`;
 const environment = { ...process.env, CMUX_COMPANION_LOCAL_E2E: "1" };
 await assertPortAvailable(port);

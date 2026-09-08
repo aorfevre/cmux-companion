@@ -59,7 +59,7 @@ function start() {
   cy.wait("@startGoal");
   cy.location("search").should("not.contain", "workspace=");
   cy.contains("Goal session started in cmux for Goal app.").should("be.visible");
-  cy.findByRole("button", { name: "Expand Blocked" }).click();
+  cy.findByRole("button", { name: "Expand Stopped" }).click();
   cy.findByRole("button", { name: "Resume Add billing" }).click();
   cy.findByRole("button", { name: "Open conversation" }).click();
   cy.location("search").should("contain", "workspace=goal-workspace");
@@ -99,7 +99,7 @@ describe("visible goal conversation", () => {
     cy.contains("Planning stopped before it produced anything").should("not.exist");
     cy.then(() => state.setPlan({ ...state.getPlan(), goalSessionState: "awaiting_approval", proposalRevision: 1, proposal }));
     cy.reload();
-    cy.contains("Ready for review").should("be.visible");
+    cy.contains("The contract waits for your approval").should("be.visible");
     cy.screenshot("native-goal-review-ready", { capture: "viewport" });
     cy.contains("Ready to launch").should("not.exist");
   });

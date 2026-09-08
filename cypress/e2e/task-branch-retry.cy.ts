@@ -40,7 +40,7 @@ describe("retry a blocked task on a fresh branch", () => {
       expect(request.body).to.deep.equal({ mode: "rebranch", closeLive: false });
       return new Promise<void>((resolve) => { release = () => { refreshed = true; request.reply({ branch: "feature/retry-2" }); resolve(); }; });
     }).as("rebranch");
-    cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
+    cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); window.localStorage.setItem("cmux-companion-read-only", "false"); } });
     cy.wait(["@dashboard", "@plans", "@health"]);
     cy.findByRole("button", { name: "1 stuck goals. Show the tasks that need you" }).click();
     cy.findByRole("region", { name: "Goals needing attention" }).should("have.focus").within(() => {

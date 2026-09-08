@@ -49,7 +49,7 @@ function installBoard(state: Column) {
   cy.intercept("GET", "**/api/github-issues", (request) => request.reply({ syncedAt: null, issues: state.issues })).as("issues");
 }
 
-function visitBoard(editable = false) {
+function visitBoard(editable = true) {
   cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); if (editable) window.localStorage.setItem("cmux-companion-read-only", "false"); } });
   cy.wait(["@dashboard", "@plans", "@health", "@issues"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");

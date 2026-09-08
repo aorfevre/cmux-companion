@@ -75,10 +75,10 @@ function installScenario(state: Scenario) {
 }
 
 function visitBoard() {
-  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
+  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); window.localStorage.setItem("cmux-companion-read-only", "false"); } });
   cy.wait(["@dashboard", "@plans", "@health"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
-  cy.findByRole("button", { name: "Expand Blocked" }).click();
+  cy.findByRole("button", { name: "Expand Stopped" }).click();
 }
 
 describe("goal board matches live cmux evidence", () => {
@@ -283,7 +283,7 @@ describe("goal board matches live cmux evidence", () => {
 
     const merged = { ...waitingMerge, health: null, boardStatus: "merged", boardPrState: "MERGED", boardState: "shipped" };
     advance(merged);
-    cy.findByRole("button", { name: "Expand Merged" }).click();
+    cy.findByRole("button", { name: "Expand Shipped" }).click();
     expectColumn("Shipped");
     cy.findAllByText(goal).should("have.length", 1);
   });

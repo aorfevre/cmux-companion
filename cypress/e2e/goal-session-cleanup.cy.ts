@@ -81,7 +81,7 @@ function installScenario(state: Scenario) {
 }
 
 function visitBoard() {
-  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
+  cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); window.localStorage.setItem("cmux-companion-read-only", "false"); } });
   cy.wait(["@dashboard", "@plans", "@health", "@retirable"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
 }
