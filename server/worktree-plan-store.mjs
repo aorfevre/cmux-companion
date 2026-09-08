@@ -1391,6 +1391,7 @@ export class WorktreePlanStore {
       goalSessionState: row.goal_session_state ?? null,
       goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,
       goalSessionError: row.goal_session_error ?? null,
+      goalSessionQuestionRevision: Number(row.goal_session_question_revision) || 0,
       proposalRevision: Number(row.proposal_revision) || 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
