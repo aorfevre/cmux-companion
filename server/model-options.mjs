@@ -25,7 +25,7 @@ export const MODEL_ROLES = [
   { id: "issueAnalyzer", label: "Issue analyzer", description: "Groups GitHub issues into topics before planning.", provider: true },
 ];
 // Retain old keys for saved configuration compatibility, without exposing retired workflows.
-export const ACTIVE_MODEL_ROLES = MODEL_ROLES.filter((role) => !["specReviewer", "issueAnalyzer"].includes(role.id));
+export const ACTIVE_MODEL_ROLES = MODEL_ROLES.filter((role) => !["issueAnalyzer"].includes(role.id));
 export const DEFAULT_MODEL_ROLES = Object.fromEntries(MODEL_ROLES.map((role) => [role.id, {
   ...(role.provider ? { provider: role.id === "planner" ? "codex" : "claude" } : {}),
   models: ["specReviewer", "codeReviewer"].includes(role.id)

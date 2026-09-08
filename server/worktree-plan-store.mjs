@@ -8,6 +8,8 @@ import { classifyLegacyWorktreeError } from "./worktree-errors.mjs";
 import { safeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
 import { currentModelId } from "./model-options.mjs";
+import { normalizeGoalType, plannerReviewReady } from "./goal-options.mjs";
+import { GoalOutcomeStore } from "./goal-outcome-store.mjs";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "goal-plans.db");
 
@@ -54,8 +56,9 @@ export class WorktreePlanStore {
     // WAL keeps a reader from blocking the round that is writing. It is a no-op
     // on an in-memory database, which is what the fast tests use.
     if (path !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA foreign_keys = ON");
+    this.db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000");
     initializePlanSchema(this.db);
+    this.outcomes = new GoalOutcomeStore(this);
     if (path !== ":memory:") {
       // The goal text and the task prompts describe private work, so the file
       // stays readable by its owner only, like every other companion file.
@@ -64,10 +67,11 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, discoveryContext = null }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, discoveryContext = null, goalType = "coding", sourceAnalysis = null }) {
     const at = this.#stamp();
     const options = safeSpecOptions(specOptions);
     const review = safeReviewOptions(reviewOptions);
+    const type = normalizeGoalType(goalType);
     this.#transaction(() => {
       // Reservation and plan creation are one transaction, before any planner
       // process starts. Both single-issue and topic planning use this boundary.
@@ -82,6 +86,7 @@ export class WorktreePlanStore {
         INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), json(review), at, at);
+      this.db.prepare("UPDATE plans SET goal_type = ?, source_analysis = ? WHERE plan_id = ?").run(type, sourceAnalysis ? json(sourceAnalysis) : null, planId);
       if (discoveryContext) this.db.prepare("UPDATE plans SET discovery_context = ? WHERE plan_id = ?").run(json(discoveryContext), planId);
       this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review }, at);
     });
@@ -252,7 +257,7 @@ export class WorktreePlanStore {
     if (!Number.isInteger(generation) || generation < 1 || !proposal || typeof proposal !== "object" || Array.isArray(proposal)) throw new TypeError("Invalid goal-session proposal");
     const at = this.#stamp();
     this.#transaction(() => {
-      const row = this.db.prepare("SELECT proposal_revision, goal_session_pending_input, goal_session_active_input, goal_session_provider_session_id FROM plans WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND goal_session_state IN ('planning', 'awaiting_input', 'awaiting_approval')").get(String(planId), generation);
+      const row = this.db.prepare("SELECT proposal_revision, goal_session_pending_input, goal_session_active_input, goal_session_provider_session_id FROM plans WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND (goal_session_state IN ('planning', 'awaiting_input', 'awaiting_approval') OR (goal_type = 'analysis' AND goal_session_state IN ('analyzing', 'analysis_ready')))").get(String(planId), generation);
       if (!row) throw new TypeError("This proposal belongs to an unavailable goal session");
       if (expectedRevision !== undefined && (row.goal_session_provider_session_id !== providerSessionId || row.proposal_revision !== expectedRevision || (row.goal_session_pending_input || row.goal_session_active_input || "") !== expectedFeedback)) throw new TypeError("The proposal or feedback changed before publication");
       const revision = Number(row.proposal_revision || 0) + 1;
@@ -260,6 +265,8 @@ export class WorktreePlanStore {
         goal_session_provider_session_id = COALESCE(?, goal_session_provider_session_id), approval_revision = NULL,
         approval_at = NULL, transition_status = NULL, goal_session_error = NULL, updated_at = ? WHERE plan_id = ?`).run(revision, json(proposal), text(providerSessionId) || null, at, String(planId));
       if (expectedRevision !== undefined) this.db.prepare("UPDATE plans SET goal_session_pending_input = NULL, goal_session_active_input = NULL WHERE plan_id = ?").run(String(planId));
+      const plan = this.get(planId);
+      if (plan.engine.reviewer) this.outcomes.queue(plan, "planner", String(revision), { proposal, baseSha: plan.baseSha });
       this.#insertEvent(String(planId), null, "proposal_published", { generation, revision, proposal }, at);
     });
     return this.get(planId);
@@ -347,7 +354,7 @@ export class WorktreePlanStore {
     const id = text(workspaceId);
     if (!id || id.length > 200) return null;
     const row = this.db.prepare("SELECT * FROM plans WHERE workflow = 'goal_session' AND goal_session_workspace_id = ? LIMIT 1").get(id);
-    return row ? readPlan(row) : null;
+    return row ? this.get(row.plan_id) : null;
   }
 
   recordGoalSessionProviderSession(planId, { generation, providerSessionId } = {}) {
@@ -364,6 +371,15 @@ export class WorktreePlanStore {
     if (!Number.isInteger(generation) || !Number.isInteger(revision) || revision < 1) throw new TypeError("Invalid proposal approval");
     const at = this.#stamp();
     this.#transaction(() => {
+      const plan = this.get(planId);
+      if (!plan || !plannerReviewReady(plan)) throw new TypeError("Wait for planner review, or acknowledge its failure before approving");
+      if (plan.goalType === "analysis") {
+        const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'analyzing', approval_revision = ?, approval_at = ?, transition_status = 'delivered', goal_session_error = NULL, delivery_status = 'analyzing', updated_at = ?
+          WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND proposal_revision = ? AND goal_session_state = 'awaiting_approval'`).run(revision, at, at, String(planId), generation, revision).changes;
+        if (changed !== 1) throw new TypeError("This proposal is no longer current or was already approved");
+        this.#insertEvent(String(planId), null, "proposal_approved", { generation, revision, goalType: "analysis" }, at);
+        return;
+      }
       const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'implementing', approval_revision = ?, approval_at = ?,
         transition_status = 'pending', goal_session_error = NULL, status = 'launched', delivery_mode = 'single', delivery_status = 'implementing',
         launched_at = COALESCE(launched_at, ?), updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
@@ -1140,7 +1156,7 @@ export class WorktreePlanStore {
       .prepare("SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY position")
       .all(row.plan_id)
       .map(readTask);
-    return { ...readPlan(row), tasks };
+    return { ...readPlan(row), tasks, analysisReports: this.outcomes.reports(String(planId)), reviews: this.outcomes.reviews(String(planId)) };
   }
 
   events(planId, { limit = 200 } = {}) {
@@ -1244,6 +1260,9 @@ export class WorktreePlanStore {
       // without a second request. The merge session is included because it is
       // the one the user opens when a merge is blocked.
       workspaceIds: splitIds([row.open_workspace_ids, row.merge_workspace_id, row.goal_session_workspace_id].filter(Boolean).join(","), null),
+      goalType: row.goal_type || "coding",
+      sourceAnalysis: parse(row.source_analysis, null),
+      plannerReviewStatus: this.outcomes.reviews(row.plan_id).find((review) => review.kind === "planner" && review.target === String(row.proposal_revision))?.status || null,
       workflow: row.workflow || "planned",
       goalSessionState: row.goal_session_state ?? null,
       goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,
@@ -1362,6 +1381,8 @@ function readPlan(row) {
     reviewBriefPath: row.review_brief_path ?? null,
     reviewLaunchedAt: row.review_launched_at ?? null,
     reviewSessionClosedAt: row.review_session_closed_at ?? null,
+    goalType: row.goal_type || "coding",
+    sourceAnalysis: parse(row.source_analysis, null),
     workflow: row.workflow || "planned",
     goalSessionState: row.goal_session_state ?? null,
     goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,

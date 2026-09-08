@@ -377,6 +377,7 @@ export function normalizePullRequest(value) {
     reviewDecision: String(value.reviewDecision || "REVIEW_REQUIRED"),
     mergeState: String(value.mergeStateStatus || "UNKNOWN"),
     headBranch: String(value.headRefName || ""),
+    headSha: /^[a-f0-9]{40,64}$/.test(value.headRefOid || "") ? value.headRefOid : null,
     baseBranch: String(value.baseRefName || ""),
     updatedAt: value.updatedAt || null,
     author: value.author?.login || null,

@@ -6,13 +6,15 @@
 // The board reads structured fields only. It never parses a display label such
 // as `runStep`, because a wording change in the planner must not move a card.
 
-// The seven columns, in board order. Frozen so no caller can reorder or extend
+// The coding and analysis columns, in board order. Frozen so no caller can reorder or extend
 // the lifecycle by mutating the shared array.
 export const GOAL_BOARD_COLUMNS = Object.freeze([
   Object.freeze({ id: "writing_spec", label: "Writing Spec", description: "The planner is still drafting the specification." }),
   Object.freeze({ id: "review_spec", label: "Review Spec", description: "A reviewer pass is checking the specification." }),
   Object.freeze({ id: "waiting_for_dev", label: "Waiting for dev", description: "The specification is ready to launch." }),
   Object.freeze({ id: "dev_in_progress", label: "Dev in progress", description: "Agents are working on the launched tasks." }),
+  Object.freeze({ id: "analysis_in_progress", label: "Analysis in progress", description: "The analyst is preparing a read-only report." }),
+  Object.freeze({ id: "analysis_ready", label: "Analysis ready", description: "Read the saved report, challenge it or launch coding discovery." }),
   Object.freeze({ id: "waiting_for_merge", label: "Waiting for merge", description: "The work waits for the goal pull request to merge." }),
   Object.freeze({ id: "blocked", label: "Blocked", description: "The goal stopped and needs a person before it can continue.", collapsedByDefault: true }),
   Object.freeze({ id: "merged", label: "Merged", description: "The goal pull request is merged.", collapsedByDefault: true }),
@@ -36,7 +38,7 @@ export function goalBoardState(plan) {
   // `health`; a payload without one keeps the old derivation exactly.
   const health = text(source.health);
   const prState = text(source.boardPrState).toUpperCase();
-  if (boardStatus === "merged" || prState === "MERGED") return "merged";
+  if (source.goalType !== "analysis" && (boardStatus === "merged" || prState === "MERGED")) return "merged";
 
   // Managed goal sessions have no launched task row while the one owner is
   // conversing or editing. Their durable lifecycle is therefore the board
@@ -44,7 +46,12 @@ export function goalBoardState(plan) {
   if (text(source.workflow) === "goal_session") {
     const session = text(source.goalSessionState);
     if (session === "unavailable" || text(source.goalSessionError) || source.transitionStatus === "uncertain") return "blocked";
-    if (prState === "OPEN" || (prState !== "CLOSED" && text(source.finalPrUrl) !== "")) return "waiting_for_merge";
+    if (source.goalType === "analysis") {
+      if (session === "analysis_ready") return "analysis_ready";
+      if (session === "analyzing") return "analysis_in_progress";
+    } else if (prState === "OPEN" || (prState !== "CLOSED" && text(source.finalPrUrl) !== "")) return "waiting_for_merge";
+    const review = source.plannerReviewStatus || (Array.isArray(source.reviews) ? source.reviews : []).find((entry) => entry?.kind === "planner" && entry.target === String(source.proposalRevision))?.status;
+    if (session === "awaiting_approval" && ["queued", "running"].includes(review)) return "review_spec";
     if (session === "awaiting_input") return "blocked";
     if (session === "awaiting_approval") return "waiting_for_dev";
     if (session === "implementing") return "dev_in_progress";

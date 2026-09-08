@@ -633,9 +633,9 @@ describe("worktree goal planner", () => {
         assert.equal(posts.length, changed ? 2 : 1);
         for (const [, init] of posts) {
           const body = JSON.parse(String(init?.body));
-          assert.deepEqual(body.engine, { provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
+          assert.deepEqual(body.engine, { provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: true });
           assert.deepEqual(body.specOptions, changed ? changedSpecOptions : defaultSpecOptions);
-          assert.deepEqual(body.reviewOptions, { codeReview: false, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
+          assert.deepEqual(body.reviewOptions, { codeReview: true, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
         }
         await userEvent.click(await screen.findByRole("button", { name: "← New goal" }));
         assertFormChecks();
@@ -1245,6 +1245,8 @@ describe("goals board", () => {
     ["Review Spec", "A reviewer pass is checking the specification."],
     ["Waiting for dev", "The specification is ready to launch."],
     ["Dev in progress", "Agents are working on the launched tasks."],
+    ["Analysis in progress", "The analyst is preparing a read-only report."],
+    ["Analysis ready", "Read the saved report, challenge it or launch coding discovery."],
     ["Waiting for merge", "The work waits for the goal pull request to merge."],
     ["Blocked", "The goal stopped and needs a person before it can continue."],
     ["Merged", "The goal pull request is merged."],
@@ -1328,31 +1330,31 @@ describe("goals board", () => {
     assert.ok(within(column("Merged")).getByLabelText("1 goal in Merged"));
     assert.ok(within(column("Waiting for dev")).getByRole("list", { name: "Waiting for dev goals" }));
     assert.equal(within(column("Merged")).queryByText("Merged already"), null);
-    assert.equal(within(column("Merged")).queryByText(COLUMNS[6][1]), null);
+    assert.equal(within(column("Merged")).queryByText(COLUMNS[8][1]), null);
     assert.equal(within(column("Aborted")).queryByText("Stopped on purpose"), null);
-    assert.equal(within(column("Aborted")).queryByText(COLUMNS[7][1]), null);
+    assert.equal(within(column("Aborted")).queryByText(COLUMNS[9][1]), null);
     assert.equal(within(column("Merged")).getByRole("button", { name: "Expand Merged" }).getAttribute("aria-expanded"), "false");
     assert.equal(within(column("Aborted")).getByRole("button", { name: "Expand Aborted" }).getAttribute("aria-expanded"), "false");
-    assert.equal(within(board).getAllByRole("button", { name: /^Collapse / }).length, 6);
+    assert.equal(within(board).getAllByRole("button", { name: /^Collapse / }).length, 8);
 
     await expandColumn(board, "Merged");
     await expandColumn(board, "Aborted");
     await expandColumn(board, "Blocked");
     assert.ok(within(column("Blocked")).getByText("Its agent died"));
     assert.ok(within(column("Merged")).getByText("Merged already"));
-    assert.ok(within(column("Merged")).getByText(COLUMNS[6][1]));
+    assert.ok(within(column("Merged")).getByText(COLUMNS[8][1]));
     assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
-    assert.ok(within(column("Aborted")).getByText(COLUMNS[7][1]));
+    assert.ok(within(column("Aborted")).getByText(COLUMNS[9][1]));
     assert.equal(within(column("Merged")).getByRole("button", { name: "Collapse Merged" }).getAttribute("aria-expanded"), "true");
     // Every column renders, so an empty one carries a note instead of nothing.
-    assert.equal(within(board).queryAllByText("No goal here yet.").length, 0);
+    assert.equal(within(board).queryAllByText("No goal here yet.").length, 2);
 
     cleanup();
     localStorage.removeItem(columnPreferenceKey);
     mountBoard([]);
     const emptyBoard = await openBoard();
-    assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 9);
-    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 5);
+    assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 11);
+    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 7);
   });
 
   test("toggles any column and restores each choice from localStorage", async () => {
@@ -1439,7 +1441,7 @@ describe("goals board", () => {
     assert.equal(within(filtered).queryByText("Write the spec"), null);
     // Eight goal columns plus the GitHub Issues column. The search filters
     // goals, so every column still renders.
-    assert.equal(within(filtered).getAllByRole("heading", { level: 3 }).length, 9);
+    assert.equal(within(filtered).getAllByRole("heading", { level: 3 }).length, 11);
     await userEvent.clear(searchBox);
     await userEvent.type(searchBox, "trust-layer");
     assert.ok(within(screen.getByRole("region", { name: "Goals board" })).getByText("Write the spec"));

@@ -102,7 +102,7 @@ describe("collapsible goal board columns", () => {
       ["Waiting for merge", "Land the implementation"],
     ];
     for (const [name, card] of expandedCards) column(name).should("contain.text", card);
-    cy.findAllByRole("button", { name: /^(Expand|Collapse) / }).should("have.length", 9);
+    cy.findAllByRole("button", { name: /^(Expand|Collapse) / }).should("have.length", 11);
 
     cy.findByRole("button", { name: "Expand Merged" }).click().should("have.attr", "aria-expanded", "true");
     column("Merged").find("article").should("have.length", 2);

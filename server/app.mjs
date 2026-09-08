@@ -5,6 +5,7 @@ import { WorktreeCleanup } from "./worktree-cleanup.mjs";
 import { WorktreeInventory, processActivity } from "./worktree-inventory.mjs";
 import { GoalSessionCollector } from "./goal-session-collector.mjs";
 import { GoalSessionService } from "./goal-session-service.mjs";
+import { GoalReviews } from "./goal-reviews.mjs";
 import Fastify from "fastify";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -73,6 +74,7 @@ export async function buildApp({
   goalFollowups = null,
   githubReviewToken = null,
   goalMergeWatch = null,
+  goalReviews = null,
   goalHealthSweep = null,
   goalSessionReaper = null,
   goalWatchdog = null,
@@ -193,6 +195,8 @@ export async function buildApp({
   // waiting to be noticed. It moves no goal: every recovery stays explicit.
   const watchdog = goalWatchdog
     || (health ? new GoalWatchdog({ health, store: planStore, integrator, pushService, mergeWatch, worktrees, sessionReaper: autoCloseSessions ? reaper : null, log: app.log }) : null);
+  const reviews = goalReviews || (planStore ? new GoalReviews({ store: planStore, worktrees, modelSettings, log: app.log }) : null);
+  const detachReviews = reviews && (!worktreePlanner || goalReviews) ? reviews.start() : null;
   const detachWatchdog = watchdog?.start() || null;
   const detachIssueSyncScheduler = issueSyncScheduler?.start() || null;
   const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
@@ -550,6 +554,40 @@ export async function buildApp({
   app.get("/api/goal-sessions/workspace/:workspaceId", async (request) => {
     if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
     return { plan: goalSessions.findByWorkspace(request.params.workspaceId) };
+  });
+
+  app.get("/api/goal-sessions/:planId/analysis/:version/download", async (request, reply) => {
+    if (!planStore) throw serviceUnavailable("Goal storage is unavailable");
+    const plan = planStore.get(request.params.planId);
+    if (!plan || plan.goalType !== "analysis") throw new TypeError("Analysis is unavailable");
+    await worktrees.resolveRepository(plan.repositoryId);
+    const report = planStore.outcomes.report(plan.planId, Number(request.params.version));
+    return reply.header("Cache-Control", "no-store").header("Content-Disposition", `attachment; filename="analysis-v${report.version}.md"`).type("text/markdown; charset=utf-8").send(`# ${report.title}\n\n${report.markdown}`);
+  });
+  app.post("/api/goal-sessions/:planId/challenge-analysis", { schema: WRITE_SCHEMAS.analysisVersion }, async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    await goalSessions.challenge(request.params.planId, request.body.version);
+    return planStore.get(request.params.planId);
+  });
+  app.post("/api/goal-sessions/:planId/launch-coding", { schema: WRITE_SCHEMAS.analysisVersion }, async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    const result = await goalSessions.launchCoding(request.params.planId, request.body.version);
+    bootstrapSnapshot = null; worktrees.invalidate();
+    return result;
+  });
+  for (const action of ["retry", "acknowledge", "reconcile"]) app.post(`/api/goal-sessions/:planId/reviews/${action}`, { schema: WRITE_SCHEMAS.reviewAction }, async (request) => {
+    if (!reviews || !planStore) throw serviceUnavailable("Goal reviews are unavailable");
+    const plan = planStore.get(request.params.planId);
+    if (!plan) throw new TypeError("Goal is unavailable");
+    await worktrees.resolveRepository(plan.repositoryId);
+    if (action === "reconcile") return reviews.reconcile(plan.planId, request.body.reviewId);
+    planStore.outcomes[action](plan.planId, request.body.reviewId);
+    return planStore.get(plan.planId);
+  });
+  app.post("/api/goal-sessions/:planId/reviews/code", { schema: WRITE_SCHEMAS.empty }, async (request) => {
+    if (!reviews) throw serviceUnavailable("Goal reviews are unavailable");
+    await reviews.requestCode(request.params.planId);
+    return planStore.get(request.params.planId);
   });
 
   app.post("/api/goal-sessions/:planId/approve", async (request) => {
@@ -1050,6 +1088,7 @@ export async function buildApp({
     detachQueue?.();
     detachIntegrator?.();
     detachWatchdog?.();
+    await detachReviews?.();
     detachIssueSyncScheduler?.();
     hub.stop();
     if (!worktreePlanStore && planStore) planStore.close();

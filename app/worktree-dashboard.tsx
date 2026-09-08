@@ -117,6 +117,9 @@ function boardEvidence(plan: PlanSummary, state: GoalBoardStateId) {
   if (state === "merged") return "Its pull request was observed as merged.";
   if (state === "waiting_for_merge") return plan.deliveryError || (plan.deliveryStatus === "assembling" ? "A merge agent is assembling this goal" : "Waiting for the goal pull request to merge");
   if (state === "blocked") return plan.deliveryError || plan.healthReason || "This goal stopped and needs attention";
+  if (state === "analysis_in_progress") return "Preparing a repository-read-only analysis report";
+  if (state === "analysis_ready") return "Report saved. Challenge the analysis or start linked coding discovery.";
+  if (state === "review_spec" && plan.workflow === "goal_session") return "An independent reviewer is checking the current proposal";
   if (state === "dev_in_progress") return plan.deliveryError || deliveryEvidence(plan.deliveryStatus);
   // A launch runs on the companion after its request has ended. Until it
   // settles, this goal is neither idle nor launched, so it says so.

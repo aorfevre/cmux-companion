@@ -122,6 +122,34 @@ CREATE TABLE IF NOT EXISTS plan_events (
   payload TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS goal_reports (
+  plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  approval_revision INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  markdown TEXT NOT NULL,
+  base_sha TEXT,
+  created_at TEXT NOT NULL,
+  coding_goal_id TEXT,
+  PRIMARY KEY (plan_id, version)
+);
+CREATE TABLE IF NOT EXISTS goal_reviews (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL REFERENCES plans(plan_id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  target TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  snapshot TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  attempt INTEGER NOT NULL DEFAULT 0,
+  pid INTEGER,
+  result TEXT,
+  error TEXT,
+  acknowledged_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (plan_id, kind, target)
+);
 CREATE INDEX IF NOT EXISTS plans_repository_updated ON plans (repository_id, updated_at);
 CREATE INDEX IF NOT EXISTS plan_events_plan_id ON plan_events (plan_id, id);
 `;
@@ -136,6 +164,11 @@ function migratePlanSchema(db) {
       const columns = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
       if (!columns.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
     };
+    ensure("goal_reviews", "post_owner", "INTEGER");
+    ensure("goal_reviews", "post_pid", "INTEGER");
+    ensure("goal_reviews", "runner_owner", "INTEGER");
+    ensure("plans", "goal_type", "TEXT NOT NULL DEFAULT 'coding'");
+    ensure("plans", "source_analysis", "TEXT");
     ensure("plans", "base_sha", "TEXT");
     ensure("plans", "source_type", "TEXT");
     ensure("plans", "issues_returned_at", "TEXT");

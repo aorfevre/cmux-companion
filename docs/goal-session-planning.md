@@ -38,10 +38,73 @@ Neither product quality nor iteration-speed improvements have been measured yet.
    workspace. The conversation stays available during PR review and accepts
    corrections within approved scope. Merge remains a separate decision.
 
-Automated planner and post-delivery code reviewers remain on the legacy path.
-Visible-session creation refuses these options before allocating resources rather
-than silently ignoring a selected reviewer. Bulk issue planning and existing
-multi-task delivery also retain their existing flow.
+New coding goals enable **Add reviewer pass**, **Code review**, unit tests,
+end-to-end tests, edge cases and refactor review. Screen wireframes and flowcharts
+remain off. The form, direct creation APIs and issue quick-start share creation
+defaults; explicit opt-outs and historical saved choices are preserved. Resetting
+the form restores new-goal defaults. Bulk issue planning and historical multi-task
+delivery retain their existing flow.
+
+### Advisory independent reviews
+
+Planner review is queued for each published proposal revision, using the saved
+spec-reviewer model for the opposite provider. Approval becomes available when
+that review completes, regardless of findings. A failure is not a pass: retry it
+or explicitly acknowledge it before deciding whether to approve. Reviewers cannot
+approve for the user, modify code, or start another goal.
+
+Code review starts after the existing observer sees the goal's matching open PR.
+It reviews a Git archive pinned to the PR head and its base-to-head diff, saves
+findings in Companion, then posts an advisory GitHub comment using the backend's
+`gh` identity. It does not submit an approval verdict or automatically fix findings.
+A changed head marks old completed findings stale; **Review current PR commit**
+requests another review explicitly. Both passes add provider usage and latency;
+users can disable them before creation. The form explains the GitHub posting.
+
+Reviews have durable attempts and process ownership. Runs are capped at 15 minutes,
+with a three-minute idle limit, bounded output, and SIGTERM/SIGKILL termination.
+Failed runs expose explicit retry. Uncertain posting exposes reconciliation of the
+saved exact comment, not an automatic second execution. Concurrent posting claims
+are serialized in SQLite. Unknown dispatch ownership fails closed; when a crashed
+owner has no recorded posting PID, an existing exact comment can resolve delivery,
+but absence alone does not authorize another post. Missing locally pinned Git
+objects or an oversized diff fail visibly rather than silently reviewing less code.
+
+### Analysis outcomes
+
+Choose **Analysis** for repository-grounded investigation rather than code delivery.
+Planner review and edge cases still apply; tests, refactor work and post-PR code
+review are shown as not applicable. Switching back to Coding retains form choices.
+Historical goals and issue quick-start remain coding unless explicitly created as
+analysis; an existing goal is not converted in place.
+
+Approve the exact analysis scope and tell the analyst to continue. Its CLI remains
+read-only even after approval: no Bash, Edit or Write. The bound `publish_analysis`
+MCP tool accepts a title and Markdown with populated Evidence, Assumptions,
+Limitations and Recommendations sections. The server appends the two next steps,
+validates identity/revision/expected version and the 96 KiB total size, and saves an
+immutable report atomically. A valid saved report produces **Analysis ready** without
+a coding task, commit, push or PR. Publishing a broader proposal requires fresh
+approval while earlier reports remain available.
+
+Companion displays version history and safe Markdown, with attachment-style
+**Download Markdown**. Raw HTML and remote images are not executed or fetched.
+Reports stay in Companion's SQLite database, not in repository files.
+
+- **Challenge the analysis** queues a separate read-only critique of the selected
+  saved report and repository evidence. Findings are version-bound; the original
+  is never rewritten. Failures can be retried, including for older report versions.
+  Ask the original analyst for any desired revision; there is no automatic rewrite.
+- **Launch coding goal** creates or opens one linked coding discovery per selected
+  report version. Its context comes from the stored report, not client-supplied
+  text, and is labeled untrusted. It uses new coding defaults and needs its own
+  proposal approval. Duplicate clicks and startup failures retain one saved child;
+  failures require recovery rather than creating another worktree.
+
+Analysis conversations and worktrees are retained for revisions. Reports and
+critiques remain readable; PR observers do not infer analysis completion or retire
+its workspace. This is not web research, a general document manager, or an
+alternative delivery path for legacy multi-task plans.
 
 Existing issue goals keep their saved workflow; starting the same issue again
 returns its existing goal rather than creating a second session. A failed start
@@ -60,8 +123,8 @@ restarts or terminal input interception. The native CLI inherits stdin/stdout/st
 and resumes the recorded session ID. This is the Claude-compatible native UI;
 it does not launch the native Codex CLI.
 
-`server/goal-session-bridge.mjs` exposes only `get_status` and `publish_proposal`
-over local stdio MCP. Proposal validation reuses delivery-contract checks,
+`server/goal-session-bridge.mjs` exposes `get_status` and `publish_proposal`
+over local stdio MCP, plus `publish_analysis` only for bound analysis goals. Proposal validation reuses delivery-contract checks,
 including requested spec options. Publishing compares the revision, provider
 identity and pending feedback atomically; it cannot approve a proposal. Validation
 errors go back to the agent for correction without setting a blocked state.
