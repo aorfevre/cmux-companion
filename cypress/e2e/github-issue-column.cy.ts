@@ -89,12 +89,12 @@ describe("GitHub Sync and the GitHub Issues column", () => {
       cy.contains(plain.name).should("not.exist");
     });
 
-    // The column is left of Writing Spec in the board's own DOM order.
+    // The column is left of Discovering in the board's own DOM order.
     cy.findByRole("region", { name: "Goals board" }).find("section.goal-board-column > header > h3")
       .then((headings) => {
         const labels = [...headings].map((heading) => heading.textContent);
         expect(labels[0]).to.equal("GitHub Issues");
-        expect(labels.indexOf("GitHub Issues")).to.be.lessThan(labels.indexOf("Writing Spec"));
+        expect(labels.indexOf("GitHub Issues")).to.be.lessThan(labels.indexOf("Discovering"));
       });
   });
 
@@ -189,7 +189,7 @@ describe("GitHub Sync and the GitHub Issues column", () => {
       state.plans = [{
         planId: "plan-issue-12", repositoryId: starred.id, repositoryName: starred.name,
         goal: "Resolve GitHub issue #12: Restore the caret", status: "draft", stage: "questions", round: 0,
-        taskCount: 0, createdAt: now, updatedAt: now, launchedAt: null, boardState: "writing_spec",
+        taskCount: 0, createdAt: now, updatedAt: now, launchedAt: null, boardState: "discovering",
         sourceType: "github_issues", issueNumbers: [12], issueUrls: [starredIssue.url],
       }];
       request.reply({ issue: state.issues[0], plan: { planId: "plan-issue-12" }, created: false });
@@ -199,7 +199,7 @@ describe("GitHub Sync and the GitHub Issues column", () => {
     cy.findByRole("button", { name: "Start a goal for #12 Restore the caret" }).click();
     cy.wait("@startGoal").its("request.url").should("match", new RegExp(`/api/github-issues/${starred.id}/12/goal$`));
 
-    cy.findByRole("region", { name: "Writing Spec" }).should("contain.text", "Resolve GitHub issue #12: Restore the caret");
+    cy.findByRole("region", { name: "Discovering" }).should("contain.text", "Resolve GitHub issue #12: Restore the caret");
     // The issue leaves its column live, with no reload: the work is on the
     // board once, as the goal card that now represents it.
     cy.findByRole("region", { name: "GitHub Issues" }).within(() => {

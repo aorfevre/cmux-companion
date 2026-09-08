@@ -45,7 +45,7 @@ const readiness = {
 };
 
 function summary(planId = "plan-summary", goal = "Approve the concise delivery plan") {
-  return { planId, repositoryId: repository.id, repositoryName: repository.name, goal, status: "draft", stage: "ready", round: 1, taskCount: tasks.length, createdAt: now, updatedAt: now, launchedAt: null, boardState: "waiting_for_dev" };
+  return { planId, repositoryId: repository.id, repositoryName: repository.name, goal, status: "draft", stage: "ready", round: 1, taskCount: tasks.length, createdAt: now, updatedAt: now, launchedAt: null, boardState: "needs_you" };
 }
 
 function summaryDetail() {
@@ -81,7 +81,7 @@ function openSavedGoal(goal: string) {
   cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-home-mode", "worktrees"); } });
   cy.wait(["@dashboard", "@plans"]);
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
-  cy.findByRole("region", { name: "Waiting for dev" }).findByRole("button", { name: `Resume ${goal}` }).click();
+  cy.findByRole("region", { name: "Needs you" }).findByRole("button", { name: `Resume ${goal}` }).click();
   cy.wait("@detail");
 }
 

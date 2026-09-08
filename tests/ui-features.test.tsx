@@ -1235,17 +1235,17 @@ describe("goals board", () => {
   const plan = (over: Record<string, unknown> & { planId: string }) => ({ repositoryId: "repo-karven", repositoryName: "trust-layer", goal: "A goal", status: "draft", stage: "ready", round: 1, taskCount: 1, createdAt: now, updatedAt: now, launchedAt: null, ...over });
 
   // One plan per column, plus a GitHub-issue plan and a Rekord plan.
-  const writing = plan({ planId: "plan-writing", goal: "Write the spec", stage: "questions", round: 0, taskCount: 0, running: true, runPhase: "running", runStage: "plan", runStep: "Reading app/page.tsx", boardState: "writing_spec" });
-  const review = plan({ planId: "plan-review", goal: "Review the spec", running: true, runPhase: "running", runStage: "review_spec", runStep: "Anything at all", boardState: "review_spec" });
-  const waitingDev = plan({ planId: "plan-waiting-dev", goal: "Ready to launch work", taskCount: 3, boardState: "waiting_for_dev", sourceType: "github_issues", issueNumbers: [42] });
-  const devInProgress = plan({ planId: "plan-dev", goal: "Agents are coding", status: "launched", taskCount: 2, deliveryStatus: "planning", launchedAt: now, boardState: "dev_in_progress" });
-  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, followupCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "waiting_for_merge", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
-  const merged = plan({ planId: "plan-merged", goal: "Merged already", status: "launched", taskCount: 4, launchedAt: now, boardState: "merged", boardStatus: "merged", boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12" });
+  const writing = plan({ planId: "plan-writing", goal: "Write the spec", stage: "questions", round: 0, taskCount: 0, running: true, runPhase: "running", runStage: "plan", runStep: "Reading app/page.tsx", boardState: "discovering" });
+  const review = plan({ planId: "plan-review", goal: "Review the spec", running: true, runPhase: "running", runStage: "review_spec", runStep: "Anything at all", boardState: "discovering" });
+  const waitingDev = plan({ planId: "plan-waiting-dev", goal: "Ready to launch work", taskCount: 3, boardState: "needs_you", sourceType: "github_issues", issueNumbers: [42] });
+  const devInProgress = plan({ planId: "plan-dev", goal: "Agents are coding", status: "launched", taskCount: 2, deliveryStatus: "planning", launchedAt: now, boardState: "building" });
+  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, followupCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "in_review", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
+  const merged = plan({ planId: "plan-merged", goal: "Merged already", status: "launched", taskCount: 4, launchedAt: now, boardState: "shipped", boardStatus: "merged", boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12" });
   const aborted = plan({ planId: "plan-aborted", goal: "Stopped on purpose", taskCount: 1, boardState: "aborted", boardStatus: "aborted", boardChangedAt: now });
   // A launched goal whose agents died. It used to read as "Dev in progress",
   // which is the one state a supervisor must never be told wrongly.
-  const blocked = plan({ planId: "plan-blocked", goal: "Its agent died", status: "launched", taskCount: 2, launchedAt: now, boardState: "blocked", deliveryStatus: "blocked", health: "dead", healthReason: "This task session is no longer open in cmux", stuckCount: 1 });
-  const rekord = plan({ planId: "plan-rekord", repositoryId: "repo-rekord", repositoryName: "recorder", goal: "Improve recording search", boardState: "waiting_for_dev" });
+  const blocked = plan({ planId: "plan-blocked", goal: "Its agent died", status: "launched", taskCount: 2, launchedAt: now, boardState: "stopped", deliveryStatus: "blocked", health: "dead", healthReason: "This task session is no longer open in cmux", stuckCount: 1 });
+  const rekord = plan({ planId: "plan-rekord", repositoryId: "repo-rekord", repositoryName: "recorder", goal: "Improve recording search", boardState: "needs_you" });
   const allPlans = [writing, review, waitingDev, devInProgress, waitingMerge, blocked, merged, aborted, rekord];
   const healthSweep = {
     checkedAt: now, sessionsAvailable: true,
@@ -1274,16 +1274,15 @@ describe("goals board", () => {
   }
 
   const COLUMNS = [
-    ["Writing Spec", "The planner is still drafting the specification."],
-    ["Review Spec", "A reviewer pass is checking the specification."],
-    ["Waiting for dev", "The specification is ready to launch."],
-    ["Dev in progress", "Agents are working on the launched tasks."],
+    ["Discovering", "The agent reads the repository and drafts the delivery contract."],
+    ["Needs you", "Answer a question, approve the contract or request changes."],
+    ["Building", "Agents are implementing the approved contract."],
     ["Analysis in progress", "The analyst is preparing a read-only report."],
     ["Analysis ready", "Read the saved report, challenge it or launch coding discovery."],
-    ["Waiting for merge", "The work waits for the goal pull request to merge."],
-    ["Blocked", "The goal stopped and needs a person before it can continue."],
-    ["Merged", "The goal pull request is merged."],
-    ["Aborted", "The goal was stopped and no more work is expected."],
+    ["In review", "The pull request is open and waits for review and merge."],
+    ["Stopped", "The goal failed or its agent died. A person must decide."],
+    ["Shipped", "The goal pull request is merged."],
+    ["Aborted", "The goal was stopped on purpose and no more work is expected."],
   ];
 
   async function openBoard() {
@@ -1341,7 +1340,7 @@ describe("goals board", () => {
     assert.equal(JSON.parse(String(launch?.body)).agent, "claude");
   });
 
-  test("renders ordered columns with Blocked and terminal defaults collapsed and accurate counts", async () => {
+  test("renders ordered columns with Stopped and terminal defaults collapsed and accurate counts", async () => {
     mountBoard();
     const board = await openBoard();
     await openOtherViews();
@@ -1352,33 +1351,33 @@ describe("goals board", () => {
     for (const [label, description] of COLUMNS.slice(0, 5)) assert.ok(within(board).getByText(description), `${label} description`);
 
     const column = (label: string) => within(board).getByRole("region", { name: label });
-    assert.ok(within(column("Writing Spec")).getByText("Write the spec"));
-    assert.ok(within(column("Review Spec")).getByText("Review the spec"));
-    assert.ok(within(column("Waiting for dev")).getByText("Ready to launch work"));
-    assert.ok(within(column("Dev in progress")).getByText("Agents are coding"));
-    assert.ok(within(column("Waiting for merge")).getByText("Waiting on the PR"));
-    assert.equal(within(column("Blocked")).queryByText("Its agent died"), null);
-    assert.ok(within(column("Blocked")).getByLabelText("1 goal in Blocked"));
-    assert.ok(within(column("Waiting for dev")).getByLabelText("2 goals in Waiting for dev"));
-    assert.ok(within(column("Merged")).getByLabelText("1 goal in Merged"));
-    assert.ok(within(column("Waiting for dev")).getByRole("list", { name: "Waiting for dev goals" }));
-    assert.equal(within(column("Merged")).queryByText("Merged already"), null);
-    assert.equal(within(column("Merged")).queryByText(COLUMNS[8][1]), null);
+    assert.ok(within(column("Discovering")).getByText("Write the spec"));
+    assert.ok(within(column("Discovering")).getByText("Review the spec"));
+    assert.ok(within(column("Needs you")).getByText("Ready to launch work"));
+    assert.ok(within(column("Building")).getByText("Agents are coding"));
+    assert.ok(within(column("In review")).getByText("Waiting on the PR"));
+    assert.equal(within(column("Stopped")).queryByText("Its agent died"), null);
+    assert.ok(within(column("Stopped")).getByLabelText("1 goal in Stopped"));
+    assert.ok(within(column("Needs you")).getByLabelText("2 goals in Needs you"));
+    assert.ok(within(column("Shipped")).getByLabelText("1 goal in Shipped"));
+    assert.ok(within(column("Needs you")).getByRole("list", { name: "Needs you goals" }));
+    assert.equal(within(column("Shipped")).queryByText("Merged already"), null);
+    assert.equal(within(column("Shipped")).queryByText(COLUMNS[7][1]), null);
     assert.equal(within(column("Aborted")).queryByText("Stopped on purpose"), null);
-    assert.equal(within(column("Aborted")).queryByText(COLUMNS[9][1]), null);
-    assert.equal(within(column("Merged")).getByRole("button", { name: "Expand Merged" }).getAttribute("aria-expanded"), "false");
+    assert.equal(within(column("Aborted")).queryByText(COLUMNS[8][1]), null);
+    assert.equal(within(column("Shipped")).getByRole("button", { name: "Expand Shipped" }).getAttribute("aria-expanded"), "false");
     assert.equal(within(column("Aborted")).getByRole("button", { name: "Expand Aborted" }).getAttribute("aria-expanded"), "false");
-    assert.equal(within(board).getAllByRole("button", { name: /^Collapse / }).length, 8);
+    assert.equal(within(board).getAllByRole("button", { name: /^Collapse / }).length, 7);
 
-    await expandColumn(board, "Merged");
+    await expandColumn(board, "Shipped");
     await expandColumn(board, "Aborted");
-    await expandColumn(board, "Blocked");
-    assert.ok(within(column("Blocked")).getByText("Its agent died"));
-    assert.ok(within(column("Merged")).getByText("Merged already"));
-    assert.ok(within(column("Merged")).getByText(COLUMNS[8][1]));
+    await expandColumn(board, "Stopped");
+    assert.ok(within(column("Stopped")).getByText("Its agent died"));
+    assert.ok(within(column("Shipped")).getByText("Merged already"));
+    assert.ok(within(column("Shipped")).getByText(COLUMNS[7][1]));
     assert.ok(within(column("Aborted")).getByText("Stopped on purpose"));
-    assert.ok(within(column("Aborted")).getByText(COLUMNS[9][1]));
-    assert.equal(within(column("Merged")).getByRole("button", { name: "Collapse Merged" }).getAttribute("aria-expanded"), "true");
+    assert.ok(within(column("Aborted")).getByText(COLUMNS[8][1]));
+    assert.equal(within(column("Shipped")).getByRole("button", { name: "Collapse Shipped" }).getAttribute("aria-expanded"), "true");
     // Every column renders, so an empty one carries a note instead of nothing.
     assert.equal(within(board).queryAllByText("No goal here yet.").length, 2);
 
@@ -1386,32 +1385,32 @@ describe("goals board", () => {
     localStorage.removeItem(columnPreferenceKey);
     mountBoard([]);
     const emptyBoard = await openBoard();
-    assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 11);
-    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 7);
+    assert.equal(within(emptyBoard).getAllByRole("heading", { level: 3 }).length, 10);
+    assert.equal(within(emptyBoard).getAllByText("No goal here yet.").length, 6);
   });
 
   test("toggles any column and restores each choice from localStorage", async () => {
     mountBoard();
     let board = await openBoard();
-    await expandColumn(board, "Merged");
+    await expandColumn(board, "Shipped");
     assert.ok(within(board).getByText("Merged already"));
 
     cleanup();
     mountBoard();
     board = await openBoard();
     assert.ok(within(board).getByText("Merged already"));
-    await userEvent.click(within(board).getByRole("button", { name: "Collapse Merged" }));
+    await userEvent.click(within(board).getByRole("button", { name: "Collapse Shipped" }));
     assert.equal(within(board).queryByText("Merged already"), null);
 
     cleanup();
     mountBoard();
     board = await openBoard();
     assert.equal(within(board).queryByText("Merged already"), null);
-    const waitingToggle = within(board).getByRole("button", { name: "Collapse Waiting for dev" });
+    const waitingToggle = within(board).getByRole("button", { name: "Collapse Needs you" });
     assert.equal(waitingToggle.getAttribute("aria-expanded"), "true");
     await userEvent.click(waitingToggle);
     assert.equal(within(board).queryByText("Ready to launch work"), null);
-    assert.equal(within(board).getByRole("button", { name: "Expand Waiting for dev" }).getAttribute("aria-expanded"), "false");
+    assert.equal(within(board).getByRole("button", { name: "Expand Needs you" }).getAttribute("aria-expanded"), "false");
   });
 
   test("falls back to the shared derivation when a plan carries no usable board state", async () => {
@@ -1420,20 +1419,20 @@ describe("goals board", () => {
     const runningReview = plan({ planId: "plan-derived-review", goal: "Derived reviewer pass", running: true, runStage: "review_spec", runStep: "Round 2 · rewriting the split" });
     mountBoard([missing, unknown, runningReview]);
     const board = await openBoard();
-    assert.ok(within(within(board).getByRole("region", { name: "Dev in progress" })).getByText("No board state at all"));
-    assert.ok(within(within(board).getByRole("region", { name: "Waiting for dev" })).getByText("An unknown board state"));
-    // Review Spec comes from runStage, so the wording of runStep cannot move it.
-    assert.ok(within(within(board).getByRole("region", { name: "Review Spec" })).getByText("Derived reviewer pass"));
+    assert.ok(within(within(board).getByRole("region", { name: "Building" })).getByText("No board state at all"));
+    assert.ok(within(within(board).getByRole("region", { name: "Needs you" })).getByText("An unknown board state"));
+    // A running reviewer pass is still discovery; the wording of runStep cannot move it.
+    assert.ok(within(within(board).getByRole("region", { name: "Discovering" })).getByText("Derived reviewer pass"));
   });
 
   // The launch runs on the companion after its request has ended. A goal in
   // that gap is neither idle nor launched, so its card must not repeat "Ready
   // to launch" for the whole minute the worktrees take.
   test("a goal whose launch is in flight reads as launching, not as ready", async () => {
-    const launching = plan({ planId: "plan-launching", goal: "Its launch is running", taskCount: 2, boardState: "waiting_for_dev", launching: true });
+    const launching = plan({ planId: "plan-launching", goal: "Its launch is running", taskCount: 2, boardState: "needs_you", launching: true });
     mountBoard([launching]);
     const board = await openBoard();
-    const column = within(board).getByRole("region", { name: "Waiting for dev" });
+    const column = within(board).getByRole("region", { name: "Needs you" });
     assert.ok(within(column).getByText("Its launch is running"));
     assert.ok(within(column).getByText("Creating worktrees and starting sessions…"));
     assert.equal(within(column).queryByText("Ready to launch"), null);
@@ -1441,7 +1440,7 @@ describe("goals board", () => {
     // Once the launch settles the marker is gone, so the card stops saying it.
     cleanup();
     mountBoard([{ ...launching, launching: false }]);
-    const settled = within(await openBoard()).getByRole("region", { name: "Waiting for dev" });
+    const settled = within(await openBoard()).getByRole("region", { name: "Needs you" });
     assert.ok(within(settled).getByText("Ready to launch"));
     assert.equal(within(settled).queryByText("Creating worktrees and starting sessions…"), null);
   });
@@ -1467,14 +1466,14 @@ describe("goals board", () => {
     await userEvent.click(screen.getByRole("tab", { name: /Karven/ }));
 
     const searchBox = screen.getByRole("searchbox", { name: "Search projects" });
-    await expandColumn(screen.getByRole("region", { name: "Goals board" }), "Merged");
+    await expandColumn(screen.getByRole("region", { name: "Goals board" }), "Shipped");
     await userEvent.type(searchBox, "Merged already");
     const filtered = screen.getByRole("region", { name: "Goals board" });
     assert.ok(within(filtered).getByText("Merged already"));
     assert.equal(within(filtered).queryByText("Write the spec"), null);
-    // Eight goal columns plus the GitHub Issues column. The search filters
+    // Nine goal columns plus the GitHub Issues column. The search filters
     // goals, so every column still renders.
-    assert.equal(within(filtered).getAllByRole("heading", { level: 3 }).length, 11);
+    assert.equal(within(filtered).getAllByRole("heading", { level: 3 }).length, 10);
     await userEvent.clear(searchBox);
     await userEvent.type(searchBox, "trust-layer");
     assert.ok(within(screen.getByRole("region", { name: "Goals board" })).getByText("Write the spec"));
@@ -1588,9 +1587,9 @@ describe("goals board", () => {
   test("shows card metadata, lifecycle evidence, and pull-request links", async () => {
     mountBoard();
     const board = await openBoard();
-    await expandColumn(board, "Merged");
+    await expandColumn(board, "Shipped");
     await expandColumn(board, "Aborted");
-    await expandColumn(board, "Blocked");
+    await expandColumn(board, "Stopped");
     const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
 
     const dev = card("Ready to launch work");
@@ -1618,7 +1617,7 @@ describe("goals board", () => {
     assert.ok(within(card("Waiting on the PR")).getByText("2 follow-ups"));
   });
 
-  test("offers follow-up actions only on Waiting for merge and submits several actions in one request", async () => {
+  test("offers follow-up actions only on In review and submits several actions in one request", async () => {
     const issue = { repositoryId: "repo-karven", repositoryName: "trust-layer", number: 91, title: "Issue without follow-ups", labels: [], url: "https://github.test/issues/91", updatedAt: now, syncedAt: now, planId: null };
     let planReads = 0;
     const fetchMock = mountBoard(allPlans, (url, init) => {
@@ -1629,11 +1628,11 @@ describe("goals board", () => {
     });
     const board = await openBoard();
     await within(board).findByText(issue.title);
-    await expandColumn(board, "Blocked");
+    await expandColumn(board, "Stopped");
     // Merged and Aborted start collapsed, so their cards render only once the
     // column is expanded. The point of this test is that a terminal goal
     // offers no follow-up button, which needs the card on the page to prove.
-    await userEvent.click(within(board).getByRole("button", { name: "Expand Merged" }));
+    await userEvent.click(within(board).getByRole("button", { name: "Expand Shipped" }));
     await userEvent.click(within(board).getByRole("button", { name: "Expand Aborted" }));
     const card = (goal: string) => within(board).getByText(goal).closest("article") as HTMLElement;
 
@@ -1697,7 +1696,7 @@ describe("goals board", () => {
       launchedCount: 2,
       readyCount: 2,
       launchedAt: now,
-      boardState: "blocked",
+      boardState: "stopped",
       deliveryStatus: "blocked",
       deliveryError: "The merge agent stopped before opening the pull request",
       mergeStatus: "blocked",
@@ -1723,7 +1722,7 @@ describe("goals board", () => {
       return null;
     });
     const board = await openBoard();
-    await expandColumn(board, "Blocked");
+    await expandColumn(board, "Stopped");
     const card = within(board).getByText("Assemble the two ready tasks").closest("article") as HTMLElement;
 
     assert.equal(within(card).getAllByText("The merge agent stopped before opening the pull request").length, 2);
@@ -1744,7 +1743,7 @@ describe("goals board", () => {
       taskCount: 1,
       launchedCount: 1,
       launchedAt: now,
-      boardState: "blocked",
+      boardState: "stopped",
       deliveryStatus: "blocked",
       workspaceIds: ["ws-gone"],
       health: "dead",
@@ -1762,7 +1761,7 @@ describe("goals board", () => {
     };
     mountBoard([stale], (url) => url === "/api/goals/health" ? new Response(JSON.stringify(staleHealth), { status: 200 }) : null);
     const board = await openBoard();
-    await expandColumn(board, "Blocked");
+    await expandColumn(board, "Stopped");
     const card = within(board).getByText("Workspace already closed").closest("article") as HTMLElement;
 
     assert.equal(within(card).queryByRole("button", { name: "Open Workspace already closed in cmux" }), null);
@@ -1784,9 +1783,9 @@ describe("goals board", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<WorktreeDashboardView onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
     const board = await openBoard();
-    await expandColumn(board, "Merged");
+    await expandColumn(board, "Shipped");
     await expandColumn(board, "Aborted");
-    await expandColumn(board, "Blocked");
+    await expandColumn(board, "Stopped");
     const card = (goal: string) => within(screen.getByRole("region", { name: "Goals board" })).getByText(goal).closest("article") as HTMLElement;
 
     // Terminal cards never offer Abort.
@@ -1820,7 +1819,7 @@ describe("goals board", () => {
   });
 
   test("encodes the plan id and keeps the card in place when the abort request fails", async () => {
-    const awkward = plan({ planId: "plan/with space", goal: "Awkward id goal", boardState: "waiting_for_dev" });
+    const awkward = plan({ planId: "plan/with space", goal: "Awkward id goal", boardState: "needs_you" });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/abort") && init?.method === "POST") return new Response(JSON.stringify({ error: "cmux is unreachable" }), { status: 502 });
@@ -1835,7 +1834,7 @@ describe("goals board", () => {
     assert.ok(await screen.findByText("cmux is unreachable"));
     const abortCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/abort"));
     assert.equal(String(abortCall?.[0]), "/api/worktree-plans/plan%2Fwith%20space/abort");
-    assert.ok(within(screen.getByRole("region", { name: "Waiting for dev" })).getByText("Awkward id goal"));
+    assert.ok(within(screen.getByRole("region", { name: "Needs you" })).getByText("Awkward id goal"));
   });
 
   test("Refresh GitHub reads the plan list only after the reconciled dashboard resolves", async () => {
@@ -1867,7 +1866,7 @@ describe("goals board", () => {
   });
 
   test("a terminal planner sheet is a record with no mutating control", async () => {
-    const mergedDetail = { planId: "plan-merged", repositoryId: "repo-1", goal: "Merged already", round: 2, status: "ready", planStatus: "launched", deliveryMode: "combined", deliveryStatus: "pr_open", boardStatus: "merged", boardState: "merged", boardChangedAt: now, boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12", finalPrNumber: 12, finalPrUrl: "https://github.test/pr/12", questions: [], tasks: [{ id: "task-1", title: "Build the sheet", branch: "feature/sheet", prompt: "Build it.", agent: "codex", agentReason: "UI work suits Codex", deliveryStatus: "integrated" }] };
+    const mergedDetail = { planId: "plan-merged", repositoryId: "repo-1", goal: "Merged already", round: 2, status: "ready", planStatus: "launched", deliveryMode: "combined", deliveryStatus: "pr_open", boardStatus: "merged", boardState: "shipped", boardChangedAt: now, boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12", finalPrNumber: 12, finalPrUrl: "https://github.test/pr/12", questions: [], tasks: [{ id: "task-1", title: "Build the sheet", branch: "feature/sheet", prompt: "Build it.", agent: "codex", agentReason: "UI work suits Codex", deliveryStatus: "integrated" }] };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
@@ -1914,7 +1913,7 @@ describe("GitHub Issues board column", () => {
     repositoryId: "repositoryStarred01", repositoryName: "trust-layer", number: 12, title: "Restore the caret",
     labels: ["editor", "bug"], url: "https://github.test/acme/trust-layer/issues/12", updatedAt: now, syncedAt: now, planId: null, ...over,
   });
-  const startedPlan = { planId: "plan-issue-12", repositoryId: "repositoryStarred01", repositoryName: "trust-layer", goal: "Resolve GitHub issue #12: Restore the caret", status: "draft", stage: "questions", round: 0, taskCount: 0, createdAt: now, updatedAt: now, launchedAt: null, boardState: "writing_spec", sourceType: "github_issues", issueNumbers: [12] };
+  const startedPlan = { planId: "plan-issue-12", repositoryId: "repositoryStarred01", repositoryName: "trust-layer", goal: "Resolve GitHub issue #12: Restore the caret", status: "draft", stage: "questions", round: 0, taskCount: 0, createdAt: now, updatedAt: now, launchedAt: null, boardState: "discovering", sourceType: "github_issues", issueNumbers: [12] };
 
   // The board mounts with a stored column and an optional route override, in
   // the same shape as the goals-board helper above.
@@ -1944,7 +1943,7 @@ describe("GitHub Issues board column", () => {
     mountIssues({ issues: [issue()] });
     const board = await openBoard();
     const column = await within(board).findByRole("region", { name: "GitHub Issues" });
-    const writingSpec = within(board).getByRole("region", { name: "Writing Spec" });
+    const writingSpec = within(board).getByRole("region", { name: "Discovering" });
     // DOM order is the column order, so the issue column really is leftmost.
     assert.equal(Boolean(column.compareDocumentPosition(writingSpec) & Node.DOCUMENT_POSITION_FOLLOWING), true);
 
@@ -2070,7 +2069,7 @@ describe("GitHub Issues board column", () => {
 
     // The new goal lands in Writing Spec, and the issue leaves the issue column
     // in the same render: the work is on the board once, not twice.
-    await waitFor(() => assert.ok(within(within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "Writing Spec" })).getByText("Resolve GitHub issue #12: Restore the caret")));
+    await waitFor(() => assert.ok(within(within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "Discovering" })).getByText("Resolve GitHub issue #12: Restore the caret")));
     await waitFor(() => assert.equal(screen.queryByRole("button", { name: "Start a goal for #12 Restore the caret" }), null));
     const issueColumn = within(screen.getByRole("region", { name: "Goals board" })).getByRole("region", { name: "GitHub Issues" });
     assert.equal(within(issueColumn).queryByText("Restore the caret"), null);
@@ -2091,7 +2090,7 @@ describe("GitHub Issues board column", () => {
     // …the header agrees with what is rendered…
     assert.ok(within(column).getByLabelText("0 issues in GitHub Issues"));
     // …and the work is still on the board, as its goal card.
-    assert.ok(within(within(board).getByRole("region", { name: "Writing Spec" })).getByText("Resolve GitHub issue #12: Restore the caret"));
+    assert.ok(within(within(board).getByRole("region", { name: "Discovering" })).getByText("Resolve GitHub issue #12: Restore the caret"));
   });
 
   test("an issue whose goal was deleted comes back with a working Start a goal button", async () => {
@@ -2277,7 +2276,7 @@ describe("fresh branch recovery", () => {
           { id: "T3", title: "Dead task", branch: "feature/dead", agent: "codex", prompt: "Build", agentReason: "", wave: 1, launchStatus: "launched", launchReason: null, deliveryStatus: "pending", health: "dead", reason: "Agent stopped", session: null, workspaceId: null },
         ];
         const now = new Date().toISOString();
-        const plan = { planId, repositoryId: "repo-retry", repositoryName: "companion", goal: "Recover blocked work", status: "launched", planStatus: "launched", stage: "ready", deliveryMode: "combined", deliveryStatus: "blocked", boardState: "blocked", round: 1, taskCount: 3, launchedCount: 1, createdAt: now, updatedAt: now, launchedAt: now, tasks, questions: [] };
+        const plan = { planId, repositoryId: "repo-retry", repositoryName: "companion", goal: "Recover blocked work", status: "launched", planStatus: "launched", stage: "ready", deliveryMode: "combined", deliveryStatus: "blocked", boardState: "stopped", round: 1, taskCount: 3, launchedCount: 1, createdAt: now, updatedAt: now, launchedAt: now, tasks, questions: [] };
         const repository = { id: "repo-retry", name: "companion", root: "karven", path: "/repo", summary: {}, worktrees: [], releases: [] };
         let release: (value: Response) => void = () => {};
         let refreshed = false;

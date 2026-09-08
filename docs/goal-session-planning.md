@@ -245,7 +245,7 @@ without publishing or editing. The resumed approved conversation recalled the
 chosen label, revision 2 and its prior 2/2 test result without tool use. Both
 native test processes were stopped with targeted SIGTERM, after checking their
 parentage against the recorded owner; process exit left errors null and board
-states Writing Spec / Dev in progress rather than Blocked. Native Escape/keyboard
+states Discovering / Building rather than Stopped. Native Escape/keyboard
 shutdown was not established by this run: earlier keyboard shutdown attempts did
 not exit the CLI, so no claim of verified keyboard cancellation is made.
 

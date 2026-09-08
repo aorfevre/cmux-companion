@@ -935,17 +935,17 @@ test("a failed snapshot reconciles nothing, and a failed reconciliation still re
 
 test("the plan list and detail carry the lifecycle fields the board reads", async (t) => {
   const planner = fakePlanner();
-  planner.list = async () => ({ plans: [{ planId: "plan-1", goal: "Add billing", status: "launched", running: false, runPhase: null, runStage: null, runStep: "", runError: "", boardStatus: null, boardPrState: "OPEN", boardState: "waiting_for_merge" }] });
-  planner.detail = async () => ({ planId: "plan-1", status: "launched", running: true, runPhase: "running", runStage: "review_spec", runStep: "Read app/page.tsx", runError: "", boardStatus: null, boardState: "review_spec", events: [] });
+  planner.list = async () => ({ plans: [{ planId: "plan-1", goal: "Add billing", status: "launched", running: false, runPhase: null, runStage: null, runStep: "", runError: "", boardStatus: null, boardPrState: "OPEN", boardState: "in_review" }] });
+  planner.detail = async () => ({ planId: "plan-1", status: "launched", running: true, runPhase: "running", runStage: "review_spec", runStep: "Read app/page.tsx", runError: "", boardStatus: null, boardState: "discovering", events: [] });
   const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner });
   t.after(() => app.close());
   const headers = { authorization: `Bearer ${TOKEN}`, host: "mac.tail.test", origin: "https://mac.tail.test" };
   const listed = (await app.inject({ url: "/api/worktree-plans", headers })).json();
-  assert.equal(listed.plans[0].boardState, "waiting_for_merge");
+  assert.equal(listed.plans[0].boardState, "in_review");
   assert.equal(listed.plans[0].boardPrState, "OPEN");
   const detail = (await app.inject({ url: "/api/worktree-plans/plan-1", headers })).json();
   assert.equal(detail.runStage, "review_spec");
-  assert.equal(detail.boardState, "review_spec");
+  assert.equal(detail.boardState, "discovering");
 });
 
 

@@ -35,7 +35,7 @@ export class GoalFollowups {
     const plan = this.store.get(id);
     if (!plan) throw new TypeError("Unknown plan. Start a new goal");
     if (plan.workflow === "goal_session") throw new TypeError("Managed goal sessions retain their one visible conversation for delivery and review");
-    if (goalBoardState(plan) !== "waiting_for_merge") {
+    if (goalBoardState(plan) !== "in_review") {
       throw new TypeError("Only a goal waiting for merge can take a follow-up action");
     }
     // A merge and a follow-up in the same worktree can both commit or resolve
@@ -116,7 +116,7 @@ export class GoalFollowups {
   #assertCurrent(id, target) {
     const current = this.store.get(id);
     const delivery = current && deliveryTarget(current);
-    if (!current || goalBoardState(current) !== "waiting_for_merge" || current.mergeStatus === "running" ||
+    if (!current || goalBoardState(current) !== "in_review" || current.mergeStatus === "running" ||
       delivery.worktreePath !== target.worktreePath || delivery.branch !== target.branch) {
       throw new TypeError("Goal lifecycle or delivery checkout changed during follow-up launch");
     }

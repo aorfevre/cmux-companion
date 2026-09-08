@@ -17,7 +17,7 @@ const goalPlan = {
   planId: "goal-overload", repositoryId: "repo-overload", repositoryName: "cmux-e2e-cypress",
   goal: "Survive an overloaded Mac", status: "launched", stage: "ready", round: 1,
   taskCount: 1, launchedCount: 1, readyCount: 0, agentSplit: { claude: 1, codex: 0 },
-  workspaceIds: [] as string[], deliveryStatus: "implementing", boardState: "dev_in_progress",
+  workspaceIds: [] as string[], deliveryStatus: "implementing", boardState: "building",
   createdAt: now, updatedAt: now, launchedAt: now,
 };
 

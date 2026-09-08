@@ -20,7 +20,7 @@ function readyPlan(overrides: Record<string, unknown> = {}) {
   return {
     planId: "plan-launch", repositoryId: "repo-e2e", repositoryName: "cmux-e2e-cypress", goal: GOAL,
     status: "draft", stage: "ready", round: 2, taskCount: tasks.length, launchedCount: 0, readyCount: 0,
-    boardState: "waiting_for_dev", createdAt: now, updatedAt: now, launchedAt: null,
+    boardState: "needs_you", createdAt: now, updatedAt: now, launchedAt: null,
     ...overrides,
   };
 }
@@ -64,7 +64,7 @@ function visitBoard() {
 }
 
 function openTheGoalSheet() {
-  cy.findByRole("region", { name: "Waiting for dev" }).findByRole("button", { name: `Resume ${GOAL}` }).click();
+  cy.findByRole("region", { name: "Needs you" }).findByRole("button", { name: `Resume ${GOAL}` }).click();
   cy.wait("@detail");
   cy.findByRole("dialog", { name: "Plan a goal" }).should("be.visible");
 }
@@ -82,17 +82,17 @@ describe("continuing saved discovery and observing existing delivery", () => {
     installScenario(state);
     visitBoard();
 
-    cy.findByRole("region", { name: "Waiting for dev" }).should("contain.text", "Creating worktrees and starting sessions…");
+    cy.findByRole("region", { name: "Needs you" }).should("contain.text", "Creating worktrees and starting sessions…");
 
     cy.then(() => {
-      state.plans = [readyPlan({ status: "launched", launchedCount: 2, launchedAt: now, deliveryStatus: "implementing", boardState: "dev_in_progress" })];
+      state.plans = [readyPlan({ status: "launched", launchedCount: 2, launchedAt: now, deliveryStatus: "implementing", boardState: "building" })];
     });
     cy.openBoardTools();
     cy.findByRole("button", { name: "Refresh GitHub" }).click();
     cy.wait("@plans");
 
-    cy.findByRole("region", { name: "Dev in progress" }).should("contain.text", GOAL);
-    cy.findByRole("region", { name: "Waiting for dev" }).should("not.contain.text", "Creating worktrees and starting sessions…");
+    cy.findByRole("region", { name: "Building" }).should("contain.text", GOAL);
+    cy.findByRole("region", { name: "Needs you" }).should("not.contain.text", "Creating worktrees and starting sessions…");
   });
 
   it("keeps the sheet open and reports the reason when a launch is refused", () => {

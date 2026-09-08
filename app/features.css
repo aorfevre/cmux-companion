@@ -332,8 +332,9 @@
 .goal-board-empty.filtered-empty .text-button{margin-top:0;color:var(--lime);font-size:7px;font-weight:800}
 .goal-board-cards{display:flex;flex-direction:column;gap:8px;margin:0;list-style:none;padding:0}
 .goal-board-card{display:flex;min-width:0;flex-direction:column;gap:7px;border:1px solid #2b3641;border-radius:12px;background:linear-gradient(145deg,#151b22,#11151a);padding:10px}
-.goal-board-card.merged{border-color:rgba(201,255,80,.28)}.goal-board-card.aborted{border-color:rgba(255,109,120,.26)}
-.goal-board-card.writing_spec,.goal-board-card.review_spec{border-color:rgba(159,196,255,.26)}
+.goal-board-card.shipped{border-color:rgba(201,255,80,.28)}.goal-board-card.aborted{border-color:rgba(255,109,120,.26)}
+.goal-board-card.discovering{border-color:rgba(159,196,255,.26)}
+.goal-board-card.needs_you{border-color:rgba(255,200,120,.4)}
 .goal-board-card>strong{display:-webkit-box;color:#edf1f4;font-size:9px;line-height:1.5;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}
 .goal-board-card-meta{display:flex;flex-wrap:wrap;gap:4px 8px;color:#7f8994;font-size:7px}
 .goal-board-card-evidence{display:-webkit-box;margin:0;color:#96a0aa;font-size:7px;line-height:1.5;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}
@@ -347,7 +348,7 @@
 .goal-board-abort-confirm{display:flex;flex-direction:column;gap:7px}
 .goal-board-abort-confirm>span{color:#ffb2b9;font-size:7px;line-height:1.55}
 .goal-board-abort-confirm>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px}
-.goal-board-card.blocked,.goal-board-card.dev_in_progress.blocked{border-color:rgba(255,179,92,.32)}
+.goal-board-card.stopped{border-color:rgba(255,109,120,.32)}
 .goal-board-card>footer .goal-board-focus,.goal-board-card>footer .goal-board-check{grid-column:1/-1}
 .goal-board-card>footer .goal-board-check{border-color:rgba(159,196,255,.3);background:rgba(159,196,255,.06);color:#9fc4ff}
 /* Health, readiness, agents and issues: the evidence the sweep already knows

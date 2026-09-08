@@ -801,7 +801,7 @@ export async function buildApp({
     issueSyncScheduler ? issueSyncScheduler.syncNow() : issueSync.sync()
   ));
 
-  // One issue becomes one goal plan. The plan then appears in Writing Spec
+  // One issue becomes one goal plan. The plan then appears in Discovering
   // like every other draft, so the caches that feed the board are dropped.
   app.post("/api/github-issues/:repositoryId/:number/goal", async (request) => {
     const repositoryId = String(request.params.repositoryId || "");

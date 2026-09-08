@@ -12,7 +12,7 @@ const tasks = [
   { id: "T1 / blocked", title: "Blocked task", branch: "feature/blocked", agent: "codex", prompt: "Build", agentReason: "", wave: 1, launchStatus: "failed", launchReason: "running-session", launchError: "That branch already has a worktree with a running session", deliveryStatus: "pending", health: "failed", reason: "Branch is occupied", session: null, workspaceId: null },
   { id: "T2", title: "Sync failure", branch: "feature/sync", agent: "codex", prompt: "Build", agentReason: "", wave: 1, launchStatus: "failed", launchReason: "add-failure", deliveryStatus: "pending", health: "failed", reason: "Project sync failed", session: null, workspaceId: null },
 ];
-const plan = { planId: "goal-retry", repositoryId: repository.id, repositoryName: repository.name, goal: "Recover blocked work", status: "launched", planStatus: "launched", stage: "ready", deliveryMode: "combined", deliveryStatus: "blocked", boardState: "blocked", round: 1, taskCount: 2, launchedCount: 0, createdAt: now, updatedAt: now, launchedAt: now, tasks, questions: [] };
+const plan = { planId: "goal-retry", repositoryId: repository.id, repositoryName: repository.name, goal: "Recover blocked work", status: "launched", planStatus: "launched", stage: "ready", deliveryMode: "combined", deliveryStatus: "blocked", boardState: "stopped", round: 1, taskCount: 2, launchedCount: 0, createdAt: now, updatedAt: now, launchedAt: now, tasks, questions: [] };
 
 describe("retry a blocked task on a fresh branch", () => {
   it("preserves the blocked branch, disables competing actions, and refreshes the effective branch", () => {

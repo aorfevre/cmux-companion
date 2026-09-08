@@ -7,8 +7,8 @@ const repo = {
   worktrees: [{ id: "worktree-links", repoId: "repo-links", path: "/fixture", name: "Goal links", branch: "main", isPrimary: true, detached: false, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }], releases: [],
 };
 const goals = [
-  { planId: "goal-launched", repositoryId: repo.id, repositoryName: repo.name, goal: "Review the whole project", status: "launched", planStatus: "launched", stage: "ready", boardState: "dev_in_progress", round: 1, taskCount: 0, tasks: [], questions: [], createdAt: now, updatedAt: now, launchedAt: now },
-  { planId: "goal-draft", repositoryId: repo.id, repositoryName: repo.name, goal: "Prepare another goal", status: "draft", planStatus: "draft", stage: "questions", boardState: "writing_spec", round: 1, taskCount: 0, tasks: [], questions: [{ id: "q1", text: "Which behavior should change?", options: ["Navigation", "Search"] }], createdAt: now, updatedAt: now, launchedAt: null },
+  { planId: "goal-launched", repositoryId: repo.id, repositoryName: repo.name, goal: "Review the whole project", status: "launched", planStatus: "launched", stage: "ready", boardState: "building", round: 1, taskCount: 0, tasks: [], questions: [], createdAt: now, updatedAt: now, launchedAt: now },
+  { planId: "goal-draft", repositoryId: repo.id, repositoryName: repo.name, goal: "Prepare another goal", status: "draft", planStatus: "draft", stage: "questions", boardState: "discovering", round: 1, taskCount: 0, tasks: [], questions: [{ id: "q1", text: "Which behavior should change?", options: ["Navigation", "Search"] }], createdAt: now, updatedAt: now, launchedAt: null },
 ];
 function scenario(listed = true) {
   cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing local fixture" } });

@@ -28,7 +28,7 @@ test("restart is explicit, preserves the old card on failure and announces its s
 });
 test("blocked discovery offers the same explicit continuation without an abort detour", () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response("{}")));
-  render(<WorktreePlannerSheet repository={{ id: "repo", name: "Sample" }} initialDraft={{ ...source, boardStatus: null, boardState: "blocked" }} onClose={() => {}} onNotice={() => {}} />);
+  render(<WorktreePlannerSheet repository={{ id: "repo", name: "Sample" }} initialDraft={{ ...source, boardStatus: null, boardState: "stopped" }} onClose={() => {}} onNotice={() => {}} />);
   assert.ok(screen.getByText(/Companion stops its previous discovery/));
   assert.equal(screen.queryAllByRole("button", { name: "Continue discovery" }).length, 1);
 });

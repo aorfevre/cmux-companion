@@ -44,7 +44,7 @@ export type PlannerProvider = "claude" | "codex";
 type PlannerEngine = { provider: PlannerProvider; model: string; effort: string; reviewer: boolean };
 // The eight lifecycle ids come from server/goal-board.mjs. The board and the
 // planner sheet read the same ids, so a card and its sheet never disagree.
-export type GoalBoardStateId = "writing_spec" | "review_spec" | "waiting_for_dev" | "dev_in_progress" | "analysis_in_progress" | "analysis_ready" | "waiting_for_merge" | "blocked" | "merged" | "aborted";
+export type GoalBoardStateId = "discovering" | "needs_you" | "building" | "analysis_in_progress" | "analysis_ready" | "in_review" | "stopped" | "shipped" | "aborted";
 // Every verdict server/goal-health.mjs can return, worst first. The sweep and
 // the plan list both send one of these words and nothing else.
 export type GoalHealth = "failed" | "dead" | "idle" | "needs_you" | "working" | "ready" | "integrated" | "queued" | "unknown";

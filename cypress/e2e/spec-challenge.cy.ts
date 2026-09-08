@@ -44,13 +44,13 @@ const discussion = [
 ];
 
 // The goal is being questioned, not planned: it is a ready draft that stays in
-// "Waiting for dev" while its round runs.
+// "Needs you" while its round runs.
 function discussingSummary() {
   return {
     planId: "plan-challenge", repositoryId: "repo-challenge", repositoryName: "cmux-e2e-cypress", goal: GOAL,
     status: "draft", stage: "ready", running: true, runStage: "discussing", runStep: "Reading the contract",
     round: 2, taskCount: tasks.length, launchedCount: 0, readyCount: 0,
-    boardState: "waiting_for_dev", createdAt: now, updatedAt: now, launchedAt: null,
+    boardState: "needs_you", createdAt: now, updatedAt: now, launchedAt: null,
   };
 }
 

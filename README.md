@@ -51,7 +51,7 @@ native interactive conversation in cmux. Ask questions, answer the agent,
 interrupt it and refine scope directly in the same terminal. Discovery stays open
 until the agent publishes a validated delivery contract through its dedicated
 Companion tool. The saved proposal then becomes ready for review; missing output,
-a CLI exit or an interrupted conversation does not move it to Blocked.
+a CLI exit or an interrupted conversation does not move it to Stopped.
 
 Review the scope, exclusions, assumptions, acceptance criteria and verification,
 then choose **Request changes** or **Approve and implement**. Approval applies to
@@ -296,7 +296,10 @@ sleeping Mac left a task pending for ever while the board reported "Dev in
 progress". Nothing could start that task again, because a launch refuses a plan
 that already launched.
 
-**Goals board** now carries a **Blocked** column and an attention rail. The rail
+**Goals board** columns are named for who acts: Discovering, Needs you, Building,
+In review, Stopped, Shipped and Aborted, plus the two analysis columns. A goal that
+asked a question or published a contract sits in **Needs you**; **Stopped** holds
+failures only. The board also carries an attention rail. The rail
 lists every task that died, went quiet, failed to launch, or is waiting for an
 answer, across both project groups, with **Continue**, **Restart**, **Skip** and
 **Open in cmux** on each row. Continue keeps the worktree and whatever the dead
@@ -409,12 +412,12 @@ kept and why, and names any session cmux refused to close. An unreachable cmux
 is reported as unknown liveness with nothing closed, never as zero finished
 sessions.
 
-**Check if merged** on a card in Waiting for merge or Blocked asks GitHub about
+**Check if merged** on a card in In review or Stopped asks GitHub about
 that one goal, instead of waiting for the next reconciliation pass. It reports
-three outcomes differently: the goal moved to Merged, its pull request is still
+three outcomes differently: the goal moved to Shipped, its pull request is still
 open, or GitHub knows no pull request for its branch.
 
-**More actions** on every goal card in Waiting for merge opens a follow-up
+**More actions** on every goal card in In review opens a follow-up
 popup. Choose one or several actions: ask a question, add more unit and e2e
 tests, run a complete code review, or give a free-form instruction, then choose
 Claude or Codex. One submission opens exactly one cmux session in that goal's
@@ -610,7 +613,7 @@ MIT
 Once Companion records a goal pull request, it closes the goal's recorded task
 sessions and final merge session, including for single-task goals and PRs already
 closed or merged. A combined goal's intermediate task and superseded merge
-sessions still close when their work is integrated. Blocked goals without a goal
+sessions still close when their work is integrated. Stopped goals without a goal
 PR retain their sessions; a task PR within a combined goal does not finish it.
 
 Cleanup runs when a combined delivery settles or GitHub reconciliation observes
