@@ -445,7 +445,11 @@ evidence:
 ```bash
 npm run test:e2e:local
 npm run test:e2e:open
+npm run test:e2e:local -- --spec cypress/e2e/goals-home.cy.ts
 ```
+
+Set `CMUX_COMPANION_CYPRESS_PORT` when port 3221 is already in use; the runner
+passes the matching base URL to Cypress.
 
 The live audit is also local-only. It compares the installed companion's goal
 board and health responses to workspace ids returned directly by cmux. It does
