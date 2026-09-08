@@ -37,6 +37,7 @@ import { GoalHealthSweep } from "./goal-health.mjs";
 import { GoalWatchdog } from "./goal-watchdog.mjs";
 import { GoalSessionReaper } from "./goal-session-reaper.mjs";
 import { GoalMergeWatch } from "./goal-merge-watch.mjs";
+import { GoalVerification } from "./goal-verification.mjs";
 import { GitHubIssueStore } from "./github-issue-store.mjs";
 import { GitHubIssueSync } from "./github-issue-sync.mjs";
 import { GitHubIssueSyncScheduler } from "./github-issue-sync-scheduler.mjs";
@@ -166,8 +167,9 @@ export async function buildApp({
     || new GitHubReviewToken({ execute: repoCatalog.execute?.bind(repoCatalog), log: app.log });
   // The watcher never runs `gh`. It reads what the dashboard already cached
   // during the one Refresh GitHub command per repository.
+  const goalVerification = planStore ? new GoalVerification({ store: planStore, repoCatalog, log: app.log }) : null;
   const mergeWatch = goalMergeWatch
-    || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, sessionCollector, worktreeCleanup: cleanup, burstReview, log: app.log }) : null);
+    || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, sessionCollector, worktreeCleanup: cleanup, burstReview, verification: goalVerification, log: app.log }) : null);
   // The one thing no other module does: ask cmux whether each launched task's
   // agent is still alive. It writes nothing, so a sweep can never move a goal
   // on its own.

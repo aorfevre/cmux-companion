@@ -9,7 +9,7 @@ import { FormEvent, RefObject, useCallback, useEffect, useRef, useState } from "
 import { AttachmentStrip, composedPrompt, ImagePickerButton, request, useImageAttachments } from "./image-attachments";
 import { DEV_SETUP_GOAL } from "./dev-setup-goal";
 import { closeGoalPopup, openGoalPopup, useGoalPopup } from "./goal-popup-url";
-import { GoalBoardStateId, GoalHealth, goalPrLink, PlanDraft, PlanSummary, TaskRelaunchResult, terminalStatus, WorktreePlannerSheet } from "./worktree-planner";
+import { GoalBoardStateId, GoalHealth, GoalVerification, goalPrLink, PlanDraft, PlanSummary, TaskRelaunchResult, terminalStatus, WorktreePlannerSheet } from "./worktree-planner";
 // The board reads its columns and its placement from the one shared module, so
 // the dashboard can never invent a column the server does not know.
 import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../server/goal-board.mjs";
@@ -979,11 +979,23 @@ function GoalBoardCard({ returningIssues, confirmingReturn, onRequestReturn, onC
       : <span key={number}>#{number}</span>)}</p>}
     <p className="goal-board-card-evidence">{boardEvidence(plan, state)}</p>
     {link && (state === "in_review" || state === "shipped") && <a className="goal-board-pr" href={link.url} target="_blank" rel="noreferrer">{link.label}</a>}
+    {plan.verification && (state === "in_review" || state === "shipped" || state === "stopped") && <GoalVerificationBadge verification={plan.verification} />}
     {plan.issuesReturnedAt && <p className="goal-board-card-evidence">Issues returned to GitHub list. This goal remains aborted.</p>}
     {confirmingReturn ? <footer className="goal-board-abort-confirm"><span>Return linked issues to the GitHub list? Open synced issues will be available for a new goal. This goal stays aborted; its history, branches and worktrees are kept.</span><div><button type="button" aria-label={`Cancel returning issues for ${plan.goal}`} disabled={returningIssues} onClick={onCancelReturn}>Cancel</button><button type="button" aria-label={`Confirm return issues for ${plan.goal}`} disabled={returningIssues} onClick={onConfirmReturn}>{returningIssues ? "Returning…" : "Return issues"}</button></div></footer> : confirming
       ? <footer className="goal-board-abort-confirm"><span>Abort this goal? Active specification work and live cmux sessions are cancelled. Its worktrees and branches are kept.</span><div><button type="button" aria-label={`Cancel aborting ${plan.goal}`} disabled={aborting} onClick={onCancelAbort}>Cancel</button><button type="button" className="confirm-abort" aria-label={`Confirm abort ${plan.goal}`} disabled={aborting} onClick={onConfirmAbort}>{aborting ? "Aborting…" : "Confirm abort"}</button></div></footer>
       : <footer><button type="button" className="goal-board-open" aria-label={`${openLabel} ${plan.goal}`} onClick={onOpen}>{openLabel}</button>{state === "aborted" && Boolean(plan.issueNumbers?.length) && !plan.issuesReturnedAt && <button type="button" className="goal-board-return-issues" aria-label={`Return issues to GitHub list for ${plan.goal}`} onClick={onRequestReturn}>Return issues to GitHub list</button>}{!closed && <button type="button" className="goal-board-abort" aria-label={`Abort ${plan.goal}`} onClick={onRequestAbort}>Abort</button>}{state === "in_review" && <button type="button" className="goal-board-more" aria-label={`More actions for ${plan.goal}`} disabled={followupBusy} onClick={onMoreActions}>{followupBusy ? "Starting follow-up…" : "More actions"}</button>}{checkable && <button type="button" className="goal-board-check" aria-label={`Check if ${plan.goal} is merged`} disabled={checking} onClick={onCheckMerge}>{checking ? "Checking GitHub…" : "Check if merged"}</button>}{focusSessionId && <button type="button" className="goal-board-focus" aria-label={`Open ${plan.goal} in cmux`} disabled={focusing} onClick={onFocusWorkspace}>{focusing ? "Opening…" : "Open in cmux"}</button>}</footer>}
   </article>;
+}
+
+// The contract's declared check, run by Companion on the goal branch when the
+// pull request opened. Approval validated words; this is the one result that
+// is not the agent's prose, so it sits beside the pull request link.
+function GoalVerificationBadge({ verification }: { verification: GoalVerification }) {
+  const label = verification.status === "passed" ? "Contract check passed" : verification.status === "failed" ? "Contract check failed" : "Contract check not run";
+  const detail = verification.status === "unavailable"
+    ? verification.reason || "No declared check matched the contract"
+    : [`${verification.source || verification.script || "check"} on ${(verification.headSha || "").slice(0, 7) || "unknown commit"}`, verification.output?.trim().split("\n").filter(Boolean).at(-1) || ""].filter(Boolean).join(" · ");
+  return <p className={`goal-board-verification ${verification.status}`} title={detail}><b>{label}</b><span>{detail}</span></p>;
 }
 
 // Which provider takes the next task, and what would change that answer. The

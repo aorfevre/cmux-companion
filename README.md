@@ -412,6 +412,14 @@ kept and why, and names any session cmux refused to close. An unreachable cmux
 is reported as unknown liveness with nothing closed, never as zero finished
 sessions.
 
+**Contract check.** When a goal session's pull request opens, Companion reads the
+approved contract's verification lines, matches them to the repository's own
+declared package scripts, and runs the matched script once per head commit in the
+goal's worktree. The result sits on the card beside the pull request link as
+**Contract check passed**, **failed** or **not run**. Prose such as "try a
+sandbox payment" matches nothing, and nothing runs. The check records evidence
+only; it never moves the goal and never runs a command the repository did not declare.
+
 **Check if merged** on a card in In review or Stopped asks GitHub about
 that one goal, instead of waiting for the next reconciliation pass. It reports
 three outcomes differently: the goal moved to Shipped, its pull request is still

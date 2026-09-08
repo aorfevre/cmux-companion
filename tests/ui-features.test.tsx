@@ -1239,8 +1239,8 @@ describe("goals board", () => {
   const review = plan({ planId: "plan-review", goal: "Review the spec", running: true, runPhase: "running", runStage: "review_spec", runStep: "Anything at all", boardState: "discovering" });
   const waitingDev = plan({ planId: "plan-waiting-dev", goal: "Ready to launch work", taskCount: 3, boardState: "needs_you", sourceType: "github_issues", issueNumbers: [42] });
   const devInProgress = plan({ planId: "plan-dev", goal: "Agents are coding", status: "launched", taskCount: 2, deliveryStatus: "planning", launchedAt: now, boardState: "building" });
-  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, followupCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "in_review", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77" });
-  const merged = plan({ planId: "plan-merged", goal: "Merged already", status: "launched", taskCount: 4, launchedAt: now, boardState: "shipped", boardStatus: "merged", boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12" });
+  const waitingMerge = plan({ planId: "plan-merge", goal: "Waiting on the PR", status: "launched", taskCount: 2, followupCount: 2, deliveryStatus: "pr_open", launchedAt: now, boardState: "in_review", boardPrState: "OPEN", boardPrNumber: 77, boardPrUrl: "https://github.test/pr/77", verification: { status: "failed", script: "verify", source: "npm run verify", headSha: "abc1234def", reason: null, output: "2 tests failed", startedAt: now, finishedAt: now } });
+  const merged = plan({ planId: "plan-merged", goal: "Merged already", status: "launched", taskCount: 4, launchedAt: now, boardState: "shipped", boardStatus: "merged", boardPrState: "MERGED", boardPrNumber: 12, boardPrUrl: "https://github.test/pr/12", verification: { status: "passed", script: "test", source: "npm test", headSha: "fed9876cba", reason: null, output: "", startedAt: now, finishedAt: now } });
   const aborted = plan({ planId: "plan-aborted", goal: "Stopped on purpose", taskCount: 1, boardState: "aborted", boardStatus: "aborted", boardChangedAt: now });
   // A launched goal whose agents died. It used to read as "Dev in progress",
   // which is the one state a supervisor must never be told wrongly.
@@ -1607,6 +1607,12 @@ describe("goals board", () => {
     assert.equal(within(card("Waiting on the PR")).getByRole("link", { name: "Open PR #77" }).getAttribute("href"), "https://github.test/pr/77");
     assert.equal(within(card("Merged already")).getByRole("link", { name: "Open PR #12" }).getAttribute("href"), "https://github.test/pr/12");
     assert.equal(within(card("Agents are coding")).queryByRole("link"), null);
+    // The contract's own check, run by Companion on the goal branch: the one
+    // piece of evidence that is not the agent's prose.
+    assert.ok(within(card("Waiting on the PR")).getByText("Contract check failed"));
+    assert.ok(within(card("Waiting on the PR")).getByTitle("npm run verify on abc1234 · 2 tests failed"));
+    assert.ok(within(card("Merged already")).getByText("Contract check passed"));
+    assert.equal(within(card("Agents are coding")).queryByText(/Contract check/), null);
 
     // Nonterminal cards reuse the planner sheet; terminal ones open read-only.
     assert.ok(within(card("Write the spec")).getByRole("button", { name: "Watch Write the spec" }));

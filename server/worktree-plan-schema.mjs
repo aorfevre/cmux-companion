@@ -256,6 +256,7 @@ function migratePlanSchema(db) {
     ensure("plan_tasks", "session_closed_at", "TEXT");
     ensure("plans", "burst", "INTEGER NOT NULL DEFAULT 0");
     ensure("plans", "intake", "TEXT");
+    ensure("plans", "verification", "TEXT");
     ensure("plan_tasks", "burst_review_status", "TEXT");
     ensure("plan_tasks", "burst_review_round", "INTEGER NOT NULL DEFAULT 0");
     ensure("plan_tasks", "burst_review_workspace_id", "TEXT");

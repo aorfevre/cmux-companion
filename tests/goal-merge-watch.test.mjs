@@ -114,3 +114,26 @@ test("a watch built without a reviewer records the pull request as before", asyn
   assert.equal(recorded.length, 1);
   assert.equal(store.get(planId).boardPrState, "OPEN");
 });
+
+// The contract's check runs on the goal branch on every pass the pull request
+// is open. The verifier owns the once-per-head rule, so the watch asks each
+// time. Like the reviewer, it must not hold up the refresh, so it is not awaited.
+test("an OPEN pull request on a goal session asks for the contract's verification", async (t) => {
+  const { store, planId, watch } = fixture(t, { burst: false });
+  const verified = [];
+  watch.verification = { verify: async (id) => { verified.push(id); return { status: "passed" }; } };
+  await watch.reconcile();
+  await watch.reconcile();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(verified, [planId, planId]);
+  assert.equal(store.get(planId).boardPrState, "OPEN");
+});
+
+test("a verifier that throws is logged and never fails the pass", async (t) => {
+  const { watch, warnings } = fixture(t, { burst: false });
+  watch.verification = { verify: async () => { throw new Error("npm missing"); } };
+  const { recorded } = await watch.reconcile();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(recorded.length, 1);
+  assert.ok(warnings.includes("goal verification could not run"));
+});
