@@ -124,6 +124,12 @@ export class BurstReview {
     const task = plan?.tasks?.find((item) => item.id === found.taskId);
     if (!plan || !task || task.burstReviewStatus !== "running") return false;
     const verdict = await this.#readVerdict(this.verdictPath(plan.planId, task.id, task.burstReviewRound));
+    // A stop with no verdict file is a reviewer that paused, not a verdict:
+    // the round stays open and the next stop is read again.
+    if (!verdict) {
+      this.log?.warn?.({ planId: plan.planId, taskId: task.id, workspaceId }, "burst reviewer stopped without a verdict file");
+      return true;
+    }
     const updated = this.store.recordBurstReviewVerdict(plan.planId, task.id, verdict);
     const after = updated.tasks.find((item) => item.id === task.id);
     if (verdict.verdict === "pass") return true;
@@ -147,7 +153,11 @@ export class BurstReview {
     const plan = this.store.findPlanByReviewWorkspace?.(workspaceId);
     if (!plan || plan.burst !== true || plan.reviewStatus !== "running" || plan.reviewSessionClosedAt) return false;
     const verdict = await this.#readVerdict(this.verdictPath(plan.planId, GOAL_TASK, 1));
-    this.store.recordReviewSessionClosed(plan.planId);
+    if (!verdict) {
+      this.log?.warn?.({ planId: plan.planId, workspaceId }, "burst goal reviewer stopped without a verdict file");
+      return true;
+    }
+    this.store.recordReviewSessionClosed(plan.planId, { verdict });
     if (verdict.verdict === "pass" || !plan.goalSessionWorkspaceId || !this.cmux.sendWorkspacePrompt) return true;
     await this.cmux.sendWorkspacePrompt(plan.goalSessionWorkspaceId, [
       "An independent burst review of your pull request found blocking issues:",
@@ -163,10 +173,12 @@ export class BurstReview {
     return join(this.briefs.directory, `${identifier(planId, "planId")}-${identifier(taskId, "taskId")}-burst-review-${Math.max(1, Number(round) || 1)}.json`);
   }
 
+  // null when there is no file yet; a block when there is one that says
+  // nothing usable, because a file that exists is the reviewer's last word.
   async #readVerdict(path) {
     let raw;
     try { raw = await readCapped(path, MAX_VERDICT_BYTES); }
-    catch { return { verdict: "block", findings: ["The reviewer stopped without writing a verdict file; no verdict file was found"] }; }
+    catch { return null; }
     try {
       if (raw === null) throw new Error(`the file is larger than ${MAX_VERDICT_BYTES} bytes`);
       const value = JSON.parse(raw);
@@ -220,5 +232,6 @@ export function burstReviewPrompt(plan, task, verdictPath) {
     `Write exactly one JSON file at ${verdictPath} with this shape and then stop:`,
     '{"verdict":"pass","findings":[]} or {"verdict":"block","findings":["one concrete, actionable finding", "..."]}',
     "Use block only for a finding that must change before merge. Put advisory notes in findings with a pass verdict.",
+    "Stop exactly once, after the verdict file is written. Do not stop to ask questions.",
   ].join("\n");
 }

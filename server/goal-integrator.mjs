@@ -8,6 +8,7 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { mergeSessionTitle, sessionEnv, sessionTitle } from "./session-name.mjs";
 import { acquireTaskWorktree, effectiveTaskBranch, launchReason } from "./task-branch.mjs";
 import { taskPrompt } from "./worktree-planner.mjs";
+import { BurstReviewTerminalError } from "./burst-review.mjs";
 
 export { readyCount } from "./delivery-contract.mjs";
 
@@ -270,14 +271,22 @@ export class GoalIntegrator {
     // one for each ready task that has none, or whose first review blocked and
     // whose owner has since pushed a new head, then wait: the reviewer's Stop
     // schedules this assemble again.
+    // A launch that fails is a delivery failure the card must show, so it goes
+    // through the same guard as every other step; the task keeps its ready
+    // evidence and its unset review state, so the next assemble tries again.
     if (plan.burst === true && this.burstReview) {
-      for (const task of plan.tasks) {
-        if (task.launchStatus !== "launched" || task.deliveryStatus !== "ready") continue;
-        if (task.burstReviewStatus && task.burstReviewStatus !== "block") continue;
-        try { await this.burstReview.reviewTask(plan.planId, task.id); }
-        catch (cause) { this.log?.warn?.({ err: cause, planId: plan.planId, taskId: task.id }, "burst review launch failed"); }
-      }
-      plan = this.store.get(plan.planId);
+      plan = await this.#guard(plan, async () => {
+        for (const task of plan.tasks) {
+          if (task.launchStatus !== "launched" || task.deliveryStatus !== "ready") continue;
+          if (task.burstReviewStatus && task.burstReviewStatus !== "block") continue;
+          try { await this.burstReview.reviewTask(plan.planId, task.id); }
+          catch (cause) {
+            if (cause instanceof BurstReviewTerminalError) throw new TerminalGoalError(cause.message);
+            throw new TypeError(`Burst review launch failed: ${conciseError(cause)}`);
+          }
+        }
+        return this.store.get(plan.planId);
+      });
     }
     const ready = (task) => (this.burstReview ? this.burstReview.taskReady(plan, task) : task.deliveryStatus === "ready");
     const pending = plan.tasks.filter((task) => task.launchStatus === "launched" && !ready(task) && task.deliveryStatus !== "integrated");
@@ -508,6 +517,9 @@ export class GoalIntegrator {
     let current = plan;
     for (const task of plan.tasks) {
       if (task.launchStatus !== "launched" || task.deliveryStatus === "integrated") continue;
+      // The second block is final. A later push must not re-ready the task and
+      // clear the findings a person still needs to read.
+      if (task.burstReviewStatus === "blocked_twice") continue;
       const evidence = await this.#readyEvidence(plan, task);
       if (evidence.headSha && (task.headSha !== evidence.headSha || task.deliveryStatus !== "ready" || task.evidenceStatus !== "ready")) {
         // A blocked burst review sent the task back to pending. The same commit

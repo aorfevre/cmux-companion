@@ -152,6 +152,9 @@ test("records when the review session is closed", (t) => {
   store.recordReviewLaunched("plan-1", { workspaceId: "ws-9", agent: "claude", briefPath: "/tmp/review.md" });
   assert.equal(store.get("plan-1").reviewSessionClosedAt, null);
   assert.ok(store.recordReviewSessionClosed("plan-1").reviewSessionClosedAt);
+  assert.equal(store.events("plan-1").some((event) => event.kind === "burst_review_verdict"), false, "a close without a verdict records none");
+  store.recordReviewSessionClosed("plan-1", { verdict: { verdict: "block", findings: ["x", "", 3] } });
+  assert.deepEqual(store.events("plan-1").filter((event) => event.kind === "burst_review_verdict").map((event) => event.payload), [{ taskId: "goal", verdict: "block", status: "block", findings: ["x", "3"] }]);
   assert.equal(store.findPlanByReviewWorkspace("ws-9").planId, "plan-1");
   assert.equal(store.findPlanByReviewWorkspace("ws-other"), null);
   assert.equal(store.findPlanByReviewWorkspace(""), null);
@@ -1480,8 +1483,11 @@ test("burst review state moves running → pass or block, and the second block i
   assert.equal(plan.tasks.find((item) => item.id === "t1").burstReviewStatus, "blocked_twice");
   assert.throws(() => store.recordBurstReviewLaunched("plan-b", "t1", { workspaceId: "review-3" }), /no further review/);
   assert.throws(() => store.recordBurstReviewVerdict("plan-b", "t2", { verdict: "maybe" }), /pass or block/);
+  assert.throws(() => store.recordBurstReviewVerdict("plan-b", "t2", { verdict: "pass" }), /No burst review is running/);
   assert.throws(() => store.recordBurstReviewLaunched("plan-b", "nope", { workspaceId: "review-x" }), /Unknown task/);
+  store.recordBurstReviewLaunched("plan-b", "t2", { workspaceId: "review-t2" });
   plan = store.recordBurstReviewVerdict("plan-b", "t2", { verdict: "pass", findings: [] });
+  assert.throws(() => store.recordBurstReviewVerdict("plan-b", "t2", { verdict: "pass" }), /No burst review is running/, "a verdict lands once");
   assert.equal(plan.tasks.find((item) => item.id === "t2").burstReviewStatus, "pass");
   assert.throws(() => store.recordBurstReviewLaunched("plan-b", "t2", { workspaceId: "review-4" }), /no further review/);
   assert.deepEqual(store.findTaskByBurstReviewWorkspace("review-2"), { planId: "plan-b", taskId: "t1" });
@@ -1495,6 +1501,6 @@ test("burst review state moves running → pass or block, and the second block i
   assert.equal(store.findTaskByBurstReviewWorkspace("review-1"), null, "the first round's workspace is superseded");
   assert.equal(store.findTaskByBurstReviewWorkspace(""), null);
   const kinds = store.events("plan-b").map((event) => event.kind);
-  assert.equal(kinds.filter((kind) => kind === "burst_review_launched").length, 2);
+  assert.equal(kinds.filter((kind) => kind === "burst_review_launched").length, 3);
   assert.equal(kinds.filter((kind) => kind === "burst_review_verdict").length, 3);
 });

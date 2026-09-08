@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentBriefs } from "../server/agent-brief.mjs";
 import { GoalIntegrator, mergePrompt, readyCount } from "../server/goal-integrator.mjs";
+import { BurstReview } from "../server/burst-review.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
 
@@ -1089,7 +1090,7 @@ function fakeBurstReview(store) {
   return {
     reviews,
     stops,
-    taskReady: (plan, task) => task.deliveryStatus === "ready" && (plan.burst !== true || task.burstReviewStatus === "pass"),
+    taskReady: BurstReview.prototype.taskReady,
     reviewTask: async (planId, taskId) => {
       reviews.push([planId, taskId]);
       const task = store.get(planId).tasks.find((item) => item.id === taskId);
@@ -1143,12 +1144,37 @@ test("a blocked task waits for its head to move, gets one more review, and then 
   assert.deepEqual(burstReview.reviews.at(-1), ["plan-12345678", "t1"]);
   assert.equal(store.get("plan-12345678").tasks[0].burstReviewRound, 2);
   store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "block", findings: ["Still missing"] });
-  store.recordTaskPending("plan-12345678", "t1", { error: "Burst review blocked twice" });
+  store.recordTaskPending("plan-12345678", "t1", { error: "Burst review blocked twice. Findings:\n- Still missing" });
   await assert.rejects(() => integrator.assemble("plan-12345678"), /blocked twice.*person/i);
+  // A later push must not re-ready the task and erase what a person needs to read.
   heads.t1 = "e".repeat(40);
   await assert.rejects(() => integrator.assemble("plan-12345678"), /blocked twice.*person/i);
+  const final = store.get("plan-12345678").tasks[0];
+  assert.equal(final.deliveryStatus, "pending");
+  assert.equal(final.burstReviewStatus, "blocked_twice");
+  assert.match(final.evidenceError, /Still missing/);
   assert.equal(burstReview.reviews.length, 3, "no third review is ever opened");
   assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false);
+});
+
+test("a reviewer that fails to launch is written to the card and retried on the next assemble", async (t) => {
+  const { store, integrator } = fixture(t, { burst: true });
+  const burstReview = fakeBurstReview(store);
+  const reviewTask = burstReview.reviewTask;
+  burstReview.reviewTask = async () => { throw new Error("cmux is down"); };
+  integrator.burstReview = burstReview;
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Burst review launch failed: cmux is down/);
+  let saved = store.get("plan-12345678");
+  assert.equal(saved.deliveryStatus, "blocked");
+  assert.match(saved.deliveryError, /Burst review launch failed: cmux is down/);
+  assert.equal(saved.tasks[0].deliveryStatus, "ready", "the task keeps its evidence");
+  assert.equal(saved.tasks[0].headSha, TASK_ONE);
+  assert.equal(saved.tasks[0].burstReviewStatus, null, "nothing was recorded, so the next pass tries again");
+  burstReview.reviewTask = reviewTask;
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 2 tasks/);
+  saved = store.get("plan-12345678");
+  assert.equal(saved.tasks[0].burstReviewStatus, "running");
+  assert.deepEqual(burstReview.reviews, [["plan-12345678", "t1"], ["plan-12345678", "t2"]]);
 });
 
 test("a passed reviewer is retired by the assemble that follows its verdict", async (t) => {

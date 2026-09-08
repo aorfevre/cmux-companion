@@ -687,8 +687,9 @@ export class WorktreePlanStore {
     const id = String(planId);
     const list = (Array.isArray(findings) ? findings : []).map((item) => String(item || "").slice(0, 1_000)).filter(Boolean).slice(0, 50);
     this.#transaction(() => {
-      const row = this.db.prepare("SELECT burst_review_round FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get(id, String(taskId));
+      const row = this.db.prepare("SELECT burst_review_status, burst_review_round FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get(id, String(taskId));
       if (!row) throw new TypeError("Unknown task");
+      if (row.burst_review_status !== "running") throw new TypeError("No burst review is running for this task");
       const status = verdict === "pass" ? "pass" : Number(row.burst_review_round) >= 2 ? "blocked_twice" : "block";
       this.db.prepare("UPDATE plan_tasks SET burst_review_status = ?, burst_review_findings = ? WHERE plan_id = ? AND task_id = ?")
         .run(status, json(list), id, String(taskId));
@@ -845,12 +846,18 @@ export class WorktreePlanStore {
     return this.get(id);
   }
 
-  recordReviewSessionClosed(planId) {
+  // A burst goal review closes with its verdict, so the event log keeps what
+  // the reviewer said under the same kind the task-level verdicts use.
+  recordReviewSessionClosed(planId, { verdict = null } = {}) {
     const at = this.#stamp();
     const id = String(planId);
     this.#transaction(() => {
       this.db.prepare("UPDATE plans SET review_session_closed_at = ?, updated_at = ? WHERE plan_id = ?")
         .run(at, at, id);
+      if (verdict) {
+        const findings = (Array.isArray(verdict.findings) ? verdict.findings : []).map((item) => String(item || "").slice(0, 1_000)).filter(Boolean).slice(0, 50);
+        this.#insertEvent(id, null, "burst_review_verdict", { taskId: "goal", verdict: verdict.verdict, status: verdict.verdict, findings }, at);
+      }
     });
     return this.get(id);
   }
