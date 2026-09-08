@@ -437,7 +437,12 @@ The follow-up session is left open for you to read and close.
 
 The Cypress suite is intentionally excluded from `npm test`, `npm run verify`,
 and CI. It starts an isolated frontend on port 3221 and stubs the application
-API with one- and two-task goal fixtures, including a task that dies, an agent
+API with deterministic fixtures. The specs cover pairing and offline recovery,
+sessions and the terminal composer, the prompt queue, the inbox, workspace
+launch, settings and push notifications, local app previews with the fix
+editor, licence usage and CCS reconnect, worktree cleanup and release
+retention, board actions and the read-only guard, bursts, deployment health,
+and the goal fixtures: one- and two-task goals, a task that dies, an agent
 waiting for input, a blocked merge whose cmux workspace remains open, and a
 spec-rigor goal that submits its six requests and renders their coverage
 evidence:
