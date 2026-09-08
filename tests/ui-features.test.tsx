@@ -1065,6 +1065,38 @@ describe("worktree goal planner", () => {
     assert.ok(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/goal-sessions/plan-1/continue")));
   });
 
+  test("a refused stopped-goal continuation preserves the goal and can retry on the board", async () => {
+    const saved = { ...readyDraft, round: 0, status: "questions" as const, planStatus: "draft" as const,
+      tasks: [], questions: [], running: false, images: [{ path: "/tmp/goal.png", name: "goal.png" }] };
+    const started = { ...saved, planId: "successor", workflow: "goal_session", goalSessionWorkspaceId: "workspace-new" };
+    const close = vi.fn(); const open = vi.fn(); const notice = vi.fn();
+    let attempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/goal-sessions/plan-1/continue" && init?.method === "POST") {
+        if (++attempts === 1) return new Response(JSON.stringify({ error: "Session unavailable" }), { status: 503 });
+        return new Response(JSON.stringify(started), { status: 200 });
+      }
+      return new Response(JSON.stringify(saved), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorktreePlannerSheet repository={repository} initialDraft={saved} onClose={close} onGoalSessionStarted={open} onNotice={notice} />);
+    assert.equal(screen.queryByRole("button", { name: "Plan this goal again" }), null);
+    const button = screen.getByRole("button", { name: "Continue discovery" });
+    await userEvent.click(button);
+    assert.ok(await screen.findByText("Session unavailable"));
+    assert.ok(screen.getByRole("region", { name: "Planning stopped" }));
+    assert.ok(screen.getByText("goal.png"));
+    assert.equal(close.mock.calls.length, 0);
+    assert.equal(notice.mock.calls.length, 0);
+    await userEvent.click(button);
+    await waitFor(() => assert.equal(close.mock.calls.length, 1));
+    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
+    assert.deepEqual(posts.map(([url]) => url), ["/api/goal-sessions/plan-1/continue", "/api/goal-sessions/plan-1/continue"]);
+    assert.equal(posts[0][1]?.body, posts[1][1]?.body);
+    assert.match(String(notice.mock.calls[0][0]), /Previous context remains saved/);
+    assert.equal(open.mock.calls.length, 0);
+  });
+
   // A timeout is not a restart. Blaming one for the other sent a user looking
   // for a crash that never happened, while the real limit stayed invisible.
   test("names the reason a round stopped instead of blaming a restart", async () => {
