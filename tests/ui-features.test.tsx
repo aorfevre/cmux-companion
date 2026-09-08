@@ -2177,6 +2177,46 @@ describe("GitHub Issues board column", () => {
     assert.equal(within(column).queryByText("recorder"), null);
     assert.equal(within(column).getAllByRole("article").length, 1);
   });
+
+  // The phone starts read-only so a pocket touch cannot send input. That guard
+  // stopped at the terminal: a board card could still start an agent or abort a
+  // goal. Every board mutation now honours the same switch; opening and
+  // focusing stay enabled because they change nothing.
+  test("read-only mode disables every board mutation and says how to enable input", async () => {
+    const posts: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") posts.push(url);
+      if (url === "/api/github-issues") return new Response(JSON.stringify({ syncedAt: null, issues: [issue()] }), { status: 200 });
+      if (url === "/api/goals/health") return new Response(JSON.stringify({ checkedAt: now, sessionsAvailable: true, summary: { goals: 1, tasks: 1, stuck: 1, needsYou: 1, working: 0, deadTasks: 1, idleTasks: 0, failedTasks: 0 }, goals: [{ planId: "plan-dead", repositoryId: "repositoryStarred01", repositoryName: "trust-layer", goal: "Its agent died", health: "dead", stuckCount: 1, merge: null, tasks: [{ id: "T1", title: "Dead task", branch: "feature/dead", agent: "claude", health: "dead", reason: "This task session is no longer open", launchStatus: "launched", session: null }] }] }), { status: 200 });
+      if (url.startsWith("/api/worktree-plans")) return new Response(JSON.stringify({ plans: [
+        { planId: "plan-open", repositoryId: "repositoryStarred01", repositoryName: "trust-layer", goal: "Waiting on the PR", status: "launched", stage: "ready", round: 1, taskCount: 1, launchedCount: 1, deliveryStatus: "pr_open", boardState: "in_review", boardPrState: "OPEN", boardPrNumber: 5, boardPrUrl: "https://github.test/pr/5", createdAt: now, updatedAt: now },
+        { planId: "plan-dead", repositoryId: "repositoryStarred01", repositoryName: "trust-layer", goal: "Its agent died", status: "launched", stage: "ready", round: 1, taskCount: 1, launchedCount: 1, health: "dead", boardState: "stopped", createdAt: now, updatedAt: now },
+      ] }), { status: 200 });
+      return new Response(JSON.stringify({ generatedAt: now, github: { status: "ready" }, summary: { repositories: 1 }, repositories: [{ id: "repositoryStarred01", name: "trust-layer", root: "r", path: "/repo/trust-layer", favorite: true, summary: { worktrees: 1, releases: 0, sessions: 0, needsYou: 0, working: 0, dirty: 0 }, worktrees: [] }], orphanSessions: [] }), { status: 200 });
+    }));
+    render(<WorktreeDashboardView readOnly onOpenWorkspace={vi.fn()} onLaunched={vi.fn(async () => {})} onNotice={vi.fn()} />);
+    const board = await openBoard();
+    await userEvent.click(within(board).getByRole("button", { name: "Expand Stopped" }));
+    assert.ok(await screen.findByText(/Read-only protection is on\. Enable input in Settings/));
+    const disabled = (name: RegExp | string) => assert.ok(screen.getByRole("button", { name }).hasAttribute("disabled"), `${name} is disabled`);
+    disabled(/^Start a goal for #12/);
+    disabled("Abort Waiting on the PR");
+    disabled("More actions for Waiting on the PR");
+    disabled("Check if Waiting on the PR is merged");
+    disabled("Continue Dead task");
+    disabled("Restart Dead task");
+    disabled("Skip Dead task");
+    disabled("GitHub Sync");
+    disabled("Burst");
+    assert.ok(screen.getByRole("button", { name: /Close finished sessions/ }).hasAttribute("disabled"));
+    assert.ok(screen.getByRole("button", { name: /Create a worktree in/ }).hasAttribute("disabled"));
+    // Reads stay open: the board is still the place to look.
+    assert.equal(within(board).getByRole("button", { name: "View Waiting on the PR" }).hasAttribute("disabled"), false);
+    assert.equal(screen.getByRole("button", { name: "Refresh GitHub" }).hasAttribute("disabled"), false);
+    assert.deepEqual(posts, []);
+  });
+
 });
 
 describe("last update stamp", () => {

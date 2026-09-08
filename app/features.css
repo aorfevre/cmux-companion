@@ -1112,3 +1112,4 @@
 .goal-board-verification.passed{border:1px solid rgba(201,255,80,.3);background:rgba(201,255,80,.06);color:var(--lime)}
 .goal-board-verification.failed{border:1px solid rgba(255,109,120,.35);background:rgba(255,109,120,.07);color:#ff9d9d}
 .goal-board-verification.unavailable{border:1px solid #2c343c;background:#151a1f;color:#96a0aa}
+.board-read-only{margin:10px 0 0;border:1px solid rgba(255,200,120,.35);border-radius:10px;background:rgba(255,200,120,.06);padding:8px 10px;color:#e8d3a3;font-size:12px;line-height:1.45}

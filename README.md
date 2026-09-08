@@ -36,7 +36,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Sends prompts and a small, safe allow-list of terminal keys
 - Provides a searchable, provider-labelled `/` shortcut palette for common Codex and Claude workflows
 - Restarts a stuck terminal or closes a workspace with explicit confirmation
-- Starts in read-only mode to avoid accidental phone input
+- Starts in read-only mode to avoid accidental phone input; the guard covers terminal input, proposal decisions and every Goals board action that starts, aborts, relaunches or syncs
 - Installs as a standalone PWA on iPhone
 - Waits quietly when cmux is closed and reconnects when it opens
 - Starts automatically at macOS login through a LaunchAgent
