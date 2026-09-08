@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentBriefs } from "../server/agent-brief.mjs";
 import { GoalIntegrator, mergePrompt, readyCount } from "../server/goal-integrator.mjs";
+import { BurstReview } from "../server/burst-review.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
 
@@ -13,12 +14,12 @@ const TASK_ONE = "a".repeat(40);
 const TASK_TWO = "b".repeat(40);
 const BASE = "c".repeat(40);
 
-function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = false, contract = false, workflow = false, reports = {}, changedFiles = {} } = {}) {
+function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = false, contract = false, workflow = false, reports = {}, changedFiles = {}, burst = false, burstReview = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), "goal-integrator-"));
   const integrationPath = join(root, "sample-goal");
   mkdirSync(integrationPath);
   const store = new WorktreePlanStore({ path: ":memory:" });
-  store.createPlan({ planId: "plan-12345678", repositoryId: REPO_ID, repositoryName: "sample", cwd: root, goal: "Ship combined billing", sourceType: "github_issues", issueNumbers: [54, 55], issueUrls: ["https://github.test/issues/54"] });
+  store.createPlan({ planId: "plan-12345678", repositoryId: REPO_ID, repositoryName: "sample", cwd: root, goal: "Ship combined billing", sourceType: "github_issues", issueNumbers: [54, 55], issueUrls: ["https://github.test/issues/54"], burst });
   store.recordRound("plan-12345678", {
     round: 1, stage: "ready", sessionId: "session",
     ...(contract ? {
@@ -46,6 +47,8 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
     ],
   });
   const calls = [];
+  // Mutable so a test can move a task head, as an amended force-push would.
+  const heads = { t1: TASK_ONE, t2: TASK_TWO };
   const repoCatalog = {
     git: async (cwd, args) => {
       calls.push(["git", cwd, args]);
@@ -65,10 +68,10 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
       }
       if (args[0] === "ls-remote") {
         if (!secondPushed && cwd.endsWith("task-two")) return "";
-        return `${cwd.endsWith("task-one") ? TASK_ONE : TASK_TWO}\t${args[2]}\n`;
+        return `${cwd.endsWith("task-one") ? heads.t1 : heads.t2}\t${args[2]}\n`;
       }
-      if (args[0] === "rev-parse" && cwd.endsWith("task-one")) return `${TASK_ONE}\n`;
-      if (args[0] === "rev-parse" && cwd.endsWith("task-two")) return `${TASK_TWO}\n`;
+      if (args[0] === "rev-parse" && cwd.endsWith("task-one")) return `${heads.t1}\n`;
+      if (args[0] === "rev-parse" && cwd.endsWith("task-two")) return `${heads.t2}\n`;
       return "";
     },
   };
@@ -103,9 +106,9 @@ function fixture(t, { secondPushed = true, pullRequest = null, thirdFailed = fal
     workspaceClose: async (workspaceId) => { calls.push(["workspaceClose", workspaceId]); return { ok: true }; },
   };
   const briefs = new AgentBriefs({ directory: join(root, "briefs") });
-  const integrator = new GoalIntegrator({ store, worktrees, repoCatalog, cmux, execute, settleMs: 1, briefs });
+  const integrator = new GoalIntegrator({ store, worktrees, repoCatalog, cmux, execute, settleMs: 1, briefs, burstReview });
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
-  return { store, integrator, calls, integrationPath };
+  return { store, integrator, calls, integrationPath, heads };
 }
 
 // cmux caps a prompt at this many characters, so the session gets a pointer and
@@ -1077,4 +1080,215 @@ for (const closeFails of [false, true]) test(`abort during merge create retains 
   const reaper = new GoalSessionReaper({ store, cmux: { workspaceListDetailed: async () => ({ workspaces: [] }) } });
   await reaper.reap();
   assert.ok(store.get(plan.planId).supersededMergeWorkspaces.find((entry) => entry.workspaceId === "cancelled-merge").retiredAt);
+});
+
+// A reviewer double that keeps the real store state machine: launches are
+// recorded, so the integrator's own reads see a running review.
+function fakeBurstReview(store) {
+  const reviews = [];
+  const stops = [];
+  return {
+    reviews,
+    stops,
+    taskReady: BurstReview.prototype.taskReady,
+    reviewTask: async (planId, taskId) => {
+      reviews.push([planId, taskId]);
+      const task = store.get(planId).tasks.find((item) => item.id === taskId);
+      store.recordBurstReviewLaunched(planId, taskId, { workspaceId: `review-${taskId}-${task.burstReviewRound + 1}`, headSha: task.headSha });
+      return true;
+    },
+    onWorkspaceStopped: async (workspaceId) => { stops.push(workspaceId); return Boolean(store.findTaskByBurstReviewWorkspace(workspaceId)); },
+  };
+}
+
+test("a burst plan launches a reviewer on every ready task and waits for the passes before assembly", async (t) => {
+  const { store, integrator, calls } = fixture(t, { burst: true });
+  const burstReview = fakeBurstReview(store);
+  integrator.burstReview = burstReview;
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 2 tasks/);
+  assert.deepEqual(burstReview.reviews, [["plan-12345678", "t1"], ["plan-12345678", "t2"]]);
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false);
+  assert.equal(calls.some((call) => call[0] === "create"), false);
+  assert.equal(store.get("plan-12345678").tasks[0].burstReviewStatus, "running");
+  // A second pass while both reviews run opens nothing new.
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 2 tasks/);
+  assert.equal(burstReview.reviews.length, 2);
+  store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "pass" });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 1 task$/);
+  store.recordBurstReviewVerdict("plan-12345678", "t2", { verdict: "pass" });
+  const result = await integrator.assemble("plan-12345678");
+  assert.equal(result.mergeStatus, "running");
+  assert.equal(calls.filter((call) => call[0] === "workspaceCreate").length, 1);
+  assert.equal(burstReview.reviews.length, 2, "a passed task is never reviewed again");
+});
+
+test("a push after a pass buys another review", async (t) => {
+  const { store, integrator, calls, heads } = fixture(t, { burst: true });
+  const burstReview = fakeBurstReview(store);
+  integrator.burstReview = burstReview;
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 2 tasks/);
+  store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "pass" });
+  store.recordBurstReviewVerdict("plan-12345678", "t2", { verdict: "pass" });
+  assert.equal(store.get("plan-12345678").tasks[0].burstReviewHeadSha, TASK_ONE);
+  // The owner of t1 pushes once more before assembly runs. The pass judged
+  // the old head, so it must not carry the new one into the merge.
+  heads.t1 = "d".repeat(40);
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 1 task$/);
+  assert.deepEqual(burstReview.reviews.at(-1), ["plan-12345678", "t1"]);
+  assert.equal(burstReview.reviews.length, 3);
+  const reviewed = store.get("plan-12345678").tasks[0];
+  assert.equal(reviewed.burstReviewStatus, "running");
+  assert.equal(reviewed.burstReviewRound, 2, "rounds are cumulative");
+  assert.equal(reviewed.burstReviewHeadSha, "d".repeat(40));
+  assert.equal(reviewed.headSha, "d".repeat(40));
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false, "assembly waits for the new verdict");
+  const kinds = store.events("plan-12345678").map((event) => event.kind);
+  assert.equal(kinds.filter((kind) => kind === "burst_review_reset").length, 1);
+  // The same head again is not a new push; the pass on t2 stands.
+  assert.equal(store.get("plan-12345678").tasks[1].burstReviewStatus, "pass");
+  store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "pass" });
+  const result = await integrator.assemble("plan-12345678");
+  assert.equal(result.mergeStatus, "running");
+  assert.equal(burstReview.reviews.length, 3);
+});
+
+test("a blocked task waits for its head to move, gets one more review, and then waits for a person", async (t) => {
+  const { store, integrator, calls, heads } = fixture(t, { burst: true });
+  const burstReview = fakeBurstReview(store);
+  integrator.burstReview = burstReview;
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review/);
+  store.recordBurstReviewVerdict("plan-12345678", "t2", { verdict: "pass" });
+  // What BurstReview does on a block: verdict, then the task goes pending.
+  store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "block", findings: ["Missing test"] });
+  store.recordTaskPending("plan-12345678", "t1", { error: "Burst review found blocking issues (round 1)" });
+  // The head has not moved, so the branch evidence must not flip the task back
+  // to ready and buy a second review of the same commit.
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for 1 task branch/);
+  assert.equal(burstReview.reviews.length, 2);
+  const blocked = store.get("plan-12345678").tasks[0];
+  assert.equal(blocked.deliveryStatus, "pending");
+  assert.equal(blocked.burstReviewStatus, "block");
+  // The owner amends and force-pushes: a new head earns the second review.
+  heads.t1 = "d".repeat(40);
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 1 task/);
+  assert.deepEqual(burstReview.reviews.at(-1), ["plan-12345678", "t1"]);
+  assert.equal(store.get("plan-12345678").tasks[0].burstReviewRound, 2);
+  store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "block", findings: ["Still missing"] });
+  store.recordTaskPending("plan-12345678", "t1", { error: "Burst review blocked twice. Findings:\n- Still missing" });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /blocked twice.*person/i);
+  // A later push must not re-ready the task and erase what a person needs to read.
+  heads.t1 = "e".repeat(40);
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /blocked twice.*person/i);
+  const final = store.get("plan-12345678").tasks[0];
+  assert.equal(final.deliveryStatus, "pending");
+  assert.equal(final.burstReviewStatus, "blocked_twice");
+  assert.match(final.evidenceError, /Still missing/);
+  assert.equal(burstReview.reviews.length, 3, "no third review is ever opened");
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false);
+});
+
+test("a reviewer that fails to launch is written to the card and retried on the next assemble", async (t) => {
+  const { store, integrator } = fixture(t, { burst: true });
+  const burstReview = fakeBurstReview(store);
+  const reviewTask = burstReview.reviewTask;
+  burstReview.reviewTask = async () => { throw new Error("cmux is down"); };
+  integrator.burstReview = burstReview;
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Burst review launch failed: cmux is down/);
+  let saved = store.get("plan-12345678");
+  assert.equal(saved.deliveryStatus, "blocked");
+  assert.match(saved.deliveryError, /Burst review launch failed: cmux is down/);
+  assert.equal(saved.tasks[0].deliveryStatus, "ready", "the task keeps its evidence");
+  assert.equal(saved.tasks[0].headSha, TASK_ONE);
+  assert.equal(saved.tasks[0].burstReviewStatus, null, "nothing was recorded, so the next pass tries again");
+  burstReview.reviewTask = reviewTask;
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 2 tasks/);
+  saved = store.get("plan-12345678");
+  assert.equal(saved.tasks[0].burstReviewStatus, "running");
+  assert.deepEqual(burstReview.reviews, [["plan-12345678", "t1"], ["plan-12345678", "t2"]]);
+});
+
+test("a passed reviewer is retired by the assemble that follows its verdict", async (t) => {
+  const { store, integrator, calls } = fixture(t, { burst: true });
+  const burstReview = fakeBurstReview(store);
+  integrator.burstReview = burstReview;
+  integrator.cmux.workspaceListDetailed = async () => ({ workspaces: ["workspace-one", "workspace-two", "review-t1-1", "review-t2-1"].map((id) => ({ id, status: { effective: "idle", signals: { any_agent_running: false, any_agent_needs_input: false, is_git_dirty: false } } })) });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review/);
+  assert.deepEqual(closedWorkspaces(calls), [], "a reviewer still reading is never closed");
+  store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "pass" });
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 1 task/);
+  assert.deepEqual(closedWorkspaces(calls), ["review-t1-1"]);
+  assert.ok(store.get("plan-12345678").tasks[0].burstReviewSessionClosedAt);
+  assert.equal(store.get("plan-12345678").tasks[0].sessionClosedAt, null, "the task's own session waits for integration");
+});
+
+test("a plan without the burst flag never consults the reviewer", async (t) => {
+  const { store, integrator } = fixture(t);
+  const burstReview = fakeBurstReview(store);
+  integrator.burstReview = burstReview;
+  const result = await integrator.assemble("plan-12345678");
+  assert.equal(result.mergeStatus, "running");
+  assert.deepEqual(burstReview.reviews, []);
+});
+
+test("a reviewer's own Stop reaches the reviewer first and then schedules its plan", async (t) => {
+  const { store, integrator } = fixture(t, { burst: true });
+  const burstReview = fakeBurstReview(store);
+  integrator.burstReview = burstReview;
+  await burstReview.reviewTask("plan-12345678", "t1");
+  const scheduled = [];
+  integrator.schedulePlan = (planId) => scheduled.push(["plan", planId]);
+  integrator.scheduleWorkspace = (workspaceId) => scheduled.push(["workspace", workspaceId]);
+  const events = eventHub();
+  const detach = integrator.attach({ hub: events });
+  t.after(() => detach());
+  events.emit({ name: "agent.hook.Stop", workspace_id: "review-t1-1" });
+  await tick(5);
+  assert.deepEqual(burstReview.stops, ["review-t1-1"]);
+  // attach() also schedules every active combined plan once at startup, so
+  // the reviewer's contribution is the plan entry, not the whole list.
+  assert.equal(scheduled.filter(([kind]) => kind === "workspace").length, 0, "a reviewer stop never takes the task path");
+  assert.ok(scheduled.some(([kind, id]) => kind === "plan" && id === "plan-12345678"), "the plan is scheduled so a pass rolls into assembly");
+  const seen = scheduled.length;
+  // A task owner's Stop is offered to the reviewer and then takes the
+  // integrator's own path.
+  events.emit({ name: "agent.hook.Stop", workspace_id: "workspace-one" });
+  await tick(5);
+  assert.deepEqual(burstReview.stops, ["review-t1-1", "workspace-one"]);
+  assert.deepEqual(scheduled.slice(seen), [["workspace", "workspace-one"]]);
+  // A Stop with no workspace id is dropped before either path.
+  events.emit({ name: "agent.hook.Stop" });
+  await tick(5);
+  assert.equal(scheduled.length, seen + 1);
+  assert.equal(burstReview.stops.length, 2);
+  // A reviewer that throws must not swallow a task owner's Stop.
+  burstReview.onWorkspaceStopped = async () => { throw new Error("verdict store is down"); };
+  events.emit({ name: "agent.hook.Stop", workspace_id: "workspace-two" });
+  await tick(5);
+  assert.deepEqual(scheduled.at(-1), ["workspace", "workspace-two"]);
+  // A goal reviewer's stop is handled and schedules nothing here.
+  burstReview.onWorkspaceStopped = async () => true;
+  events.emit({ name: "agent.hook.Stop", workspace_id: "review-goal" });
+  await tick(5);
+  assert.equal(scheduled.length, seen + 2);
+});
+
+test("a store that throws under a task owner's Stop is logged twice and never rejects", async (t) => {
+  const { integrator } = fixture(t, { burst: true });
+  const warnings = [];
+  integrator.log = { warn: (details, message) => warnings.push(message) };
+  integrator.burstReview = { onWorkspaceStopped: async () => { throw new Error("verdict store is down"); } };
+  integrator.store.findTaskByWorkspace = () => { throw new Error("plan store is down"); };
+  const rejections = [];
+  const onRejection = (reason) => rejections.push(reason);
+  process.on("unhandledRejection", onRejection);
+  t.after(() => process.off("unhandledRejection", onRejection));
+  const events = eventHub();
+  const detach = integrator.attach({ hub: events });
+  t.after(() => detach());
+  events.emit({ name: "agent.hook.Stop", workspace_id: "workspace-one" });
+  await tick(10);
+  // attach() also schedules the plan at startup, whose assemble fails on the
+  // same broken store; that warning is the integrator's own and is expected.
+  assert.deepEqual(warnings.filter((message) => message !== "combined goal assembly failed"), ["burst review stop handling failed", "task stop could not be scheduled"]);
+  assert.deepEqual(rejections, []);
 });

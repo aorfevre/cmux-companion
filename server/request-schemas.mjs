@@ -1,3 +1,5 @@
+import { MAX_BURST_GOAL } from "./burst-contract.mjs";
+
 // Boundary schemas reject malformed controls before any process, worktree or
 // queue mutation. Domain validators still enforce ownership and allowed values.
 const text = { type: "string", maxLength: 32_000 };
@@ -17,13 +19,14 @@ export const WRITE_SCHEMAS = {
     goal: { type: "string", maxLength: 8000 },
     images: { type: "array", maxItems: 4, items: image },
     engine: { type: "object", additionalProperties: false, properties: { provider: { enum: ["claude", "codex"] }, model: { type: "string" }, effort: { type: "string" }, reviewer: { type: "boolean" } } },
-    specOptions: { type: "object" }, reviewOptions: { type: "object" },
+    specOptions: { type: "object" }, reviewOptions: { type: "object" }, burst: { type: "boolean" },
     background: { type: "boolean" }, traceId: id, idempotencyKey: { type: "string", pattern: "^[0-9a-fA-F-]{36}$" },
     issueNumbers: { type: "array", maxItems: 100, items: { type: "integer", minimum: 1 } }, issueUrls: { type: "array", maxItems: 100, items: { type: "string", maxLength: 1000 } },
   }, ["repositoryId", "goal"]),
   analysisVersion: body({ version: { type: "integer", minimum: 1 } }, ["version"]),
   reviewAction: body({ reviewId: { type: "string", pattern: "^[a-f0-9]{64}$" } }, ["reviewId"]),
   empty: body({}),
+  burstApprove: body({ goal: { type: "string", maxLength: MAX_BURST_GOAL } }),
   updateGoal: body({ tasks: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", required: ["id", "title", "branch", "prompt"], properties: { id, title: { type: "string" }, branch: { type: "string" }, prompt: { type: "string" }, agent: { enum: ["claude", "codex"] } } } } }, ["tasks"]),
 };
 

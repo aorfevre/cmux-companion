@@ -1,8 +1,10 @@
+import { normalizeBurst } from "./burst-options.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeImages, normalizePlannerEngine, normalizeIssueNumbers, normalizeIssueUrls } from "./worktree-planner.mjs";
 import { normalizeSpecOptions } from "./spec-options.mjs";
 import { normalizeReviewOptions } from "./review-options.mjs";
 import { normalizeGoalType, applicableSpecOptions, NEW_GOAL_SPEC_OPTIONS, NEW_GOAL_REVIEWER, NEW_GOAL_REVIEW_OPTIONS } from "./goal-options.mjs";
+import { MAX_GOAL_TEXT } from "./goal-limits.mjs";
 
 // Owns every new discovery conversation. Historical delivery recovery remains
 // separate; continuing unlaunched discovery creates one durable successor.
@@ -13,10 +15,10 @@ export class GoalSessionService {
     this.processAlive = processAlive; this.stopGoal = stopGoal;
   }
 
-  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, idempotencyKey = null, issueNumbers = [], issueUrls = [], discoveryContext = null, goalType = "coding", sourceAnalysis = null } = {}) {
+  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, burst = false, idempotencyKey = null, issueNumbers = [], issueUrls = [], discoveryContext = null, goalType = "coding", sourceAnalysis = null } = {}) {
     const type = normalizeGoalType(goalType);
     const text = String(goal || "").trim();
-    if (!text || text.length > 4_000) throw new TypeError("Describe the goal for this repository");
+    if (!text || text.length > MAX_GOAL_TEXT) throw new TypeError("Describe the goal for this repository");
     const repository = await this.worktrees.resolveRepository(repositoryId);
     const planId = validIdempotencyKey(idempotencyKey) || randomUUID();
     const attachments = normalizeImages(images);
@@ -29,13 +31,14 @@ export class GoalSessionService {
     if (type === "analysis") selectedReview.codeReview = false;
     normalizeSpecOptions(specOptions);
     const selectedOptions = applicableSpecOptions(type, normalizeSpecOptions({ ...NEW_GOAL_SPEC_OPTIONS, ...specOptions }));
+    const burstOn = normalizeBurst(burst);
     const existing = this.store.get(planId);
     if (existing) {
-      if (existing.workflow !== "goal_session" || existing.goalType !== type || !same(existing.sourceAnalysis, sourceAnalysis) || existing.repositoryId !== repository.id || existing.goal !== text || !same(existing.issueNumbers, linkedIssues) || !same(existing.issueUrls, linkedUrls) || !same(existing.images, attachments) || !same(existing.engine, selectedEngine) || !same(existing.specOptions, selectedOptions) || !same(existing.reviewOptions, selectedReview)) throw new TypeError("This goal-session request key belongs to a different goal");
+      if (existing.burst !== burstOn || existing.workflow !== "goal_session" || existing.goalType !== type || !same(existing.sourceAnalysis, sourceAnalysis) || existing.repositoryId !== repository.id || existing.goal !== text || !same(existing.issueNumbers, linkedIssues) || !same(existing.issueUrls, linkedUrls) || !same(existing.images, attachments) || !same(existing.engine, selectedEngine) || !same(existing.specOptions, selectedOptions) || !same(existing.reviewOptions, selectedReview)) throw new TypeError("This goal-session request key belongs to a different goal");
       return existing;
     }
     this.store.createPlan({ planId, repositoryId: repository.id, repositoryName: repository.name, cwd: repository.primaryPath, goal: text, images: attachments,
-      goalType: type, sourceAnalysis, engine: selectedEngine, specOptions: selectedOptions, reviewOptions: selectedReview,
+      goalType: type, sourceAnalysis, burst: burstOn, engine: selectedEngine, specOptions: selectedOptions, reviewOptions: selectedReview,
       sourceType: linkedIssues.length ? "github_issues" : null, issueNumbers: linkedIssues, issueUrls: linkedUrls, discoveryContext });
     const branch = `goal-session/${planId.slice(0, 12)}`;
     this.store.reserveGoalSession(planId, { branch, generation: 1 });
@@ -100,7 +103,7 @@ export class GoalSessionService {
     await this.worktrees.resolveRepository(source.repositoryId);
     if (source.issueNumbers?.length) this.store.returnIssuesToBacklog(source.planId);
     return this.start({ repositoryId: source.repositoryId, goal: source.goal, images: source.images,
-      goalType: source.goalType, sourceAnalysis: source.sourceAnalysis,
+      goalType: source.goalType, sourceAnalysis: source.sourceAnalysis, burst: source.burst,
       engine: source.engine, specOptions: source.specOptions, reviewOptions: source.reviewOptions,
       issueNumbers: source.issueNumbers, issueUrls: source.issueUrls, idempotencyKey,
       discoveryContext: source.discoveryContext || { sourcePlanId: source.planId, spec: source.spec, tasks: source.tasks, questions: source.questions, events: this.store.events(source.planId), discussion: this.store.discussions(source.planId) } });

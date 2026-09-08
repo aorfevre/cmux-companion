@@ -11,7 +11,7 @@
 const PREFERENCE = { MERGED: 3, OPEN: 2, CLOSED: 1 };
 
 export class GoalMergeWatch {
-  constructor({ store, worktrees, sessionCollector = null, worktreeCleanup = null, log = null } = {}) {
+  constructor({ store, worktrees, sessionCollector = null, worktreeCleanup = null, burstReview = null, log = null } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     this.store = store;
@@ -19,6 +19,9 @@ export class GoalMergeWatch {
     this.log = log;
     this.sessionCollector = sessionCollector;
     this.worktreeCleanup = worktreeCleanup;
+    // Asked once per open pull request on every pass; it decides for itself
+    // whether the goal is a burst goal and whether a reviewer already runs.
+    this.burstReview = burstReview;
   }
 
   #plans() {
@@ -85,6 +88,17 @@ export class GoalMergeWatch {
         recorded.push(written);
         await this.sessionCollector?.collect(plan.planId);
         if (written.state === "MERGED") this.worktreeCleanup?.schedule();
+      }
+      // The review is asked for on every pass the pull request is open, not
+      // only on the pass that recorded it: a reviewer that failed to start
+      // released its claim, and nothing else would retry. reviewGoal answers
+      // false cheaply once a review is claimed or running, and it owns the
+      // burst rules, so the watch does not check the flag itself.
+      // The reviewer opens a cmux session, which must not hold up the
+      // refresh the user is waiting on, so it is not awaited.
+      if (match.state === "OPEN") {
+        Promise.resolve().then(() => this.burstReview?.reviewGoal?.(plan.planId))
+          .catch((cause) => this.log?.warn?.({ err: cause, planId: plan.planId }, "burst goal review could not start"));
       }
     }
     return { recorded };

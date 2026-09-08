@@ -12,6 +12,7 @@ import { WorktreeDashboardView } from "../app/worktree-dashboard";
 import { WorktreePlannerSheet } from "../app/worktree-planner";
 import { GitHubIssuePicker } from "../app/github-issue-picker";
 import { DeploymentHealth } from "../app/deployment-health";
+import { DEFAULT_MODEL_ROLES } from "../server/model-options.mjs";
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
@@ -2388,5 +2389,37 @@ describe("unified GitHub issue picker", () => {
     const start = vi.fn(async () => {});
     render(<GitHubIssuePicker repository={{ id: "repository12345678", name: "App" }} onStart={start} onClose={() => {}} />);
     await screen.findByRole("alert"); assert.equal(start.mock.calls.length, 0);
+  });
+});
+
+describe("burst", () => {
+  test("the goal form sends burst when the toggle is on", async () => {
+    const posts: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/settings/models")) return new Response(JSON.stringify({ roles: DEFAULT_MODEL_ROLES, defaults: DEFAULT_MODEL_ROLES, warning: null }), { status: 200 });
+      if (url.endsWith("/api/goal-sessions") && init?.method === "POST") { posts.push(JSON.parse(String(init.body))); return new Response(JSON.stringify({ planId: "p1", repositoryId: "r1", goal: "x", round: 0, status: "questions", questions: [], tasks: [], workflow: "goal_session" }), { status: 201 }); }
+      return new Response("{}", { status: 200 });
+    }));
+    render(<WorktreePlannerSheet repository={{ id: "r1", name: "Repo" }} onClose={() => {}} onNotice={() => {}} />);
+    await userEvent.type(await screen.findByLabelText("Goal"), "Ship burst");
+    await userEvent.click(screen.getByLabelText("Burst"));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
+    await waitFor(() => assert.equal(posts.length, 1));
+    assert.equal((posts[0] as { burst: boolean }).burst, true);
+  });
+
+  test("Board tools offers Burst and opens the sheet", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/bursts")) return new Response(JSON.stringify({ bursts: [] }), { status: 200 });
+      if (url.includes("/api/worktree-dashboard")) return new Response(JSON.stringify({ generatedAt: "2026-09-08T00:00:00Z", github: { status: "ready" }, summary: { repositories: 0 }, repositories: [], orphanSessions: [] }), { status: 200 });
+      if (url.includes("/api/worktree-plans")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }));
+    render(<WorktreeDashboardView readOnly={false} onOpenWorkspace={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.click(await screen.findByText("Board tools"));
+    await userEvent.click(screen.getByRole("button", { name: "Burst" }));
+    assert.ok(await screen.findByRole("dialog", { name: "Burst plan" }));
   });
 });

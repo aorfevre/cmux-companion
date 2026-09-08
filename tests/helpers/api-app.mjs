@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { CmuxClient } from "../../server/cmux-client.mjs";
 import { buildApp } from "../../server/app.mjs";
 import { WorktreePlanStore } from "../../server/worktree-plan-store.mjs";
+import { BurstStore } from "../../server/burst-store.mjs";
 import { GitHubIssueStore } from "../../server/github-issue-store.mjs";
 import { GitHubReviewToken } from "../../server/github-review-token.mjs";
 import { AgentBriefs } from "../../server/agent-brief.mjs";
@@ -22,10 +23,12 @@ export async function buildTestApp(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "cmux-api-fixture-"));
   let app;
   let ownedStore;
+  let ownedBurstStore;
   t.after(async () => {
     try { await app?.close(); }
     finally {
       ownedStore?.close();
+      ownedBurstStore?.close();
       await rm(directory, { recursive: true, force: true });
     }
   });
@@ -36,6 +39,8 @@ export async function buildTestApp(t, options = {}) {
     cmux: options.cmux || new CmuxClient({ bin: "/fake/cmux", socketPassword: "" }),
     repoCatalog,
     worktreePlanStore,
+    // The app would otherwise open the real bursts.db beside the real plans.db.
+    burstStore: options.burstStore || (ownedBurstStore = new BurstStore({ path: ":memory:" })),
     worktreeDashboard: options.worktreeDashboard || new WorktreeDashboard({
       repoCatalog, managedReleaseRoots: [],
       repositoryArchive: new RepositoryArchive({ path: join(directory, "archive.json") }),

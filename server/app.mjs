@@ -1,4 +1,8 @@
 import { registerPlannerRoutes } from "./planner-routes.mjs";
+import { registerBurstRoutes } from "./burst-routes.mjs";
+import { BurstStore } from "./burst-store.mjs";
+import { BurstScanner } from "./burst-scanner.mjs";
+import { BurstService } from "./burst-service.mjs";
 import { WRITE_SCHEMAS, schemaErrorFormatter } from "./request-schemas.mjs";
 import { releaseRetention } from "./release-retention.mjs";
 import { WorktreeCleanup } from "./worktree-cleanup.mjs";
@@ -25,6 +29,7 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
+import { BurstReview } from "./burst-review.mjs";
 import { GoalFollowups } from "./goal-followup.mjs";
 import { GitHubReviewToken } from "./github-review-token.mjs";
 import { agentCapacity } from "./agent-capacity.mjs";
@@ -85,6 +90,8 @@ export async function buildApp({
   cmuxGroups = null,
   githubIssueSync = null,
   githubIssueSyncScheduler = null,
+  burstStore = null,
+  burstService = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
   previewManager = null,
@@ -145,8 +152,11 @@ export async function buildApp({
   // exactly what the switch does not need to protect them from.
   const autoCloseSessions = !AUTO_CLOSE_OFF.has(String(process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS ?? "").trim().toLowerCase());
   const sessionCollector = planStore ? new GoalSessionCollector({ store: planStore, cmux, reaper, enabled: autoCloseSessions, log: app.log }) : null;
+  // The independent reviewer a burst goal buys. It gates combined assembly on
+  // a per-task pass, and reviews a goal session once its pull request opens.
+  const burstReview = planStore ? new BurstReview({ store: planStore, cmux, briefs, modelSettings, log: app.log }) : null;
   const integrator = goalIntegrator
-    || (planStore ? new GoalIntegrator({ modelSettings, store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector }) : null);
+    || (planStore ? new GoalIntegrator({ modelSettings, store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector, burstReview }) : null);
   const followups = goalFollowups
     || (planStore ? new GoalFollowups({ modelSettings, store: planStore, cmux, log: app.log, briefs }) : null);
   // The identity a goal code review posts under. It is separate from the
@@ -157,7 +167,7 @@ export async function buildApp({
   // The watcher never runs `gh`. It reads what the dashboard already cached
   // during the one Refresh GitHub command per repository.
   const mergeWatch = goalMergeWatch
-    || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, sessionCollector, worktreeCleanup: cleanup, log: app.log }) : null);
+    || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, sessionCollector, worktreeCleanup: cleanup, burstReview, log: app.log }) : null);
   // The one thing no other module does: ask cmux whether each launched task's
   // agent is still alive. It writes nothing, so a sweep can never move a goal
   // on its own.
@@ -176,6 +186,11 @@ export async function buildApp({
         ? { intervalMs: Number(process.env.CMUX_COMPANION_GITHUB_ISSUE_SYNC_INTERVAL_MS) }
         : {}),
     });
+  // Burst reuses the goal session path for every approved candidate, so a test
+  // that builds an app without goal sessions gets no burst service and 503s.
+  const burstPlans = burstStore || (goalSessions && !burstService ? new BurstStore() : null);
+  const bursts = burstService
+    || (goalSessions && burstPlans ? new BurstService({ store: burstPlans, worktrees, goalSessions, accountUsage, log: app.log, scanner: new BurstScanner({ modelSettings }) }) : null);
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
@@ -638,6 +653,10 @@ export async function buildApp({
     bootstrapSnapshot = null;
     worktrees.invalidate();
   } });
+  registerBurstRoutes(app, { bursts, invalidate: () => {
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+  } });
 
   // Abort is terminal and idempotent. The integrator drops its scheduled work
   // first, so no timer can create a session between the two calls.
@@ -1092,6 +1111,7 @@ export async function buildApp({
     detachIssueSyncScheduler?.();
     hub.stop();
     if (!worktreePlanStore && planStore) planStore.close();
+    if (!burstStore && burstPlans) burstPlans.close();
   });
 
   if (frontendUpstream) {

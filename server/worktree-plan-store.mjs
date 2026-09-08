@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { classifyLegacyWorktreeError } from "./worktree-errors.mjs";
 import { safeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
+import { normalizeBurst } from "./burst-options.mjs";
 import { currentModelId } from "./model-options.mjs";
 import { normalizeGoalType, plannerReviewReady } from "./goal-options.mjs";
 import { GoalOutcomeStore } from "./goal-outcome-store.mjs";
@@ -30,6 +31,7 @@ const PLAN_EVENT_KINDS = new Set([
   "task_relaunched", "task_skipped", "followup_launched", "task_associated",
   "review_claimed", "review_launched", "discussion", "merge_cleanup_required",
   "goal_session_started", "proposal_published", "proposal_changes_requested", "proposal_approved", "goal_session_transition", "goal_session_correction",
+  "burst_review_launched", "burst_review_verdict", "burst_review_reset",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -67,11 +69,12 @@ export class WorktreePlanStore {
   }
 
   // The opening goal. It is the only row that creates a plan.
-  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, discoveryContext = null, goalType = "coding", sourceAnalysis = null }) {
+  createPlan({ planId, repositoryId, repositoryName = null, cwd = null, goal, images = [], sourceType = null, issueNumbers = [], issueUrls = [], deliveryPolicy = "auto", engine = {}, specOptions = {}, reviewOptions = {}, burst = false, discoveryContext = null, goalType = "coding", sourceAnalysis = null }) {
     const at = this.#stamp();
     const options = safeSpecOptions(specOptions);
     const review = safeReviewOptions(reviewOptions);
     const type = normalizeGoalType(goalType);
+    const burstOn = normalizeBurst(burst);
     this.#transaction(() => {
       // Reservation and plan creation are one transaction, before any planner
       // process starts. Both single-issue and topic planning use this boundary.
@@ -83,12 +86,12 @@ export class WorktreePlanStore {
       }
 
       this.db.prepare(`
-        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), json(review), at, at);
+        INSERT INTO plans (plan_id, repository_id, repository_name, cwd, goal, images, source_type, issue_numbers, issue_urls, delivery_policy, engine_provider, engine_model, engine_effort, engine_reviewer, spec_options, review_options, burst, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(planId, repositoryId, repositoryName, cwd, goal, json(images), text(sourceType), json(issueNumbers), json(issueUrls), policy(deliveryPolicy), engine.provider || "claude", engine.model || "default", engine.effort || "default", engine.reviewer === true ? 1 : 0, json(options), json(review), burstOn ? 1 : 0, at, at);
       this.db.prepare("UPDATE plans SET goal_type = ?, source_analysis = ? WHERE plan_id = ?").run(type, sourceAnalysis ? json(sourceAnalysis) : null, planId);
       if (discoveryContext) this.db.prepare("UPDATE plans SET discovery_context = ? WHERE plan_id = ?").run(json(discoveryContext), planId);
-      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review }, at);
+      this.#insertEvent(planId, 0, "goal", { goal, images, sourceType, issueNumbers, issueUrls, deliveryPolicy: policy(deliveryPolicy), engine: { provider: engine.provider || "claude", model: engine.model || "default", effort: engine.effort || "default", reviewer: engine.reviewer === true }, specOptions: options, reviewOptions: review, burst: burstOn }, at);
     });
     this.#prune();
     return this.get(planId);
@@ -610,6 +613,13 @@ export class WorktreePlanStore {
     return row ? this.get(row.plan_id) : null;
   }
 
+  findPlanByReviewWorkspace(workspaceIdValue) {
+    const id = text(workspaceIdValue);
+    if (!id) return null;
+    const row = this.db.prepare("SELECT plan_id FROM plans WHERE review_workspace_id = ? LIMIT 1").get(id);
+    return row ? this.get(row.plan_id) : null;
+  }
+
   activeCombinedPlans() {
     return this.db.prepare(`
       SELECT plan_id FROM plans
@@ -647,6 +657,89 @@ export class WorktreePlanStore {
       this.#insertEvent(String(planId), null, "task_pending", { taskId, error }, at);
     });
     return this.get(planId);
+  }
+
+  // One reviewer per finished task, at most twice. The second block is final:
+  // the task waits for a person, and no third session is ever opened. The head
+  // under review is kept here because a block returns the task to pending,
+  // which clears head_sha; the integrator needs it to tell an amended push
+  // apart from the commit that was already judged.
+  recordBurstReviewLaunched(planId, taskId, { workspaceId, headSha = null }) {
+    const at = this.#stamp();
+    const id = String(planId);
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT burst_review_status, burst_review_round FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get(id, String(taskId));
+      if (!row) throw new TypeError("Unknown task");
+      if (row.burst_review_status === "blocked_twice" || row.burst_review_status === "pass") throw new TypeError("This task needs no further review");
+      if (row.burst_review_status === "running") throw new TypeError("A burst review is already running for this task");
+      const round = Number(row.burst_review_round) + 1;
+      this.db.prepare("UPDATE plan_tasks SET burst_review_status = 'running', burst_review_round = ?, burst_review_workspace_id = ?, burst_review_head_sha = ?, burst_review_session_closed_at = NULL WHERE plan_id = ? AND task_id = ?")
+        .run(round, text(workspaceId), text(headSha), id, String(taskId));
+      // A reviewer that is running is a launch that succeeded, so a failure
+      // from an earlier attempt must not stay on the card.
+      this.db.prepare(`
+        UPDATE plans SET delivery_status = CASE delivery_status WHEN 'blocked' THEN 'implementing' ELSE delivery_status END,
+          delivery_error = NULL, updated_at = ? WHERE plan_id = ?
+      `).run(at, id);
+      this.#insertEvent(id, null, "burst_review_launched", { taskId, workspaceId: text(workspaceId), headSha: text(headSha), round }, at);
+    });
+    return this.get(id);
+  }
+
+  recordBurstReviewVerdict(planId, taskId, { verdict, findings = [] } = {}) {
+    if (verdict !== "pass" && verdict !== "block") throw new TypeError("A burst review verdict is pass or block");
+    const at = this.#stamp();
+    const id = String(planId);
+    const list = findingsList(findings);
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT burst_review_status, burst_review_round FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get(id, String(taskId));
+      if (!row) throw new TypeError("Unknown task");
+      if (row.burst_review_status !== "running") throw new TypeError("No burst review is running for this task");
+      const status = verdict === "pass" ? "pass" : Number(row.burst_review_round) >= 2 ? "blocked_twice" : "block";
+      this.db.prepare("UPDATE plan_tasks SET burst_review_status = ?, burst_review_findings = ? WHERE plan_id = ? AND task_id = ?")
+        .run(status, json(list), id, String(taskId));
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
+      this.#insertEvent(id, null, "burst_review_verdict", { taskId, verdict, status, findings: list }, at);
+    });
+    return this.get(id);
+  }
+
+  // A pass is pinned to the head it judged. When the owner pushes again, the
+  // verdict no longer describes the branch, so it is cleared and the launch
+  // loop opens a fresh reviewer. The round is kept on purpose: rounds are
+  // cumulative, so a passed task that is pushed again gets exactly one more
+  // review, and a block on that review counts toward blocked_twice as usual.
+  // Every other status is left alone: running and block already carry the
+  // head they judged, and blocked_twice is final.
+  resetBurstReviewForNewHead(planId, taskId) {
+    const at = this.#stamp();
+    const id = String(planId);
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT burst_review_status, burst_review_round, burst_review_head_sha, burst_review_workspace_id, burst_review_session_closed_at FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get(id, String(taskId));
+      if (!row) throw new TypeError("Unknown task");
+      if (row.burst_review_status !== "pass") return;
+      // The reaper finds a task's reviewer through this column. A passed
+      // reviewer it has not retired yet would be orphaned by the clear, so
+      // its id moves to the cleanup list the reaper also walks.
+      const orphan = text(row.burst_review_workspace_id);
+      if (orphan && !row.burst_review_session_closed_at) {
+        const sessions = this.#superseded(id);
+        if (!sessions.some((entry) => entry.workspaceId === orphan)) sessions.push({ workspaceId: orphan, retiredAt: null });
+        this.db.prepare("UPDATE plans SET superseded_merge_workspaces = ? WHERE plan_id = ?").run(json(sessions), id);
+      }
+      this.db.prepare("UPDATE plan_tasks SET burst_review_status = NULL, burst_review_workspace_id = NULL, burst_review_head_sha = NULL, burst_review_session_closed_at = NULL WHERE plan_id = ? AND task_id = ?")
+        .run(id, String(taskId));
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
+      this.#insertEvent(id, null, "burst_review_reset", { taskId, round: Number(row.burst_review_round) || 0, headSha: row.burst_review_head_sha ?? null }, at);
+    });
+    return this.get(id);
+  }
+
+  findTaskByBurstReviewWorkspace(workspaceId) {
+    const value = text(workspaceId);
+    if (!value) return null;
+    const row = this.db.prepare("SELECT plan_id, task_id FROM plan_tasks WHERE burst_review_workspace_id = ? LIMIT 1").get(value);
+    return row ? { planId: row.plan_id, taskId: row.task_id } : null;
   }
 
   recordIntegrationStarted(planId, { branch, path }) {
@@ -799,6 +892,23 @@ export class WorktreePlanStore {
     return this.get(id);
   }
 
+  // The goal reviewer delivered its verdict. The event keeps what it said
+  // under the same kind the task-level verdicts use, and 'done' is what the
+  // reaper reads to know the session has nothing left to say; the session's
+  // own closure stamp is written when the session is actually retired.
+  recordGoalReviewVerdict(planId, { verdict, findings = [] } = {}) {
+    if (verdict !== "pass" && verdict !== "block") throw new TypeError("A burst review verdict is pass or block");
+    const at = this.#stamp();
+    const id = String(planId);
+    const list = findingsList(findings);
+    this.#transaction(() => {
+      const changed = this.db.prepare("UPDATE plans SET review_status = 'done', updated_at = ? WHERE plan_id = ? AND review_status = 'running'").run(at, id).changes;
+      if (changed !== 1) throw new TypeError("No goal review is running for this plan");
+      this.#insertEvent(id, null, "burst_review_verdict", { taskId: "goal", verdict, status: verdict, findings: list }, at);
+    });
+    return this.get(id);
+  }
+
   // The merge agent stopped without a pull request. The worktree and the live
   // session are both kept, because a retry continues them rather than restarting.
   recordMergeBlocked(planId, reason) {
@@ -887,10 +997,21 @@ export class WorktreePlanStore {
         "UPDATE plan_tasks SET session_closed_at = ? WHERE plan_id = ? AND task_id = ? AND workspace_id = ? AND session_closed_at IS NULL",
       );
       for (const entry of wanted) if (entry.kind === "task" && entry.taskId) close.run(at, id, entry.taskId, entry.workspaceId);
+      // A burst reviewer has its own column on the task row, so the task's own
+      // stamp is never confused with its reviewer's.
+      const closeReview = this.db.prepare(
+        "UPDATE plan_tasks SET burst_review_session_closed_at = ? WHERE plan_id = ? AND task_id = ? AND burst_review_workspace_id = ? AND burst_review_session_closed_at IS NULL",
+      );
+      for (const entry of wanted) if (entry.kind === "review" && entry.taskId) closeReview.run(at, id, entry.taskId, entry.workspaceId);
       // The live merge session has no row of its own, so the plan carries its
       // stamp. Only the id the plan currently points at may claim that column.
       if (wanted.some((entry) => entry.kind === "merge" && entry.workspaceId === liveMerge)) {
         this.db.prepare("UPDATE plans SET merge_session_closed_at = COALESCE(merge_session_closed_at, ?) WHERE plan_id = ?").run(at, id);
+      }
+      // The goal reviewer, like the merge session, lives on the plan row.
+      for (const entry of wanted) {
+        if (entry.kind !== "goal_review") continue;
+        this.db.prepare("UPDATE plans SET review_session_closed_at = COALESCE(review_session_closed_at, ?) WHERE plan_id = ? AND review_workspace_id = ?").run(at, id, entry.workspaceId);
       }
       const retired = new Set(wanted.filter((entry) => entry.kind === "superseded").map((entry) => entry.workspaceId));
       if (retired.size) {
@@ -1216,7 +1337,9 @@ export class WorktreePlanStore {
         (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.agent = 'claude') AS claude_count,
         (SELECT COUNT(*) FROM plan_tasks t WHERE t.plan_id = p.plan_id AND t.agent = 'codex') AS codex_count,
         (SELECT group_concat(t.workspace_id) FROM plan_tasks t WHERE t.plan_id = p.plan_id
-           AND t.workspace_id IS NOT NULL AND t.session_closed_at IS NULL) AS open_workspace_ids
+           AND t.workspace_id IS NOT NULL AND t.session_closed_at IS NULL) AS open_workspace_ids,
+        (SELECT group_concat(t.burst_review_workspace_id) FROM plan_tasks t WHERE t.plan_id = p.plan_id
+           AND t.burst_review_workspace_id IS NOT NULL AND t.burst_review_session_closed_at IS NULL) AS open_review_workspace_ids
       FROM plans p ${where} ORDER BY p.updated_at DESC, p.plan_id DESC LIMIT ?
     `).all(...values).map((row) => ({
       planId: row.plan_id,
@@ -1239,6 +1362,7 @@ export class WorktreePlanStore {
       engine: { provider: row.engine_provider || "claude", model: currentModelId(row.engine_model) || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
       specOptions: safeSpecOptions(parse(row.spec_options, null)),
       reviewOptions: safeReviewOptions(parse(row.review_options, null)),
+      burst: row.burst === 1,
       reviewStatus: row.review_status ?? null,
       lastError: row.last_error ?? null,
       lastErrorAt: row.last_error_at ?? null,
@@ -1259,7 +1383,7 @@ export class WorktreePlanStore {
       // Every session this goal still owns, so one card can offer Open in cmux
       // without a second request. The merge session is included because it is
       // the one the user opens when a merge is blocked.
-      workspaceIds: splitIds([row.open_workspace_ids, row.merge_workspace_id, row.goal_session_workspace_id].filter(Boolean).join(","), null),
+      workspaceIds: splitIds([row.open_workspace_ids, row.open_review_workspace_ids, row.merge_workspace_id, row.goal_session_workspace_id].filter(Boolean).join(","), null),
       goalType: row.goal_type || "coding",
       sourceAnalysis: parse(row.source_analysis, null),
       plannerReviewStatus: this.outcomes.reviews(row.plan_id).find((review) => review.kind === "planner" && review.target === String(row.proposal_revision))?.status || null,
@@ -1346,6 +1470,7 @@ export class WorktreePlanStore {
       AND NOT EXISTS (
         SELECT 1 FROM plan_tasks t WHERE t.plan_id = plans.plan_id
           AND ((t.workspace_id IS NOT NULL AND t.session_closed_at IS NULL)
+            OR (t.burst_review_workspace_id IS NOT NULL AND t.burst_review_session_closed_at IS NULL)
             OR (t.worktree_path IS NOT NULL AND t.worktree_removed_at IS NULL))
       )
       AND NOT EXISTS (
@@ -1376,6 +1501,7 @@ function readPlan(row) {
     engine: { provider: row.engine_provider || "claude", model: currentModelId(row.engine_model) || "default", effort: row.engine_effort || "default", reviewer: row.engine_reviewer === 1 },
     specOptions: safeSpecOptions(parse(row.spec_options, null)),
     reviewOptions: safeReviewOptions(parse(row.review_options, null)),
+    burst: row.burst === 1,
     reviewWorkspaceId: row.review_workspace_id ?? null,
     reviewStatus: row.review_status ?? null,
     reviewBriefPath: row.review_brief_path ?? null,
@@ -1474,6 +1600,12 @@ function readTask(row) {
     deliveryStatus: row.delivery_status || "pending",
     integratedCommitSha: row.integrated_commit_sha,
     sessionClosedAt: row.session_closed_at ?? null,
+    burstReviewStatus: row.burst_review_status ?? null,
+    burstReviewRound: Number(row.burst_review_round) || 0,
+    burstReviewWorkspaceId: row.burst_review_workspace_id ?? null,
+    burstReviewFindings: parse(row.burst_review_findings, []),
+    burstReviewHeadSha: row.burst_review_head_sha ?? null,
+    burstReviewSessionClosedAt: row.burst_review_session_closed_at ?? null,
   };
 }
 
@@ -1501,9 +1633,14 @@ function splitIds(joined, mergeWorkspaceId) {
 // say which column holds its stamp. An entry with no kind is read the old way,
 // so the relaunch caller keeps working unchanged.
 function sessionKind(value, taskId, workspaceIdValue, liveMergeWorkspaceId) {
-  if (value === "task" || value === "merge" || value === "superseded") return value;
+  if (value === "task" || value === "merge" || value === "superseded" || value === "review" || value === "goal_review") return value;
   if (taskId) return "task";
   return workspaceIdValue && workspaceIdValue === liveMergeWorkspaceId ? "merge" : "superseded";
+}
+
+// What a reviewer may say: short lines, and not too many of them.
+function findingsList(value) {
+  return (Array.isArray(value) ? value : []).map((item) => String(item || "").slice(0, 1_000)).filter(Boolean).slice(0, 50);
 }
 
 function boardStatus(value) {

@@ -29,6 +29,10 @@ function accountState(account: CapacityAccount) {
   return "Reported capacity available";
 }
 
+export function hasLiveOpportunity(capacity: AgentCapacity | null, now: number): boolean {
+  return (capacity?.providers || []).some((provider) => provider.accounts.some((account) => account.opportunity && Date.parse(account.opportunity.resetAt || "") > now));
+}
+
 export function WeeklyOpportunities({ capacity, error, now, onUsage }: { capacity: AgentCapacity | null; error: string; now: number; onUsage?: () => void }) {
   const opportunities = (capacity?.providers || []).flatMap((provider) => provider.accounts.flatMap((account) => {
     const window = account.opportunity;

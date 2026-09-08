@@ -17,6 +17,7 @@ import {
 } from "./delivery-contract.mjs";
 import { safeSpecOptions, specOptionsBriefLines } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
+import { burstBriefLines } from "./burst-options.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { resolveDefaultBaseRef } from "./default-base-ref.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
@@ -416,7 +417,7 @@ export class WorktreePlanner {
       const brief = await this.briefs.write({
         planId: plan.planId,
         taskId: task.id,
-        markdown: taskPrompt(task, plan.spec, plan.images, task.branch, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions),
+        markdown: taskPrompt(task, plan.spec, plan.images, task.branch, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions, plan.burst),
       });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
@@ -469,7 +470,7 @@ export class WorktreePlanner {
       const brief = await this.briefs.write({
         planId: plan.planId,
         taskId: task.id,
-        markdown: taskPrompt(effectiveTask, plan.spec, plan.images, base, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions),
+        markdown: taskPrompt(effectiveTask, plan.spec, plan.images, base, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions, plan.burst),
       });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
@@ -515,7 +516,7 @@ export class WorktreePlanner {
       const brief = await this.briefs.write({
         planId: plan.planId,
         taskId: task.id,
-        markdown: taskPrompt(effectiveTask, plan.spec, plan.images, base, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions),
+        markdown: taskPrompt(effectiveTask, plan.spec, plan.images, base, plan.deliveryMode, `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions, plan.burst),
       });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
@@ -727,7 +728,7 @@ export class WorktreePlanner {
       const brief = await this.briefs.write({
         planId: draft.planId,
         taskId: task.id,
-        markdown: taskPrompt(effectiveTask, draft.spec, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers, draft.specOptions),
+        markdown: taskPrompt(effectiveTask, draft.spec, draft.images, base, deliveryMode, `${draft.planId}/${task.id}`, draft.issueNumbers, draft.specOptions, draft.burst),
       });
       const workspace = await this.cmux.workspaceCreate({
         cwd: path,
@@ -948,8 +949,12 @@ export class WorktreePlanner {
 // deduplicated, because a merge session that was later superseded appears in
 // both lists and must not be closed twice.
 function goalWorkspaceIds(plan) {
-  const ids = (Array.isArray(plan?.tasks) ? plan.tasks : []).map((task) => task?.workspaceId);
-  ids.push(plan?.mergeWorkspaceId, plan?.goalSessionWorkspaceId);
+  const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+  const ids = tasks.map((task) => task?.workspaceId);
+  // A burst reviewer is the goal's session too: it opened on the task's
+  // worktree and nothing but this goal will ever close it.
+  ids.push(...tasks.map((task) => task?.burstReviewWorkspaceId));
+  ids.push(plan?.mergeWorkspaceId, plan?.goalSessionWorkspaceId, plan?.reviewWorkspaceId);
   for (const entry of Array.isArray(plan?.supersededMergeWorkspaces) ? plan.supersededMergeWorkspaces : []) {
     ids.push(typeof entry === "string" ? entry : entry?.workspaceId);
   }
@@ -1105,7 +1110,7 @@ function combinedBranchStep(readyToken) {
 // than every reason. A healthy goal has nothing to say.
 
 
-export function taskPrompt(task, spec, images, base, deliveryMode = "single", readyToken = "", issueNumbers = [], specOptions = undefined) {
+export function taskPrompt(task, spec, images, base, deliveryMode = "single", readyToken = "", issueNumbers = [], specOptions = undefined, burst = false) {
   const criteria = (spec?.acceptanceCriteria || []).filter((criterion) => task.criterionIds?.includes(criterion.id));
   const contract = [
     "Delivery contract for this task:",
@@ -1125,6 +1130,7 @@ export function taskPrompt(task, spec, images, base, deliveryMode = "single", re
   // reads what was asked for before it reads how to close the branch.
   const rigor = [
     specOptionsBriefLines(safeSpecOptions(specOptions)).join("\n"),
+    burstBriefLines(burst === true).join("\n"),
     formatOptionEvidence(spec?.optionEvidence),
     formatDesignArtifacts(spec?.designArtifacts),
   ].filter(Boolean);

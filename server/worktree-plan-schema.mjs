@@ -254,4 +254,11 @@ function migratePlanSchema(db) {
     ensure("plan_tasks", "delivery_status", "TEXT NOT NULL DEFAULT 'pending'");
     ensure("plan_tasks", "integrated_commit_sha", "TEXT");
     ensure("plan_tasks", "session_closed_at", "TEXT");
+    ensure("plans", "burst", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plan_tasks", "burst_review_status", "TEXT");
+    ensure("plan_tasks", "burst_review_round", "INTEGER NOT NULL DEFAULT 0");
+    ensure("plan_tasks", "burst_review_workspace_id", "TEXT");
+    ensure("plan_tasks", "burst_review_findings", "TEXT NOT NULL DEFAULT '[]'");
+    ensure("plan_tasks", "burst_review_head_sha", "TEXT");
+    ensure("plan_tasks", "burst_review_session_closed_at", "TEXT");
 }
