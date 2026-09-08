@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "./api-request";
 import { hasLiveOpportunity, type AgentCapacity } from "./agent-capacity";
-import { MAX_BURST_GOAL } from "../server/burst-limits.mjs";
+import { MAX_BURST_GOAL } from "../server/burst-contract.mjs";
 
 export type BurstCandidate = { repositoryId: string; repositoryName: string; goal: string | null; rationale: string | null; evidence: string[]; sizeEstimate: string | null; status: "scanning" | "proposed" | "failed" | "approved" | "declined"; reason: string | null; planId: string | null; updatedAt: string };
 export type Burst = { burstId: string; status: "scanning" | "ready" | "closed"; createdAt: string; updatedAt: string; capacitySnapshot: unknown; candidates: BurstCandidate[] };
