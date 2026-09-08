@@ -84,7 +84,7 @@ function relativePreviewTime(value: string) {
 function FixEditor({ preview, capture, onClose, onFix, onNotice }: { preview: Preview; capture: Capture; onClose: () => void; onFix: (preview: Preview, prompt: string, queue: boolean) => Promise<void>; onNotice: (message: string) => void }) {
   const [strokes, setStrokes] = useState<Stroke[]>([]); const [note, setNote] = useState(""); const [busy, setBusy] = useState(false); const drawing = useRef(false);
   function point(event: ReactPointerEvent<SVGSVGElement>) { const rect = event.currentTarget.getBoundingClientRect(); return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) }; }
-  function begin(event: ReactPointerEvent<SVGSVGElement>) { event.preventDefault(); drawing.current = true; event.currentTarget.setPointerCapture(event.pointerId); setStrokes((current) => [...current, { points: [point(event)] }]); }
+  function begin(event: ReactPointerEvent<SVGSVGElement>) { event.preventDefault(); drawing.current = true; event.currentTarget.setPointerCapture(event.pointerId); const first = point(event); setStrokes((current) => [...current, { points: [first] }]); }
   function move(event: ReactPointerEvent<SVGSVGElement>) { if (!drawing.current) return; const next = point(event); setStrokes((current) => current.map((stroke, index) => index === current.length - 1 ? { points: [...stroke.points, next] } : stroke)); }
   function end() { drawing.current = false; }
   async function submit(queue: boolean) {
