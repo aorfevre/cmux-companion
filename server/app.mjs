@@ -1,4 +1,8 @@
 import { registerPlannerRoutes } from "./planner-routes.mjs";
+import { registerBurstRoutes } from "./burst-routes.mjs";
+import { BurstStore } from "./burst-store.mjs";
+import { BurstScanner } from "./burst-scanner.mjs";
+import { BurstService } from "./burst-service.mjs";
 import { WRITE_SCHEMAS, schemaErrorFormatter } from "./request-schemas.mjs";
 import { releaseRetention } from "./release-retention.mjs";
 import { WorktreeCleanup } from "./worktree-cleanup.mjs";
@@ -85,6 +89,8 @@ export async function buildApp({
   cmuxGroups = null,
   githubIssueSync = null,
   githubIssueSyncScheduler = null,
+  burstStore = null,
+  burstService = null,
   plannerProgress = new PlannerProgress(),
   pushService = null,
   previewManager = null,
@@ -176,6 +182,11 @@ export async function buildApp({
         ? { intervalMs: Number(process.env.CMUX_COMPANION_GITHUB_ISSUE_SYNC_INTERVAL_MS) }
         : {}),
     });
+  // Burst reuses the goal session path for every approved candidate, so a test
+  // that builds an app without goal sessions gets no burst service and 503s.
+  const burstPlans = burstStore || (goalSessions && !burstService ? new BurstStore() : null);
+  const bursts = burstService
+    || (goalSessions && burstPlans ? new BurstService({ store: burstPlans, worktrees, goalSessions, accountUsage, log: app.log, scanner: new BurstScanner({ modelSettings }) }) : null);
   const pairAttempts = new Map();
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
@@ -638,6 +649,10 @@ export async function buildApp({
     bootstrapSnapshot = null;
     worktrees.invalidate();
   } });
+  registerBurstRoutes(app, { bursts, invalidate: () => {
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+  } });
 
   // Abort is terminal and idempotent. The integrator drops its scheduled work
   // first, so no timer can create a session between the two calls.
@@ -1092,6 +1107,7 @@ export async function buildApp({
     detachIssueSyncScheduler?.();
     hub.stop();
     if (!worktreePlanStore && planStore) planStore.close();
+    if (!burstStore && burstPlans) burstPlans.close();
   });
 
   if (frontendUpstream) {

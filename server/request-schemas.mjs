@@ -1,3 +1,5 @@
+import { MAX_BURST_GOAL } from "./burst-contract.mjs";
+
 // Boundary schemas reject malformed controls before any process, worktree or
 // queue mutation. Domain validators still enforce ownership and allowed values.
 const text = { type: "string", maxLength: 32_000 };
@@ -24,6 +26,7 @@ export const WRITE_SCHEMAS = {
   analysisVersion: body({ version: { type: "integer", minimum: 1 } }, ["version"]),
   reviewAction: body({ reviewId: { type: "string", pattern: "^[a-f0-9]{64}$" } }, ["reviewId"]),
   empty: body({}),
+  burstApprove: body({ goal: { type: "string", maxLength: MAX_BURST_GOAL } }),
   updateGoal: body({ tasks: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", required: ["id", "title", "branch", "prompt"], properties: { id, title: { type: "string" }, branch: { type: "string" }, prompt: { type: "string" }, agent: { enum: ["claude", "codex"] } } } } }, ["tasks"]),
 };
 
