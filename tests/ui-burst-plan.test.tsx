@@ -5,7 +5,7 @@ import { afterEach, test, vi } from "vitest";
 import { BurstBanner, BurstPlanSheet } from "../app/burst-plan";
 import type { AgentCapacity } from "../app/agent-capacity";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 const REPO = "repoAAAAAAAAAAAAAA";
 const burst = { burstId: "burst-1", status: "ready", createdAt: "2026-09-08T10:00:00Z", updatedAt: "2026-09-08T10:05:00Z", capacitySnapshot: null,
@@ -72,6 +72,47 @@ test("start a burst when none exists", async () => {
   await userEvent.click(await screen.findByRole("button", { name: "Start a burst" }));
   await waitFor(() => assert.ok(calls.some((c) => c.init?.method === "POST" && c.url === "/api/bursts")));
   assert.ok(await screen.findByText(/Scanning starred repositories/));
+});
+
+test("polling refreshes a scanning burst into its proposed state after 5 seconds", async () => {
+  vi.useFakeTimers();
+  const scanning = { ...burst, status: "scanning" as const };
+  const ready = { ...burst, status: "ready" as const };
+  let detailCalls = 0;
+  stubFetch({
+    "GET /api/bursts": () => ({ bursts: [scanning] }),
+    "GET /api/bursts/burst-1": () => { detailCalls += 1; return detailCalls === 1 ? scanning : ready; },
+  });
+  render(<BurstPlanSheet readOnly={false} onClose={() => {}} onOpenGoal={() => {}} />);
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(0);
+  assert.ok(screen.getByText(/Scanning starred repositories/));
+  assert.equal(detailCalls, 1);
+  await vi.advanceTimersByTimeAsync(5_000);
+  await vi.advanceTimersByTimeAsync(0);
+  assert.equal(detailCalls, 2);
+  assert.ok(screen.getByText(/Review each candidate below/));
+});
+
+test("a failed approve keeps the candidate proposed with Approve enabled and shows the error", async () => {
+  const handlers: Record<string, () => Response> = {
+    "GET /api/bursts": () => new Response(JSON.stringify({ bursts: [burst] }), { status: 200 }),
+    "GET /api/bursts/burst-1": () => new Response(JSON.stringify(burst), { status: 200 }),
+    [`POST /api/bursts/burst-1/candidates/${REPO}/approve`]: () => new Response(JSON.stringify({ error: "Goal session already running" }), { status: 500 }),
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input).replace(/^https?:\/\/[^/]+/, "");
+    const key = `${(init?.method || "GET").toUpperCase()} ${url}`;
+    const handler = handlers[key];
+    if (!handler) return new Response(JSON.stringify({ error: `no handler for ${key}` }), { status: 501 });
+    return handler();
+  }));
+  render(<BurstPlanSheet readOnly={false} onClose={() => {}} onOpenGoal={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Approve trust-layer" }));
+  const alert = await screen.findByRole("alert");
+  assert.match(alert.textContent || "", /Goal session already running/);
+  const approve = screen.getByRole("button", { name: "Approve trust-layer" });
+  assert.equal(approve.hasAttribute("disabled"), false);
 });
 
 test("the banner shows only for a live weekly opportunity", () => {
