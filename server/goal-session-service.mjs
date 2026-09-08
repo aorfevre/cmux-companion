@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { normalizeImages, normalizePlannerEngine, normalizeIssueNumbers, normalizeIssueUrls } from "./worktree-planner.mjs";
 import { normalizeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
 
 // Owns only the visible, one-worktree session path. Legacy saved plans keep
-// their existing planner/launch flow and never enter this service.
+// their existing planner/launch flow; an explicit restart creates a new goal.
 export class GoalSessionService {
   constructor({ store, worktrees, cmux, modelSettings, log = null, processAlive = isProcessAlive } = {}) {
     if (!store || !worktrees || !cmux) throw new TypeError("Goal sessions need plan storage, worktrees and cmux");
@@ -56,6 +56,34 @@ export class GoalSessionService {
       this.store.recordGoalSessionStartFailure(planId, cause?.message || "Goal session could not start");
       throw withPlanId(cause, planId);
     }
+  }
+
+  // One durable successor per stopped discovery, including after a lost HTTP
+  // response or a browser reload. Restarting its successor is a separate action.
+  async restart(planId) {
+    const source = this.store.get(planId);
+    if (!source || source.boardStatus !== "aborted") throw new TypeError("Abort the old goal before restarting discovery");
+    if (source.tasks?.length || source.status === "launched") throw new TypeError("Restart discovery is only available before development tasks exist");
+    const hash = createHash("sha256").update(`goal-discovery-restart:${source.planId}`).digest("hex");
+    const idempotencyKey = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+    const existing = this.store.get(idempotencyKey);
+    if (existing) {
+      if (existing.workflow !== "goal_session" || existing.repositoryId !== source.repositoryId || existing.goal !== source.goal) throw new TypeError("The discovery restart identity belongs to a different goal");
+      return existing;
+    }
+    if (source.goalSessionRunnerPid && this.processAlive(source.goalSessionRunnerPid)) throw new TypeError("The old discovery runner is still active. Wait for it to stop");
+    if (source.goalSessionWorkspaceId) {
+      const inventory = await this.#inventory();
+      if (inventory.workspaces.some((workspace) => (workspace.id || workspace.workspace_id) === source.goalSessionWorkspaceId)) throw new TypeError("Close the old discovery workspace before restarting");
+    }
+    // Resolve authorization before releasing issue ownership. A failed start
+    // leaves the original readable and issues available for an explicit retry.
+    await this.worktrees.resolveRepository(source.repositoryId);
+    if (source.issueNumbers?.length) this.store.returnIssuesToBacklog(source.planId);
+    return this.start({ repositoryId: source.repositoryId, goal: source.goal, images: source.images,
+      engine: { ...source.engine, reviewer: false }, specOptions: source.specOptions,
+      reviewOptions: { ...source.reviewOptions, codeReview: false },
+      issueNumbers: source.issueNumbers, issueUrls: source.issueUrls, idempotencyKey });
   }
 
   // Recovery is explicit and reuses only durable ids. It never looks at a

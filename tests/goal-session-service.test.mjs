@@ -115,3 +115,66 @@ test("recovery queues a failed turn for its live owner without starting another 
   assert.equal(recovered.goalSessionPendingInput, "Keep exports stable.");
   assert.equal(recovered.goalSessionError, null);
 });
+
+test("restarts aborted discovery once, retaining context and moving GitHub ownership", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  let created = 0;
+  const service = new GoalSessionService({ store, worktrees: {
+    resolveRepository: async (id) => ({ id, name: "sample", primaryPath: "/repo/sample" }),
+    create: async () => { created++; return { worktree: { path: "/repo/restarted" } }; },
+  }, cmux: { workspaceListDetailed: async () => ({ workspaces: [] }), workspaceCreate: async () => ({ workspace_id: "fresh" }), workspaceStartGoalSessionRunner: async () => {} } });
+  const source = store.createPlan({ planId: "old", repositoryId: "repo", goal: "Fix issue eight", issueNumbers: [8], issueUrls: ["https://github.com/example/sample/issues/8"], images: [{ path: "/attachments/shot.png", name: "shot.png" }], engine: { provider: "codex", model: "gpt-5.4", effort: "high", reviewer: true }, specOptions: { unitTests: true, edgeCases: true }, reviewOptions: { codeReview: true } });
+  await assert.rejects(() => service.restart("old"), /Abort the old goal/);
+  assert.equal(created, 0);
+  assert.equal(store.get("old").issuesReturnedAt, null);
+  store.recordGoalAborted("old");
+  const [first, repeated] = await Promise.all([service.restart("old"), service.restart("old")]);
+  assert.equal(first.planId, repeated.planId);
+  assert.equal(created, 1);
+  assert.equal((await service.restart("old")).planId, first.planId);
+  assert.equal(created, 1);
+  assert.equal(first.workflow, "goal_session");
+  for (const key of ["goal", "images", "specOptions", "issueNumbers", "issueUrls"]) assert.deepEqual(first[key], source[key]);
+  assert.deepEqual(first.engine, { ...source.engine, reviewer: false });
+  assert.equal(first.reviewOptions.codeReview, false);
+  assert.equal(store.get("old").boardStatus, "aborted");
+  assert.ok(store.get("old").issuesReturnedAt);
+  assert.throws(() => store.createPlan({ planId: "duplicate", repositoryId: "repo", goal: "Duplicate", issueNumbers: [8] }), /already belongs/);
+});
+
+test("restart refuses live discovery owners and retains failed successors for recovery", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  let attempts = 0;
+  const service = new GoalSessionService({ store, worktrees: {
+    resolveRepository: async (id) => ({ id, name: "sample", primaryPath: "/repo/sample" }),
+    create: async () => { attempts++; throw new Error("Checkout failed"); },
+  }, cmux: { workspaceListDetailed: async () => ({ workspaces: [] }) } });
+  store.createPlan({ planId: "old", repositoryId: "repo", goal: "Retry discovery" });
+  store.reserveGoalSession("old", { branch: "old", generation: 1 });
+  store.recordGoalSessionStart("old", { worktreePath: "/repo/old", workspaceId: "old-workspace", generation: 1 });
+  store.recordGoalAborted("old");
+  service.cmux.workspaceListDetailed = async () => ({ workspaces: [{ id: "old-workspace" }] });
+  await assert.rejects(() => service.restart("old"), /Close the old discovery workspace/);
+  assert.equal(attempts, 0);
+  service.cmux.workspaceListDetailed = async () => ({ workspaces: [] });
+  let failedId;
+  await assert.rejects(() => service.restart("old"), (error) => { failedId = error.planId; return /Checkout failed/.test(error.message); });
+  const saved = await service.restart("old");
+  assert.equal(saved.planId, failedId);
+  assert.match(saved.goalSessionError, /Checkout failed/);
+  assert.equal(attempts, 1);
+});
+
+test("restart refuses terminal completions, development tasks and live runner PIDs", async () => {
+  for (const [source, message] of [
+    [{ boardStatus: "merged" }, /Abort the old goal/],
+    [{ boardStatus: "aborted", tasks: [{ id: "T1" }] }, /before development tasks/],
+    [{ boardStatus: "aborted", status: "launched" }, /before development tasks/],
+    [{ planId: "old", boardStatus: "aborted", goalSessionRunnerPid: 123 }, /still active/],
+  ]) {
+    const service = new GoalSessionService({ store: { get: (id) => id === "old" ? source : null }, worktrees: {}, cmux: {}, processAlive: () => true });
+    await assert.rejects(() => service.restart("old"), message);
+  }
+});

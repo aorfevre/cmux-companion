@@ -542,6 +542,18 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
     finally { setBusy(""); }
   }
 
+  async function restartDiscovery() {
+    if (!draft || busy) return;
+    setBusy("recover"); setError("");
+    try {
+      const restarted = await request<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(draft.planId)}/restart`, { method: "POST", body: "{}" });
+      receive(restarted);
+      onNotice("Opened the restarted discovery. The old goal remains saved.");
+      if (restarted.goalSessionWorkspaceId) await onGoalSessionStarted?.(restarted);
+    } catch (cause) { fail(cause, "Could not restart discovery"); }
+    finally { setBusy(""); }
+  }
+
   async function recoverGoalSession() {
     if (!draft) return;
     setBusy("recover"); setError("");
@@ -730,6 +742,11 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
     {draft && <div className="planner-goal-reference"><span>Goal reference: <code>{draft.planId}</code></span><button type="button" onClick={async () => { const url = goalPopupUrl({ planId: draft.planId }).href; try { await navigator.clipboard.writeText(url); onNotice("Goal link copied"); } catch { onNotice("Copy the goal URL from the address bar"); } }}>Copy goal link</button></div>}
     {draft && <button type="button" className="planner-new-goal" disabled={busy !== ""} onClick={newGoal}>← New goal</button>}
     {draft && terminal && <TerminalGoalBanner status={terminal} plan={draft} />}
+    {draft && !draft.tasks.length && !launchedPlan && terminal !== "merged" && <section className="planner-spec-options" aria-label="Restart discovery">
+      <strong>Start discovery again</strong>
+      <p>{terminal === "aborted" ? "Open a fresh interactive cmux session using this goal, saved images, Spec depth options and GitHub links. The old goal stays saved. Automated reviewer passes are off for this session. Linked issues move to the new goal; if startup fails before it is saved, they return to the GitHub list." : "To restart from saved context, close this sheet and Abort the old goal on the Goals board, then expand the Aborted column, reopen it and choose Restart discovery. This stops its previous work first."}</p>
+      {terminal === "aborted" && <button type="button" disabled={busy !== ""} onClick={() => { void restartDiscovery(); }}>{busy === "recover" ? "Opening discovery…" : "Restart discovery"}</button>}
+    </section>}
     {!draft && <>
       <section className="planner-spec-options" aria-label="Development setup review">
         <header><strong>Development setup</strong><span>Review instructions, setup and verification for this project, whatever its stack or coding agent.</span></header>

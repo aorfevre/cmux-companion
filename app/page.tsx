@@ -16,6 +16,7 @@ import { TerminalGrid, type TerminalView } from "./terminal-grid.tsx";
 import { terminalViewSignature } from "./terminal-grid.mjs";
 import { hasGoalPopup } from "./goal-popup-url";
 import { ModelSettingsPanel } from "./model-settings";
+import { WorktreeOverview } from "./worktree-overview";
 import { WorktreeCleanupPanel } from "./worktree-cleanup";
 import { WorktreeDashboardView } from "./worktree-dashboard";
 import { DeploymentHealth } from "./deployment-health";
@@ -34,7 +35,7 @@ type ChangedFile = { path: string; status: string; area: string; areas: string[]
 type Changes = { repo: Repo; files: ChangedFile[]; summary: { staged: string; unstaged: string }; recentCommit?: { hash: string; subject: string } | null };
 type PullRequest = { number: number; title: string; url: string; state: string; isDraft: boolean; reviewDecision: string; mergeState: string; headBranch: string; baseBranch: string; updatedAt?: string | null; author?: string | null; checks: { passed: number; failed: number; pending: number; total: number } };
 type PromptQueueItem = { id: string; workspaceId: string; surfaceId: string; text: string; createdAt: string; updatedAt: string; attempts: number; lastError?: string | null };
-type View = "sessions" | "inbox" | "launch" | "apps" | "settings" | "usage";
+type View = "sessions" | "inbox" | "launch" | "apps" | "settings" | "usage" | "worktrees";
 type DetailTab = "terminal" | "tasks" | "changes";
 type HomeMode = "sessions" | "worktrees";
 
@@ -51,7 +52,7 @@ export default function Home() {
   const [auth, setAuth] = useState<"loading" | "paired" | "unpaired" | "offline">("loading");
   const [pairingToken, setPairingToken] = useState(""); const [pairingError, setPairingError] = useState("");
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null); const [inbox, setInbox] = useState<Inbox>({ items: [], actionableCount: 0, unreadCount: 0 }); const [repos, setRepos] = useState<Repo[]>([]);
-  const [view, setView] = useState<View>(() => { if (typeof window === "undefined") return "sessions"; if (hasGoalPopup(location.search)) return "sessions"; const value = new URLSearchParams(location.search).get("view"); return value === "inbox" || value === "launch" || value === "apps" || value === "settings" || value === "usage" ? value : "sessions"; }); const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); return query.has("action") || (!query.has("workspace") && query.has("repo") && query.has("file")) ? null : query.get("workspace"); }); const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("surface")); const [detailTab, setDetailTab] = useState<DetailTab>(() => { if (typeof window === "undefined") return "terminal"; const tab = new URLSearchParams(location.search).get("tab"); return tab === "changes" || tab === "tasks" ? tab : "terminal"; });
+  const [view, setView] = useState<View>(() => { if (typeof window === "undefined") return "sessions"; if (hasGoalPopup(location.search)) return "sessions"; const value = new URLSearchParams(location.search).get("view"); return value === "inbox" || value === "launch" || value === "apps" || value === "settings" || value === "usage" || value === "worktrees" ? value : "sessions"; }); const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); return query.has("action") || (!query.has("workspace") && query.has("repo") && query.has("file")) ? null : query.get("workspace"); }); const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("surface")); const [detailTab, setDetailTab] = useState<DetailTab>(() => { if (typeof window === "undefined") return "terminal"; const tab = new URLSearchParams(location.search).get("tab"); return tab === "changes" || tab === "tasks" ? tab : "terminal"; });
   const [draft, setDraft] = useState(""); const [sending, setSending] = useState(false); const [live, setLive] = useState(false); const [notice, setNotice] = useState("");
   const [actionId, setActionId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("action"));
   const [focusedPreviewId, setFocusedPreviewId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("preview"));
@@ -147,6 +148,7 @@ export default function Home() {
     {view === "launch" && <LaunchView repos={repos} onReload={loadRepos} onLaunched={async (id) => { const data = await loadBootstrap(); const workspace = data?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else { setView("sessions"); setNotice("Workspace launched. It will appear in a moment."); } }} />}
     {view === "apps" && <AppsView focusedId={focusedPreviewId} onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onNotice={setNotice} onFix={fixPreview} />}
     {view === "settings" && <SettingsView bootstrap={bootstrap} readOnly={readOnly} installable={Boolean(installPrompt)} onReadOnly={changeReadOnly} onInstall={() => installPrompt?.prompt?.()} onApps={() => changeView("apps")} onUsage={() => changeView("usage")} onNotice={setNotice} onLogout={async () => { await api("/api/auth/logout", { method: "POST", body: "{}" }); setAuth("unpaired"); }} />}
+    {view === "worktrees" && <WorktreeOverview />}
     {view === "usage" && <AccountUsageView onBack={() => changeView("settings")} />}
     <BottomNav view={view} onView={changeView} /></main>;
 }
@@ -451,7 +453,7 @@ function PushSettings({ onNotice }: { onNotice: (message: string) => void }) {
 }
 
 function urlBase64ToBytes(value: string) { const padding = "=".repeat((4 - value.length % 4) % 4); const raw = atob((value + padding).replaceAll("-", "+").replaceAll("_", "/")); return Uint8Array.from([...raw].map((char) => char.charCodeAt(0))); }
-export function BottomNav({ view, onView }: { view: View; onView: (view: View) => void }) { return <nav className="bottom-nav" aria-label="Main navigation">{[["sessions", "⌂", "Goals"], ["usage", "◔", "Licence Usage"], ["settings", "⚙", "Settings"]].map(([id, icon, label]) => <button aria-label={label} className={view === id ? "active" : ""} onClick={() => onView(id as View)} key={id}><span aria-hidden="true">{icon}</span><small>{label}</small></button>)}</nav>; }
+export function BottomNav({ view, onView }: { view: View; onView: (view: View) => void }) { return <nav className="bottom-nav" aria-label="Main navigation">{[["sessions", "⌂", "Goals"], ["worktrees", "▤", "Worktrees"], ["usage", "◔", "Licence Usage"], ["settings", "⚙", "Settings"]].map(([id, icon, label]) => <button aria-label={label} className={view === id ? "active" : ""} onClick={() => onView(id as View)} key={id}><span aria-hidden="true">{icon}</span><small>{label}</small></button>)}</nav>; }
 function Empty({ icon, title, body, action }: { icon: string; title: string; body: string; action?: React.ReactNode }) { return <div className="empty-card"><span>{icon}</span><strong>{title}</strong><p>{body}</p>{action}</div>; }
 function WorkspaceSkeleton() { return <div className="workspace-card skeleton"><i /><i /><i /></div>; }
 function LoadingScreen() { return <main className="center-screen"><div className="brand-mark large">c</div><p>Opening companion…</p></main>; }

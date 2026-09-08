@@ -29,8 +29,9 @@ for (const [width, height] of [[390, 844], [1100, 760], [1440, 900]]) {
       cy.findByRole("heading", { name: "Goals board" }).should("be.visible");
       cy.findByRole("region", { name: "Goals board" }).should("be.visible");
       cy.findByRole("navigation", { name: "Main navigation" }).within(() => {
-        cy.findAllByRole("button").should("have.length", 3);
+        cy.findAllByRole("button").should("have.length", 4);
         cy.findByRole("button", { name: "Goals" }).should("have.class", "active");
+        cy.findByRole("button", { name: "Worktrees" }).should("be.visible");
         cy.findByRole("button", { name: "Licence Usage" }).should("be.visible");
         cy.findByRole("button", { name: "Settings" }).should("be.visible");
       });

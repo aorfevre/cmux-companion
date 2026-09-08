@@ -7,7 +7,7 @@ No cloud application server is involved. Terminal output and input travel direct
 ## What it does
 
 - Shows every cmux workspace and terminal
-- Opens on the **Goals board**, with Goals, Licence Usage, and Settings as the main navigation. Tools keeps Sessions and Local apps accessible; Board tools contains repository/worktree and draft/launched goal lists, GitHub refresh/sync, and finished-session cleanup; worktree cleanup lives in Settings. Explicit session and goal links still open their targets; old session-home preferences no longer override the dashboard.
+- Opens on the **Goals board**, with Goals, Worktrees, Licence Usage, and Settings as the main navigation. Tools keeps Sessions and Local apps accessible; Board tools contains repository/worktree and draft/launched goal lists, GitHub refresh/sync, and finished-session cleanup; Worktrees shows inventory and manual garbage collection; cleanup settings remain available in Settings. Explicit session and goal links still open their targets; old session-home preferences no longer override the dashboard.
 - Shows sanitized per-account Claude Code and OpenAI Codex quota from CCS, including reported 5-hour, daily, weekly, monthly, and additional feature windows
 - Highlights real cmux status, structured tasks, CPU, memory, and process health
 - Collects permission requests, questions, plans, and meaningful notifications in an action inbox
@@ -569,6 +569,21 @@ session counts reach zero. The deterministic Cypress suite does not operate real
 cmux sessions.
 
 ### Automatic worktree inventory and garbage collection
+
+Open **Worktrees** beside Goals (or `/?view=worktrees`) to see registered checkout,
+development worktree, eligible and protected counts, paths, reasons and space estimates.
+**Run garbage collection** previews a confirmation, then collects all eligible entries
+regardless of search filters. It runs immediately without enabling a schedule or
+bypassing safety checks and grace periods. Counts include missing Git registrations,
+not every ordinary directory in `../`. Failed or uncertain runs require a fresh scan.
+
+For old blocked goals that have no development tasks, choose **Abort** on the Goals
+board, expand the **Aborted** column, reopen the saved goal, then **Restart discovery**. This opens native interactive
+discovery with the saved goal, images, engine, Spec depth options and GitHub issue links;
+automated reviews are disabled for native sessions. The original remains saved and
+its issues are released for the successor. If startup fails before saving that successor,
+issues remain available in the GitHub list. Repeated clicks reopen the same successor
+instead of creating duplicate sessions. Goals with development tasks use task recovery.
 
 **Worktree cleanup** provides a central dry-run inventory across Karven and Rekord,
 including nested repositories and external registrations. Sessions close when a
