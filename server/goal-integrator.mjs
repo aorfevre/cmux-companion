@@ -25,7 +25,7 @@ class TerminalGoalError extends TypeError {}
 // branch is ready by reading git, then hands the merge itself to one cmux agent:
 // a conflict needs judgement, which no subprocess can supply.
 export class GoalIntegrator {
-  constructor({ modelSettings = new ModelSettings(), store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS, briefs = new AgentBriefs(), sessionCollector = null } = {}) {
+  constructor({ modelSettings = new ModelSettings(), store, worktrees, repoCatalog, cmux = null, execute = null, log = null, settleMs = TASK_SETTLE_MS, briefs = new AgentBriefs(), sessionCollector = null, burstReview = null } = {}) {
     if (!store) throw new TypeError("A goal plan store is required");
     if (!worktrees) throw new TypeError("A worktree dashboard is required");
     if (!repoCatalog) throw new TypeError("A repository catalog is required");
@@ -38,6 +38,9 @@ export class GoalIntegrator {
     // The full brief goes to a file. cmux caps a prompt at 8,000 characters, so
     // every agent session gets a short pointer to that file instead.
     this.briefs = briefs;
+    // The extra reviewer a burst goal buys. Null means every ready task is
+    // ready; see BurstReview.taskReady for the gate it adds.
+    this.burstReview = burstReview;
     this.execute = execute || ((bin, args, options) => repoCatalog.execute(bin, args, options));
     this.log = log;
     this.settleMs = settleMs;
@@ -52,7 +55,14 @@ export class GoalIntegrator {
     const onEvent = (event) => {
       if (event?.name !== "agent.hook.Stop") return;
       const workspaceId = event.workspace_id || event.payload?.workspace_id || event.data?.workspace_id;
-      if (workspaceId) this.scheduleWorkspace(workspaceId);
+      if (!workspaceId) return;
+      // A reviewer's own stop is read first, then its plan is scheduled: a
+      // pass leads straight into assembly and a block into the owner's turn.
+      Promise.resolve(this.burstReview?.onWorkspaceStopped?.(workspaceId)).then((handled) => {
+        const found = handled ? this.store.findTaskByBurstReviewWorkspace?.(workspaceId) : null;
+        if (found) this.schedulePlan(found.planId);
+        else this.scheduleWorkspace(workspaceId);
+      }).catch((cause) => this.log?.warn?.({ err: cause, workspaceId }, "burst review stop handling failed"));
     };
     hub.on("event", onEvent);
     hub.addConsumer();
@@ -249,7 +259,21 @@ export class GoalIntegrator {
     if (plan.mergeStatus === "blocked" && plan.integrationWorktreePath) {
       plan = await this.#guard(plan, () => this.#recordIntegrated(plan));
     }
-    const pending = plan.tasks.filter((task) => task.launchStatus === "launched" && task.deliveryStatus !== "ready" && task.deliveryStatus !== "integrated");
+    // A burst goal buys an independent review of every finished task. Launch
+    // one for each ready task that has none, or whose first review blocked and
+    // whose owner has since pushed a new head, then wait: the reviewer's Stop
+    // schedules this assemble again.
+    if (plan.burst === true && this.burstReview) {
+      for (const task of plan.tasks) {
+        if (task.launchStatus !== "launched" || task.deliveryStatus !== "ready") continue;
+        if (task.burstReviewStatus && task.burstReviewStatus !== "block") continue;
+        try { await this.burstReview.reviewTask(plan.planId, task.id); }
+        catch (cause) { this.log?.warn?.({ err: cause, planId: plan.planId, taskId: task.id }, "burst review launch failed"); }
+      }
+      plan = this.store.get(plan.planId);
+    }
+    const ready = (task) => (this.burstReview ? this.burstReview.taskReady(plan, task) : task.deliveryStatus === "ready");
+    const pending = plan.tasks.filter((task) => task.launchStatus === "launched" && !ready(task) && task.deliveryStatus !== "integrated");
     const failed = plan.tasks.filter((task) => task.launchStatus === "failed");
     const queued = plan.tasks.filter((task) => task.launchStatus === "queued");
     // A failed task used to end the goal for good: this threw on every call,
@@ -260,7 +284,7 @@ export class GoalIntegrator {
       throw new TypeError(`${failed.length} task${failed.length === 1 ? "" : "s"} never launched (${names}). Relaunch each one, or skip it, before Companion can build the combined pull request`);
     }
     if (pending.length) {
-      const message = `Waiting for ${pending.length} task branch${pending.length === 1 ? "" : "es"} in wave ${activeWave(plan) + 1} to be committed, pushed, and evidenced`;
+      const message = pendingMessage(plan, pending);
       if (automatic) throw new TasksNotReadyError(message);
       throw new TypeError(message);
     }
@@ -476,6 +500,10 @@ export class GoalIntegrator {
       if (task.launchStatus !== "launched" || task.deliveryStatus === "integrated") continue;
       const evidence = await this.#readyEvidence(plan, task);
       if (evidence.headSha && (task.headSha !== evidence.headSha || task.deliveryStatus !== "ready" || task.evidenceStatus !== "ready")) {
+        // A blocked burst review sent the task back to pending. The same commit
+        // must not become ready again and buy a second review of itself; only
+        // an amended head does.
+        if (["block", "blocked_twice"].includes(task.burstReviewStatus) && task.burstReviewHeadSha === evidence.headSha) continue;
         current = this.store.recordTaskReady(plan.planId, task.id, evidence.headSha, evidence);
       } else if (!evidence.headSha && (task.deliveryStatus === "ready" || evidenceChanged(task, evidence))) {
         current = this.store.recordTaskPending(plan.planId, task.id, evidence);
@@ -778,6 +806,19 @@ function remaining(plan) {
   return unmerged
     ? `Check this branch's log for the Cmux-Goal-Task trailers, merge whatever is still missing from: ${unmerged}, ${finish}.`
     : `Verify this branch, ${finish}.`;
+}
+
+// The pending message names the cause, because "waiting for a branch" is
+// wrong advice for a task whose branch is fine and whose reviewer is reading.
+function pendingMessage(plan, pending) {
+  const stuck = pending.filter((task) => task.burstReviewStatus === "blocked_twice");
+  if (stuck.length) {
+    const names = stuck.map((task) => task.title || task.id).slice(0, 3).join(", ");
+    return `Burst review blocked twice on ${stuck.length === 1 ? "one task" : `${stuck.length} tasks`} (${names}). A person decides what happens next`;
+  }
+  const reviewing = pending.filter((task) => task.deliveryStatus === "ready");
+  if (reviewing.length === pending.length) return `Waiting for burst review of ${reviewing.length} task${reviewing.length === 1 ? "" : "s"}`;
+  return `Waiting for ${pending.length} task branch${pending.length === 1 ? "" : "es"} in wave ${activeWave(plan) + 1} to be committed, pushed, and evidenced`;
 }
 
 function activeWave(plan) {

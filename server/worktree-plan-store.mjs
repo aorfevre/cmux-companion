@@ -653,8 +653,11 @@ export class WorktreePlanStore {
   }
 
   // One reviewer per finished task, at most twice. The second block is final:
-  // the task waits for a person, and no third session is ever opened.
-  recordBurstReviewLaunched(planId, taskId, { workspaceId }) {
+  // the task waits for a person, and no third session is ever opened. The head
+  // under review is kept here because a block returns the task to pending,
+  // which clears head_sha; the integrator needs it to tell an amended push
+  // apart from the commit that was already judged.
+  recordBurstReviewLaunched(planId, taskId, { workspaceId, headSha = null }) {
     const at = this.#stamp();
     const id = String(planId);
     this.#transaction(() => {
@@ -663,10 +666,10 @@ export class WorktreePlanStore {
       if (row.burst_review_status === "blocked_twice" || row.burst_review_status === "pass") throw new TypeError("This task needs no further review");
       if (row.burst_review_status === "running") throw new TypeError("A burst review is already running for this task");
       const round = Number(row.burst_review_round) + 1;
-      this.db.prepare("UPDATE plan_tasks SET burst_review_status = 'running', burst_review_round = ?, burst_review_workspace_id = ? WHERE plan_id = ? AND task_id = ?")
-        .run(round, text(workspaceId), id, String(taskId));
+      this.db.prepare("UPDATE plan_tasks SET burst_review_status = 'running', burst_review_round = ?, burst_review_workspace_id = ?, burst_review_head_sha = ? WHERE plan_id = ? AND task_id = ?")
+        .run(round, text(workspaceId), text(headSha), id, String(taskId));
       this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
-      this.#insertEvent(id, null, "burst_review_launched", { taskId, workspaceId: text(workspaceId), round }, at);
+      this.#insertEvent(id, null, "burst_review_launched", { taskId, workspaceId: text(workspaceId), headSha: text(headSha), round }, at);
     });
     return this.get(id);
   }
@@ -1526,6 +1529,7 @@ function readTask(row) {
     burstReviewRound: Number(row.burst_review_round) || 0,
     burstReviewWorkspaceId: row.burst_review_workspace_id ?? null,
     burstReviewFindings: parse(row.burst_review_findings, []),
+    burstReviewHeadSha: row.burst_review_head_sha ?? null,
   };
 }
 

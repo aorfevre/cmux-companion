@@ -15,7 +15,7 @@ function plan(overrides = {}) {
   return {
     planId: "plan-1", repositoryName: "sample", goal: "Ship it", burst: true, baseRef: "origin/main",
     spec: { outcome: "Done", acceptanceCriteria: [{ id: "AC-1", text: "It works", verification: "npm test" }, { id: "AC-2", text: "Other", verification: "manual" }] },
-    tasks: [{ id: "t1", title: "Do", branch: "feature/do", agent: "claude", workspaceId: "ws-t1", worktreePath: "/wt/t1", launchStatus: "launched", deliveryStatus: "ready", criterionIds: ["AC-1"], ownedAreas: ["src/"], burstReviewStatus: null, burstReviewRound: 0, burstReviewWorkspaceId: null, burstReviewFindings: [] }],
+    tasks: [{ id: "t1", title: "Do", branch: "feature/do", agent: "claude", workspaceId: "ws-t1", worktreePath: "/wt/t1", headSha: "f".repeat(40), launchStatus: "launched", deliveryStatus: "ready", criterionIds: ["AC-1"], ownedAreas: ["src/"], burstReviewStatus: null, burstReviewRound: 0, burstReviewWorkspaceId: null, burstReviewFindings: [] }],
     ...overrides,
   };
 }
@@ -30,8 +30,8 @@ function harness(t, dir, current) {
   const store = {
     plan: current,
     get(id) { return id === this.plan.planId ? this.plan : null; },
-    recordBurstReviewLaunched(id, taskId, { workspaceId }) {
-      calls.push(["launched", taskId, workspaceId]);
+    recordBurstReviewLaunched(id, taskId, { workspaceId, headSha }) {
+      calls.push(["launched", taskId, workspaceId, headSha]);
       const task = this.plan.tasks.find((x) => x.id === taskId);
       task.burstReviewStatus = "running"; task.burstReviewRound += 1; task.burstReviewWorkspaceId = workspaceId;
       return this.plan;
@@ -70,7 +70,7 @@ test("launches one reviewer on a ready task and records it", async (t) => {
   assert.match(create.title, /Burst review 1/);
   assert.equal(create.env.COMPANION_PLAN, "plan-1");
   assert.match(create.prompt, new RegExp(`^Read ${dir}/plan-1-t1-burst-review-1.md$`));
-  assert.deepEqual(calls.find(([kind]) => kind === "launched").slice(1), ["t1", "review-1"]);
+  assert.deepEqual(calls.find(([kind]) => kind === "launched").slice(1), ["t1", "review-1", "f".repeat(40)]);
   assert.equal(await review.reviewTask("plan-1", "t1"), false, "a running review is not doubled");
   assert.equal(calls.filter(([kind]) => kind === "create").length, 1);
   const brief = burstReviewPrompt(plan(), plan().tasks[0], join(dir, "plan-1-t1-burst-review-1.json"));

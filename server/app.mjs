@@ -29,6 +29,7 @@ import { AgentBriefs } from "./agent-brief.mjs";
 import { WorktreePlanner } from "./worktree-planner.mjs";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
 import { GoalIntegrator } from "./goal-integrator.mjs";
+import { BurstReview } from "./burst-review.mjs";
 import { GoalFollowups } from "./goal-followup.mjs";
 import { GitHubReviewToken } from "./github-review-token.mjs";
 import { agentCapacity } from "./agent-capacity.mjs";
@@ -151,8 +152,11 @@ export async function buildApp({
   // exactly what the switch does not need to protect them from.
   const autoCloseSessions = !AUTO_CLOSE_OFF.has(String(process.env.CMUX_COMPANION_AUTO_CLOSE_SESSIONS ?? "").trim().toLowerCase());
   const sessionCollector = planStore ? new GoalSessionCollector({ store: planStore, cmux, reaper, enabled: autoCloseSessions, log: app.log }) : null;
+  // The independent reviewer a burst goal buys. It gates combined assembly on
+  // a per-task pass, and reviews a goal session once its pull request opens.
+  const burstReview = planStore ? new BurstReview({ store: planStore, cmux, briefs, modelSettings, log: app.log }) : null;
   const integrator = goalIntegrator
-    || (planStore ? new GoalIntegrator({ modelSettings, store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector }) : null);
+    || (planStore ? new GoalIntegrator({ modelSettings, store: planStore, worktrees, repoCatalog, cmux, log: app.log, briefs, sessionCollector, burstReview }) : null);
   const followups = goalFollowups
     || (planStore ? new GoalFollowups({ modelSettings, store: planStore, cmux, log: app.log, briefs }) : null);
   // The identity a goal code review posts under. It is separate from the

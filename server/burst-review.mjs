@@ -44,7 +44,7 @@ export class BurstReview {
     });
     const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
     if (!workspaceId) throw new TypeError("cmux created the review session but did not return its id");
-    this.store.recordBurstReviewLaunched(plan.planId, task.id, { workspaceId });
+    this.store.recordBurstReviewLaunched(plan.planId, task.id, { workspaceId, headSha: task.headSha || null });
     return true;
   }
 

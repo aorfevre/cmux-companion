@@ -1454,18 +1454,25 @@ test("burst review state moves running → pass or block, and the second block i
   assert.equal(task.burstReviewStatus, null);
   assert.equal(task.burstReviewRound, 0);
   assert.deepEqual(task.burstReviewFindings, []);
-  let plan = store.recordBurstReviewLaunched("plan-b", "t1", { workspaceId: "review-1" });
+  let plan = store.recordBurstReviewLaunched("plan-b", "t1", { workspaceId: "review-1", headSha: "a".repeat(40) });
   task = plan.tasks.find((item) => item.id === "t1");
   assert.equal(task.burstReviewStatus, "running");
   assert.equal(task.burstReviewRound, 1);
   assert.equal(task.burstReviewWorkspaceId, "review-1");
+  assert.equal(task.burstReviewHeadSha, "a".repeat(40));
   assert.throws(() => store.recordBurstReviewLaunched("plan-b", "t1", { workspaceId: "review-1b" }), /already running/);
   plan = store.recordBurstReviewVerdict("plan-b", "t1", { verdict: "block", findings: ["No test for the empty case"] });
   task = plan.tasks.find((item) => item.id === "t1");
   assert.equal(task.burstReviewStatus, "block");
   assert.deepEqual(task.burstReviewFindings, ["No test for the empty case"]);
-  plan = store.recordBurstReviewLaunched("plan-b", "t1", { workspaceId: "review-2" });
+  // A block sends the task back to pending, which clears its head; the head
+  // under review survives so the integrator can tell an amended push apart.
+  store.recordTaskPending("plan-b", "t1", { error: "blocked" });
+  assert.equal(store.get("plan-b").tasks.find((item) => item.id === "t1").headSha, null);
+  assert.equal(store.get("plan-b").tasks.find((item) => item.id === "t1").burstReviewHeadSha, "a".repeat(40));
+  plan = store.recordBurstReviewLaunched("plan-b", "t1", { workspaceId: "review-2", headSha: "b".repeat(40) });
   assert.equal(plan.tasks.find((item) => item.id === "t1").burstReviewRound, 2);
+  assert.equal(plan.tasks.find((item) => item.id === "t1").burstReviewHeadSha, "b".repeat(40));
   plan = store.recordBurstReviewVerdict("plan-b", "t1", { verdict: "block", findings: ["Still missing"] });
   assert.equal(plan.tasks.find((item) => item.id === "t1").burstReviewStatus, "blocked_twice");
   assert.throws(() => store.recordBurstReviewLaunched("plan-b", "t1", { workspaceId: "review-3" }), /no further review/);
