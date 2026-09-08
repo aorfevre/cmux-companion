@@ -675,7 +675,12 @@ export class WorktreePlanStore {
       const round = Number(row.burst_review_round) + 1;
       this.db.prepare("UPDATE plan_tasks SET burst_review_status = 'running', burst_review_round = ?, burst_review_workspace_id = ?, burst_review_head_sha = ?, burst_review_session_closed_at = NULL WHERE plan_id = ? AND task_id = ?")
         .run(round, text(workspaceId), text(headSha), id, String(taskId));
-      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
+      // A reviewer that is running is a launch that succeeded, so a failure
+      // from an earlier attempt must not stay on the card.
+      this.db.prepare(`
+        UPDATE plans SET delivery_status = CASE delivery_status WHEN 'blocked' THEN 'implementing' ELSE delivery_status END,
+          delivery_error = NULL, updated_at = ? WHERE plan_id = ?
+      `).run(at, id);
       this.#insertEvent(id, null, "burst_review_launched", { taskId, workspaceId: text(workspaceId), headSha: text(headSha), round }, at);
     });
     return this.get(id);
@@ -685,7 +690,7 @@ export class WorktreePlanStore {
     if (verdict !== "pass" && verdict !== "block") throw new TypeError("A burst review verdict is pass or block");
     const at = this.#stamp();
     const id = String(planId);
-    const list = (Array.isArray(findings) ? findings : []).map((item) => String(item || "").slice(0, 1_000)).filter(Boolean).slice(0, 50);
+    const list = findingsList(findings);
     this.#transaction(() => {
       const row = this.db.prepare("SELECT burst_review_status, burst_review_round FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get(id, String(taskId));
       if (!row) throw new TypeError("Unknown task");
@@ -846,18 +851,29 @@ export class WorktreePlanStore {
     return this.get(id);
   }
 
-  // A burst goal review closes with its verdict, so the event log keeps what
-  // the reviewer said under the same kind the task-level verdicts use.
-  recordReviewSessionClosed(planId, { verdict = null } = {}) {
+  recordReviewSessionClosed(planId) {
     const at = this.#stamp();
     const id = String(planId);
     this.#transaction(() => {
       this.db.prepare("UPDATE plans SET review_session_closed_at = ?, updated_at = ? WHERE plan_id = ?")
         .run(at, at, id);
-      if (verdict) {
-        const findings = (Array.isArray(verdict.findings) ? verdict.findings : []).map((item) => String(item || "").slice(0, 1_000)).filter(Boolean).slice(0, 50);
-        this.#insertEvent(id, null, "burst_review_verdict", { taskId: "goal", verdict: verdict.verdict, status: verdict.verdict, findings }, at);
-      }
+    });
+    return this.get(id);
+  }
+
+  // The goal reviewer delivered its verdict. The event keeps what it said
+  // under the same kind the task-level verdicts use, and 'done' is what the
+  // reaper reads to know the session has nothing left to say; the session's
+  // own closure stamp is written when the session is actually retired.
+  recordGoalReviewVerdict(planId, { verdict, findings = [] } = {}) {
+    if (verdict !== "pass" && verdict !== "block") throw new TypeError("A burst review verdict is pass or block");
+    const at = this.#stamp();
+    const id = String(planId);
+    const list = findingsList(findings);
+    this.#transaction(() => {
+      const changed = this.db.prepare("UPDATE plans SET review_status = 'done', updated_at = ? WHERE plan_id = ? AND review_status = 'running'").run(at, id).changes;
+      if (changed !== 1) throw new TypeError("No goal review is running for this plan");
+      this.#insertEvent(id, null, "burst_review_verdict", { taskId: "goal", verdict, status: verdict, findings: list }, at);
     });
     return this.get(id);
   }
@@ -960,6 +976,11 @@ export class WorktreePlanStore {
       // stamp. Only the id the plan currently points at may claim that column.
       if (wanted.some((entry) => entry.kind === "merge" && entry.workspaceId === liveMerge)) {
         this.db.prepare("UPDATE plans SET merge_session_closed_at = COALESCE(merge_session_closed_at, ?) WHERE plan_id = ?").run(at, id);
+      }
+      // The goal reviewer, like the merge session, lives on the plan row.
+      for (const entry of wanted) {
+        if (entry.kind !== "goal_review") continue;
+        this.db.prepare("UPDATE plans SET review_session_closed_at = COALESCE(review_session_closed_at, ?) WHERE plan_id = ? AND review_workspace_id = ?").run(at, id, entry.workspaceId);
       }
       const retired = new Set(wanted.filter((entry) => entry.kind === "superseded").map((entry) => entry.workspaceId));
       if (retired.size) {
@@ -1581,9 +1602,14 @@ function splitIds(joined, mergeWorkspaceId) {
 // say which column holds its stamp. An entry with no kind is read the old way,
 // so the relaunch caller keeps working unchanged.
 function sessionKind(value, taskId, workspaceIdValue, liveMergeWorkspaceId) {
-  if (value === "task" || value === "merge" || value === "superseded" || value === "review") return value;
+  if (value === "task" || value === "merge" || value === "superseded" || value === "review" || value === "goal_review") return value;
   if (taskId) return "task";
   return workspaceIdValue && workspaceIdValue === liveMergeWorkspaceId ? "merge" : "superseded";
+}
+
+// What a reviewer may say: short lines, and not too many of them.
+function findingsList(value) {
+  return (Array.isArray(value) ? value : []).map((item) => String(item || "").slice(0, 1_000)).filter(Boolean).slice(0, 50);
 }
 
 function boardStatus(value) {

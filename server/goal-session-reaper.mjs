@@ -66,6 +66,10 @@ export function retirableSessions(plan, live = { available: false, byId: new Map
       keep.push(kept(entry, "This burst reviewer has not delivered its verdict"));
       continue;
     }
+    if (entry.kind === "goal_review" && !terminal && entry.reviewStatus !== "done") {
+      keep.push(kept(entry, "This burst reviewer has not delivered its verdict"));
+      continue;
+    }
     if (!terminal && !prOpen && !finishedWithoutPullRequest(entry)) {
       keep.push(kept(entry, entry.kind === "task" ? "This task is not integrated yet" : "This goal is still being assembled"));
       continue;
@@ -314,6 +318,12 @@ function ownedSessions(plan) {
   if (plan?.workflow === "goal_session" && !isTerminal(plan) && plan.goalSessionWorkspaceId && !sessions.some((entry) => entry.workspaceId === plan.goalSessionWorkspaceId)) {
     sessions.push({ workspaceId: plan.goalSessionWorkspaceId, taskId: null, kind: "goal", title: plan.goal || "Goal", deliveryStatus: "pending" });
   }
+  // The goal-level burst reviewer lives on the plan row, beside the merge
+  // session, and is finished by its verdict or by the goal's end.
+  const reviewId = text(plan?.reviewWorkspaceId);
+  if (reviewId && !plan?.reviewSessionClosedAt) {
+    sessions.push({ workspaceId: reviewId, taskId: null, kind: "goal_review", title: `${REVIEW_TITLE}: ${text(plan?.goal) || "Goal"}`, deliveryStatus: null, reviewStatus: text(plan?.reviewStatus) || null });
+  }
   const mergeId = text(plan?.mergeWorkspaceId);
   if (mergeId && !plan?.mergeSessionClosedAt) {
     sessions.push({ workspaceId: mergeId, taskId: null, kind: "merge", title: MERGE_TITLE, deliveryStatus: null });
@@ -349,12 +359,13 @@ function hasOpenPullRequest(plan) {
 function finishedWithoutPullRequest(entry) {
   return entry.kind === "superseded"
     || (entry.kind === "task" && entry.deliveryStatus === "integrated")
-    || (entry.kind === "review" && REVIEW_DONE.has(entry.reviewStatus));
+    || (entry.kind === "review" && REVIEW_DONE.has(entry.reviewStatus))
+    || (entry.kind === "goal_review" && entry.reviewStatus === "done");
 }
 
 function closeReason(entry, { terminal, prOpen, plan }) {
   if (entry.kind === "superseded") return "A newer merge agent replaced this session";
-  if (entry.kind === "review" && !terminal) return "This burst reviewer delivered its verdict";
+  if ((entry.kind === "review" || entry.kind === "goal_review") && !terminal) return "This burst reviewer delivered its verdict";
   if (terminal) return plan?.boardStatus === "aborted" ? "This goal was aborted" : "This goal is merged";
   if (entry.kind === "task" && entry.deliveryStatus === "integrated") return "This task is merged into the goal branch";
   return prOpen ? "This goal's pull request is open, so this task's work is delivered" : "This session has no work left";

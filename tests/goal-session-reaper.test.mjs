@@ -498,3 +498,64 @@ test("a second review round reopens the reviewer column for its new session", as
   assert.deepEqual(close, []);
   assert.equal(keep.find((entry) => entry.workspaceId === "review-1").kind, "review");
 });
+
+// --- the goal-level burst reviewer ------------------------------------------
+
+// A burst goal session whose pull request is open and whose reviewer has been
+// launched on the goal worktree. The reviewer lives on the plan row.
+function burstGoalSession(t) {
+  const store = memoryStore(t);
+  store.createPlan({ planId: "plan-g", repositoryId: "repository12345678", repositoryName: "sample", cwd: "/repo", goal: "Ship", burst: true });
+  store.reserveGoalSession("plan-g", { branch: "goal/ship", generation: 1 });
+  store.recordGoalSessionStart("plan-g", { worktreePath: "/repo/goal", workspaceId: "ws-goal", generation: 1 });
+  store.publishProposal("plan-g", { generation: 1, providerSessionId: "provider", proposal: { intendedBehavior: "Ship", scope: ["All"] } });
+  store.approveProposal("plan-g", { generation: 1, revision: 1 });
+  store.recordGoalPullRequest("plan-g", { number: 1, url: "https://github.test/pr/1", state: "OPEN" });
+  store.claimGoalReview("plan-g", { agent: "codex" });
+  store.recordReviewLaunched("plan-g", { workspaceId: "review-goal", agent: "codex", briefPath: "/tmp/review.md" });
+  return store;
+}
+
+test("a goal reviewer still reading stays open while the goal is live", async (t) => {
+  const store = burstGoalSession(t);
+  const client = cmux(workspaces(["ws-goal", "review-goal"]));
+  const result = await new GoalSessionReaper({ store, cmux: client }).reap();
+  assert.deepEqual(client.closed(), []);
+  const entry = result.kept.find((item) => item.workspaceId === "review-goal");
+  assert.equal(entry.kind, "goal_review");
+  assert.match(entry.reason, /has not delivered its verdict/);
+  assert.equal(store.get("plan-g").reviewSessionClosedAt, null);
+});
+
+test("a goal reviewer that delivered its verdict is retired once", async (t) => {
+  const store = burstGoalSession(t);
+  store.recordGoalReviewVerdict("plan-g", { verdict: "pass" });
+  const client = cmux(workspaces(["ws-goal", "review-goal"]));
+  const reaper = new GoalSessionReaper({ store, cmux: client });
+  const first = await reaper.reap();
+  assert.deepEqual(client.closed(), ["review-goal"]);
+  const entry = first.closed.find((item) => item.workspaceId === "review-goal");
+  assert.equal(entry.kind, "goal_review");
+  assert.match(entry.reason, /delivered its verdict/);
+  assert.ok(store.get("plan-g").reviewSessionClosedAt);
+  assert.match(reasonFor(first.kept, "ws-goal"), /review and corrections/, "the goal conversation itself stays open");
+  await reaper.reap();
+  assert.deepEqual(client.closed(), ["review-goal"]);
+});
+
+test("an aborted burst goal retires a goal reviewer that is still reading", async (t) => {
+  const store = burstGoalSession(t);
+  store.recordGoalAborted("plan-g");
+  const client = cmux(workspaces(["ws-goal", "review-goal"]));
+  const result = await new GoalSessionReaper({ store, cmux: client }).reap();
+  assert.deepEqual(client.closed().sort(), ["review-goal", "ws-goal"]);
+  assert.equal(result.closed.find((item) => item.workspaceId === "review-goal").reason, "This goal was aborted");
+  assert.ok(store.get("plan-g").reviewSessionClosedAt);
+});
+
+test("a recorded goal reviewer is never mistaken for a restored workspace", async () => {
+  const { restoredGoalSessions } = await import("../server/restored-goal-sessions.mjs");
+  const plan = { planId: "plan-g", repositoryName: "sample", workflow: "goal_session", boardStatus: null, goalSessionWorktreePath: "/repo/goal", reviewWorkspaceId: "review-goal", tasks: [] };
+  assert.deepEqual(restoredGoalSessions([plan], [{ id: "review-goal", title: "Burst review: Ship", current_directory: "/repo/goal" }]), []);
+  assert.deepEqual(restoredGoalSessions([plan], [{ id: "REVIEW-GOAL", title: "Burst review: Ship", current_directory: "/repo/goal" }]), []);
+});

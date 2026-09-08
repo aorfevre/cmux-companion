@@ -954,7 +954,7 @@ function goalWorkspaceIds(plan) {
   // A burst reviewer is the goal's session too: it opened on the task's
   // worktree and nothing but this goal will ever close it.
   ids.push(...tasks.map((task) => task?.burstReviewWorkspaceId));
-  ids.push(plan?.mergeWorkspaceId, plan?.goalSessionWorkspaceId);
+  ids.push(plan?.mergeWorkspaceId, plan?.goalSessionWorkspaceId, plan?.reviewWorkspaceId);
   for (const entry of Array.isArray(plan?.supersededMergeWorkspaces) ? plan.supersededMergeWorkspaces : []) {
     ids.push(typeof entry === "string" ? entry : entry?.workspaceId);
   }

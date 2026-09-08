@@ -313,7 +313,8 @@ test("reviewGoal launches once on the goal session worktree and prompts the owne
   assert.equal(prompt[1], "ws-goal");
   assert.match(prompt[2], /- Missing changelog/);
   assert.match(prompt[2], /do not merge/);
-  assert.ok(plan().reviewSessionClosedAt);
+  assert.equal(plan().reviewStatus, "done", "the verdict finishes the review; the reaper closes the session");
+  assert.equal(plan().reviewSessionClosedAt, null);
   // The verdict is on the record, under the same event the task reviews use.
   const [event] = goalVerdicts(store);
   assert.deepEqual(event.payload, { taskId: "goal", verdict: "block", status: "block", findings: ["Missing changelog"] });
@@ -330,7 +331,7 @@ test("a passing goal review closes quietly and is recorded", async (t) => {
   await review.reviewGoal("plan-g");
   await writeFile(join(dir, "plan-g-goal-burst-review-1.json"), JSON.stringify({ verdict: "pass", findings: ["nit"] }));
   assert.equal(await review.onWorkspaceStopped("review-g"), true);
-  assert.ok(plan().reviewSessionClosedAt);
+  assert.equal(plan().reviewStatus, "done");
   assert.equal(calls.some(([k]) => k === "prompt"), false);
   assert.deepEqual(goalVerdicts(store).map((event) => event.payload), [{ taskId: "goal", verdict: "pass", status: "pass", findings: ["nit"] }]);
 });

@@ -1241,3 +1241,24 @@ test("a reviewer's own Stop reaches the reviewer first and then schedules its pl
   await tick(5);
   assert.equal(scheduled.length, seen + 2);
 });
+
+test("a store that throws under a task owner's Stop is logged twice and never rejects", async (t) => {
+  const { integrator } = fixture(t, { burst: true });
+  const warnings = [];
+  integrator.log = { warn: (details, message) => warnings.push(message) };
+  integrator.burstReview = { onWorkspaceStopped: async () => { throw new Error("verdict store is down"); } };
+  integrator.store.findTaskByWorkspace = () => { throw new Error("plan store is down"); };
+  const rejections = [];
+  const onRejection = (reason) => rejections.push(reason);
+  process.on("unhandledRejection", onRejection);
+  t.after(() => process.off("unhandledRejection", onRejection));
+  const events = eventHub();
+  const detach = integrator.attach({ hub: events });
+  t.after(() => detach());
+  events.emit({ name: "agent.hook.Stop", workspace_id: "workspace-one" });
+  await tick(10);
+  // attach() also schedules the plan at startup, whose assemble fails on the
+  // same broken store; that warning is the integrator's own and is expected.
+  assert.deepEqual(warnings.filter((message) => message !== "combined goal assembly failed"), ["burst review stop handling failed", "task stop could not be scheduled"]);
+  assert.deepEqual(rejections, []);
+});

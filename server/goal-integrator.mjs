@@ -69,7 +69,10 @@ export class GoalIntegrator {
         if (found) this.schedulePlan(found.planId);
       }).catch((cause) => {
         this.log?.warn?.({ err: cause, workspaceId }, "burst review stop handling failed");
-        this.scheduleWorkspace(workspaceId);
+        // The fallback reads the store too. A second failure is logged and
+        // ends here rather than as an unhandled rejection.
+        try { this.scheduleWorkspace(workspaceId); }
+        catch (fallback) { this.log?.warn?.({ err: fallback, workspaceId }, "task stop could not be scheduled"); }
       });
     };
     hub.on("event", onEvent);

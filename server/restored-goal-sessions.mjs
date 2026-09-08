@@ -5,7 +5,7 @@ import { mergeSessionTitle, sessionTitle, projectCode, taskCode, partCode } from
 // title. Never infer completion from the title, age, or a clean checkout.
 export function restoredGoalSessions(plans, workspaces) {
   const recorded = new Set(plans.flatMap((p) => [
-    p.goalSessionWorkspaceId, p.mergeWorkspaceId, ...(p.tasks || []).map((t) => t.workspaceId),
+    p.goalSessionWorkspaceId, p.mergeWorkspaceId, p.reviewWorkspaceId, ...(p.tasks || []).map((t) => t.workspaceId),
     ...(p.supersededMergeWorkspaces || []).map((w) => w.workspaceId),
     ...(p.followups || []).map((w) => w.workspaceId),
   ]).filter(Boolean).map((id) => id.toLowerCase()));

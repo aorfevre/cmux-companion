@@ -1009,6 +1009,20 @@ test("abort closes a burst reviewer that is still reading", async (t) => {
   assert.deepEqual(result.closedSessionIds.slice().sort(), ["review-1", "ws-1"]);
 });
 
+test("abort closes a goal reviewer that is still reading", async (t) => {
+  const { store, planner, deps } = launchablePlanner();
+  t.after(() => store.close());
+  const closed = [];
+  deps.cmux.workspaceClose = async (id) => { closed.push(id); };
+  const draft = await seedLegacyPlan(planner, { repositoryId: REPO_ID, goal: "Add billing" });
+  await planner.launch(draft.planId);
+  store.claimGoalReview(draft.planId, { agent: "codex" });
+  store.recordReviewLaunched(draft.planId, { workspaceId: "review-goal", agent: "codex", briefPath: "/tmp/review.md" });
+  const result = await planner.abort(draft.planId);
+  assert.deepEqual(closed.slice().sort(), ["review-goal", "ws-1"]);
+  assert.deepEqual(result.closedSessionIds.slice().sort(), ["review-goal", "ws-1"]);
+});
+
 test("abort reports the sessions cmux refused to close", async (t) => {
   const { store, planner, deps } = launchablePlanner();
   t.after(() => store.close());

@@ -157,7 +157,7 @@ export class BurstReview {
       this.log?.warn?.({ planId: plan.planId, workspaceId }, "burst goal reviewer stopped without a verdict file");
       return true;
     }
-    this.store.recordReviewSessionClosed(plan.planId, { verdict });
+    this.store.recordGoalReviewVerdict(plan.planId, verdict);
     if (verdict.verdict === "pass" || !plan.goalSessionWorkspaceId || !this.cmux.sendWorkspacePrompt) return true;
     await this.cmux.sendWorkspacePrompt(plan.goalSessionWorkspaceId, [
       "An independent burst review of your pull request found blocking issues:",

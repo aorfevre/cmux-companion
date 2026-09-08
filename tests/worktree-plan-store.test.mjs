@@ -151,10 +151,19 @@ test("records when the review session is closed", (t) => {
   store.claimGoalReview("plan-1", { agent: "claude" });
   store.recordReviewLaunched("plan-1", { workspaceId: "ws-9", agent: "claude", briefPath: "/tmp/review.md" });
   assert.equal(store.get("plan-1").reviewSessionClosedAt, null);
-  assert.ok(store.recordReviewSessionClosed("plan-1").reviewSessionClosedAt);
-  assert.equal(store.events("plan-1").some((event) => event.kind === "burst_review_verdict"), false, "a close without a verdict records none");
-  store.recordReviewSessionClosed("plan-1", { verdict: { verdict: "block", findings: ["x", "", 3] } });
+  assert.throws(() => store.recordGoalReviewVerdict("plan-1", { verdict: "maybe" }), /pass or block/);
+  assert.equal(store.recordGoalReviewVerdict("plan-1", { verdict: "block", findings: ["x", "", 3] }).reviewStatus, "done");
   assert.deepEqual(store.events("plan-1").filter((event) => event.kind === "burst_review_verdict").map((event) => event.payload), [{ taskId: "goal", verdict: "block", status: "block", findings: ["x", "3"] }]);
+  assert.throws(() => store.recordGoalReviewVerdict("plan-1", { verdict: "pass" }), /No goal review is running/, "a verdict lands once");
+  assert.equal(store.get("plan-1").reviewSessionClosedAt, null, "the verdict does not close the session; retirement does");
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "ws-other", kind: "goal_review" }]);
+  assert.equal(store.get("plan-1").reviewSessionClosedAt, null, "only the recorded reviewer id may claim the stamp");
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "ws-9", kind: "goal_review" }]);
+  const closedAt = store.get("plan-1").reviewSessionClosedAt;
+  assert.ok(closedAt);
+  store.recordSessionsRetired("plan-1", [{ workspaceId: "ws-9", kind: "goal_review" }]);
+  assert.equal(store.get("plan-1").reviewSessionClosedAt, closedAt, "a second retirement keeps the first stamp");
+  assert.ok(store.recordReviewSessionClosed("plan-1").reviewSessionClosedAt);
   assert.equal(store.findPlanByReviewWorkspace("ws-9").planId, "plan-1");
   assert.equal(store.findPlanByReviewWorkspace("ws-other"), null);
   assert.equal(store.findPlanByReviewWorkspace(""), null);
@@ -1467,6 +1476,14 @@ test("burst review state moves running → pass or block, and the second block i
   assert.equal(task.burstReviewWorkspaceId, "review-1");
   assert.equal(task.burstReviewHeadSha, "a".repeat(40));
   assert.throws(() => store.recordBurstReviewLaunched("plan-b", "t1", { workspaceId: "review-1b" }), /already running/);
+  // A failed launch left its message on the card; the launch that worked clears it.
+  store.recordDeliveryFailure("plan-b", "Burst review launch failed: cmux is down");
+  assert.equal(store.get("plan-b").deliveryStatus, "blocked");
+  store.recordBurstReviewLaunched("plan-b", "t2", { workspaceId: "review-t2-first" });
+  assert.equal(store.get("plan-b").deliveryError, null);
+  assert.equal(store.get("plan-b").deliveryStatus, "implementing");
+  store.recordBurstReviewVerdict("plan-b", "t2", { verdict: "block", findings: ["retry"] });
+  store.db.prepare("UPDATE plan_tasks SET burst_review_status = NULL, burst_review_round = 0 WHERE plan_id = 'plan-b' AND task_id = 't2'").run();
   plan = store.recordBurstReviewVerdict("plan-b", "t1", { verdict: "block", findings: ["No test for the empty case"] });
   task = plan.tasks.find((item) => item.id === "t1");
   assert.equal(task.burstReviewStatus, "block");
@@ -1501,6 +1518,6 @@ test("burst review state moves running → pass or block, and the second block i
   assert.equal(store.findTaskByBurstReviewWorkspace("review-1"), null, "the first round's workspace is superseded");
   assert.equal(store.findTaskByBurstReviewWorkspace(""), null);
   const kinds = store.events("plan-b").map((event) => event.kind);
-  assert.equal(kinds.filter((kind) => kind === "burst_review_launched").length, 3);
-  assert.equal(kinds.filter((kind) => kind === "burst_review_verdict").length, 3);
+  assert.equal(kinds.filter((kind) => kind === "burst_review_launched").length, 4);
+  assert.equal(kinds.filter((kind) => kind === "burst_review_verdict").length, 4);
 });
