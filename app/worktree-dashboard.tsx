@@ -964,7 +964,7 @@ function GoalBoardCard({ returningIssues, confirmingReturn, onRequestReturn, onC
   const checkable = state === "waiting_for_merge" || state === "blocked";
   return <article className={`goal-board-card ${state}`}>
     <RepoChip name={repositoryName} />
-    <strong>{plan.goal}</strong>
+    <strong>{plan.goal}{plan.burst && <em className="goal-burst-badge" aria-label="Burst goal">Burst</em>}</strong>
     <div className="goal-board-card-meta"><span>{plan.taskCount} task{plan.taskCount === 1 ? "" : "s"}</span><span>Updated {relativePlanTime(plan.updatedAt)}</span></div>
     {liveTasks.length > 0 && <p className="goal-board-task-codes" aria-label="Live task sessions">{liveTasks.map((task) => <code title={task.title} aria-label={`${sessionTaskCode(task)}: ${task.title}`} key={task.id}>{sessionTaskCode(task)}</code>)}</p>}
     {health && <p className={`goal-board-health ${health}`}><b>{HEALTH_LABELS[health]}</b><span>{plan.healthReason || "This goal needs a person"}</span></p>}
