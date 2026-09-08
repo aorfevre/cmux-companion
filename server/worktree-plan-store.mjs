@@ -613,6 +613,13 @@ export class WorktreePlanStore {
     return row ? this.get(row.plan_id) : null;
   }
 
+  findPlanByReviewWorkspace(workspaceIdValue) {
+    const id = text(workspaceIdValue);
+    if (!id) return null;
+    const row = this.db.prepare("SELECT plan_id FROM plans WHERE review_workspace_id = ? LIMIT 1").get(id);
+    return row ? this.get(row.plan_id) : null;
+  }
+
   activeCombinedPlans() {
     return this.db.prepare(`
       SELECT plan_id FROM plans

@@ -152,6 +152,9 @@ test("records when the review session is closed", (t) => {
   store.recordReviewLaunched("plan-1", { workspaceId: "ws-9", agent: "claude", briefPath: "/tmp/review.md" });
   assert.equal(store.get("plan-1").reviewSessionClosedAt, null);
   assert.ok(store.recordReviewSessionClosed("plan-1").reviewSessionClosedAt);
+  assert.equal(store.findPlanByReviewWorkspace("ws-9").planId, "plan-1");
+  assert.equal(store.findPlanByReviewWorkspace("ws-other"), null);
+  assert.equal(store.findPlanByReviewWorkspace(""), null);
 });
 
 test("reads malformed stored specification options as all false", (t) => {

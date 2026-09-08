@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BurstReview, burstReviewPrompt, reviewerProvider } from "../server/burst-review.mjs";
@@ -186,4 +186,112 @@ test("an unrelated workspace stop is ignored", async (t) => {
 
 test("the constructor refuses missing collaborators", () => {
   assert.throws(() => new BurstReview({}), /store, cmux, briefs and model settings/);
+});
+
+function goalSessionPlan(overrides = {}) {
+  return {
+    planId: "plan-g", repositoryName: "sample", goal: "Ship", burst: true, workflow: "goal_session",
+    goalSessionWorkspaceId: "ws-goal", goalSessionWorktreePath: "/wt/goal", goalSessionBranch: "goal/ship", baseRef: "origin/main",
+    engine: { provider: "claude" }, boardPrUrl: "https://github.test/pr/1", finalPrUrl: null, reviewStatus: null, reviewWorkspaceId: null,
+    spec: { outcome: "Shipped", acceptanceCriteria: [{ id: "AC-1", text: "It ships", verification: "npm test" }] }, tasks: [],
+    ...overrides,
+  };
+}
+
+function goalHarness(t, dir, current) {
+  const calls = [];
+  const store = {
+    get: (id) => (id === current.planId ? current : null),
+    claimGoalReview(id, { agent }) { calls.push(["claim", agent]); if (current.reviewStatus) return null; current.reviewStatus = "claiming"; return current; },
+    recordReviewLaunched(id, { workspaceId, agent, briefPath }) { calls.push(["review-launched", workspaceId, agent, briefPath]); current.reviewStatus = "running"; current.reviewWorkspaceId = workspaceId; return current; },
+    releaseGoalReview() { calls.push(["release"]); if (!current.reviewWorkspaceId) current.reviewStatus = null; return current; },
+    recordReviewSessionClosed() { calls.push(["closed"]); current.reviewSessionClosedAt = "now"; return current; },
+    findTaskByBurstReviewWorkspace: () => null,
+    findPlanByReviewWorkspace: (ws) => (current.reviewWorkspaceId === ws ? current : null),
+  };
+  const cmux = {
+    workspaceCreate: async (options) => { calls.push(["create", options]); return { workspace_id: "review-g" }; },
+    sendWorkspacePrompt: async (ws, text) => { calls.push(["prompt", ws, text]); },
+  };
+  const review = new BurstReview({ store, cmux, briefs: fakeBriefs(dir), modelSettings: { workspace: (role, agent) => ({ agent, model: "default" }) } });
+  return { review, calls, store, cmux };
+}
+
+test("reviewGoal launches once on the goal session worktree and prompts the owner on block", async (t) => {
+  const dir = await directory(t);
+  const current = goalSessionPlan();
+  const { review, calls } = goalHarness(t, dir, current);
+  assert.equal(await review.reviewGoal("plan-g"), true);
+  const create = calls.find(([k]) => k === "create")[1];
+  assert.equal(create.cwd, "/wt/goal");
+  assert.equal(create.agent, "codex");
+  assert.match(create.title, /^Burst review: Ship$/);
+  assert.equal(create.env.COMPANION_PLAN, "plan-g");
+  assert.equal(create.env.COMPANION_TASK, undefined);
+  assert.deepEqual(calls.find(([k]) => k === "review-launched").slice(1, 3), ["review-g", "codex"]);
+  assert.match(calls.find(([k]) => k === "review-launched")[3], /plan-g-goal-burst-review-1\.md$/);
+  assert.equal(await review.reviewGoal("plan-g"), false, "a second call while one runs is a no-op");
+  assert.equal(calls.filter(([k]) => k === "create").length, 1);
+  await writeFile(join(dir, "plan-g-goal-burst-review-1.json"), JSON.stringify({ verdict: "block", findings: ["Missing changelog"] }));
+  assert.equal(await review.onWorkspaceStopped("review-g"), true);
+  const prompt = calls.find(([k]) => k === "prompt");
+  assert.equal(prompt[1], "ws-goal");
+  assert.match(prompt[2], /- Missing changelog/);
+  assert.match(prompt[2], /do not merge/);
+  assert.ok(calls.some(([k]) => k === "closed"));
+  assert.equal(await review.onWorkspaceStopped("review-g"), false, "a closed review is not read twice");
+  assert.equal(calls.filter(([k]) => k === "prompt").length, 1);
+});
+
+test("a passing goal review closes quietly", async (t) => {
+  const dir = await directory(t);
+  const { review, calls } = goalHarness(t, dir, goalSessionPlan());
+  await review.reviewGoal("plan-g");
+  await writeFile(join(dir, "plan-g-goal-burst-review-1.json"), JSON.stringify({ verdict: "pass", findings: [] }));
+  assert.equal(await review.onWorkspaceStopped("review-g"), true);
+  assert.ok(calls.some(([k]) => k === "closed"));
+  assert.equal(calls.some(([k]) => k === "prompt"), false);
+});
+
+test("the goal brief carries every acceptance criterion and the goal branch", async (t) => {
+  const dir = await directory(t);
+  const { review } = goalHarness(t, dir, goalSessionPlan());
+  await review.reviewGoal("plan-g");
+  const brief = await readFile(join(dir, "plan-g-goal-burst-review-1.md"), "utf8");
+  assert.match(brief, /AC-1: It ships/);
+  assert.match(brief, /Branch: goal\/ship against origin\/main/);
+  assert.match(brief, /plan-g-goal-burst-review-1\.json/);
+});
+
+test("reviewGoal declines plans that are not open burst goal sessions", async (t) => {
+  const dir = await directory(t);
+  for (const current of [
+    goalSessionPlan({ burst: false }),
+    goalSessionPlan({ workflow: "planned" }),
+    goalSessionPlan({ boardPrUrl: null }),
+    goalSessionPlan({ goalSessionWorktreePath: null }),
+    goalSessionPlan({ reviewStatus: "running", reviewWorkspaceId: "old" }),
+  ]) {
+    const { review, calls } = goalHarness(t, dir, current);
+    assert.equal(await review.reviewGoal("plan-g"), false);
+    assert.equal(calls.some(([k]) => k === "create"), false);
+  }
+  const { review: unknown } = goalHarness(t, dir, goalSessionPlan());
+  assert.equal(await unknown.reviewGoal("plan-x"), false);
+  const { review: merged, calls } = goalHarness(t, dir, goalSessionPlan({ boardPrUrl: null, finalPrUrl: "https://github.test/pr/2" }));
+  assert.equal(await merged.reviewGoal("plan-g"), true, "the stored final pull request counts as open");
+  assert.equal(calls.filter(([k]) => k === "create").length, 1);
+});
+
+test("a failed goal reviewer launch releases the claim so a later pass can retry", async (t) => {
+  const dir = await directory(t);
+  const current = goalSessionPlan();
+  const { review, calls, cmux } = goalHarness(t, dir, current);
+  cmux.workspaceCreate = async () => { throw new Error("cmux is down"); };
+  await assert.rejects(() => review.reviewGoal("plan-g"), /cmux is down/);
+  assert.deepEqual(calls.map(([k]) => k), ["claim", "release"]);
+  assert.equal(current.reviewStatus, null);
+  cmux.workspaceCreate = async () => ({});
+  await assert.rejects(() => review.reviewGoal("plan-g"), /did not return its id/);
+  assert.equal(current.reviewStatus, null);
 });

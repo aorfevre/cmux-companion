@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { sessionEnv } from "./session-name.mjs";
 
 const SETTLED = new Set(["running", "pass", "blocked_twice"]);
+// The task id a goal session's single review files under.
+const GOAL_TASK = "goal";
 
 // The extra reviewer a burst goal buys. One session per finished task, on the
 // task's own worktree, with the other provider. It writes a verdict file and
@@ -48,11 +50,43 @@ export class BurstReview {
     return true;
   }
 
+  // The goal-session counterpart of reviewTask: one reviewer on the goal's own
+  // worktree once its pull request is open. The plan-level review columns
+  // hold the claim, so two watch passes cannot open two reviewers.
+  async reviewGoal(planId) {
+    const plan = this.store.get(planId);
+    if (!plan || plan.burst !== true || plan.workflow !== "goal_session") return false;
+    if (!plan.goalSessionWorktreePath || !(plan.boardPrUrl || plan.finalPrUrl)) return false;
+    if (plan.reviewStatus) return false;
+    const provider = reviewerProvider(plan.engine?.provider);
+    const claimed = this.store.claimGoalReview(plan.planId, { agent: provider });
+    if (!claimed) return false;
+    try {
+      const verdictPath = this.verdictPath(plan.planId, GOAL_TASK, 1);
+      const task = { id: GOAL_TASK, title: plan.goal, branch: plan.goalSessionBranch, criterionIds: (plan.spec?.acceptanceCriteria || []).map((criterion) => criterion.id), ownedAreas: [] };
+      const brief = await this.briefs.write({ planId: plan.planId, taskId: `${GOAL_TASK}-burst-review-1`, markdown: burstReviewPrompt(plan, task, verdictPath) });
+      const created = await this.cmux.workspaceCreate({
+        cwd: plan.goalSessionWorktreePath,
+        title: `Burst review: ${String(plan.goal).slice(0, 60)}`,
+        ...this.modelSettings.workspace("codeReviewer", provider),
+        env: sessionEnv(plan, null),
+        prompt: this.briefs.pointerPrompt({ title: `Burst review: ${plan.goal}`, outcome: plan.spec?.outcome || plan.goal, path: brief.path }),
+      });
+      const workspaceId = created?.workspace_id || created?.workspaceId || created?.id || null;
+      if (!workspaceId) throw new TypeError("cmux created the review session but did not return its id");
+      this.store.recordReviewLaunched(plan.planId, { workspaceId, agent: provider, briefPath: brief.path });
+      return true;
+    } catch (cause) {
+      this.store.releaseGoalReview(plan.planId);
+      throw cause;
+    }
+  }
+
   // Called for every agent Stop. Returns false when the workspace is not one
   // of ours, so the caller can hand it to the integrator's own path.
   async onWorkspaceStopped(workspaceId) {
     const found = this.store.findTaskByBurstReviewWorkspace?.(workspaceId);
-    if (!found) return false;
+    if (!found) return this.#onGoalReviewStopped(workspaceId);
     const plan = this.store.get(found.planId);
     const task = plan?.tasks?.find((item) => item.id === found.taskId);
     if (!plan || !task || task.burstReviewStatus !== "running") return false;
@@ -73,6 +107,20 @@ export class BurstReview {
         "Address each finding, amend the final commit so it keeps the Cmux-Goal-Ready and Cmux-Goal-Report trailers, force-push with lease, then stop again. A second review follows.",
       ].join("\n")).catch((cause) => this.log?.warn?.({ err: cause, taskId: task.id }, "burst review findings could not reach the owner"));
     }
+    return true;
+  }
+
+  async #onGoalReviewStopped(workspaceId) {
+    const plan = this.store.findPlanByReviewWorkspace?.(workspaceId);
+    if (!plan || plan.burst !== true || plan.reviewStatus !== "running" || plan.reviewSessionClosedAt) return false;
+    const verdict = await this.#readVerdict(this.verdictPath(plan.planId, GOAL_TASK, 1));
+    this.store.recordReviewSessionClosed(plan.planId);
+    if (verdict.verdict === "pass" || !plan.goalSessionWorkspaceId || !this.cmux.sendWorkspacePrompt) return true;
+    await this.cmux.sendWorkspacePrompt(plan.goalSessionWorkspaceId, [
+      "An independent burst review of your pull request found blocking issues:",
+      verdict.findings.map((item) => `- ${item}`).join("\n"),
+      "Address each finding on the same branch and push. Companion observes the pull request; do not merge.",
+    ].join("\n")).catch((cause) => this.log?.warn?.({ err: cause, planId: plan.planId }, "burst goal review findings could not reach the owner"));
     return true;
   }
 

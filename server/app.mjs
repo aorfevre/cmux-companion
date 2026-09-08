@@ -167,7 +167,7 @@ export async function buildApp({
   // The watcher never runs `gh`. It reads what the dashboard already cached
   // during the one Refresh GitHub command per repository.
   const mergeWatch = goalMergeWatch
-    || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, sessionCollector, worktreeCleanup: cleanup, log: app.log }) : null);
+    || (planStore ? new GoalMergeWatch({ store: planStore, worktrees, sessionCollector, worktreeCleanup: cleanup, burstReview, log: app.log }) : null);
   // The one thing no other module does: ask cmux whether each launched task's
   // agent is still alive. It writes nothing, so a sweep can never move a goal
   // on its own.
