@@ -34,11 +34,11 @@ test("the tighter deciding window sets an account's headroom", () => {
   assert.equal(capacity.providers[0].headroom, 20);
 });
 
-test("a monthly window never decides, because the dispatcher does not read it", () => {
+test("a reported monthly usage limit constrains eligibility too", () => {
   const claude = [account({ windows: [window("5h", 90), window("monthly", 2)] })];
   const capacity = agentCapacity(usage({ claude }));
-  assert.equal(capacity.providers[0].headroom, 90);
-  assert.deepEqual(capacity.providers[0].accounts[0].windows.map((item) => item.cadence), ["5h"]);
+  assert.equal(capacity.providers[0].headroom, null);
+  assert.deepEqual(capacity.providers[0].accounts[0].windows.map((item) => item.cadence), ["5h", "monthly"]);
 });
 
 test("names the roomier provider when the two are far apart", () => {
@@ -48,7 +48,7 @@ test("names the roomier provider when the two are far apart", () => {
   }));
 
   assert.equal(capacity.next, "claude");
-  assert.match(capacity.reason, /takes the next task/);
+  assert.match(capacity.reason, /most reported headroom/);
   assert.equal(capacity.available, true);
 });
 
@@ -60,7 +60,7 @@ test("explains the alternation when the two are within ten points", () => {
     codex: [account({ id: "acct-2", windows: [window("5h", 58), window("weekly", 58)] })],
   }));
 
-  assert.match(capacity.reason, /within ten points, so tasks alternate/);
+  assert.match(capacity.reason, /tasks alternate within a single plan/);
 });
 
 test("a provider below the floor cannot take work, and says the other is alone", () => {
@@ -73,12 +73,12 @@ test("a provider below the floor cannot take work, and says the other is alone",
   // The real number is still shown, so 3% does not read as "no data".
   assert.equal(capacity.providers[0].bestPercent, 3);
   assert.equal(capacity.next, "codex");
-  assert.match(capacity.reason, /only provider with quota/);
+  assert.match(capacity.reason, /only provider with reported usable quota/);
 });
 
 test("an exhausted pair reports the soonest reset instead of a provider", () => {
-  const soon = "2026-09-03T14:00:00.000Z";
-  const later = "2026-09-04T09:00:00.000Z";
+  const soon = new Date(Date.now() + 3_600_000).toISOString();
+  const later = new Date(Date.now() + 86_400_000).toISOString();
   const capacity = agentCapacity(usage({
     claude: [account({ status: "exhausted", windows: [window("5h", 0, later), window("weekly", 0, later)] })],
     codex: [account({ id: "acct-2", status: "exhausted", windows: [window("5h", 0, soon), window("weekly", 0, later)] })],
@@ -87,7 +87,7 @@ test("an exhausted pair reports the soonest reset instead of a provider", () => 
   assert.equal(capacity.available, false);
   assert.equal(capacity.next, null);
   assert.equal(capacity.nextReset, soon, "the soonest window is the only actionable fact");
-  assert.match(capacity.reason, /Neither provider has usable quota/);
+  assert.match(capacity.reason, /No provider has usable quota/);
 });
 
 test("an exhausted pair with no reported reset says so rather than inventing one", () => {
@@ -97,7 +97,7 @@ test("an exhausted pair with no reported reset says so rather than inventing one
   }));
 
   assert.equal(capacity.nextReset, null);
-  assert.match(capacity.reason, /no reset time was reported/);
+  assert.match(capacity.reason, /Check limits/);
 });
 
 test("an account that needs reconnection does not count as capacity", () => {
@@ -138,4 +138,36 @@ test("the verdict comes from the dispatcher's own rule", async () => {
   });
   const [dispatched] = assignAgents([{ id: "t1" }], snapshot);
   assert.equal(agentCapacity(snapshot).next, dispatched.agent);
+});
+
+test("opportunities keep account identity, observation age and blocked capacity", () => {
+  const now = Date.parse("2026-09-07T12:00:00Z");
+  const snapshot = agentCapacity(usage({ claude: [account({ id: "work", label: "Work", paused: true,
+    updatedAt: "2026-09-07T11:00:00Z", windows: [window("5h", 0), window("weekly", 60, "2026-09-07T15:00:00Z")] })] }), now);
+  const work = snapshot.providers[0].accounts[0];
+  assert.equal(work.label, "Work");
+  assert.equal(work.opportunity.remainingPercent, 60);
+  assert.equal(work.eligibility, "paused");
+  assert.equal(work.freshness, "stale");
+  assert.equal(snapshot.next, "codex");
+});
+
+test("opportunities exclude low balances, past, missing and distant resets", () => {
+  const now = Date.parse("2026-09-07T12:00:00Z");
+  for (const [percent, reset] of [[19, "2026-09-07T15:00:00Z"], [60, null], [60, "bad"], [60, "2026-09-07T11:00:00Z"], [60, "2026-09-09T15:00:00Z"]]) {
+    const snapshot = agentCapacity(usage({ claude: [account({ windows: [window("weekly", percent, reset)] })] }), now);
+    assert.equal(snapshot.providers[0].accounts[0].opportunity, null);
+  }
+});
+
+test("unknown telemetry and known blocks have different capacity states", () => {
+  assert.equal(agentCapacity(null).state, "unknown");
+  const blocked = agentCapacity(usage({ claude: [account({ paused: true })], codex: [account({ status: "reconnect" })] }));
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.next, null);
+});
+
+test("past resets are not advertised as the next reset", () => {
+  const snapshot = agentCapacity(usage({ claude: [account({ windows: [window("weekly", 40, "2020-01-01T00:00:00Z")] })] }));
+  assert.equal(snapshot.nextReset, null);
 });

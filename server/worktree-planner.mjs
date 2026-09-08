@@ -1,3 +1,4 @@
+import { providerCapacity } from "./capacity-policy.mjs";
 import { ModelSettings } from "./model-settings.mjs";
 import { DEFAULT_MODEL_ROLES, currentModelId, normalizeModelId, roleEngine } from "./model-options.mjs";
 import { parsePlannerReply, parseDiscussionReply } from "./planner-reply.mjs";
@@ -51,18 +52,19 @@ const EMPTY_QUESTION = "Ask a question about this plan";
 const LONG_QUESTION = "That question is too long";
 const DISCUSSION_EXHAUSTED = `This plan has been questioned ${DISCUSSION_CAP} times. Reject it and re-plan instead`;
 
-const USABLE_STATUS = new Set(["ready", "low"]);
-const MIN_HEADROOM = 5;
 const CLOSE_ENOUGH = 10;
 const LABELS = { claude: "Claude", codex: "Codex" };
 
 export function assignAgents(tasks, usage) {
-  const claude = providerHeadroom(usage, "claude");
-  const codex = providerHeadroom(usage, "codex");
+  const states = { claude: providerCapacity(usage, "claude"), codex: providerCapacity(usage, "codex") };
+  const claude = states.claude.headroom;
+  const codex = states.codex.headroom;
   const list = Array.isArray(tasks) ? tasks : [];
 
   if (claude === null && codex === null) {
-    return list.map((task) => ({ ...task, agent: "claude", agentReason: "Account usage is unavailable" }));
+    const fallback = ["claude", "codex"].find((id) => states[id].state === "unknown");
+    if (!fallback && list.length) throw new TypeError("No provider has usable quota. Check limits, paused accounts or reconnection before trying again");
+    return list.map((task) => ({ ...task, agent: fallback, agentReason: "Account usage is unavailable · provider fallback; quota unverified" }));
   }
   if (claude === null) return list.map((task) => ({ ...task, ...describe("codex", codex) }));
   if (codex === null) return list.map((task) => ({ ...task, ...describe("claude", claude) }));
@@ -83,28 +85,6 @@ export function assignAgents(tasks, usage) {
 // account that runs the task: assignAgents chooses a provider, never an account.
 function describe(agent, percent) {
   return { agent, agentReason: `${LABELS[agent]} · best account ${Math.round(percent)}% left` };
-}
-
-// Returns the best headroom across a provider's usable accounts, or null when
-// the provider cannot take work right now.
-function providerHeadroom(usage, id) {
-  const provider = (usage?.providers || []).find((item) => item?.id === id);
-  if (!provider) return null;
-  const scores = (provider.accounts || [])
-    .filter((account) => USABLE_STATUS.has(account?.status))
-    .map(accountHeadroom)
-    .filter((value) => value !== null);
-  if (!scores.length) return null;
-  const best = Math.max(...scores);
-  return best > MIN_HEADROOM ? best : null;
-}
-
-function accountHeadroom(account) {
-  const percents = (account?.windows || [])
-    .filter((window) => window?.category === "usage" && (window.cadence === "5h" || window.cadence === "weekly"))
-    .map((window) => window.remainingPercent)
-    .filter((value) => Number.isFinite(value));
-  return percents.length ? Math.min(...percents) : null;
 }
 
 const DRAFT_TTL_MS = 30 * 60_000;
@@ -677,6 +657,9 @@ export class WorktreePlanner {
     const { plan, task } = this.#launchedTask(planId, taskId);
     if (task.deliveryStatus === "integrated") throw new TypeError("This task is already merged into the goal branch");
     if (!this.cmux) throw new TypeError("Relaunching a task needs a cmux connection");
+    if (providerCapacity(await this.#usage(true), task.agent).state === "blocked") {
+      throw new TypeError("This provider has no usable quota. Check limits, paused accounts or reconnection before retrying");
+    }
 
     // Two agents in one worktree would fight over the same files, so a live
     // session must go before a new one starts.
@@ -1042,6 +1025,9 @@ export class WorktreePlanner {
     let branch = task.branch;
     let path = null;
     try {
+      if (providerCapacity(await this.#usage(true), task.agent).state === "blocked") {
+        throw new TypeError("This provider has no usable quota. Check limits, paused accounts or reconnection before retrying");
+      }
       const created = await acquireTaskWorktree({
         worktrees: this.worktrees,
         repositoryId: draft.repositoryId,
@@ -1235,11 +1221,11 @@ export class WorktreePlanner {
     }
   }
 
-  async #usage() {
+  async #usage(refresh = false) {
     const timedOut = Symbol("usage-timeout");
     let timer = null;
     try {
-      const snapshot = Promise.resolve().then(() => this.accountUsage?.snapshot()).catch((cause) => {
+      const snapshot = Promise.resolve().then(() => this.accountUsage?.snapshot({ refresh })).catch((cause) => {
         this.log?.warn?.({ err: cause }, "planner usage snapshot failed");
         return null;
       });

@@ -20,7 +20,7 @@ function fixtures() {
   });
 }
 
-for (const [width, height] of [[390, 844], [1440, 900]]) {
+for (const [width, height] of [[390, 844], [1100, 760], [1440, 900]]) {
   describe(`Goals home at ${width}px`, () => {
     beforeEach(() => { cy.viewport(width, height); fixtures(); });
 
@@ -52,6 +52,46 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       cy.findByRole("region", { name: "Goals board" }).should("be.visible");
       cy.reload();
       cy.findByRole("region", { name: "Goals board" }).should("be.visible");
+    });
+
+    it("shows weekly opportunities on the collapsed board and groups account limits", () => {
+      const observed = new Date().toISOString();
+      const resetAt = new Date(Date.now() + 3 * 3_600_000).toISOString();
+      const weekly = { cadence: "weekly", label: "Weekly limit", remainingPercent: 60, resetAt };
+      cy.intercept("GET", "**/api/goals/capacity*", {
+        available: true, next: "claude", state: "eligible", reason: "Claude has the most reported headroom.", nextReset: resetAt,
+        providers: [{ id: "claude", label: "Claude", available: true, headroom: 45, bestPercent: 45,
+          accounts: [{ id: "work", label: "Work account", status: "ready", eligibility: "eligible", headroom: 45, updatedAt: observed,
+            windows: [weekly, { cadence: "5h", label: "Session limit", remainingPercent: 45, resetAt }], opportunity: weekly },
+          { id: "personal", label: "Personal account", status: "ready", paused: true, eligibility: "paused", headroom: 80, windows: [weekly] }] }],
+      }).as("quota");
+      cy.visit("/?view=sessions");
+      cy.wait("@quota");
+      cy.findByRole("region", { name: "Weekly reset opportunities" }).should("be.visible")
+        .and("contain.text", "Claude · Work account").and("contain.text", "60% weekly remaining").and("contain.text", "45% short-window remaining");
+      cy.findByRole("region", { name: "Weekly reset opportunities" }).screenshot(`weekly-opportunity-${width}`, { scale: true });
+      cy.findByRole("region", { name: "Agent capacity" }).should("not.exist");
+      cy.findByRole("button", { name: /Show agent capacity/ }).click();
+      cy.findByRole("region", { name: "Claude Work account" }).should("contain.text", "Weekly limit");
+      cy.findByRole("region", { name: "Claude Personal account" }).should("contain.text", "Paused");
+      cy.findByRole("region", { name: "Agent capacity" }).should("contain.text", "Goal sessions keep their selected engine");
+      cy.findByRole("button", { name: "Refresh quota" }).click();
+      cy.wait("@quota").its("request.url").should("include", "refresh=1");
+      cy.document().then((doc) => { expect(doc.documentElement.scrollWidth).to.be.at.most(width); });
+      cy.findByRole("region", { name: "Agent capacity" }).then(($panel) => {
+        expect($panel[0].getBoundingClientRect().right).to.be.at.most(width);
+      });
+      cy.findByRole("region", { name: "Agent capacity" }).screenshot(`account-capacity-${width}`, { scale: true });
+      cy.intercept("GET", "**/api/account-usage*", { generatedAt: observed, summary: {}, providers: [] });
+      cy.findByRole("region", { name: "Weekly reset opportunities" }).within(() => cy.findByRole("button", { name: "All account usage" }).click());
+      cy.findByRole("heading", { name: "Licence usage" }).should("be.visible");
+      cy.location("search").should("eq", "?view=usage");
+    });
+
+    it("distinguishes missing quota from exhaustion", () => {
+      cy.visit("/");
+      cy.findByRole("button", { name: /Quota unknown/ }).should("be.visible");
+      cy.contains("Both exhausted").should("not.exist");
     });
 
     it("reports unavailable goal attention without claiming everything is clear", () => {

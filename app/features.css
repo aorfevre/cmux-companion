@@ -1020,3 +1020,26 @@
   .worktree-planner-sheet .review-user-flow{grid-template-columns:minmax(0,1fr)}
   .worktree-planner-sheet .review-user-flow li:not(:last-child)::after{content:"↓";right:50%;top:auto;bottom:-23px}
 }
+
+/* Account-level capacity remains readable on the mobile board. */
+.weekly-opportunities{margin-top:14px;border:1px solid #526936;border-radius:14px;background:#172016;padding:14px}
+.weekly-opportunities>header,.capacity-account>header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px}
+.weekly-opportunities h3{margin:0;font-size:16px}
+.weekly-opportunities p{margin:8px 0;font-size:14px;line-height:1.5}
+.weekly-opportunities .text-button,.agent-capacity>.text-button{font-size:14px;color:var(--lime)}
+.weekly-opportunity-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px}
+.weekly-opportunity-list article{padding-top:10px;border-top:1px solid #34442d;overflow-wrap:anywhere}
+.weekly-opportunity-list strong{font-size:14px}
+.weekly-opportunity-list small,.capacity-account>small{font-size:12px;color:#b7c1ad}
+.capacity-account{margin-top:12px;padding-top:12px;border-top:1px solid #34404b;overflow-wrap:anywhere}
+.capacity-account>header{font-size:14px;margin-bottom:6px}
+.capacity-account>header span{font-size:12px;color:#bbc3ca}
+.agent-capacity h3{font-size:16px}
+.agent-capacity-reason,.agent-capacity-note{font-size:14px}
+.agent-capacity-provider>header strong{font-size:16px}
+.agent-capacity-provider>header em{font-size:12px}
+.capacity-account .agent-capacity-windows li{font-size:14px;flex-wrap:wrap}
+.capacity-account .agent-capacity-windows small{font-size:12px}
+
+.capacity-account .agent-capacity-windows span,.capacity-account .agent-capacity-windows b{font-size:14px}
+.agent-capacity-provider>header{flex-wrap:wrap}

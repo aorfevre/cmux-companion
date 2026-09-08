@@ -2369,3 +2369,37 @@ test("coder defaults reach task workspace launches", async () => {
   await planner.launch(draft.planId);
   assert.equal(deps.calls.find(([kind]) => kind === "workspace")[1].model, "custom-coder");
 });
+
+test("paused accounts cannot win assignment even with the largest balance", () => {
+  const usage = usageFor(90, 40);
+  usage.providers[0].accounts[0].paused = true;
+  assert.equal(assignAgents(THREE, usage)[0].agent, "codex");
+});
+
+test("known exhaustion cannot fall back to Claude", () => {
+  assert.throws(() => assignAgents(THREE, usageFor(0, 0)), /No provider has usable quota/);
+  assert.deepEqual(assignAgents([], usageFor(0, 0)), []);
+  const usage = usageFor(0, null);
+  assert.equal(assignAgents(THREE, usage)[0].agent, "codex");
+  assert.match(assignAgents(THREE, usage)[0].agentReason, /quota unverified/);
+});
+
+test("provider fetch failure cannot advertise retained windows as usable", () => {
+  const usage = usageFor(90, 40);
+  usage.providers[0].available = false;
+  assert.equal(assignAgents(THREE, usage)[0].agent, "codex");
+});
+
+test("a saved task whose provider became blocked fails before creating a worktree", async () => {
+  const deps = launchDeps();
+  const planner = new WorktreePlanner(deps);
+  const draft = await readyDraft(planner);
+  let refreshed = false;
+  deps.accountUsage.snapshot = async (options) => { refreshed = options.refresh; return usageFor(0, 90); };
+  const result = await planner.launch(draft.planId);
+  assert.equal(refreshed, true);
+  assert.equal(result.launched, 0);
+  assert.equal(result.results[0].status, "failed");
+  assert.match(result.results[0].error, /no usable quota/);
+  assert.equal(deps.calls.some((call) => ["create", "workspace"].includes(call[0])), false);
+});
