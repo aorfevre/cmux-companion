@@ -31,7 +31,7 @@ const PLAN_EVENT_KINDS = new Set([
   "task_relaunched", "task_skipped", "followup_launched", "task_associated",
   "review_claimed", "review_launched", "discussion", "merge_cleanup_required",
   "goal_session_started", "proposal_published", "proposal_changes_requested", "proposal_approved", "goal_session_transition", "goal_session_correction",
-  "burst_review_launched", "burst_review_verdict",
+  "burst_review_launched", "burst_review_verdict", "burst_review_reset",
 ]);
 // The only two lifecycle states that are stored. Every other column of the
 // board is derived, so a stored value that is neither of these is a bug.
@@ -700,6 +700,37 @@ export class WorktreePlanStore {
         .run(status, json(list), id, String(taskId));
       this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
       this.#insertEvent(id, null, "burst_review_verdict", { taskId, verdict, status, findings: list }, at);
+    });
+    return this.get(id);
+  }
+
+  // A pass is pinned to the head it judged. When the owner pushes again, the
+  // verdict no longer describes the branch, so it is cleared and the launch
+  // loop opens a fresh reviewer. The round is kept on purpose: rounds are
+  // cumulative, so a passed task that is pushed again gets exactly one more
+  // review, and a block on that review counts toward blocked_twice as usual.
+  // Every other status is left alone: running and block already carry the
+  // head they judged, and blocked_twice is final.
+  resetBurstReviewForNewHead(planId, taskId) {
+    const at = this.#stamp();
+    const id = String(planId);
+    this.#transaction(() => {
+      const row = this.db.prepare("SELECT burst_review_status, burst_review_round, burst_review_head_sha, burst_review_workspace_id, burst_review_session_closed_at FROM plan_tasks WHERE plan_id = ? AND task_id = ?").get(id, String(taskId));
+      if (!row) throw new TypeError("Unknown task");
+      if (row.burst_review_status !== "pass") return;
+      // The reaper finds a task's reviewer through this column. A passed
+      // reviewer it has not retired yet would be orphaned by the clear, so
+      // its id moves to the cleanup list the reaper also walks.
+      const orphan = text(row.burst_review_workspace_id);
+      if (orphan && !row.burst_review_session_closed_at) {
+        const sessions = this.#superseded(id);
+        if (!sessions.some((entry) => entry.workspaceId === orphan)) sessions.push({ workspaceId: orphan, retiredAt: null });
+        this.db.prepare("UPDATE plans SET superseded_merge_workspaces = ? WHERE plan_id = ?").run(json(sessions), id);
+      }
+      this.db.prepare("UPDATE plan_tasks SET burst_review_status = NULL, burst_review_workspace_id = NULL, burst_review_head_sha = NULL, burst_review_session_closed_at = NULL WHERE plan_id = ? AND task_id = ?")
+        .run(id, String(taskId));
+      this.db.prepare("UPDATE plans SET updated_at = ? WHERE plan_id = ?").run(at, id);
+      this.#insertEvent(id, null, "burst_review_reset", { taskId, round: Number(row.burst_review_round) || 0, headSha: row.burst_review_head_sha ?? null }, at);
     });
     return this.get(id);
   }

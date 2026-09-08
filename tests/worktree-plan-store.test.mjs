@@ -1521,3 +1521,60 @@ test("burst review state moves running → pass or block, and the second block i
   assert.equal(kinds.filter((kind) => kind === "burst_review_launched").length, 4);
   assert.equal(kinds.filter((kind) => kind === "burst_review_verdict").length, 4);
 });
+
+test("a new head after a pass clears the verdict, keeps the round, and leaves every other status alone", (t) => {
+  const store = memoryStore(t);
+  store.createPlan({ planId: "plan-r", repositoryId: "repository12345678", goal: "g", burst: true });
+  store.recordRound("plan-r", { round: 1, stage: "ready", tasks: TASKS });
+  store.recordLaunch("plan-r", { results: TASKS.map((task) => ({ id: task.id, branch: task.branch, status: "launched", path: `/wt/${task.id}`, workspace: { workspace_id: `ws-${task.id}` } })) });
+  const task = (id) => store.get("plan-r").tasks.find((item) => item.id === id);
+  const resets = () => store.events("plan-r").filter((event) => event.kind === "burst_review_reset").map((event) => event.payload);
+  // No review yet: nothing to reset.
+  store.resetBurstReviewForNewHead("plan-r", "t1");
+  assert.equal(task("t1").burstReviewStatus, null);
+  assert.deepEqual(resets(), []);
+  // Running: the reviewer is still judging this head.
+  store.recordBurstReviewLaunched("plan-r", "t1", { workspaceId: "review-1", headSha: "a".repeat(40) });
+  const running = task("t1");
+  store.resetBurstReviewForNewHead("plan-r", "t1");
+  assert.deepEqual(task("t1"), running);
+  // Block: the head under review is what tells an amended push apart.
+  store.recordBurstReviewVerdict("plan-r", "t1", { verdict: "block", findings: ["x"] });
+  const blocked = task("t1");
+  store.resetBurstReviewForNewHead("plan-r", "t1");
+  assert.deepEqual(task("t1"), blocked);
+  assert.equal(task("t1").burstReviewHeadSha, "a".repeat(40));
+  // Blocked twice: final.
+  store.recordBurstReviewLaunched("plan-r", "t1", { workspaceId: "review-2", headSha: "b".repeat(40) });
+  store.recordBurstReviewVerdict("plan-r", "t1", { verdict: "block", findings: ["y"] });
+  const final = task("t1");
+  assert.equal(final.burstReviewStatus, "blocked_twice");
+  store.resetBurstReviewForNewHead("plan-r", "t1");
+  assert.deepEqual(task("t1"), final);
+  assert.deepEqual(resets(), []);
+  // Pass: cleared, round kept, and the next launch is one more round.
+  store.recordBurstReviewLaunched("plan-r", "t2", { workspaceId: "review-t2", headSha: "c".repeat(40) });
+  store.recordBurstReviewVerdict("plan-r", "t2", { verdict: "pass" });
+  const plan = store.resetBurstReviewForNewHead("plan-r", "t2");
+  const reset = plan.tasks.find((item) => item.id === "t2");
+  assert.equal(reset.burstReviewStatus, null);
+  assert.equal(reset.burstReviewRound, 1, "rounds are cumulative across a reset");
+  assert.equal(reset.burstReviewWorkspaceId, null);
+  assert.equal(reset.burstReviewHeadSha, null);
+  assert.deepEqual(reset.burstReviewFindings, []);
+  assert.deepEqual(resets(), [{ taskId: "t2", round: 1, headSha: "c".repeat(40) }]);
+  assert.equal(store.findTaskByBurstReviewWorkspace("review-t2"), null, "the passed reviewer's workspace no longer names the task");
+  assert.deepEqual(plan.supersededMergeWorkspaces.filter((entry) => entry.workspaceId === "review-t2"), [{ workspaceId: "review-t2", retiredAt: null }], "an un-retired reviewer stays on the cleanup list");
+  // A reviewer the reaper already retired needs no cleanup entry.
+  store.recordBurstReviewLaunched("plan-r", "t2", { workspaceId: "review-t2-again", headSha: "d".repeat(40) });
+  store.recordBurstReviewVerdict("plan-r", "t2", { verdict: "pass" });
+  store.recordSessionsRetired("plan-r", [{ workspaceId: "review-t2-again", taskId: "t2", kind: "review" }]);
+  store.resetBurstReviewForNewHead("plan-r", "t2");
+  assert.equal(store.get("plan-r").supersededMergeWorkspaces.some((entry) => entry.workspaceId === "review-t2-again"), false);
+  assert.equal(task("t2").burstReviewRound, 2);
+  store.recordBurstReviewLaunched("plan-r", "t2", { workspaceId: "review-t2-third", headSha: "e".repeat(40) });
+  assert.equal(task("t2").burstReviewRound, 3);
+  store.recordBurstReviewVerdict("plan-r", "t2", { verdict: "block", findings: ["late"] });
+  assert.equal(task("t2").burstReviewStatus, "blocked_twice", "a block after the reset counts toward the final block");
+  assert.throws(() => store.resetBurstReviewForNewHead("plan-r", "nope"), /Unknown task/);
+});

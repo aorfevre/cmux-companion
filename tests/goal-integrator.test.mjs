@@ -1122,6 +1122,36 @@ test("a burst plan launches a reviewer on every ready task and waits for the pas
   assert.equal(burstReview.reviews.length, 2, "a passed task is never reviewed again");
 });
 
+test("a push after a pass buys another review", async (t) => {
+  const { store, integrator, calls, heads } = fixture(t, { burst: true });
+  const burstReview = fakeBurstReview(store);
+  integrator.burstReview = burstReview;
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 2 tasks/);
+  store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "pass" });
+  store.recordBurstReviewVerdict("plan-12345678", "t2", { verdict: "pass" });
+  assert.equal(store.get("plan-12345678").tasks[0].burstReviewHeadSha, TASK_ONE);
+  // The owner of t1 pushes once more before assembly runs. The pass judged
+  // the old head, so it must not carry the new one into the merge.
+  heads.t1 = "d".repeat(40);
+  await assert.rejects(() => integrator.assemble("plan-12345678"), /Waiting for burst review of 1 task$/);
+  assert.deepEqual(burstReview.reviews.at(-1), ["plan-12345678", "t1"]);
+  assert.equal(burstReview.reviews.length, 3);
+  const reviewed = store.get("plan-12345678").tasks[0];
+  assert.equal(reviewed.burstReviewStatus, "running");
+  assert.equal(reviewed.burstReviewRound, 2, "rounds are cumulative");
+  assert.equal(reviewed.burstReviewHeadSha, "d".repeat(40));
+  assert.equal(reviewed.headSha, "d".repeat(40));
+  assert.equal(calls.some((call) => call[0] === "workspaceCreate"), false, "assembly waits for the new verdict");
+  const kinds = store.events("plan-12345678").map((event) => event.kind);
+  assert.equal(kinds.filter((kind) => kind === "burst_review_reset").length, 1);
+  // The same head again is not a new push; the pass on t2 stands.
+  assert.equal(store.get("plan-12345678").tasks[1].burstReviewStatus, "pass");
+  store.recordBurstReviewVerdict("plan-12345678", "t1", { verdict: "pass" });
+  const result = await integrator.assemble("plan-12345678");
+  assert.equal(result.mergeStatus, "running");
+  assert.equal(burstReview.reviews.length, 3);
+});
+
 test("a blocked task waits for its head to move, gets one more review, and then waits for a person", async (t) => {
   const { store, integrator, calls, heads } = fixture(t, { burst: true });
   const burstReview = fakeBurstReview(store);

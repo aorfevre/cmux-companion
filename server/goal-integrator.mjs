@@ -529,6 +529,10 @@ export class GoalIntegrator {
         // must not become ready again and buy a second review of itself; only
         // an amended head does.
         if (["block", "blocked_twice"].includes(task.burstReviewStatus) && task.burstReviewHeadSha === evidence.headSha) continue;
+        // A pass is pinned to the head it judged too. A push after it must
+        // not ride that verdict into assembly; the reset leaves the task with
+        // no status, and the launch loop opens one more review.
+        if (task.burstReviewStatus === "pass" && task.burstReviewHeadSha !== evidence.headSha) this.store.resetBurstReviewForNewHead(plan.planId, task.id);
         current = this.store.recordTaskReady(plan.planId, task.id, evidence.headSha, evidence);
       } else if (!evidence.headSha && (task.deliveryStatus === "ready" || evidenceChanged(task, evidence))) {
         current = this.store.recordTaskPending(plan.planId, task.id, evidence);

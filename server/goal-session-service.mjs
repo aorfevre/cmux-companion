@@ -4,6 +4,7 @@ import { normalizeImages, normalizePlannerEngine, normalizeIssueNumbers, normali
 import { normalizeSpecOptions } from "./spec-options.mjs";
 import { normalizeReviewOptions } from "./review-options.mjs";
 import { normalizeGoalType, applicableSpecOptions, NEW_GOAL_SPEC_OPTIONS, NEW_GOAL_REVIEWER, NEW_GOAL_REVIEW_OPTIONS } from "./goal-options.mjs";
+import { MAX_GOAL_TEXT } from "./goal-limits.mjs";
 
 // Owns every new discovery conversation. Historical delivery recovery remains
 // separate; continuing unlaunched discovery creates one durable successor.
@@ -17,7 +18,7 @@ export class GoalSessionService {
   async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, burst = false, idempotencyKey = null, issueNumbers = [], issueUrls = [], discoveryContext = null, goalType = "coding", sourceAnalysis = null } = {}) {
     const type = normalizeGoalType(goalType);
     const text = String(goal || "").trim();
-    if (!text || text.length > 4_000) throw new TypeError("Describe the goal for this repository");
+    if (!text || text.length > MAX_GOAL_TEXT) throw new TypeError("Describe the goal for this repository");
     const repository = await this.worktrees.resolveRepository(repositoryId);
     const planId = validIdempotencyKey(idempotencyKey) || randomUUID();
     const attachments = normalizeImages(images);

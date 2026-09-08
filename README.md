@@ -120,6 +120,9 @@ they open directly through cmux rather than through the same capacity check
 that gates scans and goal launches, so a burst goal can add review sessions
 after the weekly window has closed. There is also no user action yet to waive
 a task blocked twice by review; the only path forward is aborting the goal.
+A goal started from an approved burst candidate always gets the burst review;
+to run one of these goals without it, type the goal by hand and leave Burst
+off.
 
 ## Architecture
 

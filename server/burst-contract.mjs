@@ -1,3 +1,5 @@
+import { MAX_GOAL_TEXT } from "./goal-limits.mjs";
+
 // The shape every burst module agrees on: ids, statuses and the proposal a
 // scan must return. Data-only, so the store, the service, the scanner and the
 // browser bundle can all import it.
@@ -6,8 +8,9 @@ export const REPOSITORY_ID = /^[A-Za-z0-9_-]{18}$/;
 export const SIZE_ESTIMATES = Object.freeze(["small", "medium", "large"]);
 export const CANDIDATE_STATUSES = Object.freeze(["scanning", "proposed", "failed", "approved", "declined"]);
 // The same limit goalSessions.start enforces on a goal, so an approved
-// candidate never fails there with an unrelated message.
-export const MAX_BURST_GOAL = 4_000;
+// candidate never fails there with an unrelated message. Both read it from
+// server/goal-limits.mjs; the burst name is kept for the modules that use it.
+export const MAX_BURST_GOAL = MAX_GOAL_TEXT;
 
 export function normalizeProposal(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("The scan returned no proposal object");

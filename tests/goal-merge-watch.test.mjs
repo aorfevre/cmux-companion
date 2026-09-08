@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { GoalMergeWatch } from "../server/goal-merge-watch.mjs";
+import { BurstReview } from "../server/burst-review.mjs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // A launched burst goal session whose pull request GitHub reports as `state`.
 function fixture(t, { burst = true, state = "OPEN" } = {}) {
@@ -38,6 +42,43 @@ test("the review is asked for again on each pass; the reviewer owns the once-onl
   await watch.reconcile();
   await watch.reconcile();
   assert.deepEqual(reviewed, ["burst-owner", "burst-owner"]);
+});
+
+test("a review that failed to start is asked for again on the next pass, with no change to the pull request", async (t) => {
+  const { store, planId, watch, warnings } = fixture(t);
+  const dir = await mkdtemp(join(tmpdir(), "goal-merge-watch-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const created = [];
+  let failures = 1;
+  const cmux = {
+    workspaceCreate: async (options) => {
+      if (failures > 0) { failures -= 1; throw new Error("cmux is down"); }
+      created.push(options.cwd);
+      return { workspace_id: "review-g" };
+    },
+    sendWorkspacePrompt: async () => {},
+    workspaceClose: async () => {},
+  };
+  const briefs = { directory: dir, async write({ planId: id, taskId, markdown }) { const path = join(dir, `${id}-${taskId}.md`); await writeFile(path, markdown); return { path }; }, pointerPrompt: ({ path }) => `Read ${path}` };
+  watch.burstReview = new BurstReview({ store, cmux, briefs, modelSettings: { workspace: (role, agent) => ({ agent, model: "default" }) } });
+  const first = await watch.reconcile();
+  assert.equal(first.recorded.length, 1, "the pull request is recorded on the first pass");
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  assert.deepEqual(warnings, ["burst goal review could not start"]);
+  assert.equal(store.get(planId).reviewStatus, null, "the failed launch released its claim");
+  const events = () => store.events(planId).filter((event) => event.kind === "board_pull_request").length;
+  assert.equal(events(), 1);
+  await watch.reconcile();
+  assert.equal(events(), 1, "nothing changed on GitHub, so nothing new is written");
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  assert.deepEqual(created, ["/repo/billing"]);
+  assert.equal(store.get(planId).reviewStatus, "running");
+  assert.equal(store.get(planId).reviewWorkspaceId, "review-g");
+  // A third pass finds the claim and opens nothing.
+  await watch.reconcile();
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  assert.equal(created.length, 1);
+  assert.deepEqual(warnings, ["burst goal review could not start"]);
 });
 
 test("a merged pull request records the goal and asks for no review", async (t) => {
