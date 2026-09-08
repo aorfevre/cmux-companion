@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 const HOOK = fileURLToPath(new URL("../server/goal-review-hook.mjs", import.meta.url));
 
 // The hook runs as a Claude Code PreToolUse hook: JSON on stdin, JSON on stdout.
-function runHook(input) {
+function runHook(input, { allowBrokenPipe = false } = {}) {
   const child = spawnSync(process.execPath, [HOOK], { input, encoding: "utf8", timeout: 10_000 });
-  assert.equal(child.error, undefined);
+  // A hook that aborts mid-read closes stdin early; Linux then reports EPIPE
+  // to the writer, which is the expected shape of that abort.
+  if (!(allowBrokenPipe && child.error?.code === "EPIPE")) assert.equal(child.error, undefined);
   return { status: child.status, stdout: child.stdout, stderr: child.stderr };
 }
 
@@ -37,7 +39,7 @@ test("hook CLI exits 2 on invalid JSON without printing a decision", () => {
 
 test("hook CLI aborts with exit 2 once stdin exceeds 256KB", () => {
   const oversized = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Read", padding: "x".repeat(300 * 1024) });
-  const result = runHook(oversized);
+  const result = runHook(oversized, { allowBrokenPipe: true });
   assert.equal(result.status, 2);
   assert.equal(result.stdout, "");
 });
