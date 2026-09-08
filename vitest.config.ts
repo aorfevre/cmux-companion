@@ -7,5 +7,12 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./tests/ui-setup.ts"],
     include: ["tests/ui-*.test.tsx"],
+    coverage: {
+      provider: "v8",
+      include: ["app/**"],
+      exclude: ["app/**/*.css", "app/layout.tsx", "app/github-issue-types.ts"],
+      reporter: ["text", "lcov"],
+      reportsDirectory: "coverage/ui",
+    },
   },
 });

@@ -63,3 +63,78 @@ test("recovery verifies repository, branch, exact pushed identity, cleanliness a
   await applyTaskAssociation(options, await inspectTaskAssociation(options));
   assert.equal(applied, true);
 });
+
+test("recovery refuses tasks, plans and workspaces that are not eligible before touching git", async () => {
+  const listed = [];
+  const cmux = { workspaceList: async () => { listed.push("list"); return { workspaces: [{ id: "ws", current_directory: null }] }; }, workspaceStatus: async () => ({}) };
+  const task = { id: "T1", launchStatus: "failed", branch: "feature/task" };
+  const cases = [
+    { plan: null, reason: /unassociated failed task/ },
+    { plan: { status: "draft", tasks: [task] }, reason: /unassociated failed task/ },
+    { plan: { status: "launched", boardStatus: "done", tasks: [task] }, reason: /unassociated failed task/ },
+    { plan: { status: "launched", finalPrUrl: "https://example.test/pr/1", tasks: [task] }, reason: /unassociated failed task/ },
+    { plan: { status: "launched", tasks: [{ ...task, launchStatus: "launched" }] }, reason: /unassociated failed task/ },
+    { plan: { status: "launched", tasks: [{ ...task, workspaceId: "ws" }] }, reason: /unassociated failed task/ },
+    { plan: { status: "launched", tasks: [{ ...task, worktreePath: "/tmp/elsewhere" }] }, reason: /unassociated failed task/ },
+  ];
+  for (const { plan, reason } of cases) {
+    await assert.rejects(inspectTaskAssociation({ store: { get: () => plan }, cmux, planId: "plan", taskId: "T1", workspaceId: "ws" }), reason);
+  }
+  assert.equal(listed.length, 0, "ineligible plans never reach cmux");
+  const eligible = { get: () => ({ status: "launched", cwd: "/tmp", tasks: [task] }) };
+  await assert.rejects(inspectTaskAssociation({ store: eligible, cmux, planId: "plan", taskId: "T1", workspaceId: "ws" }), /missing or has no checkout/);
+  await assert.rejects(inspectTaskAssociation({ store: eligible, cmux, planId: "plan", taskId: "T1", workspaceId: "absent" }), /missing or has no checkout/);
+  assert.equal(listed.length, 2);
+});
+
+test("recovery rejects a checkout from another repository and a contract-2 task without valid completion evidence", async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "task-association-contract-")));
+  const previousHome = process.env.CMUX_COMPANION_HOME;
+  process.env.CMUX_COMPANION_HOME = root;
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.CMUX_COMPANION_HOME;
+    else process.env.CMUX_COMPANION_HOME = previousHome;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const repository = join(root, "repo");
+  const foreign = join(root, "foreign");
+  for (const directory of [repository, foreign]) {
+    git(root, "init", "-b", "main", directory);
+    git(directory, "config", "user.email", "fixture@example.test");
+    git(directory, "config", "user.name", "Fixture");
+    git(directory, "commit", "--allow-empty", "-m", "base");
+  }
+  const base = git(repository, "rev-parse", "HEAD");
+  const checkout = join(root, "task");
+  git(repository, "worktree", "add", "-b", "feature/task", checkout);
+  git(repository, "init", "--bare", join(root, "remote.git"));
+  git(repository, "remote", "add", "origin", join(root, "remote.git"));
+  git(foreign, "checkout", "-b", "feature/task");
+  let report = '{"criteria":["AC-1"],"verification":[{"check":"npm test","status":"passed"}],"limitations":[]}';
+  const commitReady = () => {
+    git(checkout, "commit", "--allow-empty", "-m", `finished\n\nCmux-Goal-Report: ${report}\nCmux-Goal-Ready: plan/T1`);
+    git(checkout, "push", "-f", "origin", "feature/task");
+  };
+  commitReady();
+  const task = { id: "T1", launchStatus: "failed", branch: "feature/task", criterionIds: ["AC-1"], verification: ["npm test"] };
+  let directory = foreign;
+  const options = { planId: "plan", taskId: "T1", workspaceId: "ws",
+    store: { get: () => ({ status: "launched", cwd: repository, baseSha: base, contractVersion: 2, tasks: [task] }), recordTaskAssociation: () => {} },
+    cmux: { workspaceList: async () => ({ workspaces: [{ id: "ws", current_directory: directory }] }),
+      workspaceStatus: async () => ({ signals: { any_agent_running: false, any_agent_needs_input: false }, effective: "idle" }) },
+  };
+  await assert.rejects(inspectTaskAssociation(options), /different repository/);
+  directory = checkout;
+  const verified = await inspectTaskAssociation(options);
+  assert.equal(verified.branch, "feature/task");
+  report = '{"criteria":["AC-1"],"verification":[{"check":"npm test","status":"failed"}],"limitations":[]}';
+  commitReady();
+  await assert.rejects(inspectTaskAssociation(options), /must pass/);
+  report = "not json";
+  commitReady();
+  await assert.rejects(inspectTaskAssociation(options), /not valid JSON/);
+  git(checkout, "commit", "--allow-empty", "-m", "finished\n\nCmux-Goal-Ready: plan/T1");
+  git(checkout, "push", "-f", "origin", "feature/task");
+  await assert.rejects(inspectTaskAssociation(options), /no Cmux-Goal-Report trailer/);
+});

@@ -60,6 +60,8 @@ Stop both processes with Ctrl-C and remove temporary configuration afterward.
 ## Fast verification
 Run `npm test`, `npm run test:ui`, `npm run lint` and `npm run typecheck`.
 For a bounded backend edit, first run `node --test tests/<name>.test.mjs`.
+`npm run test:coverage` and `npm run test:ui:coverage` write line coverage reports
+under `coverage/`; keep backend and UI line coverage at or above 90%.
 
 ## Full verification
 Run `npm run verify` (backend, UI, lint, types and build); CI uses the same command.

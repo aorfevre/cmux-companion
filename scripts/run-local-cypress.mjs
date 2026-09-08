@@ -6,13 +6,17 @@ if (process.env.CI) throw new Error("The Cypress suite is intentionally local-on
 
 const open = process.argv.includes("--open");
 const spaExperiment = process.argv.includes("--spa-experiment");
+// `npm run test:e2e:local -- --spec cypress/e2e/<name>.cy.ts` runs one spec.
+const specIndex = process.argv.indexOf("--spec");
+const spec = specIndex === -1 ? null : process.argv[specIndex + 1];
+if (specIndex !== -1 && !spec) throw new Error("--spec needs a spec path.");
 // vinext binds its development listener to localhost even when Vite receives a
 // numeric host. Use the URL it actually advertises, or readiness waits forever
 // while the frontend is already serving on IPv6 loopback.
 const host = "localhost";
 const port = Number(process.env.CMUX_COMPANION_CYPRESS_PORT) || 3221;
 const baseUrl = `http://${host}:${port}`;
-const environment = { ...process.env, CMUX_COMPANION_LOCAL_E2E: "1" };
+const environment = { ...process.env, CMUX_COMPANION_LOCAL_E2E: "1", CMUX_COMPANION_CYPRESS_BASE_URL: baseUrl };
 await assertPortAvailable(port);
 const frontend = spawn(spaExperiment ? process.execPath : "npm", spaExperiment
   ? ["node_modules/vite/bin/vite.js", "preview", "--config", "experiments/local-spa/vite.config.ts", "--host", host, "--port", String(port), "--strictPort"]
@@ -55,6 +59,7 @@ try {
   await waitUntilReady();
   const args = ["cypress", open ? "open" : "run", "--config-file", "cypress.config.ts"];
   if (process.env.CMUX_COMPANION_CYPRESS_BROWSER) args.push("--browser", process.env.CMUX_COMPANION_CYPRESS_BROWSER);
+  if (spec) args.push("--spec", spec);
   const cypress = spawn("npx", args, { cwd: process.cwd(), env: environment, stdio: "inherit" });
   const code = await new Promise((resolve, reject) => {
     cypress.once("error", reject);
