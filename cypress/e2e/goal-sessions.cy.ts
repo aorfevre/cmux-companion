@@ -48,7 +48,7 @@ function scenario(initial: Record<string, unknown> = basePlan) {
     plan = { ...plan, goalSessionState: "implementing", approvalRevision: plan.proposalRevision };
     request.reply(plan);
   }).as("approval");
-  return { getPlan: () => plan, setPlan: (next: Record<string, unknown>) => { plan = next; } };
+  return { setStarted: () => { started = true; }, getPlan: () => plan, setPlan: (next: Record<string, unknown>) => { plan = next; } };
 }
 function start() {
   cy.visit("/?mode=worktrees", { onBeforeLoad(window) { window.localStorage.setItem("cmux-companion-read-only", "false"); } });
@@ -156,5 +156,27 @@ describe("visible goal conversation", () => {
     cy.wait("@goalState");
     cy.findByRole("alert").should("contain.text", "Proposal changed");
     cy.findByText("Implementation is continuing in this conversation.").should("not.exist");
+  });
+});
+
+describe("one discovery process", () => {
+  for (const width of [390, 1280]) it(`continues a stopped legacy goal in its native successor at ${width}px`, () => {
+    cy.viewport(width, 900);
+    const state = scenario({ ...basePlan, questions: [], goalSessionState: "planning" });
+    cy.intercept("GET", "**/api/worktree-plans/old-goal", { planId: "old-goal", repositoryId: repo.id, repositoryName: repo.name, goal: "Add billing", status: "questions", round: 0, tasks: [], questions: [], lastError: "Old proxy failed" });
+    cy.intercept("POST", "**/api/goal-sessions/old-goal/continue", (request) => {
+      expect(request.body).to.deep.equal({}); state.setStarted(); request.reply(state.getPlan());
+    }).as("continueDiscovery");
+    cy.visit("/?plan=old-goal");
+    cy.findByRole("button", { name: "Continue discovery" }).should("be.visible");
+    cy.findByRole("button", { name: "Plan this goal again" }).should("not.exist");
+    cy.get("@continueDiscovery.all").should("have.length", 0);
+    cy.findByRole("button", { name: "Continue discovery" }).click(); cy.wait("@continueDiscovery");
+    cy.location("search").should("contain", "workspace=goal-workspace");
+    cy.wait("@goalState");
+    cy.contains("Discovery is open in the interactive conversation.").should("be.visible");
+    cy.get("@startGoal.all").should("have.length", 0);
+    cy.get("@continueDiscovery.all").should("have.length", 1);
+    cy.screenshot(`unified-discovery-${width}`, { capture: "viewport" });
   });
 });

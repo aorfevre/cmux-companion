@@ -1,9 +1,8 @@
-import { readPrivateJson } from "./private-json-state.mjs";
+import { readPrivateJson, writePrivateJson } from "./private-json-state.mjs";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 const DEFAULT_PATH = join(homedir(), ".config", "cmux-companion", "prompt-queue.json");
 const CONTEXT_ID = /^[a-zA-Z0-9:_-]{3,128}$/;
@@ -155,13 +154,7 @@ export class PromptQueue extends EventEmitter {
     return { items };
   }
 
-  save() {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    const temporary = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
-    writeFileSync(temporary, JSON.stringify(this.state, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-    renameSync(temporary, this.path);
-    chmodSync(this.path, 0o600);
-  }
+  save() { writePrivateJson(this.path, this.state); }
 }
 
 function normalizePrompt(value) {

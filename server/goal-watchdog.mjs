@@ -1,3 +1,5 @@
+import { firstReason } from "./goal-health-summary.mjs";
+import { oneLine } from "./text-summary.mjs";
 // The health sweep can tell that a task's agent died. Nothing called it.
 //
 // A supervision tool that only answers when asked is not supervision: the
@@ -205,14 +207,4 @@ export class GoalWatchdog {
       return false;
     }
   }
-}
-
-function firstReason(goal) {
-  const parts = [...(goal?.tasks || []), ...(goal?.merge ? [goal.merge] : [])];
-  return parts.find((part) => part.health === goal?.health)?.reason || null;
-}
-
-function oneLine(value, limit) {
-  const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }

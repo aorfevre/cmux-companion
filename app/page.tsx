@@ -1,9 +1,11 @@
 "use client";
-/* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/label-has-associated-control, @next/next/no-img-element */
+import { sessionState } from "../server/session-state.mjs";
+import { relativeTime } from "./relative-time";
+/* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/label-has-associated-control */
 
 import { useOwnedReads } from "./owned-reads";
 import { request as api } from "./api-request";
-import { composedPrompt, useImageAttachments, type ImageAttachment } from "./image-attachments";
+import { AttachmentStrip, composedPrompt, useImageAttachments, type ImageAttachment } from "./image-attachments";
 import { useOwnedRead } from "./use-owned-read";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountUsageView } from "./account-usage";
@@ -44,8 +46,7 @@ type HomeMode = "sessions" | "worktrees";
 function sameTerminalView(left: TerminalView | null, right: TerminalView | null) { return terminalViewSignature(left) === terminalViewSignature(right); }
 
 function compactPath(path?: string | null) { return path ? path.replace(/^\/Users\/[^/]+/, "~") : "Directory unavailable"; }
-function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
-function sessionState(workspace: Workspace) { if (workspace.has_unread || workspace.status?.signals?.any_agent_needs_input) return { label: "Needs you", tone: "attention" }; if (workspace.status?.effective === "working" || workspace.status?.signals?.any_agent_running) return { label: "Working", tone: "working" }; if (workspace.status?.effective === "done") return { label: "Done", tone: "done" }; return { label: "Ready", tone: "ready" }; }
+
 function formatBytes(bytes = 0) { if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`; if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(0)} MB`; return `${(bytes / 1024 ** 3).toFixed(1)} GB`; }
 
 export default function Home() {
@@ -361,6 +362,11 @@ export function TerminalPanel(props: { workspace: Workspace; terminal: Terminal;
     props.onShortcuts(false);
     requestAnimationFrame(() => composerRef.current?.focus());
   }
+  function pasteImages(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const images = [...event.clipboardData.items].filter((item) => item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)).slice(0, 4 - props.attachments.length);
+    if (images.length) { event.preventDefault(); images.forEach(props.onImage); }
+  }
+
   return (
     <div className="terminal-panel">
       <section className="terminal-window">
@@ -378,10 +384,10 @@ export function TerminalPanel(props: { workspace: Workspace; terminal: Terminal;
             ))}</div> : <p className="shortcut-empty">No matching shortcut. Use <button type="button" onClick={() => chooseShortcut("/help")}>/help</button> for the active agent&apos;s full list.</p>}
           </div>
         )}
-        {props.attachments.length > 0 && <div className="attachment-strip">{props.attachments.map((image) => <div key={image.path}><img src={image.preview} alt={image.name} /><span>{image.name}</span><button type="button" aria-label={`Remove ${image.name}`} onClick={() => props.onRemoveImage(image.path)}>×</button></div>)}</div>}
-        <form className="composer compact-composer" onSubmit={props.onSubmit}><input ref={imageInputRef} className="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={(event) => { [...(event.currentTarget.files || [])].slice(0, 4 - props.attachments.length).forEach(props.onImage); event.currentTarget.value = ""; }} /><button type="button" className="attach-button" aria-label="Attach an image" disabled={props.readOnly || props.sending || props.attachments.length >= 4} onClick={() => imageInputRef.current?.click()}>＋</button><div className="composer-editor"><textarea ref={composerRef} aria-label="Terminal input" placeholder={props.readOnly ? "Use ••• to enable input" : "Message…"} value={props.draft} onChange={(event) => props.onDraft(event.target.value)} onPaste={(event) => { const images = [...event.clipboardData.items].filter((item) => item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)).slice(0, 4 - props.attachments.length); if (images.length) { event.preventDefault(); images.forEach(props.onImage); } }} disabled={props.readOnly || props.sending} rows={1} /><button type="button" className="queue-draft" aria-label={props.queueItems.length ? `Prompt queue, ${props.queueItems.length} waiting` : "Queue message"} disabled={props.readOnly || props.sending} onClick={() => props.draft.trim() || props.attachments.length ? props.onQueue() : setQueueOpen(true)}>⌛{props.queueItems.length > 0 && <b>{props.queueItems.length > 9 ? "9+" : props.queueItems.length}</b>}</button><button type="button" className="expand-writer" aria-label="Open large writing area" disabled={props.readOnly} onClick={() => setWritingMode(true)}>↗</button></div><button aria-label="Send now" disabled={props.readOnly || props.sending || (!props.draft.trim() && props.attachments.length === 0)}>{props.sending ? "…" : "↑"}</button></form>
+        <AttachmentStrip attachments={props.attachments} className="" onRemove={props.onRemoveImage} />
+        <form className="composer compact-composer" onSubmit={props.onSubmit}><input ref={imageInputRef} className="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={(event) => { [...(event.currentTarget.files || [])].slice(0, 4 - props.attachments.length).forEach(props.onImage); event.currentTarget.value = ""; }} /><button type="button" className="attach-button" aria-label="Attach an image" disabled={props.readOnly || props.sending || props.attachments.length >= 4} onClick={() => imageInputRef.current?.click()}>＋</button><div className="composer-editor"><textarea ref={composerRef} aria-label="Terminal input" placeholder={props.readOnly ? "Use ••• to enable input" : "Message…"} value={props.draft} onChange={(event) => props.onDraft(event.target.value)} onPaste={pasteImages} disabled={props.readOnly || props.sending} rows={1} /><button type="button" className="queue-draft" aria-label={props.queueItems.length ? `Prompt queue, ${props.queueItems.length} waiting` : "Queue message"} disabled={props.readOnly || props.sending} onClick={() => props.draft.trim() || props.attachments.length ? props.onQueue() : setQueueOpen(true)}>⌛{props.queueItems.length > 0 && <b>{props.queueItems.length > 9 ? "9+" : props.queueItems.length}</b>}</button><button type="button" className="expand-writer" aria-label="Open large writing area" disabled={props.readOnly} onClick={() => setWritingMode(true)}>↗</button></div><button aria-label="Send now" disabled={props.readOnly || props.sending || (!props.draft.trim() && props.attachments.length === 0)}>{props.sending ? "…" : "↑"}</button></form>
       </div>
-      {writingMode && <form className="writing-mode" onSubmit={(event) => { setWritingMode(false); props.onSubmit(event); }}><header><button type="button" onClick={() => setWritingMode(false)}>Done</button><strong>Write message</strong><button disabled={props.sending || (!props.draft.trim() && props.attachments.length === 0)}>{props.sending ? "…" : "Send"}</button></header><textarea autoFocus aria-label="Expanded terminal input" value={props.draft} onChange={(event) => props.onDraft(event.target.value)} onPaste={(event) => { const images = [...event.clipboardData.items].filter((item) => item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)).slice(0, 4 - props.attachments.length); if (images.length) { event.preventDefault(); images.forEach(props.onImage); } }} placeholder="Write your full message…" /><footer><button type="button" onClick={() => imageInputRef.current?.click()}>＋ Image</button><button type="button" disabled={props.sending || (!props.draft.trim() && props.attachments.length === 0)} onClick={() => { setWritingMode(false); props.onQueue(); }}>⌛ Queue</button><span>{props.draft.length.toLocaleString()} characters</span></footer></form>}
+      {writingMode && <form className="writing-mode" onSubmit={(event) => { setWritingMode(false); props.onSubmit(event); }}><header><button type="button" onClick={() => setWritingMode(false)}>Done</button><strong>Write message</strong><button disabled={props.sending || (!props.draft.trim() && props.attachments.length === 0)}>{props.sending ? "…" : "Send"}</button></header><textarea autoFocus aria-label="Expanded terminal input" value={props.draft} onChange={(event) => props.onDraft(event.target.value)} onPaste={pasteImages} placeholder="Write your full message…" /><footer><button type="button" onClick={() => imageInputRef.current?.click()}>＋ Image</button><button type="button" disabled={props.sending || (!props.draft.trim() && props.attachments.length === 0)} onClick={() => { setWritingMode(false); props.onQueue(); }}>⌛ Queue</button><span>{props.draft.length.toLocaleString()} characters</span></footer></form>}
       {queueOpen && <PromptQueueSheet items={props.queueItems} busy={props.sending} onClose={() => setQueueOpen(false)} onUpdate={props.onQueueUpdate} onMove={props.onQueueMove} onSend={props.onQueueSend} onRemove={props.onQueueRemove} />}
     </div>
   );

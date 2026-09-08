@@ -1,4 +1,5 @@
-import { chmod, mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { cleanupOldFiles } from "./temporary-file-cleanup.mjs";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -43,12 +44,6 @@ export class ImageAttachments {
   }
 
   async cleanup(maxAgeMs = 7 * 24 * 60 * 60 * 1_000) {
-    const entries = await readdir(this.directory).catch(() => []);
-    const cutoff = Date.now() - maxAgeMs;
-    await Promise.all(entries.map(async (name) => {
-      const path = join(this.directory, name);
-      const details = await stat(path).catch(() => null);
-      if (details?.isFile() && details.mtimeMs < cutoff) await unlink(path).catch(() => {});
-    }));
+    return cleanupOldFiles(this.directory, maxAgeMs);
   }
 }

@@ -1,4 +1,5 @@
-import { readFileSync, copyFileSync, chmodSync, constants } from "node:fs";
+import { dirname } from "node:path";
+import { readFileSync, copyFileSync, chmodSync, constants, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 // Recover only after preserving the exact damaged bytes. Permission/IO errors
@@ -18,4 +19,12 @@ export function readPrivateJson(path, fallback, valid = value => value !== null 
   chmodSync(backup, 0o600);
   onRecovery(backup);
   return structuredClone(fallback);
+}
+
+export function writePrivateJson(path, value) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, path);
+  chmodSync(path, 0o600);
 }

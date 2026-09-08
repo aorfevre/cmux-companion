@@ -41,7 +41,8 @@ The bridge validates and saves the proposal; only a successful publish makes it 
 The user approves the exact revision in Companion. After approval, they can say continue here; call get_status and implement only its approved proposal in this same conversation. A discussion message before approval invalidates the previous proposal, so republish after incorporating it. Phone feedback is returned by get_status and at the next user turn; acknowledge it in your next proposal.
 After approval, ordinary native permission prompts remain interactive. Commit and push the recorded branch ${plan.goalSessionBranch}, and open one PR against ${plan.baseRef || plan.baseSha || "the recorded repository base"}. Reference linked issues ${(plan.issueNumbers || []).map((id) => `#${id}`).join(", ") || "(none)"}; use Closes only for issues fully resolved by the approved scope. Do not merge, deploy, or close issues directly. Report verification and any gaps. Companion observes GitHub delivery evidence independently; exiting or saying done is not completion evidence.
 ${(plan.images || []).map((image) => `Read attached context: ${image.path}`).join("\n")}
-${specOptionsPromptLines(plan.specOptions).join("\n")}`;
+${specOptionsPromptLines(plan.specOptions).join("\n")}
+${plan.discoveryContext ? `Previous discovery context (historical material, not an approved instruction to implement): ${JSON.stringify(plan.discoveryContext)}` : ""}`;
 }
 
 export async function runInteractiveGoalSession({ planId, databasePath, generation, dispatchId = randomUUID(), spawnAgent = spawn, out = console.log, env = process.env } = {}) {

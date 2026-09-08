@@ -10,91 +10,10 @@ import { BottomNav, HomeModeSwitch, InboxView, LastUpdateStamp, ManagedGoalContr
 import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { WorktreeDashboardView } from "../app/worktree-dashboard";
 import { WorktreePlannerSheet } from "../app/worktree-planner";
-import { GitHubIssuePlannerSheet } from "../app/github-issue-planner";
+import { GitHubIssuePicker } from "../app/github-issue-picker";
 import { DeploymentHealth } from "../app/deployment-health";
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
-
-describe("GitHub issue topic planner", () => {
-  test("shows live GitHub analysis milestones while the request is running", async () => {
-    const streams: { url: string; closed: boolean; emit: (data: unknown) => void }[] = [];
-    class FakeEventSource {
-      onmessage: ((event: { data: string }) => void) | null = null;
-      onerror: (() => void) | null = null;
-      index: number;
-      constructor(public url: string) {
-        this.index = streams.length;
-        streams.push({ url, closed: false, emit: (data) => this.onmessage?.({ data: JSON.stringify(data) }) });
-      }
-      close() { streams[this.index].closed = true; }
-    }
-    vi.stubGlobal("EventSource", FakeEventSource);
-    let release: (value: Response) => void = () => {};
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      void input; void init;
-      return new Promise<Response>((resolve) => { release = resolve; });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<GitHubIssuePlannerSheet repository={{ id: "repository12345678", name: "app" }} onClose={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
-    const sheet = await screen.findByRole("dialog", { name: "Plan GitHub issues" });
-    await waitFor(() => assert.equal(streams.length, 1));
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    assert.match(body.traceId, /^[0-9a-f-]{36}$/);
-    assert.ok(streams[0].url.endsWith(`/api/worktree-plans/progress/${body.traceId}`));
-
-    streams[0].emit({ k: "phase", t: "Fetching repository details and open issues…" });
-    streams[0].emit({ k: "phase", t: "Found 3 open issues" });
-    streams[0].emit({ k: "phase", t: "Grouping 3 issues by outcome and implementation overlap…" });
-    assert.ok(await within(sheet).findByText("Grouping 3 issues by outcome and implementation overlap…"));
-    assert.ok(within(sheet).getByText("Found 3 open issues"));
-    assert.ok(within(sheet).getByRole("status"));
-
-    release(new Response(JSON.stringify({ analysisId: null, repository: { nameWithOwner: "acme/app", url: null, issuesUrl: null }, issues: [], topics: [], analyzedAt: new Date().toISOString() }), { status: 200 }));
-    assert.ok(await within(sheet).findByText("No open issues"));
-    assert.equal(streams[0].closed, true);
-  });
-
-  test("groups tickets, captures clarification, creates goal plans, and launches every ready topic", async () => {
-    const analysis = {
-      analysisId: "analysis-1", repository: { nameWithOwner: "acme/app", url: "https://github.com/acme/app", issuesUrl: "https://github.com/acme/app/issues" }, analyzedAt: new Date().toISOString(),
-      issues: [
-        { number: 54, title: "Restore focus", labels: ["editor"], url: "https://github.com/acme/app/issues/54", updatedAt: "2026-09-01" },
-        { number: 55, title: "Caret visibility", labels: ["editor"], url: "https://github.com/acme/app/issues/55", updatedAt: "2026-09-01" },
-        { number: 57, title: "Diagnostics", labels: ["backend"], url: "https://github.com/acme/app/issues/57", updatedAt: "2026-09-01" },
-      ],
-      topics: [
-        { id: "topic-1", title: "Editor reliability", goal: "Make editing reliable", rationale: "Shared editor files", issueNumbers: [54, 55], questions: [{ id: "question-1", text: "Which browsers?", options: ["All", "Safari"] }], acceptanceCriteria: [], overlapRisk: "Both touch the editor", dependencies: [] },
-        { id: "topic-2", title: "Correction observability", goal: "Add diagnostics", rationale: "Independent backend work", issueNumbers: [57], questions: [], acceptanceCriteria: [], overlapRisk: "low", dependencies: [] },
-      ],
-    };
-    const plan = (id: string, title: string, branch: string) => ({ planId: id, repositoryId: "repository12345678", goal: title, round: 1, status: "ready", deliveryMode: "combined", questions: [], tasks: [{ id: "t1", title, branch, prompt: "Do it", agent: "codex", agentReason: "Codex has headroom" }] });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/analyze")) return new Response(JSON.stringify(analysis), { status: 200 });
-      if (url.endsWith("/prepare")) return new Response(JSON.stringify({ analysisId: "analysis-1", results: [
-        { topicId: "topic-1", title: "Editor reliability", issueNumbers: [54, 55], status: "planned", plan: plan("plan-1", "Editor task", "feature/editor") },
-        { topicId: "topic-2", title: "Correction observability", issueNumbers: [57], status: "planned", plan: plan("plan-2", "Diagnostics task", "feature/diagnostics") },
-      ] }), { status: 200 });
-      if (url.endsWith("/launch")) return new Response(JSON.stringify({ requested: 2, launchedTopics: 2, launchedWorktrees: 2, results: [{ planId: "plan-1", status: "launched" }, { planId: "plan-2", status: "launched" }] }), { status: 200 });
-      throw new Error(`Unexpected ${url} ${init?.method}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const launched = vi.fn(async () => {});
-    render(<GitHubIssuePlannerSheet repository={{ id: "repository12345678", name: "app" }} onClose={() => {}} onLaunched={launched} onNotice={() => {}} />);
-    const sheet = await screen.findByRole("dialog", { name: "Plan GitHub issues" });
-    assert.ok(await within(sheet).findByText("Editor reliability"));
-    await userEvent.click(within(sheet).getByRole("button", { name: "All" }));
-    await userEvent.click(within(sheet).getByRole("button", { name: "Create 2 goal plans" }));
-    assert.ok(await within(sheet).findByText("Editor task"));
-    assert.ok(within(sheet).getByText("Diagnostics task"));
-    await userEvent.click(within(sheet).getByRole("button", { name: "Launch 2 topics" }));
-    assert.ok(await within(sheet).findByText("2 topics in flight"));
-    assert.equal(launched.mock.calls.length, 1);
-    const prepareCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/prepare"));
-    assert.match(String(prepareCall?.[1]?.body), /"question-1":"All"/);
-  });
-});
 
 describe("contextual mobile features", () => {
   test("keeps permanent navigation focused on frequent mobile destinations", async () => {
@@ -364,7 +283,7 @@ describe("contextual mobile features", () => {
     assert.ok(within(launchedGoals).getByText("Ship prompt analytics"));
     await userEvent.click(within(launchedGoals).getByRole("button", { name: "View Ship prompt analytics" }));
     const launchedPlanner = await screen.findByRole("dialog", { name: "Plan a goal" });
-    assert.ok(within(launchedPlanner).getByText("Measure prompt quality"));
+    assert.ok(within(launchedPlanner).getByRole("heading", { name: "Measure prompt quality" }));
     assert.ok(within(launchedPlanner).getByText("This goal was already launched. The saved plan is read-only."));
     await userEvent.click(within(launchedPlanner).getByRole("button", { name: "Close goal planner sheet" }));
     await userEvent.click(within(launchedGoals).getByRole("button", { name: "Delete Ship prompt analytics" }));
@@ -421,7 +340,7 @@ describe("contextual mobile features", () => {
 
     // The deep link resolves the goal independently of board selection.
     const planner = await screen.findByRole("dialog", { name: "Plan a goal" });
-    assert.ok(await within(planner).findByRole("region", { name: "Planning in progress" }));
+    assert.ok(await within(planner).findByRole("region", { name: "Continue discovery" }));
     assert.equal(new URLSearchParams(location.search).get("plan"), "plan-running");
     await userEvent.click(within(planner).getByRole("button", { name: "Close goal planner sheet" }));
 
@@ -635,27 +554,6 @@ describe("worktree goal planner", () => {
   ];
   const readyDraft = { planId: "plan-1", repositoryId: "repo-1", goal: "Ship the planner", round: 2, status: "ready", questions: [], tasks };
 
-  // Opens a saved ready plan and presses Launch. The sheet lives inside a
-  // harness that unmounts it on close, exactly as the dashboard does, so a
-  // closed sheet is observable as a dialog that is gone. The launch route
-  // answers like the real one: 202 with the plan id and the in-flight marker.
-  async function launchReadyPlan(launchResponse: { status: number; body: unknown }, notice: (message: string) => void = () => {}) {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      void init;
-      if (url.endsWith("/launch")) return new Response(JSON.stringify(launchResponse.body), { status: launchResponse.status });
-      return new Response(JSON.stringify(readyDraft), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    function Harness() {
-      const [open, setOpen] = useState(true);
-      return open ? <WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => setOpen(false)} onNotice={notice} /> : null;
-    }
-    render(<Harness />);
-    await userEvent.click(await screen.findByRole("button", { name: "Launch 2 sessions" }));
-    return fetchMock;
-  }
-
   // Submitting a goal is fire and forget. The companion answers as soon as the
   // plan row exists, so the sheet has nothing left to show and the board takes
   // the goal from there.
@@ -665,10 +563,10 @@ describe("worktree goal planner", () => {
     const notice = vi.fn();
     render(<WorktreePlannerSheet repository={repository} onClose={close} onNotice={notice} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
 
     await waitFor(() => assert.equal(close.mock.calls.length, 1));
-    assert.match(String(notice.mock.calls[0][0]), /Planning this goal on companion/);
+    assert.match(String(notice.mock.calls[0][0]), /Goal session started in cmux for companion/);
   });
 
   // The submit fails before any plan row exists, so this sheet is the only
@@ -678,91 +576,20 @@ describe("worktree goal planner", () => {
     const close = vi.fn();
     render(<WorktreePlannerSheet repository={repository} onClose={close} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
 
     assert.ok(await screen.findByText("Unknown repository"));
     assert.equal(close.mock.calls.length, 0);
     assert.equal((screen.getByRole("textbox", { name: "Goal" }) as HTMLTextAreaElement).value, "Ship the planner");
   });
 
-  test("shows, changes, and submits the planner engine and derived reviewer", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
-      if (url === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
-      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
-
-    const engine = screen.getByRole("combobox", { name: "Planner engine" }) as HTMLSelectElement;
-    const model = screen.getByRole("combobox", { name: "Planner model" }) as HTMLSelectElement;
-    const effort = screen.getByRole("combobox", { name: "Planner effort" }) as HTMLSelectElement;
-    const reviewer = screen.getByRole("checkbox", { name: "Add a reviewer pass" }) as HTMLInputElement;
-    assert.equal(engine.value, "codex");
-    assert.equal(model.value, "gpt-6-astra");
-    assert.equal(effort.value, "default");
-    assert.equal(reviewer.checked, true);
-    assert.ok(screen.getByText("Codex (xcodex) · Codex Astra"));
-    assert.ok(within(model).getByRole("option", { name: "Codex Astra" }));
-    await userEvent.selectOptions(model, "default");
-    assert.ok(screen.getByText("Codex (xcodex) · CCS default model"));
-    await userEvent.selectOptions(engine, "claude");
-    assert.equal(model.value, "default");
-    assert.ok(Array.from(model.options).some((option) => option.value === model.value));
-    assert.ok(screen.getByText("Claude Code (xclaude) · CCS default model"));
-    assert.ok(within(model).getByRole("option", { name: "Opus 5" }));
-    assert.ok(within(model).getByRole("option", { name: "Fable 5.1" }));
-
-    await userEvent.selectOptions(engine, "codex");
-    assert.equal(model.value, "gpt-6-astra");
-    assert.ok(within(model).getByRole("option", { name: "GPT-5.6 Sol" }));
-    assert.equal(within(model).queryByRole("option", { name: "Opus 5" }), null);
-    await userEvent.selectOptions(model, "gpt-5.6-terra");
-    await userEvent.selectOptions(effort, "high");
-    assert.ok(screen.getByText("Codex (xcodex) · GPT-5.6 Terra"));
-    assert.ok(screen.getByText("Reviewer: Claude Code (xclaude) · Fable 5.1 · xhigh effort"));
-
-    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
-    assert.deepEqual(body.engine, { provider: "codex", model: "gpt-5.6-terra", effort: "high", reviewer: true });
-  });
-
-  test("defaults code review to Fable and submits a separate provider model", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(readyDraft), { status: 201 });
-      return new Response(JSON.stringify({ plans: [] }), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
-    const model = screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement;
-    const provider = screen.getByRole("combobox", { name: "Code-review reviewer" }) as HTMLSelectElement;
-    assert.equal(model.value, "claude-fable-5-1");
-    assert.equal(model.selectedOptions[0].textContent, "Fable 5.1");
-    assert.equal(provider.value, "claude");
-    await userEvent.selectOptions(provider, "codex");
-    assert.equal(within(model).queryByRole("option", { name: "Fable 5.1" }), null);
-    assert.ok(Array.from(model.options).some((option) => option.value === model.value));
-    await userEvent.selectOptions(model, "gpt-6-astra");
-    assert.equal((screen.getByRole("checkbox", { name: "Code review" }) as HTMLInputElement).checked, true);
-    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Review this goal");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-    const body = JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/worktree-plans" && init?.method === "POST")?.[1]?.body));
-    assert.deepEqual(body.reviewOptions, { codeReview: true, reviewer: "codex", reviewerModel: "gpt-6-astra" });
-    await userEvent.click(screen.getByRole("button", { name: /New goal/ }));
-    assert.equal((screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement).value, "claude-fable-5-1");
-    assert.equal((screen.getByRole("checkbox", { name: "Code review" }) as HTMLInputElement).checked, true);
-  });
-
   const formChecks = {
-    "Add a reviewer pass": true, "Code review": true,
     "Unit tests": true, "End-to-end tests": true, "Edge cases": true, "Refactor review": true,
     "Screen wireframes": false, "Flowcharts": false,
   };
   const defaultSpecOptions = { unitTests: true, e2eTests: true, edgeCases: true, refactorPass: true, screenMocks: false, flowcharts: false };
   const changedSpecOptions = { unitTests: false, e2eTests: false, edgeCases: true, refactorPass: false, screenMocks: true, flowcharts: true };
-  const changedChecks = { ...formChecks, "Add a reviewer pass": false, "Code review": false, "Unit tests": false, "End-to-end tests": false, "Refactor review": false, "Screen wireframes": true, "Flowcharts": true };
+  const changedChecks = { ...formChecks, "Unit tests": false, "End-to-end tests": false, "Refactor review": false, "Screen wireframes": true, "Flowcharts": true };
   function assertFormChecks(expected = formChecks) {
     for (const [name, checked] of Object.entries(expected)) {
       assert.equal((screen.getByRole("checkbox", { name }) as HTMLInputElement).checked, checked, name);
@@ -775,7 +602,7 @@ describe("worktree goal planner", () => {
     }
   }
 
-  for (const [button, endpoint] of [["Plan this goal", "/api/worktree-plans"], ["Start goal session", "/api/goal-sessions"]]) {
+  for (const [button, endpoint] of [["Start goal session", "/api/goal-sessions"]]) {
     for (const changed of [false, true]) {
       test(`${button} submits ${changed ? "explicit overrides after a failed submit" : "untouched review and spec defaults"} and resets on New goal`, async () => {
         let fail = changed;
@@ -791,15 +618,12 @@ describe("worktree goal planner", () => {
         assertFormChecks();
         if (changed) {
           await changeFormChecks();
-          await userEvent.selectOptions(screen.getByRole("combobox", { name: "Code-review reviewer" }), "codex");
-          await userEvent.selectOptions(screen.getByRole("combobox", { name: "Code-review model" }), "gpt-6-astra");
         }
         await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
         await userEvent.click(screen.getByRole("button", { name: button }));
         if (changed) {
           assert.ok(await screen.findByText("Planner unavailable"));
           assertFormChecks(changedChecks);
-          assert.equal((screen.getByRole("combobox", { name: "Code-review model" }) as HTMLSelectElement).value, "gpt-6-astra");
           fail = false;
           await userEvent.click(screen.getByRole("button", { name: button }));
         }
@@ -807,9 +631,9 @@ describe("worktree goal planner", () => {
         assert.equal(posts.length, changed ? 2 : 1);
         for (const [, init] of posts) {
           const body = JSON.parse(String(init?.body));
-          assert.deepEqual(body.engine, { provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: !changed });
+          assert.deepEqual(body.engine, { provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
           assert.deepEqual(body.specOptions, changed ? changedSpecOptions : defaultSpecOptions);
-          assert.deepEqual(body.reviewOptions, { codeReview: !changed, reviewer: changed ? "codex" : "claude", reviewerModel: changed ? "gpt-6-astra" : "claude-fable-5-1" });
+          assert.deepEqual(body.reviewOptions, { codeReview: false, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
         }
         await userEvent.click(await screen.findByRole("button", { name: "← New goal" }));
         assertFormChecks();
@@ -826,7 +650,7 @@ describe("worktree goal planner", () => {
     render(<Harness />);
     await changeFormChecks();
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
     await userEvent.click(await screen.findByRole("button", { name: "← New goal" }));
     assertFormChecks();
     assert.equal((screen.getByRole("textbox", { name: "Goal" }) as HTMLTextAreaElement).value, "");
@@ -846,7 +670,7 @@ describe("worktree goal planner", () => {
     vi.stubGlobal("fetch", fetchMock);
     const resolved = vi.fn();
     render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onPlanResolved={resolved} onClose={() => {}} onNotice={() => {}} />);
-    assert.ok(await screen.findByRole("button", { name: "Launch 2 sessions" }));
+    assert.ok(await screen.findByRole("button", { name: "Continue discovery" }));
     assert.equal(screen.queryByRole("region", { name: "Spec depth" }), null);
     assert.equal(screen.queryByRole("checkbox", { name: "Add a reviewer pass" }), null);
     assert.deepEqual(resolved.mock.calls[0][0], saved);
@@ -909,7 +733,7 @@ describe("worktree goal planner", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(artifactDraft), { status: 201 })));
     render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship billing safely");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
 
     const passport = await screen.findByRole("region", { name: "Goal passport" });
     await userEvent.click(within(passport).getByRole("tab", { name: "Checks" }));
@@ -957,7 +781,7 @@ describe("worktree goal planner", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(markdownDraft), { status: 201 })));
     render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
 
     // The markers are structure, not literal text: a heading is a heading and a
     // list is a list, so no "##" or "-" survives into the rendered output.
@@ -1002,7 +826,7 @@ describe("worktree goal planner", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(passportDraft), { status: 201 })));
     render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship billing safely");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
 
     const passport = await screen.findByRole("region", { name: "Goal passport" });
     assert.ok(within(passport).getByText("Operators can ship billing safely"));
@@ -1023,7 +847,7 @@ describe("worktree goal planner", () => {
     assert.ok(within(passport).getByText("planned"));
     assert.ok(within(passport).getByText("Limitation: Safari was not available"));
     assert.ok(within(passport).getByText("Outside ownership: README.md"));
-    assert.ok(screen.getByRole("button", { name: "Start workflow · 1 session in wave 1" }));
+    assert.ok(screen.getByRole("button", { name: "Continue discovery" }));
   });
 
   test("keeps an approval summary and dependency delivery plan concise until details are requested", async () => {
@@ -1050,7 +874,7 @@ describe("worktree goal planner", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(approvalDraft), { status: 201 })));
     render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Make approval clearer");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
 
     const passport = await screen.findByRole("region", { name: "Goal passport" });
     assert.equal(within(passport).getByRole("tab", { name: "Overview" }).getAttribute("aria-selected"), "true");
@@ -1097,33 +921,6 @@ describe("worktree goal planner", () => {
 
   });
 
-  test("rejects a plan with written feedback and starts a fresh analysis", async () => {
-    const revised = { ...readyDraft, round: 3, running: true, tasks: [] };
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/feedback") && init?.method === "POST") return new Response(JSON.stringify(revised), { status: 202 });
-      return new Response(JSON.stringify(readyDraft), { status: 201 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
-    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-
-    // The rejection throws away every task, so it hides behind one button and
-    // stays disabled until the reviewer says what is wrong.
-    await userEvent.click(await screen.findByRole("button", { name: "This plan is wrong" }));
-    const send = screen.getByRole("button", { name: "Analyse this goal again" });
-    assert.equal((send as HTMLButtonElement).disabled, true);
-    await userEvent.type(screen.getByRole("textbox", { name: "What is wrong with this split?" }), "Tasks 1 and 2 share a file.");
-    await userEvent.click(send);
-
-    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/feedback"));
-    assert.ok(call);
-    assert.deepEqual(JSON.parse(String(call?.[1]?.body)), { text: "Tasks 1 and 2 share a file.", background: true });
-    // The new round is a background round, so the sheet shows it planning.
-    assert.ok(await screen.findByRole("region", { name: "Planning in progress" }));
-  });
-
   test("views launched goals without offering edits or a second launch", async () => {
     const now = new Date().toISOString();
     const summary = { planId: "plan-launched", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the finished flow", status: "launched", stage: "ready", round: 2, taskCount: 2, launchedCount: 2, createdAt: now, updatedAt: now, launchedAt: now };
@@ -1139,7 +936,7 @@ describe("worktree goal planner", () => {
     assert.ok(await screen.findByText("This goal was already launched. The saved plan is read-only."));
     assert.equal(screen.queryByRole("button", { name: "Launch 2 sessions" }), null);
     assert.equal(screen.queryByRole("button", { name: "Remove Build the sheet" }), null);
-    assert.equal((screen.getByRole("button", { name: "Use Codex for Build the sheet" }) as HTMLButtonElement).disabled, true);
+    assert.equal(screen.queryByRole("button", { name: "Use Codex for Build the sheet" }), null);
     assert.ok(screen.getByRole("button", { name: "← New goal" }));
   });
 
@@ -1229,72 +1026,6 @@ describe("worktree goal planner", () => {
     assert.ok(within(rows).getByText("Waiting"));
   });
 
-  test("walks a goal through questions into a plan and launches every task", async () => {
-    const questionDraft = { planId: "plan-1", repositoryId: "repo-1", goal: "Ship the planner", round: 1, status: "questions", questions: [{ id: "question-1", text: "Which surface comes first?", options: ["Mobile", "Desktop"] }], tasks: [] };
-    const toggled = { ...readyDraft, tasks: [{ ...tasks[0], agent: "claude", agentReason: "You picked Claude" }, tasks[1]] };
-    const close = vi.fn();
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === "/api/worktree-plans" && init?.method === "POST") return new Response(JSON.stringify(questionDraft), { status: 201 });
-      if (url === "/api/worktree-plans/plan-1/answers") return new Response(JSON.stringify(readyDraft), { status: 200 });
-      if (url === "/api/worktree-plans/plan-1" && init?.method === "PATCH") return new Response(JSON.stringify(toggled), { status: 200 });
-      if (url === "/api/worktree-plans/plan-1/launch") return new Response(JSON.stringify({ planId: "plan-1", launching: true }), { status: 202 });
-      return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={close} onNotice={() => {}} />);
-    const goal = screen.getByRole("textbox", { name: "Goal" });
-    assert.equal(goal.getAttribute("maxlength"), "4000");
-    assert.equal((screen.getByRole("button", { name: "Plan this goal" }) as HTMLButtonElement).disabled, true);
-    await userEvent.type(goal, "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-    assert.ok(await screen.findByText("Round 1"));
-    await userEvent.click(screen.getByRole("button", { name: "Answer Which surface comes first? with Mobile" }));
-    assert.equal((screen.getByRole("textbox", { name: "Which surface comes first?" }) as HTMLTextAreaElement).value, "Mobile");
-    assert.ok(screen.getByRole("button", { name: "Skip questions" }));
-    await userEvent.click(screen.getByRole("button", { name: "Answer" }));
-    assert.ok(await screen.findByText("Build the sheet"));
-    assert.ok(screen.getByText("feature/planner-routes"));
-    assert.ok(screen.getByText("UI work suits Codex"));
-    await userEvent.click(screen.getByRole("button", { name: "Use Claude for Build the sheet" }));
-    assert.ok(await screen.findByText("You picked Claude"));
-    await userEvent.click(screen.getByRole("button", { name: "Launch 2 sessions" }));
-    await waitFor(() => assert.equal(close.mock.calls.length, 2));
-    const answerCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/answers"));
-    assert.match(String(answerCall?.[1]?.body), /"id":"question-1"/);
-    assert.match(String(answerCall?.[1]?.body), /"text":"Mobile"/);
-    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PATCH");
-    assert.match(String(patchCall?.[1]?.body), /"agent":"claude"/);
-    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([url]) => String(url));
-    assert.deepEqual(posts, ["/api/worktree-plans", "/api/worktree-plans/plan-1/answers", "/api/worktree-plans/plan-1/launch"]);
-  });
-
-  // Launching is fire and forget: the companion answers 202 as soon as it
-  // accepts the work, so the sheet closes and a push notification reports the
-  // outcome. No progress paragraph and no launch-result screen belong here.
-  test("a launched goal closes the sheet at once with a notice", async () => {
-    const notice = vi.fn();
-    const fetchMock = await launchReadyPlan({ status: 202, body: { planId: "plan-1", launching: true } }, notice);
-
-    await waitFor(() => assert.equal(screen.queryByRole("dialog", { name: "Plan a goal" }), null));
-    assert.match(String(notice.mock.calls[0][0]), /Launching this goal/);
-    const launchCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/launch"));
-    assert.deepEqual(JSON.parse(String(launchCall?.[1]?.body)), { background: true });
-    assert.equal(screen.queryByText(/Creating worktrees and starting sessions/), null);
-    assert.equal(screen.queryByText("Launch result"), null);
-    assert.equal(screen.queryByRole("button", { name: "Launching…" }), null);
-  });
-
-  // The launch is refused before any worktree exists, so this sheet is the only
-  // place that reason can be read. Closing it would hide it.
-  test("a refused launch keeps the sheet open with its reason", async () => {
-    await launchReadyPlan({ status: 409, body: { error: "This goal is launching right now" } });
-
-    assert.ok(await screen.findByText("This goal is launching right now"));
-    assert.ok(screen.getByRole("dialog", { name: "Plan a goal" }));
-    assert.ok(screen.getByRole("button", { name: "Launch 2 sessions" }));
-  });
-
   // jsdom has no EventSource, so the sheet gets a fake it can drive by hand.
   function fakeEventSource() {
     const opened: { url: string; closed: boolean; emit: (data: unknown) => void }[] = [];
@@ -1312,62 +1043,6 @@ describe("worktree goal planner", () => {
     return opened;
   }
 
-  test("shows the live steps while a plan is being made", async () => {
-    const streams = fakeEventSource();
-    const runningDraft = { ...readyDraft, round: 0, status: "questions", questions: [], tasks: [], running: true };
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      void init;
-      if (String(input) === "/api/worktree-plans") return new Response(JSON.stringify(runningDraft), { status: 202 });
-      return new Response(JSON.stringify(readyDraft), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
-    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-
-    // The round runs on the companion, so the request carries the background
-    // flag and the stream keys on the plan id it answered with.
-    const body = JSON.parse(String(fetchMock.mock.calls.find(([url]) => String(url) === "/api/worktree-plans")?.[1]?.body));
-    assert.equal(body.background, true);
-    await waitFor(() => assert.equal(streams.length, 1));
-    assert.ok(streams[0].url.endsWith("/api/worktree-plans/progress/plan-1"));
-
-    streams[0].emit({ k: "tool", t: "Read server/app.mjs" });
-    streams[0].emit({ k: "text", t: "Thinking…" });
-    assert.ok(await screen.findByText("Read server/app.mjs"));
-    assert.ok(screen.getByText("Thinking…"));
-
-    // The "done" frame makes the sheet reload the plan, which now holds tasks.
-    streams[0].emit({ k: "done" });
-    assert.ok(await screen.findByText("Build the sheet"));
-    assert.equal(screen.queryByText("Read server/app.mjs"), null);
-  });
-
-  test("lets the sheet close while its round keeps running", async () => {
-    const streams = fakeEventSource();
-    const runningDraft = { ...readyDraft, round: 0, status: "questions", questions: [], tasks: [], running: true };
-    let closed = false;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input) === "/api/worktree-plans") return new Response(JSON.stringify(runningDraft), { status: 202 });
-      return new Response(JSON.stringify(runningDraft), { status: 200 });
-    }));
-    const view = render(<WorktreePlannerSheet repository={repository} onClose={() => { closed = true; }} onNotice={() => {}} />);
-    await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-
-    const panel = await screen.findByRole("region", { name: "Planning in progress" });
-    assert.ok(within(panel).getByText(/A notification arrives when this one is ready/));
-    await userEvent.click(within(panel).getByRole("button", { name: "Close and keep planning" }));
-    assert.equal(closed, true);
-
-    // The stream belongs to the sheet, not to the round. Unmounting closes it
-    // and leaves the round to finish on the companion.
-    await waitFor(() => assert.equal(streams.length, 1));
-    assert.equal(streams[0].closed, false);
-    view.unmount();
-    assert.equal(streams[0].closed, true);
-  });
-
   test("offers to start the round again when it stopped without a result", async () => {
     fakeEventSource();
     const stalledSummary = { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", status: "draft", stage: "questions", round: 0, taskCount: 0, launchedCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), launchedAt: null };
@@ -1375,7 +1050,7 @@ describe("worktree goal planner", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [stalledSummary] }), { status: 200 });
-      if (url.endsWith("/run")) return new Response(JSON.stringify({ ...stalledDraft, running: true }), { status: 202 });
+      if (url.endsWith("/continue")) return new Response(JSON.stringify({ ...stalledDraft, workflow: "goal_session", planId: "successor", goalSessionWorkspaceId: "native" }), { status: 200 });
       return new Response(JSON.stringify(stalledDraft), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1383,9 +1058,9 @@ describe("worktree goal planner", () => {
 
     const panel = await screen.findByRole("region", { name: "Planning stopped" });
     assert.ok(within(panel).getByText(/A companion restart does this/));
-    await userEvent.click(within(panel).getByRole("button", { name: "Plan this goal again" }));
-    await screen.findByRole("region", { name: "Planning in progress" });
-    assert.ok(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/worktree-plans/plan-1/run")));
+    await userEvent.click(screen.getByRole("button", { name: "Continue discovery" }));
+    await waitFor(() => assert.ok(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/continue"))));
+    assert.ok(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/goal-sessions/plan-1/continue")));
   });
 
   // A timeout is not a restart. Blaming one for the other sent a user looking
@@ -1408,7 +1083,7 @@ describe("worktree goal planner", () => {
     // The wrong explanation must be gone, not merely accompanied by the right one.
     assert.equal(within(panel).queryByText(/A companion restart does this/), null);
     // The goal is still recoverable either way.
-    assert.ok(within(panel).getByRole("button", { name: "Plan this goal again" }));
+    assert.ok(screen.getByRole("button", { name: "Continue discovery" }));
   });
 
   // A round that failed seconds ago is still in the run registry, which is
@@ -1442,8 +1117,8 @@ describe("worktree goal planner", () => {
     const pasted = new File(["image"], "goal.png", { type: "image/png" });
     fireEvent.paste(goal, { clipboardData: { items: [{ type: "image/png", getAsFile: () => pasted }] } });
     assert.ok(await screen.findByRole("img", { name: "goal.png" }));
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-    const planCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/worktree-plans");
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
+    const planCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/goal-sessions");
     assert.match(String(planCall?.[1]?.body), /"images":\[\{"path":"\/attachments\/goal.png","name":"goal.png"\}\]/);
   });
 
@@ -1462,8 +1137,8 @@ describe("worktree goal planner", () => {
     assert.ok(await screen.findByRole("img", { name: "goal.png" }));
     await userEvent.click(screen.getByRole("button", { name: "Remove goal.png" }));
     assert.equal(screen.queryByRole("img", { name: "goal.png" }), null);
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
-    const planCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/worktree-plans");
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
+    const planCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/goal-sessions");
     assert.match(String(planCall?.[1]?.body), /"images":\[\]/);
   });
 
@@ -1479,7 +1154,7 @@ describe("worktree goal planner", () => {
     await userEvent.type(goal, "Ship the planner");
     fireEvent.paste(goal, { clipboardData: { items: [{ type: "image/png", getAsFile: () => new File(["image"], "goal.png", { type: "image/png" }) }] } });
     assert.ok(await screen.findByRole("img", { name: "goal.png" }));
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
     assert.ok(await screen.findByText("Build the sheet"));
     const panel = screen.getByLabelText("Your goal and attachments").closest("details") as HTMLElement;
     assert.ok(panel);
@@ -1493,7 +1168,7 @@ describe("worktree goal planner", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...readyDraft, images: [{ path: "/attachments/old.png", name: "old.png" }] }), { status: 201 })));
     render(<WorktreePlannerSheet repository={repository} onClose={() => {}} onNotice={() => {}} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Goal" }), "Ship the planner");
-    await userEvent.click(screen.getByRole("button", { name: "Plan this goal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start goal session" }));
     const panel = (await screen.findByLabelText("Your goal and attachments")).closest("details") as HTMLElement;
     assert.ok(panel);
     assert.ok(within(panel).getByText("old.png"));
@@ -2620,241 +2295,6 @@ describe("fresh branch recovery", () => {
   }
 });
 
-// T2 · AC-1, AC-3, AC-9, AC-10. Questioning a Delivery Contract is the one
-// planner action that must leave the contract alone. Every test here therefore
-// asserts the contract and the task titles as well as the thread.
-describe("questioning a delivery contract", () => {
-  const repository = { id: "repo-1", name: "companion" };
-  const at = "2026-09-05T09:00:00.000Z";
-  const tasks = [
-    { id: "task-1", title: "Build the sheet", branch: "feature/planner-sheet", prompt: "Build the planner sheet.", agent: "codex", agentReason: "UI work suits Codex", criterionIds: ["AC-1"] },
-    { id: "task-2", title: "Wire the routes", branch: "feature/planner-routes", prompt: "Wire the planner routes.", agent: "claude", agentReason: "Server work suits Claude", criterionIds: ["AC-1"] },
-  ];
-  const spec = {
-    version: 2, outcome: "A questioned contract stays the same contract",
-    inScope: ["The goal sheet"], nonGoals: [], constraints: [], assumptions: [], risks: [],
-    acceptanceCriteria: [{ id: "AC-1", text: "The thread is durable", verification: "npm run test:ui" }],
-  };
-  const readiness = { ready: true, errors: [], warnings: [], waves: [["task-1"], ["task-2"]], coverage: [{ criterionId: "AC-1", taskIds: ["task-1", "task-2"] }] };
-  const answered = { question: "Does task 2 cover the migration?", answer: "Yes.\nIt owns server/migrate.mjs.", contractImpact: "none", suggestion: "", round: 2, createdAt: at };
-
-  function readyDetail(extra: Record<string, unknown> = {}) {
-    return { planId: "plan-1", repositoryId: "repo-1", repositoryName: "companion", goal: "Ship the planner", round: 2, status: "ready", stage: "ready", planStatus: "draft", boardState: "waiting_for_dev", questions: [], tasks, spec, readiness, contractVersion: 2, createdAt: at, updatedAt: at, launchedAt: null, ...extra };
-  }
-
-  // jsdom has no EventSource. The sheet gets one it can drive by hand, so the
-  // "done" frame that ends the discussion round is a deliberate step.
-  function fakeEventSource() {
-    const opened: { url: string; closed: boolean; emit: (data: unknown) => void }[] = [];
-    class FakeEventSource {
-      onmessage: ((event: { data: string }) => void) | null = null;
-      onerror: (() => void) | null = null;
-      index: number;
-      constructor(public url: string) {
-        opened.push({ url, closed: false, emit: (data) => this.onmessage?.({ data: JSON.stringify(data) }) });
-        this.index = opened.length - 1;
-      }
-      close() { opened[this.index].closed = true; }
-    }
-    vi.stubGlobal("EventSource", FakeEventSource);
-    return opened;
-  }
-
-  // AC-1. The whole arc: an existing thread, an asked question, the running
-  // 202 that carries no answer, the streamed end, and the reloaded answer. The
-  // contract outcome and both task titles must survive every step.
-  test("asks a question and shows the answer without changing the contract", async () => {
-    const streams = fakeEventSource();
-    const asked = { question: "Which task owns the CSS?", answer: "", contractImpact: "none", suggestion: "", round: 2, createdAt: at };
-    let answeredYet = false;
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/discuss") && init?.method === "POST") {
-        answeredYet = true;
-        // The real route answers 202 with the public draft and no discussion
-        // field, because no answer exists yet.
-        return new Response(JSON.stringify(readyDetail({ running: true, runStage: "discussing" })), { status: 202 });
-      }
-      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
-      return new Response(JSON.stringify(readyDetail({ discussion: answeredYet ? [answered, { ...asked, answer: "app/features.css belongs to task 1." }] : [answered] })), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
-
-    const region = await screen.findByRole("region", { name: "Question this plan" });
-    assert.ok(within(region).getByText("Does task 2 cover the migration?"));
-    assert.ok(within(region).getByText(/It owns server\/migrate.mjs/));
-
-    await userEvent.type(within(region).getByRole("textbox", { name: "Question about this plan" }), "Which task owns the CSS?");
-    await userEvent.click(within(region).getByRole("button", { name: "Ask" }));
-
-    const post = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/discuss") && init?.method === "POST");
-    assert.ok(post);
-    assert.equal(String(post?.[0]), "/api/worktree-plans/plan-1/discuss");
-    assert.deepEqual(JSON.parse(String(post?.[1]?.body)), { text: "Which task owns the CSS?", background: true });
-
-    // The 202 omits the discussion, so the loaded thread must not disappear.
-    assert.ok(await screen.findByText("A questioned contract stays the same contract"));
-    assert.ok(screen.getByText("Does task 2 cover the migration?"));
-    await userEvent.click(screen.getByRole("tab", { name: "Tasks" }));
-    for (const title of ["Build the sheet", "Wire the routes"]) assert.ok(screen.getAllByText(title).length > 0);
-    await userEvent.click(screen.getByRole("tab", { name: "Overview" }));
-    // A discussion is not a planning round, so the full-page view stays away.
-    assert.equal(screen.queryByRole("region", { name: "Planning in progress" }), null);
-
-    await waitFor(() => assert.equal(streams.length, 1));
-    streams[0].emit({ k: "done" });
-
-    assert.ok(await screen.findByText("app/features.css belongs to task 1."));
-    assert.ok(screen.getByText("A questioned contract stays the same contract"));
-    await userEvent.click(screen.getByRole("tab", { name: "Tasks" }));
-    for (const title of ["Build the sheet", "Wire the routes"]) assert.ok(screen.getAllByText(title).length > 0);
-    await userEvent.click(screen.getByRole("tab", { name: "Overview" }));
-    // The composer empties only once the question is stored.
-    assert.equal((screen.getByRole("textbox", { name: "Question about this plan" }) as HTMLTextAreaElement).value, "");
-  });
-
-  test("refuses whitespace and caps the question at 2000 characters", async () => {
-    fakeEventSource();
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
-      return new Response(JSON.stringify(readyDetail({ discussion: [] })), { status: 200 });
-    }));
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
-
-    const region = await screen.findByRole("region", { name: "Question this plan" });
-    const box = within(region).getByRole("textbox", { name: "Question about this plan" }) as HTMLTextAreaElement;
-    const ask = within(region).getByRole("button", { name: "Ask" }) as HTMLButtonElement;
-    assert.equal(box.maxLength, 2_000);
-    assert.equal(ask.disabled, true);
-    await userEvent.type(box, "   ");
-    assert.equal(ask.disabled, true);
-    await userEvent.type(box, "Why?");
-    assert.equal(ask.disabled, false);
-  });
-
-  // AC-3. A suggestion written against round 1 describes a split that no
-  // longer exists, so acting on it would re-plan against stale advice.
-  test("offers a handoff for the current round only", async () => {
-    fakeEventSource();
-    const stale = { question: "Split task 1?", answer: "It is too large.", contractImpact: "revision_suggested", suggestion: "Split task 1 into CSS and markup.", round: 1, createdAt: at };
-    const fresh = { question: "Is the migration covered?", answer: "No task owns it.", contractImpact: "revision_suggested", suggestion: "Add a task that owns server/migrate.mjs.", round: 2, createdAt: at };
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
-      return new Response(JSON.stringify(readyDetail({ discussion: [stale, fresh] })), { status: 200 });
-    }));
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
-
-    const region = await screen.findByRole("region", { name: "Question this plan" });
-    const entries = within(region).getAllByRole("listitem");
-    // Oldest first, so the stale round is read before the current one.
-    assert.match(entries[0].textContent || "", /Round 1/);
-    assert.match(entries[1].textContent || "", /Round 2/);
-    assert.match(entries[0].className, /historical/);
-    assert.match(entries[1].className, /current/);
-    assert.ok(within(entries[0]).getByText("Split task 1 into CSS and markup."));
-    assert.equal(within(region).getAllByRole("button", { name: "Use this suggestion" }).length, 1);
-    assert.equal(within(entries[0]).queryByRole("button", { name: "Use this suggestion" }), null);
-    assert.ok(within(entries[1]).getByRole("button", { name: "Use this suggestion" }));
-  });
-
-  // AC-9. The handoff fills the existing box and nothing more. Only the
-  // existing re-plan button may post to /feedback, with its body unchanged.
-  test("copies a suggestion into the rejection panel without posting it", async () => {
-    fakeEventSource();
-    const suggestion = "Add a task that owns server/migrate.mjs.";
-    const fresh = { question: "Is the migration covered?", answer: "No task owns it.", contractImpact: "revision_suggested", suggestion, round: 2, createdAt: at };
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/feedback") && init?.method === "POST") return new Response(JSON.stringify(readyDetail({ round: 3, running: true, tasks: [] })), { status: 202 });
-      if (url.includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
-      return new Response(JSON.stringify(readyDetail({ discussion: [fresh] })), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
-
-    const region = await screen.findByRole("region", { name: "Question this plan" });
-    await userEvent.click(within(region).getByRole("button", { name: "Use this suggestion" }));
-
-    const box = await screen.findByRole("textbox", { name: "What is wrong with this split?" });
-    assert.equal((box as HTMLTextAreaElement).value, suggestion);
-    assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/feedback")), false);
-
-    await userEvent.click(screen.getByRole("button", { name: "Analyse this goal again" }));
-    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/feedback"));
-    assert.ok(call);
-    assert.deepEqual(JSON.parse(String(call?.[1]?.body)), { text: suggestion, background: true });
-  });
-
-  // AC-10. A discussion locks the sheet without hiding it: the contract is the
-  // subject of the question, so it must stay on screen while the answer runs.
-  test("keeps the ready view and disables every mutation while discussing", async () => {
-    fakeEventSource();
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
-      return new Response(JSON.stringify(readyDetail({ running: true, runStage: "discussing", discussion: [answered] })), { status: 200 });
-    }));
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
-
-    const region = await screen.findByRole("region", { name: "Question this plan" });
-    assert.equal(screen.queryByRole("region", { name: "Planning in progress" }), null);
-    assert.ok(screen.getByText("A questioned contract stays the same contract"));
-    await userEvent.click(screen.getByRole("tab", { name: "Tasks" }));
-    for (const title of ["Build the sheet", "Wire the routes"]) assert.ok(screen.getAllByText(title).length > 0);
-    await userEvent.click(screen.getByRole("tab", { name: "Overview" }));
-    assert.ok(within(region).getByText("Does task 2 cover the migration?"));
-    // The progress lives inside the thread, not in a page that replaced it.
-    assert.ok(within(region).getByText(/Answering your question against the repository/));
-
-    assert.equal((within(region).getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled, true);
-    assert.equal((screen.getByRole("button", { name: /^Start workflow|^Launch / }) as HTMLButtonElement).disabled, true);
-    await userEvent.click(screen.getByRole("tab", { name: "Tasks" }));
-    await userEvent.click(screen.getByText("Agents and task prompts"));
-    assert.equal((screen.getByRole("button", { name: "Remove Build the sheet" }) as HTMLButtonElement).disabled, true);
-    assert.equal((screen.getByRole("button", { name: "Use Claude for Build the sheet" }) as HTMLButtonElement).disabled, true);
-    assert.equal((screen.getByRole("button", { name: "This plan is wrong" }) as HTMLButtonElement).disabled, true);
-  });
-
-  // AC-3. The record outlives the draft. A launched or closed goal keeps every
-  // question it was asked, and offers no way to ask or act on another.
-  test("shows the thread read-only on a launched or terminal goal", async () => {
-    for (const extra of [{ planStatus: "launched", status: "ready", launchedAt: at }, { boardStatus: "merged", boardState: "merged", planStatus: "launched" }]) {
-      fakeEventSource();
-      const suggested = { question: "Is the migration covered?", answer: "No task owns it.", contractImpact: "revision_suggested", suggestion: "Add a migration task.", round: 2, createdAt: at };
-      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
-        return new Response(JSON.stringify(readyDetail({ discussion: [answered, suggested], ...extra })), { status: 200 });
-      }));
-      render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
-
-      const region = await screen.findByRole("region", { name: "Question this plan" });
-      assert.ok(within(region).getByText("Does task 2 cover the migration?"));
-      assert.ok(within(region).getByText("Add a migration task."));
-      assert.equal(within(region).queryByRole("textbox", { name: "Question about this plan" }), null);
-      assert.equal(within(region).queryByRole("button", { name: "Ask" }), null);
-      assert.equal(within(region).queryByRole("button", { name: "Use this suggestion" }), null);
-      cleanup();
-    }
-  });
-
-  // The server refuses the thirteenth question. The sheet says so first,
-  // rather than letting the user write one and collect a 400.
-  test("stops offering a question at the stored cap", async () => {
-    fakeEventSource();
-    const many = Array.from({ length: 12 }, (_, index) => ({ ...answered, question: `Question ${index + 1}`, createdAt: at }));
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes("?repositoryId=")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
-      return new Response(JSON.stringify(readyDetail({ discussion: many })), { status: 200 });
-    }));
-    render(<WorktreePlannerSheet repository={repository} initialPlanId="plan-1" onClose={() => {}} onNotice={() => {}} />);
-
-    const region = await screen.findByRole("region", { name: "Question this plan" });
-    assert.ok(within(region).getByText("This plan has been questioned 12 times. Reject it and re-plan instead"));
-    assert.equal((within(region).getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled, true);
-    assert.equal((within(region).getByRole("textbox", { name: "Question about this plan" }) as HTMLTextAreaElement).disabled, true);
-  });
-});
-
 
 describe("managed goal controls in a visible workspace", () => {
   test("keeps the revision-bound approval card beside its exact conversation", async () => {
@@ -2884,3 +2324,33 @@ async function openOtherViews() {
   const summary = await screen.findByText("Board tools");
   if (!summary.closest("details")?.open) await userEvent.click(summary);
 }
+
+describe("unified GitHub issue picker", () => {
+  test("reads issues without a planning request and delegates the selected issue to the board entry", async () => {
+    const issue = { repositoryId: "repository12345678", repositoryName: "App", number: 8, title: "Billing", labels: [], url: "", updatedAt: "", syncedAt: "", planId: null };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => { assert.match(String(input), /github-issues/); return new Response(JSON.stringify({ issues: [issue] })); });
+    vi.stubGlobal("fetch", fetchMock);
+    const start = vi.fn(async () => {}), close = vi.fn();
+    render(<GitHubIssuePicker repository={{ id: issue.repositoryId, name: "App" }} onStart={start} onClose={close} />);
+    const button = await screen.findByRole("button", { name: "Continue discovery for #8" });
+    assert.equal(start.mock.calls.length, 0);
+    assert.equal(String(fetchMock.mock.calls[0]?.[0]), "/api/github-issues/repository/repository12345678");
+    await userEvent.click(button);
+    assert.deepEqual(start.mock.calls[0], [issue]); assert.equal(close.mock.calls.length, 1);
+  });
+  test("keeps the issue picker open when the shared board action reports failure", async () => {
+    const issue = { repositoryId: "repository12345678", number: 8, title: "Billing" };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ issues: [issue] }))));
+    const close = vi.fn();
+    render(<GitHubIssuePicker repository={{ id: issue.repositoryId, name: "App" }} onStart={async () => false} onClose={close} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Continue discovery for #8" }));
+    assert.equal(close.mock.calls.length, 0);
+    assert.ok(screen.getByRole("button", { name: "Continue discovery for #8" }));
+  });
+  test("reports issue-fetch failures without launching discovery", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "GitHub unavailable" }), { status: 503 })));
+    const start = vi.fn(async () => {});
+    render(<GitHubIssuePicker repository={{ id: "repository12345678", name: "App" }} onStart={start} onClose={() => {}} />);
+    await screen.findByRole("alert"); assert.equal(start.mock.calls.length, 0);
+  });
+});

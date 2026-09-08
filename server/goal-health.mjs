@@ -1,3 +1,5 @@
+import { summarize, emptySummary } from "./goal-health-summary.mjs";
+export { isStuck } from "./goal-health-summary.mjs";
 // A launched goal has no liveness signal of its own. The integrator only ever
 // hears `agent.hook.Stop`, and a crashed agent, a closed workspace, a hung
 // session or a sleeping Mac emits nothing at all. So a task can sit at
@@ -318,30 +320,7 @@ export function worst(values) {
 
 // True when a goal needs a person. The board badge and the KPI tile both read
 // this, so "stuck" means one thing everywhere.
-export function isStuck(health) {
-  return health === "dead" || health === "idle" || health === "failed";
-}
 
-function summarize(goals) {
-  const summary = emptySummary();
-  for (const goal of goals) {
-    summary.goals += 1;
-    if (isStuck(goal.health)) summary.stuck += 1;
-    if (goal.health === "needs_you") summary.needsYou += 1;
-    if (goal.health === "working") summary.working += 1;
-    for (const task of goal.tasks) {
-      summary.tasks += 1;
-      if (task.health === "dead") summary.deadTasks += 1;
-      if (task.health === "idle") summary.idleTasks += 1;
-      if (task.health === "failed") summary.failedTasks += 1;
-    }
-  }
-  return summary;
-}
-
-function emptySummary() {
-  return { goals: 0, tasks: 0, stuck: 0, needsYou: 0, working: 0, deadTasks: 0, idleTasks: 0, failedTasks: 0 };
-}
 
 function waveReason(wave) {
   return wave > 0 ? `This task waits for wave ${wave} to integrate` : "This task has not launched yet";

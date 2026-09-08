@@ -113,64 +113,16 @@ function visitBoard() {
   cy.findByRole("region", { name: "Goals board" }).should("be.visible");
 }
 
-describe("questioning a delivery contract", () => {
-  it("keeps the contract, the thread and the card while the answer runs", () => {
-    installScenario();
-    visitBoard();
-
-    // The goal is being questioned, not re-planned, so its card must not move
-    // out of the launch-ready column.
-    cy.findByRole("region", { name: "Waiting for dev" }).within(() => {
-      cy.contains(GOAL).should("be.visible");
-      cy.findByRole("button", { name: `Watch ${GOAL}` }).click();
+describe("saved discovery is read-only", () => {
+  it("keeps the old specification and discussion while offering one native continuation", () => {
+    installScenario(); visitBoard();
+    cy.findByRole("button", { name: `Watch ${GOAL}` }).click(); cy.wait("@detail");
+    cy.findByRole("dialog", { name: "Plan a goal" }).within(() => {
+      cy.findByRole("button", { name: "Continue discovery" }).should("be.enabled");
+      cy.findByRole("button", { name: /^Ask$/ }).should("not.exist");
+      cy.findByRole("button", { name: "This plan is wrong" }).should("not.exist");
+      cy.findByRole("region", { name: "Saved discussion" }).should("contain.text", "Does task 1 already own the migration?");
     });
-    cy.wait("@detail");
-
-    cy.findByRole("dialog", { name: "Plan a goal" }).should("be.visible").within(() => {
-      // The full-page planning view would hide the contract the question is
-      // about, so it must be absent.
-      cy.findByRole("region", { name: "Planning in progress" }).should("not.exist");
-
-      cy.findByRole("region", { name: "Goal passport" }).should("be.visible")
-        .and("contain.text", "A questioned contract is answered without being rewritten")
-        .and("contain.text", "Plan checks passed");
-      cy.contains("Round 2 · 2 tasks").should("be.visible");
-      cy.findByRole("tab", { name: "Tasks" }).click();
-      cy.contains("summary", "Agents and task prompts").click();
-      cy.get(".planner-task").should("have.length", 2);
-      cy.get(".planner-task").first().should("contain.text", "Store the discussion");
-      cy.get(".planner-task").last().should("contain.text", "Render the thread");
-
-      cy.findByRole("region", { name: "Question this plan" }).should("be.visible").within(() => {
-        // Oldest first, with each entry naming the contract round it examined.
-        cy.get(".planner-discussion-entry").should("have.length", 2);
-        cy.get(".planner-discussion-entry").first()
-          .should("have.class", "historical")
-          .and("contain.text", "Round 1")
-          .and("contain.text", "Does task 1 already own the migration?")
-          .and("contain.text", "It owns the store only.");
-        cy.get(".planner-discussion-entry").last()
-          .should("have.class", "current")
-          .and("contain.text", "Round 2")
-          .and("contain.text", "Task 1 stores it, task 2 renders it.");
-
-        // The progress belongs to the thread, not to a page that replaced it.
-        cy.contains("Answering your question against the repository and this contract").should("be.visible");
-        cy.findByRole("button", { name: "Ask" }).should("be.disabled");
-      });
-
-      // Every control that would change the contract is refused while the
-      // discussion holds the plan's session.
-      cy.findByRole("button", { name: /^Start workflow|^Launch / }).should("be.disabled");
-      cy.findByRole("button", { name: "Remove Store the discussion" }).should("be.disabled");
-      cy.findByRole("button", { name: "Use Codex for Store the discussion" }).should("be.disabled");
-      cy.findByRole("button", { name: "This plan is wrong" }).should("be.disabled");
-    });
-
-    // Closing the sheet leaves the card exactly where it was.
-    cy.findByRole("button", { name: "Close goal planner sheet" }).click();
-    cy.findByRole("region", { name: "Waiting for dev" }).should("contain.text", GOAL);
   });
 });
-
 export {};

@@ -1,0 +1,1 @@
+export type GitHubIssueCard = { repositoryId: string; repositoryName: string; number: number; title: string; labels: string[]; url: string; updatedAt: string; syncedAt: string; planId: string | null };

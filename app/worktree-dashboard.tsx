@@ -1,4 +1,6 @@
 "use client";
+import { relativeTime } from "./relative-time";
+import { summarize as summarizeHealthGoals, emptySummary as emptyHealthSummary } from "../server/goal-health-summary.mjs";
 
 import { FollowupSheet, type FollowupSubmission } from "./goal-followup-sheet";
 
@@ -14,7 +16,7 @@ import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../s
 // The GitHub Issues column shares its identity with the server, exactly like
 // the goal columns above. One label, one id, one empty hint, in one file.
 import { GITHUB_ISSUE_ALL_STARTED_HINT, GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_HINT, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, visibleGithubIssues } from "../server/github-issue-board.mjs";
-import { GitHubIssuePlannerSheet } from "./github-issue-planner";
+import { GitHubIssuePicker } from "./github-issue-picker";
 // The quota countdown already exists on the licence page. Reusing it keeps one
 // reset time from reading two different ways on two screens.
 import { AgentCapacityChip, AgentCapacityStrip, WeeklyOpportunities, type AgentCapacity } from "./agent-capacity";
@@ -50,7 +52,7 @@ type SessionReapReport = { checkedAt: string; sessionsAvailable: boolean; closed
 // GET /api/github-issues and POST /api/github-issues/sync. Every field here is
 // repository content that any GitHub user can write, so the column renders it
 // as plain text and never as markup or as an instruction.
-type GitHubIssueCard = { repositoryId: string; repositoryName: string; number: number; title: string; labels: string[]; url: string; updatedAt: string; syncedAt: string; planId: string | null };
+import type { GitHubIssueCard } from "./github-issue-types";
 type GitHubIssueColumnPayload = { syncedAt: string | null; issues: GitHubIssueCard[] };
 type GitHubIssueSyncRepository = { repositoryId: string; name: string; status: string; issueCount: number; truncated: boolean; error: string | null };
 type GitHubIssueSyncResult = { syncedAt: string; status: string; message: string | null; repositories: GitHubIssueSyncRepository[]; issues: GitHubIssueCard[] };
@@ -242,7 +244,7 @@ function sessionTaskCode(task: HealthTask) {
   return /^([A-Z0-9]{2,4}-T\d{1,3}-[a-z0-9]+)\b/i.exec(title)?.[1] || task.id;
 }
 
-function relativeTime(timestamp?: number) { if (!timestamp) return "now"; const seconds = Math.max(0, Math.round(Date.now() / 1000 - timestamp)); if (seconds < 60) return "now"; if (seconds < 3600) return `${Math.floor(seconds / 60)}m`; if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`; return `${Math.floor(seconds / 86400)}d`; }
+
 function relativePlanTime(timestamp?: string) { const value = timestamp ? Date.parse(timestamp) : NaN; return relativeTime(Number.isFinite(value) ? Math.round(value / 1000) : undefined); }
 function githubCheckedTime(timestamp: string) { const value = relativePlanTime(timestamp); return value === "now" ? "just now" : `${value} ago`; }
 function compactPath(path: string) { return path.replace(/^\/Users\/[^/]+/, "~"); }
@@ -476,25 +478,20 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
     finally { setBusy(""); }
   }
 
-  async function setArchived(repo: DashboardRepository, archived: boolean) {
+  async function setRepositoryFlag(repo: DashboardRepository, key: "archived" | "favorite", value: boolean) {
+    const archive = key === "archived";
+    const action = archive ? (value ? "archive" : "restore") : (value ? "favorite" : "unfavorite");
     setBusy(`repo:${repo.id}`);
     try {
-      await request(`/api/worktree-dashboard/repositories/${repo.id}/archive`, { method: "PATCH", body: JSON.stringify({ archived }) });
-      setDashboard((current) => current ? { ...current, repositories: current.repositories.map((item) => item.id === repo.id ? { ...item, archived } : item) } : current);
-      onNotice(`${repo.name} ${archived ? "archived" : "restored"}`);
-    } catch (cause) { onNotice(cause instanceof Error ? cause.message : `Could not ${archived ? "archive" : "restore"} ${repo.name}`); }
+      await request(`/api/worktree-dashboard/repositories/${repo.id}/${archive ? "archive" : "favorite"}`, { method: "PATCH", body: JSON.stringify({ [key]: value }) });
+      setDashboard((current) => current ? { ...current, repositories: current.repositories.map((item) => item.id === repo.id ? { ...item, [key]: value } : item) } : current);
+      onNotice(`${repo.name} ${action}d`);
+    } catch (cause) { onNotice(cause instanceof Error ? cause.message : `Could not ${action} ${repo.name}`); }
     finally { setBusy(""); }
   }
 
-  async function setFavorite(repo: DashboardRepository, favorite: boolean) {
-    setBusy(`repo:${repo.id}`);
-    try {
-      await request(`/api/worktree-dashboard/repositories/${repo.id}/favorite`, { method: "PATCH", body: JSON.stringify({ favorite }) });
-      setDashboard((current) => current ? { ...current, repositories: current.repositories.map((item) => item.id === repo.id ? { ...item, favorite } : item) } : current);
-      onNotice(`${repo.name} ${favorite ? "favorited" : "unfavorited"}`);
-    } catch (cause) { onNotice(cause instanceof Error ? cause.message : `Could not ${favorite ? "favorite" : "unfavorite"} ${repo.name}`); }
-    finally { setBusy(""); }
-  }
+  function setArchived(repo: DashboardRepository, archived: boolean) { return setRepositoryFlag(repo, "archived", archived); }
+  function setFavorite(repo: DashboardRepository, favorite: boolean) { return setRepositoryFlag(repo, "favorite", favorite); }
 
   async function returnIssues(plan: PlanSummary) {
     await runBoardAction(`return-issues:${plan.planId}`, async () => {
@@ -662,6 +659,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
   // One issue becomes one goal plan. The plan lands in Writing Spec, so the
   // goal list is re-read after the call rather than guessed at locally.
   async function startIssueGoal(issue: GitHubIssueCard) {
+    let opened = false;
     await runBoardAction(githubIssueCardId(issue), async () => {
       try {
         const result = await request<GitHubIssueGoalResult>(`/api/github-issues/${encodeURIComponent(issue.repositoryId)}/${issue.number}/goal`, { method: "POST" });
@@ -670,6 +668,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
         )));
         await loadGoalPlans();
         setIssueNotice("");
+        opened = true;
         const workspaceId = result.plan?.goalSessionWorkspaceId;
         if (result.plan?.workflow === "goal_session" && workspaceId) {
           onNotice(result.created ? `Started a planning conversation for issue #${issue.number}.` : `Opening the existing conversation for issue #${issue.number}.`);
@@ -681,11 +680,13 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
           ? `Issue #${issue.number} already has a goal. Nothing new was created.`
           : `Started a goal for issue #${issue.number}. It is in Writing Spec.`);
       } catch (cause) {
+        opened = false;
         const message = cause instanceof Error ? cause.message : `Could not start a goal for issue #${issue.number}`;
         setIssueNotice(message);
         onNotice(message);
       }
     });
+    return opened;
   }
 
   const isBoardView = dashboardFilter === "goals-board";
@@ -916,7 +917,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
       if (onGoalSessionStarted) await onGoalSessionStarted(workspaceId);
       else onOpenWorkspace(workspaceId);
     }} onClose={() => { closeGoalPopup(); void loadGoalPlans(); }} onNotice={onNotice} />}
-    {issuePlanTarget && <GitHubIssuePlannerSheet repository={issuePlanTarget} onClose={() => { setIssuePlanTarget(null); void loadGoalPlans(); }} onLaunched={async () => { await load(true); await loadGoalPlans(); }} onNotice={onNotice} />}
+    {issuePlanTarget && <GitHubIssuePicker repository={issuePlanTarget} onClose={() => { setIssuePlanTarget(null); void loadGoalPlans(); }} onStart={startIssueGoal} />}
     {followupTarget && <FollowupSheet plan={followupTarget} busy={boardBusy[`followup:${followupTarget.planId}`] === true} onClose={() => setFollowupTarget(null)} onSubmit={(submission) => launchFollowup(followupTarget, submission)} />}
   </>;
 }
@@ -983,29 +984,6 @@ function GoalBoardCard({ returningIssues, confirmingReturn, onRequestReturn, onC
 
 // Which provider takes the next task, and what would change that answer. The
 // verdict is the server's; this renders it and never recomputes it.
-function emptyHealthSummary(): HealthSummary {
-  return { goals: 0, tasks: 0, stuck: 0, needsYou: 0, working: 0, deadTasks: 0, idleTasks: 0, failedTasks: 0 };
-}
-
-function summarizeHealthGoals(goals: HealthGoal[]): HealthSummary {
-  const summary = emptyHealthSummary();
-  for (const goal of goals) {
-    summary.goals += 1;
-    if (goal.health === "dead" || goal.health === "idle" || goal.health === "failed") summary.stuck += 1;
-    if (goal.health === "needs_you") summary.needsYou += 1;
-    if (goal.health === "working") summary.working += 1;
-    for (const task of goal.tasks) {
-      summary.tasks += 1;
-      if (task.health === "dead") summary.deadTasks += 1;
-      if (task.health === "idle") summary.idleTasks += 1;
-      if (task.health === "failed") summary.failedTasks += 1;
-    }
-  }
-  return summary;
-}
-
-
-
 // Every task a person must answer for, across every repository, on one screen.
 // Restart and Skip both destroy something, so each confirms inline first.
 function AttentionRail({ relaunchModes, railRef, rows, sessionsAvailable, loaded, error, busy, confirming, onRetry, onRequestConfirm, onRelaunch, onSkip, onFocus }: { relaunchModes: Record<string, string>; railRef: RefObject<HTMLElement | null>; rows: { goal: HealthGoal; item: HealthTask | HealthMerge; kind: "task" | "merge" }[]; sessionsAvailable: boolean; loaded: boolean; error: string; busy: Record<string, boolean>; confirming: string; onRetry: () => void; onRequestConfirm: (key: string) => void; onRelaunch: (goal: HealthGoal, task: HealthTask, mode: "continue" | "restart" | "rebranch") => void; onSkip: (goal: HealthGoal, task: HealthTask) => void; onFocus: (workspaceId: string, label: string) => void }) {

@@ -187,7 +187,7 @@ test("strict removal locking shares the launch lock and never falls back without
   assert.equal(called, false);
   await git(directory, ["init"]);
   await withWorkspaceLaunch(directory, async () => {
-    await assert.rejects(() => withWorkspaceLaunch(directory, () => { called = true; }, { requireRepository: true, lockDirectory }), /holds this lock/);
+    await assert.rejects(() => withWorkspaceLaunch(directory, () => { called = true; }, { requireRepository: true, lockDirectory }), { statusCode: 409, message: /holds this lock/ });
   }, { lockDirectory });
   assert.equal(called, false);
   assert.equal(await withWorkspaceLaunch(directory, () => "removed", { requireRepository: true, lockDirectory }), "removed");

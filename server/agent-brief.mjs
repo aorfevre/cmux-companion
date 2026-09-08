@@ -1,5 +1,7 @@
+import { oneLine as summary } from "./text-summary.mjs";
+import { cleanupOldFiles } from "./temporary-file-cleanup.mjs";
 import { AGENT_REPLY_FORMAT } from "./agent-reply-format.mjs";
-import { chmod, mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -15,11 +17,6 @@ function identifier(value, label) {
   const safe = raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "");
   if (!safe) throw new TypeError(`${label} must contain a letter or a digit`);
   return safe.slice(0, 120);
-}
-
-function summary(value, limit) {
-  const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
 
 export class AgentBriefs {
@@ -57,12 +54,6 @@ export class AgentBriefs {
   }
 
   async cleanup(maxAgeMs = 7 * 24 * 60 * 60 * 1_000) {
-    const entries = await readdir(this.directory).catch(() => []);
-    const cutoff = Date.now() - maxAgeMs;
-    await Promise.all(entries.map(async (name) => {
-      const path = join(this.directory, name);
-      const details = await stat(path).catch(() => null);
-      if (details?.isFile() && details.mtimeMs < cutoff) await unlink(path).catch(() => {});
-    }));
+    return cleanupOldFiles(this.directory, maxAgeMs);
   }
 }

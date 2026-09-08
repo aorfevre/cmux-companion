@@ -44,8 +44,7 @@ No cloud application server is involved. Terminal output and input travel direct
 ## Visible goal sessions
 
 In Worktrees, open **New goal**, describe a small increment and select **Start
-goal session**. If the form exposes automated reviewer toggles, disable both
-reviews first; those remain supported by **Plan this goal**. Companion saves the goal and opens an isolated worktree with a
+goal session**. Companion saves the goal and opens an isolated worktree with a
 native interactive conversation in cmux. Ask questions, answer the agent,
 interrupt it and refine scope directly in the same terminal. Discovery stays open
 until the agent publishes a validated delivery contract through its dedicated
@@ -79,10 +78,12 @@ required, and no provider prose is treated as proof of successful delivery.
 
 The owner is associated with one task for existing health and PR tracking.
 Companion observes PR state through its GitHub refresh/watch path; provider prose
-or a successful process exit is not delivery evidence. Existing **Plan this
-goal**, bulk issue planning and multi-task delivery retain their separate flow.
-Automated planner/code reviewers remain on that legacy path; a visible-session
-start rejects those selections before allocating resources.
+or a successful process exit is not delivery evidence. All new goals, GitHub issue
+goals and restarted discovery use this same process. Old unlaunched goals offer
+**Continue discovery**, which stops the old run and opens one recorded successor
+with its saved contract, questions and discussion as historical context. Previously
+launched deliveries retain their recovery controls. Automated planner/code-review
+toggles are unavailable for native sessions; requests enabling them are rejected.
 Merge and deployment remain separate decisions.
 
 See the [feature contract and validation](docs/goal-session-planning.md). Local
@@ -148,7 +149,11 @@ Open **Settings → Licence usage** to see the remaining quota for every Claude 
 
 Worktrees Beta discovers Git's registered worktrees for the configured repository roots, then groups open cmux sessions by their current directory. Each worktree shows its branch, changed-file count, ahead/behind state, latest activity, agent state, and matching open GitHub pull request. **＋ Worktree** on a repository creates or opens a branch in a sibling Git worktree and can immediately start its first agent session. **＋ Session** on an existing worktree starts another cmux session there with Codex through `xcodex` or Claude through `xclaude`. The server derives the worktree path, validates Git refs, and refreshes registered worktrees before each action.
 
-**Plan a goal** on a repository sends one goal to a read-only headless planner. The planner may ask clarifying questions first; answer them, or skip and keep its assumptions visible. A ready plan is a Delivery Contract: outcome, scope and non-goals, constraints, assumptions, risks, observable acceptance criteria, task ownership, expected verification, and explicit dependencies. The Goal Passport shows that contract, readiness warnings, workflow waves, and criterion evidence before and after launch. You can still switch a task's agent, edit it, reject the split with written feedback, or drop it before confirming.
+**Plan a goal** on a repository opens the same interactive goal-session form.
+The agent asks any discovery questions in cmux and publishes a Delivery Contract
+for approval. Saved legacy contracts and their Goal Passport remain readable;
+use **Continue discovery** to revise an unlaunched goal in the native conversation.
+There is no second planner or legacy launch action.
 
 ### Approving a goal
 
@@ -169,7 +174,7 @@ regenerates the plan or changes its saved contract.
 
 ### Spec depth
 
-New goal forms enable **Add a reviewer pass** and **Request a code review** by default. Both remain optional: turn either off before submitting to skip that review.
+New goal forms use the owning interactive agent for discovery and implementation. Separate automated reviewer controls are not offered.
 
 **Spec depth** on the Plan a goal sheet holds six independent requests. **Unit tests**, **End-to-end tests**, **Edge cases**, and **Refactor review** are on by default; **Screen wireframes** and **Flowcharts** remain off. Each selected request becomes a written requirement in every planning round and in every task brief. All six remain independently editable. Choosing **New goal** restores these form defaults, without changing existing saved goals or defaults for API callers that omit options. The six are:
 
@@ -220,9 +225,14 @@ this action neither restarts work nor reopens a closed issue on GitHub.
 
 The repository's bulk issue-planning sheet remains a separate workflow:
 
-**GitHub Issues** loads up to 100 open tickets from the repository selected by the local checkout's `origin`, then asks an isolated Claude analyzer to group every ticket exactly once into delivery-sized master topics. Select the topics to deliver, answer topic-level clarifications, and create the saved goal plans. Any repository-planner follow-up questions stay in the same sheet. Once every selected plan is ready, one action launches all topic worktrees; their agents then run in parallel.
+**GitHub Issues** loads up to 100 open tickets from the selected allowed repository.
+Choose **Continue discovery** on an issue to use the same start action as the
+GitHub board column. The server refreshes the issue, retains its source link and
+deduplicates ownership. An existing native goal opens its recorded conversation;
+an old unlaunched goal continues through the same migration service. There is no
+separate topic analyzer, bulk planner or bulk launch. GitHub closes linked issues
+when their PR merges; Companion never closes an issue directly.
 
-Each selected topic is an independent delivery unit. Tickets likely to touch the same files are grouped into the same topic, where Plan a Goal can sequence or split the implementation. Even a one-task issue topic uses Companion's generated delivery branch and verification gate. Its final PR contains one `Closes #N` line per linked ticket, so GitHub closes those issues only when the PR merges. Companion never closes an issue directly. The sheet refreshes selected tickets before planning and refuses tickets that changed, closed, or already belong to another saved goal.
 
 This workflow requires the GitHub CLI to be authenticated for the repository (`gh auth status`). Issue bodies are treated as untrusted text, and the grouping model runs with local reads, writes, shell commands, tasks, and web tools disabled.
 
@@ -577,13 +587,14 @@ regardless of search filters. It runs immediately without enabling a schedule or
 bypassing safety checks and grace periods. Counts include missing Git registrations,
 not every ordinary directory in `../`. Failed or uncertain runs require a fresh scan.
 
-For old blocked goals that have no development tasks, choose **Abort** on the Goals
-board, expand the **Aborted** column, reopen the saved goal, then **Restart discovery**. This opens native interactive
-discovery with the saved goal, images, engine, Spec depth options and GitHub issue links;
+For old blocked goals whose development has not started, open the saved goal and
+choose **Continue discovery**. This stops the previous discovery and opens native
+interactive discovery with the saved contract, discussion, goal, images, engine,
+Spec depth options and GitHub issue links;
 automated reviews are disabled for native sessions. The original remains saved and
 its issues are released for the successor. If startup fails before saving that successor,
 issues remain available in the GitHub list. Repeated clicks reopen the same successor
-instead of creating duplicate sessions. Goals with development tasks use task recovery.
+instead of creating duplicate sessions. Goals with started development tasks use task recovery.
 
 **Worktree cleanup** provides a central dry-run inventory across Karven and Rekord,
 including nested repositories and external registrations. Sessions close when a
@@ -641,12 +652,11 @@ exercise the actual recovery decisions without launching agents or deleting real
 
 ### Model defaults
 
-Settings → **Model defaults** stores a model for each provider and role: planner,
-spec reviewer, coder, code reviewer, merge agent, follow-up agent, and GitHub
-issue analyzer. Planning starts with Codex Astra (`gpt-6-astra`); Claude specification
-and code reviews start with Fable 5.1. Coding, merging, follow-ups, and issue analysis retain the provider default.
-The Settings panel also selects the default provider for planning, merging,
-and issue analysis. Task assignment and explicit provider choices still apply.
+Settings → **Model defaults** exposes planner, coder, code reviewer, merge agent
+and follow-up agent roles. The planner model owns the interactive discovery and
+implementation conversation. Retired spec-reviewer and issue-analyzer settings
+remain stored for compatibility but are hidden. Planning starts with Codex Astra
+(`gpt-6-astra`). Explicit provider and model choices still apply.
 
 Choose a model from the full dropdown or select **Custom model…** to enter a
 provider model ID, then **Save model defaults**. `default` explicitly
@@ -659,8 +669,7 @@ code-review models. Per-goal model choices override Settings. New task launches,
 retries, dependency waves, merge sessions, and follow-ups read the current role
 defaults; existing agent sessions are unchanged. A follow-up containing a code
 review uses the code-review model even when it also requests tests or other work.
-The optional specification reviewer still uses the opposite provider at xhigh
-effort. The issue analyzer has its own defaults, separate from topic planning.
+New native goals do not start a separate specification reviewer or issue analyzer.
 
 Configuration lives in `~/.config/cmux-companion/model-settings.json` (override
 with `CMUX_COMPANION_MODEL_SETTINGS_FILE`). The paired, same-origin Settings

@@ -72,6 +72,14 @@ export class GitHubIssueSync {
     };
   }
 
+  async readRepository(repositoryId) {
+    const repository = await this.worktrees.resolveRepository(repositoryId);
+    const result = await this.#fetch({ ...repository, path: repository.primaryPath || repository.path }, new Date().toISOString());
+    if (result.status !== "ok") throw new TypeError(result.error);
+    this.store.replace([repository.id], result.issues, { syncedAt: new Date().toISOString() });
+    return result;
+  }
+
   // Turns one stored issue into one goal plan. It refuses an unknown issue and
   // never creates a second plan for an issue that already has one.
   async startGoal(options) {
@@ -91,8 +99,9 @@ export class GitHubIssueSync {
     const issue = this.store.get(id, issueNumber);
     if (!issue) throw new TypeError("Unknown GitHub issue. Run GitHub Sync again");
 
-    const existing = await this.#existingPlan(id, issueNumber);
+    let existing = await this.#existingPlan(id, issueNumber);
     if (existing) {
+      if (existing.workflow !== "goal_session" && existing.status !== "launched" && existing.boardStatus !== "merged") existing = await this.goalSessions.continueDiscovery(existing.planId);
       const saved = this.store.setPlanId(id, issueNumber, existing.planId);
       return { issue: saved, plan: existing, created: false };
     }
@@ -191,7 +200,7 @@ export class GitHubIssueSync {
 
 // The goal prompt. The issue title and body are repository content that any
 // GitHub user can write, so they are labelled untrusted data and never
-// instructions, with the same wording as server/github-issue-planner.mjs.
+// instructions. Both the board and repository issue picker use this source.
 function issueGoal(issue) {
   return [
     `Resolve GitHub issue #${issue.number}: ${issue.title}`,

@@ -1,11 +1,11 @@
-import { readPrivateJson } from "./private-json-state.mjs";
+import { readPrivateJson, writePrivateJson } from "./private-json-state.mjs";
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -201,13 +201,7 @@ export class PreviewManager extends EventEmitter {
     return { previews: Array.isArray(value.previews) ? value.previews.map(normalizeStoredPreview).filter(Boolean) : [] };
   }
 
-  save() {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    const temporary = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
-    writeFileSync(temporary, JSON.stringify(this.state, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-    renameSync(temporary, this.path);
-    chmodSync(this.path, 0o600);
-  }
+  save() { writePrivateJson(this.path, this.state); }
 }
 
 export function extractLocalUrls(text) {

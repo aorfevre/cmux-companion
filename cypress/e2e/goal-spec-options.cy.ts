@@ -248,14 +248,9 @@ describe("human launch review", () => {
         cy.findByRole("button", { name: "Show Full expected outcome as raw text" }).click();
         cy.get("pre").should("have.text", fullOutcome);
       });
-      cy.findByRole("region", { name: "Launch decision" }).within(() => {
-        cy.contains("Review 1 assumptions and 1 warnings in Impacts before proceeding.").should("be.visible");
-        cy.findByRole("button", { name: /Start workflow/ }).should("be.enabled");
-      });
+      cy.findByRole("region", { name: "Launch decision" }).should("not.exist");
+      cy.findByRole("button", { name: "Continue discovery" }).should("be.enabled");
       cy.then(() => expect(launches).to.equal(0));
-      cy.findByRole("region", { name: "Launch decision" }).findByRole("button").click();
-      cy.wait("@launchReview");
-      cy.then(() => expect(launches).to.equal(1));
     });
   }
 
@@ -270,16 +265,16 @@ describe("human launch review", () => {
     cy.wait("@blockedReview");
     cy.contains("Needs work").should("be.visible");
     cy.contains("AC-2 has no task").should("be.visible");
-    cy.findByRole("region", { name: "Launch decision" }).findByRole("button").should("be.disabled");
-    cy.findByRole("button", { name: "This plan is wrong" }).should("be.enabled");
+    cy.findByRole("region", { name: "Launch decision" }).should("not.exist");
+    cy.findByRole("button", { name: "Continue discovery" }).should("be.enabled");
   });
 });
 
 describe("planner engine defaults", () => {
   it("submits Codex Astra and keeps Default and provider switches valid", () => {
     installScenario({ plans: [] });
-    cy.intercept("POST", "**/api/worktree-plans", (request) => {
-      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: true });
+    cy.intercept("POST", "**/api/goal-sessions", (request) => {
+      expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
       request.reply({ statusCode: 202, body: {
         planId: "astra-default", repositoryId: "repo-spec", goal: request.body.goal,
         status: "questions", round: 0, running: true, questions: [], tasks: [],
@@ -290,8 +285,6 @@ describe("planner engine defaults", () => {
     cy.findByRole("combobox", { name: "Planner engine" }).should("have.value", "codex");
     cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6-astra");
     cy.contains("Codex (xcodex) · Codex Astra").should("be.visible");
-    cy.findByRole("checkbox", { name: "Add a reviewer pass" }).check();
-    cy.contains("Reviewer: Claude Code (xclaude) · Fable 5.1 · xhigh effort").should("be.visible");
     cy.findByRole("combobox", { name: "Planner model" }).select("default");
     cy.contains("Codex (xcodex) · CCS default model").should("be.visible");
     cy.findByRole("combobox", { name: "Planner engine" }).select("claude");
@@ -301,41 +294,17 @@ describe("planner engine defaults", () => {
     cy.findByRole("combobox", { name: "Planner engine" }).select("codex");
     cy.findByRole("combobox", { name: "Planner model" }).should("have.value", "gpt-6-astra");
     cy.findByRole("textbox", { name: "Goal" }).type("Plan using Astra");
-    cy.findByRole("button", { name: "Plan this goal" }).click();
+    cy.findByRole("button", { name: "Start goal session" }).click();
     cy.wait("@planAstra");
     cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
   });
-});
-
-describe("post-delivery reviewer model", () => {
-  for (const changeModel of [false, true]) {
-    it(`opens with Fable 5.1 and submits the ${changeModel ? "selected" : "default"} reviewer model`, () => {
-      installScenario({ plans: [] });
-      cy.intercept("POST", "**/api/worktree-plans", (request) => {
-        expect(request.body.reviewOptions).to.deep.equal({ codeReview: true, reviewer: changeModel ? "codex" : "claude", reviewerModel: changeModel ? "gpt-6-astra" : "claude-fable-5-1" });
-        request.reply({ statusCode: 202, body: { planId: "review-model", repositoryId: "repo-spec", goal: request.body.goal, status: "questions", round: 0, running: true, questions: [], tasks: [] } });
-      }).as("reviewModel");
-      visitBoard();
-      cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
-      cy.findByRole("combobox", { name: "Code-review model" }).should("be.visible").and("have.value", "claude-fable-5-1").find("option:selected").should("have.text", "Fable 5.1");
-      cy.findByRole("combobox", { name: "Code-review reviewer" }).should("have.value", "claude");
-      if (changeModel) {
-        cy.findByRole("combobox", { name: "Code-review reviewer" }).select("codex");
-        cy.findByRole("combobox", { name: "Code-review model" }).select("gpt-6-astra").find('option[value="claude-fable-5-1"]').should("not.exist");
-      }
-      cy.findByRole("checkbox", { name: "Code review" }).check();
-      cy.findByRole("textbox", { name: "Goal" }).type("Review the delivered goal");
-      cy.findByRole("button", { name: "Plan this goal" }).click();
-      cy.wait("@reviewModel");
-    });
-  }
 });
 
 describe("per-project development setup review", () => {
   for (const provider of ["claude", "codex"]) {
     it(`submits an editable project-specific review with ${provider}`, () => {
       installScenario({ plans: [] });
-      cy.intercept("POST", "**/api/worktree-plans", (request) => {
+      cy.intercept("POST", "**/api/goal-sessions", (request) => {
         expect(request.body.repositoryId).to.equal("repo-spec");
         expect(request.body.engine.provider).to.equal(provider);
         expect(request.body.goal).to.include("TypeScript, Cypress and Astro");
@@ -343,7 +312,7 @@ describe("per-project development setup review", () => {
         expect(request.body.goal).to.include("Result:").and.include("Checks:").and.include("Blockers:");
         expect(request.body.goal).to.include("Keep the hardware simulator.");
         expect(request.body.goal.length).to.be.at.most(4000);
-        expect(request.body.background).to.equal(true);
+        expect(request.body).not.to.have.property("background");
         request.reply({ statusCode: 202, body: {
           planId: "dev-setup", repositoryId: "repo-spec", goal: request.body.goal,
           status: "questions", round: 0, running: true, questions: [], tasks: [],
@@ -354,7 +323,7 @@ describe("per-project development setup review", () => {
       cy.findByRole("button", { name: "Review dev setup" }).click();
       cy.findByRole("textbox", { name: "Goal" }).type("\nKeep the hardware simulator.");
       cy.findByRole("combobox", { name: "Planner engine" }).select(provider);
-      cy.findByRole("button", { name: "Plan this goal" }).click();
+      cy.findByRole("button", { name: "Start goal session" }).click();
       cy.wait("@reviewSetup");
       cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
     });
@@ -362,14 +331,14 @@ describe("per-project development setup review", () => {
 
   it("preserves a written goal and keeps the review editable after a failed submit", () => {
     installScenario({ plans: [] });
-    cy.intercept("POST", "**/api/worktree-plans", { statusCode: 503, body: { error: "Planner unavailable" } }).as("failedReview");
+    cy.intercept("POST", "**/api/goal-sessions", { statusCode: 503, body: { error: "Planner unavailable" } }).as("failedReview");
     visitBoard();
     cy.findByRole("button", { name: "Plan a goal for cmux-e2e-cypress" }).click();
     cy.findByRole("textbox", { name: "Goal" }).type("Keep my existing scope");
     cy.findByRole("button", { name: "Review dev setup" }).should("be.disabled");
     cy.findByRole("textbox", { name: "Goal" }).should("have.value", "Keep my existing scope").clear();
     cy.findByRole("button", { name: "Review dev setup" }).click();
-    cy.findByRole("button", { name: "Plan this goal" }).click();
+    cy.findByRole("button", { name: "Start goal session" }).click();
     cy.wait("@failedReview");
     cy.findByRole("dialog", { name: "Plan a goal" }).should("be.visible");
     cy.contains("Planner unavailable").should("be.visible");
@@ -379,7 +348,7 @@ describe("per-project development setup review", () => {
   it("opens a review from one project without submitting or carrying it into a normal goal", () => {
     installScenario({ plans: [] });
     let submissions = 0;
-    cy.intercept("POST", "**/api/worktree-plans", () => { submissions += 1; });
+    cy.intercept("POST", "**/api/goal-sessions", () => { submissions += 1; });
     visitBoard();
     cy.contains("summary", "Board tools").click();
     cy.findByRole("tab", { name: /^Inactive/ }).click();
@@ -393,7 +362,7 @@ describe("per-project development setup review", () => {
 });
 
 describe("specification rigor options", () => {
-  for (const [button, endpoint] of [["Plan this goal", "worktree-plans"], ["Start goal session", "goal-sessions"]]) {
+  for (const [button, endpoint] of [["Start goal session", "goal-sessions"]]) {
     for (const changed of [false, true]) {
       it(`${button} submits ${changed ? "explicit opt-outs and diagram opt-ins" : "untouched review and spec defaults"}`, () => {
         cy.viewport(1280, 1400);
@@ -405,8 +374,8 @@ describe("specification rigor options", () => {
             unitTests: true, e2eTests: true, edgeCases: true, refactorPass: true, screenMocks: false, flowcharts: false,
           });
           // Effort remains the only reasoning control.
-          expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: !changed });
-          expect(request.body.reviewOptions).to.deep.equal({ codeReview: !changed, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
+          expect(request.body.engine).to.deep.equal({ provider: "codex", model: "gpt-6-astra", effort: "default", reviewer: false });
+          expect(request.body.reviewOptions).to.deep.equal({ codeReview: false, reviewer: "claude", reviewerModel: "claude-fable-5-1" });
           request.reply({
             planId: "plan-new", repositoryId: "repo-spec", repositoryName: "cmux-e2e-cypress", goal: GOAL,
             status: "questions", stage: "questions", planStatus: "draft", running: true, round: 0,
@@ -420,11 +389,11 @@ describe("specification rigor options", () => {
           cy.findByRole("region", { name: "Spec depth" }).should("be.visible");
           SPEC_CONTROLS.forEach((label, index) => cy.findByRole("checkbox", { name: label }).should(index < 4 ? "be.checked" : "not.be.checked"));
           cy.findByRole("region", { name: "Spec depth" }).findAllByRole("checkbox").should("have.length", SPEC_CONTROLS.length);
-          cy.findByRole("checkbox", { name: "Add a reviewer pass" }).should("be.checked");
-          cy.findByRole("checkbox", { name: "Code review" }).should("be.checked");
+          cy.findByRole("checkbox", { name: "Add a reviewer pass" }).should("not.exist");
+          cy.findByRole("checkbox", { name: "Code review" }).should("not.exist");
 
           if (changed) {
-            for (const name of ["Add a reviewer pass", "Code review", "Unit tests", "End-to-end tests", "Refactor review"]) {
+            for (const name of ["Unit tests", "End-to-end tests", "Refactor review"]) {
               cy.findByRole("checkbox", { name }).uncheck().should("not.be.checked");
             }
             for (const name of ["Screen wireframes", "Flowcharts"]) cy.findByRole("checkbox", { name }).check().should("be.checked");
@@ -506,15 +475,15 @@ describe("restarting old discovery", () => {
     installScenario({ plans: [] });
     const old = { ...readyDetail(), tasks: [], questions: [], round: 0, boardStatus: "aborted", boardState: "aborted", issueNumbers: [8], status: "questions" };
     cy.intercept("GET", "**/api/worktree-plans/plan-spec", old);
-    cy.intercept("POST", "**/api/goal-sessions/plan-spec/restart", { statusCode: 503, body: { error: "Old discovery is still stopping" } }).as("restart");
+    cy.intercept("POST", "**/api/goal-sessions/plan-spec/continue", { statusCode: 503, body: { error: "Old discovery is still stopping" } }).as("restart");
     cy.visit("/?view=sessions&mode=worktrees&plan=plan-spec");
-    cy.findByRole("region", { name: "Restart discovery" }).should("be.visible");
-    cy.contains("Automated reviewer passes are off").should("be.visible");
+    cy.findByRole("region", { name: "Continue discovery" }).should("be.visible");
+    cy.contains("Companion stops its previous discovery").should("be.visible");
     cy.get("@restart.all").should("have.length", 0);
-    cy.findByRole("button", { name: "Restart discovery" }).click();
+    cy.findByRole("button", { name: "Continue discovery" }).click();
     cy.wait("@restart").its("request.body").should("deep.equal", {});
     cy.contains("Old discovery is still stopping").should("be.visible");
-    cy.findByRole("button", { name: "Restart discovery" }).should("be.enabled");
+    cy.findByRole("button", { name: "Continue discovery" }).should("be.enabled");
     cy.location("search").should("contain", "plan=plan-spec");
   });
 });

@@ -170,11 +170,41 @@ test("restart refuses live discovery owners and retains failed successors for re
 test("restart refuses terminal completions, development tasks and live runner PIDs", async () => {
   for (const [source, message] of [
     [{ boardStatus: "merged" }, /Abort the old goal/],
-    [{ boardStatus: "aborted", tasks: [{ id: "T1" }] }, /before development tasks/],
+    [{ boardStatus: "aborted", tasks: [{ id: "T1", worktreePath: "/repo/task" }] }, /before development tasks/],
     [{ boardStatus: "aborted", status: "launched" }, /before development tasks/],
     [{ planId: "old", boardStatus: "aborted", goalSessionRunnerPid: 123 }, /still active/],
   ]) {
     const service = new GoalSessionService({ store: { get: (id) => id === "old" ? source : null }, worktrees: {}, cmux: {}, processAlive: () => true });
     await assert.rejects(() => service.restart("old"), message);
   }
+});
+
+test("continuing legacy discovery stops it once and preserves its full unapproved context", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" }); t.after(() => store.close());
+  const source = store.createPlan({ planId: "legacy", repositoryId: "repo", goal: "Fix the old issue", images: [{ path: "/images/context.png", name: "context.png" }], issueNumbers: [8], engine: { provider: "codex", model: "gpt-6-astra", effort: "high", reviewer: true } });
+  store.recordRound("legacy", { round: 1, stage: "ready", spec: { outcome: "Saved outcome" }, tasks: [{ id: "T1", title: "Saved task", branch: "old/t1", prompt: "Saved instructions", agent: "codex" }] });
+  store.recordDiscussion("legacy", { question: "Keep history?", answer: "Yes", contractImpact: "none", round: 1 });
+  let stopped = 0, started = 0;
+  const service = new GoalSessionService({ store, worktrees: { resolveRepository: async (id) => ({ id, name: "Repo", primaryPath: "/repo" }), create: async () => { started++; return { worktree: { path: "/repo-new" } }; } }, cmux: { workspaceListDetailed: async () => ({ workspaces: [] }), workspaceCreate: async () => ({ workspace_id: "new" }), workspaceStartGoalSessionRunner: async () => {} }, stopGoal: async (id) => { stopped++; store.recordGoalAborted(id); return { failedSessionIds: [] }; } });
+  const next = await service.continueDiscovery("legacy");
+  assert.equal(next.workflow, "goal_session"); assert.equal(next.approvalRevision, null);
+  assert.equal(next.discoveryContext.sourcePlanId, "legacy");
+  assert.equal(next.discoveryContext.spec.outcome, "Saved outcome");
+  assert.equal(next.discoveryContext.tasks[0].title, "Saved task");
+  assert.equal(next.discoveryContext.discussion[0].answer, "Yes");
+  assert.deepEqual(next.images, source.images); assert.deepEqual(next.issueNumbers, [8]);
+  assert.equal(next.engine.reviewer, false);
+  assert.equal(store.get("legacy").boardStatus, "aborted");
+  assert.equal((await service.continueDiscovery("legacy")).planId, next.planId);
+  assert.equal((await service.continueDiscovery(next.planId)).planId, next.planId);
+  assert.equal(stopped, 1); assert.equal(started, 1);
+});
+
+test("failed stop never creates another writer or releases issue ownership", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" }); t.after(() => store.close());
+  store.createPlan({ planId: "legacy", repositoryId: "repo", goal: "Keep work", issueNumbers: [8] });
+  const service = new GoalSessionService({ store, worktrees: { resolveRepository: async () => ({ id: "repo" }), create: () => { throw new Error("Must not create"); } }, cmux: {}, stopGoal: async () => ({ failedSessionIds: ["old"] }) });
+  await assert.rejects(() => service.continueDiscovery("legacy"), /could not be stopped/);
+  assert.equal(store.get("legacy").issuesReturnedAt, null);
+  assert.equal(store.list().length, 1);
 });

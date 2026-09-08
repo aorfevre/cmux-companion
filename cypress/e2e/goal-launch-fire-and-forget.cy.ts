@@ -69,33 +69,12 @@ function openTheGoalSheet() {
   cy.findByRole("dialog", { name: "Plan a goal" }).should("be.visible");
 }
 
-describe("launching a goal is fire and forget", () => {
-  it("closes the sheet on a notice and reads as launching on the card", () => {
-    const state: Scenario = { plans: [readyPlan()], detail: planDetail() };
-    installScenario(state);
-    cy.intercept("POST", "**/api/worktree-plans/plan-launch/launch", (request) => {
-      expect(request.body).to.deep.equal({ background: true });
-      state.plans = [readyPlan({ launching: true })];
-      state.detail = planDetail({ launching: true });
-      request.reply({ statusCode: 202, body: { planId: "plan-launch", launching: true } });
-    }).as("launch");
-    visitBoard();
-    openTheGoalSheet();
-
-    cy.findByRole("dialog", { name: "Plan a goal" }).within(() => {
-      cy.findByRole("button", { name: "Launch 2 sessions" }).click();
-    });
-
-    cy.wait("@launch");
-    cy.findByRole("dialog", { name: "Plan a goal" }).should("not.exist");
-    cy.contains("Launching this goal. A notification reports the result.").should("be.visible");
-    // Neither the progress paragraph nor the launch-result screen exists now.
-    cy.contains("Creating worktrees and starting sessions. This can take a minute.").should("not.exist");
-    cy.contains("Launch result").should("not.exist");
-
-    cy.findByRole("region", { name: "Waiting for dev" })
-      .should("contain.text", "Creating worktrees and starting sessions…")
-      .and("not.contain.text", "Ready to launch");
+describe("continuing saved discovery and observing existing delivery", () => {
+  it("offers one continuation action for an unlaunched historical plan", () => {
+    const state: Scenario = { plans: [readyPlan()], detail: planDetail() }; installScenario(state); visitBoard(); openTheGoalSheet();
+    cy.findByRole("button", { name: "Continue discovery" }).should("be.enabled");
+    cy.findByRole("button", { name: "Launch 2 sessions" }).should("not.exist");
+    cy.findByRole("button", { name: "Plan this goal" }).should("not.exist");
   });
 
   it("stops saying launching once the launch settles", () => {
@@ -119,12 +98,12 @@ describe("launching a goal is fire and forget", () => {
   it("keeps the sheet open and reports the reason when a launch is refused", () => {
     const state: Scenario = { plans: [readyPlan()], detail: planDetail() };
     installScenario(state);
-    cy.intercept("POST", "**/api/worktree-plans/plan-launch/launch", { statusCode: 409, body: { error: "This goal is launching right now. Wait for the launch to finish" } }).as("launch");
+    cy.intercept("POST", "**/api/goal-sessions/plan-launch/continue", { statusCode: 409, body: { error: "This goal is launching right now. Wait for the launch to finish" } }).as("launch");
     visitBoard();
     openTheGoalSheet();
 
     cy.findByRole("dialog", { name: "Plan a goal" }).within(() => {
-      cy.findByRole("button", { name: "Launch 2 sessions" }).click();
+      cy.findByRole("button", { name: "Continue discovery" }).click();
     });
 
     cy.wait("@launch");

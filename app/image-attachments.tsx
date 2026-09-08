@@ -89,9 +89,9 @@ export function useImageAttachments(onNotice: (message: string) => void, ownerKe
   return { attachments: snapshot.owner === owner ? snapshot.images : [], uploading: snapshot.owner === owner ? snapshot.pending : 0, inputRef, addImages, pasteImages, removeImage, clearAttachments };
 }
 
-export function AttachmentStrip({ attachments, className = "", onRemove }: { attachments: ImageAttachment[]; className?: string; onRemove: (path: string) => void }) {
+export function AttachmentStrip({ attachments, className = "worktree-attachments", onRemove }: { attachments: ImageAttachment[]; className?: string; onRemove: (path: string) => void }) {
   if (!attachments.length) return null;
-  return <div className={`attachment-strip worktree-attachments ${className}`.trim()}>{attachments.map((image) => <div key={image.path}>
+  return <div className={`attachment-strip ${className}`.trim()}>{attachments.map((image) => <div key={image.path}>
     <img src={image.preview} alt={image.name} />
     <span>{image.name}</span>
     <button type="button" aria-label={`Remove ${image.name}`} onClick={() => onRemove(image.path)}>×</button>

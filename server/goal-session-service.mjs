@@ -1,18 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeImages, normalizePlannerEngine, normalizeIssueNumbers, normalizeIssueUrls } from "./worktree-planner.mjs";
 import { normalizeSpecOptions } from "./spec-options.mjs";
-import { safeReviewOptions } from "./review-options.mjs";
+import { normalizeReviewOptions } from "./review-options.mjs";
 
-// Owns only the visible, one-worktree session path. Legacy saved plans keep
-// their existing planner/launch flow; an explicit restart creates a new goal.
+// Owns every new discovery conversation. Historical delivery recovery remains
+// separate; continuing unlaunched discovery creates one durable successor.
 export class GoalSessionService {
-  constructor({ store, worktrees, cmux, modelSettings, log = null, processAlive = isProcessAlive } = {}) {
+  constructor({ store, worktrees, cmux, modelSettings, log = null, processAlive = isProcessAlive, stopGoal = null } = {}) {
     if (!store || !worktrees || !cmux) throw new TypeError("Goal sessions need plan storage, worktrees and cmux");
     this.store = store; this.worktrees = worktrees; this.cmux = cmux; this.modelSettings = modelSettings; this.log = log;
-    this.processAlive = processAlive;
+    this.processAlive = processAlive; this.stopGoal = stopGoal;
   }
 
-  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, idempotencyKey = null, issueNumbers = [], issueUrls = [] } = {}) {
+  async start({ repositoryId, goal, images, engine = {}, specOptions = {}, reviewOptions = {}, idempotencyKey = null, issueNumbers = [], issueUrls = [], discoveryContext = null } = {}) {
     const text = String(goal || "").trim();
     if (!text || text.length > 4_000) throw new TypeError("Describe the goal for this repository");
     const repository = await this.worktrees.resolveRepository(repositoryId);
@@ -21,8 +21,8 @@ export class GoalSessionService {
     const linkedIssues = normalizeIssueNumbers(issueNumbers);
     const linkedUrls = normalizeIssueUrls(issueUrls);
     const selectedEngine = normalizePlannerEngine(engine, this.modelSettings?.roles);
-    const selectedReview = safeReviewOptions(reviewOptions);
-    if (selectedReview.codeReview || selectedEngine.reviewer) throw new TypeError("Managed goal sessions do not support automated reviewers. Use Plan this goal for reviewed delivery");
+    const selectedReview = normalizeReviewOptions(reviewOptions);
+    if (selectedReview.codeReview || selectedEngine.reviewer) throw new TypeError("Managed goal sessions do not support automated reviewers. Continue review in the interactive goal conversation");
     const selectedOptions = normalizeSpecOptions(specOptions);
     const existing = this.store.get(planId);
     if (existing) {
@@ -31,7 +31,7 @@ export class GoalSessionService {
     }
     this.store.createPlan({ planId, repositoryId: repository.id, repositoryName: repository.name, cwd: repository.primaryPath, goal: text, images: attachments,
       engine: selectedEngine, specOptions: selectedOptions, reviewOptions: selectedReview,
-      sourceType: linkedIssues.length ? "github_issues" : null, issueNumbers: linkedIssues, issueUrls: linkedUrls });
+      sourceType: linkedIssues.length ? "github_issues" : null, issueNumbers: linkedIssues, issueUrls: linkedUrls, discoveryContext });
     const branch = `goal-session/${planId.slice(0, 12)}`;
     this.store.reserveGoalSession(planId, { branch, generation: 1 });
     try {
@@ -58,12 +58,26 @@ export class GoalSessionService {
     }
   }
 
+  async continueDiscovery(planId) {
+    const source = this.store.get(planId);
+    if (!source || source.boardStatus === "merged") throw new TypeError("This goal cannot restart discovery");
+    if (source.workflow === "goal_session" && !source.boardStatus) return source;
+    if (source.status === "launched" || source.tasks?.some((task) => task.workspaceId || task.worktreePath)) throw new TypeError("Development has already started; continue its recorded conversation");
+    await this.worktrees.resolveRepository(source.repositoryId);
+    if (source.boardStatus !== "aborted") {
+      if (!this.stopGoal) throw new TypeError("Stopping the previous discovery is unavailable");
+      const result = await this.stopGoal(source.planId);
+      if (result.failedSessionIds?.length) throw new TypeError("The old conversation could not be stopped. Close it before continuing discovery");
+    }
+    return this.restart(source.planId);
+  }
+
   // One durable successor per stopped discovery, including after a lost HTTP
   // response or a browser reload. Restarting its successor is a separate action.
   async restart(planId) {
     const source = this.store.get(planId);
     if (!source || source.boardStatus !== "aborted") throw new TypeError("Abort the old goal before restarting discovery");
-    if (source.tasks?.length || source.status === "launched") throw new TypeError("Restart discovery is only available before development tasks exist");
+    if (source.tasks?.some((task) => task.workspaceId || task.worktreePath) || source.status === "launched") throw new TypeError("Restart discovery is only available before development tasks exist");
     const hash = createHash("sha256").update(`goal-discovery-restart:${source.planId}`).digest("hex");
     const idempotencyKey = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
     const existing = this.store.get(idempotencyKey);
@@ -83,7 +97,8 @@ export class GoalSessionService {
     return this.start({ repositoryId: source.repositoryId, goal: source.goal, images: source.images,
       engine: { ...source.engine, reviewer: false }, specOptions: source.specOptions,
       reviewOptions: { ...source.reviewOptions, codeReview: false },
-      issueNumbers: source.issueNumbers, issueUrls: source.issueUrls, idempotencyKey });
+      issueNumbers: source.issueNumbers, issueUrls: source.issueUrls, idempotencyKey,
+      discoveryContext: source.discoveryContext || { sourcePlanId: source.planId, spec: source.spec, tasks: source.tasks, questions: source.questions, events: this.store.events(source.planId), discussion: this.store.discussions(source.planId) } });
   }
 
   // Recovery is explicit and reuses only durable ids. It never looks at a

@@ -16,7 +16,7 @@ export const MODEL_CATALOG = {
   ],
 };
 export const MODEL_ROLES = [
-  { id: "planner", label: "Planner", description: "New goal plans and questions about their specification.", provider: true },
+  { id: "planner", label: "Planner", description: "The interactive conversation for discovery, review and approved implementation.", provider: true },
   { id: "specReviewer", label: "Spec reviewer", description: "The optional second pass uses the other provider.", provider: false },
   { id: "coder", label: "Coder", description: "Task launches, retries, dependency waves, and manually launched agents. Task provider choices still apply.", provider: false },
   { id: "codeReviewer", label: "Code reviewer", description: "Post-delivery review requests and follow-ups that include a code review, using the selected provider.", provider: false },
@@ -24,6 +24,8 @@ export const MODEL_ROLES = [
   { id: "followup", label: "Follow-up agent", description: "Additional tests, questions, and custom work after delivery.", provider: false },
   { id: "issueAnalyzer", label: "Issue analyzer", description: "Groups GitHub issues into topics before planning.", provider: true },
 ];
+// Retain old keys for saved configuration compatibility, without exposing retired workflows.
+export const ACTIVE_MODEL_ROLES = MODEL_ROLES.filter((role) => !["specReviewer", "issueAnalyzer"].includes(role.id));
 export const DEFAULT_MODEL_ROLES = Object.fromEntries(MODEL_ROLES.map((role) => [role.id, {
   ...(role.provider ? { provider: role.id === "planner" ? "codex" : "claude" } : {}),
   models: ["specReviewer", "codeReviewer"].includes(role.id)

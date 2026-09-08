@@ -158,6 +158,7 @@ function migratePlanSchema(db) {
     ensure("plans", "goal_session_workspace_id", "TEXT");
     ensure("plans", "goal_session_worktree_path", "TEXT");
     ensure("plans", "goal_session_branch", "TEXT");
+    ensure("plans", "discovery_context", "TEXT");
     ensure("plans", "goal_session_generation", "INTEGER NOT NULL DEFAULT 0");
     ensure("plans", "goal_session_provider_session_id", "TEXT");
     ensure("plans", "proposal_revision", "INTEGER NOT NULL DEFAULT 0");
