@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BurstStore } from "../server/burst-store.mjs";
+import { MAX_BURST_GOAL } from "../server/burst-contract.mjs";
 
 const REPO_A = "repoAAAAAAAAAAAAAA";
 const REPO_B = "repoBBBBBBBBBBBBBB";
@@ -65,4 +66,34 @@ test("list is newest first and unknown ids return null", (t) => {
   store.create({ burstId: "burst-2", repositories: [{ id: REPO_A, name: "a" }] });
   assert.deepEqual(store.list().map((b) => b.burstId), ["burst-2", "burst-1"]);
   assert.equal(store.get("nope"), null);
+});
+
+test("a stale scan result never overwrites a candidate that already settled", (t) => {
+  const store = memoryStore(t);
+  store.create({ burstId: "burst-1", repositories: [{ id: REPO_A, name: "a" }] });
+  store.recordProposal("burst-1", REPO_A, { goal: "first", rationale: "r" });
+  store.recordDecline("burst-1", REPO_A);
+  assert.throws(() => store.recordProposal("burst-1", REPO_A, { goal: "late", rationale: "r" }), /cannot move to proposed/);
+  assert.throws(() => store.recordFailure("burst-1", REPO_A, "late"), /cannot move to failed/);
+  const candidate = store.get("burst-1").candidates[0];
+  assert.equal(candidate.status, "declined");
+  assert.equal(candidate.goal, "first");
+});
+
+test("a duplicate repository is a typed error and running lists scanning bursts", (t) => {
+  const store = memoryStore(t);
+  assert.throws(() => store.create({ burstId: "burst-1", repositories: [{ id: REPO_A, name: "a" }, { id: REPO_A, name: "a" }] }), TypeError);
+  assert.equal(store.list().length, 0);
+  store.create({ burstId: "burst-1", repositories: [{ id: REPO_A, name: "a" }, { id: REPO_B, name: "b" }] });
+  store.create({ burstId: "burst-2", repositories: [{ id: REPO_A, name: "a" }] });
+  store.recordProposal("burst-2", REPO_A, { goal: "g", rationale: "r" });
+  assert.deepEqual(store.running(), ["burst-1"]);
+  assert.deepEqual(store.strandedScanning(), [{ burstId: "burst-1", repositoryId: REPO_A }, { burstId: "burst-1", repositoryId: REPO_B }]);
+});
+
+test("an approved goal is capped at the goal session limit", (t) => {
+  const store = memoryStore(t);
+  store.create({ burstId: "burst-1", repositories: [{ id: REPO_A, name: "a" }] });
+  store.recordProposal("burst-1", REPO_A, { goal: "g", rationale: "r" });
+  assert.equal(store.recordApproval("burst-1", REPO_A, { planId: "plan-1", goal: "x".repeat(5_000) }).goal.length, MAX_BURST_GOAL);
 });

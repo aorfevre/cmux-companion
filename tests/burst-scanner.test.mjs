@@ -57,3 +57,8 @@ test("the prompt names the files to read and the exact JSON shape", () => {
   assert.match(prompt, /"sizeEstimate"/);
   assert.match(prompt, /Do not write/);
 });
+
+test("a result the CLI flags as an error is reported with its own text", async () => {
+  const scan = scanner(async () => ({ stdout: `${JSON.stringify({ type: "result", is_error: true, result: "Not logged in. Run ccs login" })}\n` }));
+  await assert.rejects(() => scan.scan({ repository, provider: "claude" }), /Not logged in\. Run ccs login/);
+});

@@ -56,6 +56,9 @@ export function scanPrompt(repository) {
 export function parseScanReply(stdout) {
   const envelope = extractJson(String(stdout));
   if (!envelope) throw new TypeError(UNUSABLE);
+  // ccs reports its own failures (auth, quota, a crashed turn) as a result
+  // line with is_error set. That text is the reason, not "unusable".
+  if (envelope.is_error === true) throw new TypeError(String(envelope.result ?? "The scan failed").slice(0, 300) || "The scan failed");
   const payload = extractJson(String(envelope.result ?? ""));
   if (!payload) throw new TypeError(UNUSABLE);
   return normalizeProposal(payload);

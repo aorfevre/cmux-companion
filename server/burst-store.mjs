@@ -56,6 +56,7 @@ export class BurstStore {
       return { id: repository.id, name: String(repository.name || repository.id).slice(0, 200) };
     });
     if (!list.length) throw new TypeError("A burst needs at least one starred repository");
+    if (new Set(list.map((repository) => repository.id)).size !== list.length) throw new TypeError("A repository can appear once in a burst");
     const at = this.#stamp();
     this.#transaction(() => {
       this.db.prepare("INSERT INTO burst_plans (burst_id, created_at, updated_at, capacity_snapshot) VALUES (?, ?, ?, ?)")
@@ -106,6 +107,17 @@ export class BurstStore {
     const rows = this.db.prepare("SELECT burst_id FROM burst_plans ORDER BY created_at DESC, burst_id DESC LIMIT ?")
       .all(Math.max(1, Math.min(100, Number(limit) || 20)));
     return rows.map((row) => this.get(row.burst_id));
+  }
+
+  // Bursts with a candidate still scanning. Cheap enough to call on every create.
+  running() {
+    return this.db.prepare("SELECT DISTINCT burst_id FROM burst_candidates WHERE status = 'scanning' ORDER BY burst_id").all().map((row) => row.burst_id);
+  }
+
+  // Every scanning row, so the service can spot rows no scan is working on.
+  strandedScanning() {
+    return this.db.prepare("SELECT burst_id, repository_id FROM burst_candidates WHERE status = 'scanning' ORDER BY burst_id, position").all()
+      .map((row) => ({ burstId: row.burst_id, repositoryId: row.repository_id }));
   }
 
   close() { this.db.close(); }
