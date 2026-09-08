@@ -1088,5 +1088,4 @@
 .proposal-layout{min-width:0}.proposal-decision{min-width:0}
 @media(min-width:900px){.proposal-layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:24px;align-items:start}.planner-delivery-status.proposal-review .proposal-decision>p{margin-top:0}.planner-delivery-status.proposal-review .planner-actions{flex-direction:column}}
 
-.planner-burst label{display:flex;gap:10px;align-items:flex-start}
 .goal-burst-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:8px;background:#5a3c12;color:#ffd58a;font-size:10px;font-style:normal;vertical-align:middle}

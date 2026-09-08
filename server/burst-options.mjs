@@ -7,6 +7,7 @@ export const BURST_OPTION = Object.freeze({
   id: "burst",
   label: "Burst",
   hint: "Uses more quota: extra reviewers and subagents.",
+  description: "Extra independent reviewers on every finished task and on the goal pull request. Every task agent may run subagents.",
 });
 
 export function normalizeBurst(value) {

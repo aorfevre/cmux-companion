@@ -17,7 +17,7 @@ import {
 } from "./delivery-contract.mjs";
 import { safeSpecOptions, specOptionsBriefLines } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
-import { burstBriefLines, normalizeBurst } from "./burst-options.mjs";
+import { burstBriefLines } from "./burst-options.mjs";
 import { AgentBriefs } from "./agent-brief.mjs";
 import { resolveDefaultBaseRef } from "./default-base-ref.mjs";
 import { PlannerRuns } from "./planner-runs.mjs";
@@ -1126,7 +1126,7 @@ export function taskPrompt(task, spec, images, base, deliveryMode = "single", re
   // reads what was asked for before it reads how to close the branch.
   const rigor = [
     specOptionsBriefLines(safeSpecOptions(specOptions)).join("\n"),
-    burstBriefLines(normalizeBurst(burst === true)).join("\n"),
+    burstBriefLines(burst === true).join("\n"),
     formatOptionEvidence(spec?.optionEvidence),
     formatDesignArtifacts(spec?.designArtifacts),
   ].filter(Boolean);

@@ -603,7 +603,12 @@ export function WorktreePlannerSheet({ repository, initialPlanId = "", initialGo
       </section>
       <section className="planner-spec-options planner-burst" aria-label="Execution intensity">
         <header><strong>{BURST_OPTION.label}</strong><span>{BURST_OPTION.hint}</span></header>
-        <label><input type="checkbox" aria-label={BURST_OPTION.label} checked={burst} onChange={(event) => setBurst(event.target.checked)} /><span><b>{BURST_OPTION.label}</b><small>Extra independent reviewers on every finished task and on the goal pull request. Every task agent may run subagents.</small></span></label>
+        <ul><li>
+          <label>
+            <input type="checkbox" aria-label={BURST_OPTION.label} checked={burst} onChange={(event) => setBurst(event.target.checked)} />
+            <span><b>{BURST_OPTION.label}</b><small>{BURST_OPTION.description}</small></span>
+          </label>
+        </li></ul>
       </section>
       {error && <p className="worktree-action-error">{error}</p>}
       {busy === "plan" && <p className="planner-waiting">Starting the round…</p>}

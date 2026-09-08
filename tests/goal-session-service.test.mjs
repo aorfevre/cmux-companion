@@ -124,7 +124,7 @@ test("restarts aborted discovery once, retaining context and moving GitHub owner
     resolveRepository: async (id) => ({ id, name: "sample", primaryPath: "/repo/sample" }),
     create: async () => { created++; return { worktree: { path: "/repo/restarted" } }; },
   }, cmux: { workspaceListDetailed: async () => ({ workspaces: [] }), workspaceCreate: async () => ({ workspace_id: "fresh" }), workspaceStartGoalSessionRunner: async () => {} } });
-  const source = store.createPlan({ planId: "old", repositoryId: "repo", goal: "Fix issue eight", issueNumbers: [8], issueUrls: ["https://github.com/example/sample/issues/8"], images: [{ path: "/attachments/shot.png", name: "shot.png" }], engine: { provider: "codex", model: "gpt-5.4", effort: "high", reviewer: true }, specOptions: { unitTests: true, edgeCases: true }, reviewOptions: { codeReview: true } });
+  const source = store.createPlan({ planId: "old", repositoryId: "repo", goal: "Fix issue eight", issueNumbers: [8], issueUrls: ["https://github.com/example/sample/issues/8"], images: [{ path: "/attachments/shot.png", name: "shot.png" }], engine: { provider: "codex", model: "gpt-5.4", effort: "high", reviewer: true }, specOptions: { unitTests: true, edgeCases: true }, reviewOptions: { codeReview: true }, burst: true });
   await assert.rejects(() => service.restart("old"), /Abort the old goal/);
   assert.equal(created, 0);
   assert.equal(store.get("old").issuesReturnedAt, null);
@@ -135,7 +135,7 @@ test("restarts aborted discovery once, retaining context and moving GitHub owner
   assert.equal((await service.restart("old")).planId, first.planId);
   assert.equal(created, 1);
   assert.equal(first.workflow, "goal_session");
-  for (const key of ["goal", "images", "specOptions", "issueNumbers", "issueUrls"]) assert.deepEqual(first[key], source[key]);
+  for (const key of ["goal", "images", "specOptions", "issueNumbers", "issueUrls", "burst"]) assert.deepEqual(first[key], source[key]);
   assert.deepEqual(first.engine, source.engine);
   assert.equal(first.reviewOptions.codeReview, true);
   assert.equal(store.get("old").boardStatus, "aborted");
