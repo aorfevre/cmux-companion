@@ -44,29 +44,38 @@ No cloud application server is involved. Terminal output and input travel direct
 ## Visible goal sessions
 
 In Worktrees, open **New goal**, describe a small increment and select **Start
-goal session**. Companion saves the goal and opens an isolated worktree with a
-visible cmux conversation. Answer questions there or through the attention inbox.
-Steering during planning is saved for the next turn. Review the proposed scope,
-exclusions, assumptions, acceptance criteria and verification, then choose
-**Request changes** or **Approve and implement**. Approval applies to that exact
-revision and session generation. Phone read-only protection also disables the
-session's approval and recovery controls until input is enabled.
+goal session**. If the form exposes automated reviewer toggles, disable both
+reviews first; those remain supported by **Plan this goal**. Companion saves the goal and opens an isolated worktree with a
+native interactive conversation in cmux. Ask questions, answer the agent,
+interrupt it and refine scope directly in the same terminal. Discovery stays open
+until the agent publishes a validated delivery contract through its dedicated
+Companion tool. The saved proposal then becomes ready for review; missing output,
+a CLI exit or an interrupted conversation does not move it to Blocked.
 
-The same owner conversation continues implementation and review. **Open
-conversation** on a saved goal returns to its recorded workspace. **Recover failed
-turn** retries a failed planning turn through its existing owner; it never
-blindly retries an uncertain writable turn. The goal retains its checkout,
-questions and decisions when the bridge restarts. A session with missing or
-uncertain ownership can require manual reconciliation rather than creating
-another writer. The owning conversation stays open while its PR is reviewed.
+Review the scope, exclusions, assumptions, acceptance criteria and verification,
+then choose **Request changes** or **Approve and implement**. Approval applies to
+that exact revision and session generation. After approval, tell the agent to
+continue in the same conversation. Ordinary tool permission prompts remain
+interactive. A new discovery message before approval withdraws the old proposal;
+the agent republishes after incorporating your feedback. Phone feedback is saved
+and reaches the agent when it next checks goal status or you send a terminal
+message; it does not inject text into an active native prompt.
 
-This conversation uses a line-oriented runner in cmux and CCS with an explicit
-Claude-compatible target for both selected providers. It resumes the saved
-provider conversation between processes; it is not a native Codex or Claude TUI.
-Send terminal replies one line at a time; use the saved goal sheet’s answer or
-request-change text area for multiline feedback. Planning enables only Read, Grep and Glob. Approval enables a bounded writable
-tool configuration without a permission-bypass mode. Unsupported commands can
-still be refused and reported as failed or uncertain turns.
+**Open conversation** returns to the recorded cmux workspace. **Resume
+conversation** restarts an exited CLI with its saved conversation identity;
+it preserves discovery and any proposal. An uncertain legacy implementation or
+missing ownership still requires reconciliation, never an automatic replay.
+Phone read-only protection disables approval, feedback and resume controls until
+input is enabled. The owning conversation stays open while its PR is reviewed.
+
+CCS uses its explicit Claude-compatible target for the selected provider, now
+with the native Claude terminal UI rather than headless print/stream-json turns.
+A supplied discovery prompt provides the `/goal` workflow; it does not require an
+installed slash command. Read, Grep, Glob, questions and the dedicated goal tools
+are available during discovery. A per-tool hook checks durable Companion approval
+before Bash, Edit or Write; native permission prompts still apply afterward.
+Only the Companion UI/API can approve a proposal. No completion envelope is
+required, and no provider prose is treated as proof of successful delivery.
 
 The owner is associated with one task for existing health and PR tracking.
 Companion observes PR state through its GitHub refresh/watch path; provider prose

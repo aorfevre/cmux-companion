@@ -119,7 +119,8 @@ function boardEvidence(plan: PlanSummary, state: GoalBoardStateId) {
   // A launch runs on the companion after its request has ended. Until it
   // settles, this goal is neither idle nor launched, so it says so.
   if (plan.launching) return LAUNCHING_EVIDENCE;
-  if (state === "waiting_for_dev") return "Ready to launch";
+  if (state === "waiting_for_dev") return plan.workflow === "goal_session" ? "Ready for review" : "Ready to launch";
+  if (state === "writing_spec" && plan.workflow === "goal_session") return "Discovery is open in the conversation";
   if (plan.running) return plan.runStep || (state === "review_spec" ? "A reviewer pass is reading the specification…" : "Reading the repository…");
   if (plan.runPhase === "failed") return plan.runError || plan.lastError || "The last round failed";
   if (plan.round === 0) return "Planning stopped before it produced anything";

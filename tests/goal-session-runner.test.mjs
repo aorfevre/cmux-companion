@@ -1,231 +1,204 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { PassThrough } from "node:stream";
+import { EventEmitter } from "node:events";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-
-import { runGoalSession, validateGoalSessionExecution, validateGoalSessionPlanning } from "../server/goal-session-runner.mjs";
+import { goalDiscoveryPrompt, interactiveGoalCommand, runInteractiveGoalSession } from "../server/goal-session-interactive.mjs";
+import { callGoalTool, goalHook, handleGoalRpc } from "../server/goal-session-bridge.mjs";
+import { goalBoardState } from "../server/goal-board.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 
-function setupSession(t, issueNumbers = []) {
-  const directory = mkdtempSync(join(tmpdir(), "cmux-goal-session-runner-"));
+function setup(t) {
+  const directory = mkdtempSync(join(tmpdir(), "cmux-interactive-goal-"));
   const databasePath = join(directory, "plans.db");
   const store = new WorktreePlanStore({ path: databasePath });
-  const planId = "goal-session-plan";
-  store.createPlan({ planId, repositoryId: "repo", cwd: directory, goal: "Add billing", issueNumbers });
-  store.reserveGoalSession(planId, { branch: "goal-session/test", generation: 1 });
-  store.recordGoalSessionStart(planId, {
-    worktreePath: directory,
-    workspaceId: "00000000-0000-4000-8000-000000000001",
-    generation: 1,
-  });
-  store.publishProposal(planId, {
-    generation: 1,
-    providerSessionId: "provider-session-1",
-    proposal: { intendedBehavior: "Add billing", scope: ["billing"] },
-  });
+  const binding = { planId: "goal-plan", generation: 1, sessionId: "00000000-0000-4000-8000-000000000001" };
+  store.createPlan({ planId: binding.planId, repositoryId: "repo", cwd: directory, goal: "Add billing", issueNumbers: [12] });
+  store.reserveGoalSession(binding.planId, { branch: "goal-session/test", generation: 1 });
+  store.recordGoalSessionStart(binding.planId, { worktreePath: directory, workspaceId: "workspace", generation: 1 });
+  store.recordGoalSessionProviderSession(binding.planId, { generation: 1, providerSessionId: binding.sessionId });
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { databasePath, directory, planId, store };
+  const get = () => store.get(binding.planId);
+  const hook = (tool_name) => goalHook(store, binding, { hook_event_name: "PreToolUse", session_id: binding.sessionId, tool_name });
+  return { store, binding, directory, databasePath, get, hook };
 }
+const contract = () => ({ basedOnRevision: 0, addressedFeedback: "", spec: { outcome: "Add billing", inScope: ["Billing"], nonGoals: ["Subscriptions"], assumptions: ["One currency"], acceptanceCriteria: [{ id: "AC-1", text: "Invoice is displayed", verification: "UI test" }] }, tasks: [{ id: "T1", title: "Billing", branch: "feature/billing", prompt: "Add the invoice UI", criterionIds: ["AC-1"], ownedAreas: ["app/**"], verification: ["npm test"] }] });
 
-function wait(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-test("a rejected durable proposal correction runs once and remains recoverable", async (t) => {
-  const { databasePath, directory, planId, store } = setupSession(t);
-  let calls = 0;
-  const stop = await runGoalSession({
-    planId,
-    databasePath,
-    generation: 1,
-    input: new PassThrough(),
-    out: () => {},
-    intervalMs: 10,
-    execute: async () => {
-      calls += 1;
-      throw new Error("provider rejected the correction");
-    },
-  });
-  t.after(stop);
-
-  store.requestProposalChanges(planId, { generation: 1, revision: 1, feedback: "Keep invoices out." });
-  await wait(100);
-
-  const plan = store.get(planId);
-  assert.equal(calls, 1, "a provider rejection must not replay the correction automatically");
-  assert.equal(plan.goalSessionPendingInput, null);
-  assert.equal(plan.goalSessionActiveInput, "Keep invoices out.", "the rejected correction remains durable for an explicit retry");
-  assert.match(plan.goalSessionError || "", /provider rejected the correction/);
-  assert.equal(plan.goalSessionWorktreePath, directory);
+test("native CLI owns the terminal and resumes the same conversation without envelopes or input interception", async (t) => {
+  const { databasePath, binding, get, directory } = setup(t);
+  const child = new EventEmitter(); child.pid = 234567; child.kill = () => {};
+  let invocation;
+  const run = runInteractiveGoalSession({ ...binding, databasePath, out: () => {}, spawnAgent: (command, args, options) => {
+    invocation = { command, args, options }; return child;
+  } });
+  child.emit("spawn");
+  assert.equal(get().goalSessionRunnerPid, child.pid, "native process protects against duplicate launch even if supervisor dies");
+  assert.equal(invocation.command, "ccs");
+  assert.equal(invocation.options.stdio, "inherit");
+  assert.equal(invocation.options.cwd, directory);
+  assert.equal(invocation.args[invocation.args.indexOf("--resume") + 1], binding.sessionId);
+  for (const flag of ["--print", "--output-format", "--permission-prompts", "--dangerously-skip-permissions"]) assert.ok(!invocation.args.includes(flag));
+  child.emit("exit", 0, null); await run;
+  assert.equal(get().goalSessionRunnerPid, null);
+  assert.equal(get().goalSessionError, null);
+  assert.equal(goalBoardState(get()), "writing_spec");
 });
 
-function resultEnvelope({ subtype = "success", sessionId = "provider-session-1", result = "Completed", isError = false } = {}) {
-  return JSON.stringify({ type: "result", subtype, session_id: sessionId, result, ...(isError ? { is_error: true } : {}) });
-}
+test("fresh session identity is durable on spawn, and native failure preserves discovery", async (t) => {
+  const { store, binding, databasePath, get } = setup(t);
+  store.db.prepare("UPDATE plans SET goal_session_provider_session_id = NULL WHERE plan_id = ?").run(binding.planId);
+  const child = new EventEmitter(); child.kill = () => {};
+  let args;
+  const run = runInteractiveGoalSession({ ...binding, databasePath, out: () => {}, spawnAgent: (_command, input) => { args = input; return child; } });
+  assert.equal(get().goalSessionProviderSessionId, null);
+  child.emit("spawn");
+  assert.equal(get().goalSessionProviderSessionId, args[args.indexOf("--session-id") + 1]);
+  assert.equal(args.at(-2), "--");
+  child.emit("exit", 1, null); await run;
+  assert.equal(get().goalSessionError, null);
+  assert.equal(goalBoardState(get()), "writing_spec");
+});
 
-test("an exit-zero provider error envelope leaves approval transition uncertain", async (t) => {
-  const { databasePath, planId, store } = setupSession(t);
-  const calls = [];
-  const stop = await runGoalSession({
-    planId,
-    databasePath,
-    generation: 1,
-    input: new PassThrough(),
-    out: () => {},
-    intervalMs: 10,
-    execute: async (args) => {
-      calls.push(args);
-      return resultEnvelope({ subtype: "error", result: "permission denied", isError: true });
-    },
-  });
-  t.after(stop);
+test("spawn failure releases ownership without inventing a provider session or blocking the goal", async (t) => {
+  const { store, binding, databasePath, get } = setup(t);
+  store.db.prepare("UPDATE plans SET goal_session_provider_session_id = NULL WHERE plan_id = ?").run(binding.planId);
+  const child = new EventEmitter(); child.kill = () => {};
+  const run = runInteractiveGoalSession({ ...binding, databasePath, out: () => {}, spawnAgent: () => child });
+  child.emit("error", new Error("ccs missing"));
+  await assert.rejects(run, /ccs missing/);
+  assert.equal(get().goalSessionProviderSessionId, null);
+  assert.equal(get().goalSessionRunnerPid, null);
+  assert.equal(goalBoardState(get()), "writing_spec");
+});
 
-  store.approveProposal(planId, { generation: 1, revision: 1 });
-  await wait(60);
-
-  assert.equal(calls.length, 1);
-  const args = calls[0];
-  assert.equal(args[args.indexOf("--tools") + 1], "Read,Grep,Glob,Edit,Write,Bash");
+test("command config binds mandatory approval hooks and only the dedicated MCP server", (t) => {
+  const { get, databasePath } = setup(t);
+  const args = interactiveGoalCommand(get(), databasePath);
+  assert.ok(args.includes("--restricted")); assert.ok(args.includes("--strict-mcp-config"));
   assert.equal(args[args.indexOf("--permission-mode") + 1], "manual");
-  assert.ok(args.includes("--restricted"));
-  assert.ok(args.includes("--permission-prompts"));
-  assert.match(args[args.indexOf("--allowed-tools") + 1], /Bash\(gh pr create \*\)/);
-  assert.match(args[args.indexOf("--allowed-tools") + 1], /Bash\(cargo test \*\)/);
-  assert.ok(!args.some((arg) => arg.includes("dangerously-skip-permissions") || arg.includes("bypassPermissions")));
-  assert.equal(store.get(planId).transitionStatus, "uncertain");
-  assert.match(store.get(planId).goalSessionError || "", /permission denied/);
+  assert.ok(!args.includes("--append-system-prompt"), "CCS appends its own steering prompt; discovery context comes from the mandatory user-turn hook");
+  assert.ok(!args.includes("--settings"), "CCS strips the standalone flag and leaks its JSON into the user prompt");
+  const settings = JSON.parse(args.find((arg) => arg.startsWith("--settings=")).slice("--settings=".length));
+  assert.equal(settings.hooks.PreToolUse[0].matcher, "*");
+  assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /goal-session-bridge.mjs/);
+  assert.ok(settings.hooks.UserPromptSubmit);
+  assert.deepEqual(Object.keys(JSON.parse(args[args.indexOf("--mcp-config") + 1]).mcpServers), ["companion_goal"]);
+  assert.match(goalDiscoveryPrompt(get()), /AskUserQuestion/);
+  assert.match(goalDiscoveryPrompt(get()), /#12/);
 });
 
-test("only an accepted result from the resumed provider conversation completes a writable turn", () => {
-  assert.equal(validateGoalSessionExecution(resultEnvelope(), "provider-session-1").session_id, "provider-session-1");
-  assert.throws(() => validateGoalSessionExecution(resultEnvelope({ subtype: "error", result: "permission denied", isError: true }), "provider-session-1"), /permission denied/);
-  assert.throws(() => validateGoalSessionExecution(JSON.stringify({ type: "result", subtype: "success", session_id: "provider-session-1", result: "denied", permission_denials: ["Edit"] }), "provider-session-1"), /denied/);
-  assert.throws(() => validateGoalSessionExecution(resultEnvelope({ sessionId: "other-provider-session" }), "provider-session-1"), /different conversation id/);
-  assert.throws(() => validateGoalSessionExecution("not an envelope"), /completion envelope/);
+test("questions and reading stay interactive; no tool permission mode bypasses unapproved writes", (t) => {
+  const { hook, get } = setup(t);
+  for (const tool of ["Read", "Grep", "Glob", "AskUserQuestion", "mcp__companion_goal__get_status"]) assert.deepEqual(hook(tool), {});
+  for (const tool of ["Bash", "Write", "Edit", "ExitPlanMode", "Agent", "mcp__other__run"]) assert.equal(hook(tool).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(goalBoardState(get()), "writing_spec");
 });
 
-test("planning rejects provider failures and a changed resumed conversation id", () => {
-  assert.equal(validateGoalSessionPlanning(resultEnvelope(), "provider-session-1").session_id, "provider-session-1");
-  assert.throws(() => validateGoalSessionPlanning(resultEnvelope({ subtype: "error", isError: true, result: "permission denied" }), "provider-session-1"), /planning turn: permission denied/);
-  assert.throws(() => validateGoalSessionPlanning(resultEnvelope({ sessionId: "other-provider-session" }), "provider-session-1"), /different conversation id/);
+test("validated publication makes review ready; stale or invalid proposals stay in the conversation", (t) => {
+  const { store, binding, get } = setup(t);
+  assert.throws(() => callGoalTool(store, binding, "publish_proposal", { ...contract(), spec: {} }), /outcome|criterion/);
+  assert.equal(get().goalSessionError, null);
+  assert.equal(get().proposalRevision, 0);
+  const result = callGoalTool(store, binding, "publish_proposal", contract());
+  assert.equal(result.approved, false);
+  assert.equal(get().goalSessionState, "awaiting_approval");
+  assert.equal(get().proposal.intendedBehavior, "Add billing");
+  assert.deepEqual(get().proposal.verification, ["npm test"]);
+  assert.throws(() => callGoalTool(store, binding, "publish_proposal", contract()), /changed/);
+  assert.equal(get().proposalRevision, 1);
 });
 
-test("planning is read-only until its durable proposal approval dispatches one writable resume", async (t) => {
-  const { databasePath, directory, planId, store } = setupSession(t);
-  store.db.prepare("UPDATE plans SET goal_session_provider_session_id = NULL, proposal_revision = 0, proposal = NULL, goal_session_state = 'planning', images = ? WHERE plan_id = ?").run(JSON.stringify([{ path: "/attachments/reference.png", name: "reference.png" }]), planId);
-  const calls = [];
-  const stop = await runGoalSession({
-    planId,
-    databasePath,
-    generation: 1,
-    input: new PassThrough(),
-    out: () => {},
-    intervalMs: 10,
-    execute: async (args) => {
-      calls.push(args);
-      if (calls.length === 1) return resultEnvelope({
-        sessionId: "provider-session-2",
-        result: JSON.stringify({ tasks: [{ title: "Billing", branch: "feature/billing", prompt: "Implement billing", verification: ["npm test"] }] }),
-      });
-      return resultEnvelope({ sessionId: "provider-session-2" });
-    },
-  });
-  t.after(stop);
-
-  await wait(60);
-  assert.equal(calls.length, 1);
-  const planning = calls[0];
-  assert.equal(planning[planning.indexOf("--tools") + 1], "Read,Grep,Glob");
-  assert.equal(planning[planning.indexOf("--permission-mode") + 1], "plan");
-  assert.ok(!planning.includes("Bash"));
-  assert.ok(planning.includes("--add-dir"));
-  assert.equal(planning[planning.indexOf("--add-dir") + 1], "/attachments");
-  assert.match(planning.at(-1), /\/attachments\/reference\.png/);
-  assert.match(planning.at(-1), /"acceptanceCriteria"/);
-  assert.equal(store.get(planId).goalSessionState, "awaiting_approval");
-
-  store.approveProposal(planId, { generation: 1, revision: 1 });
-  await wait(60);
-  assert.equal(calls.length, 2);
-  assert.ok(calls[1].includes("--resume"));
-  assert.equal(calls[1][calls[1].indexOf("--resume") + 1], "provider-session-2");
-  assert.equal(store.get(planId).goalSessionWorktreePath, directory);
-  assert.equal(store.get(planId).transitionStatus, "delivered");
+test("direct conversation feedback withdraws the prior proposal and guards against stale phone approval", (t) => {
+  const { store, binding, get, hook } = setup(t);
+  callGoalTool(store, binding, "publish_proposal", contract());
+  const context = goalHook(store, binding, { hook_event_name: "UserPromptSubmit", session_id: binding.sessionId, prompt: "Exclude exports" });
+  assert.match(context.hookSpecificOutput.additionalContext, /Exclude exports/);
+  assert.match(context.hookSpecificOutput.additionalContext, /interactive owner of this goal/);
+  assert.match(context.hookSpecificOutput.additionalContext, /Add billing/);
+  assert.equal(get().goalSessionState, "planning");
+  assert.throws(() => store.approveProposal(binding.planId, { generation: 1, revision: 1 }), /no longer current/);
+  assert.throws(() => callGoalTool(store, binding, "publish_proposal", { ...contract(), basedOnRevision: 1 }), /feedback changed/);
+  callGoalTool(store, binding, "publish_proposal", { ...contract(), basedOnRevision: 1, addressedFeedback: "Exclude exports" });
+  assert.equal(get().goalSessionPendingInput, null);
+  store.approveProposal(binding.planId, { generation: 1, revision: 2 });
+  assert.deepEqual(hook("Edit"), {}, "approval does not auto-grant native permission");
+  assert.equal(get().transitionStatus, "delivered");
+  assert.equal(get().finalPrUrl, null, "tool authorization is not delivery evidence");
+  assert.throws(() => callGoalTool(store, binding, "publish_proposal", { ...contract(), basedOnRevision: 2 }), /unavailable/);
 });
 
-test("prints a provider completion that has no assistant prose", async (t) => {
-  const { databasePath, planId, store } = setupSession(t);
-  const output = [];
-  const stop = await runGoalSession({
-    planId, databasePath, generation: 1, input: new PassThrough(), out: (line) => output.push(line), intervalMs: 10,
-    execute: async () => resultEnvelope({ result: "Committed 123abc and opened PR #42." }),
-  });
-  t.after(stop);
-  store.approveProposal(planId, { generation: 1, revision: 1 });
-  await wait(60);
-  assert.ok(output.some((line) => /opened PR #42/.test(line)));
+test("phone feedback reaches the next native turn and is acknowledged atomically with publication", (t) => {
+  const { store, binding, get } = setup(t);
+  callGoalTool(store, binding, "publish_proposal", contract());
+  store.requestProposalChanges(binding.planId, { generation: 1, revision: 1, feedback: "Add receipts" });
+  assert.equal(callGoalTool(store, binding, "get_status").addressedFeedback, "Add receipts");
+  const event = goalHook(store, binding, { hook_event_name: "UserPromptSubmit", session_id: binding.sessionId, prompt: "Please continue" });
+  assert.match(event.hookSpecificOutput.additionalContext, /Add receipts/);
+  assert.throws(() => store.publishProposal(binding.planId, { generation: 1, proposal: {}, expectedRevision: 1, expectedFeedback: "stale" }), /changed/);
+  assert.equal(get().goalSessionPendingInput, "Add receipts");
+  callGoalTool(store, binding, "publish_proposal", { ...contract(), basedOnRevision: 1, addressedFeedback: "Add receipts" });
+  assert.equal(get().proposalRevision, 2);
+  assert.equal(get().goalSessionPendingInput, null);
 });
 
-test("a post-delivery correction is claimed durably and is never replayed after failure", async (t) => {
-  const { databasePath, planId, store } = setupSession(t);
-  store.approveProposal(planId, { generation: 1, revision: 1 });
-  store.claimGoalSessionTransition(planId, { generation: 1, revision: 1 });
-  store.recordGoalSessionTransition(planId, { generation: 1, revision: 1 });
-  const input = new PassThrough();
-  let calls = 0;
-  const stop = await runGoalSession({
-    planId, databasePath, generation: 1, input, out: () => {}, intervalMs: 10,
-    execute: async () => { calls += 1; throw new Error("connection dropped after dispatch"); },
-  });
-  t.after(stop);
-  input.write("Correct the receipt text\n");
-  await wait(60);
-  assert.equal(calls, 1);
-  assert.equal(store.get(planId).goalSessionCorrectionStatus, "uncertain");
-  input.write("Try the correction again\n");
-  await wait(40);
-  assert.equal(calls, 1, "an uncertain writable correction is not replayed");
+test("stale generation, wrong conversation, closed goals and legacy uncertainty fail closed", (t) => {
+  const { store, binding, hook } = setup(t);
+  assert.throws(() => callGoalTool(store, { ...binding, generation: 2 }, "get_status"), /no longer current/);
+  assert.throws(() => goalHook(store, binding, { hook_event_name: "PreToolUse", session_id: "other", tool_name: "Read" }), /identity/);
+  callGoalTool(store, binding, "publish_proposal", contract());
+  store.approveProposal(binding.planId, { generation: 1, revision: 1 });
+  store.claimGoalSessionTransition(binding.planId, { generation: 1, revision: 1 });
+  store.recordGoalSessionTransition(binding.planId, { generation: 1, revision: 1, error: "Legacy handoff uncertain" });
+  assert.equal(hook("Bash").hookSpecificOutput.permissionDecision, "deny");
+  store.db.prepare("UPDATE plans SET board_status = 'aborted' WHERE plan_id = ?").run(binding.planId);
+  assert.throws(() => hook("Read"), /no longer current/);
 });
 
-test("provider questions become durable attention and the terminal answer resumes the same conversation", async (t) => {
-  const { databasePath, planId, store } = setupSession(t);
-  store.db.prepare("UPDATE plans SET goal_session_provider_session_id = NULL, proposal_revision = 0, proposal = NULL, questions = '[]', goal_session_state = 'planning' WHERE plan_id = ?").run(planId);
-  const input = new PassThrough();
-  const calls = [];
-  const stop = await runGoalSession({
-    planId, databasePath, generation: 1, input, out: () => {}, intervalMs: 10,
-    execute: async (args) => {
-      calls.push(args);
-      return calls.length === 1
-        ? resultEnvelope({ sessionId: "provider-session-questions", result: JSON.stringify({ questions: [{ text: "Which API?", options: ["REST", "GraphQL"] }] }) })
-        : resultEnvelope({ sessionId: "provider-session-questions", result: JSON.stringify({ tasks: [{ title: "Billing", branch: "feature/billing", prompt: "Implement billing" }] }) });
-    },
-  });
-  t.after(stop);
-
-  await wait(60);
-  assert.equal(store.get(planId).goalSessionState, "awaiting_input");
-  assert.deepEqual(store.get(planId).questions, [{ id: "q1", text: "Which API?", options: ["REST", "GraphQL"] }]);
-  input.write("REST\n");
-  await wait(60);
-  assert.equal(calls.length, 2);
-  assert.equal(calls[1][calls[1].indexOf("--resume") + 1], "provider-session-questions");
-  assert.equal(store.get(planId).goalSessionState, "awaiting_approval");
+test("MCP handshake, validation errors and unavailable methods cannot approve a goal", (t) => {
+  const { store, binding, get } = setup(t);
+  const rpc = (method, params) => handleGoalRpc(store, binding, { jsonrpc: "2.0", id: 1, method, params });
+  assert.equal(rpc("initialize").result.serverInfo.name, "companion-goal");
+  assert.deepEqual(rpc("tools/list").result.tools.map((tool) => tool.name), ["get_status", "publish_proposal"]);
+  assert.equal(rpc("tools/call", { name: "approve", arguments: {} }).result.isError, true);
+  assert.equal(rpc("tools/call", { name: "publish_proposal", arguments: {} }).result.isError, true);
+  assert.equal(rpc("unknown").error.code, -32601);
+  assert.equal(get().approvalRevision, null);
+  assert.equal(get().goalSessionError, null);
 });
 
-test("approved issue work retains PR references without authorizing extra scope", async (t) => {
-  const { databasePath, planId, store } = setupSession(t, [12, 15]);
-  let prompt;
-  const stop = await runGoalSession({ planId, databasePath, generation: 1, input: new PassThrough(), out: () => {}, intervalMs: 10,
-    execute: async (args) => { prompt = args.at(-1); return resultEnvelope(); },
-  });
-  t.after(stop);
-  assert.equal(prompt, undefined);
-  store.approveProposal(planId, { generation: 1, revision: 1 });
-  for (let attempt = 0; attempt < 100 && !prompt; attempt += 1) await wait(10);
-  assert.match(prompt, /Linked GitHub issues: #12, #15/);
-  assert.match(prompt, /only for issues fully resolved by the approved scope/);
-  assert.match(prompt, /Do not close issues directly or expand scope/);
+
+test("stdio bridge emits MCP JSON and hook failures deny through exit code 2", (t) => {
+  const { binding, databasePath } = setup(t);
+  const entry = fileURLToPath(new URL("../server/goal-session-bridge.mjs", import.meta.url));
+  const run = (mode, input) => spawnSync(process.execPath, [entry, mode, binding.planId, databasePath, "1", binding.sessionId], { input, encoding: "utf8", timeout: 5000 });
+  const mcp = run("mcp", [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "get_status", arguments: {} } },
+  ].map((item) => JSON.stringify(item)).join("\n") + "\n");
+  assert.equal(mcp.status, 0, mcp.stderr);
+  const messages = mcp.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(messages.length, 2);
+  assert.equal(JSON.parse(messages[1].result.content[0].text).approved, false);
+  const event = { hook_event_name: "PreToolUse", session_id: binding.sessionId, tool_name: "Bash" };
+  const deny = run("hook", JSON.stringify(event));
+  assert.equal(deny.status, 0);
+  assert.equal(JSON.parse(deny.stdout).hookSpecificOutput.permissionDecision, "deny");
+  const wrongSession = run("hook", JSON.stringify({ ...event, session_id: "other" }));
+  assert.equal(wrongSession.status, 2);
+  assert.match(wrongSession.stderr, /identity/);
+  assert.equal(run("hook", "invalid json").status, 2);
+});
+
+
+test("CLI modes that disable approval hooks cannot start a native agent", async (t) => {
+  const { binding, databasePath, get } = setup(t);
+  for (const flag of ["CLAUDE_CODE_SAFE_MODE", "CLAUDE_CODE_SIMPLE"]) {
+    await assert.rejects(runInteractiveGoalSession({ ...binding, databasePath, out: () => {}, env: { [flag]: "1" }, spawnAgent: () => assert.fail("must not spawn without hooks") }), /require approval hooks/);
+    assert.equal(get().goalSessionRunnerPid, null);
+    assert.equal(goalBoardState(get()), "writing_spec");
+  }
 });
