@@ -922,7 +922,7 @@ export function WorktreeDashboardView({ onOpenWorkspace, onLaunched, onGoalSessi
       else onOpenWorkspace(workspaceId);
     }} onClose={() => { closeGoalPopup(); void loadGoalPlans(); }} onNotice={onNotice} />}
     {issuePlanTarget && <GitHubIssuePicker repository={issuePlanTarget} onClose={() => { setIssuePlanTarget(null); void loadGoalPlans(); }} onStart={startIssueGoal} />}
-    {burstSheet && <BurstPlanSheet readOnly={readOnly} autoStart={burstSheet.autoStart} onClose={() => { setBurstSheet(null); void loadGoalPlans(); }} onOpenGoal={(repositoryId, planId) => { const repo = (dashboard?.repositories || []).find((item) => item.id === repositoryId); setBurstSheet(null); if (repo) openGoalPopup({ repository: repo, planId }); }} />}
+    {burstSheet && <BurstPlanSheet readOnly={readOnly} autoStart={burstSheet.autoStart} onClose={() => { setBurstSheet(null); void loadGoalPlans(); }} onOpenGoal={(repositoryId, planId) => { const repo = (dashboard?.repositories || []).find((item) => item.id === repositoryId); setBurstSheet(null); if (repo) openGoalPopup({ repository: repo, planId }); else onNotice("That repository is no longer on the board"); }} />}
     {followupTarget && <FollowupSheet plan={followupTarget} busy={boardBusy[`followup:${followupTarget.planId}`] === true} onClose={() => setFollowupTarget(null)} onSubmit={(submission) => launchFollowup(followupTarget, submission)} />}
   </>;
 }

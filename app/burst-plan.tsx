@@ -25,7 +25,7 @@ export function BurstPlanSheet({ readOnly, onClose, onOpenGoal, autoStart = fals
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
-  const [goals, setGoals] = useState<Record<string, string>>({});
+  const [goals, setGoals] = useState<Record<string, string | undefined>>({});
   const [loaded, setLoaded] = useState(false);
 
   // A generation counter defends against a slow poll GET resolving after a
@@ -37,11 +37,15 @@ export function BurstPlanSheet({ readOnly, onClose, onOpenGoal, autoStart = fals
 
   const applyDetail = useCallback((detail: Burst) => {
     setBurst(detail);
-    // A candidate's goal starts null while it scans, which seeds this field
-    // with "". A later poll must still be able to fill that field in once
-    // the scan proposes a goal, so an already-typed value wins only when it
-    // is non-empty; `??` would keep that stale "" forever.
-    setGoals((current) => Object.fromEntries(detail.candidates.map((c) => [c.repositoryId, current[c.repositoryId] || c.goal || ""])));
+    // A candidate's goal starts null while it scans. A later poll must still
+    // fill the field in once the scan proposes a goal, but must not clobber
+    // a value the user typed — including one they deliberately cleared to
+    // "". So: never touched (key absent) -> take the server goal; touched,
+    // even to empty (key present) -> keep what the user typed.
+    setGoals((current) => Object.fromEntries(detail.candidates.map((c) => {
+      const typed = current[c.repositoryId];
+      return [c.repositoryId, c.goal === null ? typed : typed ?? c.goal];
+    })));
   }, []);
 
   const load = useCallback(async () => {
