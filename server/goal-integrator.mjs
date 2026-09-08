@@ -590,7 +590,7 @@ export class GoalIntegrator {
         const brief = await this.briefs.write({
           planId: plan.planId,
           taskId: task.id,
-          markdown: taskPrompt(effectiveTask, plan.spec, plan.images, plan.integrationBranch, "combined", `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions),
+          markdown: taskPrompt(effectiveTask, plan.spec, plan.images, plan.integrationBranch, "combined", `${plan.planId}/${task.id}`, plan.issueNumbers, plan.specOptions, plan.burst),
         });
         const workspace = await this.cmux.workspaceCreate({
           cwd: path,

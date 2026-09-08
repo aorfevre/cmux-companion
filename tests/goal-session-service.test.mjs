@@ -208,3 +208,17 @@ test("failed stop never creates another writer or releases issue ownership", asy
   assert.equal(store.get("legacy").issuesReturnedAt, null);
   assert.equal(store.list().length, 1);
 });
+
+test("start persists burst and includes it in the idempotency identity", async (t) => {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  const service = new GoalSessionService({
+    store, modelSettings: { roles: undefined },
+    worktrees: { resolveRepository: async (id) => ({ id, name: "sample", primaryPath: "/repo/sample" }), create: async () => ({ worktree: { path: "/repo/sample-goal" } }) },
+    cmux: { workspaceListDetailed: async () => ({ workspaces: [] }), workspaceCreate: async () => ({ workspace_id: "ws" }), workspaceStartGoalSessionRunner: async () => {} },
+  });
+  const key = "11111111-1111-4111-8111-111111111111";
+  const plan = await service.start({ repositoryId: "repo-1", goal: "Burst it", burst: true, idempotencyKey: key });
+  assert.equal(plan.burst, true);
+  await assert.rejects(() => service.start({ repositoryId: "repo-1", goal: "Burst it", burst: false, idempotencyKey: key }), /belongs to a different goal/);
+});

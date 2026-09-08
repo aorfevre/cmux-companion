@@ -9,7 +9,7 @@ import { selectTaskBranchCandidate, taskBranchCandidates } from "../server/task-
 import { WORKTREE_REASONS, worktreeStateError } from "../server/worktree-errors.mjs";
 import { LaunchRuns } from "../server/launch-runs.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
-import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, describeTimeout, finalEnvelope, normalizePlannerEngine, parseDiscussionReply, parsePlannerReply, progressEvent, streamExecFile } from "../server/worktree-planner.mjs";
+import { PLANNER_ENGINES, WorktreePlanner, assignAgents, describeRunFailure, describeTimeout, finalEnvelope, normalizePlannerEngine, parseDiscussionReply, parsePlannerReply, progressEvent, streamExecFile, taskPrompt } from "../server/worktree-planner.mjs";
 
 function envelope(text, sessionId = "session-1") {
   return `[i] Preparing CLIProxy...\n[OK] CLIProxy binary ready\n${JSON.stringify({ session_id: sessionId, result: text })}\n`;
@@ -1243,4 +1243,14 @@ test("abort refuses a plan that does not exist", async (t) => {
   const { store, planner } = storedPlanner({ replies: [] });
   t.after(() => store.close());
   await assert.rejects(() => planner.abort("no-such-plan"), /Unknown plan/);
+});
+
+test("taskPrompt appends the burst block only when burst is on", () => {
+  const task = { id: "T1", title: "Do it", type: "feature", prompt: "Build it.", ownedAreas: ["src/"], verification: ["npm test"], criterionIds: [] };
+  const spec = { outcome: "Done", acceptanceCriteria: [] };
+  const plain = taskPrompt(task, spec, [], "origin/main", "single", "", [], undefined, false);
+  const burst = taskPrompt(task, spec, [], "origin/main", "single", "", [], undefined, true);
+  assert.ok(!plain.includes("Burst mode is on"));
+  assert.ok(burst.includes("Burst mode is on for this goal:"));
+  assert.ok(burst.indexOf("Burst mode is on") < burst.indexOf("Record completion evidence in the final commit message."), "the burst block sits before the completion instruction");
 });
