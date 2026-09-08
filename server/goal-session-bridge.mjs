@@ -3,6 +3,7 @@
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { WorktreePlanStore } from "./worktree-plan-store.mjs";
+import { goalDiscoveryPrompt } from "./goal-session-interactive.mjs";
 import { parsePlannerReply } from "./planner-reply.mjs";
 
 const READ_TOOLS = new Set(["Read", "Grep", "Glob", "AskUserQuestion", "mcp__companion_goal__get_status", "mcp__companion_goal__publish_proposal"]);
@@ -24,7 +25,7 @@ export function boundGoal(store, { planId, generation, sessionId }) {
 }
 
 export function goalStatus(plan) {
-  return { state: plan.goalSessionState, basedOnRevision: plan.proposalRevision,
+  return { goal: plan.goal, state: plan.goalSessionState, basedOnRevision: plan.proposalRevision,
     addressedFeedback: plan.goalSessionPendingInput || plan.goalSessionActiveInput || "",
     approved: plan.goalSessionState === "implementing" && plan.approvalRevision === plan.proposalRevision && Boolean(plan.approvalAt) && !plan.goalSessionError && ["pending", "delivered"].includes(plan.transitionStatus),
     proposal: plan.proposal, branch: plan.goalSessionBranch, baseRef: plan.baseRef, issueNumbers: plan.issueNumbers };
@@ -55,7 +56,7 @@ export function goalHook(store, binding, event) {
     if (plan.goalSessionState === "awaiting_approval" && typeof event.prompt === "string" && event.prompt.trim()) {
       plan = store.requestProposalChanges(binding.planId, { generation: binding.generation, revision: plan.proposalRevision, feedback: event.prompt.trim().slice(0, 4_000) });
     }
-    return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `Current Companion goal state: ${JSON.stringify(goalStatus(plan))}` } };
+    return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `${goalDiscoveryPrompt(plan)}\nCurrent Companion goal state: ${JSON.stringify(goalStatus(plan))}` } };
   }
   if (event.hook_event_name !== "PreToolUse") throw new Error("Unexpected goal hook event");
   const allowRead = READ_TOOLS.has(event.tool_name);

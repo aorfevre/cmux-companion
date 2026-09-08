@@ -72,7 +72,7 @@ Bash, Edit and Write require a current durable approval. Unknown tools fail clos
 The hook leaves native permission decisions intact and never grants write access
 itself. A UserPromptSubmit hook carries phone feedback and approval context into
 the conversation and invalidates an unapproved proposal when discussion resumes.
-Custom settings and MCP sources are isolated; the prompt supplies the `/goal`
+Custom settings and MCP sources are isolated; the user-turn hook supplies the `/goal`
 workflow without depending on an installed slash command.
 
 The supervisor transfers its durable process ownership to the spawned CCS
@@ -144,3 +144,49 @@ and recovery without creating another goal. Existing browser coverage is retaine
 Current change evidence and interventions are recorded in the PR completion
 report. Live CCS/cmux/GitHub behavior, installation, merge and deployment require
 separate authorization and are not established by mocked browser tests.
+
+
+## Native live validation (2026-09-08)
+
+Used new worktrees of the disposable `../cmux-e2e-cypress` repository, temporary
+SQLite databases, and the PR checkout's fixed cmux entry point. The installed
+Companion backend and goal database were not started or changed. Runtime:
+CCS 8.9.0, Claude Code 2.1.263, Codex Astra through the Claude-compatible target.
+
+The first live launch exposed a real CCS compatibility defect: its argument
+filter removes standalone `--settings` but leaves the JSON value as positional
+prompt text. CCS also appends its own system steering prompt. The fix passes
+`--settings=<json>` as one argument and supplies discovery context through the
+mandatory UserPromptSubmit hook, so the workflow survives CCS prompt injection.
+Regression assertions cover both argument forms and hook-delivered goal context.
+
+After the fix, the live native session read the fixture and asked directly for
+the desired label. An explicit pre-approval Edit attempt was denied by the
+Companion hook and left the checkout unchanged. The agent published revision 1
+through MCP; direct feedback withdrew it and resulted in revision 2. Approval
+was recorded through the same store decision used by the service, in the isolated
+test database. The agent observed it in the same conversation, presented native
+per-edit and shell permission prompts, changed exactly two lines in the approved
+files, and ran `npm test` successfully (2 passed). No commit, push, fixture PR,
+merge, deployment or remote delivery operation was requested or performed.
+
+Exiting the native process preserved its conversation ID, approved proposal and
+non-blocked state. Resume used the existing workspace and provider identity.
+The live test uses service/store boundaries for approval and resume; the phone
+approval UI remains covered by mocked Cypress, not an installed-backend live run.
+The test does not establish every other CCS/provider version's compatibility.
+
+Fresh-launch regression also passed with the corrected arguments: the real initial
+goal appeared as the prompt, the agent read the fixture and asked for the label
+without publishing or editing. The resumed approved conversation recalled the
+chosen label, revision 2 and its prior 2/2 test result without tool use. Both
+native test processes were stopped with targeted SIGTERM, after checking their
+parentage against the recorded owner; process exit left errors null and board
+states Writing Spec / Dev in progress rather than Blocked. Native Escape/keyboard
+shutdown was not established by this run: earlier keyboard shutdown attempts did
+not exit the CLI, so no claim of verified keyboard cancellation is made.
+
+Cleanup closed only the two recorded test workspaces and removed their uniquely
+named fixture worktrees, local branches and temporary databases. The original
+fixture checkout remained clean. Provider conversation history was preserved in
+its native session storage; no credentials or account settings were edited.

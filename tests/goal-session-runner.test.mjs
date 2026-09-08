@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { interactiveGoalCommand, runInteractiveGoalSession } from "../server/goal-session-interactive.mjs";
+import { goalDiscoveryPrompt, interactiveGoalCommand, runInteractiveGoalSession } from "../server/goal-session-interactive.mjs";
 import { callGoalTool, goalHook, handleGoalRpc } from "../server/goal-session-bridge.mjs";
 import { goalBoardState } from "../server/goal-board.mjs";
 import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
@@ -79,13 +79,15 @@ test("command config binds mandatory approval hooks and only the dedicated MCP s
   const args = interactiveGoalCommand(get(), databasePath);
   assert.ok(args.includes("--restricted")); assert.ok(args.includes("--strict-mcp-config"));
   assert.equal(args[args.indexOf("--permission-mode") + 1], "manual");
-  const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
+  assert.ok(!args.includes("--append-system-prompt"), "CCS appends its own steering prompt; discovery context comes from the mandatory user-turn hook");
+  assert.ok(!args.includes("--settings"), "CCS strips the standalone flag and leaks its JSON into the user prompt");
+  const settings = JSON.parse(args.find((arg) => arg.startsWith("--settings=")).slice("--settings=".length));
   assert.equal(settings.hooks.PreToolUse[0].matcher, "*");
   assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /goal-session-bridge.mjs/);
   assert.ok(settings.hooks.UserPromptSubmit);
   assert.deepEqual(Object.keys(JSON.parse(args[args.indexOf("--mcp-config") + 1]).mcpServers), ["companion_goal"]);
-  assert.match(args[args.indexOf("--append-system-prompt") + 1], /AskUserQuestion/);
-  assert.match(args[args.indexOf("--append-system-prompt") + 1], /#12/);
+  assert.match(goalDiscoveryPrompt(get()), /AskUserQuestion/);
+  assert.match(goalDiscoveryPrompt(get()), /#12/);
 });
 
 test("questions and reading stay interactive; no tool permission mode bypasses unapproved writes", (t) => {
@@ -114,6 +116,8 @@ test("direct conversation feedback withdraws the prior proposal and guards again
   callGoalTool(store, binding, "publish_proposal", contract());
   const context = goalHook(store, binding, { hook_event_name: "UserPromptSubmit", session_id: binding.sessionId, prompt: "Exclude exports" });
   assert.match(context.hookSpecificOutput.additionalContext, /Exclude exports/);
+  assert.match(context.hookSpecificOutput.additionalContext, /interactive owner of this goal/);
+  assert.match(context.hookSpecificOutput.additionalContext, /Add billing/);
   assert.equal(get().goalSessionState, "planning");
   assert.throws(() => store.approveProposal(binding.planId, { generation: 1, revision: 1 }), /no longer current/);
   assert.throws(() => callGoalTool(store, binding, "publish_proposal", { ...contract(), basedOnRevision: 1 }), /feedback changed/);

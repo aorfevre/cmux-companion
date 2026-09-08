@@ -18,12 +18,13 @@ export function interactiveGoalCommand(plan, databasePath, { fresh = false } = {
     UserPromptSubmit: [{ hooks: [{ type: "command", command: hook, timeout: 10 }] }],
   } };
   const mcp = { mcpServers: { companion_goal: { command: process.execPath, args: [BRIDGE, "mcp", ...binding] } } };
+  // CCS 8.9 strips a standalone --settings flag but leaves its value as the
+  // positional user prompt. The attached form reaches the native parser intact.
   const args = [plan.engine.provider, "--target", "claude", "--restricted", "--setting-sources", "", "--strict-mcp-config",
-    "--settings", JSON.stringify(settings), "--mcp-config", JSON.stringify(mcp), "--disable-slash-commands",
+    `--settings=${JSON.stringify(settings)}`, "--mcp-config", JSON.stringify(mcp), "--disable-slash-commands",
     "--tools", "Read,Grep,Glob,AskUserQuestion,Edit,Write,Bash", "--permission-mode", "manual",
     "--allowed-tools", "Read,Grep,Glob,AskUserQuestion,mcp__companion_goal__get_status,mcp__companion_goal__publish_proposal",
-    fresh ? "--session-id" : "--resume", plan.goalSessionProviderSessionId,
-    "--append-system-prompt", goalDiscoveryPrompt(plan)];
+    fresh ? "--session-id" : "--resume", plan.goalSessionProviderSessionId];
   if (plan.engine.model && plan.engine.model !== "default") args.push("--model", plan.engine.model);
   if (plan.engine.effort && plan.engine.effort !== "default") args.push("--effort", plan.engine.effort);
   for (const directory of new Set((plan.images || []).map((image) => dirname(image.path)))) args.push("--add-dir", directory);
