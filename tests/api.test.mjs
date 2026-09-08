@@ -1864,3 +1864,31 @@ test("schema-rejected planner requests still terminate their progress trace", as
   try { assert.match(new TextDecoder().decode((await reader.read()).value), /"k":"error"/); }
   finally { await reader.cancel(); }
 });
+
+test("discovery restart requires pairing and same origin, then returns one saved successor", async (t) => {
+  const { WorktreePlanStore } = await import("../server/worktree-plan-store.mjs");
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "old-discovery", repositoryId: "repo", goal: "Fix legacy discovery" });
+  store.recordGoalAborted("old-discovery");
+  let launches = 0;
+  const app = await buildApp(t, { token: TOKEN, worktreePlanStore: store, cmux: {
+    ...fakeCmux(), workspaceListDetailed: async () => ({ workspaces: [] }),
+    workspaceStartGoalSessionRunner: async () => { launches++; },
+  }, worktreeDashboard: {
+    resolveRepository: async (id) => ({ id, name: "fixture", primaryPath: "/repo/fixture" }),
+    create: async () => ({ worktree: { path: "/repo/new" } }), invalidate: () => {},
+  } });
+  const url = "/api/goal-sessions/old-discovery/restart";
+  assert.equal((await app.inject({ method: "POST", url, payload: {} })).statusCode, 401);
+  const cookie = await pairedCookie(app);
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  assert.equal((await app.inject({ method: "POST", url, headers: { ...headers, origin: "https://evil.test" }, payload: {} })).statusCode, 403);
+  assert.equal(launches, 0);
+  const response = await app.inject({ method: "POST", url, headers, payload: {} });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().workflow, "goal_session");
+  const retry = await app.inject({ method: "POST", url, headers, payload: {} });
+  assert.equal(retry.json().planId, response.json().planId);
+  assert.equal(launches, 1);
+});

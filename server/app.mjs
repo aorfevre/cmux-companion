@@ -571,6 +571,14 @@ export async function buildApp({
     return result;
   });
 
+  app.post("/api/goal-sessions/:planId/restart", async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    const plan = await goalSessions.restart(request.params.planId);
+    bootstrapSnapshot = null;
+    worktrees.invalidate();
+    return plan;
+  });
+
   app.post("/api/goal-sessions/:planId/recover", async (request) => {
     if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
     return goalSessions.recover(request.params.planId);

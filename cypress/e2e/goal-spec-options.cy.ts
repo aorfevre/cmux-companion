@@ -499,3 +499,22 @@ describe("specification rigor options", () => {
 });
 
 export {};
+
+describe("restarting old discovery", () => {
+  it("opens an aborted issue goal and explicitly starts its saved discovery again", () => {
+    cy.viewport(390, 900);
+    installScenario({ plans: [] });
+    const old = { ...readyDetail(), tasks: [], questions: [], round: 0, boardStatus: "aborted", boardState: "aborted", issueNumbers: [8], status: "questions" };
+    cy.intercept("GET", "**/api/worktree-plans/plan-spec", old);
+    cy.intercept("POST", "**/api/goal-sessions/plan-spec/restart", { statusCode: 503, body: { error: "Old discovery is still stopping" } }).as("restart");
+    cy.visit("/?view=sessions&mode=worktrees&plan=plan-spec");
+    cy.findByRole("region", { name: "Restart discovery" }).should("be.visible");
+    cy.contains("Automated reviewer passes are off").should("be.visible");
+    cy.get("@restart.all").should("have.length", 0);
+    cy.findByRole("button", { name: "Restart discovery" }).click();
+    cy.wait("@restart").its("request.body").should("deep.equal", {});
+    cy.contains("Old discovery is still stopping").should("be.visible");
+    cy.findByRole("button", { name: "Restart discovery" }).should("be.enabled");
+    cy.location("search").should("contain", "plan=plan-spec");
+  });
+});
