@@ -40,6 +40,8 @@ No cloud application server is involved. Terminal output and input travel direct
 - Installs as a standalone PWA on iPhone
 - Waits quietly when cmux is closed and reconnects when it opens
 - Starts automatically at macOS login through a LaunchAgent
+- Detects a weekly quota window and offers **Start a burst**: one read-only scan agent per starred repository proposes one goal each; you approve, decline or rescan every candidate, and an approved candidate starts an ordinary goal session
+- Marks any goal as **Burst**: every task brief permits subagents, an independent reviewer with the other provider checks each finished task (twice at most) before assembly, and a goal session gets one review when its pull request opens
 
 ## Visible goal sessions
 
@@ -94,6 +96,30 @@ fixtures exercise the workflow, identities and recovery boundaries; real CCS
 permission enforcement, cmux continuity and live GitHub delivery still require
 the explicit live-test opt-in. Product-quality and iteration-speed improvements
 have not yet been measured on real goals.
+
+## Burst
+
+Burst has two independent parts. A **burst plan** scans every starred
+repository with a read-only agent and proposes one goal per repository. Review
+the goal, rationale and evidence on the Burst sheet (Board tools → Burst, or the
+banner that appears when a weekly quota window is open). Approve a candidate to
+start its goal session; the spec still needs your approval in that session.
+Decline or rescan any candidate. One repository's scan failure is recorded on
+that candidate and never aborts the others. Burst never launches work by itself.
+
+The **Burst** toggle on the goal form is the second part. Every task brief of a
+burst goal tells the agent it may launch subagents and that quota is not a
+constraint. After a task reports finished, an independent reviewer with the
+other provider reads the branch and writes a pass or block verdict. A block
+returns the findings to the task agent for one more round; a second block marks
+the task for your attention. A burst goal session gets the same review once its
+pull request opens.
+
+**Known limits:** burst reviewer sessions do not consult the quota floor —
+they open directly through cmux rather than through the same capacity check
+that gates scans and goal launches, so a burst goal can add review sessions
+after the weekly window has closed. There is also no user action yet to waive
+a task blocked twice by review; the only path forward is aborting the goal.
 
 ## Architecture
 
@@ -560,6 +586,9 @@ Open **Settings → Deployments** to see the running Companion release and the d
 | `CCS_BIN` | First `ccs` executable in `PATH`, then installed NVM versions | Optional explicit CCS executable used to discover structured account quota support |
 | `CMUX_COMPANION_PREVIEW_PORT_START` | `8500` | First Tailscale HTTPS preview port |
 | `CMUX_COMPANION_PREVIEW_PORT_END` | `8599` | Last Tailscale HTTPS preview port |
+| `CMUX_COMPANION_BURSTS_DB` | `~/.config/cmux-companion/bursts.db` | SQLite database of burst plans and candidates |
+| `CMUX_BURST_IDLE_TIMEOUT_MS` | `240000` | How long one burst repository scan may print nothing before it is killed |
+| `CMUX_BURST_CEILING_MS` | `900000` | Absolute limit on one burst repository scan, whatever it prints |
 
 ## Troubleshooting
 
