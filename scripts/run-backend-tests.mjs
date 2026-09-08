@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
@@ -15,7 +15,14 @@ export function backendTestFiles(directory) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const files = backendTestFiles(fileURLToPath(new URL("../tests", import.meta.url)));
   if (!files.length) throw new Error("No deterministic backend tests found");
-  const child = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" });
-  if (child.error) throw child.error;
-  process.exitCode = child.status ?? 1;
+  // node --test only writes an lcov reporter destination into an existing directory.
+  mkdirSync(fileURLToPath(new URL("../coverage", import.meta.url)), { recursive: true });
+  if (process.argv.includes("--list")) {
+    // `npm run test:coverage` substitutes this list into its own node --test call.
+    process.stdout.write(files.join(" ") + "\n");
+  } else {
+    const child = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" });
+    if (child.error) throw child.error;
+    process.exitCode = child.status ?? 1;
+  }
 }
