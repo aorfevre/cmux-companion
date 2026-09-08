@@ -2408,4 +2408,18 @@ describe("burst", () => {
     await waitFor(() => assert.equal(posts.length, 1));
     assert.equal((posts[0] as { burst: boolean }).burst, true);
   });
+
+  test("Board tools offers Burst and opens the sheet", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/bursts")) return new Response(JSON.stringify({ bursts: [] }), { status: 200 });
+      if (url.includes("/api/worktree-dashboard")) return new Response(JSON.stringify({ generatedAt: "2026-09-08T00:00:00Z", github: { status: "ready" }, summary: { repositories: 0 }, repositories: [], orphanSessions: [] }), { status: 200 });
+      if (url.includes("/api/worktree-plans")) return new Response(JSON.stringify({ plans: [] }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }));
+    render(<WorktreeDashboardView readOnly={false} onOpenWorkspace={() => {}} onLaunched={async () => {}} onNotice={() => {}} />);
+    await userEvent.click(await screen.findByText("Board tools"));
+    await userEvent.click(screen.getByRole("button", { name: "Burst" }));
+    assert.ok(await screen.findByRole("dialog", { name: "Burst plan" }));
+  });
 });
