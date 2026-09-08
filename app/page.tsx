@@ -1,4 +1,5 @@
 "use client";
+import { ProposalReview } from "./proposal-review";
 import { sessionState } from "../server/session-state.mjs";
 import { relativeTime } from "./relative-time";
 /* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/label-has-associated-control */
@@ -308,16 +309,14 @@ function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: stri
   if (plan.boardStatus === "aborted" || plan.boardStatus === "merged") return <section className="planner-delivery-status" aria-label="Goal status"><strong>{plan.boardStatus === "aborted" ? "Goal aborted" : "Goal merged"}</strong>{errors}</section>;
   if (plan.goalSessionState === "awaiting_input") return <section className="planner-delivery-status" aria-label="Managed goal questions"><strong>Goal needs your answer</strong>{plan.questions.map((question) => <p key={question.id}>Question: {question.text}{question.options.length ? ` (${question.options.join(" / ")})` : ""}</p>)}<p>Reply in this visible conversation to continue planning.</p>{errors}</section>;
   if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong>{resume}<p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "Discovery is open in the interactive conversation. Ask questions and steer the agent here.")}</p>{errors}{plan.goalSessionError && <button type="button" disabled={readOnly || Boolean(busy)} onClick={recover}>{busy === "recover" ? "Recovering…" : "Recover failed turn"}</button>}</section>;
-  return <section className="planner-delivery-status" aria-label="Proposal awaiting approval"><strong>Proposal revision {plan.proposalRevision}</strong>{resume}<p>Ready for review. Approve this revision, then tell the agent to continue here.</p><p>{plan.proposal.intendedBehavior || plan.goal}</p>
-    {plan.proposal.scope?.length ? <p>Scope: {plan.proposal.scope.join(" · ")}</p> : null}
-    {plan.proposal.exclusions?.length ? <p>Out of scope: {plan.proposal.exclusions.join(" · ")}</p> : null}
-    {plan.proposal.acceptanceCriteria?.length ? <p>Acceptance: {plan.proposal.acceptanceCriteria.map((criterion) => `${criterion.text} (${criterion.verification})`).join(" · ")}</p> : null}
-    {plan.proposal.assumptions?.length ? <p>Assumptions: {plan.proposal.assumptions.join(" · ")}</p> : null}
-    {plan.proposal.verification?.length ? <p>Verify: {plan.proposal.verification.join(" · ")}</p> : null}
+  return <section className="planner-delivery-status proposal-review" aria-label="Proposal awaiting approval"><h2>Proposal revision {plan.proposalRevision}</h2>{resume}
+    <div className="proposal-layout"><ProposalReview proposal={plan.proposal} goal={plan.goal} /><div className="proposal-decision">
+    <p>Ready for review. Approve this revision, then tell the agent to continue here.</p>
     <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} disabled={readOnly || Boolean(busy)} maxLength={4_000} rows={2} onChange={(event) => setChanges(event.target.value)} /></label>
     {errors}
     {readOnly && <p>Enable input in the session menu to approve or request changes.</p>}
     <div className="planner-actions"><button type="button" disabled={readOnly || Boolean(readError) || Boolean(busy) || !changes.trim()} onClick={requestChanges}>{busy === "changes" ? "Sending…" : "Request changes"}</button><button type="button" className="primary-button" disabled={readOnly || Boolean(readError) || Boolean(busy)} onClick={approve}>{busy === "approve" ? "Approving…" : "Approve and implement"}</button></div>
+    </div></div>
   </section>;
 }
 
