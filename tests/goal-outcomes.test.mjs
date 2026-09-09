@@ -430,3 +430,37 @@ test("a head that moves while comments are reconciled leaves the review stale an
   assert.equal(postings(), 0);
   assert.equal(get().reviews[0].result, "Advisory: add a missing-input test.", "the findings are kept for the person");
 });
+
+test("reviewers stream their progress so a long silent review is not killed as idle", async (t) => {
+  const args = reviewCommand({ provider: "codex", model: "gpt-5.6-sol" }, "/tmp/context.json");
+  assert.equal(args[args.indexOf("--output-format") + 1], "stream-json");
+  assert.ok(args.includes("--verbose"), "stream-json needs --verbose to emit every event line");
+  const { store, worktrees, publish, get } = setup(t, { reviewer: true }); publish();
+  let options;
+  const runner = new GoalReviews({ store, worktrees, execute: async (bin, _args, given) => {
+    if (bin !== "ccs") return { stdout: "" };
+    options = given;
+    return { stdout: ['{"type":"assistant","message":{"content":[]}}', '{"type":"result","is_error":false,"result":"Advisory: fine"}', ""].join("\n") };
+  } });
+  await runner.tick();
+  assert.equal(get().reviews[0].status, "completed"); assert.equal(get().reviews[0].result, "Advisory: fine");
+  assert.equal(options.strictBuffer, undefined, "stream events are transport noise and must not fail the review by volume");
+  assert.ok(options.maxBuffer >= 4 * 1024 * 1024);
+});
+
+test("a reviewer that is killed or exits non-zero reports why instead of 'Command failed'", async (t) => {
+  const red = String.fromCharCode(27) + "[31m"; const reset = String.fromCharCode(27) + "[0m";
+  const cases = [
+    [{ killed: true, reason: "idle", signal: "SIGTERM" }, /stopped answering: no output for 3 minutes/],
+    [{ killed: true, reason: "ceiling", signal: "SIGTERM" }, /ran for 15 minutes without finishing/],
+    [{ killed: true, reason: "aborted", signal: "SIGTERM" }, /interrupted/],
+    [{ code: 1, stderr: "[i] Preparing CLIProxy...\nERROR\nhttps://example.test/docs\nE301 Claude CLI not found" }, /cannot find the claude CLI/],
+    [{ code: 2, stderr: `${red}Something specific broke${reset}\n` }, /could not run: Something specific broke/],
+  ];
+  for (const [failure, expected] of cases) {
+    const { store, worktrees, publish, get } = setup(t, { reviewer: true }); publish();
+    const runner = new GoalReviews({ store, worktrees, execute: async (bin) => { if (bin !== "ccs") return { stdout: "" }; throw Object.assign(new Error("Command failed"), failure); } });
+    await runner.tick();
+    assert.equal(get().reviews[0].status, "failed"); assert.match(get().reviews[0].error, expected);
+  }
+});
