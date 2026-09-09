@@ -601,6 +601,23 @@ export async function buildApp({
     planStore.outcomes[action](plan.planId, request.body.reviewId);
     return planStore.get(plan.planId);
   });
+  // Decisions are one write per finding, so a phone can save each pick as it
+  // is made; sending turns them into the planner's single change request.
+  const decisionParams = { params: { type: "object", properties: { planId: { type: "string" }, reviewId: { type: "string", pattern: "^[a-f0-9]{64}$" }, findingId: { type: "string", pattern: "^[A-Za-z0-9_-]{1,16}$" } }, required: ["planId", "reviewId"] } };
+  app.put("/api/goal-sessions/:planId/reviews/:reviewId/decisions/:findingId", { schema: { ...WRITE_SCHEMAS.reviewDecision, ...decisionParams } }, async (request) => {
+    if (!planStore) throw serviceUnavailable("Goal reviews are unavailable");
+    const plan = planStore.get(request.params.planId);
+    if (!plan) throw new TypeError("Goal is unavailable");
+    await worktrees.resolveRepository(plan.repositoryId);
+    return planStore.outcomes.decide(plan.planId, request.params.reviewId, request.params.findingId, request.body);
+  });
+  app.post("/api/goal-sessions/:planId/reviews/:reviewId/send-decisions", { schema: { ...WRITE_SCHEMAS.reviewSendDecisions, ...decisionParams } }, async (request) => {
+    if (!planStore) throw serviceUnavailable("Goal reviews are unavailable");
+    const plan = planStore.get(request.params.planId);
+    if (!plan) throw new TypeError("Goal is unavailable");
+    await worktrees.resolveRepository(plan.repositoryId);
+    return planStore.outcomes.sendDecisions(plan.planId, request.params.reviewId, request.body);
+  });
   app.post("/api/goal-sessions/:planId/reviews/code", { schema: WRITE_SCHEMAS.empty }, async (request) => {
     if (!reviews) throw serviceUnavailable("Goal reviews are unavailable");
     await reviews.requestCode(request.params.planId);

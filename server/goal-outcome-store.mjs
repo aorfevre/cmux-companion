@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { parseReviewFindings, reviewDecisionFeedback } from "./review-findings.mjs";
 
 export const MAX_REPORT_BYTES = 96 * 1024;
 export const MAX_REVIEW_BYTES = 64 * 1024;
@@ -58,12 +59,16 @@ export class GoalOutcomeStore {
     return id;
   }
 
+  #decisions(reviewId) {
+    return this.db.prepare("SELECT finding_id, verdict, comment, updated_at FROM goal_review_decisions WHERE review_id = ? ORDER BY updated_at, finding_id").all(reviewId)
+      .map((row) => ({ findingId: row.finding_id, verdict: row.verdict, comment: row.comment, updatedAt: row.updated_at }));
+  }
   reviews(planId) {
-    return this.db.prepare("SELECT * FROM goal_reviews WHERE plan_id = ? ORDER BY created_at DESC, id").all(planId).map((row) => reviewRow(row));
+    return this.db.prepare("SELECT * FROM goal_reviews WHERE plan_id = ? ORDER BY created_at DESC, id").all(planId).map((row) => reviewRow(row, this.#decisions(row.id)));
   }
   review(id) {
     const row = this.db.prepare("SELECT * FROM goal_reviews WHERE id = ?").get(id);
-    return row ? { ...reviewRow(row), snapshot: JSON.parse(row.snapshot), runnerOwner: row.runner_owner, postOwner: row.post_owner, postPid: row.post_pid } : null;
+    return row ? { ...reviewRow(row, this.#decisions(row.id)), snapshot: JSON.parse(row.snapshot), runnerOwner: row.runner_owner, postOwner: row.post_owner, postPid: row.post_pid } : null;
   }
   queue(plan, kind, target, snapshot) {
     if (!["planner", "code", "analysis"].includes(kind)) throw new TypeError("Unknown review kind");
@@ -90,8 +95,12 @@ export class GoalOutcomeStore {
   finish(id, attempt, { status, result = null, error = null }) {
     if (!["completed", "failed", "stale", "posting", "uncertain"].includes(status)) throw new TypeError("Invalid review result state");
     if (result !== null && (typeof result !== "string" || !result.trim() || Buffer.byteLength(result) > MAX_REVIEW_BYTES)) throw new TypeError("Reviewer returned an empty or oversized result");
-    this.db.prepare("UPDATE goal_reviews SET status = ?, result = COALESCE(?, result), error = ?, updated_at = ? WHERE id = ? AND attempt = ? AND status IN ('running', 'posting', 'uncertain')")
-      .run(status, result, error ? String(error).slice(0, 2000) : null, this.stamp(), id, attempt);
+    // Only a completed planner review is split into findings; the user decides
+    // on those one by one. Other kinds keep the Markdown alone.
+    const before = this.review(id);
+    const findings = status === "completed" && before?.kind === "planner" && typeof result === "string" ? JSON.stringify(parseReviewFindings(result).findings) : null;
+    this.db.prepare("UPDATE goal_reviews SET status = ?, result = COALESCE(?, result), findings = COALESCE(?, findings), error = ?, updated_at = ? WHERE id = ? AND attempt = ? AND status IN ('running', 'posting', 'uncertain')")
+      .run(status, result, findings, error ? String(error).slice(0, 2000) : null, this.stamp(), id, attempt);
     return this.review(id);
   }
   claimPost(id, attempt) {
@@ -116,12 +125,41 @@ export class GoalOutcomeStore {
     this.db.prepare("UPDATE goal_reviews SET status = 'queued', acknowledged_at = NULL, updated_at = ? WHERE id = ? AND status = 'failed'").run(this.stamp(), id);
     return this.review(id);
   }
+  #decidable(planId, id) {
+    const review = this.review(id);
+    if (!review || review.planId !== planId || review.kind !== "planner" || review.status !== "completed" || !this.current(review)) throw new TypeError("This planner review is no longer current");
+    if (review.decisionsSentAt) throw new TypeError("These review decisions were already sent to the planner");
+    return review;
+  }
+  decide(planId, id, findingId, { verdict, comment } = {}) {
+    const review = this.#decidable(planId, id);
+    if (!review.findings.some((finding) => finding.id === findingId)) throw new TypeError("Unknown finding for this review");
+    if (!["agree", "disagree"].includes(verdict)) throw new TypeError("Verdict must be agree or disagree");
+    const note = typeof comment === "string" ? comment.trim() : "";
+    if (Buffer.byteLength(note) > 1_000) throw new TypeError("Keep the comment under 1,000 bytes");
+    this.db.prepare("INSERT INTO goal_review_decisions (review_id, finding_id, verdict, comment, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(review_id, finding_id) DO UPDATE SET verdict = excluded.verdict, comment = excluded.comment, updated_at = excluded.updated_at")
+      .run(id, findingId, verdict, note, this.stamp());
+    return this.store.get(planId);
+  }
+  // requestProposalChanges runs its own transaction and moves the goal out of
+  // awaiting_approval, so a crash before the stamp cannot double-send: the
+  // review is no longer current and the next attempt is refused.
+  sendDecisions(planId, id, { generation, revision } = {}) {
+    const review = this.#decidable(planId, id);
+    const decided = new Map(review.decisions.map((decision) => [decision.findingId, decision.verdict]));
+    if (review.findings.some((finding) => !decided.has(finding.id))) throw new TypeError("Decide on every finding before sending");
+    if (![...decided.values()].includes("agree")) throw new TypeError("Agree with at least one finding, or approve the proposal instead");
+    this.store.requestProposalChanges(planId, { generation, revision, feedback: reviewDecisionFeedback(review) });
+    this.db.prepare("UPDATE goal_reviews SET decisions_sent_at = ? WHERE id = ? AND decisions_sent_at IS NULL").run(this.stamp(), id);
+    return this.store.get(planId);
+  }
   pending() { return this.db.prepare("SELECT id FROM goal_reviews WHERE status IN ('queued', 'running', 'posting', 'uncertain') ORDER BY created_at").all().map(({ id }) => this.review(id)); }
 }
 
 function reportRow(row) {
   return { planId: row.plan_id, version: row.version, approvalRevision: row.approval_revision, title: row.title, markdown: row.markdown, baseSha: row.base_sha, createdAt: row.created_at, codingGoalId: row.coding_goal_id };
 }
-function reviewRow(row) {
-  return { id: row.id, planId: row.plan_id, kind: row.kind, target: row.target, generation: row.generation, status: row.status, attempt: row.attempt, pid: row.pid, result: row.result, error: row.error, acknowledgedAt: row.acknowledged_at, createdAt: row.created_at, updatedAt: row.updated_at };
+function reviewRow(row, decisions = []) {
+  return { id: row.id, planId: row.plan_id, kind: row.kind, target: row.target, generation: row.generation, status: row.status, attempt: row.attempt, pid: row.pid, result: row.result, error: row.error, acknowledgedAt: row.acknowledged_at, createdAt: row.created_at, updatedAt: row.updated_at,
+    findings: row.findings ? JSON.parse(row.findings) : [], decisions, decisionsSentAt: row.decisions_sent_at || null };
 }

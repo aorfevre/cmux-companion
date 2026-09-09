@@ -150,6 +150,14 @@ CREATE TABLE IF NOT EXISTS goal_reviews (
   updated_at TEXT NOT NULL,
   UNIQUE (plan_id, kind, target)
 );
+CREATE TABLE IF NOT EXISTS goal_review_decisions (
+  review_id TEXT NOT NULL REFERENCES goal_reviews(id) ON DELETE CASCADE,
+  finding_id TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  comment TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (review_id, finding_id)
+);
 CREATE INDEX IF NOT EXISTS plans_repository_updated ON plans (repository_id, updated_at);
 CREATE INDEX IF NOT EXISTS plan_events_plan_id ON plan_events (plan_id, id);
 `;
@@ -167,6 +175,8 @@ function migratePlanSchema(db) {
     ensure("goal_reviews", "post_owner", "INTEGER");
     ensure("goal_reviews", "post_pid", "INTEGER");
     ensure("goal_reviews", "runner_owner", "INTEGER");
+    ensure("goal_reviews", "findings", "TEXT");
+    ensure("goal_reviews", "decisions_sent_at", "TEXT");
     ensure("plans", "goal_type", "TEXT NOT NULL DEFAULT 'coding'");
     ensure("plans", "source_analysis", "TEXT");
     ensure("plans", "base_sha", "TEXT");

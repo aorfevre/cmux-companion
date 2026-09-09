@@ -442,7 +442,7 @@ sessions and the terminal composer, the prompt queue, the inbox, workspace
 launch, settings and push notifications, local app previews with the fix
 editor, licence usage and CCS reconnect, worktree cleanup and release
 retention, board actions and the read-only guard, bursts, deployment health,
-and the goal fixtures: one- and two-task goals, a task that dies, an agent
+per-finding decisions on the planner review, and the goal fixtures: one- and two-task goals, a task that dies, an agent
 waiting for input, a blocked merge whose cmux workspace remains open, and a
 spec-rigor goal that submits its six requests and renders their coverage
 evidence:
