@@ -497,3 +497,34 @@ test("an idle viewport lease is released after twenty-five seconds", async (t) =
   await app.close();
   assert.equal(cmux.calls.length, 2, "an expired lease is not cleared a second time on shutdown");
 });
+
+test("review decisions save per finding and send one change request when complete", async (t) => {
+  const { app, store, plan } = await goalFixture(t);
+  plan("decided", { engine: { provider: "codex", reviewer: true } });
+  store.publishProposal("decided", { generation: 1, providerSessionId: "decided-session", proposal });
+  const review = store.get("decided").reviews[0];
+  const claimed = store.outcomes.claim(review.id);
+  store.outcomes.finish(review.id, claimed.attempt, { status: "completed", result: "```json\n" + JSON.stringify({ findings: [{ id: "F1", severity: "high", title: "Rollback", evidence: "None", suggestion: "Add" }, { id: "F2", severity: "low", title: "Naming" }] }) + "\n```" });
+  const url = (findingId) => `/api/goal-sessions/decided/reviews/${review.id}/decisions/${findingId}`;
+  const send = () => app.inject({ method: "POST", url: `/api/goal-sessions/decided/reviews/${review.id}/send-decisions`, headers: AUTH, payload: { generation: 1, revision: 1 } });
+
+  assert.equal((await send()).statusCode, 400, "nothing decided yet");
+  const first = await app.inject({ method: "PUT", url: url("F1"), headers: AUTH, payload: { verdict: "agree", comment: "Cover seeds" } });
+  assert.equal(first.statusCode, 200, first.body);
+  assert.deepEqual(first.json().reviews[0].decisions.map((decision) => decision.findingId), ["F1"]);
+  assert.equal((await app.inject({ method: "PUT", url: url("F9"), headers: AUTH, payload: { verdict: "agree", comment: "" } })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PUT", url: url("F2"), headers: AUTH, payload: { verdict: "maybe", comment: "" } })).statusCode, 400, "schema rejects the verdict");
+  assert.equal((await send()).statusCode, 400, "F2 still undecided");
+  assert.equal((await app.inject({ method: "PUT", url: url("F2"), headers: AUTH, payload: { verdict: "disagree", comment: "Repo convention" } })).statusCode, 200);
+  const sent = await send();
+  assert.equal(sent.statusCode, 200, sent.body);
+  assert.equal(sent.json().goalSessionState, "planning");
+  assert.ok(sent.json().reviews[0].decisionsSentAt);
+  const pending = store.db.prepare("SELECT goal_session_pending_input FROM plans WHERE plan_id = 'decided'").get().goal_session_pending_input;
+  assert.match(pending, /^Independent review decisions for proposal revision 1\./);
+  assert.match(pending, /## \[high\] Rollback/);
+  assert.match(pending, /- Naming — reason: Repo convention/);
+  assert.equal((await send()).statusCode, 400, "cannot send twice");
+  assert.equal((await app.inject({ method: "PUT", url: url("F1"), headers: AUTH, payload: { verdict: "agree", comment: "" } })).statusCode, 400, "locked after sending");
+  assert.equal((await app.inject({ method: "PUT", url: `/api/goal-sessions/missing/reviews/${review.id}/decisions/F1`, headers: AUTH, payload: { verdict: "agree", comment: "" } })).statusCode, 400);
+});
