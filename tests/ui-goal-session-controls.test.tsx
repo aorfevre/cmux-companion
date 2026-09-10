@@ -70,7 +70,7 @@ test("exited discovery stays open and can resume without a blocker or approval",
 test("saved proposal remains reviewable after exit and read-only input disables resume", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => response({ ...proposal("native"), goalSessionRunnerPid: null, goalSessionRunnerDispatchId: null })));
   render(<ManagedGoalControls workspaceId="native" readOnly />);
-  await screen.findByText("Ready for review. Approve this revision, then tell the agent to continue here.");
+  await screen.findByText("Ready for your decision. Approve this exact final revision, then tell the agent to continue here.");
   assert.equal((screen.getByRole("button", { name: "Resume conversation" }) as HTMLButtonElement).disabled, true);
   assert.equal((screen.getByRole("button", { name: "Approve and implement" }) as HTMLButtonElement).disabled, true);
 });

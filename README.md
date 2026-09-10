@@ -209,9 +209,13 @@ regenerates the plan or changes its saved contract.
 New coding goals enable independent planner and post-PR code review, unit tests,
 end-to-end tests, edge cases and refactor review. Both reviewer controls are
 editable; extra passes add provider usage and latency. Historical saved choices
-and explicit opt-outs remain unchanged. Planner findings are advisory; a failed
-pass must be retried or explicitly acknowledged before approval. Code findings
-are saved in Companion and posted as an advisory comment to the observed PR.
+and explicit opt-outs remain unchanged. After each published proposal, the
+independent reviewer critiques it, then a read-only fork of the planner's own
+conversation assesses every finding and publishes one reviewed final plan.
+You approve or request changes on that final plan; you never adjudicate
+findings. A failed review or assessment blocks approval until you retry it.
+Code findings are saved in Companion and posted as an advisory comment to the
+observed PR.
 
 Choose **Analysis** for a repository-read-only outcome instead of code. Approve its
 scope, then receive a versioned Markdown report in Companion, with download,
@@ -442,7 +446,7 @@ sessions and the terminal composer, the prompt queue, the inbox, workspace
 launch, settings and push notifications, local app previews with the fix
 editor, licence usage and CCS reconnect, worktree cleanup and release
 retention, board actions and the read-only guard, bursts, deployment health,
-per-finding decisions on the planner review, and the goal fixtures: one- and two-task goals, a task that dies, an agent
+automatic planner assessment of the independent review, and the goal fixtures: one- and two-task goals, a task that dies, an agent
 waiting for input, a blocked merge whose cmux workspace remains open, and a
 spec-rigor goal that submits its six requests and renders their coverage
 evidence:

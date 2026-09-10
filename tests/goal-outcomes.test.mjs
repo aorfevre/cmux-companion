@@ -115,35 +115,35 @@ test("coding sessions do not expose or permit report publication", (t) => {
   assert.ok(!handleGoalRpc(store, binding, { id: 1, method: "tools/list" }).result.tools.some((tool) => tool.name === "publish_analysis"));
 });
 
-test("planner reviews run independently, gate only completion and cannot approve for the user", async (t) => {
+test("planner reviews run independently, queue planner assessment and cannot approve for the user", async (t) => {
   const { store, worktrees, publish, approve, get } = setup(t, { reviewer: true });
   publish(); assert.equal(get().reviews[0].status, "queued"); assert.equal(goalBoardState(get()), "discovering");
   assert.throws(approve, /Wait for planner review/);
   let calls = 0;
   const reviews = new GoalReviews({ store, worktrees, execute: async (bin, args, options) => {
     if (bin === "git" || bin === "tar") return { stdout: "" };
-    assert.equal(bin, "ccs"); assert.equal(args[0], "claude"); assert.ok(args.includes("Read,Grep,Glob")); options.onSpawn(12345); calls++;
+    assert.equal(bin, "ccs"); assert.equal(args[0], args.includes("--fork-session") ? "codex" : "claude"); assert.ok(args.includes("Read,Grep,Glob")); options.onSpawn(12345); calls++;
     return { stdout: JSON.stringify({ result: "High: evidence does not cover missing input. Advisory only." }) };
   } });
   await reviews.tick(); await reviews.tick();
-  assert.equal(calls, 1); assert.equal(get().reviews[0].status, "completed"); assert.equal(get().approvalRevision, null); assert.equal(plannerReviewReady(get()), true);
-  approve(); assert.equal(get().goalSessionState, "analyzing");
+  assert.equal(calls, 2); assert.equal(get().reviews[0].status, "completed"); assert.equal(get().approvalRevision, null); assert.equal(plannerReviewReady(get()), false);
+  assert.equal(get().reviews[0].assessment.status, "failed", "unstructured assessment is not a final plan");
+  assert.throws(approve, /assessment/);
 });
 
-test("planner failure requires explicit acknowledgment or retry and a new revision invalidates old evidence", async (t) => {
+test("planner failure stays blocked, cannot be acknowledged away, supports retry, and a new revision invalidates old evidence", async (t) => {
   const { store, worktrees, publish, approve, get } = setup(t, { reviewer: true });
   publish();
   const runner = new GoalReviews({ store, worktrees, execute: async (bin) => { if (bin === "ccs") throw new Error("provider timeout"); return { stdout: "" }; } });
   await runner.tick(); const failed = get().reviews[0];
   assert.equal(failed.status, "failed"); assert.throws(approve, /Wait for planner review/);
-  store.outcomes.acknowledge("goal", failed.id); assert.equal(plannerReviewReady(get()), true);
+  assert.equal(typeof store.outcomes.acknowledge, "undefined", "acknowledging a failure can no longer stand in for assessment");
   store.requestProposalChanges("goal", { generation: 1, revision: 1, feedback: "Add missing cases" });
   publish(); assert.equal(plannerReviewReady(get()), false);
-  assert.throws(() => store.outcomes.acknowledge("goal", failed.id), /no longer current/);
   const current = get().reviews.find((review) => review.target === "2");
   await runner.tick(); store.outcomes.retry("goal", current.id);
   runner.execute = async () => ({ stdout: JSON.stringify({ result: "No additional findings." }) });
-  await runner.tick(); approve();
+  await runner.tick(); assert.throws(approve, /assessment/);
 });
 
 test("late planner result cannot mark a newer proposal reviewed", async (t) => {
@@ -465,49 +465,16 @@ test("a reviewer that is killed or exits non-zero reports why instead of 'Comman
   }
 });
 
-test("a completed planner review stores its findings and reads back the decisions the user saved", async (t) => {
+test("completed planner reviews queue assessment and retain historical user decisions", (t) => {
   const { store, publish, get } = setup(t, { reviewer: true }); publish();
-  const review = get().reviews[0];
-  const claimed = store.outcomes.claim(review.id);
-  const result = "Prose.\n\n```json\n" + JSON.stringify({ findings: [{ id: "F1", severity: "high", title: "Missing rollback", evidence: "No down step", suggestion: "Add one" }, { id: "F2", severity: "low", title: "Naming" }] }) + "\n```";
-  store.outcomes.finish(review.id, claimed.attempt, { status: "completed", result });
-  const completed = get().reviews[0];
-  assert.equal(completed.findings.length, 2); assert.equal(completed.findings[0].title, "Missing rollback");
-  assert.deepEqual(completed.decisions, []); assert.equal(completed.decisionsSentAt, null);
-  store.outcomes.decide("goal", review.id, "F1", { verdict: "agree", comment: "  Also seed data  " });
-  store.outcomes.decide("goal", review.id, "F1", { verdict: "disagree", comment: "" });
-  store.outcomes.decide("goal", review.id, "F2", { verdict: "agree", comment: "" });
-  const decided = get().reviews[0].decisions;
-  assert.deepEqual(decided.map((decision) => [decision.findingId, decision.verdict, decision.comment]), [["F1", "disagree", ""], ["F2", "agree", ""]]);
-  assert.throws(() => store.outcomes.decide("goal", review.id, "F9", { verdict: "agree", comment: "" }), /unknown finding/i);
-  assert.throws(() => store.outcomes.decide("goal", review.id, "F1", { verdict: "maybe", comment: "" }), /verdict/i);
-  assert.throws(() => store.outcomes.decide("goal", review.id, "F1", { verdict: "agree", comment: "c".repeat(1_001) }), /comment/i);
-  assert.throws(() => store.outcomes.decide("other", review.id, "F1", { verdict: "agree", comment: "" }), /no longer current/i);
-});
-
-test("sending decisions requires every finding decided with one agreement, then makes one change request and locks the review", async (t) => {
-  const { store, publish, get } = setup(t, { reviewer: true }); publish();
-  const review = get().reviews[0];
-  const claimed = store.outcomes.claim(review.id);
-  store.outcomes.finish(review.id, claimed.attempt, { status: "completed", result: "```json\n" + JSON.stringify({ findings: [{ id: "F1", severity: "high", title: "Rollback", evidence: "None", suggestion: "Add" }, { id: "F2", severity: "low", title: "Naming" }] }) + "\n```" });
-  assert.throws(() => store.outcomes.sendDecisions("goal", review.id, { generation: 1, revision: 1 }), /every finding/i);
-  store.outcomes.decide("goal", review.id, "F1", { verdict: "disagree", comment: "Not needed" });
-  store.outcomes.decide("goal", review.id, "F2", { verdict: "disagree", comment: "" });
-  assert.throws(() => store.outcomes.sendDecisions("goal", review.id, { generation: 1, revision: 1 }), /at least one/i);
-  store.outcomes.decide("goal", review.id, "F1", { verdict: "agree", comment: "Cover seeds" });
-  const plan = store.outcomes.sendDecisions("goal", review.id, { generation: 1, revision: 1 });
-  assert.equal(plan.goalSessionState, "planning");
-  const pending = store.db.prepare("SELECT goal_session_pending_input FROM plans WHERE plan_id = 'goal'").get().goal_session_pending_input;
-  assert.equal(pending, [
-    "Independent review decisions for proposal revision 1.", "",
-    "Apply these findings:", "## [high] Rollback", "Evidence: None", "Suggestion: Add", "Comment: Cover seeds", "",
-    "Do not apply these findings:", "- Naming",
-  ].join("\n"));
-  assert.ok(plan.reviews[0].decisionsSentAt);
-  assert.throws(() => store.outcomes.decide("goal", review.id, "F2", { verdict: "agree", comment: "" }), /no longer current|already sent/i);
-  assert.throws(() => store.outcomes.sendDecisions("goal", review.id, { generation: 1, revision: 1 }), /no longer current|already sent/i);
-  const events = store.db.prepare("SELECT kind FROM plan_events WHERE plan_id = 'goal' ORDER BY id").all().map((row) => row.kind);
-  assert.equal(events.filter((kind) => kind === "proposal_changes_requested").length, 1);
+  const review = store.outcomes.claim(get().reviews[0].id);
+  store.outcomes.finish(review.id, review.attempt, { status: "completed", result: "Review all evidence" });
+  store.db.prepare("INSERT INTO goal_review_decisions (review_id, finding_id, verdict, comment, updated_at) VALUES (?, 'review', 'agree', 'Historical note', '2026-09-09')").run(review.id);
+  const saved = get().reviews[0];
+  assert.equal(saved.assessment.status, "pending");
+  assert.equal(saved.findings[0].evidence, "Review all evidence");
+  assert.equal(saved.decisions[0].comment, "Historical note");
+  assert.equal(get().goalSessionPendingInput, null);
 });
 
 test("the reviewer is asked for a findings block that the parser understands", () => {

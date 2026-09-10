@@ -281,6 +281,7 @@ async function goalFixture(t) {
     start: () => () => {},
     reconcile: async (planId, reviewId) => { reviewCalls.push(["reconcile", planId, reviewId]); return { planId, reviewId, reconciled: true }; },
     requestCode: async (planId) => { reviewCalls.push(["code", planId]); },
+    assessments: { retry: (planId, reviewId, reconcile) => { reviewCalls.push(["assessment", planId, reviewId, reconcile]); return store.get(planId); } },
   };
   const cmux = { ...fakeCmux(), workspaceListDetailed: async () => ({ workspaces: [] }), workspaceStartGoalSessionRunner: async (...args) => runnerCalls.push(args) };
   const app = await buildApp(t, { cmux, token: TOKEN, worktreePlanStore: store, goalReviews, worktreeDashboard: fakeDashboard() });
@@ -345,8 +346,8 @@ test("review routes act on the stored review and hand reconciliation and code re
   store.outcomes.finish(review.id, claimed.attempt, { status: "failed", error: "provider timeout" });
 
   const acknowledged = await app.inject({ method: "POST", url: "/api/goal-sessions/reviewed/reviews/acknowledge", headers: AUTH, payload: { reviewId: review.id } });
-  assert.equal(acknowledged.statusCode, 200, acknowledged.body);
-  assert.ok(acknowledged.json().reviews[0].acknowledgedAt);
+  assert.equal(acknowledged.statusCode, 410, "acknowledging a failed review no longer unlocks approval");
+  assert.equal(store.get("reviewed").reviews[0].acknowledgedAt, null);
   const retried = await app.inject({ method: "POST", url: "/api/goal-sessions/reviewed/reviews/retry", headers: AUTH, payload: { reviewId: review.id } });
   assert.equal(retried.statusCode, 200, retried.body);
   assert.equal(retried.json().reviews[0].status, "queued");
@@ -498,33 +499,41 @@ test("an idle viewport lease is released after twenty-five seconds", async (t) =
   assert.equal(cmux.calls.length, 2, "an expired lease is not cleared a second time on shutdown");
 });
 
-test("review decisions save per finding and send one change request when complete", async (t) => {
+test("assessment routes hand retry and reconciliation to the reviewer with the exact review and stay inside the allow-list", async (t) => {
+  const { app, store, plan, reviewCalls } = await goalFixture(t);
+  plan("assessed", { engine: { provider: "codex", reviewer: true } });
+  store.publishProposal("assessed", { generation: 1, providerSessionId: "assessed-session", proposal });
+  const review = store.get("assessed").reviews[0];
+  const retried = await app.inject({ method: "POST", url: "/api/goal-sessions/assessed/reviews/assessment-retry", headers: AUTH, payload: { reviewId: review.id } });
+  assert.equal(retried.statusCode, 200, retried.body);
+  assert.equal(retried.json().planId, "assessed");
+  const reconciled = await app.inject({ method: "POST", url: "/api/goal-sessions/assessed/reviews/assessment-reconcile", headers: AUTH, payload: { reviewId: review.id } });
+  assert.equal(reconciled.statusCode, 200, reconciled.body);
+  assert.deepEqual(reviewCalls, [["assessment", "assessed", review.id, false], ["assessment", "assessed", review.id, true]]);
+  reviewCalls.length = 0;
+  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/assessed/reviews/assessment-retry", headers: AUTH, payload: { reviewId: "f".repeat(64) } })).statusCode, 200, "the reviewer, not the route, decides whether an unknown id is retryable");
+  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/assessed/reviews/assessment-retry", headers: AUTH, payload: { reviewId: "short" } })).statusCode, 400, "schema rejects a malformed id");
+  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/missing/reviews/assessment-retry", headers: AUTH, payload: { reviewId: review.id } })).statusCode, 400);
+  store.createPlan({ planId: "outside", repositoryId: "not-allowed", cwd: "/fixture", goal: "Outside", engine: { provider: "codex", reviewer: true } });
+  const denied = await app.inject({ method: "POST", url: "/api/goal-sessions/outside/reviews/assessment-retry", headers: AUTH, payload: { reviewId: review.id } });
+  assert.equal(denied.statusCode, 400); assert.match(denied.body, /Unknown repository/);
+  assert.deepEqual(reviewCalls.map((call) => call[2]), ["f".repeat(64)], "malformed, missing and denied requests never reach the reviewer");
+});
+
+test("retired decision routes refuse old clients without changing the proposal", async (t) => {
   const { app, store, plan } = await goalFixture(t);
   plan("decided", { engine: { provider: "codex", reviewer: true } });
   store.publishProposal("decided", { generation: 1, providerSessionId: "decided-session", proposal });
   const review = store.get("decided").reviews[0];
-  const claimed = store.outcomes.claim(review.id);
-  store.outcomes.finish(review.id, claimed.attempt, { status: "completed", result: "```json\n" + JSON.stringify({ findings: [{ id: "F1", severity: "high", title: "Rollback", evidence: "None", suggestion: "Add" }, { id: "F2", severity: "low", title: "Naming" }] }) + "\n```" });
-  const url = (findingId) => `/api/goal-sessions/decided/reviews/${review.id}/decisions/${findingId}`;
-  const send = () => app.inject({ method: "POST", url: `/api/goal-sessions/decided/reviews/${review.id}/send-decisions`, headers: AUTH, payload: { generation: 1, revision: 1 } });
-
-  assert.equal((await send()).statusCode, 400, "nothing decided yet");
-  const first = await app.inject({ method: "PUT", url: url("F1"), headers: AUTH, payload: { verdict: "agree", comment: "Cover seeds" } });
-  assert.equal(first.statusCode, 200, first.body);
-  assert.deepEqual(first.json().reviews[0].decisions.map((decision) => decision.findingId), ["F1"]);
-  assert.equal((await app.inject({ method: "PUT", url: url("F9"), headers: AUTH, payload: { verdict: "agree", comment: "" } })).statusCode, 400);
-  assert.equal((await app.inject({ method: "PUT", url: url("F2"), headers: AUTH, payload: { verdict: "maybe", comment: "" } })).statusCode, 400, "schema rejects the verdict");
-  assert.equal((await send()).statusCode, 400, "F2 still undecided");
-  assert.equal((await app.inject({ method: "PUT", url: url("F2"), headers: AUTH, payload: { verdict: "disagree", comment: "Repo convention" } })).statusCode, 200);
-  const sent = await send();
-  assert.equal(sent.statusCode, 200, sent.body);
-  assert.equal(sent.json().goalSessionState, "planning");
-  assert.ok(sent.json().reviews[0].decisionsSentAt);
-  const pending = store.db.prepare("SELECT goal_session_pending_input FROM plans WHERE plan_id = 'decided'").get().goal_session_pending_input;
-  assert.match(pending, /^Independent review decisions for proposal revision 1\./);
-  assert.match(pending, /## \[high\] Rollback/);
-  assert.match(pending, /- Naming — reason: Repo convention/);
-  assert.equal((await send()).statusCode, 400, "cannot send twice");
-  assert.equal((await app.inject({ method: "PUT", url: url("F1"), headers: AUTH, payload: { verdict: "agree", comment: "" } })).statusCode, 400, "locked after sending");
-  assert.equal((await app.inject({ method: "PUT", url: `/api/goal-sessions/missing/reviews/${review.id}/decisions/F1`, headers: AUTH, payload: { verdict: "agree", comment: "" } })).statusCode, 400);
+  const retired = [
+    ["PUT", `/api/goal-sessions/decided/reviews/${review.id}/decisions/F1`, { verdict: "agree" }],
+    ["POST", `/api/goal-sessions/decided/reviews/${review.id}/send-decisions`, { generation: 1, revision: 1 }],
+    ["POST", "/api/goal-sessions/decided/reviews/acknowledge", { reviewId: review.id }],
+  ];
+  for (const [method, url, payload] of retired) {
+    assert.equal((await app.inject({ method, url, headers: AUTH, payload })).statusCode, 410);
+    assert.equal((await app.inject({ method, url, payload })).statusCode, 401);
+  }
+  assert.equal(store.get("decided").goalSessionPendingInput, null);
+  assert.equal(store.get("decided").proposalRevision, 1);
 });

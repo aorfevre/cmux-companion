@@ -176,6 +176,7 @@ function migratePlanSchema(db) {
     ensure("goal_reviews", "post_pid", "INTEGER");
     ensure("goal_reviews", "runner_owner", "INTEGER");
     ensure("goal_reviews", "findings", "TEXT");
+    ensure("goal_reviews", "assessment", "TEXT");
     ensure("goal_reviews", "decisions_sent_at", "TEXT");
     ensure("plans", "goal_type", "TEXT NOT NULL DEFAULT 'coding'");
     ensure("plans", "source_analysis", "TEXT");

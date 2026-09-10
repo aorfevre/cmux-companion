@@ -1,3 +1,4 @@
+import { plannerReviewPhase } from "./goal-options.mjs";
 // One goal has one place on the board. This module owns that mapping and
 // nothing else: no storage, no network, no Node built-ins. The dashboard, the
 // API and the tests all read the same derivation, so a card can never sit in
@@ -51,8 +52,9 @@ export function goalBoardState(plan) {
     } else if (prState === "OPEN" || (prState !== "CLOSED" && text(source.finalPrUrl) !== "")) return "in_review";
     // A reviewer pass on a published contract is still discovery: nothing
     // waits on the person until the pass ends.
-    const review = source.plannerReviewStatus || (Array.isArray(source.reviews) ? source.reviews : []).find((entry) => entry?.kind === "planner" && entry.target === String(source.proposalRevision))?.status;
-    if (session === "awaiting_approval" && ["queued", "running"].includes(review)) return "discovering";
+    const review = source.plannerReviewStatus || plannerReviewPhase(source);
+    if (session === "awaiting_approval" && ["queued", "running", "pending"].includes(review)) return "discovering";
+    if (session === "awaiting_approval" && ["failed", "uncertain", "stale"].includes(review)) return "stopped";
     // A question and a published contract both wait on the person. They are
     // the healthy path, never a failure, so they share one visible column.
     if (session === "awaiting_input" || session === "awaiting_approval") return "needs_you";

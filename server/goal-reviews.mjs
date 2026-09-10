@@ -1,3 +1,4 @@
+import { PlannerAssessments } from "./planner-assessments.mjs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,9 +12,12 @@ const HOOK = fileURLToPath(new URL("./goal-review-hook.mjs", import.meta.url));
 const REVIEW_IDLE_MS = 3 * 60_000;
 const REVIEW_CEILING_MS = 15 * 60_000;
 
-function describeReviewTimeout(reason) {
-  if (reason === "aborted") return "The review was interrupted before it finished";
-  return describeTimeout(reason, REVIEW_IDLE_MS, REVIEW_CEILING_MS).replace(/^The planner/, "The reviewer");
+// Both the reviewer and the planner's assessment fork run through the same
+// bounded process, so their failures read the same way to the user.
+export function describeProcessFailure(cause, role, idleMs = REVIEW_IDLE_MS, ceilingMs = REVIEW_CEILING_MS) {
+  if (cause?.killed || cause?.signal) return cause.reason === "aborted" ? `The ${role} was interrupted before it finished` : describeTimeout(cause.reason, idleMs, ceilingMs).replace(/^The planner/, `The ${role}`);
+  if (cause?.code !== undefined) return describeRunFailure(cause.stderr).replace(/^The planner could not run/, `The ${role} could not run`);
+  return null;
 }
 const quote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 const SHA = /^[a-f0-9]{40,64}$/;
@@ -31,7 +35,7 @@ export function reviewCommand(engine, contextPath) {
 export class GoalReviews {
   constructor({ store, worktrees, modelSettings, execute = streamExecFile, log = null, processAlive = alive, env = process.env } = {}) {
     this.store = store; this.outcomes = store.outcomes; this.worktrees = worktrees; this.modelSettings = modelSettings;
-    this.execute = execute; this.log = log; this.processAlive = processAlive; this.env = env; this.active = null;
+    this.execute = execute; this.log = log; this.processAlive = processAlive; this.env = env; this.active = null; this.assessments = new PlannerAssessments(this);
   }
   start() {
     const timer = setInterval(() => { void this.tick().catch((err) => this.log?.warn?.({ err }, "goal review sweep failed")); }, 2500);
@@ -57,7 +61,7 @@ export class GoalReviews {
     await this.observeCode();
     if (this.stopped) return;
     const review = this.outcomes.pending().find((entry) => entry.status === "queued");
-    if (!review) return;
+    if (!review) { await this.assessments.tick(); return; }
     if (!this.outcomes.current(review)) {
       const claimed = this.outcomes.claim(review.id);
       if (claimed) this.outcomes.finish(claimed.id, claimed.attempt, { status: "stale", error: "The goal or review target changed before review." });
@@ -67,6 +71,7 @@ export class GoalReviews {
     if (!claimed) return;
     this.active = this.run(claimed).finally(() => { this.active = null; });
     await this.active;
+    if (!this.stopped) await this.assessments.tick();
   }
   async observeCode() {
     for (const summary of this.store.list({ status: "launched", limit: 200 })) {
@@ -137,9 +142,7 @@ export class GoalReviews {
         ({ stdout } = await this.execute("ccs", reviewCommand(engine, contextPath), { cwd, env: this.env, processGroup: true, timeout: REVIEW_CEILING_MS, idleTimeout: REVIEW_IDLE_MS, maxBuffer: 4 * 1024 * 1024, signal: this.controller.signal,
           onSpawn: (pid) => this.outcomes.recordPid(review.id, review.attempt, pid) }));
       } catch (cause) {
-        if (cause?.killed || cause?.signal) throw new Error(describeReviewTimeout(cause.reason));
-        if (cause?.code !== undefined) throw new Error(describeRunFailure(cause.stderr).replace(/^The planner could not run/, "The reviewer could not run"));
-        throw cause;
+        throw new Error(describeProcessFailure(cause, "reviewer") || cause?.message || String(cause));
       }
       const envelope = JSON.parse(finalEnvelope(stdout));
       if (envelope.is_error || typeof envelope.result !== "string" || !envelope.result.trim() || Buffer.byteLength(envelope.result) > MAX_REVIEW_BYTES) throw new Error("Reviewer returned an empty, failed or oversized result");

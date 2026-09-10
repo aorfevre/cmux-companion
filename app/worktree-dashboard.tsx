@@ -122,7 +122,7 @@ function boardEvidence(plan: PlanSummary, state: GoalBoardStateId) {
   if (state === "aborted") return "Stopped. Branches and worktrees were kept.";
   if (state === "shipped") return "Its pull request was observed as merged.";
   if (state === "in_review") return plan.deliveryError || (plan.deliveryStatus === "assembling" ? "A merge agent is assembling this goal" : "The pull request is open and waits for review");
-  if (state === "stopped") return plan.deliveryError || plan.healthReason || "This goal stopped and needs attention";
+  if (state === "stopped") return plan.deliveryError || plan.healthReason || (["failed", "uncertain", "stale"].includes(plan.plannerReviewStatus || "") ? "Planner review or assessment needs attention; retry it from the goal" : "This goal stopped and needs attention");
   if (state === "analysis_in_progress") return "Preparing a repository-read-only analysis report";
   if (state === "analysis_ready") return "Report saved. Challenge the analysis or start linked coding discovery.";
   if (state === "building") return plan.deliveryError || deliveryEvidence(plan.deliveryStatus);
@@ -130,7 +130,7 @@ function boardEvidence(plan: PlanSummary, state: GoalBoardStateId) {
   // settles, this goal is neither idle nor launched, so it says so.
   if (plan.launching) return LAUNCHING_EVIDENCE;
   if (state === "needs_you") return plan.workflow === "goal_session" ? (plan.goalSessionState === "awaiting_input" ? "The agent asked you a question" : "The contract waits for your approval") : "Ready to launch";
-  if (state === "discovering" && plan.workflow === "goal_session") return ["queued", "running"].includes(plan.plannerReviewStatus || "") ? "An independent reviewer is checking the current proposal" : "Discovery is open in the conversation";
+  if (state === "discovering" && plan.workflow === "goal_session") return plan.plannerReviewStatus === "pending" ? "The planner is assessing the independent review" : ["queued", "running"].includes(plan.plannerReviewStatus || "") ? "An independent reviewer is checking the current proposal" : "Discovery is open in the conversation";
   if (plan.running) return plan.runStep || (plan.runStage === "review_spec" ? "A reviewer pass is reading the specification…" : "Reading the repository…");
   if (plan.runPhase === "failed") return plan.runError || plan.lastError || "The last round failed";
   if (plan.round === 0) return "Planning stopped before it produced anything";

@@ -44,7 +44,7 @@ When the outcome, scope, exclusions, assumptions, acceptance criteria and verifi
 The bridge validates and saves the proposal; only a successful publish makes it ready for review. Explain that it is ready in Companion, then leave the conversation open for feedback. If validation fails, refine the proposal here; this is not a blocked goal.
 The user approves the exact revision in Companion. After approval, they can say continue here; call get_status and implement only its approved proposal in this same conversation. A discussion message before approval invalidates the previous proposal, so republish after incorporating it. Phone feedback is returned by get_status and at the next user turn; acknowledge it in your next proposal.
 ${delivery}
-${plan.engine?.reviewer ? "An independent planner review runs after proposal publication; it never approves or edits. The user sees advisory findings or a disclosed failure before approval. Do not wait synchronously or fabricate reviewer findings." : ""}
+${plan.engine?.reviewer ? "After proposal publication, Companion automatically runs independent review and a read-only fork of your saved conversation using your configured planner model to assess it. That assessment publishes the final plan for the user. Do not publish a competing revision or ask the user to forward review findings. Read get_status before continuing: its final proposal, not an earlier draft in this conversation, is authoritative. Neither review nor assessment approves implementation." : ""}
 ${(plan.images || []).map((image) => `Read attached context: ${image.path}`).join("\n")}
 ${intakePromptLines(plan.intake).join("\n")}
 ${specOptionsPromptLines(plan.specOptions).join("\n")}
