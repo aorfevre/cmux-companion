@@ -13,6 +13,7 @@ See [product behavior](README.md#what-it-does) and [architecture](README.md#arch
 - `server/index.mjs`: starts the loopback companion and wires persistent services.
 - `server/app.mjs`: Fastify API, authentication hooks and service wiring.
 - `server/goal-board.mjs`: shared pure derivation of goal board columns/state.
+- `server/goal-session-service.mjs`: managed discovery sessions, including the one approval prompt Companion sends to the agent conversation.
 - `server/worktree-plan-store.mjs`: node:sqlite saved plans and delivery history.
 - `server/repo-identity-store.mjs`: rebuildable SQLite repository/worktree cache.
 - `server/burst-service.mjs`, `server/burst-scanner.mjs`, `server/burst-store.mjs`: burst plans, the read-only per-repository scan and their storage.
