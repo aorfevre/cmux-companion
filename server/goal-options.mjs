@@ -16,8 +16,20 @@ export function applicableSpecOptions(type, options) {
   return type === "analysis" ? { ...options, unitTests: false, e2eTests: false, refactorPass: false } : options;
 }
 
+export function currentPlannerReview(plan) {
+  return (Array.isArray(plan.reviews) ? plan.reviews : []).find((entry) => entry.kind === "planner" &&
+    (entry.target === String(plan.proposalRevision) || (entry.assessment?.status === "completed" && entry.assessment.finalRevision === plan.proposalRevision)));
+}
+
 export function plannerReviewReady(plan) {
   if (!plan.engine?.reviewer) return true;
-  const review = (Array.isArray(plan.reviews) ? plan.reviews : []).find((entry) => entry.kind === "planner" && entry.target === String(plan.proposalRevision));
-  return review?.status === "completed" || (review?.status === "failed" && Boolean(review.acknowledgedAt));
+  const review = currentPlannerReview(plan);
+  return review?.status === "completed" && review.assessment?.status === "completed" && review.assessment.finalRevision === plan.proposalRevision;
+}
+
+export function plannerReviewPhase(plan) {
+  const review = currentPlannerReview(plan);
+  if (!review) return null;
+  if (review.status !== "completed") return review.status;
+  return review.assessment?.status === "completed" ? "completed" : review.assessment?.status || "pending";
 }

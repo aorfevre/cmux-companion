@@ -9,7 +9,7 @@ import { safeSpecOptions } from "./spec-options.mjs";
 import { safeReviewOptions } from "./review-options.mjs";
 import { normalizeBurst } from "./burst-options.mjs";
 import { currentModelId } from "./model-options.mjs";
-import { normalizeGoalType, plannerReviewReady } from "./goal-options.mjs";
+import { normalizeGoalType, plannerReviewReady, plannerReviewPhase } from "./goal-options.mjs";
 import { normalizeIntake } from "./goal-intake.mjs";
 import { GoalOutcomeStore } from "./goal-outcome-store.mjs";
 
@@ -257,20 +257,27 @@ export class WorktreePlanStore {
     return this.get(planId);
   }
 
-  publishProposal(planId, { generation, proposal, providerSessionId = null, expectedRevision, expectedFeedback } = {}) {
+  publishProposal(planId, { generation, proposal, providerSessionId = null, expectedRevision, expectedFeedback, assessment = null } = {}) {
     if (!Number.isInteger(generation) || generation < 1 || !proposal || typeof proposal !== "object" || Array.isArray(proposal)) throw new TypeError("Invalid goal-session proposal");
     const at = this.#stamp();
     this.#transaction(() => {
       const row = this.db.prepare("SELECT proposal_revision, goal_session_pending_input, goal_session_active_input, goal_session_provider_session_id FROM plans WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND (goal_session_state IN ('planning', 'awaiting_input', 'awaiting_approval') OR (goal_type = 'analysis' AND goal_session_state IN ('analyzing', 'analysis_ready')))").get(String(planId), generation);
       if (!row) throw new TypeError("This proposal belongs to an unavailable goal session");
       if (expectedRevision !== undefined && (row.goal_session_provider_session_id !== providerSessionId || row.proposal_revision !== expectedRevision || (row.goal_session_pending_input || row.goal_session_active_input || "") !== expectedFeedback)) throw new TypeError("The proposal or feedback changed before publication");
+      const reviewed = assessment ? this.outcomes.review(assessment.reviewId) : null;
+      if (assessment && (!reviewed || reviewed.planId !== String(planId) || reviewed.status !== "completed" || reviewed.attempt !== assessment.attempt
+        || reviewed.generation !== generation || Number(reviewed.target) !== expectedRevision || reviewed.assessment?.status !== "running"
+        || reviewed.assessment.dispatchId !== assessment.dispatchId || reviewed.assessment.sessionId !== providerSessionId
+        || reviewed.assessment.pendingInput !== (row.goal_session_pending_input || "") || reviewed.assessment.activeInput !== (row.goal_session_active_input || ""))) throw new TypeError("Planner assessment is no longer current or owned");
       const revision = Number(row.proposal_revision || 0) + 1;
       this.db.prepare(`UPDATE plans SET goal_session_state = 'awaiting_approval', proposal_revision = ?, proposal = ?,
         goal_session_provider_session_id = COALESCE(?, goal_session_provider_session_id), approval_revision = NULL,
         approval_at = NULL, transition_status = NULL, goal_session_error = NULL, updated_at = ? WHERE plan_id = ?`).run(revision, json(proposal), text(providerSessionId) || null, at, String(planId));
       if (expectedRevision !== undefined) this.db.prepare("UPDATE plans SET goal_session_pending_input = NULL, goal_session_active_input = NULL WHERE plan_id = ?").run(String(planId));
       const plan = this.get(planId);
-      if (plan.engine.reviewer) this.outcomes.queue(plan, "planner", String(revision), { proposal, baseSha: plan.baseSha });
+      if (assessment) this.db.prepare("UPDATE goal_reviews SET assessment = ? WHERE id = ?").run(json({ ...reviewed.assessment, status: "completed", finalRevision: revision,
+        summary: assessment.summary, dispositions: assessment.dispositions, completedAt: at, error: null }), reviewed.id);
+      if (plan.engine.reviewer && !assessment) this.outcomes.queue(plan, "planner", String(revision), { proposal, baseSha: plan.baseSha });
       this.#insertEvent(String(planId), null, "proposal_published", { generation, revision, proposal }, at);
     });
     return this.get(planId);
@@ -376,7 +383,7 @@ export class WorktreePlanStore {
     const at = this.#stamp();
     this.#transaction(() => {
       const plan = this.get(planId);
-      if (!plan || !plannerReviewReady(plan)) throw new TypeError("Wait for planner review, or acknowledge its failure before approving");
+      if (!plan || !plannerReviewReady(plan)) throw new TypeError("Wait for planner review and planner assessment before approving");
       if (plan.goalType === "analysis") {
         const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'analyzing', approval_revision = ?, approval_at = ?, transition_status = 'delivered', goal_session_error = NULL, delivery_status = 'analyzing', updated_at = ?
           WHERE plan_id = ? AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND proposal_revision = ? AND goal_session_state = 'awaiting_approval'`).run(revision, at, at, String(planId), generation, revision).changes;
@@ -1403,7 +1410,7 @@ export class WorktreePlanStore {
       workspaceIds: splitIds([row.open_workspace_ids, row.open_review_workspace_ids, row.merge_workspace_id, row.goal_session_workspace_id].filter(Boolean).join(","), null),
       goalType: row.goal_type || "coding",
       sourceAnalysis: parse(row.source_analysis, null),
-      plannerReviewStatus: this.outcomes.reviews(row.plan_id).find((review) => review.kind === "planner" && review.target === String(row.proposal_revision))?.status || null,
+      plannerReviewStatus: plannerReviewPhase({ reviews: this.outcomes.reviews(row.plan_id), proposalRevision: Number(row.proposal_revision) }),
       workflow: row.workflow || "planned",
       goalSessionState: row.goal_session_state ?? null,
       goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,

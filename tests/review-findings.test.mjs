@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseReviewFindings, reviewDecisionFeedback, MAX_FINDINGS } from "../server/review-findings.mjs";
+import { parseReviewFindings, MAX_FINDINGS } from "../server/review-findings.mjs";
 
 const block = (findings) => "Intro text.\n\n```json\n" + JSON.stringify({ findings }) + "\n```\n\n## Details\nMore prose.";
 
@@ -39,41 +39,11 @@ test("hostile entries are dropped or capped without failing", () => {
   assert.equal(Buffer.byteLength(parsed.findings[0].evidence), 2_000);
   assert.deepEqual(parsed.findings[1], { id: "F3", severity: "medium", title: "kept", evidence: "", suggestion: "" });
   assert.equal(parseReviewFindings("```json\n{not json\n```").findings[0].id, "review", "broken JSON falls back");
-  assert.equal(parseReviewFindings("```json\n{\"findings\":[]}\n```").findings[0].id, "review", "an empty list falls back");
+  assert.equal(parseReviewFindings("```json\n{\"findings\":[\"junk\"]}\n```").findings[0].id, "review", "a list with no usable entry falls back");
 });
 
-test("the feedback template lists agreed findings in full and disagreed ones by title, then caps the text", () => {
-  const review = {
-    target: "3",
-    findings: [
-      { id: "F1", severity: "high", title: "Missing rollback", evidence: "No down step", suggestion: "Add one" },
-      { id: "F2", severity: "low", title: "Naming", evidence: "Mixed case", suggestion: "Pick one" },
-      { id: "F3", severity: "note", title: "Style", evidence: "", suggestion: "" },
-    ],
-    decisions: [
-      { findingId: "F1", verdict: "agree", comment: "Also cover the seed data" },
-      { findingId: "F2", verdict: "disagree", comment: "Matches the repo convention" },
-      { findingId: "F3", verdict: "disagree", comment: "" },
-    ],
-  };
-  const text = reviewDecisionFeedback(review);
-  assert.equal(text, [
-    "Independent review decisions for proposal revision 3.",
-    "",
-    "Apply these findings:",
-    "## [high] Missing rollback",
-    "Evidence: No down step",
-    "Suggestion: Add one",
-    "Comment: Also cover the seed data",
-    "",
-    "Do not apply these findings:",
-    "- Naming — reason: Matches the repo convention",
-    "- Style",
-  ].join("\n"));
-  const agreedOnly = reviewDecisionFeedback({ ...review, decisions: [{ findingId: "F1", verdict: "agree", comment: "" }] });
-  assert.ok(!agreedOnly.includes("Do not apply"));
-  assert.ok(!agreedOnly.includes("Comment:"));
-  const huge = reviewDecisionFeedback({ target: "1", findings: Array.from({ length: 5 }, (_, index) => ({ id: `F${index}`, severity: "high", title: `T${index}`, evidence: "e".repeat(1_900), suggestion: "s" })), decisions: Array.from({ length: 5 }, (_, index) => ({ findingId: `F${index}`, verdict: "agree", comment: "" })) });
-  assert.ok(Buffer.byteLength(huge) <= 4_000);
-  assert.match(huge, /evidence shortened for \d+ finding/);
+test("an explicit empty findings list is a valid clean review, not a fallback", () => {
+  const parsed = parseReviewFindings("```json\n{\"findings\":[]}\n```\n\nNo issues found.");
+  assert.deepEqual(parsed.findings, []);
+  assert.match(parsed.markdown, /No issues found/);
 });

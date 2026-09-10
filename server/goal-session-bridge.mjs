@@ -31,7 +31,7 @@ export function goalStatus(plan) {
     analysisVersion: plan.analysisReports?.[0]?.version || 0,
     latestAnalysis: plan.analysisReports?.[0] || null,
     analysisVersions: (plan.analysisReports || []).map(({ version, title, approvalRevision }) => ({ version, title, approvalRevision })),
-    reviews: (plan.reviews || []).filter((review) => review.kind === "planner" ? review.target === String(plan.proposalRevision) : review.kind === "analysis" ? review.target === String(plan.analysisReports?.[0]?.version) : true).slice(0, 4),
+    reviews: (plan.reviews || []).filter((review) => review.kind === "planner" ? (review.target === String(plan.proposalRevision) || review.assessment?.finalRevision === plan.proposalRevision) : review.kind === "analysis" ? review.target === String(plan.analysisReports?.[0]?.version) : true).slice(0, 4),
     addressedFeedback: plan.goalSessionPendingInput || plan.goalSessionActiveInput || "",
     approved: (plan.goalType === "analysis" ? ["analyzing", "analysis_ready"].includes(plan.goalSessionState) : plan.goalSessionState === "implementing") && plan.approvalRevision === plan.proposalRevision && Boolean(plan.approvalAt) && !plan.goalSessionError && ["pending", "delivered"].includes(plan.transitionStatus),
     proposal: plan.proposal, branch: plan.goalSessionBranch, baseRef: plan.baseRef, issueNumbers: plan.issueNumbers };
