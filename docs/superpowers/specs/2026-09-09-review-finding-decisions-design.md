@@ -1,163 +1,119 @@
-# Review finding decisions design
+# Planner assessment of independent review
 
-Date: 2026-09-09
+Updated: 2026-09-10
 
 ## Outcome
 
-After the independent planner review finishes, the user decides on each
-finding one by one and sends the accepted findings to the planner as one change
-request. The planner revises the proposal from those decisions. The user no
-longer copies review text by hand into the conversation.
+The planner automatically receives and assesses the independent review, revises
+its proposal where warranted, and presents one reviewed final plan. The user
+approves or requests changes to that plan; they do not adjudicate reviewer
+findings or forward feedback. This replaces the previous per-finding human
+Agree/Disagree workflow in this same specification.
 
 ## User journey
 
-1. A goal session publishes proposal revision N. The independent planner review
-   runs and completes.
-2. The proposal screen shows a **Planner review** section. Each finding is one
-   card with its severity, title, evidence and suggestion.
-3. On each card the user picks **Agree** or **Disagree**, and can type a short
-   comment. Each pick saves at once.
-4. When every finding has a decision, the user presses **Send decisions to
-   planner**. Companion builds one change request from the agreed findings and
-   the comments, and hands it to the planner conversation as it does today for
-   **Request changes**.
-5. The planner revises. It publishes revision N+1. A new review runs when the
-   reviewer flag is on. The old review and its decisions stay visible as a
-   historical target.
-6. If the user agrees with nothing, **Send decisions to planner** is disabled.
-   The user can approve the revision with **Approve and implement**; the
-   disagreements stay on record.
+1. The planner publishes a proposal. When planner review is enabled, Companion
+   shows “Reviewing your plan” and withholds the final approval action.
+2. The independent reviewer critiques the immutable proposal and repository base.
+3. Companion durably hands the complete critique to the goal's configured planner
+   model automatically, without a user message or a manual Continue action.
+   The planner assesses every finding, accepting, adapting or rejecting it with
+   a reason, and updates the proposal where appropriate.
+4. The planner publishes the final proposal and its assessment, linked to the
+   exact reviewed revision and review attempt. The UI shows “Reviewed plan ready”
+   with the final outcome, scope and acceptance criteria first. A concise
+   “What changed after review” summary is visible; findings, individual rationales
+   and technical evidence are expandable under “Review details”.
+5. The user's actions are “Approve and implement” and “Request changes”. Approval
+   applies only to the exact final revision; neither model may approve it.
+6. User-requested changes start a new proposal/review/assessment cycle. Review
+   or assessment failures show an honest status and a retry action, preserving
+   the proposal and evidence. Failed or incomplete reviews cannot be presented
+   as a reviewed plan or silently unlock approval.
 
 ## Non-goals
 
-- Code reviews and analysis critiques do not change.
-- The reviewer's text is never edited by the user.
-- No automatic re-review after the revision beyond the existing reviewer flag.
-- No planner reply per finding. The planner answers through the next revision.
-- No decision on a historical review target; only the current revision's review
-  accepts decisions.
+- Changes to code review, analysis critique or review-disabled goals.
+- Automatic implementation, approval, merge or deployment.
+- A reviewer/planner debate loop: one independent critique and one planner
+  assessment per cycle. Publishing the assessed final revision does not itself
+  enqueue another review. “Reviewed” means the planner assessed an independent
+  critique; it does not claim that a second reviewer certified the final edits.
+- Automatic resolution of missing user requirements: a real product question
+  may still be asked, without making the user decide technical review findings.
+- Deleting historical human decisions or altering already-approved live goals.
 
-## Architecture
+## Delivery boundaries
 
-### Reviewer output
+### Storage and background orchestration
 
-`reviewCommand()` in `server/goal-reviews.mjs` asks the reviewer for a fenced
-`json` block before its free Markdown. The block shape is:
+Persist the assessment lifecycle (pending, running, completed, failed or uncertain),
+review identity and attempt, goal generation, source revision, final revision,
+planner model identity, dispatch ownership, assessment and summary. Record each
+finding's disposition and rationale, including a valid empty-findings result.
+Preserve full raw review text; malformed structured findings fall back to full
+text assessment, never an automatic pass. Oversized input produces an explicit
+failure rather than silently dropping evidence.
 
-```json
-{ "findings": [ { "id": "F1", "severity": "high", "title": "…", "evidence": "…", "suggestion": "…" } ] }
-```
+Review completion queues assessment atomically and idempotently. Background
+execution consumes the queue automatically through the owning planner
+conversation or an explicitly resumed session with that planner's saved context
+and configured model. Merely saving pending input for the next human turn does
+not satisfy automatic delivery. Never inject a competing process into an occupied
+terminal. Unknown dispatch ownership remains uncertain until reconciled;
+restart/retry does not duplicate a planner turn or publish an extra revision.
 
-`severity` is one of `high`, `medium`, `low`, `note`. `id` matches
-`/^[A-Za-z0-9_-]{1,16}$/`. Every string is trimmed and capped at 2,000 bytes.
-At most 40 findings are kept.
+Abort, generation changes, newer user feedback or a replaced proposal invalidate
+pending work. Stale results remain historical and cannot overwrite the current
+plan or unlock its approval. Source-to-final revision linkage distinguishes
+assessment publication from a fresh proposal that requires a new review cycle.
 
-A new pure module `server/review-findings.mjs` exports
-`parseReviewFindings(markdown)`. It returns `{ findings, markdown }`. When no
-valid block exists, it returns one finding `{ id: "review", severity: "note",
-title: "Review findings", evidence: markdown, suggestion: "" }`. The full
-result Markdown is always kept so nothing the reviewer wrote is lost.
+### API and agent boundary
 
-### Data
+Expose assessment status and final-plan provenance through the existing plan
+read payload. Validate assessment publication against the current goal,
+review attempt, source revision and dispatch identity. Enforce final-plan
+readiness in server-side approval checks, not only disabled UI buttons.
 
-`goal_reviews` gains one column `findings` (JSON text, null until completion).
-`GoalReviews.run()` stores parsed findings when it records a completed planner
-review. Code and analysis reviews leave the column null.
+Treat reviewer text as untrusted evidence. The planner must assess it against the
+user's intent and repository facts, preserve scope and explain rejected findings.
+Review feedback never grants implementation or external-action permission.
+Preserve pairing, same-origin checks, repository allow-lists and native permissions.
 
-New table `goal_review_decisions`:
+### UI and compatibility
 
-| column | type | note |
-| --- | --- | --- |
-| `review_id` | text | foreign key to `goal_reviews.id` |
-| `finding_id` | text | matches a finding `id` of that review |
-| `verdict` | text | `agree` or `disagree` |
-| `comment` | text | trimmed, at most 1,000 bytes, may be empty |
-| `updated_at` | text | ISO stamp |
+Remove human Agree/Disagree controls, per-finding comment inputs and “Send
+decisions to planner” from the active planner-review journey. Retire their write
+routes so stale clients cannot trigger the old transition; historical data stays
+readable under details. A currently unapproved completed review without an
+assessment enters the automatic assessment flow once, including after upgrade.
+Already approved, aborted or historical targets do not restart.
 
-Primary key is (`review_id`, `finding_id`). `goal_reviews` gains
-`decisions_sent_at` (ISO stamp, null until sent).
-
-`GoalOutcomeStore` gains `decide(reviewId, findingId, { verdict, comment })`
-and `markDecisionsSent(reviewId)`. `reviewRow()` returns `findings`,
-`decisions` (list) and `decisionsSentAt`, so the planner sheet reads them from
-the existing plan payload.
-
-### API
-
-Both routes live next to the existing review actions in `server/app.mjs` and
-use `WRITE_SCHEMAS` entries.
-
-- `PUT /api/goal-sessions/:planId/reviews/:reviewId/decisions/:findingId` with
-  body `{ verdict, comment }`. Refuses a review that is not `completed`, not of
-  kind `planner`, not the current proposal revision, or already sent. Returns
-  the plan.
-- `POST /api/goal-sessions/:planId/reviews/:reviewId/send-decisions` with body
-  `{ generation, revision }`. Refuses unless every finding has a decision and at
-  least one is `agree`. Builds the feedback text with
-  `reviewDecisionFeedback(review)` from `server/review-findings.mjs`, calls
-  `planStore.requestProposalChanges(planId, { generation, revision, feedback })`,
-  then `markDecisionsSent(reviewId)` in the same transaction. Returns the plan.
-
-Both routes honour the existing read-only guard on the board.
-
-### Feedback text
-
-`reviewDecisionFeedback(review)` renders a fixed template:
-
-```
-Independent review decisions for proposal revision N.
-
-Apply these findings:
-## [high] Title
-Evidence: …
-Suggestion: …
-Comment: …
-
-Do not apply these findings:
-- Title — reason: …
-```
-
-Sections with no entries are omitted. The text is capped at 4,000 bytes to
-match `requestProposalChanges`; when the cap is hit, evidence is truncated first
-and a final line says how many findings were shortened.
-
-### UI
-
-`app/goal-outcomes.tsx` renders the review card. For a completed planner
-review on the current revision it shows one `article` per finding with:
-
-- a severity badge and the title,
-- evidence and suggestion as Markdown,
-- a radio group **Agree** / **Disagree** named by the finding title,
-- a comment `textarea` with placeholder "Optional comment for the planner",
-- a saved / saving status line.
-
-Below the cards: **Send decisions to planner**, disabled until every finding has
-a verdict and at least one is `agree`, and a count line "3 of 5 decided". After
-sending, the section shows "Decisions sent on <time>" and the controls become
-read-only. The free Markdown stays available under a "Full review text"
-disclosure.
-
-The **Approve and implement** button keeps its current rule: a completed or
-acknowledged review unlocks it. Decisions do not gate approval.
+Show review and assessment progress as work in progress; only the final assessed
+proposal asks for approval. Keep the final decision controls beside the plan,
+with readable suggestions, expandable technical content and mobile touch targets
+of at least 44px. No manual copy/paste, review forwarding or terminal Continue is
+required between initial proposal publication and final-plan presentation.
 
 ## Acceptance criteria
 
-| criterion | verification |
+| Criterion | One verification |
 | --- | --- |
-| A review result with a valid findings block yields one card per finding, in order. | `tests/review-findings.test.mjs`: parse fixture with three findings. |
-| A review result without a block yields one "Review findings" card with the full text. | Same test file: fallback case. |
-| Invalid ids, unknown severities and over-long strings are dropped or capped without failing the review. | Same test file: hostile fixture. |
-| A decision saves and reloads with its comment. | `tests/goal-outcomes.test.mjs`: `decide` then `review()`. |
-| Sending requires every finding decided and one agreement; otherwise the route returns 400 with the reason. | `tests/api-routes.test.mjs`: three inject cases. |
-| Sending creates exactly one proposal change request with the template text and stamps `decisionsSentAt`. | `tests/api-routes.test.mjs`: assert the stored `goal_session_pending_input` and the event. |
-| A historical review target refuses decisions. | `tests/api-routes.test.mjs`: publish revision 2, decide on revision 1's review, expect 409. |
-| The UI shows cards, saves on each pick, counts decisions and enables Send only when allowed. | `tests/ui-goal-outcomes.test.tsx`: render with three findings, click, assert requests and button state. |
-| The end-to-end flow works in a browser. | `cypress/e2e/review-decisions.cy.ts`: agree, disagree, comment, send, then the next revision appears. |
-| Read-only protection blocks both routes and disables the controls. | Existing read-only Vitest and Cypress patterns extended to the new controls. |
+| Completed review automatically reaches the configured planner with full critique and source identity. | Backend orchestration test completes a review and observes one assessment dispatch without human input. |
+| Planner assessment records all finding dispositions and publishes a linked final revision without a review loop. | Backend lifecycle test validates dispositions, provenance and exactly one review per cycle. |
+| Final approval is impossible before assessment completion and remains an explicit human action afterward. | API test rejects direct premature approval and accepts only the exact completed final revision. |
+| User change requests begin a fresh review cycle. | Backend lifecycle test submits feedback on the final revision and verifies a new review identity. |
+| Retries, restart and duplicate completion do not create competing turns or duplicate final revisions. | Recovery test simulates crashes before and after dispatch with durable ownership assertions. |
+| Stale or aborted work cannot replace a newer plan or unlock approval. | Race test changes generation, revision, feedback and abort state before result publication. |
+| Failed review/assessment, uncertain dispatch, malformed findings and oversized inputs are disclosed without a false pass. | Failure-path tests assert saved status, preserved evidence and blocked approval. |
+| The user sees one final plan and its summary; technical details expand and no finding decision controls remain. | UI test checks pending, ready, historical and failed states and the expandable details. |
+| Mobile users reach final approval without sending review feedback or using the terminal. | Deterministic Cypress test simulates automatic progression at 390px width and verifies final actions and 44px targets. |
+| Upgrade preserves old decisions and assesses only eligible current unapproved reviews once. | Migration/recovery test covers completed, approved, aborted and historical reviews. |
+| Existing security restrictions hold for assessment publication and retries. | API/bridge tests reject unpaired, wrong-origin, stale-owner and out-of-scope requests. |
 
 ## Success measure
 
-A completed planner review with findings reaches the planner as one change
-request with zero manual copying of review text. Measured in the Cypress spec by
-asserting the request-changes body equals the rendered template.
+For a successful review-enabled cycle, the number of human actions between
+initial proposal publication and presentation of the assessed final plan is zero.
+The deterministic Cypress flow verifies this while requiring explicit final
+approval before implementation.
