@@ -667,13 +667,24 @@
 .worktree-planner-sheet .planner-progress li{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 .worktree-planner-sheet .planner-context{margin:0 2px 13px;border-radius:12px;padding:12px}
 .worktree-planner-sheet .planner-context .planner-prompt>summary{font-size:12px}
-.worktree-planner-sheet .review-finding{display:flex;flex-direction:column;gap:6px;border:1px solid rgba(159,196,255,.22);border-radius:9px;padding:9px}
+.worktree-planner-sheet .review-finding{display:flex;flex-direction:column;gap:16px;border:1px solid rgba(159,196,255,.22);border-radius:12px;padding:16px;margin:12px 0;min-width:0;overflow-wrap:anywhere}
 .worktree-planner-sheet .review-finding header{display:flex;align-items:center;gap:8px}
 .worktree-planner-sheet .review-finding .severity-badge{border-radius:6px;padding:1px 6px;font-size:8px;font-weight:800;text-transform:uppercase;background:#2b3442;color:#c6dcff}
 .worktree-planner-sheet .review-finding.severity-high .severity-badge{background:#4a1d1d;color:#ffb3b3}
 .worktree-planner-sheet .review-finding.severity-medium .severity-badge{background:#4a3a1d;color:#ffd9a0}
 .worktree-planner-sheet .review-decision{display:flex;flex-direction:column;gap:6px}
-.worktree-planner-sheet .review-decision [role=radiogroup]{display:flex;gap:14px}
+.worktree-planner-sheet .review-decision [role=radiogroup]{display:flex;flex-wrap:wrap;gap:10px}
+.worktree-planner-sheet .review-decision [role=radiogroup] label{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:10px;flex:1 1 120px;min-height:48px;margin:0;padding:10px 16px;border:1px solid #657286;border-radius:10px;background:#202731;color:#edf2fa;font-size:14px;font-weight:700;cursor:pointer}
+.worktree-planner-sheet .review-decision [role=radiogroup] label:has(:checked){border-color:#c6f478;background:#29351d;color:#dcffa8}
+.worktree-planner-sheet .review-decision [role=radiogroup] label:focus-within{outline:2px solid #c6f478;outline-offset:3px}
+.worktree-planner-sheet .review-decision input[type=radio]{width:18px;height:18px;min-height:0;margin:0;accent-color:#c6f478}
+.worktree-planner-sheet .review-finding .markdown-body{width:100%;max-width:none;margin:0;padding:0}
+.worktree-planner-sheet .review-suggestion{padding:14px;border-left:3px solid #c6f478;border-radius:8px;background:#202a1c;color:#edf2e7}
+.worktree-planner-sheet .review-suggestion .markdown-body p{font-size:14px;line-height:1.65;color:inherit;margin:8px 0 0}
+.worktree-planner-sheet .review-technical-details summary{display:list-item;min-height:44px;padding:12px 0;cursor:pointer;font-size:13px;color:#b9c5d5}
+.worktree-planner-sheet .review-technical-details .markdown-body{padding-top:8px}
+.worktree-planner-sheet .review-decisions-footer{padding:14px;border:1px solid #657286;border-radius:10px;background:#202731}
+.worktree-planner-sheet .review-decisions-footer button{min-height:48px}
 .worktree-planner-sheet .review-decisions-footer{display:flex;flex-direction:column;gap:6px}
 .worktree-planner-sheet .planner-delivery-mode,.worktree-planner-sheet .planner-delivery-status{gap:8px;margin:0 0 15px;border-radius:12px;padding:14px}
 .worktree-planner-sheet .planner-delivery-mode strong,.worktree-planner-sheet .planner-delivery-status strong{font-size:14px}

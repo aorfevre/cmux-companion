@@ -39,6 +39,7 @@ function install() {
 
 describe("Planner review decisions", () => {
   it("agrees, disagrees, comments, sends one change request and shows the next revision", () => {
+    cy.viewport(390, 844);
     const review = { id: "d".repeat(64), kind: "planner", target: "1", status: "completed", result: "```json\n{}\n```\n\nFull prose", error: null, acknowledgedAt: null, findings, decisions: [] as Decision[], decisionsSentAt: null as string | null };
     let detail = { ...summary(), planStatus: "draft", questions: [], tasks: [], events: [], engine: { provider: "claude", model: "default", effort: "default", reviewer: true }, proposalRevision: 1, proposal: { intendedBehavior: "Add billing" }, reviews: [review], analysisReports: [] };
     install();
@@ -59,6 +60,16 @@ describe("Planner review decisions", () => {
     cy.findByRole("heading", { name: "Proposal revision 1" }).should("be.visible");
     cy.findByRole("button", { name: "Send decisions to planner" }).should("be.disabled");
     cy.findByText("0 of 2 decided").should("be.visible");
+    cy.findByRole("region", { name: "Suggestion for Missing rollback" }).should("be.visible").and("contain.text", "Add one");
+    cy.findByText("No down step").should("not.be.visible");
+    cy.findByRole("article", { name: "Missing rollback" }).within(() => {
+      cy.contains("summary", "Technical details").click();
+      cy.findByText("No down step").should("be.visible");
+      cy.contains("summary", "Technical details").click();
+      cy.findByRole("radio", { name: "Agree with Missing rollback" }).parent().should(($label) => {
+        expect($label[0].getBoundingClientRect().height).to.be.at.least(44);
+      });
+    });
     cy.findByRole("radio", { name: "Agree with Missing rollback" }).click();
     cy.wait("@decide").its("request.body").should("deep.equal", { verdict: "agree", comment: "" });
     cy.findByText("1 of 2 decided").should("be.visible");

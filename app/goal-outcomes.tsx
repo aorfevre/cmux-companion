@@ -76,6 +76,7 @@ export function GoalOutcomes({ draft, onReceive, onLinked, readOnly = false }: {
           <h4>{review.kind === "planner" ? "Planner review" : review.kind === "analysis" ? "Analysis critique" : "Code review"} · {review.kind === "code" ? "commit" : "version"} {review.target} · {review.status}{historical ? " (historical target)" : ""}</h4>
           {review.error && <p role="status">{review.error}</p>}
           {findings.length > 0 ? <>
+            {decidable && <p className="review-instructions">Choose Agree or Disagree for each suggestion, then send your decisions to the planner.</p>}
             {findings.map((finding) => <FindingCard key={finding.id} finding={finding} decision={decisions.get(finding.id) || null} editable={decidable && !readOnly && !busy} onDecide={(verdict, comment) => { void send("PUT", `reviews/${review.id}/decisions/${encodeURIComponent(finding.id)}`, { verdict, comment }); }} />)}
             {decidable && <div className="review-decisions-footer">
               <p>{decidedCount} of {findings.length} decided</p>
@@ -107,14 +108,15 @@ function FindingCard({ finding, decision, editable, onDecide }: { finding: Revie
   const verdict = decision?.verdict || null;
   return <article className={`review-finding severity-${finding.severity}`} aria-label={finding.title}>
     <header><span className="severity-badge">{finding.severity}</span><strong>{finding.title}</strong></header>
-    {finding.evidence && <ReportMarkdown>{finding.evidence}</ReportMarkdown>}
-    {finding.suggestion && <p><b>Suggestion:</b> {finding.suggestion}</p>}
+    {finding.suggestion && <section className="review-suggestion" aria-label={`Suggestion for ${finding.title}`}><strong>Suggested change</strong><ReportMarkdown>{finding.suggestion}</ReportMarkdown></section>}
     {editable ? <div className="review-decision">
+      <strong>Your decision</strong>
       <div role="radiogroup" aria-label={`Decision on ${finding.title}`}>
         <label><input type="radio" name={`decision-${finding.id}`} aria-label={`Agree with ${finding.title}`} checked={verdict === "agree"} onChange={() => onDecide("agree", comment.trim())} /> Agree</label>
         <label><input type="radio" name={`decision-${finding.id}`} aria-label={`Disagree with ${finding.title}`} checked={verdict === "disagree"} onChange={() => onDecide("disagree", comment.trim())} /> Disagree</label>
       </div>
       <textarea aria-label={`Comment on ${finding.title}`} placeholder="Optional comment for the planner" maxLength={1_000} rows={2} value={comment} onChange={(event) => setComment(event.target.value)} onBlur={() => { if (verdict && comment.trim() !== (decision?.comment || "")) onDecide(verdict, comment.trim()); }} />
     </div> : decision && <p className="review-decision-saved">{decision.verdict === "agree" ? "Agreed" : "Disagreed"}{decision.comment ? ` · ${decision.comment}` : ""}</p>}
+    {finding.evidence && <details className="review-technical-details"><summary>Technical details</summary><ReportMarkdown>{finding.evidence}</ReportMarkdown></details>}
   </article>;
 }
