@@ -153,19 +153,22 @@ describe("native analysis outcomes and advisory reviews", () => {
     for (const name of ["Unit tests", "End-to-end tests", "Refactor review", "Code review"]) cy.findByRole("checkbox", { name }).should("be.enabled").and("be.checked");
   });
 
-  it("requires failed-review acknowledgment before analysis approval, then preserves report history and critiques", () => {
-    const review = { id: "a".repeat(64), kind: "planner", target: "1", status: "failed", result: null as string | null, error: "Provider timeout", acknowledgedAt: null as string | null };
-    const report = { planId: "plan-spec", version: 1, approvalRevision: 1, title: "Boundary analysis", markdown: "## Evidence\nImmutable first report.\n\n## Next steps\nChallenge the analysis or launch coding goal.", baseSha: "a".repeat(40), createdAt: now, codingGoalId: null };
+  it("requires a retried review and planner assessment before analysis approval, then preserves report history and critiques", () => {
+    const review = { id: "a".repeat(64), kind: "planner", target: "1", status: "failed", result: null as string | null, error: "Provider timeout" as string | null, acknowledgedAt: null as string | null, assessment: null as Record<string, unknown> | null };
+    const report = { planId: "plan-spec", version: 1, approvalRevision: 2, title: "Boundary analysis", markdown: "## Evidence\nImmutable first report.\n\n## Next steps\nChallenge the analysis or launch coding goal.", baseSha: "a".repeat(40), createdAt: now, codingGoalId: null };
     const summary = { ...readySummary(), workflow: "goal_session", goalType: "analysis", goalSessionGeneration: 1, goalSessionState: "awaiting_approval", boardState: "needs_you" };
     const state = { plans: [summary] };
     let detail = { ...readyDetail(), ...summary, tasks: [], engine: { provider: "claude", model: "default", effort: "default", reviewer: true }, proposalRevision: 1, proposal: { intendedBehavior: "Read repository evidence" }, reviews: [review], analysisReports: [] as typeof report[] };
     installScenario(state);
     cy.intercept("GET", "**/api/worktree-plans/plan-spec", (request) => request.reply(detail)).as("analysisDetail");
-    cy.intercept("POST", "**/api/goal-sessions/plan-spec/reviews/acknowledge", (request) => {
-      expect(request.body.reviewId).to.equal(review.id); review.acknowledgedAt = now; request.reply(detail);
-    }).as("acknowledge");
+    cy.intercept("POST", "**/api/goal-sessions/plan-spec/reviews/retry", (request) => {
+      expect(request.body.reviewId).to.equal(review.id);
+      // The retried review completes and the planner assessment publishes revision 2 without user input.
+      Object.assign(review, { status: "completed", error: null, result: "Independent review of the analysis scope", assessment: { status: "completed", sourceRevision: 1, finalRevision: 2, summary: "Narrowed the evidence scope.", dispositions: [] } });
+      detail = { ...detail, proposalRevision: 2, reviews: [review] }; request.reply(detail);
+    }).as("retryReview");
     cy.intercept("POST", "**/api/goal-sessions/plan-spec/approve", (request) => {
-      expect(review.acknowledgedAt).to.equal(now);
+      expect(request.body).to.deep.equal({ generation: 1, revision: 2 });
       detail = { ...detail, goalSessionState: "analysis_ready", analysisReports: [{ ...report, version: 2, markdown: "Latest report evidence" }, report] };
       request.reply(detail);
     }).as("approveAnalysis");
@@ -175,10 +178,14 @@ describe("native analysis outcomes and advisory reviews", () => {
       request.reply(detail);
     }).as("challenge");
     visitBoard(); cy.findByRole("button", { name: `Resume ${READY_GOAL}` }).click(); cy.wait("@analysisDetail");
-    cy.findByRole("heading", { name: "Proposal revision 1" }).should("be.visible");
+    cy.findByRole("region", { name: "Plan review progress" }).should("contain.text", "Preparing your reviewed plan");
+    cy.findByRole("button", { name: "Approve analysis" }).should("not.exist");
+    cy.findByRole("button", { name: "Acknowledge failed review" }).should("not.exist");
+    cy.findByText("Provider timeout").should("be.visible");
+    cy.findByRole("button", { name: "Retry planner review" }).click(); cy.wait("@retryReview");
+    cy.findByRole("heading", { name: "Proposal revision 2" }).should("be.visible");
     cy.findByRole("region", { name: "Proposal details" }).should("contain.text", "Read repository evidence");
-    cy.findByRole("button", { name: "Approve analysis" }).should("be.disabled");
-    cy.findByRole("button", { name: "Acknowledge failed review" }).click(); cy.wait("@acknowledge");
+    cy.findByRole("region", { name: "What changed after review" }).should("contain.text", "Narrowed the evidence scope.");
     cy.findByRole("button", { name: "Approve analysis" }).should("be.enabled").click(); cy.wait("@approveAnalysis");
     cy.findByRole("region", { name: "Analysis report" }).should("contain.text", "Latest report evidence");
     cy.findByRole("combobox", { name: "Analysis report version" }).select("1");

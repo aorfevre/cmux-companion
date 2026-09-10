@@ -17,7 +17,8 @@ See [product behavior](README.md#what-it-does) and [architecture](README.md#arch
 - `server/repo-identity-store.mjs`: rebuildable SQLite repository/worktree cache.
 - `server/burst-service.mjs`, `server/burst-scanner.mjs`, `server/burst-store.mjs`: burst plans, the read-only per-repository scan and their storage.
 - `server/burst-review.mjs`: the extra reviewer sessions a burst goal buys.
-- `server/review-findings.mjs`: splits a planner review into findings and renders the user's decisions as one change request.
+- `server/review-findings.mjs`: splits a planner review into structured findings for the planner assessment.
+- `server/planner-assessments.mjs`: the automatic read-only planner fork that assesses a completed review and publishes the final revision.
 - `server/burst-contract.mjs`, `server/burst-routes.mjs`: shared burst field/status contracts and the Fastify routes that expose them.
 - `worker/index.ts`: vinext Worker entry and image handling; build scaffolding, not the Mac bridge.
 - `tests/`: explicit Node backend tests and automatically selected Vitest UI tests.

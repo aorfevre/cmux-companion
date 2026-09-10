@@ -45,13 +45,21 @@ defaults; explicit opt-outs and historical saved choices are preserved. Resettin
 the form restores new-goal defaults. Bulk issue planning and historical multi-task
 delivery retain their existing flow.
 
-### Advisory independent reviews
+### Independent review and planner assessment
 
 Planner review is queued for each published proposal revision, using the saved
-spec-reviewer model for the opposite provider. Approval becomes available when
-that review completes, regardless of findings. A failure is not a pass: retry it
-or explicitly acknowledge it before deciding whether to approve. Reviewers cannot
-approve for the user, modify code, or start another goal.
+spec-reviewer model for the opposite provider. When it completes, Companion
+queues one planner assessment atomically and runs it in the background: a
+read-only fork of the planner's saved conversation, with the goal's configured
+model, reads the full critique and accepts, adapts or rejects every finding
+with a reason. The assessment publishes the final revision linked to the
+reviewed revision and review attempt; that publication does not enqueue another
+review. Approval becomes available only for that exact assessed revision.
+A failed review or assessment is not a pass: it stays visible with its error and
+an explicit retry; an uncertain dispatch needs reconciliation first. Neither the
+reviewer nor the assessing planner can approve for the user, modify code, or
+start another goal. User change requests begin a fresh proposal, review and
+assessment cycle.
 
 Code review starts after the existing observer sees the goal's matching open PR.
 It reviews a Git archive pinned to the PR head and its base-to-head diff, saves
