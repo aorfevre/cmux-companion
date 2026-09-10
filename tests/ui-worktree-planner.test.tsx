@@ -127,6 +127,15 @@ describe("goal session sheet", () => {
     assert.ok(screen.getByText(/The analysis report is saved below/));
     rerender(<WorktreePlannerSheet key="uncertain" repository={repository} initialDraft={{ ...analysing, goalSessionState: "planning", transitionStatus: "uncertain" }} onClose={() => {}} onNotice={() => {}} />);
     assert.ok(screen.getByText(/The implementation handoff is uncertain/));
+    const implementing: PlanDraft = { ...proposalDraft, goalSessionState: "implementing", approvalRevision: 2 };
+    rerender(<WorktreePlannerSheet key="sent" repository={repository} initialDraft={{ ...implementing, transitionStatus: "sent" }} onClose={() => {}} onNotice={() => {}} />);
+    assert.ok(screen.getByText("Approval sent. The agent is starting the implementation."));
+    assert.equal(screen.queryByRole("button", { name: "Send approval again" }), null);
+    rerender(<WorktreePlannerSheet key="delivered" repository={repository} initialDraft={{ ...implementing, transitionStatus: "delivered" }} onClose={() => {}} onNotice={() => {}} />);
+    assert.ok(screen.getByText(/Implementation is continuing/));
+    rerender(<WorktreePlannerSheet key="uncertain-approval" repository={repository} initialDraft={{ ...implementing, transitionStatus: "uncertain" }} onClose={() => {}} onNotice={() => {}} />);
+    assert.ok(screen.getByText(/may not have reached the agent/));
+    assert.equal(screen.queryByRole("button", { name: "Send approval again" }), null);
     rerender(<WorktreePlannerSheet key="approve" repository={repository} initialDraft={{ ...proposalDraft, goalType: "analysis" }} onClose={() => {}} onNotice={() => {}} />);
     assert.ok(screen.getByRole("button", { name: "Approve analysis" }));
     rerender(<WorktreePlannerSheet key="review" repository={repository} initialDraft={{ ...proposalDraft, engine: { provider: "claude", model: "m", effort: "high", reviewer: true }, reviews: [{ id: "r1", kind: "planner", target: "2", status: "running", result: null, error: null, acknowledgedAt: null }] }} onClose={() => {}} onNotice={() => {}} />);
@@ -385,5 +394,18 @@ describe("launched goal passport", () => {
     assert.deepEqual(goalPrLink({ finalPrUrl: "https://github.test/pr/3", finalPrNumber: 3 }), { url: "https://github.test/pr/3", label: "Open PR #3" });
     assert.deepEqual(goalPrLink({ boardPrUrl: "https://github.test/pr/4" }), { url: "https://github.test/pr/4", label: "Open PR" });
     assert.equal(goalPrLink({}), null);
+  });
+});
+
+describe("approval delivery", () => {
+  test("a deferred approval shows its reason and resends once through the API", async () => {
+    const deferred: PlanDraft = { ...proposalDraft, goalSessionState: "implementing", approvalRevision: 2, transitionStatus: "pending", approvalDelivery: { status: "pending", reason: "The agent conversation is closed. Resume it, then send the approval again" } };
+    const calls = stubFetch((url, init) => url === "/api/goal-sessions/plan-goal/resend-approval" && init?.method === "POST" ? response({ ...deferred, transitionStatus: "sent", approvalDelivery: { status: "sent", reason: null } }) : undefined);
+    render(<WorktreePlannerSheet repository={repository} initialDraft={deferred} onClose={() => {}} onNotice={() => {}} />);
+    assert.ok(screen.getByText(/Approval not sent yet: The agent conversation is closed/));
+    await userEvent.click(screen.getByRole("button", { name: "Send approval again" }));
+    assert.ok(await screen.findByText("Approval sent. The agent is starting the implementation."));
+    assert.equal(posted(calls, "/api/goal-sessions/plan-goal/resend-approval").length, 1);
+    assert.equal(screen.queryByRole("button", { name: "Send approval again" }), null);
   });
 });

@@ -55,9 +55,11 @@ a CLI exit or an interrupted conversation does not move it to Stopped.
 
 Review the scope, exclusions, assumptions, acceptance criteria and verification,
 then choose **Request changes** or **Approve and implement**. Approval applies to
-that exact revision and session generation. After approval, tell the agent to
-continue in the same conversation. Ordinary tool permission prompts remain
-interactive. A new discovery message before approval withdraws the old proposal;
+that exact revision and session generation. Companion then sends the approval
+to the agent's conversation itself, so the agent starts implementing without a
+message from you. If the conversation is closed or the agent is showing a
+prompt, the goal says why and offers **Send approval again**. Ordinary tool
+permission prompts remain interactive. A new discovery message before approval withdraws the old proposal;
 the agent republishes after incorporating your feedback. Phone feedback is saved
 and reaches the agent when it next checks goal status or you send a terminal
 message; it does not inject text into an active native prompt.

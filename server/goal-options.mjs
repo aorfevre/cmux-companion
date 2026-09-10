@@ -27,6 +27,19 @@ export function plannerReviewReady(plan) {
   return review?.status === "completed" && review.assessment?.status === "completed" && review.assessment.finalRevision === plan.proposalRevision;
 }
 
+// One sentence for the state of an approval's delivery to the agent
+// conversation. The card, the sheet and the sessions view all read it.
+export function approvalDeliveryMessage(plan) {
+  if (!plan || plan.goalSessionState !== "implementing" || plan.goalType === "analysis") return null;
+  const status = plan.transitionStatus;
+  if (status === "delivered") return null;
+  if (status === "uncertain") return "The approval may not have reached the agent. Check the conversation in cmux, then continue there if it did not.";
+  if (status === "sending") return "Approval is being sent to the agent.";
+  if (status === "sent") return "Approval sent. The agent is starting the implementation.";
+  if (status === "pending") return plan.approvalDelivery?.reason ? `Approval not sent yet: ${plan.approvalDelivery.reason}.` : "Approval saved. Companion is sending it to the agent.";
+  return null;
+}
+
 export function plannerReviewPhase(plan) {
   const review = currentPlannerReview(plan);
   if (!review) return null;

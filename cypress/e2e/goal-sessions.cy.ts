@@ -46,9 +46,14 @@ function scenario(initial: Record<string, unknown> = basePlan) {
   cy.intercept("POST", "**/api/goal-sessions/goal-one/approve", (request) => {
     expect(request.body.generation).to.equal(1);
     expect(request.body.revision).to.equal(plan.proposalRevision);
-    plan = { ...plan, goalSessionState: "implementing", approvalRevision: plan.proposalRevision };
+    // Companion sends the approval to the conversation itself; the user never types "continue".
+    plan = { ...plan, goalSessionState: "implementing", approvalRevision: plan.proposalRevision, transitionStatus: "sent", approvalDelivery: { status: "sent", reason: null } };
     request.reply(plan);
   }).as("approval");
+  cy.intercept("POST", "**/api/goal-sessions/goal-one/resend-approval", (request) => {
+    plan = { ...plan, transitionStatus: "sent", approvalDelivery: { status: "sent", reason: null } };
+    request.reply(plan);
+  }).as("resend");
   return { setStarted: () => { started = true; }, getPlan: () => plan, setPlan: (next: Record<string, unknown>) => { plan = next; } };
 }
 function start() {
@@ -136,7 +141,9 @@ describe("visible goal conversation", () => {
     cy.findByText("Proposal revision 2").should("be.visible");
     cy.contains("Email receipts").should("be.visible");
     cy.findByRole("button", { name: "Approve and implement" }).click(); cy.wait("@approval");
-    cy.findByText("Implementation is continuing in this conversation.").should("be.visible");
+    cy.findByText("Approval sent. The agent is starting the implementation.").should("be.visible");
+    cy.findByRole("button", { name: "Send approval again" }).should("not.exist");
+    cy.get("@resend.all").should("have.length", 0);
     cy.location("search").should("contain", "workspace=goal-workspace");
     cy.get("@startGoal.all").should("have.length", 1);
     cy.get("@approval.all").should("have.length", 1);
@@ -208,5 +215,17 @@ describe("one discovery process", () => {
     cy.get("@startGoal.all").should("have.length", 0);
     cy.get("@continueDiscovery.all").should("have.length", 1);
     cy.screenshot(`unified-discovery-${width}`, { capture: "viewport" });
+  });
+  it("shows why an approval was not sent and resends it from the goal at 390px", () => {
+    cy.viewport(390, 844);
+    const state = scenario({ ...basePlan, questions: [], goalSessionState: "implementing", proposalRevision: 1, approvalRevision: 1, proposal, transitionStatus: "pending", approvalDelivery: { status: "pending", reason: "The agent conversation is closed. Resume it, then send the approval again" } });
+    cy.intercept("GET", "**/api/worktree-plans*", (request) => request.reply({ plans: [{ ...state.getPlan(), status: "launched", stage: "ready", taskCount: 1, launchedCount: 1, readyCount: 0, boardState: "needs_you", createdAt: now, updatedAt: now }] }));
+    cy.visit("/?mode=worktrees");
+    cy.contains("Approval not sent yet: The agent conversation is closed").should("be.visible");
+    cy.findByRole("button", { name: "View Add billing" }).click();
+    cy.findByRole("button", { name: "Send approval again" }).should("be.visible").and(($button) => { expect($button[0].getBoundingClientRect().height).to.be.at.least(44); }).click();
+    cy.wait("@resend");
+    cy.findByText("Approval sent. The agent is starting the implementation.").should("be.visible");
+    cy.findByRole("button", { name: "Send approval again" }).should("not.exist");
   });
 });

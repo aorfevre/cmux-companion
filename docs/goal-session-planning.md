@@ -31,9 +31,13 @@ Neither product quality nor iteration-speed improvements have been measured yet.
    and verification. **Request changes** saves feedback for the next native turn;
    **Approve and implement** applies to the displayed revision and generation.
    A direct discovery message before approval withdraws the old proposal.
-5. After approving, tell the agent to continue in the same conversation. Per-tool
-   approval checks now permit implementation, subject to native permission prompts.
+5. Companion sends one approval prompt to the recorded conversation; the agent
+   calls get_status and implements the approved revision there. Per-tool
+   approval checks permit implementation, subject to native permission prompts.
    The owner becomes one launched task for existing health and PR tracking.
+   A closed conversation, a missing workspace or an on-screen native prompt
+   leaves the approval pending with its reason and a **Send approval again**
+   action; a transport failure is uncertain and is never resent automatically.
 6. Open the saved goal's **Open conversation** action to return to its recorded
    workspace. The conversation stays available during PR review and accepts
    corrections within approved scope. Merge remains a separate decision.

@@ -266,3 +266,106 @@ test("a goal with no intake answers stores an empty intake and an unchanged prom
   assert.doesNotMatch(goalDiscoveryPrompt(store.get(plan.planId)), /must not change/);
   await assert.rejects(() => service.start({ repositoryId: "repo-1", goal: "x", intake: { exclusions: "a".repeat(5_000) } }), /intake/i);
 });
+
+// Approval delivery: the user never types "continue". One prompt reaches the
+// recorded conversation; every blocker leaves the approval pending with a
+// reason; a transport error is uncertain and never resent by itself.
+function approvedFixture(t, { alive = true, workspaces = null, sendError = null } = {}) {
+  const store = new WorktreePlanStore({ path: ":memory:" });
+  t.after(() => store.close());
+  store.createPlan({ planId: "goal", repositoryId: "repo", goal: "Ship billing" });
+  store.reserveGoalSession("goal", { branch: "goal-session/goal", generation: 1 });
+  store.recordGoalSessionStart("goal", { worktreePath: "/repo/goal", workspaceId: "ws-goal", generation: 1 });
+  store.recordGoalSessionProviderSession("goal", { generation: 1, providerSessionId: "provider" });
+  const dispatchId = "00000000-0000-4000-8000-000000000020";
+  store.claimGoalSessionRunnerDispatch("goal", { generation: 1, dispatchId });
+  store.claimGoalSessionRunner("goal", { generation: 1, dispatchId, pid: 4242 });
+  store.publishProposal("goal", { generation: 1, providerSessionId: "provider", proposal: { intendedBehavior: "Ship billing" } });
+  const sent = [];
+  const cmux = {
+    workspaceListDetailed: async () => ({ workspaces: workspaces ?? [{ id: "ws-goal", status: { signals: {} } }] }),
+    sendWorkspacePrompt: async (workspaceId, text) => { sent.push([workspaceId, text]); if (sendError) throw new Error(sendError); },
+  };
+  const service = new GoalSessionService({ store, worktrees: { resolveRepository: async () => ({ id: "repo" }) }, cmux, processAlive: () => alive });
+  return { store, service, sent, get: () => store.get("goal") };
+}
+
+test("approval sends exactly one prompt to the recorded conversation and the first write tool marks it delivered", async (t) => {
+  const { service, sent, get, store } = approvedFixture(t);
+  const plan = await service.approve("goal", { generation: 1, revision: 1 });
+  assert.equal(plan.transitionStatus, "sent");
+  assert.equal(plan.approvalDelivery.status, "sent"); assert.ok(plan.approvalDelivery.sentAt);
+  assert.equal(sent.length, 1); assert.equal(sent[0][0], "ws-goal");
+  assert.match(sent[0][1], /revision 1 of generation 1 is approved/); assert.match(sent[0][1], /get_status/);
+  assert.ok(!sent[0][1].includes("Ship billing"), "the prompt carries no user or repository text");
+  await assert.rejects(service.resendApproval("goal"), /already delivered/);
+  await service.sweepApprovals(); assert.equal(sent.length, 1, "the sweep never sends a second prompt");
+  assert.equal(store.claimGoalSessionTransition("goal", { generation: 1, revision: 1 }).transitionStatus, "dispatching");
+  store.recordGoalSessionTransition("goal", { generation: 1, revision: 1 });
+  assert.equal(get().transitionStatus, "delivered");
+});
+
+for (const [name, options, reason] of [
+  ["a dead runner", { alive: false }, /conversation is closed/],
+  ["a missing workspace", { workspaces: [] }, /no longer open in cmux/],
+  ["an on-screen native prompt", { workspaces: [{ id: "ws-goal", status: { signals: { any_agent_needs_input: true } } }] }, /showing a prompt/],
+]) test(`${name} leaves the approval pending with a reason and sends nothing`, async (t) => {
+  const { service, sent, get } = approvedFixture(t, options);
+  const plan = await service.approve("goal", { generation: 1, revision: 1 });
+  assert.equal(plan.transitionStatus, "pending"); assert.match(plan.approvalDelivery.reason, reason);
+  assert.equal(sent.length, 0);
+  assert.equal(plan.approvalRevision, 1, "the approval itself is kept");
+  await service.sweepApprovals(); assert.equal(sent.length, 0, "a deferred approval waits for an explicit resend");
+  assert.equal(get().goalSessionState, "implementing");
+});
+
+test("resend delivers a deferred approval once the blocker is gone and refuses other states", async (t) => {
+  const { service, sent, get } = approvedFixture(t, { workspaces: [] });
+  await service.approve("goal", { generation: 1, revision: 1 });
+  assert.equal(sent.length, 0);
+  service.cmux.workspaceListDetailed = async () => ({ workspaces: [{ id: "ws-goal", status: { signals: {} } }] });
+  const plan = await service.resendApproval("goal");
+  assert.equal(plan.transitionStatus, "sent"); assert.equal(plan.approvalDelivery.reason, null); assert.equal(sent.length, 1);
+  await assert.rejects(service.resendApproval("goal"), /already delivered/);
+  assert.equal(get().transitionStatus, "sent");
+});
+
+test("a transport failure is uncertain, not retried, and blocks resend", async (t) => {
+  const { service, sent, get } = approvedFixture(t, { sendError: "socket closed" });
+  const plan = await service.approve("goal", { generation: 1, revision: 1 });
+  assert.equal(plan.transitionStatus, "uncertain"); assert.match(plan.approvalDelivery.error, /socket closed/); assert.match(plan.goalSessionError, /may not have reached/);
+  assert.equal(sent.length, 1);
+  await assert.rejects(service.resendApproval("goal"), /uncertain/);
+  await service.sweepApprovals(); assert.equal(sent.length, 1);
+  assert.equal(get().transitionStatus, "uncertain");
+});
+
+test("abort or a change request between claim and send cancels delivery, and a crash before send is resent once by the sweep", async (t) => {
+  const { service, sent, get, store } = approvedFixture(t);
+  service.cmux.workspaceListDetailed = async () => { store.recordGoalAborted("goal"); return { workspaces: [{ id: "ws-goal", status: { signals: {} } }] }; };
+  const aborted = await service.approve("goal", { generation: 1, revision: 1 });
+  assert.equal(aborted.boardStatus, "aborted"); assert.equal(sent.length, 0);
+  assert.equal(get().transitionStatus, "sending", "an aborted goal keeps its last record and is never delivered");
+  await service.sweepApprovals(); assert.equal(sent.length, 0);
+
+  const second = approvedFixture(t);
+  second.store.approveProposal("goal", { generation: 1, revision: 1 });
+  // Simulate a crash after the claim: the record says sending but nothing was sent.
+  second.store.claimApprovalDelivery("goal", { generation: 1, revision: 1, dispatchId: "00000000-0000-4000-8000-000000000099" });
+  await second.service.sweepApprovals(); assert.equal(second.sent.length, 0, "a sending claim is owned; the sweep does not race it");
+  second.store.deferApprovalDelivery("goal", { generation: 1, revision: 1, dispatchId: "00000000-0000-4000-8000-000000000099", reason: "" });
+  assert.equal(second.get().transitionStatus, "pending");
+  second.store.db.prepare("UPDATE plans SET approval_delivery = NULL WHERE plan_id = 'goal'").run();
+  await second.service.sweepApprovals(); assert.equal(second.sent.length, 1, "a fresh pending approval is delivered once by the sweep");
+  await second.service.sweepApprovals(); assert.equal(second.sent.length, 1);
+});
+
+test("a duplicate approve request cannot send twice and a delivered transition is never demoted", async (t) => {
+  const { service, sent, store, get } = approvedFixture(t);
+  await service.approve("goal", { generation: 1, revision: 1 });
+  await assert.rejects(service.approve("goal", { generation: 1, revision: 1 }), /no longer current|already approved/);
+  assert.equal(sent.length, 1);
+  store.claimGoalSessionTransition("goal", { generation: 1, revision: 1 });
+  store.recordGoalSessionTransition("goal", { generation: 1, revision: 1 });
+  assert.equal(store.recordApprovalDelivery("goal", { generation: 1, revision: 1, dispatchId: get().approvalDelivery.dispatchId }).transitionStatus, "delivered");
+});

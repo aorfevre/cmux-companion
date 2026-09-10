@@ -320,6 +320,12 @@ test("goal session conversation routes drive the durable state machine", async (
   const approved = await app.inject({ method: "POST", url: "/api/goal-sessions/chat/approve", headers: AUTH, payload: { generation: 1, revision: 2 } });
   assert.equal(approved.statusCode, 200, approved.body);
   assert.equal(approved.json().goalSessionState, "implementing");
+  // No runner is recorded here, so the approval waits with its reason and the
+  // resend route delivers it once the conversation is back.
+  assert.equal(approved.json().transitionStatus, "pending");
+  assert.match(approved.json().approvalDelivery.reason, /conversation is closed/);
+  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/chat/resend-approval", headers: AUTH, payload: {} })).json().transitionStatus, "pending");
+  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/missing/resend-approval", headers: AUTH, payload: {} })).statusCode, 400);
 
   plan("resume");
   const continued = await app.inject({ method: "POST", url: "/api/goal-sessions/resume/continue", headers: AUTH, payload: {} });
