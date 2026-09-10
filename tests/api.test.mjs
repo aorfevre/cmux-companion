@@ -1514,7 +1514,7 @@ async function nativeDiscoveryFixture(t) {
 
 test("analysis and review routes require pairing, same origin, strict bodies and repository authorization", async (t) => {
   const { app, headers, store } = await nativeDiscoveryFixture(t);
-  const routes = ["challenge-analysis", "launch-coding", "reviews/retry", "reviews/reconcile", "reviews/code", "reviews/assessment-retry", "reviews/assessment-reconcile"];
+  const routes = ["challenge-analysis", "launch-coding", "reviews/retry", "reviews/reconcile", "reviews/code", "reviews/assessment-retry", "reviews/assessment-reconcile", "resend-approval"];
   for (const action of routes) {
     const url = `/api/goal-sessions/missing/${action}`;
     assert.equal((await app.inject({ method: "POST", url, payload: {} })).statusCode, 401);

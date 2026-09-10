@@ -212,7 +212,7 @@ export async function buildApp({
   // waiting to be noticed. It moves no goal: every recovery stays explicit.
   const watchdog = goalWatchdog
     || (health ? new GoalWatchdog({ health, store: planStore, integrator, pushService, mergeWatch, worktrees, sessionReaper: autoCloseSessions ? reaper : null, log: app.log }) : null);
-  const reviews = goalReviews || (planStore ? new GoalReviews({ store: planStore, worktrees, modelSettings, log: app.log }) : null);
+  const reviews = goalReviews || (planStore ? new GoalReviews({ store: planStore, worktrees, modelSettings, goalSessions, log: app.log }) : null);
   const detachReviews = reviews && (!worktreePlanner || goalReviews) ? reviews.start() : null;
   const detachWatchdog = watchdog?.start() || null;
   const detachIssueSyncScheduler = issueSyncScheduler?.start() || null;
@@ -622,6 +622,10 @@ export async function buildApp({
   app.post("/api/goal-sessions/:planId/approve", async (request) => {
     if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
     return goalSessions.approve(request.params.planId, request.body || {});
+  });
+  app.post("/api/goal-sessions/:planId/resend-approval", { schema: WRITE_SCHEMAS.empty }, async (request) => {
+    if (!goalSessions) throw serviceUnavailable("Goal sessions are unavailable");
+    return goalSessions.resendApproval(request.params.planId);
   });
 
   app.post("/api/goal-sessions/:planId/answer", async (request) => {
