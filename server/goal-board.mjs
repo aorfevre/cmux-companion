@@ -46,6 +46,9 @@ export function goalBoardState(plan) {
   if (text(source.workflow) === "goal_session") {
     const session = text(source.goalSessionState);
     if (session === "unavailable" || text(source.goalSessionError) || source.transitionStatus === "uncertain") return "stopped";
+    // An approval whose prompt could not be sent waits on the person again:
+    // the stored reason and the resend action live on the goal.
+    if (session === "implementing" && source.transitionStatus === "pending" && text(source.approvalDelivery?.reason)) return "needs_you";
     if (source.goalType === "analysis") {
       if (session === "analysis_ready") return "analysis_ready";
       if (session === "analyzing") return "analysis_in_progress";

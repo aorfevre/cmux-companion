@@ -33,8 +33,8 @@ export function reviewCommand(engine, contextPath) {
 }
 
 export class GoalReviews {
-  constructor({ store, worktrees, modelSettings, execute = streamExecFile, log = null, processAlive = alive, env = process.env } = {}) {
-    this.store = store; this.outcomes = store.outcomes; this.worktrees = worktrees; this.modelSettings = modelSettings;
+  constructor({ store, worktrees, modelSettings, goalSessions = null, execute = streamExecFile, log = null, processAlive = alive, env = process.env } = {}) {
+    this.store = store; this.outcomes = store.outcomes; this.worktrees = worktrees; this.modelSettings = modelSettings; this.goalSessions = goalSessions;
     this.execute = execute; this.log = log; this.processAlive = processAlive; this.env = env; this.active = null; this.assessments = new PlannerAssessments(this);
   }
   start() {
@@ -59,6 +59,9 @@ export class GoalReviews {
       }
     }
     await this.observeCode();
+    if (this.stopped) return;
+    // Approvals given while the companion was down are sent once here.
+    await this.goalSessions?.sweepApprovals?.();
     if (this.stopped) return;
     const review = this.outcomes.pending().find((entry) => entry.status === "queued");
     if (!review) { await this.assessments.tick(); return; }

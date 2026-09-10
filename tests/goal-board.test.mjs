@@ -167,4 +167,9 @@ test("maps a goal session by who acts next", () => {
   assert.equal(goalBoardState({ ...session, goalSessionState: "unavailable" }), "stopped");
   assert.equal(goalBoardState({ ...session, goalSessionState: "planning", goalSessionError: "spawn failed" }), "stopped");
   assert.equal(goalBoardState({ ...session, goalSessionState: "implementing", transitionStatus: "uncertain" }), "stopped");
+  // An approval that Companion could not send waits on the person again; one
+  // that is sending or sent is building.
+  assert.equal(goalBoardState({ ...session, goalSessionState: "implementing", transitionStatus: "pending", approvalDelivery: { status: "pending", reason: "The agent conversation is closed" } }), "needs_you");
+  assert.equal(goalBoardState({ ...session, goalSessionState: "implementing", transitionStatus: "pending", approvalDelivery: null }), "building");
+  assert.equal(goalBoardState({ ...session, goalSessionState: "implementing", transitionStatus: "sent" }), "building");
 });

@@ -290,7 +290,7 @@ export class WorktreePlanStore {
     this.#transaction(() => {
       const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'planning', approval_revision = NULL, approval_at = NULL,
         goal_session_pending_input = ?,
-        transition_status = NULL, goal_session_error = NULL, updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
+        transition_status = NULL, approval_delivery = NULL, goal_session_error = NULL, updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
         AND board_status IS NULL AND goal_session_generation = ? AND proposal_revision = ? AND goal_session_state = 'awaiting_approval'`).run(note, at, String(planId), generation, revision).changes;
       if (changed !== 1) throw new TypeError("This proposal is no longer current");
       this.#insertEvent(String(planId), null, "proposal_changes_requested", { generation, revision, feedback: note }, at);
@@ -392,7 +392,7 @@ export class WorktreePlanStore {
         return;
       }
       const changed = this.db.prepare(`UPDATE plans SET goal_session_state = 'implementing', approval_revision = ?, approval_at = ?,
-        transition_status = 'pending', goal_session_error = NULL, status = 'launched', delivery_mode = 'single', delivery_status = 'implementing',
+        transition_status = 'pending', approval_delivery = NULL, goal_session_error = NULL, status = 'launched', delivery_mode = 'single', delivery_status = 'implementing',
         launched_at = COALESCE(launched_at, ?), updated_at = ? WHERE plan_id = ? AND workflow = 'goal_session'
         AND board_status IS NULL AND goal_session_generation = ? AND proposal_revision = ? AND goal_session_state = 'awaiting_approval'`).run(revision, at, at, at, String(planId), generation, revision).changes;
       if (changed !== 1) throw new TypeError("This proposal is no longer current or was already approved");
@@ -409,8 +409,57 @@ export class WorktreePlanStore {
   claimGoalSessionTransition(planId, { generation, revision } = {}) {
     const at = this.#stamp();
     const changed = this.db.prepare(`UPDATE plans SET transition_status = 'dispatching', updated_at = ? WHERE plan_id = ?
-      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND approval_revision = ? AND transition_status = 'pending'`).run(at, String(planId), generation, revision).changes;
+      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND approval_revision = ? AND transition_status IN ('pending', 'sent')`).run(at, String(planId), generation, revision).changes;
     return changed === 1 ? this.get(planId) : null;
+  }
+
+  // Approval delivery: Companion sends one prompt to the recorded conversation
+  // so the user never types "continue". The claim is the only writer that moves
+  // pending to sending, keyed by generation, revision and a fresh dispatch id,
+  // so a duplicate approve, a crash or a restart cannot send twice. The hook's
+  // first write tool still moves pending or sent to delivered.
+  claimApprovalDelivery(planId, { generation, revision, dispatchId } = {}) {
+    if (!Number.isInteger(generation) || !Number.isInteger(revision) || !text(dispatchId)) throw new TypeError("Invalid approval delivery claim");
+    const at = this.#stamp();
+    const record = JSON.stringify({ status: "sending", dispatchId, generation, revision, claimedAt: at, sentAt: null, reason: null, error: null });
+    const changed = this.db.prepare(`UPDATE plans SET transition_status = 'sending', approval_delivery = ?, updated_at = ? WHERE plan_id = ?
+      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_state = 'implementing' AND goal_session_generation = ? AND approval_revision = ? AND transition_status = 'pending'`).run(record, at, String(planId), generation, revision).changes;
+    return changed === 1 ? this.get(planId) : null;
+  }
+
+  // A precondition that failed leaves the approval pending with its reason, so
+  // the card can say why nothing was sent and offer to send again.
+  deferApprovalDelivery(planId, { generation, revision, dispatchId, reason } = {}) {
+    const why = text(reason) || "Approval could not be delivered";
+    const at = this.#stamp();
+    const current = this.get(planId)?.approvalDelivery;
+    if (current?.dispatchId !== dispatchId || current.status !== "sending") return this.get(planId);
+    const record = JSON.stringify({ ...current, status: "pending", reason: why.slice(0, 500), deferredAt: at });
+    this.db.prepare(`UPDATE plans SET transition_status = 'pending', approval_delivery = ?, updated_at = ? WHERE plan_id = ?
+      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND approval_revision = ? AND transition_status = 'sending'`).run(record, at, String(planId), generation, revision);
+    return this.get(planId);
+  }
+
+  recordApprovalDelivery(planId, { generation, revision, dispatchId, error = null } = {}) {
+    const failed = text(error);
+    const at = this.#stamp();
+    const current = this.get(planId)?.approvalDelivery;
+    if (current?.dispatchId !== dispatchId || current.status !== "sending") return this.get(planId);
+    const record = JSON.stringify({ ...current, status: failed ? "uncertain" : "sent", sentAt: failed ? null : at, error: failed ? failed.slice(0, 2000) : null, reason: null });
+    // The agent may already have run its first write tool between the send and
+    // this record; a delivered transition is never demoted.
+    const changed = this.db.prepare(`UPDATE plans SET transition_status = ?, approval_delivery = ?, goal_session_error = COALESCE(?, goal_session_error), updated_at = ? WHERE plan_id = ?
+      AND workflow = 'goal_session' AND board_status IS NULL AND goal_session_generation = ? AND approval_revision = ? AND transition_status = 'sending'`)
+      .run(failed ? "uncertain" : "sent", record, failed || null, at, String(planId), generation, revision).changes;
+    if (changed) this.#insertEvent(String(planId), null, "goal_session_transition", { generation, revision, dispatchId, status: failed ? "uncertain" : "sent", error: failed || null }, at);
+    return this.get(planId);
+  }
+
+  // Approvals that still wait for a send: fresh ones and deferred ones. The
+  // reviewer sweep delivers them after a restart or once a blocker clears.
+  pendingApprovalDeliveries() {
+    return this.db.prepare(`SELECT plan_id FROM plans WHERE workflow = 'goal_session' AND board_status IS NULL AND goal_session_state = 'implementing'
+      AND goal_type != 'analysis' AND transition_status = 'pending' ORDER BY approval_at`).all().map((row) => this.get(row.plan_id)).filter(Boolean);
   }
 
   recordGoalSessionTransition(planId, { generation, revision, error = null } = {}) {
@@ -1415,6 +1464,8 @@ export class WorktreePlanStore {
       goalSessionState: row.goal_session_state ?? null,
       goalSessionWorkspaceId: row.goal_session_workspace_id ?? null,
       goalSessionError: row.goal_session_error ?? null,
+      transitionStatus: row.transition_status ?? null,
+      approvalDelivery: parse(row.approval_delivery, null),
       goalSessionQuestionRevision: Number(row.goal_session_question_revision) || 0,
       proposalRevision: Number(row.proposal_revision) || 0,
       createdAt: row.created_at,
@@ -1548,6 +1599,7 @@ function readPlan(row) {
     approvalRevision: Number.isInteger(row.approval_revision) ? row.approval_revision : null,
     approvalAt: row.approval_at ?? null,
     transitionStatus: row.transition_status ?? null,
+    approvalDelivery: parse(row.approval_delivery, null),
     goalSessionError: row.goal_session_error ?? null,
     goalSessionPendingInput: row.goal_session_pending_input ?? null,
     goalSessionActiveInput: row.goal_session_active_input ?? null,

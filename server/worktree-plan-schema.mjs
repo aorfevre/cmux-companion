@@ -210,6 +210,7 @@ function migratePlanSchema(db) {
     ensure("plans", "approval_revision", "INTEGER");
     ensure("plans", "approval_at", "TEXT");
     ensure("plans", "transition_status", "TEXT");
+    ensure("plans", "approval_delivery", "TEXT");
     ensure("plans", "goal_session_error", "TEXT");
     ensure("plans", "goal_session_pending_input", "TEXT");
     ensure("plans", "goal_session_active_input", "TEXT");

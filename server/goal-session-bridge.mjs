@@ -33,7 +33,7 @@ export function goalStatus(plan) {
     analysisVersions: (plan.analysisReports || []).map(({ version, title, approvalRevision }) => ({ version, title, approvalRevision })),
     reviews: (plan.reviews || []).filter((review) => review.kind === "planner" ? (review.target === String(plan.proposalRevision) || review.assessment?.finalRevision === plan.proposalRevision) : review.kind === "analysis" ? review.target === String(plan.analysisReports?.[0]?.version) : true).slice(0, 4),
     addressedFeedback: plan.goalSessionPendingInput || plan.goalSessionActiveInput || "",
-    approved: (plan.goalType === "analysis" ? ["analyzing", "analysis_ready"].includes(plan.goalSessionState) : plan.goalSessionState === "implementing") && plan.approvalRevision === plan.proposalRevision && Boolean(plan.approvalAt) && !plan.goalSessionError && ["pending", "delivered"].includes(plan.transitionStatus),
+    approved: (plan.goalType === "analysis" ? ["analyzing", "analysis_ready"].includes(plan.goalSessionState) : plan.goalSessionState === "implementing") && plan.approvalRevision === plan.proposalRevision && Boolean(plan.approvalAt) && !plan.goalSessionError && ["pending", "sending", "sent", "delivered"].includes(plan.transitionStatus),
     proposal: plan.proposal, branch: plan.goalSessionBranch, baseRef: plan.baseRef, issueNumbers: plan.issueNumbers };
 }
 
@@ -76,7 +76,7 @@ export function goalHook(store, binding, event) {
   if (!allowRead && !allowWrite && !allowArtifact) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Implementation requires approval of the current saved proposal in Companion. Keep discovery interactive with Read, Grep, Glob, AskUserQuestion and companion_goal tools." } };
   // This records authorization reaching the native session, not completion.
   // No output envelope or exit code is interpreted as delivery success.
-  if (allowWrite && plan.transitionStatus === "pending") {
+  if (allowWrite && ["pending", "sent"].includes(plan.transitionStatus)) {
     const claimed = store.claimGoalSessionTransition(binding.planId, { generation: binding.generation, revision: plan.approvalRevision });
     if (!claimed) throw new Error("The approval changed before this tool could run");
     store.recordGoalSessionTransition(binding.planId, { generation: binding.generation, revision: plan.approvalRevision });

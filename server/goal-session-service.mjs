@@ -6,6 +6,11 @@ import { normalizeReviewOptions } from "./review-options.mjs";
 import { normalizeGoalType, applicableSpecOptions, NEW_GOAL_SPEC_OPTIONS, NEW_GOAL_REVIEWER, NEW_GOAL_REVIEW_OPTIONS } from "./goal-options.mjs";
 import { MAX_GOAL_TEXT } from "./goal-limits.mjs";
 import { normalizeIntake } from "./goal-intake.mjs";
+import { agentBusyState } from "./goal-health.mjs";
+
+export function approvalPrompt(plan) {
+  return `Proposal revision ${plan.approvalRevision} of generation ${plan.goalSessionGeneration} is approved in Companion, which sent this message. Call companion_goal.get_status, then implement exactly its approved proposal in this conversation. Native permission prompts still apply.`;
+}
 
 // Owns every new discovery conversation. Historical delivery recovery remains
 // separate; continuing unlaunched discovery creates one durable successor.
@@ -177,7 +182,60 @@ export class GoalSessionService {
   }
 
   findByWorkspace(workspaceId) { return this.store.findGoalSessionByWorkspace(workspaceId); }
-  approve(planId, decision) { return this.store.approveProposal(planId, decision); }
+  // Approval sends one prompt to the recorded conversation. The user never
+  // types "continue". A failed precondition leaves the approval pending with
+  // its reason; a transport error is uncertain and never retried on its own.
+  async approve(planId, decision) {
+    const plan = this.store.approveProposal(planId, decision);
+    if (plan.goalType === "analysis") return plan;
+    return this.deliverApproval(plan.planId);
+  }
+  async resendApproval(planId) {
+    const plan = this.store.get(planId);
+    if (!plan || plan.workflow !== "goal_session" || plan.boardStatus || plan.goalSessionState !== "implementing") throw new TypeError("This goal has no approval to send");
+    if (plan.transitionStatus !== "pending") throw new TypeError(plan.transitionStatus === "uncertain" ? "The approval delivery is uncertain; confirm it in cmux before sending again" : "The approval was already delivered to the agent");
+    await this.worktrees.resolveRepository(plan.repositoryId);
+    return this.deliverApproval(planId);
+  }
+  async deliverApproval(planId) {
+    const before = this.store.get(planId);
+    if (!before || before.transitionStatus !== "pending" || before.goalType === "analysis") return before;
+    const claim = { generation: before.goalSessionGeneration, revision: before.approvalRevision, dispatchId: randomUUID() };
+    const plan = this.store.claimApprovalDelivery(planId, claim);
+    if (!plan) return this.store.get(planId);
+    const defer = (reason) => this.store.deferApprovalDelivery(planId, { ...claim, reason });
+    try {
+      if (!plan.goalSessionWorkspaceId) return defer("This goal has no recorded conversation to send the approval to");
+      if (!plan.goalSessionRunnerPid || !this.processAlive(plan.goalSessionRunnerPid)) return defer("The agent conversation is closed. Resume it, then send the approval again");
+      let inventory;
+      try { inventory = await this.#inventory(); } catch (cause) { return defer(`cmux could not be checked: ${cause?.message || cause}`); }
+      const workspace = inventory.workspaces.find((entry) => (entry.id || entry.workspace_id) === plan.goalSessionWorkspaceId);
+      if (!workspace) return defer("The agent workspace is no longer open in cmux. Resume the conversation, then send the approval again");
+      if (agentBusyState(workspace) === "needs_input") return defer("The agent is showing a prompt in cmux. Answer it there, then send the approval again");
+      // Re-check the durable state after the inventory read: abort, a change
+      // request or a newer generation must never receive a prompt.
+      const latest = this.store.get(planId);
+      if (!latest || latest.boardStatus || latest.approvalDelivery?.dispatchId !== claim.dispatchId || latest.transitionStatus !== "sending") return latest;
+    } catch (cause) {
+      return defer(String(cause?.message || cause));
+    }
+    try {
+      await this.cmux.sendWorkspacePrompt(plan.goalSessionWorkspaceId, approvalPrompt(plan));
+      return this.store.recordApprovalDelivery(planId, claim);
+    } catch (cause) {
+      this.log?.warn?.({ err: cause, planId }, "approval delivery to the goal conversation is uncertain");
+      return this.store.recordApprovalDelivery(planId, { ...claim, error: `The approval prompt may not have reached the agent: ${cause?.message || cause}` });
+    }
+  }
+  // Startup and blocker recovery: deliver approvals that still wait, at most
+  // one send per approval, from the background sweep.
+  async sweepApprovals() {
+    for (const plan of this.store.pendingApprovalDeliveries()) {
+      if (plan.approvalDelivery?.reason) continue; // deferred: the user resends once the blocker is gone
+      try { await this.deliverApproval(plan.planId); }
+      catch (cause) { this.log?.warn?.({ err: cause, planId: plan.planId }, "approval delivery sweep failed"); }
+    }
+  }
   requestChanges(planId, decision) { return this.store.requestProposalChanges(planId, decision); }
   answer(planId, answer) { return this.store.submitGoalSessionAnswer(planId, answer); }
 }
