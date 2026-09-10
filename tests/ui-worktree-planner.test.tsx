@@ -130,8 +130,10 @@ describe("goal session sheet", () => {
     rerender(<WorktreePlannerSheet key="approve" repository={repository} initialDraft={{ ...proposalDraft, goalType: "analysis" }} onClose={() => {}} onNotice={() => {}} />);
     assert.ok(screen.getByRole("button", { name: "Approve analysis" }));
     rerender(<WorktreePlannerSheet key="review" repository={repository} initialDraft={{ ...proposalDraft, engine: { provider: "claude", model: "m", effort: "high", reviewer: true }, reviews: [{ id: "r1", kind: "planner", target: "2", status: "running", result: null, error: null, acknowledgedAt: null }] }} onClose={() => {}} onNotice={() => {}} />);
-    assert.ok(screen.getByText(/Independent planner review must finish/));
-    assert.equal((screen.getByRole("button", { name: "Approve and implement" }) as HTMLButtonElement).disabled, true);
+    assert.ok(screen.getByRole("region", { name: "Plan review progress" }));
+    assert.ok(screen.getByText(/The reviewer and planner are assessing this proposal/));
+    assert.equal(screen.queryByRole("button", { name: "Approve and implement" }), null, "no approval action before the final plan");
+    assert.equal(screen.getByText("Draft plan").closest("details")?.open, false);
   });
 
   test("a lost session clears the draft and returns to the form", async () => {

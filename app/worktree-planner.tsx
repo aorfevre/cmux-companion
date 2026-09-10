@@ -100,11 +100,12 @@ function GoalSessionProposal({ draft, busy, onApprove, onRequestChanges, onAnswe
         : "Discovery is open in the interactive cmux conversation. Ask questions and steer the agent there.");
     return <section className="planner-delivery-status" aria-label="Goal session status"><strong>Goal session</strong><p>{message}</p>{resume}<div className="planner-actions">{open}{draft.goalSessionError && <button type="button" className="primary-button" disabled={busy} onClick={onRecover}>Recover failed turn</button>}</div></section>;
   }
+  if (!reviewReady) return <section className="planner-delivery-status" aria-label="Plan review progress"><strong>Preparing your reviewed plan</strong><p>The reviewer and planner are assessing this proposal. Your final plan will appear here when assessment finishes.</p><details><summary>Draft plan</summary><ProposalReview proposal={proposal} goal={draft.goal} /></details><div className="planner-actions">{open}</div></section>;
   return <section className="planner-delivery-status proposal-review" aria-label="Proposal awaiting approval"><h2>Proposal revision {draft.proposalRevision}</h2>{resume}
     <div className="proposal-layout"><ProposalReview proposal={proposal} goal={draft.goal} /><div className="proposal-decision">
-    <p>{reviewReady ? "Ready for your decision. Review findings are advisory. Approve this exact revision, then tell the agent to continue in the conversation." : "Independent planner review must finish before approval. If it fails, retry or explicitly acknowledge the failure below."} You can keep discussing to revise it.</p>
+    <p>Ready for your decision. Approve this exact final revision, then tell the agent to continue in the conversation. You can keep discussing to revise it.</p>
     <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} maxLength={4_000} rows={3} onChange={(event) => setChanges(event.target.value)} /></label>
-    <div className="planner-actions">{open}<button type="button" disabled={busy || !changes.trim()} onClick={() => onRequestChanges(changes.trim())}>Request changes</button><button type="button" className="primary-button" disabled={busy || !reviewReady} onClick={onApprove}>{busy ? "Approving…" : draft.goalType === "analysis" ? "Approve analysis" : "Approve and implement"}</button></div>
+    <div className="planner-actions">{open}<button type="button" disabled={busy || !changes.trim()} onClick={() => onRequestChanges(changes.trim())}>Request changes</button><button type="button" className="primary-button" disabled={busy} onClick={onApprove}>{busy ? "Approving…" : draft.goalType === "analysis" ? "Approve analysis" : "Approve and implement"}</button></div>
     </div></div>
   </section>;
 }

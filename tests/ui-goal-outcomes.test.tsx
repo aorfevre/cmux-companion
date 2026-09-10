@@ -56,11 +56,11 @@ test("linked coding opens the returned discovery and reports startup failures in
   assert.equal(linked.mock.calls.length, 1);
 });
 
-test("planner failures can be acknowledged while uncertain code posting offers reconciliation", async () => {
+test("planner failures can be retried while uncertain code posting offers reconciliation", async () => {
   const fetch = vi.fn(async () => json(draft)); vi.stubGlobal("fetch", fetch);
   const reviews: GoalReview[] = [{ ...failed, kind: "planner" }, { ...failed, id: "b".repeat(64), kind: "code", target: "c".repeat(40), status: "uncertain", result: "Saved advisory findings" }];
   render(<GoalOutcomes draft={{ ...draft, proposalRevision: 1, reviews }} onReceive={vi.fn()} onLinked={vi.fn()} />);
-  await userEvent.click(screen.getByRole("button", { name: "Acknowledge failed review" }));
+  await userEvent.click(screen.getByRole("button", { name: "Retry planner review" }));
   await userEvent.click(screen.getByRole("button", { name: "Reconcile review" }));
   assert.equal(fetch.mock.calls.length, 2); assert.ok(screen.getByText("Saved advisory findings"));
 });
@@ -72,63 +72,40 @@ const findings = [
 const plannerDraft: PlanDraft = { ...draft, planId: "coding", goalType: "coding", goalSessionState: "awaiting_approval", goalSessionGeneration: 1, proposalRevision: 2, analysisReports: [] };
 const completed: GoalReview = { id: "c".repeat(64), kind: "planner", target: "2", status: "completed", result: "```json\n{}\n```\n\nFull prose", error: null, acknowledgedAt: null, findings, decisions: [], decisionsSentAt: null };
 
-test("each planner finding is a card whose decision saves at once and gates the send button", async () => {
-  const receive = vi.fn();
-  let decisions: { findingId: string; verdict: "agree" | "disagree"; comment: string }[] = [];
-  const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    const match = url.match(/\/decisions\/([^/]+)$/);
-    if (match) { const body = JSON.parse(String(init?.body)); decisions = [...decisions.filter((d) => d.findingId !== match[1]), { findingId: match[1], ...body }]; return json({ ...plannerDraft, reviews: [{ ...completed, decisions }] }); }
-    if (url.endsWith("/send-decisions")) return json({ ...plannerDraft, goalSessionState: "planning", reviews: [{ ...completed, decisions, decisionsSentAt: "2026-09-09T10:00:00.000Z" }] });
-    throw new Error(`unexpected ${url}`);
-  });
-  vi.stubGlobal("fetch", fetch);
-  const view = render(<GoalOutcomes draft={{ ...plannerDraft, reviews: [completed] }} onReceive={receive} onLinked={vi.fn()} />);
-  assert.equal(screen.getAllByRole("article").length, 3, "one review article plus two finding cards");
-  assert.ok(screen.getByText("Missing rollback"));
-  assert.ok(screen.getByText("high"));
-  assert.equal(screen.getByRole("button", { name: "Send decisions to planner" }).hasAttribute("disabled"), true);
-  assert.ok(screen.getByText("0 of 2 decided"));
-  await userEvent.click(screen.getByRole("radio", { name: "Agree with Missing rollback" }));
-  await waitFor(() => assert.equal(receive.mock.calls.length, 1));
-  assert.equal(String(fetch.mock.calls[0][0]), "/api/goal-sessions/coding/reviews/" + "c".repeat(64) + "/decisions/F1");
-  assert.equal((fetch.mock.calls[0][1] as RequestInit).method, "PUT");
-  view.rerender(<GoalOutcomes draft={receive.mock.calls[0][0] as PlanDraft} onReceive={receive} onLinked={vi.fn()} />);
-  assert.ok(screen.getByText("1 of 2 decided"));
-  await userEvent.type(screen.getByRole("textbox", { name: "Comment on Naming" }), "Repo convention");
-  await userEvent.click(screen.getByRole("radio", { name: "Disagree with Naming" }));
-  await waitFor(() => assert.equal(receive.mock.calls.length, 2));
-  assert.deepEqual(JSON.parse(String((fetch.mock.calls[1][1] as RequestInit).body)), { verdict: "disagree", comment: "Repo convention" });
-  view.rerender(<GoalOutcomes draft={receive.mock.calls[1][0] as PlanDraft} onReceive={receive} onLinked={vi.fn()} />);
-  assert.equal(screen.getByRole("button", { name: "Send decisions to planner" }).hasAttribute("disabled"), false);
-  await userEvent.click(screen.getByRole("button", { name: "Send decisions to planner" }));
-  await waitFor(() => assert.equal(receive.mock.calls.length, 3));
-  assert.deepEqual(JSON.parse(String((fetch.mock.calls[2][1] as RequestInit).body)), { generation: 1, revision: 2 });
-  view.rerender(<GoalOutcomes draft={receive.mock.calls[2][0] as PlanDraft} onReceive={receive} onLinked={vi.fn()} />);
-  assert.ok(screen.getByText(/Decisions sent/));
-  assert.equal(screen.queryByRole("button", { name: "Send decisions to planner" }), null);
-  assert.equal(screen.queryByRole("radio"), null);
-  assert.ok(screen.getByText("Disagreed · Repo convention"));
-});
-
-test("send stays disabled when every finding is disagreed, and read-only mode never mutates", async () => {
-  const allDisagreed: GoalReview = { ...completed, decisions: findings.map((finding) => ({ findingId: finding.id, verdict: "disagree" as const, comment: "", updatedAt: "2026-09-09T10:00:00.000Z" })) };
-  const view = render(<GoalOutcomes draft={{ ...plannerDraft, reviews: [allDisagreed] }} onReceive={vi.fn()} onLinked={vi.fn()} />);
-  assert.equal(screen.getByRole("button", { name: "Send decisions to planner" }).hasAttribute("disabled"), true);
-  assert.ok(screen.getByText("Agree with at least one finding to send, or approve the proposal."));
-  view.unmount();
+test("the planner assesses automatically and only its final summary is prominent", async () => {
   const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
-  render(<GoalOutcomes draft={{ ...plannerDraft, planId: "ro", reviews: [completed] }} onReceive={vi.fn()} onLinked={vi.fn()} readOnly />);
-  assert.equal(screen.queryByRole("radio"), null, "read-only shows no decision controls");
-  assert.equal(screen.getByRole("button", { name: "Send decisions to planner" }).hasAttribute("disabled"), true);
+  const view = render(<GoalOutcomes draft={{ ...plannerDraft, reviews: [completed] }} onReceive={vi.fn()} onLinked={vi.fn()} />);
+  assert.ok(screen.getByText("Planner is assessing the review"));
+  assert.equal(screen.queryByRole("radio"), null);
+  assert.equal(screen.queryByRole("button", { name: "Send decisions to planner" }), null);
+  const assessed: GoalReview = { ...completed, assessment: { status: "completed", sourceRevision: 2, finalRevision: 3, summary: "Added rollback coverage.", dispositions: [{ findingId: "F1", disposition: "accept", rationale: "Protect existing data" }] } };
+  view.rerender(<GoalOutcomes draft={{ ...plannerDraft, proposalRevision: 3, reviews: [assessed] }} onReceive={vi.fn()} onLinked={vi.fn()} />);
+  assert.ok(screen.getByText("Reviewed plan ready"));
+  assert.ok(screen.getByRole("region", { name: "What changed after review" }));
+  assert.ok(screen.getByText("Added rollback coverage."));
+  assert.equal(screen.getByText("Review details").closest("details")?.open, false);
+  await userEvent.click(screen.getByText("Review details"));
+  assert.equal(screen.getByText("Review details").closest("details")?.open, true);
+  assert.ok(screen.getByText("Planner: accept · Protect existing data"));
   assert.equal(fetch.mock.calls.length, 0);
 });
 
-test("a historical planner review shows its findings and decisions without controls", () => {
-  const historical: GoalReview = { ...completed, target: "1", decisions: [{ findingId: "F1", verdict: "agree", comment: "Yes", updatedAt: "2026-09-09T10:00:00.000Z" }], decisionsSentAt: "2026-09-09T10:01:00.000Z" };
+test("failed assessments retry explicitly, respect read-only and report failures", async () => {
+  const fetch = vi.fn(async () => json({ error: "Still unavailable" }, 400)); vi.stubGlobal("fetch", fetch);
+  const review: GoalReview = { ...completed, assessment: { status: "failed", sourceRevision: 2, finalRevision: null, error: "Provider unavailable" } };
+  const view = render(<GoalOutcomes draft={{ ...plannerDraft, reviews: [review] }} onReceive={vi.fn()} onLinked={vi.fn()} readOnly />);
+  assert.equal((screen.getByRole("button", { name: "Retry planner assessment" }) as HTMLButtonElement).disabled, true);
+  view.rerender(<GoalOutcomes draft={{ ...plannerDraft, reviews: [review] }} onReceive={vi.fn()} onLinked={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Retry planner assessment" }));
+  assert.ok(await screen.findByRole("alert"));
+  assert.equal(fetch.mock.calls.length, 1);
+});
+
+test("historical human decisions remain readable without active controls", async () => {
+  const historical: GoalReview = { ...completed, target: "1", decisions: [{ findingId: "F1", verdict: "agree", comment: "Yes" }] };
   render(<GoalOutcomes draft={{ ...plannerDraft, reviews: [historical] }} onReceive={vi.fn()} onLinked={vi.fn()} />);
   assert.ok(screen.getByText(/historical target/));
-  assert.ok(screen.getByText("Agreed · Yes"));
+  await userEvent.click(screen.getByText("Review details"));
+  assert.ok(screen.getByText("Previous user decision: agree · Yes"));
   assert.equal(screen.queryByRole("radio"), null);
-  assert.equal(screen.queryByRole("button", { name: "Send decisions to planner" }), null);
 });
