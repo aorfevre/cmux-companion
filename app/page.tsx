@@ -25,7 +25,7 @@ import { WorktreeDashboardView } from "./worktree-dashboard";
 import { DeploymentHealth } from "./deployment-health";
 import type { PlanDraft } from "./worktree-planner";
 import { GoalOutcomes } from "./goal-outcomes";
-import { plannerReviewReady } from "../server/goal-options.mjs";
+import { plannerReviewReady, approvalDeliveryMessage } from "../server/goal-options.mjs";
 
 type Terminal = { id: string; title: string; current_directory?: string | null; is_focused?: boolean; is_ready?: boolean };
 type WorkspaceStatus = { effective?: string; inferred?: string; signals?: Record<string, boolean> };
@@ -264,7 +264,7 @@ export function ManagedGoalControls({ workspaceId, readOnly = false }: { workspa
 function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: string; readOnly: boolean }) {
   const [plan, setPlan] = useState<PlanDraft | null>(null);
   const [changes, setChanges] = useState("");
-  const [busy, setBusy] = useState<"approve" | "changes" | "recover" | null>(null);
+  const [busy, setBusy] = useState<"approve" | "changes" | "recover" | "resend" | null>(null);
   const [error, setError] = useState("");
   const [readError, setReadError] = useState("");
   const ownedRead = useOwnedReads(workspaceId);
@@ -297,6 +297,13 @@ function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: stri
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not request proposal changes"); }
     finally { mutation.current += 1; setBusy(null); }
   }
+  async function resendApproval() {
+    if (readOnly || busy || !plan) return;
+    mutation.current += 1; setBusy("resend"); setError("");
+    try { setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/resend-approval`, { method: "POST", body: "{}" })); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not send the approval again"); }
+    finally { mutation.current += 1; setBusy(null); }
+  }
   async function recover() {
     if (readOnly || busy || !plan) return;
     mutation.current += 1; setBusy("recover"); setError("");
@@ -315,11 +322,11 @@ function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: stri
   const resume = disconnected ? <><p>Conversation closed. Discovery and saved proposals are preserved.</p><button type="button" disabled={readOnly || Boolean(readError) || Boolean(busy)} onClick={recover}>Resume conversation</button></> : null;
   if (plan.boardStatus === "aborted" || plan.boardStatus === "merged") return <><section className="planner-delivery-status" aria-label="Goal status"><strong>{plan.boardStatus === "aborted" ? "Goal aborted" : "Goal merged"}</strong>{errors}</section>{outcomes}</>;
   if (plan.goalSessionState === "awaiting_input") return <section className="planner-delivery-status" aria-label="Managed goal questions"><strong>Goal needs your answer</strong>{plan.questions.map((question) => <p key={question.id}>Question: {question.text}{question.options.length ? ` (${question.options.join(" / ")})` : ""}</p>)}<p>Reply in this visible conversation to continue planning.</p>{errors}</section>;
-  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <><section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong>{resume}<p>{plan.goalSessionError || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "analysis_ready" ? "Analysis saved. Read the report, challenge it or launch linked coding discovery below." : plan.goalSessionState === "analyzing" ? "Analysis is continuing read-only in this conversation." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "Discovery is open in the interactive conversation. Ask questions and steer the agent here.")}</p>{errors}{plan.goalSessionError && <button type="button" disabled={readOnly || Boolean(busy)} onClick={recover}>{busy === "recover" ? "Recovering…" : "Recover failed turn"}</button>}</section>{outcomes}</>;
+  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <><section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong>{resume}<p>{plan.goalSessionError || approvalDeliveryMessage(plan) || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "analysis_ready" ? "Analysis saved. Read the report, challenge it or launch linked coding discovery below." : plan.goalSessionState === "analyzing" ? "Analysis is continuing read-only in this conversation." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "Discovery is open in the interactive conversation. Ask questions and steer the agent here.")}</p>{errors}{plan.goalSessionError && <button type="button" disabled={readOnly || Boolean(busy)} onClick={recover}>{busy === "recover" ? "Recovering…" : "Recover failed turn"}</button>}{plan.transitionStatus === "pending" && plan.approvalDelivery?.reason && <button type="button" disabled={readOnly || Boolean(busy)} onClick={resendApproval}>{busy === "resend" ? "Sending…" : "Send approval again"}</button>}</section>{outcomes}</>;
   if (!reviewReady) return <><section className="planner-delivery-status" aria-label="Plan review progress"><strong>Preparing your reviewed plan</strong>{resume}<p>The reviewer and planner are assessing this proposal. Your final plan will appear here when assessment finishes.</p><details><summary>Draft plan</summary><ProposalReview proposal={plan.proposal} goal={plan.goal} /></details>{errors}</section>{outcomes}</>;
   return <><section className="planner-delivery-status proposal-review" aria-label="Proposal awaiting approval"><h2>Proposal revision {plan.proposalRevision}</h2>{resume}
     <div className="proposal-layout"><ProposalReview proposal={plan.proposal} goal={plan.goal} /><div className="proposal-decision">
-    <p>Ready for your decision. Approve this exact final revision, then tell the agent to continue here.</p>
+    <p>Ready for your decision. Approve this exact final revision and the agent starts implementing it here.</p>
     <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} disabled={readOnly || Boolean(busy)} maxLength={4_000} rows={2} onChange={(event) => setChanges(event.target.value)} /></label>
     {errors}
     {readOnly && <p>Enable input in the session menu to approve or request changes.</p>}

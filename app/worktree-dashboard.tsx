@@ -13,6 +13,7 @@ import { GoalBoardStateId, GoalHealth, GoalVerification, goalPrLink, PlanDraft, 
 // The board reads its columns and its placement from the one shared module, so
 // the dashboard can never invent a column the server does not know.
 import { GOAL_BOARD_COLUMNS, goalBoardState, groupGoalsByBoardState } from "../server/goal-board.mjs";
+import { approvalDeliveryMessage } from "../server/goal-options.mjs";
 // The GitHub Issues column shares its identity with the server, exactly like
 // the goal columns above. One label, one id, one empty hint, in one file.
 import { GITHUB_ISSUE_ALL_STARTED_HINT, GITHUB_ISSUE_COLUMN, GITHUB_ISSUE_EMPTY_HINT, GITHUB_ISSUE_SYNC_NO_FAVORITES, githubIssueCardId, visibleGithubIssues } from "../server/github-issue-board.mjs";
@@ -125,11 +126,11 @@ function boardEvidence(plan: PlanSummary, state: GoalBoardStateId) {
   if (state === "stopped") return plan.deliveryError || plan.healthReason || (["failed", "uncertain", "stale"].includes(plan.plannerReviewStatus || "") ? "Planner review or assessment needs attention; retry it from the goal" : "This goal stopped and needs attention");
   if (state === "analysis_in_progress") return "Preparing a repository-read-only analysis report";
   if (state === "analysis_ready") return "Report saved. Challenge the analysis or start linked coding discovery.";
-  if (state === "building") return plan.deliveryError || deliveryEvidence(plan.deliveryStatus);
+  if (state === "building") return plan.deliveryError || approvalDeliveryMessage(plan) || deliveryEvidence(plan.deliveryStatus);
   // A launch runs on the companion after its request has ended. Until it
   // settles, this goal is neither idle nor launched, so it says so.
   if (plan.launching) return LAUNCHING_EVIDENCE;
-  if (state === "needs_you") return plan.workflow === "goal_session" ? (plan.goalSessionState === "awaiting_input" ? "The agent asked you a question" : "The contract waits for your approval") : "Ready to launch";
+  if (state === "needs_you") return plan.workflow === "goal_session" ? (plan.goalSessionState === "awaiting_input" ? "The agent asked you a question" : approvalDeliveryMessage(plan) || "The contract waits for your approval") : "Ready to launch";
   if (state === "discovering" && plan.workflow === "goal_session") return plan.plannerReviewStatus === "pending" ? "The planner is assessing the independent review" : ["queued", "running"].includes(plan.plannerReviewStatus || "") ? "An independent reviewer is checking the current proposal" : "Discovery is open in the conversation";
   if (plan.running) return plan.runStep || (plan.runStage === "review_spec" ? "A reviewer pass is reading the specification…" : "Reading the repository…");
   if (plan.runPhase === "failed") return plan.runError || plan.lastError || "The last round failed";
