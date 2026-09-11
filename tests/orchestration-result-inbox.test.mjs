@@ -35,38 +35,38 @@ function fixture(t) {
   return { get store() { return store; }, get service() { return service; }, get results() { return results; }, artifacts, reopen, command, dispatch, raw, get authority() { return authority(store.get('g').attempts[0]); } };
 }
 
-test('early role results remain durable and pending until dispatch identity is recorded', (t) => {
+test('early role results remain durable and pending until dispatch identity is recorded', async (t) => {
   const f = fixture(t), raw = f.raw();
   const received = f.results.receive(f.authority, 'result', raw);
   assert.equal(f.artifacts.get(received.artifactId).toString(), raw);
-  f.results.drain(); assert.equal(f.store.get('g').reviews.length, 0);
-  f.reopen(); f.results.drain(); assert.equal(f.store.get('g').results[0].status, 'pending');
-  f.dispatch(); f.results.drain();
+  await f.results.drain(); assert.equal(f.store.get('g').reviews.length, 0);
+  f.reopen(); await f.results.drain(); assert.equal(f.store.get('g').results[0].status, 'pending');
+  f.dispatch(); await f.results.drain();
   assert.equal(f.store.get('g').results[0].status, 'accepted');
   assert.equal(f.store.get('g').reviews.length, 1); assert.equal(f.store.get('g').attempts[0].workerState, 'running');
   const version = f.store.get('g').version;
-  f.results.receive(f.authority, 'result', raw); f.results.drain(); assert.equal(f.store.get('g').version, version);
+  f.results.receive(f.authority, 'result', raw); await f.results.drain(); assert.equal(f.store.get('g').version, version);
   assert.throws(() => f.results.receive(f.authority, 'result', '{}'), { code: 'IDEMPOTENCY_CONFLICT' });
 });
 
-test('malformed and stale reviews preserve private evidence without approval or slot release', (t) => {
+test('malformed and stale reviews preserve private evidence without approval or slot release', async (t) => {
   const f = fixture(t); f.dispatch();
-  f.results.receive(f.authority, 'malformed', 'PASS private provider details'); f.results.drain();
+  f.results.receive(f.authority, 'malformed', 'PASS private provider details'); await f.results.drain();
   const goal = f.store.get('g');
   assert.equal(goal.results[0].code, 'MALFORMED_RESULT'); assert.equal(goal.attempts[0].status, 'failed');
   assert.equal(goal.attempts[0].workerState, 'running'); assert.equal(goal.reviews.length, 0);
   assert.ok(!JSON.stringify(f.store.events()).includes('private provider details'));
   assert.throws(() => f.command('approve', { revision: 1 }, 'user'), { code: 'REVIEW_REQUIRED' });
   const old = f.authority, raw = f.raw(); f.command('abort', {}, 'user');
-  f.results.receive(old, 'late', raw); f.results.drain();
+  f.results.receive(old, 'late', raw); await f.results.drain();
   assert.equal(f.store.get('g').results[1].code, 'STALE_ATTEMPT'); assert.equal(f.store.get('g').status, 'aborted');
   assert.equal(f.store.get('g').reviews.length, 0);
 });
 
-test('post-commit response loss cannot duplicate accepted review after reopening storage', (t) => {
+test('post-commit response loss cannot duplicate accepted review after reopening storage', async (t) => {
   const f = fixture(t); f.dispatch(); f.results.receive(f.authority, 'result', f.raw());
   f.store.failpoint = (point) => { if (point === 'after_commit') throw new Error('crash after acceptance'); };
-  assert.throws(() => f.results.drain(), /crash after acceptance/); f.reopen(); f.results.drain();
+  await assert.rejects(f.results.drain(), /crash after acceptance/); f.reopen(); await f.results.drain();
   assert.equal(f.store.get('g').reviews.length, 1);
   assert.equal(f.store.events().filter((event) => event.kind === 'agent_result_accepted').length, 1);
 });
@@ -94,8 +94,8 @@ test('uncertain result waits for correlated stopped identity instead of being ca
   assert.equal(f.store.get('g').results[0].status, 'accepted'); assert.equal(f.store.get('g').attempts[0].workerState, 'stopped');
 });
 
-test('rejection of a historical implementer result cannot fail its running replacement', (t) => {
-  const f = fixture(t); f.dispatch(); f.results.receive(f.authority, 'review', f.raw()); f.results.drain();
+test('rejection of a historical implementer result cannot fail its running replacement', async (t) => {
+  const f = fixture(t); f.dispatch(); f.results.receive(f.authority, 'review', f.raw()); await f.results.drain();
   f.command('record_stopped', { attemptId: 'r' }); f.command('approve', { revision: 1 }, 'user');
   const launch = (attemptId) => {
     f.command('request_attempt', { role: 'implementer', attemptId, operationId: `op_${attemptId}`, conversationId: attemptId, taskId: 'A' });
@@ -105,7 +105,7 @@ test('rejection of a historical implementer result cannot fail its running repla
   f.command('record_failure', { attemptId: 'old', confirmedStopped: true, error: 'Failed task' });
   f.command('retry_task', { taskId: 'A' }, 'user'); launch('new');
   f.results.receive(authority(old), 'late_candidate', envelope(old, { headSha: 'b'.repeat(40), summary: 'Late output', evidence: [] }));
-  f.results.drain();
+  await f.results.drain();
   assert.equal(f.store.get('g').results.at(-1).code, 'STALE_ATTEMPT');
   assert.equal(f.store.get('g').tasks[0].status, 'running'); assert.equal(f.store.get('g').attempts.at(-1).status, 'running');
 });
@@ -130,7 +130,7 @@ test('scheduler consumes scripted planner/reviewer results before observing exit
 });
 
 for (const role of ['planner', 'reviewer']) for (const boundary of ['received', 'before_accept_commit', 'accepted']) {
-  test(`${role} result survives process death at ${boundary} without duplicate acceptance`, (t) => {
+  test(`${role} result survives process death at ${boundary} without duplicate acceptance`, async (t) => {
     const directory = mkdtempSync(join(tmpdir(), 'orchestration-result-crash-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const run = (point) => spawnSync(process.execPath, ['tests/helpers/orchestration/result-recovery-child.mjs', directory, role, point], { encoding: 'utf8', timeout: 10000 });

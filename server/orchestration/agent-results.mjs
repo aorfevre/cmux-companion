@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { DomainError, identifier, requireValue } from './domain/contracts.mjs';
+import { parseRoleResult } from './domain/role-result.mjs';
 
 /** Durable result inbox in the authoritative aggregate. Raw output is written to
  * private artifacts first; accepted/rejected disposition commits with lifecycle
  * changes, so response loss cannot replay an accepted mutation after restart.
  */
 export class AgentResults {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; artifacts: import('./storage/artifacts.mjs').ArtifactStore; id?: () => string }} options */
-  constructor({ service, artifacts, id = randomUUID }) { this.service = service; this.store = service.store; this.artifacts = artifacts; this.id = id; }
+  /** @param {{ service: import('./service.mjs').OrchestrationService; artifacts: import('./storage/artifacts.mjs').ArtifactStore; id?: () => string; repositories?: Pick<import('./types.d.ts').RepositoryPort, 'candidate'> }} options */
+  constructor({ service, artifacts, repositories, id = randomUUID }) { this.service = service; this.store = service.store; this.artifacts = artifacts; this.id = id; this.repositories = repositories; }
   /** Receipt reconciliation is read-only and cannot revive authority. The sole
    * generation exception is a planner's own accepted publication, which advances
    * generation/revision in the same transaction as accepting that exact result.
@@ -46,7 +47,7 @@ export class AgentResults {
     this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version, type: 'receive_role_result', payload: { resultId, attemptId: attempt.id, artifactId: artifact.id } }, { kind: 'system' });
     return this.store.get(goal.id)?.results?.find((entry) => entry.id === resultId);
   }
-  drain() {
+  async drain() {
     for (const snapshot of this.store.list()) for (const pending of snapshot.results?.filter((entry) => entry.status === 'pending') ?? []) {
       const goal = this.store.get(snapshot.id); requireValue(goal, 'Result goal disappeared');
       const attempt = goal.attempts.find((entry) => entry.id === pending.attemptId); requireValue(attempt, 'Result attempt disappeared');
@@ -58,9 +59,25 @@ export class AgentResults {
         let result;
         try { result = JSON.parse(bytes.toString('utf8')); }
         catch { throw new DomainError('MALFORMED_RESULT', 'Agent result was not a JSON object'); }
+        const parsed = parseRoleResult(result, { goalId: goal.id, attempt });
+        if (parsed.role === 'implementer') {
+          requireValue(this.repositories, 'Repository evidence verification is unavailable', 'UNSUPPORTED_CAPABILITY');
+          requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+          const task = goal.tasks.find((entry) => entry.id === attempt.taskId);
+          requireValue(task, 'Candidate task disappeared');
+          const proof = await this.repositories.candidate({ repositoryId: goal.repositoryId, attempt, headSha: parsed.output.headSha, ownedAreas: task.ownedAreas });
+          requireValue(proof.headSha === parsed.output.headSha, 'Git proof targets a different candidate', 'STALE_TARGET');
+          this.artifacts.get(proof.artifactId);
+          requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+          this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version, type: 'accept_candidate_result', payload: { resultId: pending.id, result, proofArtifactId: proof.artifactId } }, { kind: 'system' });
+          continue;
+        }
         this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version, type: 'accept_role_result', payload: { resultId: pending.id, result } }, { kind: 'agent', goalId: goal.id, attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision });
       } catch (error) {
         if (!(error instanceof DomainError)) throw error;
+        // An awaited Git read can overlap another result or user command. Retry
+        // from fresh state; a concurrent mutation is not an implementer failure.
+        if (error.code === 'VERSION_CONFLICT') continue;
         const latest = this.store.get(goal.id); requireValue(latest, 'Result goal disappeared');
         if (latest.results?.find((entry) => entry.id === pending.id)?.status !== 'pending') continue;
         this.service.execute({ id: this.id(), goalId: latest.id, expectedVersion: latest.version, type: 'reject_role_result', payload: { resultId: pending.id, code: error.code } }, { kind: 'system' });

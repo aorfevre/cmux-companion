@@ -100,13 +100,28 @@ export function transition(before, command, authority) {
       accepted.events.push({ kind: 'agent_result_accepted', payload: { resultId: saved.id, attemptId: saved.attemptId, artifactId: saved.artifactId } });
       return accepted;
     }
+    case 'accept_candidate_result': {
+      requireAuthority(authority, 'system');
+      const submission = goal.results?.find((entry) => entry.id === input.resultId);
+      requireValue(submission?.status === 'pending', 'Candidate result is not pending', 'STALE_ATTEMPT');
+      const attempt = attemptById(goal, submission.attemptId);
+      const parsed = parseRoleResult(input.result, { goalId: goal.id, attempt });
+      requireValue(parsed.role === 'implementer', 'Candidate result must belong to an implementer', 'FORBIDDEN');
+      const proofArtifactId = text(input.proofArtifactId, 64);
+      requireValue(/^[a-f0-9]{64}$/.test(proofArtifactId), 'Invalid candidate proof artifact');
+      const accepted = transition(before, { ...command, type: 'confirm_candidate', payload: { attemptId: attempt.id, headSha: parsed.output.headSha } }, authority);
+      const saved = accepted.goal.results?.find((entry) => entry.id === submission.id);
+      requireValue(saved, 'Result reference disappeared'); saved.status = 'accepted'; saved.proofArtifactId = proofArtifactId;
+      accepted.events.push({ kind: 'agent_result_accepted', payload: { resultId: saved.id, attemptId: saved.attemptId, artifactId: saved.artifactId, proofArtifactId } });
+      return accepted;
+    }
     case 'reject_role_result': {
       requireAuthority(authority, 'system');
       const submission = goal.results?.find((entry) => entry.id === input.resultId);
       requireValue(submission?.status === 'pending', 'Result is not pending', 'STALE_ATTEMPT');
       submission.status = 'rejected'; submission.code = identifier(input.code);
       const attempt = goal.attempts.find((entry) => entry.id === submission.attemptId);
-      if (attempt && attempt.generation === goal.generation && attempt.revision === goal.revision && ownsWorker(attempt) && ['queued', 'running', 'uncertain'].includes(attempt.status)) {
+      if (attempt && attempt.generation === goal.generation && attempt.revision === goal.revision && ['queued', 'running', 'uncertain'].includes(attempt.status)) {
         attempt.status = 'failed'; attempt.error = 'Agent result was rejected; inspect the saved evidence';
         if (attempt.role === 'implementer' && attempt.taskId) {
           const task = taskById(goal, attempt.taskId); if (task.status === 'running') task.status = 'failed';
@@ -241,8 +256,12 @@ export function transition(before, command, authority) {
       const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
       requireValue(attempt && ownsWorker(attempt), 'No owned live attempt');
       attempt.workerState = 'stopped';
-      if (attempt.status !== 'succeeded') attempt.status = 'cancelled';
-      if (attempt.generation === goal.generation && attempt.taskId && attempt.role === 'implementer') {
+      // A verified process exit releases capacity, but pending asynchronous
+      // result verification retains lifecycle eligibility until disposition.
+      const pendingResult = attempt.status === 'running' && attempt.generation === goal.generation && attempt.revision === goal.revision
+        && !['aborted', 'merged'].includes(goal.status) && goal.results?.some((entry) => entry.attemptId === attempt.id && entry.status === 'pending');
+      if (attempt.status !== 'succeeded' && !pendingResult) attempt.status = 'cancelled';
+      if (!pendingResult && attempt.generation === goal.generation && attempt.taskId && attempt.role === 'implementer') {
         const task = taskById(goal, attempt.taskId);
         if (task.status === 'running') task.status = 'failed';
       } emit('attempt_stopped', { attemptId: attempt.id }); break;

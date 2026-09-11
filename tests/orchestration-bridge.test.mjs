@@ -55,7 +55,7 @@ test('bridge subprocess submits durable structured output without claiming accep
   assert.equal(store.get('goal').revision, 0);
   assert.ok(!JSON.stringify(received).includes(credential)); assert.ok(!JSON.stringify(received).includes('artifactId'));
   assert.equal((await submit(config, input)).result.status, 'pending');
-  results.drain(); assert.equal(store.get('goal').revision, 1); assert.equal(store.get('goal').approvedRevision, null);
+  await results.drain(); assert.equal(store.get('goal').revision, 1); assert.equal(store.get('goal').approvedRevision, null);
   assert.equal((await submit(config, input)).result.status, 'accepted');
   assert.equal((await submit(config, { ...input, id: 'new_submission' })).code, 'FORBIDDEN');
   service.execute({ id: 'revise', goalId: 'goal', expectedVersion: store.get('goal').version, type: 'request_revision', payload: { message: 'New scope' } }, { kind: 'user' });

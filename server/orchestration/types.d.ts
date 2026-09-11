@@ -45,7 +45,7 @@ export interface Goal {
   integration: { operationId: string; taskId: string; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'failed' } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number } | null;
   planningRequest?: { message: string; basedOnRevision: number } | null;
-  results?: { id: string; attemptId: string; artifactId: string; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
+  results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
 }
 export interface EvidenceReference { path: string; line: number; description: string }
 export type RoleOutput =

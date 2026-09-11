@@ -14,11 +14,11 @@ substitute acceptance criterion for the whole replacement.
 | --- | --- | --- |
 | T01: domain and ports | Foundation implemented | Typed pure graph/state/review rules, explicit result versus worker liveness, command identities and adapter capability contracts. |
 | T02: persistence | Foundation implemented | Explicit-path SQLite state, immutable contracts, indexed attempt ownership, atomic event/intent/receipt writes, private artifacts and journal cursors. |
-| T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Candidate/repair submission deliberately remains unavailable until the Git evidence adapters in T07–T08 are connected. |
+| T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Structured candidate submission now connects independent Git proof to atomic acceptance; integration-repair submission still fails closed. |
 | M1 durable-decision gate | Passed for foundation | Review and verification below; no production scheduling activated. |
 | T04: scheduler and recovery | Implemented, independently reviewed | Exclusive nonce-fenced ownership, transactional capacity, durable FIFO, explicit retries, abort reconciliation and fresh-process crash recovery. |
 | T05–T06 / M2 | In progress | Runtime, concurrent real-Git fake implementers, scheduled planning/review, revision requests and durable role-result intake pass targeted tests. Complete task-review/repair and integrated A/B/C journey remain; M2 has not passed. |
-| T07–T09 / M3 | Pending | Disposable real Git task repository, worktrees, integration, verification and PR adapter. |
+| T07–T09 / M3 | In progress | Disposable real Git repository, owned worktrees, candidate proof and durable acceptance implemented. Serialized integration, combined verification and PR adapter remain. |
 | T10–T12 / M4 | Pending | Runnable isolated composition, durable consumers, actual provider/cmux adapters and new mobile/Cypress journey. |
 | T13–T15 / M5 | Pending | Full crash matrix, cleanup, disposable cutover rehearsal, legacy removal, documentation and final acceptance. |
 
@@ -327,3 +327,33 @@ not yet real process termination.
 Candidate acceptance remains disconnected and fails closed. Real integration,
 production adapters, full fixture E2E, cutover/retirement and remaining T01–T15 gates
 are incomplete. PR #115 remains draft; no live service, merge or deployment ran.
+
+## T07 candidate-result acceptance wiring
+
+The durable inbox now awaits independent Git verification for implementer output
+when a repository adapter is supplied. Raw output remains private. A system-only
+command commits the proof artifact reference, candidate state and result receipt
+atomically; scoped agents cannot invoke it to substitute their own evidence.
+Repository allow-list checks surround the awaited read. Independent task reviewers
+are pinned to the accepted candidate SHA, and integration remains unchanged until
+separate reviewed integration evidence arrives.
+
+Git verification may overlap another command. Optimistic version conflicts leave
+output pending for fresh verification. Independent review reproduced a race where
+stopped-worker reconciliation then cancelled that pending attempt. Process exit
+now records the worker as stopped and releases its capacity while preserving a
+current pending result's eligibility; its later acceptance or rejection settles
+lifecycle independently. Historical generation/status guards remain enforced.
+The revision-race regression initially used `feedback` instead of `message`, so it
+only proved malformed-command rejection. It now asserts the actual discovering
+status and incremented generation after revision.
+
+Real disposable Git tests cover accepted proof and exact review target, scope
+rejection, abort/revision during verification, lost acceptance response, concurrent
+inbox mutations, agent bypass refusal and stopped-worker retry with both acceptance
+and rejection. Independent reviewer `/root/domain_review` approved the corrections and reran
+candidate/inbox suites: 22 passed, zero failed. Backend coverage passed 1,358 tests
+with one platform skip and 98.23% lines. Full `npm run verify` passed: 1,358
+backend tests, one platform skip, 257 UI tests, lint, both typechecks and build.
+Serialized integration, full scheduled repair journey and later plan gates remain
+incomplete.

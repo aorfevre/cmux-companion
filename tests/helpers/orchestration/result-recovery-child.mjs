@@ -32,7 +32,7 @@ const attempt = store.get('g').attempts[0];
 const output = role === 'planner' ? { contract: contract() } : { schemaVersion: 1, target: attempt.target, disposition: 'accept', findings: [] };
 const raw = JSON.stringify({ schemaVersion: 1, goalId: 'g', attemptId: attempt.id, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role, target: attempt.target, output });
 results.receive({ kind: 'agent', goalId: 'g', attemptId: attempt.id, role, generation: attempt.generation, revision: attempt.revision }, 'result', raw);
-results.drain();
+await results.drain();
 const goal = store.get('g');
 process.stdout.write(JSON.stringify({ disposition: goal.results[0].status, reviews: goal.reviews.length, contracts: goal.contracts.length, received: store.events().filter((event) => event.kind === 'agent_result_received').length, accepted: store.events().filter((event) => event.kind === 'agent_result_accepted').length }));
 store.close();
