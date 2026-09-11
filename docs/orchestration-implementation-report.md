@@ -288,3 +288,42 @@ transport is not connected yet. Candidate and integration-repair acceptance stil
 fail closed until independent repository evidence is available. A fully scheduled
 task repair/integration journey, remaining adapter/result fault cases and M2 are
 still incomplete. No live or installed service was exercised, merged or deployed.
+
+## Authenticated result transport and initial T07 Git evidence
+
+The scoped bridge and HTTP result endpoint now accept only `{id, raw}` and return
+bounded receipt metadata. Historical credential bindings support exact settled
+receipt replay after a lost response, including the planner's own publication;
+they cannot authorize changed/new output, later revisions, explicit revocation or
+aborted goals. Bridge buffering is bounded before newline parsing.
+
+The new local Git adapter records operation manifests and atomically reserves
+branch/ownership refs before creating isolated worktrees. It reconciles recorded
+reservations, refuses unowned paths (including dangling symlinks), and verifies
+native worktree registration, exact branch/head/base, clean checkout, ancestry,
+nonmerge history and approved changed paths. Configured checkout filters and new
+symlink/submodule modes fail closed. Candidate reports reference a byte-preserved
+binary patch artifact. Reviewer attempts use their exact commit target as base.
+
+Independent reviewers `/root/domain_review` and `/root/scheduler_admission_review`
+approved their respective transport and Git slices after corrections. The Git
+review found UTF-8 decoding corrupted non-UTF-8 blob patches and replacement refs
+could substitute object evidence. Patches now preserve raw bytes, metadata rejects
+unsupported encodings, and Git disables replacement objects. A real patch apply
+must reproduce the candidate's exact tree; a replacement-ref regression verifies
+the original commit's delta.
+
+Full `npm run verify` passed: 1,349 backend tests, one platform skip, 257 UI
+tests, lint, frontend/backend types and build.
+
+Checks: targeted API/bridge/Git tests passed 24 with one platform skip; checked JS,
+targeted ESLint and `git diff --check` passed. Backend coverage passed 1,349 tests
+with one skip and 98.24% lines. The invalid-filename test initially failed during
+fixture creation with macOS EILSEQ; it now explicitly skips macOS, whose filesystem
+rejects those names. Its rejection path remains unverified locally and is covered
+by the test on Linux. Provisioning recovery here uses injected exceptions/reopen,
+not yet real process termination.
+
+Candidate acceptance remains disconnected and fails closed. Real integration,
+production adapters, full fixture E2E, cutover/retirement and remaining T01–T15 gates
+are incomplete. PR #115 remains draft; no live service, merge or deployment ran.

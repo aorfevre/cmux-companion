@@ -93,7 +93,7 @@ export interface ClockPort { now(): string }
 export interface IdentityPort { next(): string }
 export interface RepositoryPort {
   provision(input: { operationId: string; repositoryId: string; branch: string; baseSha: string }): Promise<{ worktree: string; branch: string; baseSha: string }>;
-  candidate(input: { repositoryId: string; attempt: Attempt; headSha: string }): Promise<{ headSha: string; changedPaths: string[]; artifactId: string }>;
+  candidate(input: { repositoryId: string; attempt: Attempt; headSha: string; ownedAreas: string[] }): Promise<{ headSha: string; changedPaths: string[]; artifactId: string }>;
   integrate(input: { repositoryId: string; operationId: string; expectedHead: string; baseSha: string; candidateSha: string }): Promise<{ status: 'integrated'; headSha: string } | { status: 'conflict'; worktree: string }>;
   observeIntegration(operationId: string): Promise<{ status: 'integrated' | 'pending' | 'unknown'; headSha: string | null }>;
 }

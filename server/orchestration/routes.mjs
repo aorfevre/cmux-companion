@@ -1,13 +1,13 @@
 import { isAuthorized, isSafeOrigin, safeEqual, sessionCookie } from '../security.mjs';
-import { DomainError, requireValue } from './domain/contracts.mjs';
+import { DomainError, object, requireValue } from './domain/contracts.mjs';
 import { parseCommand, USER_COMMANDS, AGENT_COMMANDS } from './domain/commands.mjs';
 import { goalView } from './domain/state-view.mjs';
 
 const PREFIX = '/api/orchestration';
 /** @param {import('fastify').FastifyInstance} app
- * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority }} options
+ * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults }} options
  */
-export function registerOrchestrationRoutes(app, { service, token, bridgeAuth }) {
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results }) {
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
@@ -18,7 +18,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth })
     if (!routePath?.startsWith(PREFIX)) return;
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff');
     if (request.method !== 'GET' && !isSafeOrigin(request)) return reply.code(403).send({ code: 'BAD_ORIGIN', error: 'Origin rejected' });
-    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`].includes(routePath)) return;
+    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/results`].includes(routePath)) return;
     if (!isAuthorized(request, token)) return reply.code(401).send({ code: 'UNAUTHORIZED', error: 'Pair this device to continue' });
   });
   app.setErrorHandler((error, _request, reply) => {
@@ -70,6 +70,20 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth })
     const authority = agentAuthority(request), goal = service.store.get(authority.goalId);
     requireValue(goal, 'Goal not found', 'NOT_FOUND');
     return { ...goalView(goal), contracts: goal.contracts };
+  });
+  app.post(`${PREFIX}/agent/results`, { bodyLimit: 2 * 1024 * 1024 }, async (request, reply) => {
+    const header = request.headers.authorization ?? '';
+    requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
+    const credential = header.slice(7), binding = bridgeAuth.receiptAuthority(credential);
+    requireValue(results, 'Structured result intake is unavailable', 'UNSUPPORTED_CAPABILITY');
+    const input = object(request.body);
+    requireValue(Object.keys(input).length === 2 && Object.hasOwn(input, 'id') && Object.hasOwn(input, 'raw') && typeof input.id === 'string' && typeof input.raw === 'string', 'Expected result id and raw output');
+    const received = results.receipt(binding, input.id, input.raw)
+      ?? results.receive(bridgeAuth.authenticate(credential), input.id, input.raw);
+    requireValue(received, 'Result receipt unavailable');
+    // A durable receipt is not workflow acceptance. Raw output, artifact paths and
+    // provider credentials never appear in this response.
+    return reply.code(202).send({ id: received.id, status: received.status, code: received.code });
   });
   app.post(`${PREFIX}/agent/commands`, async (request) => {
     const authority = agentAuthority(request), command = parseCommand(request.body);

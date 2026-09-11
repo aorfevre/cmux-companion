@@ -201,7 +201,7 @@ export function transition(before, command, authority) {
       const conversationId = identifier(input.conversationId);
       requireValue(!goal.attempts.some((attempt) => attempt.conversationId === conversationId), 'Independent attempts require fresh conversation identities');
       /** @type {Attempt} */
-      const attempt = { id, operationId, role, mode, taskId, target, generation: goal.generation, revision: goal.revision, status: 'queued', workerState: 'pending', identity: null, baseSha: goal.integrationHead, worktree: null, branch: null, conversationId, error: null };
+      const attempt = { id, operationId, role, mode, taskId, target, generation: goal.generation, revision: goal.revision, status: 'queued', workerState: 'pending', identity: null, baseSha: role === 'reviewer' && !target.startsWith('contract:') ? target : goal.integrationHead, worktree: null, branch: null, conversationId, error: null };
       goal.attempts.push(attempt); intent('launch', operationId, id, { role, mode, target, taskId }); emit('attempt_queued', { attemptId: id, role }); break;
     }
     case 'record_provision': {

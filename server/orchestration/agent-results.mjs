@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { DomainError, identifier, requireValue } from './domain/contracts.mjs';
 
 /** Durable result inbox in the authoritative aggregate. Raw output is written to
@@ -8,6 +8,24 @@ import { DomainError, identifier, requireValue } from './domain/contracts.mjs';
 export class AgentResults {
   /** @param {{ service: import('./service.mjs').OrchestrationService; artifacts: import('./storage/artifacts.mjs').ArtifactStore; id?: () => string }} options */
   constructor({ service, artifacts, id = randomUUID }) { this.service = service; this.store = service.store; this.artifacts = artifacts; this.id = id; }
+  /** Receipt reconciliation is read-only and cannot revive authority. The sole
+   * generation exception is a planner's own accepted publication, which advances
+   * generation/revision in the same transaction as accepting that exact result.
+   * Any further user revision/abort remains fenced.
+   * @param {Extract<import('./types.d.ts').Authority, {kind: 'agent'}>} authority
+   * @param {string} resultId @param {string} raw
+   */
+  receipt(authority, resultId, raw) {
+    const goal = this.store.get(authority.goalId);
+    const attempt = goal?.attempts.find((entry) => entry.id === authority.attemptId);
+    const result = goal?.results?.find((entry) => entry.id === resultId && entry.attemptId === authority.attemptId);
+    if (!goal || !attempt || !result || result.status === 'pending' || ['aborted', 'merged'].includes(goal.status)) return null;
+    if (attempt.role !== authority.role || attempt.generation !== authority.generation || attempt.revision !== authority.revision) return null;
+    const current = goal.generation === attempt.generation && goal.revision === attempt.revision;
+    const ownPublication = attempt.role === 'planner' && result.status === 'accepted' && goal.generation === attempt.generation + 1 && goal.revision === attempt.revision + 1;
+    if (!current && !ownPublication) return null;
+    return createHash('sha256').update(raw).digest('hex') === result.artifactId ? result : null;
+  }
   /** Caller supplies authority authenticated by transport or bound by the trusted
    * adapter to its recorded attempt, never identity parsed from raw agent output.
    * Historical adapter observations may be archived but cannot advance state.

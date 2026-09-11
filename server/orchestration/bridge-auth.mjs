@@ -31,13 +31,25 @@ export class BridgeAuthority {
   digest(secret) { return createHash('sha256').update(secret).digest('hex'); }
   /** @param {string} secret @returns {Extract<import('./types.d.ts').Authority, {kind: 'agent'}>} */
   authenticate(secret) {
+    const authority = this.receiptAuthority(secret);
+    const goal = this.store.get(authority.goalId);
+    requireValue(goal, 'Agent goal is unavailable', 'UNAUTHORIZED');
+    validateAuthority(goal, authority, true); return authority;
+  }
+  /** This historical binding permits only exact receipt lookup; callers must
+   * authenticate() separately before any new mutation. Explicit credential
+   * revocation and terminal goals deny even receipt reconciliation.
+   * @param {string} secret @returns {Extract<import('./types.d.ts').Authority, {kind: 'agent'}>}
+   */
+  receiptAuthority(secret) {
     requireValue(typeof secret === 'string' && secret.length >= 32 && secret.length <= 128, 'Invalid agent credential', 'UNAUTHORIZED');
     const row = this.store.db.prepare('SELECT authority FROM agent_credentials WHERE digest = ? AND revoked = 0').get(this.digest(secret));
     requireValue(row, 'Invalid agent credential', 'UNAUTHORIZED');
     const authority = /** @type {Extract<import('./types.d.ts').Authority, {kind: 'agent'}>} */ (JSON.parse(String(row.authority)));
     const goal = this.store.get(authority.goalId);
     requireValue(goal, 'Agent goal is unavailable', 'UNAUTHORIZED');
-    validateAuthority(goal, authority, true); return authority;
+    requireValue(!['aborted', 'merged'].includes(goal.status), 'Agent authority was revoked', 'FORBIDDEN');
+    return authority;
   }
   /** @param {string} goalId @param {string} attemptId */
   revoke(goalId, attemptId) { this.store.db.prepare('UPDATE agent_credentials SET revoked = 1 WHERE goal_id = ? AND attempt_id = ?').run(goalId, attemptId); }
