@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OrchestrationStore } from '../server/orchestration/storage/store.mjs';
+import { VerificationCoordinator } from '../server/orchestration/verification-coordinator.mjs';
+import { FakeAgents, barrier } from './helpers/orchestration/fake-agents.mjs';
 import { IntegrationRepairs } from '../server/orchestration/integration-repairs.mjs';
 import { Scheduler } from '../server/orchestration/scheduler.mjs';
 import { DomainError } from '../server/orchestration/domain/contracts.mjs';
@@ -142,14 +144,14 @@ test('continuous implementer readiness keeps its FIFO position when integration 
   assert.equal(f.store.ready()[0].goalId, 'older');
 });
 
-function acceptedTask(f) {
-  f.create('g'); f.approve('g');
-  const attemptId = f.request('g', 'implementer', 'A'); f.dispatch('g', attemptId);
-  f.command('g', 'confirm_candidate', { attemptId, headSha: 'b'.repeat(40) });
-  f.command('g', 'record_stopped', { attemptId });
-  const reviewId = f.request('g', 'reviewer', 'A'); f.dispatch('g', reviewId);
-  f.command('g', 'record_review', { attemptId: reviewId, reviewId: 'accepted_a', review: { schemaVersion: 1, target: 'b'.repeat(40), disposition: 'accept', findings: [] } });
-  f.command('g', 'record_stopped', { attemptId: reviewId });
+function acceptedTask(f, goalId = 'g') {
+  f.create(goalId); f.approve(goalId);
+  const attemptId = f.request(goalId, 'implementer', 'A'); f.dispatch(goalId, attemptId);
+  f.command(goalId, 'confirm_candidate', { attemptId, headSha: 'b'.repeat(40) });
+  f.command(goalId, 'record_stopped', { attemptId });
+  const reviewId = f.request(goalId, 'reviewer', 'A'); f.dispatch(goalId, reviewId);
+  f.command(goalId, 'record_review', { attemptId: reviewId, reviewId: 'accepted_a', review: { schemaVersion: 1, target: 'b'.repeat(40), disposition: 'accept', findings: [] } });
+  f.command(goalId, 'record_stopped', { attemptId: reviewId });
 }
 
 for (const scenario of ['abort', 'receipt_loss', 'failure']) test(`integration coordinator preserves evidence across ${scenario}`, async (t) => {
@@ -283,4 +285,106 @@ test('rejecting an earlier duplicate cannot fail the repair effect owner', (t) =
   assert.equal(goal.results[0].status, 'pending'); assert.ok(goal.results[0].repair);
   assert.equal(goal.results[1].status, 'rejected');
   assert.equal(goal.attempts.find((attempt) => attempt.id === attemptId).status, 'running');
+});
+
+function integratedGoal(f, goalId = 'g') {
+  acceptedTask(f, goalId);
+  for (const [index, taskId] of ['A', 'B', 'C'].entries()) {
+    if (taskId !== 'A') {
+      const attemptId = f.request(goalId, 'implementer', taskId); f.dispatch(goalId, attemptId);
+      f.command(goalId, 'confirm_candidate', { attemptId, headSha: 'b'.repeat(40) }); f.command(goalId, 'record_stopped', { attemptId });
+      const reviewer = f.request(goalId, 'reviewer', taskId); f.dispatch(goalId, reviewer);
+      f.command(goalId, 'record_review', { attemptId: reviewer, reviewId: `accepted_${taskId}`, review: { schemaVersion: 1, target: 'b'.repeat(40), disposition: 'accept', findings: [] } });
+      f.command(goalId, 'record_stopped', { attemptId: reviewer });
+    }
+    f.command(goalId, 'request_integration', { taskId, operationId: `integrate_${goalId}_${taskId}` });
+    f.command(goalId, 'record_integration', { operationId: `integrate_${goalId}_${taskId}`, headSha: String(index + 1).repeat(40) });
+  }
+  for (const operation of f.store.operations()) f.store.advanceOperation(operation.id, operation.status, 'completed');
+}
+const verificationResult = (headSha, passed = true, workerState = 'stopped') => ({ verification: { headSha, checks: [{ id: 'unit', passed, artifactId: 'a'.repeat(64) }] }, workerState, artifactId: 'b'.repeat(64) });
+
+for (const interrupted of [false, true]) test(`verification receipt settles once after coordinator interruption=${interrupted}`, async (t) => {
+  const f = fixture(t); integratedGoal(f); let launches = 0, receipt;
+  const errors = [], options = { service: f.service, ownership: { assertOwned() {} }, onError: (error) => errors.push(error), verifier: {
+    run: async (input) => { launches++; receipt = verificationResult(input.headSha); if (interrupted) f.store.failpoint = (point) => { if (point === 'after_commit' && f.store.get('g').verification) throw new Error('lost receipt acknowledgement'); }; return receipt; },
+    observe: async () => receipt,
+  } };
+  const coordinator = new VerificationCoordinator(options); await coordinator.run();
+  const job = [...coordinator.active.values()][0].job;
+  if (interrupted) await assert.rejects(job, /lost receipt acknowledgement/); else await job;
+  f.store.failpoint = () => {};
+  await new VerificationCoordinator(options).run();
+  assert.equal(launches, 1); assert.equal(f.store.get('g').verification.checks[0].passed, true);
+  assert.ok(!f.store.operations().some((operation) => operation.kind === 'verify'));
+  assert.equal(errors.length, interrupted ? 1 : 0);
+});
+
+test('unknown verification remains owned and cannot authorize retry, final repair or publication', async (t) => {
+  const f = fixture(t); integratedGoal(f);
+  const coordinator = new VerificationCoordinator({ service: f.service, ownership: { assertOwned() {} }, verifier: {
+    run: async (input) => verificationResult(input.headSha, false, 'unknown'), observe: async () => null,
+  } });
+  await coordinator.run(); await [...coordinator.active.values()][0].job;
+  const run = f.store.get('g').verificationRuns[0];
+  assert.equal(run.status, 'uncertain'); assert.equal(run.workerState, 'unknown');
+  assert.throws(() => f.command('g', 'retry_verification', {}, 'user'), { code: 'NOT_READY' });
+  assert.throws(() => f.request('g', 'integrator'), { code: 'NOT_READY' });
+  assert.throws(() => f.command('g', 'request_publication', { operationId: 'publish' }), { code: 'NOT_READY' });
+});
+
+test('failed stopped verification can be explicitly retried without reusing its receipt', async (t) => {
+  const f = fixture(t); integratedGoal(f); let launches = 0;
+  const coordinator = new VerificationCoordinator({ service: f.service, ownership: { assertOwned() {} }, verifier: {
+    run: async (input) => verificationResult(input.headSha, ++launches > 1), observe: async () => null,
+  } });
+  await coordinator.run(); await [...coordinator.active.values()][0].job;
+  await coordinator.run(); assert.equal(launches, 1);
+  f.command('g', 'retry_verification', {}, 'user');
+  await coordinator.run(); await [...coordinator.active.values()][0].job;
+  assert.equal(launches, 2); assert.equal(f.store.get('g').verificationRuns.length, 2);
+  assert.equal(f.store.get('g').verification.checks[0].passed, true);
+});
+
+test('scheduler admits other goals during checks and joins cancelled verification before releasing ownership', async (t) => {
+  const f = fixture(t); integratedGoal(f); f.service.agents = new FakeAgents();
+  const started = barrier(), cancelled = barrier(), release = barrier(); let released = false;
+  const ownership = { acquire() {}, assertOwned() { assert.equal(released, false); }, release() { released = true; } };
+  const scheduler = new Scheduler({ service: f.service, ownership, repositories: { provision: async (input) => ({ worktree: `/tmp/${input.operationId}`, branch: input.branch, baseSha: input.baseSha }) }, verifier: {
+    run: async (input) => { started.release(); input.signal.addEventListener('abort', () => cancelled.release(), { once: true }); await release.promise; return verificationResult(input.headSha, false); },
+    observe: async () => null,
+  } });
+  t.after(async () => { release.release(); if (!released) await scheduler.stop(); });
+  await scheduler.start(); await started.promise;
+  f.create('h'); await scheduler.tick();
+  assert.ok(f.service.agents.launches.some((launch) => launch.goalId === 'h' && launch.attempt.role === 'planner'));
+  const stopped = scheduler.stop(); await cancelled.promise; assert.equal(released, false);
+  release.release(); await stopped; assert.equal(released, true);
+});
+
+test('abort during checks archives their result without reviving final evidence', async (t) => {
+  const f = fixture(t); integratedGoal(f); const release = barrier();
+  const coordinator = new VerificationCoordinator({ service: f.service, ownership: { assertOwned() {} }, verifier: {
+    run: async (input) => { await release.promise; assert.equal(input.signal.aborted, true); return verificationResult(input.headSha, false); }, observe: async () => null,
+  } });
+  await coordinator.run(); const job = [...coordinator.active.values()][0].job;
+  f.command('g', 'abort', {}, 'user'); coordinator.cancelRevoked(); release.release(); await job;
+  assert.equal(f.store.get('g').status, 'aborted'); assert.equal(f.store.get('g').verification, null);
+  assert.equal(f.store.get('g').verificationRuns[0].status, 'complete');
+});
+
+for (const restart of [false, true]) test(`unknown verification globally retains capacity across restart=${restart}`, async (t) => {
+  const f = fixture(t); integratedGoal(f); integratedGoal(f, 'h');
+  let launches = 0;
+  const options = { service: f.service, ownership: { assertOwned() {} }, verifier: {
+    run: async (input) => { launches++; return verificationResult(input.headSha, false, 'unknown'); }, observe: async () => null,
+  } };
+  const first = new VerificationCoordinator(options);
+  await first.run(); await Promise.all([...first.active.values()].map((run) => run.job));
+  const coordinator = restart ? new VerificationCoordinator(options) : first;
+  await coordinator.run(); await Promise.all([...coordinator.active.values()].map((run) => run.job));
+  assert.equal(launches, 1);
+  assert.deepEqual(['g', 'h'].map((goalId) => f.store.get(goalId).verificationRuns[0].workerState).sort(), ['pending', 'unknown']);
+  f.create('ordinary'); f.approve('ordinary');
+  assert.ok(f.request('ordinary', 'implementer', 'A'));
 });

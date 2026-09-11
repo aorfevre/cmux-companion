@@ -29,7 +29,7 @@ export function readyWork(goal) {
     const review = currentReviews(goal).filter((review) => review.kind === 'integration' && review.target === goal.integrationHead).at(-1);
     const failedCheck = goal.verification?.headSha === goal.integrationHead && goal.verification.checks.some((check) => !check.passed);
     if (review?.disposition === 'request_changes' || failedCheck) {
-      if (goal.finalRepairCount < goal.finalRepairLimit) add('integrator', null, goal.integrationHead);
+      if (!goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && goal.finalRepairCount < goal.finalRepairLimit) add('integrator', null, goal.integrationHead);
     } else add('reviewer', null, goal.integrationHead);
   }
   return result;

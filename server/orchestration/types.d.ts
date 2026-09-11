@@ -45,6 +45,7 @@ export interface Goal {
   integration: { operationId: string; taskId: string; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number } | null;
   planningRequest?: { message: string; basedOnRevision: number } | null;
+  verificationRuns?: { operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
   integrationResults?: { operationId: string; taskId: string; headSha: string }[];
   results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; repair?: { effectId: string; integrationOperationId: string; headSha: string }; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
 }
@@ -60,7 +61,7 @@ export type Authority = { kind: 'user' } | { kind: 'system' } | {
 };
 export interface DomainEvent { kind: string; payload: Json }
 export interface Intent {
-  id: string; kind: 'launch' | 'terminate' | 'integrate' | 'integrate_repair' | 'publish'; goalId: string;
+  id: string; kind: 'launch' | 'terminate' | 'integrate' | 'integrate_repair' | 'verify' | 'publish'; goalId: string;
   generation: number; revision: number; attemptId: string | null; payload: Json;
 }
 export interface Transition { goal: Goal; events: DomainEvent[]; intents: Intent[] }
@@ -102,7 +103,8 @@ export interface RepositoryPort {
   observeIntegration(operationId: string): Promise<{ status: 'integrated' | 'pending' | 'unknown'; headSha: string | null }>;
 }
 export interface VerificationPort {
-  run(input: { repositoryId: string; headSha: string; checks: Check[] }): Promise<Verification>;
+  run(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; checks: Check[]; signal?: AbortSignal }): Promise<VerificationRunResult>;
+  observe(operationId: string): Promise<VerificationRunResult | null>;
 }
 export interface PullRequestPort {
   publish(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; branch: string; baseBranch: string }): Promise<{ number: number; url: string; headSha: string }>;
@@ -110,3 +112,5 @@ export interface PullRequestPort {
 }
 
 export interface RepairInput { goalId: string; repositoryId: string; integrationOperationId: string; effectId: string; attempt: Attempt; headSha: string; proofArtifactId: string }
+
+export interface VerificationRunResult { verification: Verification; workerState: 'stopped' | 'unknown'; artifactId: string }

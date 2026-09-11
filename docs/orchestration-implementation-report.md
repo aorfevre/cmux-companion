@@ -486,3 +486,57 @@ adapters, complete service-process fault matrix, scripted cancellation ownership
 mobile E2E and retirement remain unfinished. Settlement interruption tests here
 use transaction failpoints; the Git-boundary tests use actual SIGKILL. No live or
 installed service, merge, deployment or public release was exercised.
+
+## T09 combined-commit verification
+
+The scheduler now records verification intents for fully integrated approved goals
+and executes checks asynchronously in a separate owned checkout at the exact
+combined commit. Repository policy resolves approved argv to explicit executables,
+environment identities and bounded process policies. Private per-check artifacts
+record outcomes, output, target SHA and environment evidence; mutation of the
+checkout, unavailable commands, failure and cancellation cannot pass.
+
+A durable request precedes provisioning and launch. Completed operation receipts
+replay without rerunning commands and bind the goal, repository, target, check set
+and approved arguments to immutable artifacts. Interrupted work without a receipt
+remains uncertain. Unknown verification ownership retains the global verification
+slot across coordinator replacement, independently of ordinary agent capacity.
+Shutdown aborts and joins locally owned jobs before releasing scheduler ownership.
+Late results remain history after abort; failed stopped checks require explicit
+retry, and unsettled checks block final repair and publication.
+
+Independent reviewers approved the domain/coordinator and runner slices.
+The coordinator review found a P1: the original in-memory job count released the
+verification slot after an unknown result or restart. The durable cross-goal gate
+and two-goal/restart regression fixed it; the reviewer independently passed all
+30 scheduler tests. The runner reviewer approved receipt binding and independently
+passed the request-rebinding regression. Checked-JS initially found three missing
+callback type annotations in that hardening; annotations now pass typechecking.
+
+Focused scheduler, verification and real-Git delivery tests passed 42/42.
+Both real scheduled fixture variants now run the actual verification adapter and
+require passing evidence at the same head as the independent final review before
+publication intent. Full `npm run verify` passed: 1,416 backend tests, one platform
+skip, 257 UI tests, lint, frontend/backend typechecks and build.
+Evidence: `/tmp/cmux-orchestration-verification-focused.log` and
+`/tmp/cmux-orchestration-verification-verify.log`.
+
+This slice does not close T09: final-review/check repair ref advancement, target
+branch movement, push and PR adapters remain required. Incomplete verification
+process recovery currently fails closed; the remaining fault/reconciliation work
+must establish worker termination before retry. Production composition, mobile
+real-backend Cypress, retirement and final architecture review are still pending.
+No live or installed integration, merge, deployment or release ran.
+
+The first coverage run failed only the new restart regression's assumption that
+goal h always queues second. Verification operations can tie in ordering, and the
+one-launch assertion already passed. The corrected assertion requires exactly one
+unknown worker and one pending run across both goals, retaining the launch count
+and ordinary-admission checks. Targeted scheduler coverage passed 30/30; independent
+review approved the correction. Initial log:
+`/tmp/cmux-orchestration-verification-coverage.log`.
+
+Final isolated backend coverage passed: 1,416 tests, one platform skip, **98.24%
+line coverage**. Log:
+`/tmp/cmux-orchestration-verification-coverage-final.log`.
+No UI code changed in this slice; real-backend Cypress remains unimplemented.

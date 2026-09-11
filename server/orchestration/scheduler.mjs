@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { DomainError, integer, requireValue } from './domain/contracts.mjs';
 import { requireCapability } from './ports.mjs';
 import { SchedulerOwnership } from './storage/ownership.mjs';
+import { VerificationCoordinator } from './verification-coordinator.mjs';
 import { IntegrationRepairs } from './integration-repairs.mjs';
 import { Reconciler } from './reconciler.mjs';
 
 export class Scheduler {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration' | 'acceptRepair' | 'observeRepair'>>; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; onError?: (error: unknown) => void }} options */
-  constructor({ service, repositories, integrations, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, onError = () => {} }) {
+  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration' | 'acceptRepair' | 'observeRepair'>>; verifier?: import('./types.d.ts').VerificationPort; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; onError?: (error: unknown) => void }} options */
+  constructor({ service, repositories, integrations, verifier, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, onError = () => {} }) {
     this.service = service; this.store = service.store; this.agents = service.agents; this.repositories = repositories;
     this.ownership = ownership; this.id = id; this.intervalMs = integer(intervalMs, 1); this.onError = onError;
     this.reconciler = new Reconciler({ service, ownership, results, id });
@@ -15,20 +16,25 @@ export class Scheduler {
     this.stopped = true; this.again = false;
     /** @type {Promise<void> | null} */ this.sweep = null;
     /** @type {ReturnType<typeof setInterval> | null} */ this.timer = null;
+    this.verifications = verifier ? new VerificationCoordinator({ service, verifier, ownership, id, onError }) : null;
     this.previousNotify = this.store.onCommit;
     /** @param {number} cursor */
-    this.notify = (cursor) => { try { this.previousNotify(cursor); } finally { void this.tick().catch(this.onError); } };
+    this.notify = (cursor) => { try { this.previousNotify(cursor); } finally { this.verifications?.cancelRevoked(); void this.tick().catch(this.onError); } };
   }
   async start() {
     requireValue(this.stopped, 'Scheduler is already started'); this.ownership.acquire();
-    this.service.ownership = this.ownership; this.stopped = false; this.store.onCommit = this.notify;
+    this.service.ownership = this.ownership; this.stopped = false; if (this.verifications) this.verifications.stopped = false; this.store.onCommit = this.notify;
     this.timer = setInterval(() => { void this.tick().catch(this.onError); }, this.intervalMs); this.timer.unref();
     try { await this.tick(); } catch (error) { await this.stop(); throw error; }
   }
   async stop() {
     this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null;
     if (this.store.onCommit === this.notify) this.store.onCommit = this.previousNotify;
-    try { await this.sweep; } finally { this.ownership.release(); }
+    try {
+      const settled = await Promise.allSettled([this.sweep, this.verifications?.stop()]);
+      const failures = settled.filter((entry) => entry.status === 'rejected');
+      if (failures.length) throw new AggregateError(failures.map((entry) => entry.reason), 'Scheduler shutdown failed');
+    } finally { this.ownership.release(); }
   }
   tick() {
     if (this.stopped) return Promise.resolve();
@@ -42,6 +48,7 @@ export class Scheduler {
     this.ownership.assertOwned(); await this.results?.drain(); await this.reconciler.run();
     if (this.stopped) return;
     await this.integrate();
+    await this.verifications?.run();
     if (this.stopped) return;
     for (const work of this.store.ready()) {
       if (this.stopped) return;
