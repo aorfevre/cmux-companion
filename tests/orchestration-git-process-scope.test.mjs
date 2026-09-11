@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
@@ -70,4 +72,32 @@ test('scoped Git launch failures and output limits leave verifiable stopped evid
   const wrapper = join(bin, 'git'); writeFileSync(wrapper, `#!${process.execPath}\nprocess.stdout.write(Buffer.alloc(17*1024*1024)); setInterval(()=>{},1000);\n`); chmodSync(wrapper, 0o700);
   await assert.rejects(withGitProcessScope(scope, () => gitBytes(repo.repository, ['status'])), { code: 'GIT_OPERATION_FAILED' });
   await until(() => gitScopeStopped(scope));
+});
+
+test('identity write failure waits for the spawned Git group to stop before rejecting', async t => {
+  const repo = await createRepositoryFixture(); t.after(() => repo.close());
+  const path = join(realpathSync(repo.directory), 'scope');
+  const bin = join(realpathSync(repo.directory), 'bin'); mkdirSync(bin);
+  const wrapper = join(bin, 'git'); writeFileSync(wrapper, `#!${process.execPath}\nsetInterval(()=>{},1000);\n`); chmodSync(wrapper, 0o700);
+  const savedPath = process.env.PATH; process.env.PATH = bin;
+  const originalWrite = fs.writeFileSync;
+  let injected = false;
+  const write = t.mock.method(fs, 'writeFileSync', (...args) => {
+    if (String(args[0]).endsWith('/identity.json') && !injected) {
+      injected = true;
+      throw Object.assign(new Error('Injected identity write failure'), { code: 'EIO' });
+    }
+    return originalWrite(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(withGitProcessScope(path, () => gitBytes(repo.repository, ['status'])), { code: 'EIO' });
+  } finally { process.env.PATH = savedPath; write.mock.restore(); syncBuiltinESMExports(); }
+  assert.equal(injected, true);
+  assert.equal(gitScopeStopped(path), true);
+  const run = join(path, readdirSync(path)[0]);
+  const command = join(run, readdirSync(run).find(name => name.startsWith('command-')));
+  assert.equal(existsSync(join(command, 'identity.json')), false);
+  assert.deepEqual(JSON.parse(readFileSync(join(command, 'stopped.json'), 'utf8')), { stopped: true });
+  await withGitProcessScope(path, () => gitBytes(repo.repository, ['status']));
 });

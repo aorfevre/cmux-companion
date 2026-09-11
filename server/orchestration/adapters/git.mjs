@@ -34,6 +34,7 @@ function trackedGitBytes(cwd, argv, env, input, allowConflict, tracked) {
     const child = spawn('git', argv, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     /** @type {Buffer[]} */ const output = []; let stdoutSize = 0, stderrSize = 0, settled = false, interrupted = false;
     /** @type {ReturnType<typeof setTimeout>|undefined} */ let escalation;
+    /** @type {unknown} */ let identityError;
     const failure = (/** @type {unknown} */ code) => Object.assign(new DomainError('GIT_OPERATION_FAILED', 'Local Git operation failed; reconcile recorded repository evidence'), { exitCode: code });
     const finish = (/** @type {unknown} */ error, neverSpawned = false) => {
       if (settled) return; settled = true; clearTimeout(timer); clearTimeout(escalation);
@@ -51,9 +52,15 @@ function trackedGitBytes(cwd, argv, env, input, allowConflict, tracked) {
     child.stdin.on('error', () => { /* Git may reject input before reading it; close supplies its exit code. */ });
     child.stdout.on('data', chunk => { stdoutSize += chunk.length; if (stdoutSize > 16 * 1024 * 1024) stop(); else output.push(chunk); });
     child.stderr.on('data', chunk => { stderrSize += chunk.length; if (stderrSize > 16 * 1024 * 1024) stop(); });
-    child.on('close', (code) => finish(!interrupted && (code === 0 || (allowConflict && code === 1)) ? null : failure(code)));
+    child.on('close', (code) => finish(identityError ?? (!interrupted && (code === 0 || (allowConflict && code === 1)) ? null : failure(code))));
     if (child.pid !== undefined) {
-      try { tracked.identity(child.pid); } catch (error) { signal('SIGKILL'); finish(error); return; }
+      try { tracked.identity(child.pid); } catch (error) {
+        // Keep the child handle until close can prove its group stopped. Losing
+        // the identity write must not turn a reaped child into a boot-only gap.
+        identityError = error; interrupted = true; signal('SIGKILL');
+        escalation = setTimeout(() => finish(error), 250);
+        return;
+      }
     }
     child.stdin.end(input);
   });

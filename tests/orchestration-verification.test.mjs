@@ -213,3 +213,25 @@ test('legacy launched check recovered after boot is not mislabeled as never star
   assert.equal(result.workerState, 'stopped');
   assert.equal(JSON.parse(f.artifacts.get(result.verification.checks[0].artifactId).toString()).code, 'OWNERSHIP_UNCERTAIN');
 });
+
+test('supervisor outcome written during process inspection wins over the disappearing PID', async t => {
+  const f = await fixture(t);
+  const { mkdirSync } = await import('node:fs');
+  const { spawn } = await import('node:child_process');
+  const { once } = await import('node:events');
+  const { observeSupervisedProcess } = await import('../server/orchestration/adapters/supervised-process.mjs');
+  const directory = join(f.repositories.directory, 'exit-race'); mkdirSync(directory);
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+  await once(child, 'spawn');
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  writeFileSync(join(directory, 'request.json'), JSON.stringify({ identity: 'race', startedAt: Date.now() }));
+  writeFileSync(join(directory, 'identity.json'), JSON.stringify({ identity: 'race', pid: child.pid, stamp: 'before-exit' }));
+  let inspections = 0;
+  const result = await observeSupervisedProcess(directory, () => null, async pid => {
+    inspections++; assert.equal(pid, child.pid);
+    const stopped = once(child, 'exit'); child.kill('SIGTERM'); await stopped;
+    writeFileSync(join(directory, 'outcome.json'), JSON.stringify({ identity: 'race', outcome: { status: 'failed', workerState: 'stopped', cause: { code: 'ABORTED', exitCode: null, signal: 'SIGTERM' }, stdout: '', stderr: '' } }));
+    return null;
+  });
+  assert.equal(inspections, 1); assert.equal(result.workerState, 'stopped'); assert.equal(result.cause.code, 'ABORTED');
+});

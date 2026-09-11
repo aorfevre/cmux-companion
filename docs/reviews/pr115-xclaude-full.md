@@ -218,3 +218,51 @@ The first coverage process had already loaded the two non-canonical fixture path
 before their correction and reported 670 passed, one platform skip and those two
 failures. Their corrected targeted run passed 2/2; coverage is being rerun against
 the corrected files. No fresh production failure was inferred from that stale run.
+
+
+## Final local verification of recovery commit `3e6db27`
+
+- Backend coverage: **672 passed, one platform skip, zero failures**; **98.29% lines**.
+- UI coverage: **115 passed**, **96.10% lines**.
+- Full verify checkpoint: **667 backend passed, one skip; 115 UI passed; lint,
+  typecheck and production build passed**. The five later supervision regressions
+  and final source were included in the successful 672-test backend coverage run;
+  final scoped/global lint and typecheck also passed.
+- Current real-service Cypress: **2/2 writable** (parallel A/B/C delivery, explicit
+  moved-target acceptance and abort) and **1/1 read-only**. Each mode intentionally
+  excludes the other's cases. Disposable state/remote/fake providers only.
+- Native Fable supervision follow-up: accepted all four follow-up fixes, no new
+  concrete blocker. Integration/publication verdict and CI are pending separately.
+
+The preserved user plan `docs/superpowers/plans/2026-09-08-burst-scan.md` is unrelated
+and unmodified. No merge, deployment, installation, live provider/GitHub suite or
+external-account change was performed.
+
+## Integration/publication follow-up and Linux CI intervention
+
+Native Fable accepted the integration/publication recovery changes with no blocking
+defect. It confirmed immutable publication identity/acceptance chains, observation
+before retries, tracked Git process proof, sent-boundary claims and abort fencing.
+Two low notes were assessed: identity-write failure after spawning Git should wait
+for reaping before finalizing evidence (now fixed); continued polling when the
+remote base branch is absent is intentional so restoring it remains recoverable,
+rather than stranding a null target that cannot be accepted. Concrete moved SHAs
+remain paused. Other notes were conservative evidence-retention questions, not
+verified unsafe behavior; revision while publication exists remains prohibited.
+
+CI on `3e6db27` failed two Linux verification assertions (abort and service SIGKILL),
+while local macOS checks passed. Source investigation found a supervisor can write
+its outcome and exit while `ps` is inspecting it. The first receipt read misses the
+outcome; a vanished PID then returned transient unknown even though the durable
+outcome was present. Observation now rereads the identity-bound outcome after
+process inspection. A deterministic regression completes a real child and writes
+its outcome during that inspection; it requires stopped proof to win. No timeout
+or stopped-worker assertion was relaxed. CI will be rerun on the corrected source.
+
+
+The CI-race verification suite passes **19/19**; Git process scope passes **5/5**,
+including an injected identity-write failure that records stopped proof after
+child close and allows the next scoped command without reboot. The bounded Git
+fallback retains uncertainty if close/stopped evidence cannot be established.
+Backend types and focused lint passed. Both native Fable follow-ups are accepted;
+remaining work is the final CI/coverage run for these two small recovery fixes.

@@ -224,6 +224,6 @@ export class NativeBackground {
       this.managed.delete(operationId);
     }));
     requireValue(observations.every((result) => result.status === 'fulfilled'), 'One or more native worker terminations are uncertain', 'OWNERSHIP_UNCERTAIN');
-    // Inputs/receipts remain private recovery evidence; T13 cleanup owns removal.
+    // Inputs/receipts remain private recovery evidence; worktree cleanup retains them.
   }
 }

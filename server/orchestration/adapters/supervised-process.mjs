@@ -20,9 +20,9 @@ function read(path) {
 }
 /** Read-only durable outcome. Null means the independent watchdog still owns the
  * check. Dead groups alone do not prove escaped descendants have terminated.
- * @param {string} directory @param {()=>string|null} [boot]
+ * @param {string} directory @param {()=>string|null} [boot] @param {typeof nativeProcessStamp} [processStamp]
  * @returns {Promise<import('../types.d.ts').ProcessOutcome|null>} */
-export async function observeSupervisedProcess(directory, boot = bootIdentity) {
+export async function observeSupervisedProcess(directory, boot = bootIdentity, processStamp = nativeProcessStamp) {
   if (!pathExists(directory)) return unavailable('unknown');
   requireValue(realpathSync(directory) === directory && !lstatSync(directory).isSymbolicLink(), 'Supervisor directory changed', 'OWNERSHIP_UNCERTAIN');
   const requestPath = join(directory, 'request.json');
@@ -30,19 +30,25 @@ export async function observeSupervisedProcess(directory, boot = bootIdentity) {
   const request = read(requestPath), currentBoot = boot();
   const priorBoot = request.bootId && currentBoot && request.bootId !== currentBoot;
   const outcomePath = join(directory, 'outcome.json');
-  if (pathExists(outcomePath)) {
+  const completed = () => {
+    if (!pathExists(outcomePath)) return null;
     const result = read(outcomePath);
     requireValue(result.identity === request.identity && ['stopped', 'unknown'].includes(result.outcome?.workerState), 'Supervisor outcome changed', 'OWNERSHIP_UNCERTAIN');
     return priorBoot ? { ...result.outcome, workerState: 'stopped' } : result.outcome;
-  }
+  };
+  const outcome = completed();
+  if (outcome) return outcome;
   if (priorBoot) return unavailable('stopped');
   if (request.spawnClaim === true && !pathExists(join(directory, 'sent.json'))) return unavailable('stopped', 'NOT_STARTED');
   const identityPath = join(directory, 'identity.json');
   if (!pathExists(identityPath)) return Date.now() - request.startedAt < 10000 ? null : unavailable('unknown');
   const worker = read(identityPath);
   requireValue(worker.identity === request.identity && Number.isSafeInteger(worker.pid) && worker.pid > 0, 'Supervisor identity changed', 'OWNERSHIP_UNCERTAIN');
-  if (nativeGroupState(worker.pid) === 'dead') return unavailable('unknown');
-  return worker.stamp && await nativeProcessStamp(worker.pid, directory) === worker.stamp ? null : unavailable('unknown');
+  const running = nativeGroupState(worker.pid) !== 'dead' && worker.stamp && await processStamp(worker.pid, directory) === worker.stamp;
+  // The supervisor writes its outcome before exiting. It may do both while ps
+  // is observing its identity; re-read that stronger evidence before declaring
+  // an absent process uncertain (especially on fast Linux shutdowns).
+  return completed() ?? (running ? null : unavailable('unknown'));
 }
 /** The independent native watchdog also supervises approved verification argv;
  * no provider installation or bridge credentials are needed for repository checks.
