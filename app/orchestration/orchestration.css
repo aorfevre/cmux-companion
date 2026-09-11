@@ -1,0 +1,18 @@
+.orchestration { max-width:1120px; margin:auto; padding:20px 20px 80px; color:#e5edea; font:15px/1.6 system-ui,sans-serif; }
+.orchestration a { color:#92e2ba; text-decoration:none; }
+.orch-header,.orch-task-grid li>div { display:flex; justify-content:space-between; align-items:center; gap:14px; }
+.orch-header { padding-bottom:28px; border-bottom:1px solid #30423b; }
+.orch-header>span,.orch-capacity,.orchestration small { color:#a8bdb2; font-size:12px; }
+.orch-heading { padding:32px 0; } .orchestration h1 { font-size:clamp(27px,4vw,42px); line-height:1.15; letter-spacing:-1px; margin:10px 0; }
+.orchestration h2 { font-size:21px; margin:0 0 14px; } .orchestration h3 { font-size:18px; margin:0 0 16px; } .orchestration h4 { margin:16px 0 4px; }
+.orch-eyebrow { font-size:11px; font-weight:700; letter-spacing:1.5px; color:#8dd7ac; text-transform:uppercase; }
+.orch-card { border:1px solid #30423b; border-radius:16px; background:#141f1b; padding:22px; margin:14px 0; overflow-wrap:anywhere; }
+.orch-workspace { display:grid; grid-template-columns:260px minmax(0,1fr); gap:22px; align-items:start; }
+.orchestration label { display:block; margin:10px 0; font-weight:600; } .orchestration input,.orchestration select,.orchestration textarea { display:block; box-sizing:border-box; width:100%; margin:8px 0 16px; border:1px solid #496254; border-radius:9px; padding:12px; background:#0d1612; color:#f0f6f2; font:inherit; }
+.orchestration button { min-height:44px; border:1px solid #4f7860; border-radius:9px; padding:10px 15px; background:#294b37; color:#e9fff0; cursor:pointer; font:inherit; font-size:14px; }
+.orchestration button:disabled { opacity:.45; cursor:not-allowed; } .orchestration :focus-visible { outline:3px solid #b6efd0; outline-offset:3px; }
+.orch-goals { padding-top:20px; } .orch-goals button { display:block; text-align:left; width:100%; margin:10px 0; background:#17251e; } .orch-goals button[aria-current] { border-color:#a4e8bd; background:#2c4937; } .orch-goals span,.orch-attempt span { display:block; color:#c0ccc5; font-size:12px; margin-top:5px; }
+.orch-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; } .orch-banner { padding:12px; border-left:3px solid #d8b870; background:#29281d; } .orch-error { padding:14px; background:#47251f; border-radius:8px; }
+.orch-task-grid { list-style:none; padding:0; margin:0; } .orch-task-grid li { border:1px solid #3a5043; padding:16px; border-radius:10px; margin:12px 0; } .orch-state { font-size:12px; color:#a9e2bd; } .orch-attempt,.orch-review { border-top:1px solid #30423b; padding:14px 0; } .orchestration blockquote { margin:12px 0; border-left:3px solid #d6aa69; padding:8px 14px; background:#22291f; }
+.orchestration code { font-size:12px; color:#c9dfd0; overflow-wrap:anywhere; } .orch-pr { display:inline-block; padding:12px 18px; border:1px solid #9be1b0; border-radius:9px; } .orch-capacity { margin:12px 0; }
+@media(max-width:700px) { .orchestration { padding:14px 14px 60px; } .orch-workspace { display:block; } .orch-card { padding:17px; } .orch-header { align-items:flex-start; } .orch-task-grid li>div { align-items:flex-start; flex-direction:column; gap:5px; } }

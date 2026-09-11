@@ -185,7 +185,7 @@ export function HomeModeSwitch({ mode, onMode, onApps, inboxCount = 0, onInbox }
   function select(action: () => void) { if (toolsRef.current) toolsRef.current.open = false; action(); }
   return <div className="dashboard-heading"><h1>{mode === "worktrees" ? "Goals board" : "Sessions"}</h1><div className="dashboard-heading-actions">
     {inboxCount > 0 && onInbox && <button className="primary-small" onClick={onInbox}>Inbox · {inboxCount}</button>}
-    <details className="dashboard-tools" ref={toolsRef}><summary>Tools</summary><nav aria-label="Dashboard tools">
+    <details className="dashboard-tools" ref={toolsRef}><summary>Tools</summary><nav aria-label="Dashboard tools"><a href="/orchestration">Orchestration goals</a>
       <button onClick={() => select(() => onMode("worktrees"))}>Goals board</button>
       <button onClick={() => select(() => onMode("sessions"))}>Sessions</button>
       {onApps && <button onClick={() => select(onApps)}>Local apps</button>}

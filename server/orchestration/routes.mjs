@@ -6,9 +6,9 @@ import { goalView } from './domain/state-view.mjs';
 
 const PREFIX = '/api/orchestration';
 /** @param {import('fastify').FastifyInstance} app
- * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean }} options
+ * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void> }} options
  */
-export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly = false }) {
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly = false, configuration, reconcile }) {
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
@@ -42,6 +42,13 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     if (typeof supplied !== 'string' || !safeEqual(supplied, token)) return reply.code(401).send({ code: 'UNAUTHORIZED', error: 'Invalid pairing token' });
     pairingAttempts.delete(request.ip);
     return reply.header('Set-Cookie', sessionCookie(request, token)).send({ paired: true });
+  });
+  app.get(`${PREFIX}/configuration`, async () => ({ limits: service.limits, capabilities: service.agents.capabilities, terminal: Boolean(service.agents.open), readOnly, repositories: configuration ? await configuration() : [] }));
+  app.post(`${PREFIX}/goals/:id/reconcile`, async (request) => {
+    requireValue(!readOnly && reconcile, 'Reconciliation is unavailable', 'FORBIDDEN');
+    const goal = service.store.get(/** @type {{id:string}} */ (request.params).id), input = object(request.body);
+    requireValue(goal && input.expectedVersion === goal.version, 'Goal version changed', 'VERSION_CONFLICT');
+    await reconcile(); return { reconciled: true };
   });
   app.get(`${PREFIX}/snapshot`, async () => {
     const snapshot = service.store.snapshot(); return { goals: snapshot.goals.map(goalView), cursor: snapshot.cursor, journalId: service.store.journalId, readOnly };

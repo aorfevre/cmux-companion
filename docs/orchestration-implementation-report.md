@@ -986,3 +986,41 @@ T14 guarded source cutover/legacy retirement, and T15 final combined verificatio
 coverage, documentation and architecture review remain required. The previous full
 `npm run verify`/coverage snapshot remains T10; the M4 full gate follows T12.
 Installed cutover, merge, deployment and release remain unperformed.
+
+### T12 / M4 — Mobile replacement journey
+
+Implemented `/orchestration`: pairing, configured repositories/capacity, goal creation,
+service-derived actions, reviewed revision approval/feedback, task graph, worker
+ownership, independent findings, verification and PR evidence. Stale responses
+refresh authoritative state; uncertain mutations retain the exact original command
+for replay. Read-only guards cover UI and HTTP. SSE invalidations and polling
+refresh the board; switching goals cannot invalidate the selected detail through
+an older mutation. Failed revision feedback is retained.
+
+The local Cypress runner now starts the real isolated replacement service and
+actual temporary Git repositories, with only agent/GitHub boundaries scripted.
+It proves simultaneous A/B work, C's integrated dependencies, blocking review and
+repair, final verification failure/repair, exact publication SHA and one PR,
+reload, mobile overflow, abort/reconciliation and separate read-only protection.
+Owned processes/resources are cleaned; sanitized state and fixture diffs survive
+under ignored `cypress/results/`. No workflow API responses are stubbed.
+
+Passed: backend 1,526 tests, one existing platform skip; UI 262 at the full-run
+checkpoint, then 6/6 targeted orchestration tests including both incremental UI
+review fixes; lint, frontend/backend types and production build. Writable Cypress
+2/2 passed; separate read-only run 1/1 passed (the mutually exclusive cases are
+intentionally pending in each mode). Final writable rerun also retained fixture
+diffs successfully. Logs: `/tmp/cmux-orchestration-t12-verify.log`,
+`/tmp/cmux-t12-{ui,lint,types,build}.log`,
+`/tmp/cmux-orchestration-t12-cypress-final.log`,
+`/tmp/cmux-orchestration-t12-readonly.log`.
+
+Investigated failures: occupied default port (used 3327 without stopping its owner),
+ambiguous Cypress check selector, publication branch evidence lookup, missing test
+matchers, and two lint issues. All corrected and affected checks rerun. Chrome
+was selected explicitly, not as evidence of an Electron failure. Independent
+reviews found projection scaling, captured-branch identity, evidence freshness,
+recorder cleanup, startup cancellation, and UI feedback/selection races; fixes
+and regressions address them. Reviewer fault injection independently confirmed
+cleanup after evidence-write failure. Native permissions/cmux/live GitHub remain
+unverified; final coverage, T13–T15 and installed cutover remain separate gates.

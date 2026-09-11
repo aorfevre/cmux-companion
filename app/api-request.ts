@@ -1,3 +1,5 @@
+export class ApiError extends Error { constructor(message: string, public status: number, public code: string | null) { super(message); } }
+
 const reads = new Map<string, Promise<unknown>>();
 
 // Polls and event refreshes share an unfinished read. Mutations invalidate the
@@ -18,7 +20,8 @@ export function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     if (!response.ok) {
       const message = body && typeof body === "object" && "error" in body && typeof body.error === "string" ? body.error : `Request failed (${response.status})`;
-      throw new Error(message);
+      const code = body && typeof body === "object" && "code" in body && typeof body.code === "string" ? body.code : null;
+      throw new ApiError(message, response.status, code);
     }
     return body as T;
   })();

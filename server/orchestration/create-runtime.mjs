@@ -7,7 +7,7 @@ import { BridgeAuthority } from './bridge-auth.mjs';
 import { OrchestrationService } from './service.mjs';
 import { AgentResults } from './agent-results.mjs';
 import { Scheduler } from './scheduler.mjs';
-import { GitRepository } from './adapters/git.mjs';
+import { GitRepository, git } from './adapters/git.mjs';
 import { GitIntegration } from './adapters/git-integration.mjs';
 import { AgentCommits } from './adapters/agent-commits.mjs';
 import { AgentTools } from './agent-tools.mjs';
@@ -57,7 +57,14 @@ export async function createRuntime({ storage, repositories: configured, token, 
     const scheduler = new Scheduler({ service, repositories, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck }), publisher: createPublisher({ repositories }), results, onError: report });
     const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
-    registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly });
+    registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {
+      try {
+        const { repository } = await repositories.repository(id);
+        const baseBranch = (await git(repository, ['symbolic-ref', '--short', 'HEAD'])).trim();
+        const baseSha = await repositories.ref(repository, `refs/heads/${baseBranch}`);
+        return { id, baseBranch, baseSha, error: null };
+      } catch { return { id, baseBranch: null, baseSha: null, error: 'Repository branch is unavailable' }; }
+    })) });
     describe = (request) => {
       requireValue(!shutdownRequested && service.ownership, 'Runtime launch is unavailable', 'NOT_READY');
       service.ownership.assertOwned();

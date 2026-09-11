@@ -1,4 +1,5 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, renameSync, realpathSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,14 +11,15 @@ import { ScriptedAgents, barrier } from '../tests/helpers/orchestration/fake-age
 import { FakeGitHub } from '../tests/helpers/orchestration/fake-github.mjs';
 
 /** Account-free demo. All external adapters are fixed here, never selected by env. */
-export async function startOrchestrationDemo({ port = 0, readOnly = false } = {}) {
-  return createDevelopmentServer({ port, configure: async (directory) => {
+export async function startOrchestrationDemo({ port = 0, readOnly = false, browserHarness = false } = {}) {
+  let fixtureAgents, fixtureGithub; const overlaps = new Set();
+  const demo = await createDevelopmentServer({ port, configure: async (directory) => {
     const repo = await createRepositoryFixture();
     repo.contract.verification.push({ id: 'injected_dependencies', argv: ['node', '--input-type=module', '-e', "import { composition } from './src/composition.mjs'; if (composition(() => 7, () => 11) !== 18) process.exit(1);"] });
     const siblings = new Map(), shared = new Map();
     return {
       dispose: () => repo.close(),
-      metadata: { repositoryId: 'repo', baseSha: repo.baseSha, repository: repo.repository, remote: repo.remote },
+      metadata: { repositoryId: 'repo', baseSha: repo.baseSha, repository: repo.repository, remote: repo.remote, browserHarness },
       options: {
         repositories: new Map([['repo', repo.repository]]), readOnly, limits: { global: 2, perGoal: 2 },
         createAgents: ({ onResult }) => {
@@ -29,14 +31,16 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false } = {}
                   if (!shared.has(goalId)) shared.set(goalId, barrier());
                   if (!siblings.has(goalId)) siblings.set(goalId, new Set());
                   siblings.get(goalId).add(attempt.taskId);
-                  if (siblings.get(goalId).size === 2) shared.get(goalId).release();
+                  if (siblings.get(goalId).size === 2) { overlaps.add(goalId); shared.get(goalId).release(); }
                   await waitForBarrier(shared.get(goalId).promise, signal);
+                  if (browserHarness) await waitForRelease(join(directory, 'release-siblings'), signal);
                 }
                 const prior = agents.launches.filter((entry) => entry.goalId === goalId && entry.attempt.taskId === 'C' && entry.attempt.role === 'implementer');
                 const headSha = await repo.implement(attempt.worktree, attempt.taskId, { failing: attempt.taskId === 'C' && prior.length === 1 });
                 return { headSha, summary: 'Implemented disposable fixture module', evidence: [] };
               }
               if (attempt.role === 'integrator') {
+                if (browserHarness) await waitForRelease(join(directory, 'release-final'), signal);
                 await writeFile(join(attempt.worktree, 'src/composition.mjs'), "import { a } from './a.mjs';\nimport { b } from './b.mjs';\nexport function composition(aSource = a, bSource = b) { return aSource() + bSource(); }\n");
                 await fixtureGit(attempt.worktree, ['add', 'src']); await fixtureGit(attempt.worktree, ['commit', '-m', 'Repair injectable composition']);
                 return { headSha: await fixtureGit(attempt.worktree, ['rev-parse', 'HEAD']), operationId: null, summary: 'Repair final check failure', evidence: [] };
@@ -49,6 +53,7 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false } = {}
               onResult(request, JSON.stringify({ schemaVersion: 1, goalId, operationId, attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision, target: attempt.target, output }));
             },
           });
+          fixtureAgents = agents;
           agents.close = async () => { for (const controller of agents.controllers.values()) controller.abort(); await agents.drain(); };
           return agents;
         },
@@ -58,11 +63,32 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false } = {}
         },
         createPublisher: ({ repositories }) => {
           const remote = new GitRemote({ repositories, directory: join(directory, 'remote-stage'), destinations: new Map([['repo', { url: realpathSync(repo.remote), protocol: 'file', env: { PATH: process.env.PATH } }]]) });
-          return new GitHubPublication({ directory: join(directory, 'publications'), remote, github: new FakeGitHub({ remote }) });
+          fixtureGithub = new FakeGitHub({ remote });
+          return new GitHubPublication({ directory: join(directory, 'publications'), remote, github: fixtureGithub });
         },
       },
     };
   } });
+  if (browserHarness) {
+    let writing = Promise.resolve();
+    let recordingError;
+    const record = () => {
+      writing = writing.catch(error => { recordingError = error; }).then(async () => {
+        const goals = demo.runtime.store.list();
+        const evidence = { goals, overlaps: [...overlaps], launches: fixtureAgents?.launches ?? [], prCreates: fixtureGithub?.creates ?? [], pulls: fixtureGithub?.pulls ?? [] };
+        const path = join(demo.manifest.directory, 'browser-evidence.json'), temporary = `${path}.tmp`;
+        await writeFile(temporary, JSON.stringify(evidence), { mode: 0o600 }); renameSync(temporary, path);
+      });
+      void writing.catch(() => {});
+    };
+    const timer = setInterval(record, 100); record();
+    const close = demo.close.bind(demo);
+    demo.close = async () => { clearInterval(timer); try { await writing; if (recordingError) throw recordingError; } finally { await close(); } };
+  }
+  return demo;
+}
+async function waitForRelease(path, signal) {
+  while (!existsSync(path)) { signal.throwIfAborted(); await delay(25, undefined, { signal }); }
 }
 
 async function waitForBarrier(promise, signal) {

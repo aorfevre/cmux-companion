@@ -78,4 +78,28 @@ These tests cover real HTTP auth/read-only protection, snapshot streaming above
 the socket high-water mark, reconnect/retention, duplicate-safe durable consumer
 delivery, lifecycle races, the complete temporary Git journey and CLI cleanup.
 They do not establish native provider permission enforcement or live GitHub/cmux
-behavior. The browser fixture journey is a subsequent implementation gate.
+behavior. The browser journey below uses the same real service and disposable repository.
+
+
+## Mobile browser journey
+
+Open `/orchestration` on the development frontend configured with the demo's API
+address and pair using its disposable token. The board exposes the service's
+available actions; it refreshes on events, reconnects and polls when streaming is
+unavailable. An uncertain command retries its original ID and expected version.
+
+```sh
+npm run test:e2e:local -- --orchestration --spec cypress/e2e/orchestration-core.cy.ts
+npm run test:e2e:local -- --orchestration --read-only --spec cypress/e2e/orchestration-core.cy.ts
+```
+
+The runner starts and stops its own frontend and real replacement backend with
+fixed fake agents and local bare Git publication. It never starts installed or
+live adapters. Set `CMUX_COMPANION_CYPRESS_PORT` if the default port is occupied;
+set `CMUX_COMPANION_CYPRESS_BROWSER=chrome` to select Chrome. The writable journey
+checks overlapping implementers, dependency integration, review and final-check
+repair, reload, abort/reconciliation, one PR and its exact Git content. The separate
+read-only run checks both disabled controls and the real HTTP mutation guard.
+Sanitized fixture state and bounded source diffs are retained in `cypress/results/`
+before disposable resources are removed; screenshots remain under `cypress/screenshots/`.
+These fake PRs and scripted agents do not prove live model quality or permissions.
