@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OrchestrationStore } from '../server/orchestration/storage/store.mjs';
+import { Scheduler } from '../server/orchestration/scheduler.mjs';
+import { DomainError } from '../server/orchestration/domain/contracts.mjs';
 import { OrchestrationService } from '../server/orchestration/service.mjs';
 import { contract, BASE } from './helpers/orchestration/domain-fixture.mjs';
 import { planTarget } from '../server/orchestration/domain/transitions.mjs';
@@ -137,4 +139,81 @@ test('continuous implementer readiness keeps its FIFO position when integration 
   const work = f.store.ready().find((work) => work.goalId === 'older' && work.taskId === 'B');
   assert.equal(work.sequence, firstSequence); assert.equal(work.target, head);
   assert.equal(f.store.ready()[0].goalId, 'older');
+});
+
+function acceptedTask(f) {
+  f.create('g'); f.approve('g');
+  const attemptId = f.request('g', 'implementer', 'A'); f.dispatch('g', attemptId);
+  f.command('g', 'confirm_candidate', { attemptId, headSha: 'b'.repeat(40) });
+  f.command('g', 'record_stopped', { attemptId });
+  const reviewId = f.request('g', 'reviewer', 'A'); f.dispatch('g', reviewId);
+  f.command('g', 'record_review', { attemptId: reviewId, reviewId: 'accepted_a', review: { schemaVersion: 1, target: 'b'.repeat(40), disposition: 'accept', findings: [] } });
+  f.command('g', 'record_stopped', { attemptId: reviewId });
+}
+
+for (const scenario of ['abort', 'receipt_loss', 'failure']) test(`integration coordinator preserves evidence across ${scenario}`, async (t) => {
+  const f = fixture(t); acceptedTask(f); let calls = 0;
+  const integrations = { integrate: async () => {
+    calls++;
+    if (scenario === 'abort') f.command('g', 'abort', {}, 'user');
+    if (scenario === 'failure') throw new DomainError('OWNERSHIP_UNCERTAIN', 'Moved ref');
+    if (scenario === 'receipt_loss') f.store.failpoint = (point) => {
+      if (point === 'after_commit' && f.store.get('g').integrationResults?.length) throw new Error('lost database response');
+    };
+    return { status: 'integrated', headSha: 'c'.repeat(40) };
+  } };
+  const scheduler = new Scheduler({ service: f.service, repositories: {}, integrations, ownership: { assertOwned() {} } });
+  scheduler.stopped = false;
+  if (scenario === 'receipt_loss') await assert.rejects(scheduler.integrate(), /lost database response/);
+  else await scheduler.integrate();
+  f.store.failpoint = () => {};
+  await scheduler.integrate();
+  assert.equal(calls, 1);
+  const goal = f.store.get('g');
+  if (scenario === 'failure') {
+    assert.equal(goal.integration.state, 'failed'); assert.equal(goal.tasks[0].status, 'accepted');
+    assert.equal(goal.integrationHead, BASE);
+  } else {
+    assert.equal(goal.tasks[0].status, 'integrated'); assert.equal(goal.integrationResults.length, 1);
+    assert.ok(!f.store.operations().some((entry) => entry.kind === 'integrate'));
+    if (scenario === 'abort') assert.equal(goal.status, 'aborted');
+  }
+});
+
+test('an aborted dispatching integration is reconciled read-only after restart', async (t) => {
+  const f = fixture(t); acceptedTask(f);
+  f.command('g', 'request_integration', { taskId: 'A', operationId: 'integration_before_abort' });
+  f.store.advanceOperation('integration_before_abort', 'pending', 'dispatching');
+  f.command('g', 'abort', {}, 'user');
+  let observations = 0, mutations = 0;
+  const scheduler = new Scheduler({ service: f.service, repositories: {}, ownership: { assertOwned() {} }, integrations: {
+    observeIntegration: async () => { observations++; return { status: 'integrated', headSha: 'c'.repeat(40) }; },
+    integrate: async () => { mutations++; throw new Error('Must not resume mutation after abort'); },
+  } });
+  scheduler.stopped = false; await scheduler.integrate(); await scheduler.integrate();
+  assert.equal(observations, 1); assert.equal(mutations, 0);
+  assert.equal(f.store.get('g').status, 'aborted'); assert.equal(f.store.get('g').integrationHead, 'c'.repeat(40));
+  assert.equal(f.store.get('g').integrationResults.length, 1);
+  assert.ok(!f.store.operations().some((operation) => operation.kind === 'integrate'));
+});
+
+test('withdrawn repositories do not interrupt unrelated allowed integration work', async (t) => {
+  const f = fixture(t); acceptedTask(f);
+  f.service.repositoryIds.add('other');
+  f.command('h', 'create_goal', { repositoryId: 'other', title: 'Allowed goal', baseSha: BASE }, 'user');
+  f.approve('h');
+  const implementer = f.request('h', 'implementer', 'A'); f.dispatch('h', implementer);
+  f.command('h', 'confirm_candidate', { attemptId: implementer, headSha: 'b'.repeat(40) });
+  f.command('h', 'record_stopped', { attemptId: implementer });
+  const reviewer = f.request('h', 'reviewer', 'A'); f.dispatch('h', reviewer);
+  f.command('h', 'record_review', { attemptId: reviewer, reviewId: 'h_review', review: { schemaVersion: 1, target: 'b'.repeat(40), disposition: 'accept', findings: [] } });
+  f.command('h', 'record_stopped', { attemptId: reviewer });
+  f.service.repositoryIds.delete('repo');
+  const calls = [];
+  const scheduler = new Scheduler({ service: f.service, repositories: {}, ownership: { assertOwned() {} }, integrations: {
+    integrate: async (input) => { calls.push(input.goalId); return { status: 'integrated', headSha: 'c'.repeat(40) }; },
+  } });
+  scheduler.stopped = false; await scheduler.integrate();
+  assert.deepEqual(calls, ['h']); assert.equal(f.store.get('g').integration, null);
+  assert.equal(f.store.get('h').tasks[0].status, 'integrated');
 });

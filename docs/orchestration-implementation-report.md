@@ -17,8 +17,8 @@ substitute acceptance criterion for the whole replacement.
 | T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Structured candidate submission now connects independent Git proof to atomic acceptance; integration-repair submission still fails closed. |
 | M1 durable-decision gate | Passed for foundation | Review and verification below; no production scheduling activated. |
 | T04: scheduler and recovery | Implemented, independently reviewed | Exclusive nonce-fenced ownership, transactional capacity, durable FIFO, explicit retries, abort reconciliation and fresh-process crash recovery. |
-| T05–T06 / M2 | In progress | Runtime, concurrent real-Git fake implementers, scheduled planning/review, revision requests and durable role-result intake pass targeted tests. Complete task-review/repair and integrated A/B/C journey remain; M2 has not passed. |
-| T07–T09 / M3 | In progress | Disposable real Git repository, owned worktrees, candidate proof and durable acceptance implemented. Serialized integration, combined verification and PR adapter remain. |
+| T05–T06 / M2 | In progress | Runtime, concurrent real-Git fake implementers, scheduled planning/review, revision requests and durable role-result intake pass targeted tests. Scheduled A/B/C task review, repair and integration now pass; cancellation ownership and remaining M2 fault gates remain. |
+| T07–T09 / M3 | In progress | Real Git worktrees, candidate proof/acceptance, serialized delta integration and crash receipts implemented. Conflict-repair acceptance, combined verification and PR adapter remain. |
 | T10–T12 / M4 | Pending | Runnable isolated composition, durable consumers, actual provider/cmux adapters and new mobile/Cypress journey. |
 | T13–T15 / M5 | Pending | Full crash matrix, cleanup, disposable cutover rehearsal, legacy removal, documentation and final acceptance. |
 
@@ -357,3 +357,65 @@ with one platform skip and 98.23% lines. Full `npm run verify` passed: 1,358
 backend tests, one platform skip, 257 UI tests, lint, both typechecks and build.
 Serialized integration, full scheduled repair journey and later plan gates remain
 incomplete.
+
+## T08 serialized integration and scheduled A/B/C journey
+
+The scheduler now requests one integration per goal, then applies accepted task
+deltas through a dedicated Git adapter. An explicit merge base preserves sibling
+changes while incorporating only the candidate delta. Separate operation-owned
+checkouts, private goal/operation/proposal manifests and Git ownership refs guard
+identity. A single Git ref transaction advances the goal branch and records its
+applied-operation receipt. An atomic workflow receipt survives lost database
+acknowledgement and prevents orphaned integration intents or duplicate application.
+
+Conflict trees and reports are recorded before materialization. Ignored/untracked
+files and modified conflict copies are preserved by refusal. Repair attempts get
+separate owned copies of the exact recorded conflict tree. Private proposal and
+conflict reports are checked against refs before replay or copying. Repository
+filters and custom merge drivers are unsupported and rejected before Git effects.
+
+The real scheduler test starts with discovery, schedules planner and independent
+plan review, requires user approval, overlaps A/B in real Git worktrees, reviews
+and serially integrates them, then starts C at the combined head. A real failing
+fixture test makes C's independent reviewer request repair; a fresh implementer
+fixes C, renewed review accepts its exact commit, and the combined checkout passes
+acceptance tests. This uses scripted agents and no live provider or GitHub service.
+
+### Review findings and interventions
+
+- Git reviewer found ignored files could be overwritten by conflict materialization:
+  all untracked/ignored files now block this integration-only checkout mutation.
+- Conflict ref publication preceded its report, leaving an interruption gap:
+  report now precedes ref publication, with recovery tests at both boundaries.
+- Conflict refs were not compared to private reports on replay/repair-copy creation:
+  both now validate the tree and artifact evidence; substituted refs are refused.
+- Coordinator reviewer reproduced aborted dispatching integrations being skipped
+  after restart: read-only observation now reconciles saved applied receipts for
+  terminal goals without starting new Git work.
+- A withdrawn repository could throw before the per-goal handler and interrupt
+  unrelated scheduling: new integration requests now skip withdrawn repositories.
+- The journey's first assertion read only 100 events; increasing to 1,000 exceeded
+  the API's bound. It now uses the supported 500-event page for this bounded fixture.
+  The earlier failures were assertion pagination errors, not missing integration.
+
+Targeted integration/scheduler/delivery tests passed 36/36; checked JS and targeted
+lint passed. The Git suite includes seven real SIGKILL boundaries: goal reservation,
+proposal report, proposed ref, atomic advance, conflict report, conflict ref and
+conflict materialization. Each case reopens twice and verifies one applied commit
+or the same preserved conflict. Kills occur at completed durable boundaries, not
+inside a still-running Git subprocess. Independent reviewers approved the corrected slices: `/root/domain_review` reran
+scheduler/delivery checks (15/15); `/root/scheduler_admission_review` reran proposal,
+repair-copy and read-only-observation regressions (3/3). The order-independent
+combined-base assertion received incremental review.
+
+Full `npm run verify` passed: 1,385 backend tests, one macOS filename skip, 257 UI
+tests, lint, both typechecks and build. Backend coverage passed the same 1,385
+tests with one skip and 98.24% lines. Logs: `/tmp/cmux-orchestration-t08-verify.log`
+and `/tmp/cmux-orchestration-t08-coverage.log`. No UI code changed; the replacement
+backend/mobile Cypress journey remains a later required gate.
+
+Conflict-repair result acceptance and its ref-advance protocol remain unavailable;
+no repair output can currently claim integration success. Combined verification/
+final publication service, production adapters, complete process fault matrix,
+mobile E2E and retirement remain incomplete. Scripted cancellation is still not an
+abort proof. No installed/live integration, merge, deployment or release ran.

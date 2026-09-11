@@ -6,24 +6,24 @@ import { ownedArea } from '../domain/graph.mjs';
 
 /** Local Git operations use fixed argv and no inherited credential/config hooks.
  * No fetch/push or checkout of submodules is performed by this adapter.
- * @param {string} cwd @param {string[]} argv @param {string} [input]
+ * @param {string} cwd @param {string[]} argv @param {string | Buffer} [input] @param {boolean} [allowConflict]
  * @returns {Promise<Buffer>} 
  */
-async function gitBytes(cwd, argv, input) {
+export async function gitBytes(cwd, argv, input, allowConflict = false) {
   return new Promise((resolveResult, reject) => {
     const child = execFile('git', ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', ...argv], {
       cwd, env: { PATH: process.env.PATH, LANG: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1' },
       timeout: 30000, maxBuffer: 16 * 1024 * 1024, encoding: null,
     }, (error, stdout) => {
-      if (error) reject(Object.assign(new DomainError('GIT_OPERATION_FAILED', 'Local Git operation failed; reconcile recorded repository evidence'), { exitCode: error.code }));
+      if (error && !(allowConflict && error.code === 1)) reject(Object.assign(new DomainError('GIT_OPERATION_FAILED', 'Local Git operation failed; reconcile recorded repository evidence'), { exitCode: error.code }));
       else resolveResult(stdout);
     });
     child.stdin?.end(input);
   });
 }
 
-/** @param {string} cwd @param {string[]} argv @param {string} [input] */
-async function git(cwd, argv, input) {
+/** @param {string} cwd @param {string[]} argv @param {string | Buffer} [input] */
+export async function git(cwd, argv, input) {
   const bytes = await gitBytes(cwd, argv, input);
   const text = bytes.toString('utf8');
   requireValue(Buffer.from(text).equals(bytes), 'Git metadata contains unsupported filename encoding', 'UNSUPPORTED_CAPABILITY');
@@ -31,7 +31,7 @@ async function git(cwd, argv, input) {
 }
 
 /** Unlike existsSync, includes dangling symlinks. @param {string} path */
-function pathExists(path) {
+export function pathExists(path) {
   try { lstatSync(path); return true; }
   catch (error) { if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return false; throw error; }
 }
@@ -59,9 +59,9 @@ export class GitRepository {
     // Local filter configuration could execute a smudge/clean process during
     // checkout. Unsupported filters fail before any worktree mutation.
     let filters = '';
-    try { filters = await git(repository, ['config', '--get-regexp', '^filter\\.']); }
+    try { filters = await git(repository, ['config', '--get-regexp', '^(filter\\.|merge\\..*\\.driver$)']); }
     catch (error) { if (/** @type {{exitCode?: unknown}} */ (error).exitCode !== 1) throw error; }
-    requireValue(!filters, 'Repository filters require an explicit supported adapter policy', 'UNSUPPORTED_CAPABILITY');
+    requireValue(!filters, 'Repository filters/merge drivers require an explicit supported adapter policy', 'UNSUPPORTED_CAPABILITY');
     return { repository, common };
   }
   /** @param {string} operationId @returns {Resource | null} */
@@ -79,15 +79,15 @@ export class GitRepository {
     try { return (await git(repository, ['rev-parse', '--verify', '--quiet', ref])).trim(); }
     catch (error) { if (/** @type {{exitCode?: unknown}} */ (error).exitCode === 1) return null; throw error; }
   }
-  /** @param {Resource} resource */
-  async checkCheckout(resource) {
+  /** @param {Resource} resource @param {boolean} [clean] */
+  async checkCheckout(resource, clean = true) {
     requireValue(!lstatSync(resource.worktree).isSymbolicLink() && realpathSync(resource.worktree) === resource.worktree, 'Recorded worktree path changed', 'OWNERSHIP_UNCERTAIN');
     const common = realpathSync((await git(resource.worktree, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
     const gitDirectory = realpathSync((await git(resource.worktree, ['rev-parse', '--absolute-git-dir'])).trim());
     requireValue(lstatSync(join(resource.worktree, '.git')).isFile() && realpathSync(readFileSync(join(gitDirectory, 'gitdir'), 'utf8').trim()) === realpathSync(join(resource.worktree, '.git')), 'Worktree registration changed', 'OWNERSHIP_UNCERTAIN');
     requireValue(common === resource.common && (await git(resource.worktree, ['rev-parse', '--show-toplevel'])).trim() === resource.worktree, 'Worktree repository identity changed', 'OWNERSHIP_UNCERTAIN');
     requireValue((await git(resource.worktree, ['symbolic-ref', '--quiet', 'HEAD'])).trim() === `refs/heads/${resource.branch}`, 'Worktree branch changed', 'STALE_TARGET');
-    requireValue(!(await git(resource.worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])), 'Worktree has uncommitted changes', 'DIRTY_WORKTREE');
+    if (clean) requireValue(!(await git(resource.worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])), 'Worktree has uncommitted changes', 'DIRTY_WORKTREE');
     return (await git(resource.worktree, ['rev-parse', 'HEAD'])).trim();
   }
   /** @param {Parameters<import('../types.d.ts').RepositoryPort['provision']>[0]} input */

@@ -45,6 +45,7 @@ export interface Goal {
   integration: { operationId: string; taskId: string; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'failed' } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number } | null;
   planningRequest?: { message: string; basedOnRevision: number } | null;
+  integrationResults?: { operationId: string; taskId: string; headSha: string }[];
   results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
 }
 export interface EvidenceReference { path: string; line: number; description: string }
@@ -94,7 +95,8 @@ export interface IdentityPort { next(): string }
 export interface RepositoryPort {
   provision(input: { operationId: string; repositoryId: string; branch: string; baseSha: string }): Promise<{ worktree: string; branch: string; baseSha: string }>;
   candidate(input: { repositoryId: string; attempt: Attempt; headSha: string; ownedAreas: string[] }): Promise<{ headSha: string; changedPaths: string[]; artifactId: string }>;
-  integrate(input: { repositoryId: string; operationId: string; expectedHead: string; baseSha: string; candidateSha: string }): Promise<{ status: 'integrated'; headSha: string } | { status: 'conflict'; worktree: string }>;
+  integrate(input: { goalId: string; repositoryId: string; operationId: string; expectedHead: string; baseSha: string; candidateSha: string }): Promise<{ status: 'integrated'; headSha: string } | { status: 'conflict'; worktree: string }>;
+  provisionRepair(input: { goalId: string; repositoryId: string; integrationOperationId: string; attempt: Attempt }): Promise<{ worktree: string; branch: string; baseSha: string }>;
   observeIntegration(operationId: string): Promise<{ status: 'integrated' | 'pending' | 'unknown'; headSha: string | null }>;
 }
 export interface VerificationPort {

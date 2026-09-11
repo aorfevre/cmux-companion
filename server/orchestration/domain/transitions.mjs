@@ -64,7 +64,7 @@ export function transition(before, command, authority) {
   requireValue(before && before.id === command.goalId, 'Goal not found', 'NOT_FOUND');
   validateAuthority(before, authority);
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
-  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
+  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
   const goal = structuredClone(before);
   /** @type {Transition} */
   const result = { goal, events: [], intents: [] };
@@ -327,7 +327,15 @@ export function transition(before, command, authority) {
       const task = taskById(goal, operation.taskId);
       requireValue(task.status === 'accepted' && task.candidateSha === operation.candidateSha, 'Accepted candidate changed');
       goal.integrationHead = sha(input.headSha); goal.verification = null; goal.integration = null;
-      task.status = 'integrated'; task.integratedSha = goal.integrationHead; emit('task_integrated', { taskId: task.id, headSha: goal.integrationHead }); break;
+      task.status = 'integrated'; task.integratedSha = goal.integrationHead;
+      (goal.integrationResults ??= []).push({ operationId: operation.operationId, taskId: task.id, headSha: goal.integrationHead });
+      emit('task_integrated', { operationId: operation.operationId, taskId: task.id, headSha: goal.integrationHead }); break;
+    }
+    case 'record_integration_failure': {
+      requireAuthority(authority, 'system');
+      requireValue(goal.integration && goal.integration.operationId === input.operationId, 'Integration operation changed', 'STALE_OPERATION');
+      goal.integration.state = 'failed';
+      emit('integration_failed', { operationId: goal.integration.operationId, code: identifier(input.code) }); break;
     }
     case 'record_integration_conflict': {
       requireAuthority(authority, 'system');
@@ -342,7 +350,9 @@ export function transition(before, command, authority) {
       requireValue(head !== goal.integrationHead, 'Repair must produce a new commit');
       if (attempt.taskId) {
         requireValue(goal.integration?.state === 'conflict' && goal.integration.taskId === attempt.taskId && input.operationId === goal.integration.operationId, 'Conflict operation changed', 'STALE_OPERATION');
-        const task = taskById(goal, attempt.taskId); task.status = 'integrated'; task.integratedSha = head; goal.integration = null;
+        const task = taskById(goal, attempt.taskId); task.status = 'integrated'; task.integratedSha = head;
+        (goal.integrationResults ??= []).push({ operationId: goal.integration.operationId, taskId: task.id, headSha: head });
+        goal.integration = null;
       }
       goal.integrationHead = head; goal.verification = null; attempt.status = 'succeeded';
       emit('integration_repaired', { headSha: head, attemptId: attempt.id }); break;

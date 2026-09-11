@@ -5,12 +5,12 @@ import { SchedulerOwnership } from './storage/ownership.mjs';
 import { Reconciler } from './reconciler.mjs';
 
 export class Scheduler {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; onError?: (error: unknown) => void }} options */
-  constructor({ service, repositories, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, onError = () => {} }) {
+  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration'>>; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; onError?: (error: unknown) => void }} options */
+  constructor({ service, repositories, integrations, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, onError = () => {} }) {
     this.service = service; this.store = service.store; this.agents = service.agents; this.repositories = repositories;
     this.ownership = ownership; this.id = id; this.intervalMs = integer(intervalMs, 1); this.onError = onError;
     this.reconciler = new Reconciler({ service, ownership, results, id });
-    this.results = results;
+    this.results = results; this.integrations = integrations;
     this.stopped = true; this.again = false;
     /** @type {Promise<void> | null} */ this.sweep = null;
     /** @type {ReturnType<typeof setInterval> | null} */ this.timer = null;
@@ -40,6 +40,8 @@ export class Scheduler {
   async pass() {
     this.ownership.assertOwned(); await this.results?.drain(); await this.reconciler.run();
     if (this.stopped) return;
+    await this.integrate();
+    if (this.stopped) return;
     for (const work of this.store.ready()) {
       if (this.stopped) return;
       const goal = this.store.get(work.goalId); if (!goal) continue;
@@ -55,6 +57,57 @@ export class Scheduler {
     const failures = dispatched.filter((result) => result.status === 'rejected');
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason), 'Agent dispatch failed');
   }
+  /** @param {import('./types.d.ts').Goal} goal @param {import('./types.d.ts').Attempt} attempt */
+  async provisionRepair(goal, attempt) {
+    requireValue(this.integrations?.provisionRepair && goal.integration, 'Conflict repair provisioning is unavailable', 'UNSUPPORTED_CAPABILITY');
+    return this.integrations.provisionRepair({ goalId: goal.id, repositoryId: goal.repositoryId, integrationOperationId: goal.integration.operationId, attempt });
+  }
+  async integrate() {
+    if (!this.integrations) return;
+    for (const operation of this.store.operations().filter((entry) => entry.kind === 'integrate')) {
+      const goal = this.store.get(operation.goalId);
+      if (goal?.integrationResults?.some((result) => result.operationId === operation.id)) {
+        this.ownership.assertOwned(); this.store.advanceOperation(operation.id, operation.status, 'completed');
+      } else if (operation.status === 'dispatching' && goal?.integration?.operationId === operation.id && this.integrations.observeIntegration) {
+        const observed = await this.integrations.observeIntegration(operation.id);
+        this.ownership.assertOwned();
+        if (observed.status === 'integrated' && observed.headSha) {
+          this.reconciler.record(goal.id, 'record_integration', { operationId: operation.id, headSha: observed.headSha });
+          this.store.advanceOperation(operation.id, operation.status, 'completed');
+        }
+      }
+    }
+    for (const snapshot of this.store.list()) {
+      if (this.stopped) return;
+      this.ownership.assertOwned();
+      let goal = this.store.get(snapshot.id);
+      if (!goal || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
+      if (!goal.integration) {
+        if (goal.attempts.some((attempt) => attempt.role === 'integrator' && attempt.workerState !== 'stopped')) continue;
+        const task = goal.tasks.find((entry) => entry.status === 'accepted');
+        if (!task) continue;
+        this.reconciler.record(goal.id, 'request_integration', { taskId: task.id, operationId: this.id() });
+        goal = this.store.get(goal.id);
+      }
+      const operation = goal?.integration;
+      if (!goal || !operation || operation.state !== 'applying') continue;
+      const intent = this.store.operations().find((entry) => entry.id === operation.operationId);
+      requireValue(intent?.kind === 'integrate', 'Integration intent disappeared');
+      if (intent.status === 'pending') this.store.advanceOperation(intent.id, 'pending', 'dispatching');
+      try {
+        requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+        const result = await this.integrations.integrate({ goalId: goal.id, repositoryId: goal.repositoryId, operationId: operation.operationId, expectedHead: operation.expectedHead, baseSha: operation.baseSha, candidateSha: operation.candidateSha });
+        this.ownership.assertOwned();
+        // Record external success even if abort arrived during Git; no further
+        // task dispatch follows a terminal goal, but its evidence is retained.
+        this.reconciler.record(goal.id, result.status === 'integrated' ? 'record_integration' : 'record_integration_conflict', { operationId: operation.operationId, ...(result.status === 'integrated' ? { headSha: result.headSha } : {}) });
+        this.store.advanceOperation(intent.id, 'dispatching', 'completed');
+      } catch (error) {
+        if (!(error instanceof DomainError)) throw error;
+        this.reconciler.record(goal.id, 'record_integration_failure', { operationId: operation.operationId, code: error.code });
+      }
+    }
+  }
   /** @param {import('./types.d.ts').Intent} operation */
   async dispatch(operation) {
     this.ownership.assertOwned();
@@ -69,7 +122,9 @@ export class Scheduler {
     try {
       requireCapability(this.agents, attempt.role, attempt.mode);
       const resources = attempt.worktree && attempt.branch ? { worktree: attempt.worktree, branch: attempt.branch, baseSha: attempt.baseSha }
-        : await this.repositories.provision({ operationId: operation.id, repositoryId: goal.repositoryId, branch: `companion/${goal.id}/${attempt.id}`, baseSha: attempt.baseSha });
+        : attempt.role === 'integrator' && attempt.taskId && goal.integration?.state === 'conflict'
+          ? await this.provisionRepair(goal, attempt)
+          : await this.repositories.provision({ operationId: operation.id, repositoryId: goal.repositoryId, branch: `companion/${goal.id}/${attempt.id}`, baseSha: attempt.baseSha });
       this.ownership.assertOwned();
       goal = this.store.get(operation.goalId); attempt = goal?.attempts.find((entry) => entry.id === operation.attemptId);
       if (!goal || !attempt) return;
