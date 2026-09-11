@@ -100,6 +100,84 @@ export class GitIntegration {
     this.failpoint('advanced');
     return { status: /** @type {const} */ ('integrated'), headSha };
   }
+  /** @param {import('../types.d.ts').RepairInput} input */
+  repairIdentity(input) {
+    return { goalId: input.goalId, repositoryId: input.repositoryId, integrationOperationId: input.integrationOperationId, baseSha: input.attempt.baseSha, target: input.attempt.target, role: input.attempt.role, generation: input.attempt.generation, revision: input.attempt.revision, effectId: input.effectId, attemptId: input.attempt.id, operationId: input.attempt.operationId, candidateSha: input.headSha, proofArtifactId: input.proofArtifactId };
+  }
+  /** @param {import('../types.d.ts').RepairInput} input */
+  async observeRepair(input) {
+    identifier(input.integrationOperationId);
+    try {
+      requireValue(realpathSync(this.directory) === this.directory, 'Integration directory changed');
+      const path = join(this.directory, `${input.integrationOperationId}.proposal.json`);
+      if (!pathExists(path)) return { status: /** @type {const} */ ('pending'), headSha: null };
+      requireValue(lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink(), 'Repair proposal changed');
+      const proposal = JSON.parse(readFileSync(path, 'utf8'));
+      requireValue(JSON.stringify(proposal.repair) === JSON.stringify(this.repairIdentity(input)), 'Another repair owns the proposal');
+      const proof = JSON.parse(this.repositories.artifacts.get(input.proofArtifactId).toString('utf8'));
+      requireValue(proof.repositoryId === input.repositoryId && proof.operationId === input.attempt.operationId && proof.baseSha === input.attempt.baseSha && proof.headSha === input.headSha, 'Repair proof changed');
+      this.repositories.artifacts.get(proof.deltaArtifactId);
+      return this.observeIntegration(input.integrationOperationId);
+    } catch { return { status: /** @type {const} */ ('unknown'), headSha: null }; }
+  }
+  /** Squash the verified repair tree onto the recorded expected integration head.
+   * Private proposal identity is written before Git refs; replay cannot substitute
+   * a different attempt/result or apply the same conflict repair twice.
+   * @param {import('../types.d.ts').RepairInput} input
+   */
+  async acceptRepair(input) {
+    const { goalId, repositoryId, integrationOperationId, effectId, attempt, headSha, proofArtifactId } = input;
+    identifier(goalId); identifier(integrationOperationId); identifier(effectId); sha(headSha);
+    const { repository, common } = await this.repositories.repository(repositoryId);
+    requireValue(realpathSync(this.directory) === this.directory, 'Integration directory changed', 'OWNERSHIP_UNCERTAIN');
+    const manifestPath = join(this.directory, `${integrationOperationId}.json`);
+    requireValue(pathExists(manifestPath) && lstatSync(manifestPath).isFile() && !lstatSync(manifestPath).isSymbolicLink(), 'Integration manifest changed', 'OWNERSHIP_UNCERTAIN');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    requireValue(manifest.goalId === goalId && manifest.repositoryId === repositoryId && manifest.repository === repository && manifest.common === common && manifest.expectedHead === attempt.baseSha && attempt.target === attempt.baseSha && attempt.role === 'integrator', 'Repair target changed', 'STALE_TARGET');
+    const proof = JSON.parse(this.repositories.artifacts.get(proofArtifactId).toString('utf8'));
+    requireValue(proof.repositoryId === repositoryId && proof.operationId === attempt.operationId && proof.baseSha === attempt.baseSha && proof.headSha === headSha, 'Repair proof belongs to another candidate', 'STALE_TARGET');
+    this.repositories.artifacts.get(proof.deltaArtifactId);
+    const prefix = `refs/companion/integrations/${integrationOperationId}`;
+    const tree = await this.repositories.ref(repository, `${prefix}/conflict`);
+    requireValue(tree, 'No recorded conflict tree', 'STALE_TARGET'); this.checkConflict(integrationOperationId, tree);
+    const proposalPath = join(this.directory, `${integrationOperationId}.proposal.json`);
+    let proposal;
+    if (pathExists(proposalPath)) {
+      requireValue(lstatSync(proposalPath).isFile() && !lstatSync(proposalPath).isSymbolicLink(), 'Repair proposal changed', 'OWNERSHIP_UNCERTAIN');
+      proposal = JSON.parse(readFileSync(proposalPath, 'utf8'));
+      requireValue(JSON.stringify(proposal.repair) === JSON.stringify(this.repairIdentity(input)), 'Another repair owns the proposal', 'OWNERSHIP_UNCERTAIN');
+    } else {
+      const resource = this.repositories.resource(attempt.operationId);
+      requireValue(resource && resource.repository === repository && resource.common === common && resource.worktree === attempt.worktree && resource.branch === attempt.branch && resource.baseSha === attempt.baseSha, 'Repair checkout changed', 'OWNERSHIP_UNCERTAIN');
+      requireValue(await this.repositories.checkCheckout(resource) === headSha, 'Repair branch moved', 'STALE_TARGET');
+      const treeSha = (await git(repository, ['rev-parse', `${headSha}^{tree}`])).trim();
+      const integrated = (await git(repository, ['-c', 'user.name=Companion', '-c', 'user.email=companion@example.invalid', 'commit-tree', treeSha, '-p', attempt.baseSha], `Resolve integration ${integrationOperationId} with ${effectId}\n`)).trim();
+      proposal = { headSha: integrated, treeSha, repair: this.repairIdentity(input) };
+      writeFileSync(proposalPath, JSON.stringify(proposal), { mode: 0o600, flag: 'wx' });
+      this.failpoint('repair_proposal_recorded');
+    }
+    requireValue((await git(repository, ['show', '-s', '--format=%P', proposal.headSha])).trim() === attempt.baseSha
+      && (await git(repository, ['rev-parse', `${proposal.headSha}^{tree}`])).trim() === proposal.treeSha
+      && (await git(repository, ['rev-parse', `${headSha}^{tree}`])).trim() === proposal.treeSha, 'Repair proposal commit changed', 'OWNERSHIP_UNCERTAIN');
+    const proposed = await this.repositories.ref(repository, `${prefix}/proposed`);
+    requireValue(!proposed || proposed === proposal.headSha, 'Repair proposal ref changed', 'OWNERSHIP_UNCERTAIN');
+    const applied = await this.repositories.ref(repository, `${prefix}/applied`);
+    if (applied) {
+      const observed = await this.observeRepair(input);
+      requireValue(observed.status === 'integrated' && observed.headSha === proposal.headSha, 'Applied repair evidence changed', 'OWNERSHIP_UNCERTAIN');
+      return { status: /** @type {const} */ ('integrated'), headSha: proposal.headSha };
+    }
+    const goalPath = join(this.directory, `goal.${goalId}.json`);
+    requireValue(lstatSync(goalPath).isFile() && !lstatSync(goalPath).isSymbolicLink(), 'Goal ownership changed', 'OWNERSHIP_UNCERTAIN');
+    const goal = JSON.parse(readFileSync(goalPath, 'utf8'));
+    requireValue(goal.goalId === goalId && goal.repositoryId === repositoryId && goal.repository === repository && goal.common === common
+      && await this.repositories.ref(repository, `refs/companion/goals/${goalId}`) === goal.initialHead, 'Goal ownership ref changed', 'OWNERSHIP_UNCERTAIN');
+    if (!proposed) await git(repository, ['update-ref', `${prefix}/proposed`, proposal.headSha, '0'.repeat(40)]);
+    this.failpoint('repair_proposed');
+    await git(repository, ['update-ref', '--stdin'], `start\nverify ${prefix}/proposed ${proposal.headSha}\nupdate refs/heads/companion-goals/${goalId} ${proposal.headSha} ${attempt.baseSha}\ncreate ${prefix}/applied ${proposal.headSha}\nprepare\ncommit\n`);
+    this.failpoint('repair_advanced');
+    return { status: /** @type {const} */ ('integrated'), headSha: proposal.headSha };
+  }
   /** Read external receipts without applying new work, including after abort.
    * @param {string} operationId
    * @returns {Promise<{status: 'integrated' | 'pending' | 'unknown'; headSha: string | null}>}

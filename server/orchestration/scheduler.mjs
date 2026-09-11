@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { DomainError, integer, requireValue } from './domain/contracts.mjs';
 import { requireCapability } from './ports.mjs';
 import { SchedulerOwnership } from './storage/ownership.mjs';
+import { IntegrationRepairs } from './integration-repairs.mjs';
 import { Reconciler } from './reconciler.mjs';
 
 export class Scheduler {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration'>>; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; onError?: (error: unknown) => void }} options */
+  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration' | 'acceptRepair' | 'observeRepair'>>; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; onError?: (error: unknown) => void }} options */
   constructor({ service, repositories, integrations, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, onError = () => {} }) {
     this.service = service; this.store = service.store; this.agents = service.agents; this.repositories = repositories;
     this.ownership = ownership; this.id = id; this.intervalMs = integer(intervalMs, 1); this.onError = onError;
@@ -64,6 +65,7 @@ export class Scheduler {
   }
   async integrate() {
     if (!this.integrations) return;
+    if (this.integrations.acceptRepair && this.integrations.observeRepair) await new IntegrationRepairs({ service: this.service, integrations: { acceptRepair: this.integrations.acceptRepair.bind(this.integrations), observeRepair: this.integrations.observeRepair.bind(this.integrations) }, ownership: this.ownership, id: this.id }).run();
     for (const operation of this.store.operations().filter((entry) => entry.kind === 'integrate')) {
       const goal = this.store.get(operation.goalId);
       if (goal?.integrationResults?.some((result) => result.operationId === operation.id)) {

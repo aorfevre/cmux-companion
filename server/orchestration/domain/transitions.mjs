@@ -64,7 +64,7 @@ export function transition(before, command, authority) {
   requireValue(before && before.id === command.goalId, 'Goal not found', 'NOT_FOUND');
   validateAuthority(before, authority);
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
-  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
+  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'settle_repair_result', 'cancel_repair_result', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
   const goal = structuredClone(before);
   /** @type {Transition} */
   const result = { goal, events: [], intents: [] };
@@ -81,6 +81,7 @@ export function transition(before, command, authority) {
       requireValue(/^[a-f0-9]{64}$/.test(artifactId), 'Invalid result artifact');
       goal.results ??= [];
       requireValue(!goal.results.some((entry) => entry.id === id), 'Result id already exists', 'IDEMPOTENCY_CONFLICT');
+      requireValue(!goal.results.some((entry) => entry.attemptId === attempt.id && entry.repair), 'Repair result already owns this attempt', 'IDEMPOTENCY_CONFLICT');
       goal.results.push({ id, attemptId: attempt.id, artifactId, status: 'pending', code: null });
       emit('agent_result_received', { resultId: id, attemptId: attempt.id, artifactId }); break;
     }
@@ -115,13 +116,56 @@ export function transition(before, command, authority) {
       accepted.events.push({ kind: 'agent_result_accepted', payload: { resultId: saved.id, attemptId: saved.attemptId, artifactId: saved.artifactId, proofArtifactId } });
       return accepted;
     }
+    case 'prepare_repair_result': {
+      requireAuthority(authority, 'system');
+      const submission = goal.results?.find((entry) => entry.id === input.resultId);
+      requireValue(submission?.status === 'pending' && !submission.repair, 'Repair result is not pending', 'STALE_ATTEMPT');
+      const attempt = attemptById(goal, submission.attemptId); ownsResult(authority, attempt);
+      const parsed = parseRoleResult(input.result, { goalId: goal.id, attempt });
+      requireValue(parsed.role === 'integrator' && attempt.taskId && goal.status === 'building' && goal.approvedRevision === goal.revision, 'Conflict repair is not approved', 'FORBIDDEN');
+      requireValue(goal.integration?.state === 'conflict' && goal.integration.taskId === attempt.taskId && goal.integration.operationId === parsed.output.operationId && goal.integrationHead === attempt.target, 'Conflict target changed', 'STALE_TARGET');
+      const proofArtifactId = text(input.proofArtifactId, 64);
+      requireValue(/^[a-f0-9]{64}$/.test(proofArtifactId), 'Invalid repair proof artifact');
+      submission.proofArtifactId = proofArtifactId;
+      submission.repair = { effectId: identifier(input.effectId), integrationOperationId: goal.integration.operationId, headSha: parsed.output.headSha };
+      goal.integration.state = 'repairing';
+      intent('integrate_repair', submission.repair.effectId, attempt.id, { resultId: submission.id });
+      emit('repair_result_prepared', { resultId: submission.id, effectId: submission.repair.effectId, proofArtifactId }); break;
+    }
+    case 'settle_repair_result': {
+      requireAuthority(authority, 'system');
+      const submission = goal.results?.find((entry) => entry.id === input.resultId);
+      requireValue(submission?.status === 'pending' && submission.repair && submission.repair.effectId === input.effectId, 'Repair effect changed', 'STALE_OPERATION');
+      const attempt = goal.attempts.find((entry) => entry.id === submission.attemptId);
+      requireValue(attempt, 'Repair attempt disappeared');
+      const change = transition(before, { ...command, type: 'record_integration', payload: { operationId: submission.repair.integrationOperationId, headSha: sha(input.headSha) } }, authority);
+      const saved = change.goal.results?.find((entry) => entry.id === submission.id);
+      const worker = change.goal.attempts.find((entry) => entry.id === attempt.id);
+      requireValue(saved && worker, 'Repair receipt disappeared');
+      const current = attempt.generation === goal.generation && attempt.revision === goal.revision && goal.status === 'building';
+      saved.status = current ? 'accepted' : 'rejected'; saved.code = current ? null : 'STALE_ATTEMPT';
+      if (current) worker.status = 'succeeded';
+      else if (worker.workerState === 'stopped' && ['running', 'uncertain'].includes(worker.status)) worker.status = 'cancelled';
+      change.events.push({ kind: current ? 'agent_result_accepted' : 'agent_result_rejected', payload: { resultId: saved.id, attemptId: worker.id, artifactId: saved.artifactId, effectId: submission.repair.effectId, headSha: change.goal.integrationHead } });
+      return change;
+    }
+    case 'cancel_repair_result': {
+      requireAuthority(authority, 'system');
+      const submission = goal.results?.find((entry) => entry.id === input.resultId);
+      requireValue(submission?.status === 'pending' && submission.repair && submission.repair.effectId === input.effectId, 'Repair effect changed', 'STALE_OPERATION');
+      submission.status = 'rejected'; submission.code = identifier(input.code);
+      const attempt = goal.attempts.find((entry) => entry.id === submission.attemptId);
+      if (attempt && ['running', 'uncertain'].includes(attempt.status)) attempt.status = goal.status === 'aborted' ? 'cancelled' : 'failed';
+      if (goal.integration?.operationId === submission.repair.integrationOperationId) goal.integration.state = 'failed';
+      emit('agent_result_rejected', { resultId: submission.id, attemptId: submission.attemptId, artifactId: submission.artifactId, code: submission.code }); break;
+    }
     case 'reject_role_result': {
       requireAuthority(authority, 'system');
       const submission = goal.results?.find((entry) => entry.id === input.resultId);
-      requireValue(submission?.status === 'pending', 'Result is not pending', 'STALE_ATTEMPT');
+      requireValue(submission?.status === 'pending' && !submission.repair, 'Result is not pending or owns an external effect', 'STALE_ATTEMPT');
       submission.status = 'rejected'; submission.code = identifier(input.code);
       const attempt = goal.attempts.find((entry) => entry.id === submission.attemptId);
-      if (attempt && attempt.generation === goal.generation && attempt.revision === goal.revision && ['queued', 'running', 'uncertain'].includes(attempt.status)) {
+      if (attempt && !goal.results?.some((entry) => entry.id !== submission.id && entry.attemptId === attempt.id && entry.repair) && attempt.generation === goal.generation && attempt.revision === goal.revision && ['queued', 'running', 'uncertain'].includes(attempt.status)) {
         attempt.status = 'failed'; attempt.error = 'Agent result was rejected; inspect the saved evidence';
         if (attempt.role === 'implementer' && attempt.taskId) {
           const task = taskById(goal, attempt.taskId); if (task.status === 'running') task.status = 'failed';

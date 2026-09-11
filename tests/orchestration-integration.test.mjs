@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { GitRepository } from '../server/orchestration/adapters/git.mjs';
 import { GitIntegration } from '../server/orchestration/adapters/git-integration.mjs';
@@ -147,4 +147,48 @@ test('repair copies are isolated, replayable and preserve edits; substituted con
   await assert.rejects(f.adapter.integrate(input), { code: 'OWNERSHIP_UNCERTAIN' });
   await assert.rejects(f.adapter.provisionRepair({ ...repair, attempt: { ...repair.attempt, id: 'repair_b', operationId: 'repair_b_op' } }), { code: 'OWNERSHIP_UNCERTAIN' });
   assert.equal(f.repositories.resource('repair_b_op'), null);
+});
+
+async function repairedFixture(t) {
+  const f = await fixture(t, { conflict: true });
+  const a = await f.adapter.integrate(f.input);
+  await f.adapter.integrate({ ...f.input, operationId: 'integrate_b', expectedHead: a.headSha, candidateSha: f.bSha });
+  const attempt = { id: 'repair_a', operationId: 'repair_op', role: 'integrator', taskId: 'B', baseSha: a.headSha, target: a.headSha };
+  Object.assign(attempt, await f.adapter.provisionRepair({ goalId: 'g', repositoryId: 'repo', integrationOperationId: 'integrate_b', attempt }));
+  writeFileSync(join(attempt.worktree, 'src/composition.mjs'), "export function composition() { return 'Resolved'; }\n");
+  await fixtureGit(attempt.worktree, ['add', 'src']);
+  await fixtureGit(attempt.worktree, ['commit', '-m', 'Repair conflict']);
+  const headSha = await fixtureGit(attempt.worktree, ['rev-parse', 'HEAD']);
+  const proof = await f.repositories.candidate({ repositoryId: 'repo', attempt, headSha, ownedAreas: ['src/b.mjs', 'src/composition.mjs'] });
+  return { ...f, repair: { goalId: 'g', repositoryId: 'repo', integrationOperationId: 'integrate_b', effectId: 'repair_effect', attempt, headSha, proofArtifactId: proof.artifactId } };
+}
+
+test('repair acceptance binds the candidate proof and replays one integrated tree', async (t) => {
+  const f = await repairedFixture(t);
+  const accepted = await f.adapter.acceptRepair(f.repair);
+  assert.equal(accepted.status, 'integrated');
+  assert.deepEqual(await new GitIntegration({ repositories: f.repositories }).acceptRepair(f.repair), accepted);
+  assert.deepEqual(await f.adapter.observeRepair(f.repair), accepted);
+  assert.equal(await fixtureGit(f.repo.repository, ['rev-parse', `${accepted.headSha}^{tree}`]), await fixtureGit(f.repo.repository, ['rev-parse', `${f.repair.headSha}^{tree}`]));
+  assert.equal(await fixtureGit(f.repo.repository, ['rev-parse', `${accepted.headSha}^`]), f.repair.attempt.baseSha);
+  await assert.rejects(f.adapter.acceptRepair({ ...f.repair, effectId: 'other_effect' }), { code: 'OWNERSHIP_UNCERTAIN' });
+  assert.equal((await f.adapter.observeRepair({ ...f.repair, effectId: 'other_effect' })).status, 'unknown');
+  for (const changed of [{ goalId: 'wrong' }, { repositoryId: 'wrong' }, { attempt: { ...f.repair.attempt, baseSha: f.repo.baseSha } }, { attempt: { ...f.repair.attempt, role: 'implementer' } }]) assert.equal((await f.adapter.observeRepair({ ...f.repair, ...changed })).status, 'unknown');
+  unlinkSync(f.repositories.artifacts.path(f.repair.proofArtifactId));
+  assert.equal((await f.adapter.observeRepair(f.repair)).status, 'unknown');
+});
+
+for (const boundary of ['repair_proposal_recorded', 'repair_proposed', 'repair_advanced']) test(`real SIGKILL preserves repair identity after ${boundary}`, async (t) => {
+  const f = await repairedFixture(t);
+  const path = join(f.repo.directory, 'repair-crash.json');
+  writeFileSync(path, JSON.stringify({ action: 'repair', repository: f.repo.repository, directory: f.repositories.directory, artifacts: f.repositories.artifacts.directory, boundary, input: f.repair }));
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./helpers/orchestration/integration-crash-child.mjs', import.meta.url)), path], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = ''; child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const exit = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({ code, signal })); });
+  assert.equal(exit.signal, 'SIGKILL', stderr);
+  for (let restart = 0; restart < 2; restart++) {
+    const result = await new GitIntegration({ repositories: f.repositories }).acceptRepair(f.repair);
+    assert.equal(await fixtureGit(f.repo.repository, ['rev-list', '--count', `${f.repair.attempt.baseSha}..${result.headSha}`]), '1');
+    assert.deepEqual(await f.adapter.observeRepair(f.repair), result);
+  }
 });

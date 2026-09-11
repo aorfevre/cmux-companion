@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OrchestrationStore } from '../server/orchestration/storage/store.mjs';
+import { IntegrationRepairs } from '../server/orchestration/integration-repairs.mjs';
 import { Scheduler } from '../server/orchestration/scheduler.mjs';
 import { DomainError } from '../server/orchestration/domain/contracts.mjs';
 import { OrchestrationService } from '../server/orchestration/service.mjs';
@@ -216,4 +217,70 @@ test('withdrawn repositories do not interrupt unrelated allowed integration work
   scheduler.stopped = false; await scheduler.integrate();
   assert.deepEqual(calls, ['h']); assert.equal(f.store.get('g').integration, null);
   assert.equal(f.store.get('h').tasks[0].status, 'integrated');
+});
+
+function preparedRepair(f, duplicate = false) {
+  acceptedTask(f);
+  f.command('g', 'request_integration', { taskId: 'A', operationId: 'conflict_a' });
+  f.command('g', 'record_integration_conflict', { operationId: 'conflict_a' });
+  const attemptId = f.request('g', 'integrator', 'A'); f.dispatch('g', attemptId);
+  const attempt = f.store.get('g').attempts.find((entry) => entry.id === attemptId);
+  const result = { schemaVersion: 1, goalId: 'g', attemptId, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: 'integrator', target: attempt.target,
+    output: { headSha: 'c'.repeat(40), operationId: 'conflict_a', summary: 'Resolve conflict', evidence: [] } };
+  f.command('g', 'receive_role_result', { resultId: 'repair_result', attemptId, artifactId: 'a'.repeat(64) });
+  if (duplicate) f.command('g', 'receive_role_result', { resultId: 'early_duplicate', attemptId, artifactId: 'c'.repeat(64) });
+  f.command('g', 'prepare_repair_result', { resultId: 'repair_result', effectId: 'repair_effect', result, proofArtifactId: 'b'.repeat(64) });
+  f.command('g', 'record_stopped', { attemptId });
+  return attemptId;
+}
+
+for (const scenario of ['pending_abort', 'withdrawal', 'sent_abort', 'unknown', 'before_commit', 'after_commit']) test(`repair coordinator preserves ownership across ${scenario}`, async (t) => {
+  const f = fixture(t), attemptId = preparedRepair(f); let applied = false, calls = 0, observations = 0;
+  if (scenario === 'pending_abort') f.command('g', 'abort', {}, 'user');
+  if (scenario === 'withdrawal') f.service.repositoryIds.delete('repo');
+  if (scenario === 'sent_abort' || scenario === 'unknown') f.store.advanceOperation('repair_effect', 'pending', 'dispatching');
+  if (scenario === 'sent_abort') { f.command('g', 'abort', {}, 'user'); applied = true; }
+  const options = { service: f.service, ownership: { assertOwned() {} }, integrations: {
+    observeRepair: async () => { observations++; return { status: applied ? 'integrated' : 'unknown', headSha: applied ? 'd'.repeat(40) : null }; },
+    acceptRepair: async () => {
+      calls++; applied = true;
+      if (scenario.endsWith('commit')) f.store.failpoint = (point) => { if (point === scenario) throw new Error('settlement interrupted'); };
+      return { status: 'integrated', headSha: 'd'.repeat(40) };
+    },
+  } };
+  if (scenario.endsWith('commit')) await assert.rejects(new IntegrationRepairs(options).run(), /settlement interrupted/);
+  else await new IntegrationRepairs(options).run();
+  f.store.failpoint = () => {};
+  await new IntegrationRepairs(options).run();
+  const goal = f.store.get('g'), result = goal.results[0], attempt = goal.attempts.find((entry) => entry.id === attemptId);
+  if (scenario === 'unknown') {
+    assert.equal(result.status, 'pending'); assert.equal(attempt.status, 'running');
+    assert.equal(attempt.workerState, 'stopped'); assert.equal(calls, 0); assert.equal(observations, 2);
+    assert.ok(f.store.operations().some((entry) => entry.id === 'repair_effect' && entry.status === 'dispatching'));
+  } else {
+    assert.ok(!f.store.operations().some((entry) => entry.id === 'repair_effect'));
+    const stale = ['pending_abort', 'withdrawal', 'sent_abort'].includes(scenario);
+    assert.equal(result.status, stale ? 'rejected' : 'accepted');
+    assert.equal(attempt.status, scenario === 'withdrawal' ? 'failed' : stale ? 'cancelled' : 'succeeded');
+    assert.equal(attempt.workerState, 'stopped');
+    assert.equal(calls, scenario.endsWith('commit') ? 1 : 0);
+    if (applied) { assert.equal(goal.integrationHead, 'd'.repeat(40)); assert.equal(goal.integrationResults.length, 1); }
+    else assert.equal(goal.integrationHead, BASE);
+  }
+});
+
+test('prepared repair owns its result and cannot be replaced by another submission', (t) => {
+  const f = fixture(t), attemptId = preparedRepair(f);
+  assert.throws(() => f.command('g', 'receive_role_result', { resultId: 'replacement', attemptId, artifactId: 'c'.repeat(64) }), { code: 'IDEMPOTENCY_CONFLICT' });
+  assert.throws(() => f.command('g', 'reject_role_result', { resultId: 'repair_result', code: 'STALE_ATTEMPT' }), { code: 'STALE_ATTEMPT' });
+  assert.equal(f.store.get('g').results[0].status, 'pending');
+});
+
+test('rejecting an earlier duplicate cannot fail the repair effect owner', (t) => {
+  const f = fixture(t), attemptId = preparedRepair(f, true);
+  f.command('g', 'reject_role_result', { resultId: 'early_duplicate', code: 'STALE_TARGET' });
+  const goal = f.store.get('g');
+  assert.equal(goal.results[0].status, 'pending'); assert.ok(goal.results[0].repair);
+  assert.equal(goal.results[1].status, 'rejected');
+  assert.equal(goal.attempts.find((attempt) => attempt.id === attemptId).status, 'running');
 });

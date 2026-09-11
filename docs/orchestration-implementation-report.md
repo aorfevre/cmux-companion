@@ -14,11 +14,11 @@ substitute acceptance criterion for the whole replacement.
 | --- | --- | --- |
 | T01: domain and ports | Foundation implemented | Typed pure graph/state/review rules, explicit result versus worker liveness, command identities and adapter capability contracts. |
 | T02: persistence | Foundation implemented | Explicit-path SQLite state, immutable contracts, indexed attempt ownership, atomic event/intent/receipt writes, private artifacts and journal cursors. |
-| T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Structured candidate submission now connects independent Git proof to atomic acceptance; integration-repair submission still fails closed. |
+| T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Structured candidate and conflict-repair submission now connect independent Git proof to durable acceptance; final-check repair remains unfinished. |
 | M1 durable-decision gate | Passed for foundation | Review and verification below; no production scheduling activated. |
 | T04: scheduler and recovery | Implemented, independently reviewed | Exclusive nonce-fenced ownership, transactional capacity, durable FIFO, explicit retries, abort reconciliation and fresh-process crash recovery. |
 | T05–T06 / M2 | In progress | Runtime, concurrent real-Git fake implementers, scheduled planning/review, revision requests and durable role-result intake pass targeted tests. Scheduled A/B/C task review, repair and integration now pass; cancellation ownership and remaining M2 fault gates remain. |
-| T07–T09 / M3 | In progress | Real Git worktrees, candidate proof/acceptance, serialized delta integration and crash receipts implemented. Conflict-repair acceptance, combined verification and PR adapter remain. |
+| T07–T09 / M3 | In progress | Real Git worktrees, candidate proof/acceptance, serialized delta integration and crash receipts implemented. Conflict-repair acceptance now includes durable effects and receipts; combined verification and PR adapter remain. |
 | T10–T12 / M4 | Pending | Runnable isolated composition, durable consumers, actual provider/cmux adapters and new mobile/Cypress journey. |
 | T13–T15 / M5 | Pending | Full crash matrix, cleanup, disposable cutover rehearsal, legacy removal, documentation and final acceptance. |
 
@@ -419,3 +419,70 @@ no repair output can currently claim integration success. Combined verification/
 final publication service, production adapters, complete process fault matrix,
 mobile E2E and retirement remain incomplete. Scripted cancellation is still not an
 abort proof. No installed/live integration, merge, deployment or release ran.
+
+## T08 conflict-repair acceptance
+
+Verified integrator output now becomes a durable repair intent before any Git
+mutation. The scheduler-owned coordinator advances the recorded integration ref;
+agents cannot invoke the preparation/settlement commands. Git creates a commit
+with the verified repair tree and recorded integration parent, then atomically
+records the goal/applied refs. The private proposal binds goal, repository,
+integration operation, effect, attempt, generation/revision, target, candidate and
+proof identity. Replays cannot substitute another repair, and read-only observation
+requires the private proof and delta artifacts to remain available.
+
+Workflow settlement records the integrated task, result disposition and receipt in
+one transaction. Unsent work is cancelled on abort or repository withdrawal. Sent
+work remains owned until external evidence is known; late success after abort is
+recorded without reviving approval or accepting stale agent authority. A stopped
+worker releases capacity while the pending result/effect retains its lifecycle.
+Duplicate output cannot fail the attempt owning an already prepared repair.
+
+The real scheduled fixture now has both nonconflicting and conflicting sibling
+variants. In the conflict variant, an isolated integration agent resolves the
+recorded A/B conflict, Git proof and ref advancement complete, and C starts from
+the combined head. C then fails its exact-checkout acceptance test, receives an
+independent blocking review, repairs once, passes renewed review and integrates.
+Both variants pass final fixture checks without live providers or GitHub.
+
+Independent `/root/domain_review` approved the coordinator/domain slice and its
+incremental duplicate-output fix; `/root/scheduler_admission_review` approved the
+Git repair adapter and observation hardening. Corrections from review:
+
+- Cancelling an unsent result after worker exit left its attempt running/stopped:
+  the exact owning attempt now settles failed or cancelled as appropriate.
+- Repair observation did not bind the complete target identity: it now refuses
+  changed goal, repository, base, role or other recorded identity fields.
+- Observation could report success without readable private proof: missing proof
+  or delta evidence now yields unknown ownership.
+
+Coordinator coverage includes pending abort/withdrawal, sent abort with observed
+success, unknown observations, before/after settlement-commit failures, and prepared
+result/early duplicate isolation. Scheduler plus inbox suites passed 35/35. The
+reviewer independently reran the coordinator suite before the duplicate addition
+(21/21), and inspected that final addition afterward. Git acceptance/tree/replay
+checks and three additional real SIGKILL boundaries (private repair proposal,
+proposed ref, atomic advance) passed 4/4; final missing-proof regression passed.
+
+An early long-running Git suite loaded the old repair identity format in its
+parent while new child processes loaded an edited format, causing three ownership
+mismatch failures. A stable-source rerun passed all four repair cases. No safety
+check was relaxed. Full `npm run verify` passed on the final implementation:
+1,398 backend tests, one platform skip, 257 UI tests, lint, both typechecks and build.
+
+Concurrent coverage then reported `TERMINATION_UNCERTAIN` instead of `OUTPUT_LIMIT`
+in the existing immediately-exiting UTF-8 fixture. That fixture now stays alive
+until its output-limit termination, as the combined-output fixture already does.
+The byte-budget and cause assertions remain intact; no runtime code changed.
+Targeted runtime coverage passed 15/15 and the fixture correction received separate
+review. Full coverage then passed without a competing verification suite:
+1,398 tests passed, one macOS filename skip, backend line coverage 98.28%. The
+final fixture also passed targeted ESLint. Logs: `/tmp/cmux-orchestration-repair-verify.log`,
+`/tmp/cmux-orchestration-repair-coverage.log` (initial failure), and
+`/tmp/cmux-orchestration-repair-coverage-final.log` (passed rerun).
+
+Final-review/check repair, combined verification and publication, production
+adapters, complete service-process fault matrix, scripted cancellation ownership,
+mobile E2E and retirement remain unfinished. Settlement interruption tests here
+use transaction failpoints; the Git-boundary tests use actual SIGKILL. No live or
+installed service, merge, deployment or public release was exercised.

@@ -42,11 +42,11 @@ export interface Goal {
   attempts: Attempt[]; reviews: Review[]; integrationHead: string;
   verification: Verification | null; finalRepairCount: number; finalRepairLimit: number;
   pr: { number: number; url: string; headSha: string } | null;
-  integration: { operationId: string; taskId: string; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'failed' } | null;
+  integration: { operationId: string; taskId: string; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number } | null;
   planningRequest?: { message: string; basedOnRevision: number } | null;
   integrationResults?: { operationId: string; taskId: string; headSha: string }[];
-  results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
+  results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; repair?: { effectId: string; integrationOperationId: string; headSha: string }; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
 }
 export interface EvidenceReference { path: string; line: number; description: string }
 export type RoleOutput =
@@ -60,7 +60,7 @@ export type Authority = { kind: 'user' } | { kind: 'system' } | {
 };
 export interface DomainEvent { kind: string; payload: Json }
 export interface Intent {
-  id: string; kind: 'launch' | 'terminate' | 'integrate' | 'publish'; goalId: string;
+  id: string; kind: 'launch' | 'terminate' | 'integrate' | 'integrate_repair' | 'publish'; goalId: string;
   generation: number; revision: number; attemptId: string | null; payload: Json;
 }
 export interface Transition { goal: Goal; events: DomainEvent[]; intents: Intent[] }
@@ -97,6 +97,8 @@ export interface RepositoryPort {
   candidate(input: { repositoryId: string; attempt: Attempt; headSha: string; ownedAreas: string[] }): Promise<{ headSha: string; changedPaths: string[]; artifactId: string }>;
   integrate(input: { goalId: string; repositoryId: string; operationId: string; expectedHead: string; baseSha: string; candidateSha: string }): Promise<{ status: 'integrated'; headSha: string } | { status: 'conflict'; worktree: string }>;
   provisionRepair(input: { goalId: string; repositoryId: string; integrationOperationId: string; attempt: Attempt }): Promise<{ worktree: string; branch: string; baseSha: string }>;
+  acceptRepair(input: RepairInput): Promise<{ status: 'integrated'; headSha: string }>;
+  observeRepair(input: RepairInput): Promise<{ status: 'integrated' | 'pending' | 'unknown'; headSha: string | null }>;
   observeIntegration(operationId: string): Promise<{ status: 'integrated' | 'pending' | 'unknown'; headSha: string | null }>;
 }
 export interface VerificationPort {
@@ -106,3 +108,5 @@ export interface PullRequestPort {
   publish(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; branch: string; baseBranch: string }): Promise<{ number: number; url: string; headSha: string }>;
   observe(input: { goalId: string; repositoryId: string; branch: string }): Promise<{ status: 'missing' | 'unknown' | 'open' | 'merged'; number: number | null; url: string | null; headSha: string | null }>;
 }
+
+export interface RepairInput { goalId: string; repositoryId: string; integrationOperationId: string; effectId: string; attempt: Attempt; headSha: string; proofArtifactId: string }

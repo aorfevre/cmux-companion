@@ -49,6 +49,7 @@ export class AgentResults {
   }
   async drain() {
     for (const snapshot of this.store.list()) for (const pending of snapshot.results?.filter((entry) => entry.status === 'pending') ?? []) {
+      if (pending.repair) continue;
       const goal = this.store.get(snapshot.id); requireValue(goal, 'Result goal disappeared');
       const attempt = goal.attempts.find((entry) => entry.id === pending.attemptId); requireValue(attempt, 'Result attempt disappeared');
       const current = goal.generation === attempt.generation && goal.revision === attempt.revision && !['aborted', 'merged'].includes(goal.status);
@@ -60,7 +61,7 @@ export class AgentResults {
         try { result = JSON.parse(bytes.toString('utf8')); }
         catch { throw new DomainError('MALFORMED_RESULT', 'Agent result was not a JSON object'); }
         const parsed = parseRoleResult(result, { goalId: goal.id, attempt });
-        if (parsed.role === 'implementer') {
+        if (parsed.role === 'implementer' || (parsed.role === 'integrator' && attempt.taskId && parsed.output.operationId !== null)) {
           requireValue(this.repositories, 'Repository evidence verification is unavailable', 'UNSUPPORTED_CAPABILITY');
           requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
           const task = goal.tasks.find((entry) => entry.id === attempt.taskId);
@@ -69,7 +70,7 @@ export class AgentResults {
           requireValue(proof.headSha === parsed.output.headSha, 'Git proof targets a different candidate', 'STALE_TARGET');
           this.artifacts.get(proof.artifactId);
           requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
-          this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version, type: 'accept_candidate_result', payload: { resultId: pending.id, result, proofArtifactId: proof.artifactId } }, { kind: 'system' });
+          this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version, type: parsed.role === 'implementer' ? 'accept_candidate_result' : 'prepare_repair_result', payload: { resultId: pending.id, result, proofArtifactId: proof.artifactId, ...(parsed.role === 'integrator' ? { effectId: this.id() } : {}) } }, { kind: 'system' });
           continue;
         }
         this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version, type: 'accept_role_result', payload: { resultId: pending.id, result } }, { kind: 'agent', goalId: goal.id, attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision });

@@ -83,7 +83,7 @@ test('combined stdout/stderr overflow including an unterminated line is bounded'
 
 test('truncated multibyte and malformed UTF-8 cannot expand returned output past its byte budget', async (t) => {
   for (const script of ["process.stdout.write('é');", 'process.stdout.write(Buffer.from([255,255]));']) {
-    const handle = await start(t, script, { policy: { ...policy, maxOutputBytes: 1 } });
+    const handle = await start(t, `${script} setInterval(() => {}, 1000);`, { policy: { ...policy, maxOutputBytes: 1 } });
     const result = await handle.result;
     assert.equal(result.cause.code, 'OUTPUT_LIMIT');
     assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= 1);
