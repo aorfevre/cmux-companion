@@ -22,7 +22,7 @@ import { requireValue } from './domain/contracts.mjs';
  * @param {{
  * storage: { database: string; artifacts: string; resources: string };
  * repositories: ReadonlyMap<string,string>; token: string; readOnly?: boolean;
- * createAgents: (context: { describe: (request: import('./types.d.ts').LaunchRequest) => import('./adapters/native-inputs.mjs').NativeDescription; onResult: (request: import('./types.d.ts').LaunchRequest, raw: string) => void }) => import('./types.d.ts').AgentPort & { close(): Promise<void> };
+ * createAgents: (context: { locate: (key: {operationId?: string; identity?:string}) => import('./types.d.ts').Mode | null; describe: (request: import('./types.d.ts').LaunchRequest) => import('./adapters/native-inputs.mjs').NativeDescription; onResult: (request: import('./types.d.ts').LaunchRequest, raw: string) => void }) => import('./types.d.ts').AgentPort & { close(): Promise<void> };
  * resolveCheck: ConstructorParameters<typeof VerificationRunner>[0]['resolveCheck'];
  * createPublisher: (context: { repositories: GitRepository }) => import('./types.d.ts').PublicationPort;
  * consumers?: { id: string; from?: number; handle: ConstructorParameters<typeof JournalConsumer>[0]['handle'] }[];
@@ -43,7 +43,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
   try {
     const artifacts = new ArtifactStore({ directory: storage.artifacts });
     const repositories = new GitRepository({ repositories: configured, directory: storage.resources, artifacts });
-    agents = createAgents({ describe: (request) => { requireValue(describe, 'Runtime context is not ready', 'NOT_READY'); return describe(request); }, onResult: (request, raw) => {
+    agents = createAgents({ locate: ({ operationId, identity }) => store.list().flatMap((goal) => goal.attempts).find((attempt) => operationId ? attempt.operationId === operationId : identity ? attempt.identity === identity : false)?.mode ?? null, describe: (request) => { requireValue(describe, 'Runtime context is not ready', 'NOT_READY'); return describe(request); }, onResult: (request, raw) => {
       requireValue(acceptingResults && results, 'Runtime result intake is closed', 'NOT_READY');
       const { goalId, attempt } = request;
       results.receive({ kind: 'agent', goalId, attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision }, request.operationId, raw);

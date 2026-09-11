@@ -16,13 +16,16 @@ const quote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
  * lifecycle belongs to the process adapter; preparation never starts a worker.
  */
 export class NativeInputs {
-  /** @param {{ engine: import('./ccs.mjs').Engine; capabilities: import('./ccs.mjs').NativeCapabilities; env: NodeJS.ProcessEnv; describe: (request: import('../types.d.ts').LaunchRequest) => Promise<NativeDescription> | NativeDescription }} options */
-  constructor({ engine, capabilities, env, describe }) {
+  /** @param {{ engine: import('./ccs.mjs').Engine; capabilities: import('./ccs.mjs').NativeCapabilities; env: NodeJS.ProcessEnv; installation?: Awaited<ReturnType<typeof import('./native-capabilities.mjs').probeNativeCapabilities>>; describe: (request: import('../types.d.ts').LaunchRequest) => Promise<NativeDescription> | NativeDescription }} options */
+  constructor({ engine, capabilities, env, describe, installation }) {
     validateNativeEnvironment(env);
-    this.engine = engine; this.capabilities = capabilities; this.env = { ...env }; this.describe = describe;
+    installation?.assertCurrent();
+    this.installation = installation;
+    this.engine = engine; this.capabilities = installation?.capabilities ?? capabilities; this.env = { ...env, ...installation?.env }; this.describe = describe;
   }
   /** @param {import('../types.d.ts').LaunchRequest} request @param {string} directory */
   async prepare(request, directory) {
+    this.installation?.assertCurrent();
     identifier(request.operationId); requireNativeCapabilities(this.capabilities, request.attempt.role, request.attempt.mode);
     requireValue(realpathSync(directory) === directory && lstatSync(directory).isDirectory() && !lstatSync(directory).isSymbolicLink(), 'Native input directory identity changed', 'OWNERSHIP_UNCERTAIN');
     requireValue(request.attempt.worktree, 'Native worktree is unavailable');
@@ -57,6 +60,7 @@ export class NativeInputs {
       save(bridgeConfig, JSON.stringify({ ...description.bridge, binding }));
       save(mcpPath, JSON.stringify({ mcpServers: { companion: { command: process.execPath, args: [mcp, bridgeConfig] } } }));
     }
+    this.installation?.assertCurrent();
     const argv = ccsCommand({ request, engine: this.engine, capabilities: this.capabilities, env: this.env, contextPath, settingsPath, mcpPath });
     return { argv, env: { ...this.env }, ...(description.activation ? { activation: description.activation } : {}) };
   }

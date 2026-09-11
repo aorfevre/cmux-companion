@@ -916,3 +916,73 @@ exercised. Actual service SIGKILL during this activation handshake remains a T13
 matrix case; the earlier native supervisor SIGKILL scenario has no activation wait.
 Production capability probing and interactive cmux/resume still remain in T11;
 T12–T15 and the final full verification gates remain open.
+
+## T11 offline adapter milestone complete
+
+Production `createNativeAgents` now combines explicit, probed CCS/Claude inputs
+with independent background supervision and a dedicated cmux terminal adapter.
+`probeNativeCapabilities` validates the initial supported CLI versions and required
+flags, pins the canonical native executable, and rechecks installation evidence
+before provider startup. Production construction requires that probe; only
+standalone fixture drivers can inject capabilities directly. Metadata probing does
+not invoke CCS startup, discover provider profiles or inherit credentials.
+
+Interactive planners inherit a real terminal's stdin/stdout/stderr, have no idle
+or ceiling timeout during user/permission waits, and retain one native conversation
+UUID across explicit resumes. Cmux creation and runner-send receipts precede their
+effects; recovery correlates operation, workspace and process birth/command identity.
+Lost responses never create a second workspace. Terminal foreground interruption
+is forwarded to the owned provider group. A paused conversation retains ownership;
+explicit stop joins the group or reports uncertainty. No terminal prose or Stop
+notification produces workflow acceptance.
+
+The `resume_planner` user command persists a versioned intent. Stable internal
+hash-derived IDs make response loss and result-before-intent-settlement recoverable
+without duplicate provider runs or another conversation. Current-generation,
+role, capability, repository and user-authority checks remain service-owned.
+The paired terminal-opening route focuses only the current owned planner and denies
+read-only clients, stale versions, cross-attempt targets, abort and missing ownership.
+
+Independent reviews:
+
+- `/root/domain_review` approved capability/installation binding and four capability
+  tests, then found two P2 resume-ID problems: a maximum-length user ID exceeded the
+  internal result-ID limit, and `initial` collided with a runner marker. Bounded
+  hash-derived adapter/result IDs resolve both. The reviewer independently passed
+  the 128-character regression, durable resume suite and terminal-opening guards,
+  and approved the final integration changes.
+- `/root/scheduler_admission_review` found a P2 resume/close race after an awaited
+  observation. The post-await shutdown guard and real PTY barrier test resolve it.
+  The reviewer passed all four then-current native-terminal cases and approved the
+  fix. A final fifth test validates the narrow cmux transport's fixed command,
+  target validation, quoting and credential-bearing error redaction.
+- The reviewer reproduced an escaped detached descendant outside the provider's
+  group. The declared adapter contract proves **owned process-group termination**,
+  not arbitrary process-tree containment. The production constraint and live
+  acceptance obligation are explicit in the native adapter runbook; neither this
+  adapter nor background supervision claims an OS sandbox or whole-tree proof.
+
+Validation passed: **306 orchestration tests**, **one platform skip**, no failures
+in `/tmp/cmux-orchestration-t11-milestone.log`; then **27 targeted tests** after the
+final resume-ID/route/transport changes in
+`/tmp/cmux-orchestration-t11-final-targeted.log`. Backend checked-JavaScript and
+orchestration lint passed. Native launch, background, capability, real PTY,
+composition, API and domain/application boundaries were exercised. Discovery tests
+confirm the new live suite remains excluded from ordinary runs. The PTY fixture
+initially failed because BSD `script` rejects Node's socket-backed stdin; a fixed
+shell pipe bridge resolves it without adding a package dependency or using cmux.
+
+[`docs/orchestration-native-adapters.md`](orchestration-native-adapters.md) records
+configuration, supported versions, authority, native input lifecycle, limitations,
+and exact opt-in prerequisites. `tests/orchestration-agents.live.mjs` defines an
+explicitly gated real-provider reviewer case in disposable Git; the runbook defines
+operator-observed permission waits, resume, actual denial, group death and cmux
+recovery cases. **No live case was run.** Offline evidence does not establish native
+permission enforcement, terminal continuity in actual cmux or provider quality.
+
+The replacement remains isolated from installed production wiring. T12's mobile
+UI/real-backend Cypress milestone is next; T13 fault-matrix completion and cleanup,
+T14 guarded source cutover/legacy retirement, and T15 final combined verification,
+coverage, documentation and architecture review remain required. The previous full
+`npm run verify`/coverage snapshot remains T10; the M4 full gate follows T12.
+Installed cutover, merge, deployment and release remain unperformed.

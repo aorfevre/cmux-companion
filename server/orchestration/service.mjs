@@ -14,6 +14,7 @@ export class OrchestrationService {
   execute(command, authority) {
     return this.store.apply(command, authority, (goal, input, caller) => {
       if (input.type === 'create_goal') requireValue(this.repositoryIds.has(String(object(input.payload).repositoryId)), 'Repository is not allowed', 'FORBIDDEN');
+      if (input.type === 'resume_planner') requireValue(typeof this.agents.resume === 'function', 'Native resume is unavailable', 'UNSUPPORTED_CAPABILITY');
       if (input.type === 'request_attempt') {
         const payload = object(input.payload);
         requireValue(['planner', 'implementer', 'reviewer', 'integrator'].includes(String(payload.role)), 'Unknown role');

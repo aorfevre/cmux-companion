@@ -270,6 +270,22 @@ export function transition(before, command, authority) {
       const attempt = { id, operationId, role, mode, taskId, target, generation: goal.generation, revision: goal.revision, status: 'queued', workerState: 'pending', identity: null, baseSha: role === 'reviewer' && !target.startsWith('contract:') ? target : goal.integrationHead, worktree: null, branch: null, conversationId, error: null };
       goal.attempts.push(attempt); intent('launch', operationId, id, { role, mode, target, taskId }); emit('attempt_queued', { attemptId: id, role }); break;
     }
+    case 'resume_planner': {
+      requireAuthority(authority, 'user');
+      const attempt = attemptById(goal, input.attemptId);
+      requireValue(attempt.role === 'planner' && attempt.mode === 'interactive' && attempt.status === 'running' && attempt.workerState === 'running' && attempt.identity
+        && ['discovering', 'awaiting_approval'].includes(goal.status), 'No current owned planner conversation', 'NOT_READY');
+      intent('resume', command.id, attempt.id, { identity: attempt.identity });
+      emit('planner_resume_requested', { attemptId: attempt.id }); break;
+    }
+    case 'record_resume': {
+      requireAuthority(authority, 'system');
+      const attempt = attemptById(goal, input.attemptId);
+      requireValue(attempt.role === 'planner' && attempt.status === 'running', 'Planner resume target changed', 'STALE_ATTEMPT');
+      attempt.error = input.code === null ? null : text(input.code, 100);
+      attempt.lastResume = { id: identifier(input.resumeId), code: attempt.error };
+      emit(input.code === null ? 'planner_resumed' : 'planner_resume_failed', { attemptId: attempt.id, code: attempt.error }); break;
+    }
     case 'record_provision': {
       requireAuthority(authority, 'system'); const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
       requireValue(attempt && attempt.status === 'queued' && ['pending', 'unknown'].includes(attempt.workerState) && input.baseSha === attempt.baseSha, 'Provisioning target changed', 'STALE_ATTEMPT');

@@ -51,6 +51,18 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     const goal = service.store.get(id); requireValue(goal, 'Goal not found', 'NOT_FOUND');
     return { ...goalView(goal), contracts: goal.contracts };
   });
+  app.post(`${PREFIX}/goals/:id/terminal`, async (request) => {
+    requireValue(!readOnly, 'This client interface is read-only', 'FORBIDDEN');
+    const goal = service.store.get(/** @type {{id:string}} */ (request.params).id);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Goal is unavailable', 'NOT_FOUND');
+    const input = object(request.body);
+    requireValue(Object.keys(input).length === 2 && Number.isSafeInteger(input.expectedVersion) && input.expectedVersion === goal.version, 'Goal version changed', 'VERSION_CONFLICT');
+    const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
+    requireValue(['discovering', 'awaiting_approval'].includes(goal.status) && attempt && attempt.status === 'running' && attempt.role === 'planner' && attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.workerState === 'running', 'Owned planner terminal is unavailable', 'NOT_READY');
+    requireValue(service.ownership && service.agents.open, 'Native terminal is unavailable', 'UNSUPPORTED_CAPABILITY');
+    service.ownership.assertOwned(); await service.agents.open(attempt.operationId);
+    return { opened: true };
+  });
   app.get(`${PREFIX}/events`, async (request) => {
     const query = /** @type {{ since?: string; limit?: string }} */ (request.query);
     return { events: service.store.events({ since: Number(query.since ?? 0), limit: Number(query.limit ?? 100) }).map(eventView), journalId: service.store.journalId };

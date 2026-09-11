@@ -27,6 +27,7 @@ export interface Attempt {
   target: string; generation: number; revision: number; status: AttemptStatus;
   workerState: 'pending' | 'unknown' | 'running' | 'stopped'; identity: string | null; baseSha: string; worktree: string | null; branch: string | null;
   conversationId: string; error: string | null; retryRequested?: boolean;
+  lastResume?: {id:string;code:string|null};
 }
 export interface Task extends TaskContract {
   status: TaskStatus; candidateSha: string | null; candidateBase: string | null;
@@ -61,19 +62,21 @@ export type Authority = { kind: 'user' } | { kind: 'system' } | {
 };
 export interface DomainEvent { kind: string; payload: Json }
 export interface Intent {
-  id: string; kind: 'launch' | 'terminate' | 'integrate' | 'integrate_repair' | 'verify' | 'publish'; goalId: string;
+  id: string; kind: 'launch' | 'resume' | 'terminate' | 'integrate' | 'integrate_repair' | 'verify' | 'publish'; goalId: string;
   generation: number; revision: number; attemptId: string | null; payload: Json;
 }
 export interface Transition { goal: Goal; events: DomainEvent[]; intents: Intent[] }
 export interface Command {
   id: string; goalId: string; expectedVersion: number; type: string; payload: unknown;
 }
-export interface LaunchRequest { operationId: string; goalId: string; attempt: Attempt }
+export interface LaunchRequest { resumeId?: string; operationId: string; goalId: string; attempt: Attempt }
 export interface AgentPort {
   capabilities: { role: Role; mode: Mode }[];
   launch(request: LaunchRequest): Promise<{ identity: string }>;
   observe(operationId: string): Promise<{ status: 'running' | 'stopped' | 'unknown'; identity: string | null }>;
   terminate(identity: string): Promise<void>;
+  resume?(request: LaunchRequest): Promise<{identity:string}>;
+  open?(operationId: string): Promise<void>;
 }
 
 export interface BackgroundPolicy { ceilingMs: number; idleMs: number; maxOutputBytes: number; killGraceMs: number }

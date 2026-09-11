@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DomainError, requireValue } from '../domain/contracts.mjs';
 import { startBackgroundProcess, backgroundPolicy } from './agent-runtime.mjs';
+import { assertNativeInstallation } from './native-capabilities.mjs';
 import { awaitNativeActivation } from './native-activation.mjs';
 import { nativeProcessStamp } from './native-process.mjs';
 
@@ -31,6 +32,10 @@ export async function runNativeWorker(configPath) {
   try {
     save('identity.json', { identity: config.identity, pid: process.pid, stamp: await nativeProcessStamp(process.pid, directory) });
     if (config.activation) await awaitNativeActivation(config.activation, controller.signal);
+    if (config.installation) {
+      assertNativeInstallation(config.installation);
+      requireValue(config.command.bin === config.installation.bin && config.command.env.CCS_CLAUDE_PATH === config.installation.nativeBin, 'Native executable binding changed', 'UNSUPPORTED_CAPABILITY');
+    }
     if (controller.signal.aborted) {
       save('outcome.json', { identity: config.identity, outcome: { status: 'failed', workerState: 'stopped', cause: { code: 'ABORTED', exitCode: null, signal: null }, stdout: '', stderr: '' } }); return;
     }

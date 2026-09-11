@@ -26,6 +26,7 @@ export class NativeBackground {
   /** @param {{ directory: string; bin: string; inputs: import('./native-inputs.mjs').NativeInputs; policy: import('../types.d.ts').BackgroundPolicy; onResult: (request: import('../types.d.ts').LaunchRequest, raw: string) => void | Promise<void>; onError?: (code: string) => void; failpoint?: (point: string) => void }} options */
   constructor({ directory, bin, inputs, policy, onResult, onError = () => {}, failpoint = () => {} }) {
     requireValue(isAbsolute(bin) && !bin.includes('\0'), 'Native executable must be explicit and absolute');
+    requireValue(!inputs.installation || inputs.installation.bin === bin, 'Native wrapper does not match the probed installation', 'UNSUPPORTED_CAPABILITY');
     this.bin = bin; this.inputs = inputs; this.policy = backgroundPolicy(policy); requireValue(this.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Native output budget exceeds transport limit'); this.onResult = onResult; this.onError = onError; this.failpoint = failpoint;
     for (const role of /** @type {const} */ (['implementer', 'reviewer', 'integrator'])) requireNativeCapabilities(inputs.capabilities, role, 'background');
     this.capabilities = /** @type {import('../types.d.ts').AgentPort['capabilities']} */ (['implementer', 'reviewer', 'integrator'].map((role) => ({ role, mode: 'background' })));
@@ -94,7 +95,8 @@ export class NativeBackground {
       writeFileSync(join(directory, 'sent.json'), JSON.stringify({ identity }), { mode: 0o600, flag: 'wx' }); sent = true;
       this.failpoint('sent');
       const workerPath = join(directory, 'worker.json');
-      writeFileSync(workerPath, JSON.stringify({ identity, startedAt: Date.now(), command: { bin: this.bin, argv: command.argv, cwd: request.attempt.worktree, env: command.env }, policy: this.policy, activation: command.activation }), { mode: 0o600, flag: 'wx' });
+      writeFileSync(workerPath, JSON.stringify({ identity, startedAt: Date.now(), command: { bin: this.bin, argv: command.argv, cwd: request.attempt.worktree, env: command.env }, policy: this.policy, activation: command.activation, installation: this.inputs.installation?.identity }), { mode: 0o600, flag: 'wx' });
+      this.inputs.installation?.assertCurrent();
       const child = spawn(process.execPath, [WORKER, workerPath], { detached: true, stdio: 'ignore', env: { PATH: process.env.PATH } });
       await once(child, 'spawn'); child.unref();
       const identityPath = join(directory, 'identity.json'), deadline = Date.now() + 10000;

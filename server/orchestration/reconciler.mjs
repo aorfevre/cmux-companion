@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { ownsWorker } from './domain/transitions.mjs';
 import { requireValue } from './domain/contracts.mjs';
 
@@ -54,6 +54,27 @@ export class Reconciler {
       const operation = operations.find((entry) => entry.id === attempt.operationId);
       if (operation?.status === 'pending') continue; // No launch was sent; dispatcher handles cancellation safely.
       await this.observe(goal.id, attempt.id);
+    }
+    for (const operation of this.store.operations().filter((entry) => entry.kind === 'resume')) {
+      this.ownership.assertOwned();
+      let goal = this.store.get(operation.goalId), attempt = goal?.attempts.find((entry) => entry.id === operation.attemptId);
+      const current = () => goal && attempt && goal.generation === operation.generation && goal.revision === operation.revision
+        && goal.status !== 'aborted' && attempt.status === 'running' && attempt.workerState === 'running' && this.service.repositoryIds.has(goal.repositoryId);
+      if (!current() || attempt?.lastResume?.id === operation.id) { this.store.advanceOperation(operation.id, operation.status, 'completed'); continue; }
+      this.store.advanceOperation(operation.id, 'pending', 'dispatching');
+      let code = null;
+      try {
+        requireValue(this.agents.resume && attempt, 'Native resume is unavailable', 'UNSUPPORTED_CAPABILITY');
+        await this.agents.resume({ goalId: operation.goalId, operationId: attempt.operationId, attempt, resumeId: `resume_${createHash('sha256').update(operation.id).digest('hex')}` });
+      } catch (error) { code = error instanceof Error && 'code' in error ? String(error.code) : 'RESUME_FAILED'; }
+      this.ownership.assertOwned();
+      if (code && !['ALREADY_RUNNING', 'NOT_READY', 'FORBIDDEN', 'STALE_ATTEMPT', 'UNSUPPORTED_CAPABILITY'].includes(code)) continue; // Replay the same durable adapter command after ambiguous response loss.
+      goal = this.store.get(operation.goalId); attempt = goal?.attempts.find((entry) => entry.id === operation.attemptId);
+      if (current()) {
+        requireValue(goal, 'Resume goal disappeared');
+        this.service.execute({ id: `resume_result_${createHash('sha256').update(operation.id).digest('hex')}`, goalId: goal.id, expectedVersion: goal.version, type: 'record_resume', payload: { attemptId: operation.attemptId, resumeId: operation.id, code } }, { kind: 'system' });
+      }
+      this.store.advanceOperation(operation.id, 'dispatching', 'completed');
     }
     for (const operation of this.store.operations().filter((entry) => entry.kind === 'terminate')) {
       this.ownership.assertOwned();

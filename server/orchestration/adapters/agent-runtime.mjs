@@ -155,6 +155,11 @@ export class AgentRuntime {
     if (!mode) return { status: /** @type {const} */ ('unknown'), identity: null };
     return this[mode].observe(operationId);
   }
+  /** @param {string} operationId */
+  async open(operationId) {
+    requireValue(this.locate({ operationId }) === 'interactive' && this.interactive.open, 'Owned native terminal is unavailable', 'UNSUPPORTED_CAPABILITY');
+    await this.interactive.open(operationId);
+  }
   /** @param {string} identity */
   async terminate(identity) {
     const mode = this.locate({ identity });
