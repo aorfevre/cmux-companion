@@ -8,13 +8,19 @@ export class FakeAgents {
     this.loseResponse = false; this.observationUnknown = false; this.ignoreTermination = false;
     this.onLaunch = async () => {};
   }
-  async launch(request) {
+  beginLaunch(request) {
     this.launches.push(structuredClone(request));
     const identity = `worker_${request.operationId}`;
     this.workers.set(request.operationId, { identity, status: 'running' });
-    await this.onLaunch(request);
-    if (this.loseResponse) throw new Error('lost launch response');
     return { identity };
+  }
+  async afterLaunch() {}
+  async launch(request) {
+    const launched = this.beginLaunch(request);
+    await this.onLaunch(request);
+    await this.afterLaunch(request);
+    if (this.loseResponse) throw new Error('lost launch response');
+    return launched;
   }
   async observe(operationId) {
     if (this.observationUnknown) return { status: 'unknown', identity: null };
@@ -40,20 +46,34 @@ export function barrier() {
 export class ScriptedAgents extends FakeAgents {
   constructor({ script, onResult = async () => {} }) {
     super(); this.script = script; this.onResult = onResult;
-    this.jobs = new Map(); this.results = []; this.errors = [];
+    this.jobs = new Map(); this.controllers = new Map(); this.results = []; this.errors = [];
   }
-  async launch(request) {
-    const launched = await super.launch(request);
+  beginLaunch(request) {
+    this.controllers.set(request.operationId, new AbortController());
+    return super.beginLaunch(request);
+  }
+  async terminate(identity) {
+    this.terminations.push(identity);
+    if (this.ignoreTermination) return;
+    for (const [operationId, worker] of this.workers) {
+      if (worker.identity === identity) this.controllers.get(operationId)?.abort();
+    }
+    // Cancellation requests do not prove termination. Only the job's finally
+    // block marks it stopped, including scripts that ignore their signal.
+  }
+  async afterLaunch(request) {
+    const signal = this.controllers.get(request.operationId).signal;
     const job = Promise.resolve().then(async () => {
       try {
-        const result = await this.script(structuredClone(request));
+        signal.throwIfAborted();
+        const result = await this.script(structuredClone(request), { signal });
+        signal.throwIfAborted();
         this.results.push({ operationId: request.operationId, result: structuredClone(result) });
         await this.onResult(request, result);
-      } catch (error) { this.errors.push({ operationId: request.operationId, error }); }
+      } catch (error) { if (!signal.aborted || error !== signal.reason) this.errors.push({ operationId: request.operationId, error }); }
       finally { this.stop(request.operationId); }
     });
     this.jobs.set(request.operationId, job);
-    return launched;
   }
   async drain() { await Promise.all([...this.jobs.values()]); }
 }

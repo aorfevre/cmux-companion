@@ -540,3 +540,34 @@ Final isolated backend coverage passed: 1,416 tests, one platform skip, **98.24%
 line coverage**. Log:
 `/tmp/cmux-orchestration-verification-coverage-final.log`.
 No UI code changed in this slice; real-backend Cypress remains unimplemented.
+
+## T05 scripted cancellation correction
+
+The scripted-agent fixture now owns an AbortController per launch. Termination
+requests signal cancellation without marking the script stopped. Script execution
+and in-flight result delivery must finish before observation reports stopped;
+aborted output that has not been submitted is suppressed. A lost launch response
+no longer prevents the already-recorded worker's script from starting.
+
+Barrier tests exercise a script that ignores cancellation, cancellation before
+script startup, in-flight result delivery, ignored termination and lost response.
+A real service/scheduler abort test verifies capacity remains owned while the
+aborted script still runs, then releases after exit with no late result or new
+launch. Its initial fixture omitted provisioning baseSha, so the script never
+launched; the corrected fixture returns the full recorded identity and explicitly
+asserts launch before waiting on its barrier.
+
+Independent reviewer `/root/domain_review` approved the fixture correction and
+the incremental scheduler regression, independently passing all four parallel
+tests. Dependent delivery, inbox, reconciliation and parallel checks passed 29/29
+before the fourth test; scheduler/planning/parallel checks then passed 37/37.
+Targeted ESLint passed. Logs: `/tmp/cmux-orchestration-script-cancellation.log`
+and `/tmp/cmux-orchestration-script-lifecycle.log`.
+
+This corrects test-harness ownership; it does not establish production provider
+termination or close the remaining full service-process fault matrix. No production
+code or UI changed in this correction. Full verify and 98.24% backend coverage
+above apply to `f4a9cdd`; this follow-up runs the affected fixture consumers.
+
+The remaining fixture consumers (candidate-result and runtime suites) passed
+24/24. Log: `/tmp/cmux-orchestration-script-dependents.log`.
