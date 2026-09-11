@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { apiFixture, TOKEN, HEADERS, create } from './helpers/orchestration/api-fixture.mjs';
+const url = '/api/orchestration/commands';
+
+test('user mutations require pairing and same origin; agent/system authorities cannot be supplied in the body', async (t) => {
+  const { app, store } = await apiFixture(t);
+  assert.equal((await app.inject({ method: 'POST', url, payload: create })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url, headers: { ...HEADERS, origin: 'https://attacker.test' }, payload: create })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'POST', url, headers: HEADERS, payload: { ...create, authority: { kind: 'system' } } })).statusCode, 400);
+  const created = await app.inject({ method: 'POST', url, headers: HEADERS, payload: create }); assert.equal(created.statusCode, 200);
+  assert.equal(created.json().goal.status, 'discovering'); assert.ok(!created.body.includes('private-context'));
+  assert.equal((await app.inject({ method: 'POST', url, headers: HEADERS, payload: { id: 'dispatch', goalId: 'goal', expectedVersion: 1, type: 'request_attempt', payload: {} } })).statusCode, 403);
+  assert.equal(store.get('goal').version, 1);
+});
+
+test('pairing sets a private cookie and invalid pairing is rate limited', async (t) => {
+  const { app } = await apiFixture(t);
+  const pair = await app.inject({ method: 'POST', url: '/api/orchestration/pair', headers: { host: 'localhost', origin: 'http://localhost' }, payload: { token: TOKEN } });
+  assert.equal(pair.statusCode, 200); assert.match(pair.headers['set-cookie'], /HttpOnly; SameSite=Strict/);
+  const cookie = pair.headers['set-cookie'].split(';')[0];
+  assert.equal((await app.inject({ url: '/api/orchestration/snapshot', headers: { cookie } })).statusCode, 200);
+  for (let i = 0; i < 10; i++) assert.equal((await app.inject({ method: 'POST', url: '/api/orchestration/pair', payload: { token: 'wrong' } })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/orchestration/pair', payload: { token: 'wrong' } })).statusCode, 429);
+});
+
+test('repository allow-list and expected versions are enforced at the service boundary', async (t) => {
+  const { app, service } = await apiFixture(t);
+  const disallowed = { ...create, payload: { ...create.payload, repositoryId: 'not_allowed' } };
+  assert.throws(() => service.execute(disallowed, { kind: 'user' }), { code: 'FORBIDDEN' });
+  await app.inject({ method: 'POST', url, headers: HEADERS, payload: create });
+  const stale = await app.inject({ method: 'POST', url, headers: HEADERS, payload: { id: 'abort', goalId: 'goal', expectedVersion: 0, type: 'abort', payload: {} } });
+  assert.equal(stale.statusCode, 409); assert.equal(stale.json().code, 'VERSION_CONFLICT');
+});
+
+test('snapshots and events require auth and omit provider identities; unknown goals are explicit', async (t) => {
+  const { app, planner } = await apiFixture(t); planner();
+  assert.equal((await app.inject({ url: '/api/orchestration/events' })).statusCode, 401);
+  const snapshot = await app.inject({ url: '/api/orchestration/snapshot', headers: HEADERS });
+  assert.equal(snapshot.json().cursor, 3); assert.ok(!snapshot.body.includes('private-context'));
+  const events = await app.inject({ url: '/api/orchestration/events?since=1&limit=1', headers: HEADERS });
+  assert.equal(events.json().events.length, 1);
+  assert.equal((await app.inject({ url: '/api/orchestration/goals/missing', headers: HEADERS })).statusCode, 404);
+  assert.equal((await app.inject({ url: '/api/orchestration/goals/goal', headers: HEADERS })).statusCode, 200);
+});
+
+test('agent credentials cannot approve, address another goal or call the user API', async (t) => {
+  const { app, planner, store } = await apiFixture(t); const secret = planner();
+  const headers = { authorization: `Bearer ${secret}` };
+  const command = { id: 'approve', goalId: 'goal', expectedVersion: 3, type: 'approve', payload: { revision: 1 } };
+  assert.equal((await app.inject({ method: 'POST', url: '/api/orchestration/agent/commands', headers, payload: command })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: command })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/orchestration/agent/commands', headers, payload: { ...command, goalId: 'other', type: 'publish_contract' } })).statusCode, 403);
+  assert.equal((await app.inject({ url: '/api/orchestration/agent/status', headers })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/api/orchestration/agent/status', headers: HEADERS })).statusCode, 401);
+  assert.equal(store.get('goal').version, 3);
+});
+
+test('credentials are hashed and explicit revocation or abort disables requests', async (t) => {
+  const { app, planner, bridgeAuth, store, service } = await apiFixture(t); const secret = planner();
+  const stored = store.db.prepare('SELECT * FROM agent_credentials').all(); assert.ok(!JSON.stringify(stored).includes(secret));
+  bridgeAuth.revoke('goal', 'planner');
+  assert.equal((await app.inject({ url: '/api/orchestration/agent/status', headers: { authorization: `Bearer ${secret}` } })).statusCode, 401);
+  const next = bridgeAuth.issue('goal', 'planner'); service.execute({ id: 'abort', goalId: 'goal', expectedVersion: 3, type: 'abort', payload: {} }, { kind: 'user' });
+  const rejected = await app.inject({ url: '/api/orchestration/agent/status', headers: { authorization: `Bearer ${next}` } });
+  assert.equal(rejected.statusCode, 403); assert.ok(!rejected.body.includes(next));
+});
+
+test('encoded matched routes cannot bypass pairing or same-origin checks', async (t) => {
+  const { app, store } = await apiFixture(t);
+  for (const prefix of ['/api/%6frchestration', '/%61pi/orchestration', '/api/orchestrat%69on']) {
+    assert.equal((await app.inject({ url: `${prefix}/snapshot` })).statusCode, 401);
+    assert.equal((await app.inject({ method: 'POST', url: `${prefix}/commands`, payload: create })).statusCode, 401);
+    assert.equal((await app.inject({ method: 'POST', url: `${prefix}/commands`, headers: { ...HEADERS, origin: 'https://attacker.test' }, payload: create })).statusCode, 403);
+  }
+  assert.equal(store.get('goal'), null);
+});

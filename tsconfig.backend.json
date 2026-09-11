@@ -7,6 +7,8 @@
   "include": [
     "server/planner-runs.mjs",
     "server/goal-run-types.d.ts",
-    "server/task-launch-result.mjs"
+    "server/task-launch-result.mjs",
+    "server/orchestration/**/*.mjs",
+    "server/orchestration/types.d.ts"
   ]
 }

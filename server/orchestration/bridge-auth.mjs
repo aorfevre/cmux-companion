@@ -1,0 +1,44 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { requireValue } from './domain/contracts.mjs';
+import { validateAuthority } from './domain/transitions.mjs';
+
+/** Credentials live only in server storage; bridge clients get one scoped secret.
+ * Database access here is internal credential management, never agent-side access.
+ */
+export class BridgeAuthority {
+  /** @param {import('./storage/store.mjs').OrchestrationStore} store */
+  constructor(store) {
+    this.store = store;
+    store.db.exec(`CREATE TABLE IF NOT EXISTS agent_credentials (
+      digest TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES goals(id),
+      attempt_id TEXT NOT NULL, authority TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
+    )`);
+  }
+  /** @param {string} goalId @param {string} attemptId */
+  issue(goalId, attemptId) {
+    const goal = this.store.get(goalId);
+    const attempt = goal?.attempts.find((entry) => entry.id === attemptId);
+    requireValue(goal && attempt && attempt.status === 'running', 'No active attempt for credential');
+    /** @type {import('./types.d.ts').Authority} */
+    const authority = { kind: 'agent', goalId, generation: goal.generation, revision: goal.revision, attemptId, role: attempt.role };
+    validateAuthority(goal, authority);
+    const secret = randomBytes(32).toString('base64url');
+    this.store.db.prepare('INSERT INTO agent_credentials(digest,goal_id,attempt_id,authority) VALUES (?,?,?,?)')
+      .run(this.digest(secret), goalId, attemptId, JSON.stringify(authority));
+    return secret;
+  }
+  /** @param {string} secret */
+  digest(secret) { return createHash('sha256').update(secret).digest('hex'); }
+  /** @param {string} secret @returns {Extract<import('./types.d.ts').Authority, {kind: 'agent'}>} */
+  authenticate(secret) {
+    requireValue(typeof secret === 'string' && secret.length >= 32 && secret.length <= 128, 'Invalid agent credential', 'UNAUTHORIZED');
+    const row = this.store.db.prepare('SELECT authority FROM agent_credentials WHERE digest = ? AND revoked = 0').get(this.digest(secret));
+    requireValue(row, 'Invalid agent credential', 'UNAUTHORIZED');
+    const authority = /** @type {Extract<import('./types.d.ts').Authority, {kind: 'agent'}>} */ (JSON.parse(String(row.authority)));
+    const goal = this.store.get(authority.goalId);
+    requireValue(goal, 'Agent goal is unavailable', 'UNAUTHORIZED');
+    validateAuthority(goal, authority, true); return authority;
+  }
+  /** @param {string} goalId @param {string} attemptId */
+  revoke(goalId, attemptId) { this.store.db.prepare('UPDATE agent_credentials SET revoked = 1 WHERE goal_id = ? AND attempt_id = ?').run(goalId, attemptId); }
+}
