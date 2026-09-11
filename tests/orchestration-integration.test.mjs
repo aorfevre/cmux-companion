@@ -114,6 +114,7 @@ for (const boundary of ['goal_reserved', 'proposal_recorded', 'proposed', 'advan
   assert.equal(exit.signal, 'SIGKILL', stderr);
   for (let restart = 0; restart < 2; restart++) {
     const result = await new GitIntegration({ repositories: f.repositories }).integrate(input);
+    t.diagnostic(JSON.stringify({ caseId: t.name, failpoint: boundary, seed: 0, observed: { status: result.status, integrationCommits: conflict ? 0 : Number(await fixtureGit(f.repo.repository, ['rev-list', '--count', `${f.repo.baseSha}..${result.headSha}`])) }, expected: 'One integration delta or retained conflict without head advance' }));
     assert.equal(result.status, conflict ? 'conflict' : 'integrated');
     if (!conflict) assert.equal(await fixtureGit(f.repo.repository, ['rev-list', '--count', `${f.repo.baseSha}..${result.headSha}`]), '1');
     else assert.match(readFileSync(join(result.worktree, 'src/composition.mjs'), 'utf8'), /<<<<<<<|>>>>>>>/);
@@ -193,6 +194,7 @@ for (const final of [false, true]) for (const boundary of [...(final ? ['final_r
   assert.equal(exit.signal, 'SIGKILL', stderr);
   for (let restart = 0; restart < 2; restart++) {
     const result = await new GitIntegration({ repositories: f.repositories }).acceptRepair(f.repair);
+    t.diagnostic(JSON.stringify({ caseId: t.name, failpoint: boundary, seed: 0, observed: { repairCommits: Number(await fixtureGit(f.repo.repository, ['rev-list', '--count', `${f.repair.attempt.baseSha}..${result.headSha}`])), headSha: result.headSha }, expected: 'One repair delta with stable operation identity' }));
     assert.equal(await fixtureGit(f.repo.repository, ['rev-list', '--count', `${f.repair.attempt.baseSha}..${result.headSha}`]), '1');
     assert.deepEqual(await f.adapter.observeRepair(f.repair), result);
   }

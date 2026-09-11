@@ -1024,3 +1024,39 @@ recorder cleanup, startup cancellation, and UI feedback/selection races; fixes
 and regressions address them. Reviewer fault injection independently confirmed
 cleanup after evidence-write failure. Native permissions/cmux/live GitHub remain
 unverified; final coverage, T13–T15 and installed cutover remain separate gates.
+
+### T13 — Durable fault matrix and conservative cleanup
+
+Added actual SIGKILL/restart cases for six SQLite transaction boundaries, all four
+agent roles at intent/dispatch/identity settlement, all four role-result inboxes,
+seven push/PR boundaries (including successful external effects before response),
+abort/termination, consumer delivery and cleanup. Persistent fake external
+inventories count actual launches/PR creation separately from workflow intent.
+Integrator intake remains a prepared repair until the separately tested real-Git
+integration protocol accepts it. Sent-but-unobservable publication stays unknown.
+
+`node scripts/run-orchestration-faults.mjs` passed **93/93** local cases and wrote
+`coverage/orchestration-faults.json` with fixed fixture seed, case status, failpoint
+observations and expected invariants. Fifty-seven process-boundary cases carry
+structured observed counts/state; the remaining cases are refusal/adapter
+regressions with executable assertions. Real-Git integration/repair crash suites
+are included, rather than replaced with thrown mock errors.
+
+Added authenticated cleanup preview/execution and separate durable cleanup receipts.
+Only terminated attempts on delivered/aborted goals without pending effects qualify.
+Cleanups retain branches/refs/manifests/artifacts and never replay workflow effects.
+Ignored files, hidden index flags, dirty/untracked data, changed heads/registration,
+recreated paths and uncertain workers are refused. Actual crash recovery finishes
+only the recorded worktree and its registration. Native sessions and retained
+recovery evidence are not automatically collected.
+
+Passed: 14 cleanup tests, 12 four-role dispatch recovery cases, 17 transaction/
+publication/abort/consumer cases, 19 result-inbox tests, API/composition 19 tests,
+checked JS/TypeScript and lint. Independent cleanup review approved after fixing
+reproduced ignored-file and assume-unchanged data-loss risks, head revalidation,
+and absent-directory registration replay; both flag-retention cases passed
+independently. Fixture errors (canonical temporary remote path, integrator branch
+provisioning and isolated candidate-proof fields) were investigated and corrected.
+Logs: `/tmp/cmux-t13-matrix-final.log`, `/tmp/cmux-t13-{cleanup,role-recovery,faults,result-matrix,api,types,lint}.log`.
+Runbook: `docs/orchestration-recovery.md`. T14 source retirement and T15 final
+whole-project checks remain; no installed resources or live adapters exercised.

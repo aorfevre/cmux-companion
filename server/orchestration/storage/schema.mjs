@@ -9,6 +9,11 @@ export function initializeSchema(db) {
       repository_id TEXT NOT NULL, status TEXT NOT NULL, state TEXT NOT NULL CHECK(json_valid(state)),
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS resource_cleanup (
+      goal_id TEXT NOT NULL REFERENCES goals(id), attempt_id TEXT NOT NULL,
+      head_sha TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','failed','completed')),
+      error TEXT, PRIMARY KEY(goal_id,attempt_id)
+    );
     CREATE TABLE IF NOT EXISTS contracts (
       goal_id TEXT NOT NULL REFERENCES goals(id), revision INTEGER NOT NULL,
       body TEXT NOT NULL CHECK(json_valid(body)), PRIMARY KEY(goal_id, revision)

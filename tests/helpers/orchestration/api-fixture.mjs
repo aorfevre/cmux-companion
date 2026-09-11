@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 export const TOKEN = 'disposable-test-pairing-token-at-least-32-characters';
 export const HEADERS = { host: 'localhost', origin: 'http://localhost', authorization: `Bearer ${TOKEN}` };
 export const create = { id: 'create', goalId: 'goal', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'Goal', baseSha: BASE } };
-export async function apiFixture(t, { resultIntake = false, readOnly = false, configuration, reconcile } = {}) {
+export async function apiFixture(t, { resultIntake = false, readOnly = false, configuration, reconcile, cleanup } = {}) {
   const store = new OrchestrationStore({ path: ':memory:' });
   const service = new OrchestrationService({ store, repositoryIds: new Set(['repo']), agents: { capabilities: [{ role: 'planner', mode: 'interactive' }, { role: 'reviewer', mode: 'background' }] } });
   const bridgeAuth = new BridgeAuthority(store);
@@ -20,7 +20,7 @@ export async function apiFixture(t, { resultIntake = false, readOnly = false, co
   const directory = resultIntake ? mkdtempSync(join(tmpdir(), 'orchestration-api-results-')) : null;
   const artifacts = directory ? new ArtifactStore({ directory }) : null;
   const results = artifacts ? new AgentResults({ service, artifacts }) : undefined;
-  registerOrchestrationRoutes(app, { service, token: TOKEN, bridgeAuth, results, readOnly, configuration, reconcile });
+  registerOrchestrationRoutes(app, { service, token: TOKEN, bridgeAuth, results, readOnly, configuration, reconcile, cleanup });
   t.after(async () => { await app.close(); store.close(); if (directory) rmSync(directory, { recursive: true, force: true }); });
   await app.ready();
   const planner = () => {

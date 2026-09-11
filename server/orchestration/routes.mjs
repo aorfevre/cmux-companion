@@ -1,14 +1,14 @@
 import { isAuthorized, isSafeOrigin, safeEqual, sessionCookie } from '../security.mjs';
-import { DomainError, object, requireValue } from './domain/contracts.mjs';
+import { DomainError, identifier, integer, object, requireValue } from './domain/contracts.mjs';
 import { parseCommand, USER_COMMANDS, AGENT_COMMANDS } from './domain/commands.mjs';
 import { eventView } from './domain/event-view.mjs';
 import { goalView } from './domain/state-view.mjs';
 
 const PREFIX = '/api/orchestration';
 /** @param {import('fastify').FastifyInstance} app
- * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void> }} options
+ * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup }} options
  */
-export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly = false, configuration, reconcile }) {
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly = false, configuration, reconcile, cleanup }) {
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
@@ -49,6 +49,15 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     const goal = service.store.get(/** @type {{id:string}} */ (request.params).id), input = object(request.body);
     requireValue(goal && input.expectedVersion === goal.version, 'Goal version changed', 'VERSION_CONFLICT');
     await reconcile(); return { reconciled: true };
+  });
+  app.get(`${PREFIX}/goals/:id/cleanup`, async request => {
+    requireValue(cleanup, 'Cleanup is unavailable', 'NOT_READY');
+    return cleanup.preview(/** @type {{id:string}} */ (request.params).id);
+  });
+  app.post(`${PREFIX}/goals/:id/cleanup`, async request => {
+    requireValue(!readOnly && cleanup, 'Cleanup is unavailable', 'FORBIDDEN');
+    const input = object(request.body);
+    return cleanup.execute({ goalId: /** @type {{id:string}} */ (request.params).id, expectedVersion: integer(input.expectedVersion), attemptId: identifier(input.attemptId) });
   });
   app.get(`${PREFIX}/snapshot`, async () => {
     const snapshot = service.store.snapshot(); return { goals: snapshot.goals.map(goalView), cursor: snapshot.cursor, journalId: service.store.journalId, readOnly };

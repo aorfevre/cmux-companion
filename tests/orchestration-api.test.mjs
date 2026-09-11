@@ -75,3 +75,20 @@ test('encoded matched routes cannot bypass pairing or same-origin checks', async
   }
   assert.equal(store.get('goal'), null);
 });
+
+test('cleanup preview is authenticated; cleanup execution preserves same-origin and readonly boundaries', async t => {
+  let writes = 0;
+  const cleanup = { preview: async goalId => ({ goalId, candidates: [] }), execute: async input => { writes++; return input; } };
+  const { app } = await apiFixture(t, { cleanup });
+  const path = '/api/orchestration/goals/goal/cleanup';
+  assert.equal((await app.inject({ url: path })).statusCode, 401);
+  assert.equal((await app.inject({ url: path, headers: HEADERS })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'POST', url: path, headers: { ...HEADERS, origin: 'https://attacker.test' }, payload: {} })).statusCode, 403);
+  assert.equal(writes, 0);
+  const result = await app.inject({ method: 'POST', url: path, headers: HEADERS, payload: { expectedVersion: 2, attemptId: 'a' } });
+  assert.deepEqual(result.json(), { goalId: 'goal', expectedVersion: 2, attemptId: 'a' }); assert.equal(writes, 1);
+  const readonly = await apiFixture(t, { cleanup, readOnly: true });
+  assert.equal((await readonly.app.inject({ url: path, headers: HEADERS })).statusCode, 200);
+  assert.equal((await readonly.app.inject({ method: 'POST', url: path, headers: HEADERS, payload: { expectedVersion: 2, attemptId: 'a' } })).statusCode, 403);
+  assert.equal(writes, 1);
+});

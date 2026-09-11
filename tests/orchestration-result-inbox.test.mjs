@@ -129,7 +129,7 @@ test('scheduler consumes scripted planner/reviewer results before observing exit
   assert.equal(agents.launches.length, 2); assert.equal(store.get('g').approvedRevision, null);
 });
 
-for (const role of ['planner', 'reviewer']) for (const boundary of ['received', 'before_accept_commit', 'accepted']) {
+for (const role of ['planner', 'reviewer', 'implementer', 'integrator']) for (const boundary of ['received', 'before_accept_commit', 'accepted']) {
   test(`${role} result survives process death at ${boundary} without duplicate acceptance`, async (t) => {
     const directory = mkdtempSync(join(tmpdir(), 'orchestration-result-crash-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -140,7 +140,8 @@ for (const role of ['planner', 'reviewer']) for (const boundary of ['received', 
     for (let restart = 0; restart < 2; restart++) {
       const recovered = run('none');
       assert.equal(recovered.error, undefined); assert.equal(recovered.status, 0, recovered.stderr);
-      assert.deepEqual(JSON.parse(recovered.stdout), { disposition: 'accepted', reviews: role === 'reviewer' ? 1 : 0, contracts: 1, received: 1, accepted: 1 });
+      t.diagnostic(JSON.stringify({ caseId: t.name, failpoint: boundary, seed: 0, observed: JSON.parse(recovered.stdout), expected: role === 'integrator' ? 'One durable receipt and one prepared repair; acceptance awaits Git integration' : 'One durable receipt and one acceptance at the exact role target' }));
+      assert.deepEqual(JSON.parse(recovered.stdout), { disposition: role === 'integrator' ? 'pending' : 'accepted', reviews: role === 'integrator' ? 2 : role === 'planner' ? 0 : 1, contracts: 1, repairPrepared: role === 'integrator', received: 1, accepted: role === 'integrator' ? 0 : 1 });
     }
   });
 }

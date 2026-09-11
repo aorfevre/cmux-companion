@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import { ResourceCleanup } from './cleanup.mjs';
 import { nativeBinding } from './adapters/native-background.mjs';
 import { rolePrompt } from './adapters/role-prompts.mjs';
 import { OrchestrationStore } from './storage/store.mjs';
@@ -56,8 +57,9 @@ export async function createRuntime({ storage, repositories: configured, token, 
     store.onCommit = () => { stream.wake(); for (const subscriber of subscribers) subscriber.wake(); };
     const scheduler = new Scheduler({ service, repositories, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck }), publisher: createPublisher({ repositories }), results, onError: report });
     const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
+    const cleanup = new ResourceCleanup({ service, repositories, assertOwned: () => scheduler.ownership.assertOwned() });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
-    registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {
+    registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly, cleanup, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {
       try {
         const { repository } = await repositories.repository(id);
         const baseBranch = (await git(repository, ['symbolic-ref', '--short', 'HEAD'])).trim();
