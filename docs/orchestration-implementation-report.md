@@ -93,7 +93,7 @@ The installed application remains untouched. New routes/modules are exercised
 through isolated tests and are not wired into installed-service startup. The
 pre-existing untracked burst-scan plan is unchanged.
 
-## T04: exclusive scheduling and recovery
+## T04: exclusive scheduling and recovery, commit `b4c25aa`
 
 The scheduler reserves capacity and launch intents in the same SQLite transaction,
 uses persisted first-readiness order and waits for integrated dependencies. Planner
@@ -150,3 +150,19 @@ The scheduler currently dispatches launches and reconciles termination; actual
 Git integration and PR publication effects remain T07–T09. Execution-mode/provider
 contracts, the checked-in Git fixture, mobile E2E and legacy retirement remain
 outstanding. No installed or live service was exercised.
+
+## T05 in progress: disposable Git fixture
+
+The checked-in dependency-free fixture now exists under
+`tests/fixtures/orchestration-repo/`. Its builder creates an isolated temporary
+repository and local bare remote, disables inherited Git configuration/hooks and
+makes real A/B/C commits. Harness tests establish independent sibling bases,
+combined dependency contents, a failing C candidate, a repaired SHA with passing
+unchanged checks, and an intentional A/B merge conflict. Both fixture tests and
+their targeted lint pass. Initial fixture checks intentionally fail until tasks
+are implemented; this is test input, not a failing Companion test suite.
+
+This validates the fixture itself, using explicit Git commands in the harness.
+It does not yet prove the service schedules/integrates these commits; runtime
+contracts and fake-agent/service wiring remain T05–T09 work. Full verification
+reported above precedes this fixture addition.
