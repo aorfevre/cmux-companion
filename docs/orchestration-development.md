@@ -25,8 +25,8 @@ SIGKILL cannot run cleanup; its printed manifest identifies the orphaned fixture
 
 ## Drive the API
 
-The frontend for this replacement is still under implementation. The API can
-already exercise the complete workflow. This example reads credentials from the
+The mobile frontend is available at `/orchestration`. The API can also
+exercise the complete workflow. This example reads credentials from the
 private file instead of putting them in process arguments or console output:
 
 ```sh

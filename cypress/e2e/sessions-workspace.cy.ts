@@ -86,7 +86,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
     it("lists sessions with their state, opens the focused terminal and renders the replay grid", () => {
       fixtures();
       visitSessions();
-      cy.findByRole("heading", { name: "Sessions", level: 1 }).should("be.visible");
+      cy.findByRole("heading", { name: "Sessions", level: 2 }).should("be.visible");
       cy.contains(".hero h1", "1 session need you.").should("be.visible");
       cy.get(".summary-row").should("contain.text", "2sessions").and("contain.text", "1needs you").and("contain.text", "1working");
       cy.findByRole("button", { name: /Billing rewrite/ }).should("contain.text", "~/karven/billing").and("contain.text", "Needs you").and("contain.text", "3 terminals").and("contain.text", "Waiting for your answer");
@@ -122,7 +122,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       cy.get(".terminal-fallback").should("contain.text", "tail -f server.log");
       cy.findByRole("button", { name: /Back/ }).click();
       cy.location("search").should("eq", "?view=sessions");
-      cy.findByRole("heading", { name: "Sessions", level: 1 }).should("be.visible");
+      cy.findByRole("heading", { name: "Sessions", level: 2 }).should("be.visible");
       cy.findByRole("button", { name: /Billing rewrite/ }).should("be.visible");
     });
   });

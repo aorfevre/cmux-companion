@@ -46,7 +46,7 @@ export function ModelSettingsPanel() {
   return <section className="model-settings" aria-label="Model defaults">
     <h2>Model defaults</h2>
     <p>Choose the model for each role and provider. Open a dropdown to see all suggested models, or choose “Custom model…” to enter another model ID. “Provider default” lets your provider choose the model.</p>
-    <p>Saved on this Mac for all paired devices. Changes apply to new agent runs; active sessions and existing planner choices keep their model.</p>
+    <p>Saved on this Mac for all paired devices. Changes apply to newly launched manual coding sessions. Orchestration models are configured by the operator.</p>
     {error && <p role="alert">{error}</p>}
     {!roles && (error ? <button type="button" onClick={() => void load()}>Retry loading model defaults</button> : <p role="status">Loading model defaults…</p>)}
     {settings?.warning && <p role="status">{settings.warning}</p>}

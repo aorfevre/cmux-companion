@@ -36,8 +36,8 @@ test("API fixture never opens operator paths and cleans up after setup failure",
     const context = { after: (cleanup) => cleanups.push(cleanup) };
     const app = await buildTestApp(context, { token: 'disposable-api-token', cmux: { bin: '/fake/cmux' } });
     const directory = app.fixtureDirectory;
-    const response = await app.inject({ url: '/api/worktree-plans', headers: { authorization: 'Bearer disposable-api-token' } });
-    if (response.statusCode !== 200 || response.json().plans.length) throw new Error('Fixture must start with empty plans');
+    const response = await app.inject({ url: '/api/repos', headers: { authorization: 'Bearer disposable-api-token' } });
+    if (response.statusCode !== 200 || response.json().repos.length) throw new Error('Fixture must start with empty repository inventory');
     await app.close();
     for (const cleanup of cleanups.splice(0)) await cleanup();
     let failed = false;

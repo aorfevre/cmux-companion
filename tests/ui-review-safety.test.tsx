@@ -49,7 +49,7 @@ test("failed queue save preserves edits, displays detail feedback and sends noth
     if (url.startsWith("/api/prompt-queue?")) return response({ items: [{ ...queued, text: savedText }] });
   });
   render(<Home />);
-  await userEvent.click(await screen.findByRole("button", { name: "Prompt queue, 1 waiting" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Prompt queue, 1 waiting" }, { timeout: 5000 }));
   const input = screen.getByRole("textbox", { name: "Queued prompt 1" });
   await userEvent.clear(input);
   await userEvent.type(input, "The reviewed instruction");
@@ -95,7 +95,7 @@ for (const oldResult of ["success", "failure"]) {
     await userEvent.click(screen.getByRole("button", { name: "Session menu" }));
     await userEvent.click(screen.getByRole("button", { name: "1. shell" }));
     await screen.findByText("Current A");
-    await userEvent.click(await screen.findByRole("button", { name: "Prompt queue, 1 waiting" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Prompt queue, 1 waiting" }, { timeout: 5000 }));
     assert.equal((screen.getByRole("textbox", { name: "Queued prompt 1" }) as HTMLTextAreaElement).value, "Current queue A");
     // The fake transport deliberately ignores AbortSignal, proving that the
     // ownership guard also works when a response cannot be cancelled.

@@ -23,17 +23,16 @@
     "test": "node scripts/run-backend-tests.mjs",
     "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='server/**' --test-coverage-exclude='server/index.mjs' --test-coverage-exclude='server/supervisor.mjs' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/backend.lcov $(node scripts/run-backend-tests.mjs --list)",
     "test:live": "node --test tests/cmux.live.mjs",
-    "test:installed": "node --test tests/installed-companion.live.mjs",
     "test:preview-live": "node --test tests/tailscale-preview.live.mjs",
     "test:ui": "vitest run --config vitest.config.ts",
     "test:ui:coverage": "vitest run --config vitest.config.ts --coverage",
     "test:e2e:local": "node scripts/run-local-cypress.mjs",
     "test:e2e:open": "node scripts/run-local-cypress.mjs --open",
-    "test:e2e:live-audit": "node scripts/e2e-live-audit.mjs",
-    "test:e2e:live-agent": "node scripts/run-live-agent-cypress.mjs",
     "typecheck": "tsc --noEmit && tsc --project tsconfig.backend.json",
     "verify": "npm test && npm run test:ui && npm run lint && npm run typecheck && npm run build",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "orchestration:faults": "node scripts/run-orchestration-faults.mjs",
+    "orchestration:inventory": "node scripts/orchestration-inventory.mjs"
   },
   "dependencies": {
     "@fastify/http-proxy": "^11.6.1",

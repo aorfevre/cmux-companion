@@ -1,4 +1,4 @@
-// Shared by Settings, the planner form, and the process boundary. Suggestions
+// Shared by manual-session Settings and the process boundary. Suggestions
 // are conveniences; safe custom model IDs do not require a code release.
 export const MODEL_PROVIDERS = ["claude", "codex"];
 export const MODEL_CATALOG = {
@@ -18,14 +18,14 @@ export const MODEL_CATALOG = {
 export const MODEL_ROLES = [
   { id: "planner", label: "Planner", description: "The interactive conversation for discovery, review and approved implementation.", provider: true },
   { id: "specReviewer", label: "Spec reviewer", description: "The optional second pass uses the other provider.", provider: false },
-  { id: "coder", label: "Coder", description: "Task launches, retries, dependency waves, and manually launched agents. Task provider choices still apply.", provider: false },
+  { id: "coder", label: "Coder", description: "Manually launched coding agents.", provider: false },
   { id: "codeReviewer", label: "Code reviewer", description: "Post-delivery review requests and follow-ups that include a code review, using the selected provider.", provider: false },
   { id: "merger", label: "Merge agent", description: "Combines completed tasks into the delivery branch.", provider: true },
   { id: "followup", label: "Follow-up agent", description: "Additional tests, questions, and custom work after delivery.", provider: false },
   { id: "issueAnalyzer", label: "Issue analyzer", description: "Groups GitHub issues into topics before planning.", provider: true },
 ];
 // Retain old keys for saved configuration compatibility, without exposing retired workflows.
-export const ACTIVE_MODEL_ROLES = MODEL_ROLES.filter((role) => !["issueAnalyzer"].includes(role.id));
+export const ACTIVE_MODEL_ROLES = MODEL_ROLES.filter((role) => role.id === "coder");
 export const DEFAULT_MODEL_ROLES = Object.fromEntries(MODEL_ROLES.map((role) => [role.id, {
   ...(role.provider ? { provider: role.id === "planner" ? "codex" : "claude" } : {}),
   models: ["specReviewer", "codeReviewer"].includes(role.id)

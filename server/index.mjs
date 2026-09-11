@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createProductionRuntime, loadProductionConfig } from "./orchestration/production.mjs";
 import { buildApp } from "./app.mjs";
 import { ModelSettings, DEFAULT_MODEL_SETTINGS_PATH } from "./model-settings.mjs";
 import { CmuxClient } from "./cmux-client.mjs";
@@ -18,6 +19,8 @@ export async function startServer({
   port = Number(process.env.CMUX_COMPANION_PORT || 3210),
   frontendUpstream = process.env.CMUX_COMPANION_FRONTEND_UPSTREAM || null,
 } = {}) {
+  if (!["127.0.0.1", "localhost", "::1"].includes(host)) throw new Error("Companion must bind to loopback");
+  const config = loadProductionConfig(process.env.CMUX_COMPANION_ORCHESTRATION_CONFIG);
   const tokenPath = process.env.CMUX_COMPANION_TOKEN_FILE || DEFAULT_TOKEN_PATH;
   const token = ensureToken(tokenPath);
   const cmux = new CmuxClient();
@@ -28,18 +31,16 @@ export async function startServer({
   // its catalog to a live one, so no test that builds an app ever touches the
   // real database file.
   const repoCatalog = new RepoCatalog({ identityStore: openRepoIdentityStore() });
-  const app = await buildApp({
-    cmux,
-    modelSettings: new ModelSettings({ path: process.env.CMUX_COMPANION_MODEL_SETTINGS_FILE || DEFAULT_MODEL_SETTINGS_PATH }),
-    token,
-    repoCatalog,
-    pushService,
-    previewManager,
-    promptQueue,
-    frontendUpstream,
-    logger: process.env.NODE_ENV !== "test",
+  const runtime = await createProductionRuntime({ config, token,
+    sessions: async () => (await cmux.workspaceListDetailed()).workspaces.map(workspace => workspace.id),
+    monitor: async app => { await buildApp({ app, cmux,
+      modelSettings: new ModelSettings({ path: process.env.CMUX_COMPANION_MODEL_SETTINGS_FILE || DEFAULT_MODEL_SETTINGS_PATH }),
+      token, repoCatalog, pushService, previewManager, promptQueue, frontendUpstream,
+      logger: process.env.NODE_ENV !== "test",
+    }); },
   });
-  await app.listen({ host, port });
+  await runtime.listen({ port });
+  const app = { close: () => runtime.close() };
   return { app, tokenPath, host, port };
 }
 

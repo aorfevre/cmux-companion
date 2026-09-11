@@ -45,3 +45,12 @@ SQLite workflow/event evidence. It does not prune a repository, delete native cm
 sessions, erase evidence or collect arbitrary files. Resources without verifiable
 attempt ownership are refused. Any additional retention policy needs its own
 explicit design and ownership checks.
+
+## Journal retention
+
+Production has no automatic journal pruning timer. The internal
+`OrchestrationStore.pruneEvents(through)` operation removes only a consumed prefix,
+bounded by the slowest durable consumer, active goals, owned workers and unsettled
+operations. No operator deletion command is provided. Browser cursors do not hold
+retention; expired cursors receive a fresh snapshot. Preserve the journal with its
+referenced artifacts when backing up or transferring ownership.

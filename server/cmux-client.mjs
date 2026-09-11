@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -19,7 +19,6 @@ const ALLOWED_KEYS = new Set([
 const ALLOWED_TODO_ACTIONS = new Set(["check", "uncheck", "start"]);
 const ALLOWED_AGENTS = new Set(["shell", "codex", "claude"]);
 const CLIENT_ID_PATTERN = /^[a-zA-Z0-9:_-]{8,128}$/;
-const GOAL_SESSION_RUNNER = fileURLToPath(new URL("./goal-session-runner.mjs", import.meta.url));
 
 export class CmuxCommandError extends Error {
   constructor(message, { code, stderr } = {}) {
@@ -292,18 +291,6 @@ export class CmuxClient {
     if (typeof title !== "string" || !title.trim() || title.trim().length > 100) throw new TypeError("Invalid workspace title");
     await this.run(["workspace", "rename", workspaceId, "--title", title.trim()]);
     return { ok: true };
-  }
-
-  // This is deliberately narrower than surface.send_text: callers cannot use
-  // it to inject a shell command. The runner has one checked-in entry point
-  // and receives only a UUID, database path and immutable generation.
-  async workspaceStartGoalSessionRunner(workspaceId, { planId, databasePath, generation, dispatchId }) {
-    assertTarget(workspaceId);
-    if (!/^[0-9a-f-]{36}$/i.test(String(planId || "")) || typeof databasePath !== "string" || !databasePath.startsWith("/") || !Number.isInteger(generation) || generation < 1 || !/^[0-9a-f-]{36}$/i.test(String(dispatchId || ""))) {
-      throw new TypeError("Invalid goal session runner");
-    }
-    const command = `${shellQuote(process.execPath)} ${shellQuote(GOAL_SESSION_RUNNER)} ${shellQuote(planId)} ${shellQuote(databasePath)} ${shellQuote(String(generation))} ${shellQuote(dispatchId)}\n`;
-    return this.rpc("surface.send_text", { workspace_id: workspaceId, text: command });
   }
 
   async workspaceClose(workspaceId) {

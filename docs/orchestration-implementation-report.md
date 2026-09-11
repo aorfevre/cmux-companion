@@ -5,22 +5,93 @@ verification and removal of obsolete paths.
 Contract: [redesign spec](superpowers/specs/2026-09-11-orchestration-core-refactor-design.md), `3f3102f`.
 Plan: [implementation plan](superpowers/plans/2026-09-11-orchestration-core-redesign.md), including review/test-repository clarification `e31d088`.
 
-## Current delivery status
+## Final local delivery status
 
-The complete goal is still in progress. This report records evidence, not a
-substitute acceptance criterion for the whole replacement.
+T01–T15 are implemented for the plan's source and local-verification scope.
+PR: https://github.com/aorfevre/cmux-companion/pull/115, targeting `main`.
+The sections after this final summary are chronological checkpoints; their
+then-pending work is superseded by the evidence here.
 
-| Scope | State | Evidence / remaining work |
+| Scope | Final implementation and decisive local evidence |
+| --- | --- |
+| T01 | Pure domain/capability contracts; domain and import-boundary suites. |
+| T02 | Separate journal, transactional effects, idempotency and ownership; storage/recovery suites. |
+| T03 | Paired commands and scoped bridge tools; API, bridge, tool and result-authority suites. |
+| T04 | Exclusive scheduling, bounded admission and reconciliation; scheduler/ownership/reconciler suites. |
+| T05 | Distinct interactive/background contracts and concurrent scripted agents; runtime/parallel suites. |
+| T06 | Planning, independent review and bounded repair; planning/role-result/delivery suites. |
+| T07 | Isolated worktrees and independent candidate proof; Git/candidate-result suites. |
+| T08 | Serialized recoverable integration and scoped repair; integration/delivery/fault suites. |
+| T09 | Exact-head verification and one reconciled PR; verification/publication/delivery suites. |
+| T10 | Isolated service, durable consumers and public SSE; composition/events/dev suites. |
+| T11 | Capability-gated native adapters, supervisor and planner continuity; native capability/background/terminal/launch suites. Live enforcement remains unverified. |
+| T12 | Mobile goal journey; UI suite plus real-backend/Git Cypress with overlapping implementers, repair and publication. |
+| T13 | 93/93 fault/adapter/refusal cases and conservative cleanup; SIGKILL evidence and independent cleanup review. |
+| T14 | Guarded source composition, disposable cutover/rollback and legacy retirement; cutover suite, monitoring regression tests and retirement inventory. |
+| T15 | Contributor/configuration/recovery docs, final local gates and combined independent review. |
+
+### Final checks
+
+| Command / scope | Result | Local evidence |
 | --- | --- | --- |
-| T01: domain and ports | Foundation implemented | Typed pure graph/state/review rules, explicit result versus worker liveness, command identities and adapter capability contracts. |
-| T02: persistence | Foundation implemented | Explicit-path SQLite state, immutable contracts, indexed attempt ownership, atomic event/intent/receipt writes, private artifacts and journal cursors. |
-| T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Structured candidate, conflict and final repair submissions connect independent Git proof to durable acceptance. |
-| M1 durable-decision gate | Passed for foundation | Review and verification below; no production scheduling activated. |
-| T04: scheduler and recovery | Implemented, independently reviewed | Exclusive nonce-fenced ownership, transactional capacity, durable FIFO, explicit retries, abort reconciliation and fresh-process crash recovery. |
-| T05–T06 / M2 | Implemented foundation | Runtime, concurrent real-Git fake implementers, scheduled planning/review, revision requests, bounded repair and durable result intake pass. Scripted cancellation retains worker ownership until jobs stop; complete fault matrix remains T13. |
-| T07–T09 / M3 | Passed account-free journey gate | Four real scheduled Git journeys reach one fake-GitHub PR at the verified/reviewed SHA, including conflicts and final review/check repairs. Durable publication receipts reconcile lost responses. Live adapter behavior remains unverified. |
-| T10–T12 / M4 | In progress | Isolated composition, durable consumers, public SSE and disposable development entry implemented; provider/cmux adapters and mobile real-backend Cypress remain. |
-| T13–T15 / M5 | Pending | Full crash matrix, cleanup, disposable cutover rehearsal, legacy removal, documentation and final acceptance. |
+| `npm run verify` | Passed: backend 613 passed, one platform skip; UI 114 passed; lint/types/build passed | `/tmp/cmux-t15-verify.log` |
+| `npm run test:coverage` | Passed; backend line coverage **98.34%** | `coverage/backend.lcov`, `/tmp/cmux-t15-backend-coverage.log` |
+| `npm run test:ui:coverage` | Passed 114 tests; UI line coverage **96.10%** | `coverage/ui/lcov.info`, `/tmp/cmux-t15-ui-coverage-final.log` |
+| `npm run test:e2e:local` with Chrome/port 3327 | Passed 78 monitoring tests; three real-service cases intentionally pending in this mode | `/tmp/cmux-t15-cypress.log` |
+| Real-service orchestration Cypress | Passed two writable workflow tests; read-only case belongs to separate mode | `/tmp/cmux-t14-cypress-core.log` |
+| Real-service orchestration Cypress `--read-only` | Passed read-only case; writable cases intentionally pending | `/tmp/cmux-t14-cypress-readonly.log` |
+| Independent combined architecture review | Approved; 125/125 cross-boundary tests passed, including four real-Git journeys and SIGKILL recovery | Reviewer `/root/domain_review`; final source review after T14 edits |
+| Independent retirement/docs review | Approved; strict monitoring schemas, removed entrypoints, model-setting scope and operator limitations reviewed | Reviewer `/root/scheduler_admission_review`; final source review after documentation corrections |
+
+The Cypress commands use `--orchestration --spec cypress/e2e/orchestration-core.cy.ts`
+for real-service mode. Chrome was explicitly selected and port 3327 avoided an
+existing listener; no port owner was killed. Fixtures use private disposable
+paths, fake agents/GitHub and real temporary Git. The three mode-specific cases
+all ran across writable/read-only invocations. Browser evidence and diffs are
+retained under ignored `cypress/results/`; logs and coverage are local artifacts,
+not public source files.
+
+### Review fixes and interventions
+
+The retirement checkpoint exposed obsolete tests for removed routes, timer
+consumers, planner controls and heading structure; those were retired or ported
+while preserving monitoring cases. The concrete cmux-client suite was restored
+after an overbroad initial test retirement. Final independent review caught
+misleading model controls: only supported manual coder defaults remain visible,
+with accurate scope text. Existing saved keys are preserved.
+
+Cutover review caught ignored/hidden-file cleanup risks (fixed in T13), empty
+startup reservations stranding corrected configuration, pathname-only journal
+binding, legacy/replacement database overlap and inherited Fastify coercion.
+Regression cases prove the fixes. During final coverage, one asynchronous queue
+read exceeded the default one-second UI readiness wait under concurrent load;
+its wait is now five seconds, with unchanged save-failure/retry assertions. The
+focused coverage run and complete 114-test coverage rerun passed. Initial failed
+checkpoints are retained below; there are no unresolved final local test failures.
+
+### Delivery boundaries and remaining operational work
+
+The [retirement map](orchestration-retirement.md) and
+[machine inventory](orchestration-retirement-inventory.json) identify removed and
+retained modules, routes, UI and tests against `b33569a`. The
+[architecture/configuration map](orchestration-architecture.md) documents the
+command vocabulary, graph/review rules, execution bounds and retention policy.
+Source wiring requires explicit private configuration before background work;
+legacy approval is never imported automatically.
+
+**Not performed or claimed:** installed cutover, merge, deployment, release or
+open-source publication. Real provider permission enforcement/model quality,
+cmux continuity and live GitHub behavior remain unverified. No live-test
+execution was authorized. Offline adapter tests do not substitute for those
+operational checks.
+
+The sibling updater installer does not currently propagate the required
+`CMUX_COMPANION_ORCHESTRATION_CONFIG` into its LaunchAgent environment. Before an
+installed rollout, the operator must establish persistent configuration, complete
+installer compatibility, inventory/backup/drain old owners and rehearse startup
+and rollback as documented. Local source delivery does not make the installed
+upgrade ready. This operational integration is explicitly outside the plan's
+source-only cutover and local acceptance boundary.
 
 ## M1 foundation: commit `8994832`
 
@@ -1060,3 +1131,37 @@ provisioning and isolated candidate-proof fields) were investigated and correcte
 Logs: `/tmp/cmux-t13-matrix-final.log`, `/tmp/cmux-t13-{cleanup,role-recovery,faults,result-matrix,api,types,lint}.log`.
 Runbook: `docs/orchestration-recovery.md`. T14 source retirement and T15 final
 whole-project checks remain; no installed resources or live adapters exercised.
+
+
+### T14 retirement checkpoint
+
+The [retirement map and operator runbook](orchestration-retirement.md) and
+[machine inventory](orchestration-retirement-inventory.json) record the removal.
+Production now requires an explicit private configuration and separate journal;
+monitoring remains encapsulated with strict input schemas. Native Inbox and
+local-app navigation remain reachable from the sessions home.
+
+Passed at this checkpoint: 88 targeted monitoring/client/cutover tests; 25 page
+UI tests; 38 retained feature/helper/grid UI tests; lint and typecheck. The
+independent cutover reviewer approved the journal-identity, failed-reservation
+and legacy-path separation fixes after 7/7 cutover tests.
+
+The initial complete backend run passed 612 tests, skipped one platform-specific
+case and failed one discovery assertion referring to removed `test:installed`.
+That obsolete entry was removed from the assertion; discovery then passed 2/2.
+Complete verification is rerunning. Regular Cypress is running on explicit
+Chrome and port 3327; it exposed remaining planner-only cases in the mixed model
+settings spec. Those cases were retired while preserving settings persistence,
+choice and error handling checks; their rerun remains pending. No installed or
+live services were exercised. T14 is not yet committed or claimed complete.
+
+Subsequent T14 checkpoint: the complete backend rerun passed 613/614 with one
+platform skip. After limiting model settings to the supported manual coder role,
+the UI settings regression was ported and all 114 UI tests passed. Lint,
+typecheck and build passed on this source. The initial regular Cypress run had
+73 passed, eight failed and three intentionally pending real-service cases;
+affected model-settings and sessions-workspace specs then passed 14/14 after
+retiring planner-only cases and updating the retained Sessions heading level.
+The independent retirement reviewer approved the complete bounded audit,
+including accurate manual-session model-setting scope. Real-service Cypress and
+both coverage commands are in progress; no combined final gate is claimed yet.

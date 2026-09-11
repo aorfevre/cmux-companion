@@ -56,7 +56,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
     const subscribers = consumers.map((options) => new JournalConsumer({ ...options, store, onError: report }));
     store.onCommit = () => { stream.wake(); for (const subscriber of subscribers) subscriber.wake(); };
     const scheduler = new Scheduler({ service, repositories, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck }), publisher: createPublisher({ repositories }), results, onError: report });
-    const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
+    const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024, ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
     const cleanup = new ResourceCleanup({ service, repositories, assertOwned: () => scheduler.ownership.assertOwned() });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
     registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly, cleanup, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {

@@ -4,7 +4,6 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { normalizeInbox } from "../server/app.mjs";
 import { CmuxCommandError } from "../server/cmux-client.mjs";
-import { WorktreePlanStore } from "../server/worktree-plan-store.mjs";
 import { buildTestApp as buildApp } from "./helpers/api-app.mjs";
 
 // Route-level coverage for the Fastify API: every handler that the broader
@@ -47,17 +46,6 @@ function fakeHub() {
   hub.removeConsumer = () => { hub.consumers -= 1; };
   hub.stop = () => { hub.stopped += 1; };
   return hub;
-}
-
-function fakeDashboard(calls = []) {
-  return {
-    calls,
-    snapshot: async (input) => { calls.push(["snapshot", input]); return { repositories: [], summary: {} }; },
-    removeCleanWorktrees: async (id, input) => { calls.push(["remove-clean", id, input]); return { removed: [] }; },
-    resolveRepository: async (id) => { if (id !== REPO_ID) throw new TypeError("Unknown repository"); return { id, name: "Fixture", primaryPath: "/repo/fixture" }; },
-    create: async () => ({ worktree: { path: "/repo/new-goal" } }),
-    invalidate: () => calls.push(["invalidate"]),
-  };
 }
 
 test("cmux command failures answer 503 and the auth status route reports pairing and identity", async (t) => {
@@ -112,14 +100,12 @@ test("bootstrap syncs detected previews and survives a sync that never finishes"
   assert.equal(synced[0][1][0].id, REPO_ID);
 });
 
-test("workspace lifecycle routes forward to cmux and drop the cached board", async (t) => {
+test("workspace lifecycle routes forward to cmux", async (t) => {
   const cmux = fakeCmux();
-  const calls = [];
-  const app = await buildApp(t, { cmux, token: TOKEN, worktreeDashboard: fakeDashboard(calls) });
+  const app = await buildApp(t, { cmux, token: TOKEN });
   const closed = await app.inject({ method: "POST", url: `/api/workspaces/${WS_ID}/close`, headers: AUTH, payload: {} });
   assert.equal(closed.statusCode, 200);
   assert.deepEqual(closed.json(), { closed: WS_ID });
-  assert.deepEqual(calls, [["invalidate"]]);
   const respawned = await app.inject({ method: "POST", url: `/api/workspaces/${WS_ID}/respawn`, headers: AUTH, payload: { surfaceId: TERM_ID } });
   assert.equal(respawned.statusCode, 200);
   assert.deepEqual(respawned.json(), { respawned: TERM_ID });
@@ -157,61 +143,6 @@ test("shutdown releases every viewport lease that is still held", async (t) => {
   assert.deepEqual(cmux.calls.at(-1), ["viewport", TERM_ID, { clientId: "phone-2", generation: 5, clear: true }]);
 });
 
-test("the worktree cleanup run drops the cached board and the remove-clean route forwards live sessions", async (t) => {
-  const cleanupCalls = [];
-  const worktreeCleanup = {
-    start: () => () => {},
-    status: async () => ({ policy: { enabled: true } }),
-    configure: async (body) => { cleanupCalls.push(["configure", body]); return { policy: body }; },
-    preview: async () => ({ previewId: "preview-1", candidates: [] }),
-    run: async (input) => { cleanupCalls.push(["run", input]); return { removed: ["one"] }; },
-  };
-  const dashboardCalls = [];
-  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreeCleanup, worktreeDashboard: fakeDashboard(dashboardCalls) });
-  assert.equal((await app.inject({ url: "/api/worktree-cleanup", headers: AUTH })).json().policy.enabled, true);
-  assert.equal((await app.inject({ method: "PATCH", url: "/api/worktree-cleanup", headers: AUTH, payload: { enabled: false } })).statusCode, 200);
-  assert.equal((await app.inject({ method: "POST", url: "/api/worktree-cleanup/preview", headers: AUTH, payload: {} })).json().previewId, "preview-1");
-  const run = await app.inject({ method: "POST", url: "/api/worktree-cleanup/run", headers: AUTH, payload: { previewId: "preview-1", ids: ["one"], prune: true } });
-  assert.equal(run.statusCode, 200);
-  assert.deepEqual(cleanupCalls.at(-1), ["run", { previewId: "preview-1", ids: ["one"], prune: true }]);
-  assert.deepEqual(dashboardCalls, [["invalidate"]]);
-  const cleaned = await app.inject({ method: "POST", url: `/api/worktree-dashboard/repositories/${REPO_ID}/remove-clean`, headers: AUTH, payload: {} });
-  assert.equal(cleaned.statusCode, 200);
-  assert.deepEqual(dashboardCalls.at(-1), ["remove-clean", REPO_ID, { workspaces: (await fakeCmux().workspaceList()).workspaces, workspacesAvailable: true }]);
-});
-
-test("a manual GitHub refresh inspects pull requests for push alerts, and a failed inspection still answers", async (t) => {
-  const inspected = [];
-  let fail = false;
-  const pushService = {
-    attach: () => () => {},
-    status: (endpoint) => ({ supported: true, subscribed: endpoint === "https://push.example/sub", endpoint }),
-    subscribe: (subscription, settings) => ({ subscribed: true, subscription, settings }),
-    updateSettings: (endpoint, settings) => ({ endpoint, settings }),
-    unsubscribe: (endpoint) => ({ removed: endpoint }),
-    test: (endpoint) => ({ sent: true, endpoint }),
-    inspectPullRequests: async (dashboard) => { inspected.push(dashboard); if (fail) throw new Error("gh exploded"); },
-  };
-  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, pushService, eventHub: fakeHub(), worktreeDashboard: fakeDashboard() });
-  assert.equal((await app.inject({ url: "/api/worktree-dashboard?github=1", headers: AUTH })).statusCode, 200);
-  assert.equal(inspected.length, 1);
-  fail = true;
-  assert.equal((await app.inject({ url: "/api/worktree-dashboard?github=1", headers: AUTH })).statusCode, 200);
-  assert.equal(inspected.length, 2);
-  assert.equal((await app.inject({ url: "/api/worktree-dashboard", headers: AUTH })).statusCode, 200);
-  assert.equal(inspected.length, 2, "a plain read inspects nothing");
-  assert.equal((await app.inject({ url: "/api/worktree-dashboard?github=1&repositoryId=short", headers: AUTH })).statusCode, 400);
-
-  const status = await app.inject({ url: "/api/push/status?endpoint=https://push.example/sub", headers: AUTH });
-  assert.deepEqual(status.json(), { supported: true, subscribed: true, endpoint: "https://push.example/sub" });
-  assert.equal((await app.inject({ url: "/api/push/status", headers: AUTH })).json().endpoint, null);
-  const subscribed = await app.inject({ method: "POST", url: "/api/push/subscribe", headers: AUTH, payload: { subscription: { endpoint: "e" }, settings: { quiet: true } } });
-  assert.deepEqual(subscribed.json(), { subscribed: true, subscription: { endpoint: "e" }, settings: { quiet: true } });
-  assert.deepEqual((await app.inject({ method: "POST", url: "/api/push/settings", headers: AUTH, payload: { endpoint: "e", settings: { quiet: false } } })).json(), { endpoint: "e", settings: { quiet: false } });
-  assert.deepEqual((await app.inject({ method: "POST", url: "/api/push/unsubscribe", headers: AUTH, payload: { endpoint: "e" } })).json(), { removed: "e" });
-  assert.deepEqual((await app.inject({ method: "POST", url: "/api/push/test", headers: AUTH, payload: { endpoint: 42 } })).json(), { sent: true, endpoint: null });
-});
-
 test("optional services answer 503 when the app was built without them", async (t) => {
   const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN });
   assert.deepEqual((await app.inject({ url: "/api/push/status", headers: AUTH })).json(), { supported: false, subscribed: false });
@@ -235,184 +166,6 @@ test("repository diffs require a file and forward the staged flag", async (t) =>
   assert.equal((await app.inject({ url: `/api/repos/${REPO_ID}/assets`, headers: AUTH })).statusCode, 400);
 });
 
-test("a manual GitHub issue sync joins the scheduler's shared pass", async (t) => {
-  let passes = 0;
-  const githubIssueSyncScheduler = { start: () => () => {}, syncNow: async () => { passes += 1; return { synced: passes }; } };
-  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, githubIssueSyncScheduler });
-  const synced = await app.inject({ method: "POST", url: "/api/github-issues/sync", headers: AUTH, payload: {} });
-  assert.equal(synced.statusCode, 200);
-  assert.deepEqual(synced.json(), { synced: 1 });
-  assert.equal((await app.inject({ method: "POST", url: "/api/github-issues/bad/1/goal", headers: AUTH, payload: {} })).statusCode, 400);
-  assert.equal((await app.inject({ method: "POST", url: `/api/github-issues/${REPO_ID}/0/goal`, headers: AUTH, payload: {} })).statusCode, 400);
-});
-
-test("native cmux inbox replies reach cmux, and a broken feed still serves durable goal questions", async (t) => {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  const cmux = fakeCmux();
-  const app = await buildApp(t, { cmux, token: TOKEN, worktreePlanStore: store, goalReviews: { start: () => () => {} } });
-  const replied = await app.inject({ method: "POST", url: `/api/inbox/${TERM_ID}/reply`, headers: AUTH, payload: { kind: "permissionRequest", mode: "allow" } });
-  assert.equal(replied.statusCode, 200);
-  assert.deepEqual(replied.json(), { ok: true, result: { answered: TERM_ID } });
-  assert.deepEqual(cmux.calls.at(-1), ["reply", TERM_ID, "permissionRequest", { kind: "permissionRequest", mode: "allow" }]);
-  assert.equal((await app.inject({ method: "POST", url: `/api/notifications/${WS_ID}/read`, headers: AUTH, payload: {} })).statusCode, 200);
-  assert.deepEqual(cmux.calls.at(-1), ["read", WS_ID]);
-
-  cmux.pendingFeed = async () => { throw new CmuxCommandError("cmux is away", { code: 1 }); };
-  assert.equal((await app.inject({ url: "/api/inbox", headers: AUTH })).statusCode, 503, "with nothing durable to show, the cmux failure is the answer");
-  store.createPlan({ planId: "inbox-goal", repositoryId: REPO_ID, cwd: "/fixture", goal: "Choose billing" });
-  store.reserveGoalSession("inbox-goal", { branch: "goal-session/inbox", generation: 1 });
-  store.recordGoalSessionStart("inbox-goal", { worktreePath: "/fixture-goal", workspaceId: WS_ID, generation: 1 });
-  store.publishGoalSessionQuestions("inbox-goal", { generation: 1, questions: [{ id: "q1", text: "Card or invoice?" }, { id: "q2", text: "Monthly or yearly?" }] });
-  const inbox = await app.inject({ url: "/api/inbox", headers: AUTH });
-  assert.equal(inbox.statusCode, 200);
-  assert.equal(inbox.json().actionableCount, 1);
-  assert.deepEqual(inbox.json().items[0].questionOptions, ["Write reply…"], "several questions offer only a free reply");
-  assert.equal(inbox.json().unreadCount, 0);
-  assert.equal((await app.inject({ method: "POST", url: `/api/inbox/${inbox.json().items[0].requestId}/reply`, headers: AUTH, payload: { kind: "question", selections: [] } })).statusCode, 400);
-});
-
-async function goalFixture(t) {
-  const store = new WorktreePlanStore({ path: ":memory:" });
-  t.after(() => store.close());
-  const reviewCalls = [];
-  const runnerCalls = [];
-  const goalReviews = {
-    start: () => () => {},
-    reconcile: async (planId, reviewId) => { reviewCalls.push(["reconcile", planId, reviewId]); return { planId, reviewId, reconciled: true }; },
-    requestCode: async (planId) => { reviewCalls.push(["code", planId]); },
-    assessments: { retry: (planId, reviewId, reconcile) => { reviewCalls.push(["assessment", planId, reviewId, reconcile]); return store.get(planId); } },
-  };
-  const cmux = { ...fakeCmux(), workspaceListDetailed: async () => ({ workspaces: [] }), workspaceStartGoalSessionRunner: async (...args) => runnerCalls.push(args) };
-  const app = await buildApp(t, { cmux, token: TOKEN, worktreePlanStore: store, goalReviews, worktreeDashboard: fakeDashboard() });
-  const plan = (id, patch = {}) => {
-    store.createPlan({ planId: id, repositoryId: REPO_ID, cwd: "/fixture", goal: `Goal ${id}`, engine: { provider: "codex", reviewer: false }, ...patch });
-    store.reserveGoalSession(id, { branch: `goal-session/${id}`, generation: 1 });
-    store.recordGoalSessionStart(id, { worktreePath: `/fixture/${id}`, workspaceId: `${id}-workspace`, generation: 1 });
-    store.recordGoalSessionProviderSession(id, { generation: 1, providerSessionId: `${id}-session` });
-    return store.get(id);
-  };
-  return { app, store, plan, reviewCalls, runnerCalls };
-}
-
-const proposal = { intendedBehavior: "Add billing", acceptanceCriteria: [{ text: "Charges", verification: "Test" }] };
-
-test("goal session conversation routes drive the durable state machine", async (t) => {
-  const { app, store, plan, runnerCalls } = await goalFixture(t);
-  plan("chat");
-  const found = await app.inject({ url: "/api/goal-sessions/workspace/chat-workspace", headers: AUTH });
-  assert.equal(found.statusCode, 200);
-  assert.equal(found.json().plan.planId, "chat");
-  assert.equal((await app.inject({ url: "/api/goal-sessions/workspace/unknown-workspace", headers: AUTH })).json().plan, null);
-
-  store.publishGoalSessionQuestions("chat", { generation: 1, questions: [{ id: "q1", text: "Which provider?", options: ["Stripe"] }] });
-  const answered = await app.inject({ method: "POST", url: "/api/goal-sessions/chat/answer", headers: AUTH, payload: { generation: 1, questionRevision: 1, feedback: "Stripe" } });
-  assert.equal(answered.statusCode, 200, answered.body);
-  assert.equal(answered.json().goalSessionState, "planning");
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/chat/answer", headers: AUTH, payload: { generation: 1, feedback: "Again" } })).statusCode, 400);
-
-  store.publishProposal("chat", { generation: 1, providerSessionId: "chat-session", proposal });
-  const changes = await app.inject({ method: "POST", url: "/api/goal-sessions/chat/request-changes", headers: AUTH, payload: { generation: 1, revision: 1, feedback: "Support invoices too" } });
-  assert.equal(changes.statusCode, 200, changes.body);
-  assert.equal(changes.json().goalSessionState, "planning");
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/chat/approve", headers: AUTH, payload: { generation: 1, revision: 1 } })).statusCode, 400, "a superseded revision cannot be approved");
-  store.publishProposal("chat", { generation: 1, providerSessionId: "chat-session", proposal });
-  const approved = await app.inject({ method: "POST", url: "/api/goal-sessions/chat/approve", headers: AUTH, payload: { generation: 1, revision: 2 } });
-  assert.equal(approved.statusCode, 200, approved.body);
-  assert.equal(approved.json().goalSessionState, "implementing");
-  // No runner is recorded here, so the approval waits with its reason and the
-  // resend route delivers it once the conversation is back.
-  assert.equal(approved.json().transitionStatus, "pending");
-  assert.match(approved.json().approvalDelivery.reason, /conversation is closed/);
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/chat/resend-approval", headers: AUTH, payload: {} })).json().transitionStatus, "pending");
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/missing/resend-approval", headers: AUTH, payload: {} })).statusCode, 400);
-
-  plan("resume");
-  const continued = await app.inject({ method: "POST", url: "/api/goal-sessions/resume/continue", headers: AUTH, payload: {} });
-  assert.equal(continued.statusCode, 200, continued.body);
-  assert.equal(continued.json().planId, "resume", "an open conversation is simply returned");
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/missing/continue", headers: AUTH, payload: {} })).statusCode, 400);
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/resume/restart", headers: AUTH, payload: {} })).statusCode, 400, "only an aborted goal restarts");
-
-  const recovered = await app.inject({ method: "POST", url: "/api/goal-sessions/resume/recover", headers: AUTH, payload: {} });
-  assert.equal(recovered.statusCode, 200, recovered.body);
-  assert.equal(runnerCalls.length, 1);
-  assert.equal(runnerCalls[0][0], "resume-workspace");
-  assert.equal(runnerCalls[0][1].planId, "resume");
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/missing/recover", headers: AUTH, payload: {} })).statusCode, 400);
-});
-
-test("review routes act on the stored review and hand reconciliation and code requests to the reviewer", async (t) => {
-  const { app, store, plan, reviewCalls } = await goalFixture(t);
-  plan("reviewed", { engine: { provider: "codex", reviewer: true } });
-  store.publishProposal("reviewed", { generation: 1, providerSessionId: "reviewed-session", proposal });
-  const review = store.get("reviewed").reviews[0];
-  assert.equal(review.status, "queued");
-  const claimed = store.outcomes.claim(review.id);
-  store.outcomes.finish(review.id, claimed.attempt, { status: "failed", error: "provider timeout" });
-
-  const acknowledged = await app.inject({ method: "POST", url: "/api/goal-sessions/reviewed/reviews/acknowledge", headers: AUTH, payload: { reviewId: review.id } });
-  assert.equal(acknowledged.statusCode, 410, "acknowledging a failed review no longer unlocks approval");
-  assert.equal(store.get("reviewed").reviews[0].acknowledgedAt, null);
-  const retried = await app.inject({ method: "POST", url: "/api/goal-sessions/reviewed/reviews/retry", headers: AUTH, payload: { reviewId: review.id } });
-  assert.equal(retried.statusCode, 200, retried.body);
-  assert.equal(retried.json().reviews[0].status, "queued");
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/reviewed/reviews/retry", headers: AUTH, payload: { reviewId: review.id } })).statusCode, 400, "a queued review cannot be retried again");
-  const reconciled = await app.inject({ method: "POST", url: "/api/goal-sessions/reviewed/reviews/reconcile", headers: AUTH, payload: { reviewId: review.id } });
-  assert.equal(reconciled.statusCode, 200, reconciled.body);
-  assert.deepEqual(reconciled.json(), { planId: "reviewed", reviewId: review.id, reconciled: true });
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/missing/reviews/retry", headers: AUTH, payload: { reviewId: review.id } })).statusCode, 400);
-  const code = await app.inject({ method: "POST", url: "/api/goal-sessions/reviewed/reviews/code", headers: AUTH, payload: {} });
-  assert.equal(code.statusCode, 200, code.body);
-  assert.equal(code.json().planId, "reviewed");
-  assert.deepEqual(reviewCalls, [["reconcile", "reviewed", review.id], ["code", "reviewed"]]);
-});
-
-test("aborted goals return their GitHub issues to the backlog exactly once", async (t) => {
-  const { app, store, plan } = await goalFixture(t);
-  plan("issues", { issueNumbers: [12, 13], issueUrls: ["https://github.com/x/y/issues/12", "https://github.com/x/y/issues/13"] });
-  assert.equal((await app.inject({ method: "POST", url: "/api/worktree-plans/issues/return-issues", headers: AUTH, payload: {} })).statusCode, 400, "only aborted goals release their issues");
-  store.recordGoalAborted("issues", { reason: "test" });
-  const returned = await app.inject({ method: "POST", url: "/api/worktree-plans/issues/return-issues", headers: AUTH, payload: {} });
-  assert.equal(returned.statusCode, 200, returned.body);
-  assert.equal(returned.json().planId, "issues");
-  assert.ok(returned.json().issuesReturnedAt);
-  assert.equal((await app.inject({ method: "POST", url: "/api/worktree-plans/issues/return-issues", headers: AUTH, payload: {} })).json().issuesReturnedAt, returned.json().issuesReturnedAt);
-  assert.equal((await app.inject({ method: "POST", url: "/api/worktree-plans/missing/return-issues", headers: AUTH, payload: {} })).statusCode, 400);
-});
-
-test("a burst approval drops the cached board so the new goal appears", async (t) => {
-  const approvals = [];
-  const burstService = { approve: async (burstId, repositoryId, body) => { approvals.push([burstId, repositoryId, body]); return { burstId, repositoryId, planId: "goal-1" }; } };
-  const calls = [];
-  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, burstService, worktreeDashboard: fakeDashboard(calls) });
-  const approved = await app.inject({ method: "POST", url: `/api/bursts/burst-abc/candidates/${REPO_ID}/approve`, headers: AUTH, payload: { goal: "Ship it" } });
-  assert.equal(approved.statusCode, 200, approved.body);
-  assert.deepEqual(approvals, [["burst-abc", REPO_ID, { goal: "Ship it" }]]);
-  assert.deepEqual(calls, [["invalidate"]]);
-});
-
-test("a settled background launch drops the cached board through the planner hook", async (t) => {
-  const planner = { abort: async () => ({}) };
-  const calls = [];
-  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: planner, worktreeDashboard: fakeDashboard(calls) });
-  assert.equal(typeof planner.onLaunchSettled, "function");
-  planner.onLaunchSettled();
-  assert.deepEqual(calls, [["invalidate"]]);
-  const retirable = await app.inject({ url: "/api/goals/sessions/retirable?planId=%20plan-9%20", headers: AUTH });
-  assert.equal(retirable.statusCode, 503, "no plan store means no session retirement");
-});
-
-test("a padded plan id is trimmed before the dry run looks it up", async (t) => {
-  const looked = [];
-  const store = { list: () => [], get: (id) => { looked.push(id); return null; }, recordSessionsRetired: () => {} };
-  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, worktreePlanner: { abort: async () => ({}) }, worktreePlanStore: store });
-  const retirable = await app.inject({ url: "/api/goals/sessions/retirable?planId=%20plan-9%20", headers: AUTH });
-  assert.equal(retirable.statusCode, 200, retirable.body);
-  assert.equal(retirable.json().sessionsAvailable, false);
-  assert.deepEqual(looked, ["plan-9"]);
-});
-
 test("the event stream fans out hub and queue events to a paired socket and detaches on close", async (t) => {
   const hub = fakeHub();
   const queue = new EventEmitter();
@@ -433,8 +186,7 @@ test("the event stream fans out hub and queue events to a paired socket and deta
   });
   await received(1);
   assert.equal(messages[0].type, "companion:ready");
-  // The durable delivery controller holds its own consumer on an injected hub.
-  assert.equal(hub.consumers, 2);
+  assert.equal(hub.consumers, 1);
   assert.equal(hub.listenerCount("state"), 1);
   hub.emit("event", { name: "agent.hook.Stop" });
   hub.emit("state", { connected: true });
@@ -447,7 +199,7 @@ test("the event stream fans out hub and queue events to a paired socket and deta
   const closed = new Promise((resolve) => serverSocket.once("close", resolve));
   serverSocket.terminate();
   await closed;
-  assert.equal(hub.consumers, 1, "the socket released its consumer");
+  assert.equal(hub.consumers, 0, "the socket released its consumer");
   assert.equal(hub.listenerCount("state"), 0);
   assert.equal(queue.listenerCount("changed"), 0);
   await app.close();
@@ -483,15 +235,6 @@ test("inbox items fall back to a title that names the request kind", () => {
   assert.equal(result.actionableCount, 3);
 });
 
-test("the discovery run route returns the open conversation and drops the cached board", async (t) => {
-  const { app, plan } = await goalFixture(t);
-  plan("running");
-  const run = await app.inject({ method: "POST", url: "/api/worktree-plans/running/run", headers: AUTH, payload: {} });
-  assert.equal(run.statusCode, 200, run.body);
-  assert.equal(run.json().planId, "running");
-  assert.equal((await app.inject({ method: "POST", url: "/api/worktree-plans/missing/run", headers: AUTH, payload: {} })).statusCode, 400);
-});
-
 test("an idle viewport lease is released after twenty-five seconds", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const cmux = fakeCmux();
@@ -503,43 +246,4 @@ test("an idle viewport lease is released after twenty-five seconds", async (t) =
   assert.deepEqual(cmux.calls.at(-1), ["viewport", TERM_ID, { clientId: "phone-3", generation: 8, clear: true }]);
   await app.close();
   assert.equal(cmux.calls.length, 2, "an expired lease is not cleared a second time on shutdown");
-});
-
-test("assessment routes hand retry and reconciliation to the reviewer with the exact review and stay inside the allow-list", async (t) => {
-  const { app, store, plan, reviewCalls } = await goalFixture(t);
-  plan("assessed", { engine: { provider: "codex", reviewer: true } });
-  store.publishProposal("assessed", { generation: 1, providerSessionId: "assessed-session", proposal });
-  const review = store.get("assessed").reviews[0];
-  const retried = await app.inject({ method: "POST", url: "/api/goal-sessions/assessed/reviews/assessment-retry", headers: AUTH, payload: { reviewId: review.id } });
-  assert.equal(retried.statusCode, 200, retried.body);
-  assert.equal(retried.json().planId, "assessed");
-  const reconciled = await app.inject({ method: "POST", url: "/api/goal-sessions/assessed/reviews/assessment-reconcile", headers: AUTH, payload: { reviewId: review.id } });
-  assert.equal(reconciled.statusCode, 200, reconciled.body);
-  assert.deepEqual(reviewCalls, [["assessment", "assessed", review.id, false], ["assessment", "assessed", review.id, true]]);
-  reviewCalls.length = 0;
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/assessed/reviews/assessment-retry", headers: AUTH, payload: { reviewId: "f".repeat(64) } })).statusCode, 200, "the reviewer, not the route, decides whether an unknown id is retryable");
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/assessed/reviews/assessment-retry", headers: AUTH, payload: { reviewId: "short" } })).statusCode, 400, "schema rejects a malformed id");
-  assert.equal((await app.inject({ method: "POST", url: "/api/goal-sessions/missing/reviews/assessment-retry", headers: AUTH, payload: { reviewId: review.id } })).statusCode, 400);
-  store.createPlan({ planId: "outside", repositoryId: "not-allowed", cwd: "/fixture", goal: "Outside", engine: { provider: "codex", reviewer: true } });
-  const denied = await app.inject({ method: "POST", url: "/api/goal-sessions/outside/reviews/assessment-retry", headers: AUTH, payload: { reviewId: review.id } });
-  assert.equal(denied.statusCode, 400); assert.match(denied.body, /Unknown repository/);
-  assert.deepEqual(reviewCalls.map((call) => call[2]), ["f".repeat(64)], "malformed, missing and denied requests never reach the reviewer");
-});
-
-test("retired decision routes refuse old clients without changing the proposal", async (t) => {
-  const { app, store, plan } = await goalFixture(t);
-  plan("decided", { engine: { provider: "codex", reviewer: true } });
-  store.publishProposal("decided", { generation: 1, providerSessionId: "decided-session", proposal });
-  const review = store.get("decided").reviews[0];
-  const retired = [
-    ["PUT", `/api/goal-sessions/decided/reviews/${review.id}/decisions/F1`, { verdict: "agree" }],
-    ["POST", `/api/goal-sessions/decided/reviews/${review.id}/send-decisions`, { generation: 1, revision: 1 }],
-    ["POST", "/api/goal-sessions/decided/reviews/acknowledge", { reviewId: review.id }],
-  ];
-  for (const [method, url, payload] of retired) {
-    assert.equal((await app.inject({ method, url, headers: AUTH, payload })).statusCode, 410);
-    assert.equal((await app.inject({ method, url, payload })).statusCode, 401);
-  }
-  assert.equal(store.get("decided").goalSessionPendingInput, null);
-  assert.equal(store.get("decided").proposalRevision, 1);
 });
