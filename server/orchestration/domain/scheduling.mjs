@@ -1,5 +1,6 @@
 import { readyTasks } from './graph.mjs';
 import { ownsWorker, planTarget } from './transitions.mjs';
+import { currentReviews } from './review.mjs';
 /** @typedef {{ key: string; role: import('../types.d.ts').Role; taskId: string | null; target: string }} ReadyWork */
 /** Readiness is derived from accepted evidence; durable ordering is assigned by
  * the state transaction when a candidate first becomes ready.
@@ -25,7 +26,7 @@ export function readyWork(goal) {
     const task = goal.tasks.find((task) => task.id === goal.integration?.taskId);
     if (task && task.repairCount < task.repairLimit) add('integrator', task.id, goal.integrationHead);
   } else if (!goal.integration && goal.tasks.every((task) => task.status === 'integrated')) {
-    const review = goal.reviews.filter((review) => review.kind === 'integration' && review.target === goal.integrationHead).at(-1);
+    const review = currentReviews(goal).filter((review) => review.kind === 'integration' && review.target === goal.integrationHead).at(-1);
     const failedCheck = goal.verification?.headSha === goal.integrationHead && goal.verification.checks.some((check) => !check.passed);
     if (review?.disposition === 'request_changes' || failedCheck) {
       if (goal.finalRepairCount < goal.finalRepairLimit) add('integrator', null, goal.integrationHead);

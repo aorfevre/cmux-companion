@@ -44,7 +44,16 @@ export interface Goal {
   pr: { number: number; url: string; headSha: string } | null;
   integration: { operationId: string; taskId: string; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'failed' } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number } | null;
+  planningRequest?: { message: string; basedOnRevision: number } | null;
+  results?: { id: string; attemptId: string; artifactId: string; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
 }
+export interface EvidenceReference { path: string; line: number; description: string }
+export type RoleOutput =
+  | { role: 'planner'; output: { contract: Contract } }
+  | { role: 'reviewer'; output: ReviewResult }
+  | { role: 'implementer'; output: { headSha: string; summary: string; evidence: EvidenceReference[] } }
+  | { role: 'integrator'; output: { headSha: string; operationId: string | null; summary: string; evidence: EvidenceReference[] } };
+export type RoleResult = RoleOutput & { schemaVersion: 1; goalId: string; attemptId: string; operationId: string; generation: number; revision: number; target: string };
 export type Authority = { kind: 'user' } | { kind: 'system' } | {
   kind: 'agent'; goalId: string; generation: number; revision: number; attemptId: string; role: Role;
 };

@@ -5,11 +5,12 @@ import { SchedulerOwnership } from './storage/ownership.mjs';
 import { Reconciler } from './reconciler.mjs';
 
 export class Scheduler {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; onError?: (error: unknown) => void }} options */
-  constructor({ service, repositories, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, onError = () => {} }) {
+  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; onError?: (error: unknown) => void }} options */
+  constructor({ service, repositories, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, onError = () => {} }) {
     this.service = service; this.store = service.store; this.agents = service.agents; this.repositories = repositories;
     this.ownership = ownership; this.id = id; this.intervalMs = integer(intervalMs, 1); this.onError = onError;
-    this.reconciler = new Reconciler({ service, ownership, id });
+    this.reconciler = new Reconciler({ service, ownership, results, id });
+    this.results = results;
     this.stopped = true; this.again = false;
     /** @type {Promise<void> | null} */ this.sweep = null;
     /** @type {ReturnType<typeof setInterval> | null} */ this.timer = null;
@@ -37,7 +38,7 @@ export class Scheduler {
     return this.sweep;
   }
   async pass() {
-    this.ownership.assertOwned(); await this.reconciler.run();
+    this.ownership.assertOwned(); await this.results?.drain(); await this.reconciler.run();
     if (this.stopped) return;
     for (const work of this.store.ready()) {
       if (this.stopped) return;

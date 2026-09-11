@@ -17,7 +17,7 @@ substitute acceptance criterion for the whole replacement.
 | T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Candidate/repair submission deliberately remains unavailable until the Git evidence adapters in T07–T08 are connected. |
 | M1 durable-decision gate | Passed for foundation | Review and verification below; no production scheduling activated. |
 | T04: scheduler and recovery | Implemented, independently reviewed | Exclusive nonce-fenced ownership, transactional capacity, durable FIFO, explicit retries, abort reconciliation and fresh-process crash recovery. |
-| T05–T06 / M2 | In progress | Runtime primitives and real-Git concurrent fake implementers now pass targeted tests; scheduled role-result/review/repair workflow and complete result crash cases remain. M2 has not passed. |
+| T05–T06 / M2 | In progress | Runtime, concurrent real-Git fake implementers, scheduled planning/review, revision requests and durable role-result intake pass targeted tests. Complete task-review/repair and integrated A/B/C journey remain; M2 has not passed. |
 | T07–T09 / M3 | Pending | Disposable real Git task repository, worktrees, integration, verification and PR adapter. |
 | T10–T12 / M4 | Pending | Runnable isolated composition, durable consumers, actual provider/cmux adapters and new mobile/Cypress journey. |
 | T13–T15 / M5 | Pending | Full crash matrix, cleanup, disposable cutover rehearsal, legacy removal, documentation and final acceptance. |
@@ -216,7 +216,75 @@ cooperative cancellation/drain semantics must precede its use for abort coverage
   and build passed for this runtime slice on Node 22.23.1.
 - `npm run test:coverage`: 1,312 tests passed; backend line coverage 98.14%.
 
-T05/M2 is not declared complete. Role output schemas, result reception/commit
-crash coverage, scheduled review/repair and an A/B/C integration journey remain
-required in T05–T09. The native interactive driver and production permission waits
+M2 is not declared complete. The T06 slice below adds role output schemas and
+planner/reviewer result reception/commit crash coverage; complete task review/repair
+and an A/B/C integration journey remain required in T06–T09. The native interactive driver and production permission waits
 are still T11 work; fake routing does not establish live terminal behavior.
+
+## T06 in progress: reviewed revisions and durable structured results
+
+Each role now has a strict versioned output envelope bound to goal, generation,
+revision, role, attempt, operation and exact target. Candidate/repair outputs carry
+bounded repository-relative evidence references. Role contexts clone the pinned
+contract, task, review history and applicable verification evidence. Prompt text
+states required permissions; provider enforcement remains a separate T11 gate.
+
+The user can request a revision with feedback. The command fences old workers and
+approval immediately, preserves immutable contracts and review history, and queues
+a new planner. A new published revision requires its own independent plan review
+and explicit user approval. Both revision request and direct contract publication
+refuse while an integration/publication operation remains unresolved, preserving
+the operation identity needed to record late external success.
+
+The internal result inbox persists raw output privately before creating a pending
+descriptor in the authoritative goal aggregate. Acceptance/rejection commits with
+its lifecycle change and journal event. Early output waits for dispatch identity;
+malformed/stale output remains evidence without granting approval or releasing
+worker ownership. The scheduler drains results before observing exits and again
+after awaited observations. A stopped but uncorrelated worker with pending output
+remains uncertain until identity can be established.
+
+### Independent review and corrections
+
+Reviewer: `/root/domain_review`, separate read-only conversation. Blocking findings
+resolved with regressions:
+
+- Revision discarded unresolved integration/publication ownership: both revision
+  paths now require those operations to be reconciled first.
+- Failed-check-only integrators lacked the failed check IDs/artifacts: exact-target
+  verification is included in their pinned context.
+- Output arriving during an awaited stopped observation could be cancelled before
+  acceptance: reconciliation now drains that output before settlement, including
+  correlated queued/uncertain results.
+- Rejecting a historical implementer result failed its running replacement's task:
+  rejection side effects now require a current owned active attempt.
+- Final acceptance/repair readiness could reuse a verdict from an old contract
+  when the same SHA reappeared: review gates and nonplanner contexts now require
+  the review attempt's current generation and revision. Planner revision context
+  retains historical findings as feedback, never as approval authority.
+
+The reviewer independently ran planning/result-contract tests (8/8) and internal
+inbox tests (13/13), approving both reviewed slices after the fixes. Six inbox crash
+cases SIGKILL a real service child at receipt, before acceptance commit and after
+acceptance commit, for planner and reviewer roles; two fresh restarts per case
+prove exactly one receipt/acceptance, including planner generation replacement.
+The final historical-verdict correction received a separate incremental review;
+the reviewer independently reran the expanded role-result suite (6/6).
+
+### Checks and scope
+
+- Targeted orchestration/security tests: 123/123 passed.
+- Backend checked-JavaScript types, targeted lint and `git diff --check`: passed.
+- Final `npm run verify`: 1,334 backend tests, 257 UI tests, lint, frontend/backend
+  types and build passed on Node 22.23.1.
+- Final `npm run test:coverage`: 1,334 tests passed; backend line coverage 98.20%.
+- Initial test-only failures assumed A/B launch response order and double-closed a
+  fixture database; assertions/fixture ownership were corrected before rerunning.
+  The later historical-verdict regression reused a fixed fixture review id;
+  assigning its new attempt a unique id resolved that test setup failure.
+
+This result intake currently serves trusted internal adapters; HTTP/bridge result
+transport is not connected yet. Candidate and integration-repair acceptance still
+fail closed until independent repository evidence is available. A fully scheduled
+task repair/integration journey, remaining adapter/result fault cases and M2 are
+still incomplete. No live or installed service was exercised, merged or deployed.

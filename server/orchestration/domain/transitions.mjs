@@ -1,6 +1,7 @@
 import { DomainError, identifier, integer, object, requireValue, sha, text, array } from './contracts.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
-import { acceptedReview, parseReview } from './review.mjs';
+import { acceptedReview, currentReviews, parseReview } from './review.mjs';
+import { parseRoleResult } from './role-result.mjs';
 
 /** @typedef {import('../types.d.ts').Goal} Goal */
 /** @typedef {import('../types.d.ts').Attempt} Attempt */
@@ -63,7 +64,7 @@ export function transition(before, command, authority) {
   requireValue(before && before.id === command.goalId, 'Goal not found', 'NOT_FOUND');
   validateAuthority(before, authority);
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
-  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
+  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
   const goal = structuredClone(before);
   /** @type {Transition} */
   const result = { goal, events: [], intents: [] };
@@ -72,9 +73,65 @@ export function transition(before, command, authority) {
   /** @param {import('../types.d.ts').Intent['kind']} kind @param {string} id @param {string | null} attemptId @param {import('../types.d.ts').Json} payload */
   const intent = (kind, id, attemptId, payload) => result.intents.push({ id, kind, goalId: goal.id, generation: goal.generation, revision: goal.revision, attemptId, payload });
   switch (command.type) {
+    case 'receive_role_result': {
+      requireAuthority(authority, 'system');
+      const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
+      requireValue(attempt, 'Result attempt is unknown', 'NOT_FOUND');
+      const id = identifier(input.resultId), artifactId = text(input.artifactId, 64);
+      requireValue(/^[a-f0-9]{64}$/.test(artifactId), 'Invalid result artifact');
+      goal.results ??= [];
+      requireValue(!goal.results.some((entry) => entry.id === id), 'Result id already exists', 'IDEMPOTENCY_CONFLICT');
+      goal.results.push({ id, attemptId: attempt.id, artifactId, status: 'pending', code: null });
+      emit('agent_result_received', { resultId: id, attemptId: attempt.id, artifactId }); break;
+    }
+    case 'accept_role_result': {
+      requireValue(authority.kind === 'agent', 'Scoped result authority required', 'FORBIDDEN');
+      const submission = goal.results?.find((entry) => entry.id === input.resultId);
+      requireValue(submission?.status === 'pending' && submission.attemptId === authority.attemptId, 'Result is not pending for this attempt', 'STALE_ATTEMPT');
+      const attempt = attemptById(goal, submission.attemptId);
+      const parsed = parseRoleResult(input.result, { goalId: goal.id, attempt });
+      let type, payload;
+      if (parsed.role === 'planner') { type = 'publish_contract'; payload = parsed.output; }
+      else if (parsed.role === 'reviewer') { type = 'record_review'; payload = { attemptId: attempt.id, reviewId: command.id, review: parsed.output }; }
+      else throw new DomainError('UNSUPPORTED_CAPABILITY', 'Repository evidence verification is unavailable');
+      const accepted = transition(before, { ...command, type, payload }, authority);
+      const saved = accepted.goal.results?.find((entry) => entry.id === submission.id);
+      requireValue(saved, 'Result reference disappeared'); saved.status = 'accepted';
+      accepted.events.push({ kind: 'agent_result_accepted', payload: { resultId: saved.id, attemptId: saved.attemptId, artifactId: saved.artifactId } });
+      return accepted;
+    }
+    case 'reject_role_result': {
+      requireAuthority(authority, 'system');
+      const submission = goal.results?.find((entry) => entry.id === input.resultId);
+      requireValue(submission?.status === 'pending', 'Result is not pending', 'STALE_ATTEMPT');
+      submission.status = 'rejected'; submission.code = identifier(input.code);
+      const attempt = goal.attempts.find((entry) => entry.id === submission.attemptId);
+      if (attempt && attempt.generation === goal.generation && attempt.revision === goal.revision && ownsWorker(attempt) && ['queued', 'running', 'uncertain'].includes(attempt.status)) {
+        attempt.status = 'failed'; attempt.error = 'Agent result was rejected; inspect the saved evidence';
+        if (attempt.role === 'implementer' && attempt.taskId) {
+          const task = taskById(goal, attempt.taskId); if (task.status === 'running') task.status = 'failed';
+        }
+      }
+      emit('agent_result_rejected', { resultId: submission.id, attemptId: submission.attemptId, artifactId: submission.artifactId, code: submission.code }); break;
+    }
+    case 'request_revision': {
+      requireAuthority(authority, 'user');
+      requireValue(goal.status !== 'delivered', 'Delivered goals require a new goal', 'INVALID_STATE');
+      requireValue(!goal.integration && !goal.publication, 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
+      const message = text(input.message, 8000);
+      for (const attempt of goal.attempts.filter(ownsWorker)) {
+        if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
+        if (attempt.workerState === 'pending') attempt.workerState = 'unknown';
+      }
+      goal.generation++; goal.approvedRevision = null; goal.status = 'discovering';
+      goal.planningRequest = { message, basedOnRevision: goal.revision };
+      goal.verification = null; goal.integration = null; goal.publication = null;
+      emit('revision_requested', { basedOnRevision: goal.revision }); break;
+    }
     case 'publish_contract': {
       requireValue(authority.kind === 'user' || (authority.kind === 'agent' && authority.role === 'planner'), 'Planner or user authority required', 'FORBIDDEN');
       requireValue(goal.status !== 'delivered', 'Delivered goals require a new goal', 'INVALID_STATE');
+      requireValue(!goal.integration && !goal.publication, 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
       const contract = parseContract(input.contract);
       for (const attempt of goal.attempts.filter(ownsWorker)) {
         if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
@@ -119,7 +176,7 @@ export function transition(before, command, authority) {
           task.repairCount++;
         } else {
           requireValue(!goal.integration && goal.tasks.every((task) => task.status === 'integrated'), 'Final repair is not ready', 'NOT_READY');
-          const rejected = goal.reviews.filter((review) => review.kind === 'integration' && review.target === goal.integrationHead).at(-1);
+          const rejected = currentReviews(goal).filter((review) => review.kind === 'integration' && review.target === goal.integrationHead).at(-1);
           const failedChecks = goal.verification?.headSha === goal.integrationHead && goal.verification.checks.some((check) => !check.passed);
           requireValue((rejected?.disposition === 'request_changes' || failedChecks) && goal.finalRepairCount < goal.finalRepairLimit, 'Final repair requires findings or failed checks and budget', 'NOT_READY');
           goal.finalRepairCount++;

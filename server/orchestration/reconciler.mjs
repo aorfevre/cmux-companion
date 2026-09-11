@@ -3,8 +3,8 @@ import { ownsWorker } from './domain/transitions.mjs';
 import { requireValue } from './domain/contracts.mjs';
 
 export class Reconciler {
-  /** @param {{service: import('./service.mjs').OrchestrationService; ownership: {assertOwned(): void}; id?: () => string}} options */
-  constructor({ service, ownership, id = randomUUID }) { this.service = service; this.store = service.store; this.agents = service.agents; this.ownership = ownership; this.id = id; }
+  /** @param {{service: import('./service.mjs').OrchestrationService; ownership: {assertOwned(): void}; results?: { drain(): void | Promise<void> }; id?: () => string}} options */
+  constructor({ service, ownership, results, id = randomUUID }) { this.service = service; this.store = service.store; this.agents = service.agents; this.ownership = ownership; this.results = results; this.id = id; }
   /** @param {string} goalId @param {string} type @param {unknown} payload */
   record(goalId, type, payload) {
     this.ownership.assertOwned(); const goal = this.store.get(goalId); requireValue(goal, 'Goal disappeared');
@@ -19,9 +19,21 @@ export class Reconciler {
     try { observation = await this.agents.observe(attempt.operationId); }
     catch { observation = { status: 'unknown', identity: null }; }
     this.ownership.assertOwned();
+    // Results can arrive during the provider await, after the sweep's initial
+    // drain. Settle them before stopped evidence changes result eligibility.
+    await this.results?.drain();
     goal = this.store.get(goalId); attempt = goal?.attempts.find((entry) => entry.id === attemptId);
     if (!goal || !attempt || !ownsWorker(attempt)) return;
     if (observation.status === 'stopped') {
+      const pending = goal.results?.some((entry) => entry.attemptId === attemptId && entry.status === 'pending');
+      if (pending && ['queued', 'uncertain'].includes(attempt.status)) {
+        if (!observation.identity || !attempt.worktree || !attempt.branch || (attempt.identity && attempt.identity !== observation.identity)) {
+          if (attempt.workerState !== 'unknown') this.record(goalId, 'record_failure', { attemptId, uncertain: true, error: 'Result awaits correlation with its recorded worker identity' });
+          return;
+        }
+        this.record(goalId, 'record_dispatch', { attemptId, identity: observation.identity, worktree: attempt.worktree, branch: attempt.branch });
+        await this.results?.drain();
+      }
       this.record(goalId, 'record_stopped', { attemptId }); this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
     }
     if (observation.status === 'running' && observation.identity && (!attempt.identity || attempt.identity === observation.identity)) {

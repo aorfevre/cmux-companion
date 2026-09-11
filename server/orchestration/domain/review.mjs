@@ -18,6 +18,13 @@ export function parseReview(value, expectedTarget) {
 }
 /** @param {import('../types.d.ts').Goal} goal @param {string} target @param {import('../types.d.ts').Review['kind']} kind */
 export function acceptedReview(goal, target, kind) {
-  const reviews = goal.reviews.filter((review) => review.target === target && review.kind === kind);
+  const reviews = currentReviews(goal).filter((review) => review.target === target && review.kind === kind);
   return reviews.at(-1)?.disposition === 'accept';
+}
+/** A commit identity alone cannot reuse approval across a revised contract.
+ * @param {import('../types.d.ts').Goal} goal
+ */
+export function currentReviews(goal) {
+  const attempts = new Set(goal.attempts.filter((attempt) => attempt.generation === goal.generation && attempt.revision === goal.revision).map((attempt) => attempt.id));
+  return goal.reviews.filter((review) => attempts.has(review.attemptId));
 }
