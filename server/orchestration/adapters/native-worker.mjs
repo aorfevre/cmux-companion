@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { requireValue } from '../domain/contracts.mjs';
+import { DomainError, requireValue } from '../domain/contracts.mjs';
 import { startBackgroundProcess, backgroundPolicy } from './agent-runtime.mjs';
+import { awaitNativeActivation } from './native-activation.mjs';
 import { nativeProcessStamp } from './native-process.mjs';
 
 /** Independent watchdog process. It owns the provider's process group, buffers
@@ -29,6 +30,7 @@ export async function runNativeWorker(configPath) {
   let sent = false;
   try {
     save('identity.json', { identity: config.identity, pid: process.pid, stamp: await nativeProcessStamp(process.pid, directory) });
+    if (config.activation) await awaitNativeActivation(config.activation, controller.signal);
     if (controller.signal.aborted) {
       save('outcome.json', { identity: config.identity, outcome: { status: 'failed', workerState: 'stopped', cause: { code: 'ABORTED', exitCode: null, signal: null }, stdout: '', stderr: '' } }); return;
     }
@@ -38,8 +40,8 @@ export async function runNativeWorker(configPath) {
       onIdentity: async ({ pid }) => { save('provider.json', { identity: config.identity, pid, stamp: await nativeProcessStamp(pid, directory) }); },
     });
     save('outcome.json', { identity: config.identity, outcome: await handle.result });
-  } catch {
-    save('outcome.json', { identity: config.identity, outcome: { status: 'failed', workerState: sent ? 'unknown' : 'stopped', cause: { code: 'NATIVE_WORKER_FAILED', exitCode: null, signal: null }, stdout: '', stderr: '' } });
+  } catch (error) {
+    save('outcome.json', { identity: config.identity, outcome: { status: 'failed', workerState: sent ? 'unknown' : 'stopped', cause: { code: error instanceof DomainError ? error.code : 'NATIVE_WORKER_FAILED', exitCode: null, signal: null }, stdout: '', stderr: '' } });
   } finally { process.off('SIGTERM', stop); process.off('SIGINT', stop); }
 }
 

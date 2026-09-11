@@ -94,7 +94,7 @@ export class NativeBackground {
       writeFileSync(join(directory, 'sent.json'), JSON.stringify({ identity }), { mode: 0o600, flag: 'wx' }); sent = true;
       this.failpoint('sent');
       const workerPath = join(directory, 'worker.json');
-      writeFileSync(workerPath, JSON.stringify({ identity, startedAt: Date.now(), command: { bin: this.bin, argv: command.argv, cwd: request.attempt.worktree, env: command.env }, policy: this.policy }), { mode: 0o600, flag: 'wx' });
+      writeFileSync(workerPath, JSON.stringify({ identity, startedAt: Date.now(), command: { bin: this.bin, argv: command.argv, cwd: request.attempt.worktree, env: command.env }, policy: this.policy, activation: command.activation }), { mode: 0o600, flag: 'wx' });
       const child = spawn(process.execPath, [WORKER, workerPath], { detached: true, stdio: 'ignore', env: { PATH: process.env.PATH } });
       await once(child, 'spawn'); child.unref();
       const identityPath = join(directory, 'identity.json'), deadline = Date.now() + 10000;

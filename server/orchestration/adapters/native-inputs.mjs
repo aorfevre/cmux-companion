@@ -10,11 +10,13 @@ const mcp = fileURLToPath(new URL('../agent-mcp.mjs', import.meta.url));
  * No goal/agent text is interpolated into that command. @param {string} value */
 const quote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
 
+/** @typedef {{ prompt: string; bridge?: { endpoint: string; credential: string }; activation?: import('./native-activation.mjs').NativeActivation }} NativeDescription */
+
 /** Private inputs are outside native file-tool working directories. Their
  * lifecycle belongs to the process adapter; preparation never starts a worker.
  */
 export class NativeInputs {
-  /** @param {{ engine: import('./ccs.mjs').Engine; capabilities: import('./ccs.mjs').NativeCapabilities; env: NodeJS.ProcessEnv; describe: (request: import('../types.d.ts').LaunchRequest) => Promise<{ prompt: string; bridge?: { endpoint: string; credential: string } }> | { prompt: string; bridge?: { endpoint: string; credential: string } } }} options */
+  /** @param {{ engine: import('./ccs.mjs').Engine; capabilities: import('./ccs.mjs').NativeCapabilities; env: NodeJS.ProcessEnv; describe: (request: import('../types.d.ts').LaunchRequest) => Promise<NativeDescription> | NativeDescription }} options */
   constructor({ engine, capabilities, env, describe }) {
     validateNativeEnvironment(env);
     this.engine = engine; this.capabilities = capabilities; this.env = { ...env }; this.describe = describe;
@@ -56,6 +58,6 @@ export class NativeInputs {
       save(mcpPath, JSON.stringify({ mcpServers: { companion: { command: process.execPath, args: [mcp, bridgeConfig] } } }));
     }
     const argv = ccsCommand({ request, engine: this.engine, capabilities: this.capabilities, env: this.env, contextPath, settingsPath, mcpPath });
-    return { argv, env: { ...this.env } };
+    return { argv, env: { ...this.env }, ...(description.activation ? { activation: description.activation } : {}) };
   }
 }

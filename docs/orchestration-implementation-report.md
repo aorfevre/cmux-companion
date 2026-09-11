@@ -881,3 +881,38 @@ probing, composition/credential handshake and opt-in live contracts remain.
 T12–T15 and final full verification/coverage/browser gates remain outstanding.
 The prior T10 full-suite snapshot still applies only to its committed code.
 Installed cutover, live acceptance, merge and release have not been performed.
+
+## T11 in progress: authoritative native dispatch activation
+
+The composition root now supplies pinned role context and private scoped credentials
+to native input preparation. Credentials can be minted for a provisioned attempt
+only after its launch intent enters `dispatching`; they remain unusable for agent
+status or mutations until `record_dispatch` commits. The independent supervisor
+persists its identity, then waits for the loopback `/agent/ready` endpoint before
+recording `provider-sent` or spawning the provider. Readiness requires current
+running authority, an allowed repository and exclusive scheduler ownership; it
+returns no workflow data. Reviewers receive no MCP tool credential. Activation
+waits are bounded, cancellable and redirect-free; private credentials and response
+bodies are never logged or reflected. Failure before provider send preserves
+stopped evidence and a structured cause.
+
+Passed: four new native-launch tests and 35 related supervisor, composition,
+API/bridge and import-boundary tests; checked-JavaScript and targeted lint.
+The real SQLite/scheduler/HTTP/Git scenario pauses after supervisor identity,
+proves there is no provider send or process before dispatch commits, then accepts
+one pinned independent review without granting user approval. Its abort variant
+proves no provider process starts. Authority tests cover missing ownership,
+repository removal, replaced generations and explicit revocation. Evidence:
+`/tmp/cmux-orchestration-native-launch.log` and
+`/tmp/cmux-orchestration-native-handshake-related.log`.
+
+`/root/domain_review` approved the authority/composition slice and independently
+passed the initial three launch cases, 11 composition cases and four bridge cases.
+`/root/scheduler_admission_review` approved the lifecycle slice, independently
+passed the initial launch suite and additional local HTTP retry, denial, abort and
+10-second timeout checks. An initial checked-JS error from an overbroad route edit
+was fixed before validation. No live provider, cmux, account or installed state was
+exercised. Actual service SIGKILL during this activation handshake remains a T13
+matrix case; the earlier native supervisor SIGKILL scenario has no activation wait.
+Production capability probing and interactive cmux/resume still remain in T11;
+T12–T15 and the final full verification gates remain open.

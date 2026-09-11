@@ -1,4 +1,6 @@
 import Fastify from 'fastify';
+import { nativeBinding } from './adapters/native-background.mjs';
+import { rolePrompt } from './adapters/role-prompts.mjs';
 import { OrchestrationStore } from './storage/store.mjs';
 import { ArtifactStore } from './storage/artifacts.mjs';
 import { BridgeAuthority } from './bridge-auth.mjs';
@@ -20,7 +22,7 @@ import { requireValue } from './domain/contracts.mjs';
  * @param {{
  * storage: { database: string; artifacts: string; resources: string };
  * repositories: ReadonlyMap<string,string>; token: string; readOnly?: boolean;
- * createAgents: (context: { onResult: (request: import('./types.d.ts').LaunchRequest, raw: string) => void }) => import('./types.d.ts').AgentPort & { close(): Promise<void> };
+ * createAgents: (context: { describe: (request: import('./types.d.ts').LaunchRequest) => import('./adapters/native-inputs.mjs').NativeDescription; onResult: (request: import('./types.d.ts').LaunchRequest, raw: string) => void }) => import('./types.d.ts').AgentPort & { close(): Promise<void> };
  * resolveCheck: ConstructorParameters<typeof VerificationRunner>[0]['resolveCheck'];
  * createPublisher: (context: { repositories: GitRepository }) => import('./types.d.ts').PublicationPort;
  * consumers?: { id: string; from?: number; handle: ConstructorParameters<typeof JournalConsumer>[0]['handle'] }[];
@@ -37,10 +39,11 @@ export async function createRuntime({ storage, repositories: configured, token, 
   let acceptingResults = true;
   /** @type {AgentResults | undefined} */ let results;
   let agents;
+  /** @type {((request: import('./types.d.ts').LaunchRequest) => import('./adapters/native-inputs.mjs').NativeDescription) | undefined} */ let describe;
   try {
     const artifacts = new ArtifactStore({ directory: storage.artifacts });
     const repositories = new GitRepository({ repositories: configured, directory: storage.resources, artifacts });
-    agents = createAgents({ onResult: (request, raw) => {
+    agents = createAgents({ describe: (request) => { requireValue(describe, 'Runtime context is not ready', 'NOT_READY'); return describe(request); }, onResult: (request, raw) => {
       requireValue(acceptingResults && results, 'Runtime result intake is closed', 'NOT_READY');
       const { goalId, attempt } = request;
       results.receive({ kind: 'agent', goalId, attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision }, request.operationId, raw);
@@ -55,6 +58,20 @@ export async function createRuntime({ storage, repositories: configured, token, 
     const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
     registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly });
+    describe = (request) => {
+      requireValue(!shutdownRequested && service.ownership, 'Runtime launch is unavailable', 'NOT_READY');
+      service.ownership.assertOwned();
+      const address = app.server.address();
+      requireValue(address && typeof address !== 'string' && address.address === '127.0.0.1', 'Native launch requires a bound loopback listener', 'NOT_READY');
+      const goal = store.get(request.goalId), attempt = goal?.attempts.find((entry) => entry.id === request.attempt.id);
+      requireValue(goal && attempt && configured.has(goal.repositoryId)
+        && JSON.stringify(nativeBinding({ goalId: goal.id, operationId: request.operationId, attempt })) === JSON.stringify(nativeBinding(request)),
+      'Native launch context changed', 'STALE_ATTEMPT');
+      const prompt = rolePrompt(goal, attempt);
+      const credential = bridgeAuth.issueForDispatch(goal.id, attempt.id, request.operationId);
+      const activation = { endpoint: `http://127.0.0.1:${address.port}`, credential };
+      return { prompt, activation, ...(attempt.role === 'reviewer' ? {} : { bridge: activation }) };
+    };
     const ownedAgents = agents;
     let started = false, closed = false, shutdownRequested = false;
     /** @type {Promise<string> | null} */ let binding = null;

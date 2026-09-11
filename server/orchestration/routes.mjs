@@ -19,7 +19,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     if (!routePath?.startsWith(PREFIX)) return;
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff');
     if (request.method !== 'GET' && !isSafeOrigin(request)) return reply.code(403).send({ code: 'BAD_ORIGIN', error: 'Origin rejected' });
-    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/results`, `${PREFIX}/agent/commit`].includes(routePath)) return;
+    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/ready`, `${PREFIX}/agent/results`, `${PREFIX}/agent/commit`].includes(routePath)) return;
     if (!isAuthorized(request, token)) return reply.code(401).send({ code: 'UNAUTHORIZED', error: 'Pair this device to continue' });
   });
   app.setErrorHandler((error, _request, reply) => {
@@ -76,6 +76,15 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
     return bridgeAuth.authenticate(header.slice(7));
   }
+  app.get(`${PREFIX}/agent/ready`, async (request, reply) => {
+    const header = request.headers.authorization ?? '';
+    requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
+    const authority = bridgeAuth.ready(header.slice(7)), goal = service.store.get(authority.goalId);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+    requireValue(service.ownership, 'Scheduler ownership is unavailable', 'OWNERSHIP_UNCERTAIN');
+    service.ownership.assertOwned();
+    return reply.code(204).send();
+  });
   app.get(`${PREFIX}/agent/status`, async (request) => {
     const authority = agentAuthority(request), goal = service.store.get(authority.goalId);
     requireValue(goal, 'Goal not found', 'NOT_FOUND');
