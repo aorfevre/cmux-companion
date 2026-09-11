@@ -6,9 +6,9 @@ import { goalView } from './domain/state-view.mjs';
 
 const PREFIX = '/api/orchestration';
 /** @param {import('fastify').FastifyInstance} app
- * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean }} options
+ * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean }} options
  */
-export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, stream, readOnly = false }) {
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly = false }) {
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
@@ -19,7 +19,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     if (!routePath?.startsWith(PREFIX)) return;
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff');
     if (request.method !== 'GET' && !isSafeOrigin(request)) return reply.code(403).send({ code: 'BAD_ORIGIN', error: 'Origin rejected' });
-    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/results`].includes(routePath)) return;
+    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/results`, `${PREFIX}/agent/commit`].includes(routePath)) return;
     if (!isAuthorized(request, token)) return reply.code(401).send({ code: 'UNAUTHORIZED', error: 'Pair this device to continue' });
   });
   app.setErrorHandler((error, _request, reply) => {
@@ -80,6 +80,11 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     const authority = agentAuthority(request), goal = service.store.get(authority.goalId);
     requireValue(goal, 'Goal not found', 'NOT_FOUND');
     return { ...goalView(goal), contracts: goal.contracts };
+  });
+  app.post(`${PREFIX}/agent/commit`, async (request) => {
+    const authority = agentAuthority(request);
+    requireValue(agentTools, 'Scoped commit tools are unavailable', 'UNSUPPORTED_CAPABILITY');
+    return agentTools.commit(authority, request.body);
   });
   app.post(`${PREFIX}/agent/results`, { bodyLimit: 2 * 1024 * 1024 }, async (request, reply) => {
     const header = request.headers.authorization ?? '';

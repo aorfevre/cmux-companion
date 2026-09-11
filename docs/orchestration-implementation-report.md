@@ -771,3 +771,67 @@ Backend coverage passed with 1,481 tests, one platform skip and **98.24% line co
 controls and real-backend Cypress remain T12. Production provider/cmux adapters,
 full fault matrix, cleanup/cutover/retirement and final combined review remain
 required. Live adapters, installed cutover, merge and release were not exercised.
+
+## T11 in progress: native role policy and scoped agent tools
+
+The CCS/native Claude command contract now separates interactive planning from
+bounded background roles, requires restricted/manual permission capabilities and
+strict MCP configuration, and supplies private context through a system-prompt
+file. Reviewer tools are Read/Grep/Glob only; planner tools add questions and scoped
+proposal submission. Implementer/integrator tools add native file edits and a
+scoped commit tool. Shell execution, delegation, unknown MCP tools and approval
+are unavailable. A separate hook process denies unsupported tools without granting
+native permissions. Structured native output must contain one successful result
+for the recorded conversation; application-level role/Git proof remains mandatory.
+
+The scoped commit tool takes only an idempotency ID, expected head and message.
+Server credentials select the goal, attempt, worktree and approved scope; the caller
+cannot supply another path or branch. Fixed Git operations capture and validate an
+immutable tree, then atomically advance the owned attempt branch and its commit
+receipt. Resource ownership refs are checked before staging and in the ref
+transaction. Lost responses reconcile the same commit. This tool does not accept,
+integrate or publish work. Actual sibling-conflict repair checkouts are covered.
+
+The stateless MCP subprocess binds planner output identities from its private
+configuration, exposes only named role tools, and still relies on server authority
+if local role configuration is spoofed. Both input and output frames are bounded;
+output completion is awaited before consuming another request. A stalled reader
+causes bounded protocol failure and immediate subprocess exit, preserving server
+receipts for retry. No database imports or generic shell command were added to
+the agent transport.
+
+Independent reviews and corrections:
+
+- `/root/domain_review` reproduced a missing resource ownership-ref check (P1) and
+  found mutable-index scope validation before tree capture (P2). The adapter now
+  validates ownership before work and during atomic ref advancement, and validates
+  the immutable tree actually committed. Regressions exercise missing/revoked refs
+  and concurrent index edits.
+- The reviewer then found `/agent/commit` missing from agent authentication route
+  exclusions (P1). Corrected; real HTTP and MCP subprocess tests prove valid agent
+  calls work while reviewer credentials, spoofed local roles, abort and lost
+  scheduler ownership remain denied. Reviewer passed all eight then-current
+  scoped-tool tests and approved the final route correction.
+- `/root/scheduler_admission_review` approved the five native argv/hook/output
+  tests, then found unbounded MCP stdout under backpressure (P2). Response limits,
+  awaited writes and a deadline resolve it. The first slow-reader regression
+  exposed Node waiting on blocked stdout even after destroy; immediate stateless
+  bridge exit fixes the hang. Reviewer independently passed the final real
+  non-reading-client regression with exit code 2 and empty stderr.
+
+Passed on the final slice: **40 targeted tests** across native tools/policy,
+API/bridge, import boundaries, composition and disposable full Git journey;
+checked-JavaScript and targeted lint. Logs:
+`/tmp/cmux-orchestration-native-tools-final.log` and
+`/tmp/cmux-orchestration-native-mcp-stall.log`. Initial failures included the
+missing auth exclusion, one stale hard-coded review target in the new test and
+the slow-reader exit hang; all were investigated and corrected.
+
+The last complete verify/coverage run remains T10 (`341b090`, 1,481 backend passes,
+257 UI passes, 98.24% backend lines). These new targeted checks do not replace the
+remaining M4/M5 full gates. Native CLI help/version metadata was read locally
+(Claude Code 2.1.268, CCS package 8.9.0); no provider session or live account request
+was launched. Production process/session execution, durable identity/recovery,
+cmux ownership, native input-file lifecycle and opt-in live adapter cases remain
+T11 work. Native permission enforcement is unverified until the authorized live
+suite runs; offline hook/argv tests do not establish it.

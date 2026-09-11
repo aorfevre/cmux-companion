@@ -15,6 +15,14 @@ export function createBridge({ endpoint, credential }) {
       return body;
   };
   return {
+    async status() {
+      const response = await fetch(new URL('/api/orchestration/agent/status', url), { redirect: 'error', headers: { authorization: `Bearer ${credential}` }, signal: AbortSignal.timeout(15000) });
+      const body = await response.json();
+      if (!response.ok) throw Object.assign(new Error('Agent status rejected'), { code: body.code || 'REQUEST_FAILED' });
+      return body;
+    },
+    /** @param {{id: string; expectedHead: string; message: string}} input */
+    commit: (input) => send('/api/orchestration/agent/commit', input),
     /** @param {unknown} command */
     submit: (command) => send('/api/orchestration/agent/commands', command),
     /** @param {{ id: string; raw: string }} result */

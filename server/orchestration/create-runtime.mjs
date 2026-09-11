@@ -7,6 +7,8 @@ import { AgentResults } from './agent-results.mjs';
 import { Scheduler } from './scheduler.mjs';
 import { GitRepository } from './adapters/git.mjs';
 import { GitIntegration } from './adapters/git-integration.mjs';
+import { AgentCommits } from './adapters/agent-commits.mjs';
+import { AgentTools } from './agent-tools.mjs';
 import { VerificationRunner } from './adapters/verification.mjs';
 import { JournalConsumer } from './event-consumers.mjs';
 import { EventStream } from './event-stream.mjs';
@@ -51,7 +53,8 @@ export async function createRuntime({ storage, repositories: configured, token, 
     store.onCommit = () => { stream.wake(); for (const subscriber of subscribers) subscriber.wake(); };
     const scheduler = new Scheduler({ service, repositories, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck }), publisher: createPublisher({ repositories }), results, onError: report });
     const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
-    registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, stream, readOnly });
+    const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
+    registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly });
     const ownedAgents = agents;
     let started = false, closed = false, shutdownRequested = false;
     /** @type {Promise<string> | null} */ let binding = null;
