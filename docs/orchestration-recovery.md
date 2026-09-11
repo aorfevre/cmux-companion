@@ -23,6 +23,25 @@ external observation proves its outcome. Recovery never treats a timed-out call
 as permission to launch again. The live adapter permission and process-tree limits
 remain as documented in `orchestration-native-adapters.md`.
 
+## Moved publication target
+
+If the configured remote target differs from the goal's recorded local base,
+publication pauses and the goal shows the observed remote commit. Scheduler ticks
+stop polling that paused publication. Choose **Publish reviewed head against moved
+target** to accept that exact observation and resume the same publication operation.
+This keeps the integration commit, independent final review and verification
+unchanged; it does not rebase or merge target-branch changes. The resulting PR may
+still need conflict resolution or further work before a separately authorized merge.
+
+The journal records each acceptance, and the adapter persists its append-only
+target chain before sending. The original operation request and base SHA remain
+immutable. If the remote moves again before publication, another explicit decision
+is required. A missing target branch cannot be accepted; it remains under observation
+so restoring it can recover publication. Abort revokes acceptance
+and fences future sends; a sent PR request can only be reconciled, never retargeted
+or duplicated. Rebasing or changing the integration commit still requires renewed
+review and verification.
+
 ## Cleanup API
 
 An authenticated `GET /api/orchestration/goals/:id/cleanup` returns a preview with

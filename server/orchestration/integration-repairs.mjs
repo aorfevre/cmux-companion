@@ -21,24 +21,32 @@ export class IntegrationRepairs {
       requireValue(goal && result?.repair && result.proofArtifactId && attempt, 'Repair effect has no recorded result');
       if (result.status !== 'pending') { this.store.advanceOperation(effect.id, effect.status, 'completed'); continue; }
       const input = { goalId: goal.id, repositoryId: goal.repositoryId, integrationOperationId: result.repair.integrationOperationId, effectId: effect.id, attempt, headSha: result.repair.headSha, proofArtifactId: result.proofArtifactId };
+      let provenPending = effect.status === 'pending';
       if (effect.status === 'dispatching') {
         const observed = await this.integrations.observeRepair(input); this.ownership.assertOwned();
         if (observed.status === 'integrated' && observed.headSha) {
           this.record(goal.id, 'settle_repair_result', { resultId: result.id, effectId: effect.id, headSha: observed.headSha });
           this.store.advanceOperation(effect.id, effect.status, 'completed'); continue;
         }
-        if (observed.status === 'unknown') continue;
+        if (observed.status === 'unknown') {
+          if (goal.integration?.state === 'failed' && goal.integration.retryRequested) this.record(goal.id, 'record_integration_failure', { operationId: input.integrationOperationId, code: 'OWNERSHIP_UNCERTAIN' });
+          continue;
+        }
+        provenPending = observed.status === 'pending';
       }
       goal = this.store.get(goal.id); requireValue(goal, 'Repair goal disappeared');
       const authorized = goal.status === 'building' && goal.generation === effect.generation && goal.revision === effect.revision && this.service.repositoryIds.has(goal.repositoryId);
       if (!authorized) {
-        // Pending means no effect has ever been sent. Dispatching remains owned
-        // until read-only observation establishes its outcome, even after abort.
-        if (effect.status === 'pending') {
+        // Observation can prove that a dispatching effect never applied too.
+        if (provenPending) {
           this.record(goal.id, 'cancel_repair_result', { resultId: result.id, effectId: effect.id, code: 'STALE_ATTEMPT' });
-          this.store.advanceOperation(effect.id, 'pending', 'completed');
+          this.store.advanceOperation(effect.id, effect.status, 'completed');
         }
         continue;
+      }
+      if (goal.integration?.state === 'failed' && goal.integration.retryRequested && provenPending) {
+        this.record(goal.id, 'resume_integration', { operationId: input.integrationOperationId });
+        goal = this.store.get(goal.id); requireValue(goal, 'Repair goal disappeared');
       }
       if (goal.integration?.state !== 'repairing') continue;
       if (effect.status === 'pending') this.store.advanceOperation(effect.id, 'pending', 'dispatching');

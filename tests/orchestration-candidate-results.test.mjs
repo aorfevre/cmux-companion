@@ -10,7 +10,7 @@ import { OrchestrationService } from '../server/orchestration/service.mjs';
 import { FakeAgents } from './helpers/orchestration/fake-agents.mjs';
 import { createRepositoryFixture } from './helpers/orchestration/fixture.mjs';
 
-async function fixture(t) {
+async function fixture(t, withSibling = false) {
   const repo = await createRepositoryFixture();
   const artifacts = new ArtifactStore({ directory: join(repo.directory, 'artifacts') });
   const store = new OrchestrationStore({ path: join(repo.directory, 'state.sqlite') });
@@ -28,6 +28,10 @@ async function fixture(t) {
   command('record_review', { attemptId: review.id, reviewId: 'plan_review', review: { schemaVersion: 1, target: review.target, disposition: 'accept', findings: [] } });
   command('record_stopped', { attemptId: review.id });
   command('approve', { revision: 1 }, 'user');
+  if (withSibling) {
+    command('request_attempt', { role: 'implementer', taskId: 'B', attemptId: 'b', operationId: 'op_b', conversationId: 'b' });
+    command('record_dispatch', { attemptId: 'b', identity: 'worker_b', worktree: '/tmp/racing-sibling', branch: 'sibling' });
+  }
   command('request_attempt', { role: 'implementer', taskId: 'A', attemptId: 'a', operationId: 'op_a', conversationId: 'a' });
   const resource = await repositories.provision({ repositoryId: 'repo', operationId: 'op_a', branch: 'companion/g/a', baseSha: repo.baseSha });
   command('record_dispatch', { attemptId: 'a', identity: 'worker_a', ...resource });
@@ -90,13 +94,14 @@ test('acceptance response loss retains one committed candidate proof', async (t)
 });
 
 test('a concurrent inbox mutation retries Git verification without failing the implementer', async (t) => {
-  const f = await fixture(t), headSha = await f.repo.implement(f.resource.worktree, 'A');
+  const f = await fixture(t, true), headSha = await f.repo.implement(f.resource.worktree, 'A');
   const candidate = f.repositories.candidate.bind(f.repositories); let intervene = true;
   f.repositories.candidate = async (input) => {
     const proof = await candidate(input);
     if (intervene) {
       intervene = false;
-      f.command('receive_role_result', { resultId: 'duplicate', attemptId: 'a', artifactId: f.store.get('g').results[0].artifactId });
+      // Another implementer can mutate the inbox while A's Git proof is in flight.
+      f.command('receive_role_result', { resultId: 'sibling_result', attemptId: 'b', artifactId: f.store.get('g').results[0].artifactId });
     }
     return proof;
   };
@@ -119,13 +124,14 @@ test('scoped agent cannot bypass Git verification with an internal candidate com
 });
 
 for (const outcome of ['accept', 'reject']) test(`stopped observation preserves candidate disposition after a Git version race: ${outcome}`, async (t) => {
-  const f = await fixture(t), headSha = await f.repo.implement(f.resource.worktree, 'A');
+  const f = await fixture(t, true), headSha = await f.repo.implement(f.resource.worktree, 'A');
   const candidate = f.repositories.candidate.bind(f.repositories); let intervene = true;
   f.repositories.candidate = async (input) => {
     const proof = await candidate(input);
     if (intervene) {
       intervene = false;
-      f.command('receive_role_result', { resultId: 'duplicate', attemptId: 'a', artifactId: f.store.get('g').results[0].artifactId });
+      // Another implementer can mutate the inbox while A's Git proof is in flight.
+      f.command('receive_role_result', { resultId: 'sibling_result', attemptId: 'b', artifactId: f.store.get('g').results[0].artifactId });
     }
     return proof;
   };

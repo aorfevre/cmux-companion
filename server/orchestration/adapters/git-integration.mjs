@@ -1,6 +1,7 @@
 import { mkdirSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { identifier, requireValue, sha } from '../domain/contracts.mjs';
+import { gitScopeStopped, withGitProcessScope } from './git-process-scope.mjs';
 import { git, gitBytes, pathExists } from './git.mjs';
 
 /** Durable per-operation evidence surrounds Git's atomic goal-ref advance.
@@ -17,6 +18,11 @@ export class GitIntegration {
   }
   /** @param {Parameters<import('../types.d.ts').RepositoryPort['integrate']>[0]} input */
   async integrate(input) {
+    identifier(input.operationId);
+    return withGitProcessScope(join(this.directory, `${input.operationId}.processes`), () => this.integrateOwned(input));
+  }
+  /** @param {Parameters<import('../types.d.ts').RepositoryPort['integrate']>[0]} input */
+  async integrateOwned(input) {
     const { goalId, repositoryId, operationId, expectedHead, baseSha, candidateSha } = input;
     identifier(goalId); identifier(repositoryId); identifier(operationId);
     sha(expectedHead); sha(baseSha); sha(candidateSha);
@@ -108,6 +114,7 @@ export class GitIntegration {
   async observeRepair(input) {
     identifier(input.integrationOperationId);
     try {
+      requireValue(gitScopeStopped(join(this.directory, `${input.integrationOperationId}.processes`)), 'Git command is not stopped');
       requireValue(realpathSync(this.directory) === this.directory, 'Integration directory changed');
       const path = join(this.directory, `${input.integrationOperationId}.proposal.json`);
       if (!pathExists(path)) return { status: /** @type {const} */ ('pending'), headSha: null };
@@ -126,6 +133,11 @@ export class GitIntegration {
    * @param {import('../types.d.ts').RepairInput} input
    */
   async acceptRepair(input) {
+    identifier(input.integrationOperationId);
+    return withGitProcessScope(join(this.directory, `${input.integrationOperationId}.processes`), () => this.acceptRepairOwned(input));
+  }
+  /** @param {import('../types.d.ts').RepairInput} input */
+  async acceptRepairOwned(input) {
     const { goalId, repositoryId, integrationOperationId, effectId, attempt, headSha, proofArtifactId } = input;
     identifier(goalId); identifier(integrationOperationId); identifier(effectId); sha(headSha);
     const { repository, common } = await this.repositories.repository(repositoryId);
@@ -193,6 +205,7 @@ export class GitIntegration {
   async observeIntegration(operationId) {
     identifier(operationId);
     try {
+      requireValue(gitScopeStopped(join(this.directory, `${operationId}.processes`)), 'Git command is not stopped');
       requireValue(realpathSync(this.directory) === this.directory, 'Integration directory changed');
       const path = join(this.directory, `${operationId}.json`);
       if (!pathExists(path)) return { status: 'pending', headSha: null };

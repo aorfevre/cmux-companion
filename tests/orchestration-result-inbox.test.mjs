@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,6 +47,32 @@ test('early role results remain durable and pending until dispatch identity is r
   const version = f.store.get('g').version;
   f.results.receive(f.authority, 'result', raw); await f.results.drain(); assert.equal(f.store.get('g').version, version);
   assert.throws(() => f.results.receive(f.authority, 'result', '{}'), { code: 'IDEMPOTENCY_CONFLICT' });
+});
+
+test('result retries cannot flood artifacts or bypass the one-pending-result bound', t => {
+  const f = fixture(t), raw = f.raw();
+  const first = f.results.receive(f.authority, 'first', raw);
+  const files = readdirSync(f.artifacts.directory).sort();
+  assert.deepEqual(f.results.receive(f.authority, 'first', raw), first);
+  for (let n = 0; n < 20; n++) {
+    assert.throws(() => f.results.receive(f.authority, 'first', `changed-${n}`), { code: 'IDEMPOTENCY_CONFLICT' });
+    assert.throws(() => f.results.receive(f.authority, `extra-${n}`, `extra-${n}`), { code: 'IDEMPOTENCY_CONFLICT' });
+  }
+  assert.throws(() => f.command('receive_role_result', { resultId: 'bypass', attemptId: f.authority.attemptId, artifactId: first.artifactId }), { code: 'IDEMPOTENCY_CONFLICT' });
+  assert.deepEqual(readdirSync(f.artifacts.directory).sort(), files);
+  assert.equal(f.store.get('g').results.length, 1);
+});
+
+test('retained rejected results have a per-attempt bound even after draining', async t => {
+  const f = fixture(t); f.dispatch();
+  for (let n = 0; n < 8; n++) {
+    f.results.receive(f.authority, `rejected-${n}`, `malformed-${n}`);
+    await f.results.drain();
+  }
+  const files = readdirSync(f.artifacts.directory).sort();
+  assert.equal(f.store.get('g').results.length, 8);
+  assert.throws(() => f.results.receive(f.authority, 'overflow', 'more evidence'), { code: 'IDEMPOTENCY_CONFLICT' });
+  assert.deepEqual(readdirSync(f.artifacts.directory).sort(), files);
 });
 
 test('malformed and stale reviews preserve private evidence without approval or slot release', async (t) => {

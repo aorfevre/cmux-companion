@@ -66,6 +66,57 @@ test('target movement is explicit and prevents publication before a PR request',
   assert.equal(await f.remote.head('repo', f.input.branch), null);
 });
 
+for (const divergence of ['behind', 'ahead']) test(`explicit acceptance publishes an unchanged reviewed head when local main is ${divergence} the remote`, async t => {
+  const f = await fixture(t);
+  if (divergence === 'behind') await fixtureGit(f.repo.repository, ['push', 'origin', `${f.input.headSha}:refs/heads/main`]);
+  else f.input.baseSha = f.input.headSha;
+  const observed = await f.publisher.publish(f.input);
+  assert.equal(observed.status, 'target_moved');
+  const requestPath = join(f.options.directory, f.input.operationId, 'request.json'), original = readFileSync(requestPath);
+  const accepted = { ...f.input, acceptedTargets: [{ id: 'accept_target', previousBaseSha: f.input.baseSha, baseHeadSha: observed.baseHeadSha }] };
+  const result = await new GitHubPublication(f.options).publish(accepted);
+  assert.equal(result.status, 'published'); assert.equal(result.pr.headSha, f.input.headSha);
+  assert.deepEqual(readFileSync(requestPath), original);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.options.directory, f.input.operationId, 'targets.accepted.json'), 'utf8')), accepted.acceptedTargets);
+  assert.equal((await new GitHubPublication(f.options).publish(accepted)).status, 'published');
+  assert.equal(f.github.creates.length, 1);
+  await assert.rejects(f.publisher.publish({ ...accepted, baseSha: observed.baseHeadSha }), { code: 'IDEMPOTENCY_CONFLICT' });
+  await assert.rejects(f.publisher.publish(f.input), { code: 'IDEMPOTENCY_CONFLICT' });
+  await assert.rejects(f.publisher.publish({ ...accepted, acceptedTargets: [...accepted.acceptedTargets, { id: 'after_send', previousBaseSha: observed.baseHeadSha, baseHeadSha: f.input.baseSha }] }), { code: 'STALE_TARGET' });
+});
+
+test('accepting an observed target cannot silently accept a newer remote commit or send after abort', async t => {
+  const f = await fixture(t);
+  await fixtureGit(f.repo.repository, ['push', 'origin', `${f.input.headSha}:refs/heads/main`]);
+  assert.equal((await f.publisher.publish(f.input)).status, 'target_moved');
+  const accepted = { ...f.input, acceptedTargets: [{ id: 'accept_target', previousBaseSha: f.input.baseSha, baseHeadSha: f.input.headSha }] };
+  await fixtureGit(f.repo.repository, ['push', '--force', 'origin', `${f.input.baseSha}:refs/heads/main`]);
+  const stale = await f.publisher.publish(accepted);
+  assert.equal(stale.status, 'target_moved'); assert.equal(stale.baseHeadSha, f.input.baseSha);
+  assert.equal(f.github.creates.length, 0); assert.equal(await f.remote.head('repo', f.input.branch), null);
+  await fixtureGit(f.repo.repository, ['push', 'origin', `${f.input.headSha}:refs/heads/main`]);
+  const controller = new AbortController(); controller.abort();
+  assert.equal((await f.publisher.publish(accepted, { signal: controller.signal })).status, 'cancelled');
+  assert.equal(f.github.creates.length, 0); assert.equal(await f.remote.head('repo', f.input.branch), null);
+});
+
+test('target acceptance after an owned push preserves the push and records every deliberate target change', async t => {
+  const f = await fixture(t), push = f.remote.push.bind(f.remote); let pushes = 0;
+  f.remote.push = async (...args) => {
+    pushes++; await push(...args);
+    await fixtureGit(f.repo.repository, ['push', 'origin', `${f.input.headSha}:refs/heads/main`]);
+  };
+  assert.equal((await f.publisher.publish(f.input)).status, 'target_moved');
+  assert.equal(await f.remote.head('repo', f.input.branch), f.input.headSha);
+  const first = { id: 'accept_first', previousBaseSha: f.input.baseSha, baseHeadSha: f.input.headSha };
+  await fixtureGit(f.repo.repository, ['push', '--force', 'origin', `${f.input.baseSha}:refs/heads/main`]);
+  assert.equal((await f.publisher.publish({ ...f.input, acceptedTargets: [first] })).status, 'target_moved');
+  const accepted = { ...f.input, acceptedTargets: [first, { id: 'accept_second', previousBaseSha: first.baseHeadSha, baseHeadSha: f.input.baseSha }] };
+  assert.equal((await f.publisher.publish(accepted)).status, 'published');
+  assert.equal(pushes, 1); assert.equal(f.github.creates.length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(join(f.options.directory, f.input.operationId, 'targets.accepted.json'), 'utf8')), accepted.acceptedTargets);
+});
+
 test('a target movement during an already sent PR is reported with the observed PR', async (t) => {
   const f = await fixture(t);
   f.github.beforeCreate = async () => fixtureGit(f.repo.repository, ['push', 'origin', `${f.input.headSha}:refs/heads/main`]);
@@ -161,4 +212,45 @@ test('GitHub CLI refuses malformed inventory and exposes no default write permis
   await assert.rejects(empty.create(f.input), { code: 'UNSUPPORTED_CAPABILITY' });
   const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: {}, execute: async () => '{}' });
   await assert.rejects(cli.find('repo', f.input.branch), { code: 'OWNERSHIP_UNCERTAIN' });
+});
+
+for (const scenario of ['pack_failure', 'abort']) test(`local push preparation ${scenario} does not claim a remote send`, async (t) => {
+  const f = await fixture(t), controller = new AbortController();
+  const repository = f.repositories.repository.bind(f.repositories);
+  f.repositories.repository = async (...args) => {
+    const result = await repository(...args);
+    if (scenario === 'abort') controller.abort();
+    // A real pack-objects failure before the network boundary.
+    return scenario === 'pack_failure' ? { ...result, repository: f.repo.directory } : result;
+  };
+  if (scenario === 'pack_failure') await assert.rejects(f.publisher.publish(f.input), { code: 'GIT_OPERATION_FAILED' });
+  else assert.equal((await f.publisher.publish(f.input, { signal: controller.signal })).status, 'cancelled');
+  const { existsSync } = await import('node:fs');
+  assert.equal(existsSync(join(f.options.directory, f.input.operationId, 'push.sent.json')), false);
+  assert.equal(await f.remote.head('repo', f.input.branch), null);
+  assert.equal(f.github.creates.length, 0);
+  f.repositories.repository = repository;
+  assert.equal((await f.publisher.publish(f.input)).status, 'published');
+  assert.equal(f.github.creates.length, 1);
+});
+
+for (const kind of ['push', 'pr']) test(`proven ${kind} spawn failure is retryable without duplicating an external request`, async (t) => {
+  const f = await fixture(t);
+  const { existsSync } = await import('node:fs');
+  let restore;
+  if (kind === 'pr') {
+    const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
+    const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: { PATH: join(f.repo.directory, 'missing-bin') } });
+    const create = f.github.create.bind(f.github);
+    f.github.create = cli.create.bind(cli); restore = () => { f.github.create = create; };
+  } else {
+    const policy = f.remote.destinations.get('repo'), original = policy.env.PATH;
+    f.publisher.failpoint = (point) => { if (point === 'push_sent') policy.env.PATH = join(f.repo.directory, 'missing-bin'); };
+    restore = () => { policy.env.PATH = original; f.publisher.failpoint = () => {}; };
+  }
+  await assert.rejects(f.publisher.publish(f.input), { code: 'EXTERNAL_NOT_SENT' });
+  assert.equal(existsSync(join(f.options.directory, f.input.operationId, `${kind}.sent.json`)), false);
+  restore();
+  assert.equal((await f.publisher.publish(f.input)).status, 'published');
+  assert.equal(f.github.creates.length, 1);
 });

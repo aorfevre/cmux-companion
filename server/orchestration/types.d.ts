@@ -43,7 +43,7 @@ export interface Goal {
   attempts: Attempt[]; reviews: Review[]; integrationHead: string;
   verification: Verification | null; finalRepairCount: number; finalRepairLimit: number;
   pr: { number: number; url: string; headSha: string } | null;
-  integration: { operationId: string; taskId: string | null; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' } | null;
+  integration: { operationId: string; taskId: string | null; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' | 'cancelled'; failedFrom?: 'applying' | 'repairing'; code?: string; retryRequested?: boolean } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; observation?: PublicationResult } | null;
   planningRequest?: { message: string; basedOnRevision: number } | null;
   verificationRuns?: { operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
@@ -118,6 +118,7 @@ export interface VerificationRunResult { verification: Verification; workerState
 export interface PublicationInput {
   operationId: string; goalId: string; repositoryId: string; headSha: string;
   branch: string; baseBranch: string; baseSha: string; marker: string;
+  acceptedTargets?: { id: string; previousBaseSha: string; baseHeadSha: string }[];
 }
 export interface PublicationResult {
   status: 'pending' | 'published' | 'unknown' | 'cancelled' | 'target_moved';
@@ -126,12 +127,12 @@ export interface PublicationResult {
 export interface RemotePort {
   identity(repositoryId: string): string;
   head(repositoryId: string, branch: string): Promise<string | null>;
-  push(input: { repositoryId: string; branch: string; headSha: string; expectedHead: string | null }): Promise<void>;
+  push(input: { repositoryId: string; branch: string; headSha: string; expectedHead: string | null }, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface GitHubPort {
   identity(repositoryId: string): string;
   find(repositoryId: string, branch: string): Promise<{ number: number; url: string; branch: string; baseBranch: string; headSha: string; marker: string | null; state: 'open' | 'closed' | 'merged' }[]>;
-  create(input: PublicationInput): Promise<void>;
+  create(input: PublicationInput, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface PublicationPort {
   publish(input: PublicationInput, options?: { signal?: AbortSignal }): Promise<PublicationResult>;

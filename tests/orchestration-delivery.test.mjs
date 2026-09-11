@@ -16,8 +16,15 @@ import { GitIntegration } from '../server/orchestration/adapters/git-integration
 import { ScriptedAgents, barrier } from './helpers/orchestration/fake-agents.mjs';
 import { createRepositoryFixture, fixtureGit } from './helpers/orchestration/fixture.mjs';
 
-for (const { conflict, finalFailure = null } of [{ conflict: false }, { conflict: true }, { conflict: false, finalFailure: 'review' }, { conflict: false, finalFailure: 'check' }]) test(`scheduler plans, overlaps A/B, integrates siblings and repairs C; conflict=${conflict}, final=${finalFailure}`, { timeout: 60000 }, async (t) => {
+for (const { conflict, finalFailure = null, movedTarget = false } of [{ conflict: false }, { conflict: true }, { conflict: false, finalFailure: 'review' }, { conflict: false, finalFailure: 'check' }, { conflict: false, movedTarget: true }]) test(`scheduler plans, overlaps A/B, integrates siblings and repairs C; conflict=${conflict}, final=${finalFailure}, moved=${movedTarget}`, { timeout: 60000 }, async (t) => {
   const repo = await createRepositoryFixture({ conflict });
+  if (movedTarget) {
+    const target = await repo.checkout('remote_target');
+    writeFileSync(join(target.worktree, 'target-update.txt'), 'Remote advanced before goal creation\n');
+    await fixtureGit(target.worktree, ['add', 'target-update.txt']); await fixtureGit(target.worktree, ['commit', '-m', 'Advance remote target']);
+    await fixtureGit(target.worktree, ['push', 'origin', 'HEAD:refs/heads/main']);
+    assert.equal(await fixtureGit(repo.repository, ['rev-parse', 'refs/heads/main']), repo.baseSha);
+  }
   if (finalFailure === 'check') repo.contract.verification.push({ id: 'injected_dependencies', argv: ['node', '--input-type=module', '-e', "import { composition } from './src/composition.mjs'; if (composition(() => 7, () => 11) !== 18) process.exit(1);"] });
   const store = new OrchestrationStore({ path: join(repo.directory, 'workflow.sqlite') });
   const artifacts = new ArtifactStore({ directory: join(repo.directory, 'artifacts') });
@@ -94,6 +101,13 @@ for (const { conflict, finalFailure = null } of [{ conflict: false }, { conflict
     await agents.drain(); await scheduler.tick();
     await Promise.all([...scheduler.verifications.active.values()].map((run) => run.job));
     await Promise.all([...scheduler.publications.active.values()].map((run) => run.job));
+    const current = store.get('g');
+    if (movedTarget && current.publication?.observation?.status === 'target_moved') {
+      const before = { head: current.integrationHead, reviews: current.reviews, verification: current.verification };
+      service.execute({ id: 'accept_remote_target', goalId: 'g', expectedVersion: current.version, type: 'accept_moved_target', payload: { operationId: current.publication.operationId, baseHeadSha: current.publication.observation.baseHeadSha } }, { kind: 'user' });
+      const accepted = store.get('g');
+      assert.deepEqual({ head: accepted.integrationHead, reviews: accepted.reviews, verification: accepted.verification }, before);
+    }
   }
   const goal = store.get('g');
   if (finalFailure) {
@@ -111,6 +125,7 @@ for (const { conflict, finalFailure = null } of [{ conflict: false }, { conflict
   assert.ok(goal.verification.checks.every((check) => check.passed));
   assert.equal(goal.status, 'delivered', JSON.stringify(goal.publication));
   assert.equal(github.creates.length, 1); assert.equal(goal.pr.headSha, goal.integrationHead);
+  if (movedTarget) assert.equal(goal.publication.plan.acceptedTargets.length, 1);
   assert.equal(await remote.head('repo', goal.publication.plan.branch), goal.integrationHead);
   assert.equal(cAttempts, 2); assert.equal(goal.tasks[2].repairCount, 1);
   const combined = goal.integrationResults.filter((result) => result.taskId === 'A' || result.taskId === 'B').at(-1).headSha;

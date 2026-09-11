@@ -1,7 +1,7 @@
-import { mkdirSync, lstatSync, readFileSync, realpathSync, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, lstatSync, readFileSync, realpathSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { identifier, requireValue, sha, branchName } from '../domain/contracts.mjs';
+import { DomainError, identifier, requireValue, sha, branchName } from '../domain/contracts.mjs';
 import { pathExists } from './git.mjs';
 
 /** Publication has two external effects. Sent markers precede each request;
@@ -36,10 +36,25 @@ export class GitHubPublication {
     requireValue(realpathSync(this.directory) === this.directory, 'Publication directory changed', 'OWNERSHIP_UNCERTAIN');
     const directory = join(this.directory, input.operationId);
     if (pathExists(directory)) requireValue(lstatSync(directory).isDirectory() && !lstatSync(directory).isSymbolicLink(), 'Publication operation directory changed', 'OWNERSHIP_UNCERTAIN');
-    const request = { ...input, remote: this.remote.identity(input.repositoryId), github: this.github.identity(input.repositoryId) };
+    // The original base remains part of operation identity. User acceptances
+    // extend a separately persisted chain; they never rewrite request.json.
+    const { acceptedTargets = [], ...original } = input;
+    const request = { ...original, remote: this.remote.identity(input.repositoryId), github: this.github.identity(input.repositoryId) };
     const path = join(directory, 'request.json');
     if (pathExists(path)) requireValue(JSON.stringify(this.read(path)) === JSON.stringify(request), 'Publication operation was reused', 'IDEMPOTENCY_CONFLICT');
-    return { directory, path, request };
+    let targetSha = input.baseSha;
+    const ids = new Set();
+    for (const target of acceptedTargets) {
+      identifier(target.id); sha(target.previousBaseSha); sha(target.baseHeadSha);
+      requireValue(Object.keys(target).length === 3 && !ids.has(target.id) && target.previousBaseSha === targetSha && target.baseHeadSha !== targetSha, 'Publication target acceptance chain changed', 'IDEMPOTENCY_CONFLICT');
+      ids.add(target.id); targetSha = target.baseHeadSha;
+    }
+    const targetsPath = join(directory, 'targets.accepted.json');
+    const recorded = pathExists(targetsPath) ? this.read(targetsPath) : [];
+    requireValue(Array.isArray(recorded) && recorded.length <= acceptedTargets.length && JSON.stringify(recorded) === JSON.stringify(acceptedTargets.slice(0, recorded.length)), 'Publication target acceptance was rewritten', 'IDEMPOTENCY_CONFLICT');
+    const newTargets = recorded.length < acceptedTargets.length;
+    requireValue(!newTargets || !pathExists(join(directory, 'pr.sent.json')), 'A sent PR request cannot accept another target', 'STALE_TARGET');
+    return { directory, path, request, targetSha, targetsPath, acceptedTargets, newTargets };
   }
   /** Read-only reconciliation. Absence after a sent PR request never permits a
    * second create: the original request may still complete.
@@ -47,12 +62,12 @@ export class GitHubPublication {
    * @returns {Promise<import('../types.d.ts').PublicationResult>}
    */
   async observe(input) {
-    const { directory, path } = this.request(input);
+    const { directory, path, targetSha } = this.request(input);
     if (!pathExists(path)) return { status: 'pending', baseHeadSha: null, pr: null };
     const pushPath = join(directory, 'push.sent.json'), prPath = join(directory, 'pr.sent.json');
     const pushed = pathExists(pushPath), requested = pathExists(prPath);
     if (pushed) requireValue(JSON.stringify(this.read(pushPath)) === JSON.stringify({ branch: input.branch, expectedHead: null, headSha: input.headSha }), 'Push receipt changed', 'OWNERSHIP_UNCERTAIN');
-    if (requested) requireValue(pushed && JSON.stringify(this.read(prPath)) === JSON.stringify({ marker: input.marker, branch: input.branch, baseBranch: input.baseBranch, headSha: input.headSha, baseHeadSha: input.baseSha }), 'PR receipt changed', 'OWNERSHIP_UNCERTAIN');
+    if (requested) requireValue(pushed && JSON.stringify(this.read(prPath)) === JSON.stringify({ marker: input.marker, branch: input.branch, baseBranch: input.baseBranch, headSha: input.headSha, baseHeadSha: targetSha }), 'PR receipt changed', 'OWNERSHIP_UNCERTAIN');
     const baseHeadSha = await this.remote.head(input.repositoryId, input.baseBranch);
     const head = await this.remote.head(input.repositoryId, input.branch);
     const matches = await this.github.find(input.repositoryId, input.branch);
@@ -65,13 +80,13 @@ export class GitHubPublication {
     if (pathExists(join(directory, 'pr.sent.json'))) return { status: 'unknown', baseHeadSha, pr: null };
     if (head !== null && (!pathExists(join(directory, 'push.sent.json')) || head !== input.headSha)) return { status: 'unknown', baseHeadSha, pr: null };
     if (pushed && head === null) return { status: 'unknown', baseHeadSha, pr: null };
-    return { status: baseHeadSha === input.baseSha ? 'pending' : 'target_moved', baseHeadSha, pr: null };
+    return { status: baseHeadSha === targetSha ? 'pending' : 'target_moved', baseHeadSha, pr: null };
   }
   /** @param {import('../types.d.ts').PublicationInput} input @param {{ signal?: AbortSignal }} [options]
    * @returns {Promise<import('../types.d.ts').PublicationResult>}
    */
   async publish(input, { signal } = {}) {
-    const { directory, path, request } = this.request(input);
+    const { directory, path, request, targetsPath, acceptedTargets, newTargets } = this.request(input);
     if (!pathExists(path)) {
       requireValue(!pathExists(directory), 'Publication directory lacks ownership', 'OWNERSHIP_UNCERTAIN');
       mkdirSync(directory, { mode: 0o700 }); this.save(path, request); this.failpoint('publication_requested');
@@ -79,11 +94,22 @@ export class GitHubPublication {
     let observed = await this.observe(input);
     if (observed.status !== 'pending') return observed;
     if (signal?.aborted) return { ...observed, status: 'cancelled' };
+    if (newTargets) { this.request(input); this.save(targetsPath, acceptedTargets); }
     const pushPath = join(directory, 'push.sent.json');
     if (!pathExists(pushPath)) {
-      if (!this.claim(pushPath, { branch: input.branch, expectedHead: null, headSha: input.headSha })) return this.observe(input);
-      this.failpoint('push_sent');
-      await this.remote.push({ repositoryId: input.repositoryId, branch: input.branch, headSha: input.headSha, expectedHead: null });
+      let claimed = false;
+      try {
+        await this.remote.push({ repositoryId: input.repositoryId, branch: input.branch, headSha: input.headSha, expectedHead: null }, { beforeSend: () => {
+          if (signal?.aborted) return false;
+          claimed = this.claim(pushPath, { branch: input.branch, expectedHead: null, headSha: input.headSha });
+          if (claimed) this.failpoint('push_sent');
+          return claimed;
+        } });
+      } catch (error) {
+        if (claimed && error instanceof DomainError && error.code === 'EXTERNAL_NOT_SENT') unlinkSync(pushPath);
+        throw error;
+      }
+      if (!claimed) return signal?.aborted ? { ...observed, status: 'cancelled' } : this.observe(input);
       this.failpoint('push_returned');
     }
     const pushed = await this.remote.head(input.repositoryId, input.branch);
@@ -93,9 +119,20 @@ export class GitHubPublication {
     if (signal?.aborted) return { ...observed, status: 'cancelled' };
     // Record the target immediately before the irreversible request. A later
     // target movement is reported in the observed result; it cannot undo a PR.
-    if (!this.claim(join(directory, 'pr.sent.json'), { marker: input.marker, branch: input.branch, baseBranch: input.baseBranch, headSha: input.headSha, baseHeadSha: observed.baseHeadSha })) return this.observe(input);
-    this.failpoint('pr_sent');
-    await this.github.create(input);
+    const prPath = join(directory, 'pr.sent.json');
+    let claimed = false;
+    try {
+      await this.github.create(input, { beforeSend: () => {
+        if (signal?.aborted) return false;
+        claimed = this.claim(prPath, { marker: input.marker, branch: input.branch, baseBranch: input.baseBranch, headSha: input.headSha, baseHeadSha: observed.baseHeadSha });
+        if (claimed) this.failpoint('pr_sent');
+        return claimed;
+      } });
+    } catch (error) {
+      if (claimed && error instanceof DomainError && error.code === 'EXTERNAL_NOT_SENT') unlinkSync(prPath);
+      throw error;
+    }
+    if (!claimed) return signal?.aborted ? { ...observed, status: 'cancelled' } : this.observe(input);
     this.failpoint('pr_returned');
     return this.observe(input);
   }

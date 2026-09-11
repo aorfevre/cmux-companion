@@ -11,7 +11,7 @@ export class GitHubCli {
     this.repositories = repositories; this.cwd = realpathSync(cwd);
     this.env = { PATH: env.PATH, HOME: env.HOME, GH_CONFIG_DIR: env.GH_CONFIG_DIR, GH_TOKEN: env.GH_TOKEN, GH_HOST: 'github.com', GH_PROMPT_DISABLED: '1', NO_COLOR: '1' };
     this.execute = execute ?? ((argv, input) => new Promise((resolve, reject) => {
-      const child = execFile('gh', argv, { cwd: this.cwd, env: this.env, timeout: 30000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => error ? reject(new DomainError('GITHUB_OPERATION_UNCERTAIN', 'GitHub request did not return confirmed success')) : resolve(stdout));
+      const child = execFile('gh', argv, { cwd: this.cwd, env: this.env, timeout: 30000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => error ? reject(new DomainError(child.pid === undefined ? 'EXTERNAL_NOT_SENT' : 'GITHUB_OPERATION_UNCERTAIN', 'GitHub request did not return confirmed success')) : resolve(stdout));
       child.stdin?.end(input);
     }));
   }
@@ -43,11 +43,12 @@ export class GitHubCli {
     }
     throw new DomainError('OWNERSHIP_UNCERTAIN', 'GitHub PR inventory exceeded the bounded observation limit');
   }
-  /** @param {import('../types.d.ts').PublicationInput} input */
-  async create(input) {
+  /** @param {import('../types.d.ts').PublicationInput} input @param {{ beforeSend?: ()=>boolean }} [options] */
+  async create(input, { beforeSend } = {}) {
     const slug = this.repository(input.repositoryId); branchName(input.branch); branchName(input.baseBranch); identifier(input.goalId); sha(input.headSha);
     requireValue(input.marker === `<!-- companion-goal:${input.goalId} -->`, 'Publication marker changed');
     const payload = { title: `Companion goal ${input.goalId}`, head: input.branch, base: input.baseBranch, body: `${input.marker}\n\nImplements the approved goal at verified commit \`${input.headSha}\`.\n\nIndependent integration review and required repository checks passed before publication.\n` };
+    if (beforeSend && !beforeSend()) return;
     await this.execute(['api', '--hostname', 'github.com', '--method', 'POST', `repos/${slug}/pulls`, '--input', '-'], JSON.stringify(payload));
   }
 }

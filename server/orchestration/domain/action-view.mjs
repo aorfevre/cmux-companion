@@ -13,7 +13,9 @@ export function actionView(goal) {
   const approvalBlocked = offer('approve', `Approve revision ${goal.revision}`, { revision: goal.revision });
   offer('request_revision', 'Request revision', { message: 'Revision feedback' });
   offer('abort', 'Abort goal', {});
+  if (goal.integration) offer('retry_integration', 'Retry integration', { operationId: goal.integration.operationId });
   offer('retry_verification', 'Retry verification', {});
+  if (goal.publication?.observation?.baseHeadSha) offer('accept_moved_target', 'Publish reviewed head against moved target', { operationId: goal.publication.operationId, baseHeadSha: goal.publication.observation.baseHeadSha });
   offer('authorize_repair', 'Authorize one final repair', {});
   for (const task of goal.tasks) {
     if (task.status === 'failed') offer('retry_task', `Retry ${task.id}`, { taskId: task.id });

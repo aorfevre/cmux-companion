@@ -181,6 +181,11 @@ Production requires `CMUX_COMPANION_ORCHESTRATION_CONFIG`, an absolute path to a
 mode-0600 regular JSON file. There is no implicit production configuration.
 Repository allow-list entries, separate storage, native capabilities and cutover
 inventory are mandatory; details are in the [cutover runbook](docs/orchestration-retirement.md).
+Git on the service's `PATH` must support `merge-tree --write-tree`,
+`--no-messages` and `--merge-base` (upstream Git 2.40 or newer). Production probes
+these options before reserving repository ownership or constructing agents;
+an unsupported installation fails with `UNSUPPORTED_CAPABILITY`. Install a
+supported Git and restart with its directory on the service's `PATH`.
 Capacity defaults are `global: 4`, `perGoal: 4`, `planners: 2`, each a positive
 integer. Background `ceilingMs`, `idleMs`, `maxOutputBytes` and `killGraceMs` are
 mandatory positive integers no larger than 2147483647. Interactive planner

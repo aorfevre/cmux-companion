@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { realpathSync, mkdirSync, existsSync } from 'node:fs';
 import { isAbsolute, join, dirname, basename } from 'node:path';
 import { canonicalJson, requireValue } from './domain/contracts.mjs';
-import { processLiveness, SchedulerOwnership } from './storage/ownership.mjs';
+import { processLiveness, ownerLiveness, SchedulerOwnership } from './storage/ownership.mjs';
 import { OrchestrationStore } from './storage/store.mjs';
 import { git } from './adapters/git.mjs';
 
@@ -116,8 +116,8 @@ export function assertRollback(path, expectedIdentity) {
     const identity = db.prepare('SELECT identity FROM journal_identity WHERE id=1').get();
     requireValue(identity && (!expectedIdentity || identity.identity === expectedIdentity), 'Replacement journal identity changed', 'OWNERSHIP_UNCERTAIN');
     const ownerTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='scheduler_owner'").get();
-    const owner = ownerTable ? db.prepare('SELECT pid FROM scheduler_owner WHERE singleton=1').get() : null;
-    requireValue(!owner || processLiveness(Number(owner.pid)) === 'dead', 'Replacement owner is still alive or uncertain', 'OWNERSHIP_UNCERTAIN');
+    const owner = ownerTable ? db.prepare('SELECT * FROM scheduler_owner WHERE singleton=1').get() : null;
+    requireValue(!owner || ownerLiveness(owner) === 'dead', 'Replacement owner is still alive or uncertain', 'OWNERSHIP_UNCERTAIN');
     const goals = db.prepare('SELECT state FROM goals').all().map(row => JSON.parse(String(row.state)));
     requireValue(!goals.some(goal => goal.attempts.some(/** @param {{workerState:string}} a */ a => a.workerState !== 'stopped') || goal.verificationRuns?.some(/** @param {{workerState:string}} run */ run => run.workerState !== 'stopped')), 'Replacement workers remain active or uncertain', 'OWNERSHIP_UNCERTAIN');
     requireValue(!db.prepare("SELECT id FROM operations WHERE status!='completed' LIMIT 1").get(), 'Replacement effects remain unsettled', 'NOT_READY');

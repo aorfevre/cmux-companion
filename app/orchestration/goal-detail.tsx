@@ -15,6 +15,7 @@ export function GoalDetail({ goal, disabled, terminal, act, control }: {
       <p>Integrated head <code>{goal.integrationHead.slice(0, 12)}</code></p>
       {safeLink && <a className="orch-pr" href={safeLink} target="_blank" rel="noreferrer">Open pull request #{goal.pr?.number}</a>}
       {goal.publication?.observation && <p>Publication: {goal.publication.observation.status}</p>}
+      {goal.publication?.observation?.status === 'target_moved' && <p className="orch-banner">The target branch moved to <code>{goal.publication.observation.baseHeadSha?.slice(0, 12) ?? 'an unavailable commit'}</code>. Publishing keeps the reviewed and verified head above unchanged; it does not rebase or merge the target branch.</p>}
       {goal.status === 'awaiting_approval' && goal.approvalBlocked && <p className="orch-banner">{goal.approvalBlocked}</p>}
       <div className="orch-actions">{goal.actions.filter(action => action.type !== 'request_revision' && action.type !== 'resume_planner').map(action => <button key={`${action.type}:${JSON.stringify(action.payload)}`} disabled={disabled} onClick={() => void act(goal, action)}>{action.label}</button>)}<button disabled={disabled} onClick={() => void control(goal, 'reconcile')}>Reconcile workers</button></div>
     </section>

@@ -39,12 +39,27 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.findByRole('region', { name: 'Combined verification' }).contains('p', 'injected_dependencies', { timeout: 30000 }).should('contain.text', 'Failed');
     cy.findByRole('link', { name: /Open pull request/ }).should('not.exist');
     cy.task<Evidence>('orchestrationEvidence').then(evidence => { expect(evidence.prCreates).to.have.length(0); });
+    cy.task<string>('orchestrationAdvanceTarget').as('movedTarget');
     cy.task('orchestrationRelease', 'final');
+    cy.contains('The target branch moved to', { timeout: 30000 }).should('be.visible');
+    cy.findByRole('link', { name: /Open pull request/ }).should('not.exist');
+    cy.task<Evidence>('orchestrationEvidence').then(evidence => {
+      const goal = evidence.goals.find(entry => entry.title === 'Build the parallel fixture')!;
+      expect(goal.publication!.observation!.status).to.equal('target_moved');
+      cy.wrap(goal.integrationHead).as('reviewedHead');
+      cy.wrap(goal.reviews.length).as('reviewCount');
+      expect(evidence.prCreates).to.have.length(0);
+    });
+    cy.reload(); cy.contains('button', 'Build the parallel fixture').click();
+    cy.findByRole('button', { name: 'Publish reviewed head against moved target' }).should('be.enabled').click();
     cy.findByRole('link', { name: 'Open pull request #1', timeout: 30000 }).should('be.visible');
     cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', status: 'delivered' }).then(evidence => {
       const goal = evidence.goals.find((entry) => entry.title === 'Build the parallel fixture')!;
       expect(goal.status).to.equal('delivered'); expect(goal.pr!.headSha).to.equal(goal.integrationHead); expect(goal.verification!.headSha).to.equal(goal.pr!.headSha);
       expect(evidence.prCreates).to.have.length(1);
+      cy.get('@reviewedHead').should('equal', goal.pr!.headSha);
+      cy.get('@reviewCount').should('equal', goal.reviews.length);
+      cy.get('@movedTarget').should('equal', goal.publication!.plan.acceptedTargets!.at(-1)!.baseHeadSha);
       const composition = evidence.launches.find((entry) => entry.goalId === goal.id && entry.attempt.taskId === 'C' && entry.attempt.role === 'implementer')!;
       cy.task<string>('orchestrationGit', { branch: composition.attempt.branch, file: 'src/a.mjs' }).should('include', 'return 2');
       cy.task<string>('orchestrationGit', { branch: composition.attempt.branch, file: 'src/b.mjs' }).should('include', 'return 3');

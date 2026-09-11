@@ -2,7 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, lstatSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { DomainError, identifier, requireValue, sha } from '../domain/contracts.mjs';
-import { backgroundPolicy, startBackgroundProcess } from './agent-runtime.mjs';
+import { backgroundPolicy } from './agent-runtime.mjs';
+import { runSupervisedProcess, observeSupervisedProcess } from './supervised-process.mjs';
+import { bootIdentity } from './process-evidence.mjs';
 import { pathExists } from './git.mjs';
 
 /** @typedef {{ bin: string; argv: string[]; env: NodeJS.ProcessEnv; environmentId: string; policy: import('../types.d.ts').BackgroundPolicy }} ResolvedCheck */
@@ -11,9 +13,9 @@ import { pathExists } from './git.mjs';
  * uncertain on reopen; absence of a completion receipt never authorizes rerun.
  */
 export class VerificationRunner {
-  /** @param {{ repositories: import('./git.mjs').GitRepository; resolveCheck: (repositoryId: string, check: import('../types.d.ts').Check) => ResolvedCheck; failpoint?: (point: string) => void }} options */
-  constructor({ repositories, resolveCheck, failpoint = () => {} }) {
-    this.repositories = repositories; this.resolveCheck = resolveCheck; this.failpoint = failpoint;
+  /** @param {{ repositories: import('./git.mjs').GitRepository; resolveCheck: (repositoryId: string, check: import('../types.d.ts').Check) => ResolvedCheck; failpoint?: (point: string) => void; boot?: ()=>string|null }} options */
+  constructor({ repositories, resolveCheck, failpoint = () => {}, boot = bootIdentity }) {
+    this.boot = boot; this.repositories = repositories; this.resolveCheck = resolveCheck; this.failpoint = failpoint;
     this.directory = join(repositories.directory, 'verification');
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     requireValue(!lstatSync(this.directory).isSymbolicLink(), 'Verification directory is a symlink', 'OWNERSHIP_UNCERTAIN');
@@ -48,18 +50,19 @@ export class VerificationRunner {
     const directory = this.runDirectory(operationId), requestPath = join(directory, 'request.json');
     const request = { schemaVersion: 1, operationId, goalId, repositoryId, headSha, checks };
     if (pathExists(requestPath)) {
-      requireValue(JSON.stringify(this.read(requestPath)) === JSON.stringify(request), 'Verification operation was reused', 'IDEMPOTENCY_CONFLICT');
+      const recordedRequest = this.read(requestPath); delete recordedRequest.bootId; delete recordedRequest.supervised;
+      requireValue(JSON.stringify(recordedRequest) === JSON.stringify(request), 'Verification operation was reused', 'IDEMPOTENCY_CONFLICT');
       const receipt = this.receipt(operationId);
       requireValue(receipt, 'Verification was interrupted; reconcile its recorded worker before retrying', 'OWNERSHIP_UNCERTAIN');
       return receipt;
     }
     requireValue(!pathExists(directory), 'Verification directory exists without a request', 'OWNERSHIP_UNCERTAIN');
-    mkdirSync(directory, { mode: 0o700 }); this.save(requestPath, request);
+    mkdirSync(directory, { mode: 0o700 }); this.save(requestPath, { ...request, bootId: this.boot(), supervised: true });
     this.failpoint('requested');
     const resource = await this.repositories.provision({ operationId, repositoryId, branch: `companion/${goalId}/${operationId}`, baseSha: headSha });
     const recorded = this.repositories.resource(operationId); requireValue(recorded, 'Verification checkout was not recorded');
     const home = join(directory, 'home'), temp = join(directory, 'tmp');
-    mkdirSync(home, { mode: 0o700 }); mkdirSync(temp, { mode: 0o700 });
+    mkdirSync(home, { mode: 0o700 }); mkdirSync(temp, { mode: 0o700 }); mkdirSync(join(directory, 'workers'), { mode: 0o700 });
     /** @type {import('../types.d.ts').Verification['checks']} */ const outcomes = [];
     /** @type {'stopped' | 'unknown'} */ let workerState = 'stopped';
     for (const check of checks) {
@@ -71,16 +74,17 @@ export class VerificationRunner {
           resolved = this.resolveCheck(repositoryId, structuredClone(check));
           requireValue(isAbsolute(resolved.bin) && resolved.environmentId.length > 0 && JSON.stringify(resolved.argv) === JSON.stringify(check.argv.slice(1)), 'Repository policy did not resolve the approved argv', 'UNSUPPORTED_CAPABILITY');
           backgroundPolicy(resolved.policy);
+          requireValue(resolved.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Verification output budget exceeds supervisor transport limit', 'UNSUPPORTED_CAPABILITY');
           const env = { ...resolved.env, HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: join(home, 'cache'), TMPDIR: temp, CI: 'true' };
           environment = { id: resolved.environmentId, bin: resolved.bin, argv: resolved.argv, platform: process.platform, architecture: process.arch, nodeVersion: process.version, environmentHash: createHash('sha256').update(JSON.stringify(env)).digest('hex') };
           requireValue(await this.repositories.checkCheckout(recorded) === headSha, 'Verification target changed', 'STALE_TARGET');
           this.save(join(directory, `${check.id}.launch.json`), { checkId: check.id, headSha, environment });
           this.failpoint('before_launch');
-          const processHandle = await startBackgroundProcess({ bin: resolved.bin, argv: resolved.argv, cwd: resource.worktree, env }, {
-            policy: resolved.policy, signal,
-            onIdentity: (identity) => { this.save(join(directory, `${check.id}.identity.json`), { ...identity, headSha, checkId: check.id }); this.failpoint('identity_recorded'); },
+          outcome = await runSupervisedProcess({ bin: resolved.bin, argv: resolved.argv, cwd: resource.worktree, env }, {
+            directory: join(directory, 'workers', check.id), policy: resolved.policy, signal, boot: this.boot,
+            onIdentity: () => { this.failpoint('identity_recorded'); },
           });
-          outcome = await processHandle.result; workerState = outcome.workerState;
+          workerState = outcome.workerState;
           code = outcome.cause?.code ?? '';
           if (workerState !== 'stopped') code ||= 'OWNERSHIP_UNCERTAIN';
           requireValue(await this.repositories.checkCheckout(recorded) === headSha, 'Verification changed its recorded checkout', 'STALE_TARGET');
@@ -93,7 +97,7 @@ export class VerificationRunner {
       }
       const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, checkId: check.id, headSha, argv: check.argv, environment, code, outcome }));
       outcomes.push({ id: check.id, passed: !code && outcome?.status === 'succeeded' && workerState === 'stopped', artifactId: artifact.id });
-      this.save(join(directory, `${check.id}.result.json`), outcomes.at(-1)); this.failpoint('check_recorded');
+      this.save(join(directory, `${check.id}.result.json`), { ...outcomes.at(-1), workerState }); this.failpoint('check_recorded');
     }
     const verification = { headSha, checks: outcomes };
     const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, goalId, repositoryId, verification, workerState }));
@@ -102,7 +106,65 @@ export class VerificationRunner {
     return result;
   }
   /** @param {string} operationId */
-  async observe(operationId) { return this.receipt(operationId); }
+  async observe(operationId) {
+    const directory = this.runDirectory(operationId), requestPath = join(directory, 'request.json');
+    if (!pathExists(requestPath)) return null;
+    const request = this.read(requestPath), currentBoot = this.boot();
+    const priorBoot = Boolean(request.bootId && currentBoot && request.bootId !== currentBoot);
+    const receipt = this.receipt(operationId);
+    if (receipt) {
+      if (receipt.workerState === 'stopped') return receipt;
+      if (!priorBoot) {
+        if (!request.supervised) return receipt;
+        for (const check of request.checks) {
+          if (!pathExists(join(directory, `${check.id}.launch.json`))) continue;
+          const observed = await observeSupervisedProcess(join(directory, 'workers', check.id), this.boot);
+          if (observed?.workerState !== 'stopped') return receipt;
+        }
+      }
+      // Keep completed check evidence immutable; only strengthen worker proof.
+      const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, goalId: request.goalId, repositoryId: request.repositoryId, verification: receipt.verification, workerState: 'stopped', recovery: priorBoot ? 'previous_boot' : 'supervisor_stopped' }));
+      const result = { ...receipt, workerState: /** @type {const} */ ('stopped'), artifactId: artifact.id };
+      this.save(join(directory, 'result.json'), result); return result;
+    }
+    /** @type {import('../types.d.ts').Verification['checks']} */ const outcomes = [];
+    /** @type {'stopped'|'unknown'} */ let workerState = 'stopped';
+    for (const check of /** @type {import('../types.d.ts').Check[]} */ (request.checks)) {
+      const resultPath = join(directory, `${check.id}.result.json`);
+      if (pathExists(resultPath)) {
+        const completed = this.read(resultPath), evidence = JSON.parse(this.repositories.artifacts.get(completed.artifactId).toString('utf8'));
+        const recordedState = completed.workerState ?? evidence.outcome?.workerState ?? (pathExists(join(directory, `${check.id}.launch.json`)) ? 'unknown' : 'stopped');
+        if (!priorBoot && recordedState !== 'stopped') workerState = 'unknown';
+        outcomes.push({ id: completed.id, passed: completed.passed, artifactId: completed.artifactId }); continue;
+      }
+      const launchPath = join(directory, `${check.id}.launch.json`);
+      let outcome = null, environment = null, code = 'NOT_STARTED';
+      if (pathExists(launchPath)) {
+        const launch = this.read(launchPath);
+        requireValue(launch.checkId === check.id && launch.headSha === request.headSha, 'Verification launch identity changed', 'OWNERSHIP_UNCERTAIN');
+        environment = launch.environment;
+        if (!request.supervised && !priorBoot) return null; // Legacy in-process runs lack durable supervisor proof.
+        outcome = priorBoot && (!request.supervised || !pathExists(join(directory, 'workers', check.id)))
+          ? { status: 'failed', workerState: 'stopped', cause: { code: 'OWNERSHIP_UNCERTAIN', exitCode: null, signal: null }, stdout: '', stderr: '' }
+          : await observeSupervisedProcess(join(directory, 'workers', check.id), this.boot);
+        if (!outcome) return null;
+        if (outcome.workerState !== 'stopped') workerState = 'unknown';
+        code = outcome.cause?.code ?? '';
+        if (workerState !== 'stopped') code ||= 'OWNERSHIP_UNCERTAIN';
+        const resource = this.repositories.resource(operationId);
+        try {
+          requireValue(resource && await this.repositories.checkCheckout(resource) === request.headSha, 'Verification checkout changed', 'STALE_TARGET');
+        } catch (error) { if (!(error instanceof DomainError)) throw error; code = error.code; }
+      }
+      const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, checkId: check.id, headSha: request.headSha, argv: check.argv, environment, code, outcome }));
+      outcomes.push({ id: check.id, passed: !code && outcome?.status === 'succeeded' && workerState === 'stopped', artifactId: artifact.id });
+    }
+    const verification = { headSha: request.headSha, checks: outcomes };
+    const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, goalId: request.goalId, repositoryId: request.repositoryId, verification, workerState }));
+    const result = { verification, workerState, artifactId: artifact.id };
+    this.save(join(directory, 'result.json'), result);
+    return this.receipt(operationId);
+  }
   /** @param {string} operationId @returns {import('../types.d.ts').VerificationRunResult | null} */
   receipt(operationId) {
     const directory = this.runDirectory(operationId), path = join(directory, 'result.json');

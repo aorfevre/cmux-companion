@@ -24,10 +24,19 @@ source, tests and scripts and the removed/retained monitoring routes against
 | Legacy installed/live audit scripts | Removed with obsolete orchestration paths; replacement live checks remain explicit opt-in. |
 
 `server/index.mjs` requires an explicit private configuration before starting
-services. `production.mjs` checks the legacy inventory before repository locks,
+services. `production.mjs` checks the legacy inventory and the actual Git
+`merge-tree` option contract before repository locks,
 checks it again after acquiring locks, probes native capabilities and then
 constructs the new runtime. `server/app.mjs` no longer constructs legacy SQL
 writers or orchestration background timers. It retains monitoring services only.
+Git must support `--write-tree`, `--no-messages` and `--merge-base` (upstream
+Git 2.40 or newer). The bounded help probe uses the service's `PATH`, loads no
+repository configuration and makes no repository changes. If startup reports
+`UNSUPPORTED_CAPABILITY`, install a supported Git and restart with its directory
+on that `PATH`; a newer Git in an interactive shell alone does not change the
+service environment. Vendor builds are checked by their advertised options,
+rather than their version label. This probe applies to read-only production too;
+the account-free disposable runtime does not load native production probes.
 
 ## Operator procedure
 
@@ -86,3 +95,24 @@ Local rehearsal does not prove installed cutover, native provider permission
 enforcement, model quality, cmux continuity or live GitHub publication. Those
 remain separately authorized acceptance paths. Final local verification and
 coverage evidence are recorded in the implementation report and PR.
+
+### Recovery after an interrupted worker
+
+Verification commands now run under an independent watchdog. A service crash
+leaves its ceiling, idle and output limits active; restart observes the durable
+outcome without launching the remaining checks. A failed, stopped verification
+can be explicitly retried against its recorded target.
+
+An uncertain worker continues to consume capacity, including after abort. Neither
+an operator assertion nor disappearance of its original process group proves that
+escaped descendants stopped. Native launches and verification requests record the
+kernel boot identity. After an operator-managed reboot, reconciliation can prove
+all processes from the earlier boot stopped and release their capacity. Do not
+reboot automatically, delete evidence, or forge stopped receipts. Older receipts
+without boot evidence remain conservative and require separately established
+termination evidence; this change does not fabricate proof for old launches.
+
+Scheduler locks additionally record boot and process birth identity. A proven
+new boot or different process birth permits reclaiming a stale PID without killing
+its current owner. Missing evidence retains the existing refusal. Never delete an
+ownership database to bypass that refusal.

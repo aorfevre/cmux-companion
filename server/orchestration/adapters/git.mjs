@@ -1,4 +1,5 @@
-import { execFile } from 'node:child_process';
+import { trackGitCommand } from './git-process-scope.mjs';
+import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, realpathSync, lstatSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DomainError, identifier, requireValue, sha } from '../domain/contracts.mjs';
@@ -10,15 +11,51 @@ import { ownedArea } from '../domain/graph.mjs';
  * @returns {Promise<Buffer>} 
  */
 export async function gitBytes(cwd, argv, input, allowConflict = false) {
+  const tracked = trackGitCommand();
+  const args = ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'submodule.recurse=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'protocol.allow=never', ...argv];
+  const env = { PATH: process.env.PATH, LANG: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1' };
+  if (tracked) return trackedGitBytes(cwd, args, env, input, allowConflict, tracked);
   return new Promise((resolveResult, reject) => {
-    const child = execFile('git', ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', ...argv], {
-      cwd, env: { PATH: process.env.PATH, LANG: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1' },
-      timeout: 30000, maxBuffer: 16 * 1024 * 1024, encoding: null,
-    }, (error, stdout) => {
+    const child = execFile('git', args, { cwd, env, timeout: 30000, maxBuffer: 16 * 1024 * 1024, encoding: null }, (error, stdout) => {
       if (error && !(allowConflict && error.code === 1)) reject(Object.assign(new DomainError('GIT_OPERATION_FAILED', 'Local Git operation failed; reconcile recorded repository evidence'), { exitCode: error.code }));
       else resolveResult(stdout);
     });
     child.stdin?.end(input);
+  });
+}
+
+/** spawn is required: execFile does not forward detached to its child.
+ * @param {string} cwd @param {string[]} argv @param {NodeJS.ProcessEnv} env
+ * @param {string|Buffer|undefined} input @param {boolean} allowConflict
+ * @param {NonNullable<ReturnType<typeof trackGitCommand>>} tracked
+ * @returns {Promise<Buffer>} */
+function trackedGitBytes(cwd, argv, env, input, allowConflict, tracked) {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn('git', argv, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    /** @type {Buffer[]} */ const output = []; let stdoutSize = 0, stderrSize = 0, settled = false, interrupted = false;
+    /** @type {ReturnType<typeof setTimeout>|undefined} */ let escalation;
+    const failure = (/** @type {unknown} */ code) => Object.assign(new DomainError('GIT_OPERATION_FAILED', 'Local Git operation failed; reconcile recorded repository evidence'), { exitCode: code });
+    const finish = (/** @type {unknown} */ error, neverSpawned = false) => {
+      if (settled) return; settled = true; clearTimeout(timer); clearTimeout(escalation);
+      try { if (!tracked.complete(child.pid, neverSpawned) && !error) error = new DomainError('OWNERSHIP_UNCERTAIN', 'Git process group has not stopped'); } catch (evidenceError) { error = evidenceError; }
+      child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+      if (error) reject(error); else resolveResult(Buffer.concat(output));
+    };
+    const signal = (/** @type {NodeJS.Signals} */ value) => { if (child.pid !== undefined) { try { process.kill(-child.pid, value); } catch { /* Group state remains independently observed. */ } } };
+    const stop = () => {
+      if (interrupted || settled) return; interrupted = true; signal('SIGTERM');
+      escalation = setTimeout(() => { signal('SIGKILL'); finish(failure('TERMINATED')); }, 250);
+    };
+    const timer = setTimeout(stop, 30000);
+    child.on('error', error => finish(failure(/** @type {NodeJS.ErrnoException} */ (error).code), child.pid === undefined));
+    child.stdin.on('error', () => { /* Git may reject input before reading it; close supplies its exit code. */ });
+    child.stdout.on('data', chunk => { stdoutSize += chunk.length; if (stdoutSize > 16 * 1024 * 1024) stop(); else output.push(chunk); });
+    child.stderr.on('data', chunk => { stderrSize += chunk.length; if (stderrSize > 16 * 1024 * 1024) stop(); });
+    child.on('close', (code) => finish(!interrupted && (code === 0 || (allowConflict && code === 1)) ? null : failure(code)));
+    if (child.pid !== undefined) {
+      try { tracked.identity(child.pid); } catch (error) { signal('SIGKILL'); finish(error); return; }
+    }
+    child.stdin.end(input);
   });
 }
 

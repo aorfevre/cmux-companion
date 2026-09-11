@@ -8,6 +8,7 @@ import { DomainError, identifier, requireValue } from '../domain/contracts.mjs';
 import { backgroundPolicy } from './agent-runtime.mjs';
 import { nativeResult, requireNativeCapabilities } from './ccs.mjs';
 import { pathExists } from './git.mjs';
+import { bootIdentity } from './process-evidence.mjs';
 import { nativeProcessStamp, nativeGroupState } from './native-process.mjs';
 const WORKER = fileURLToPath(new URL('./native-worker.mjs', import.meta.url));
 
@@ -23,11 +24,11 @@ export function nativeBinding(request) {
  * starts another worker. No constructor starts a process or timer.
  */
 export class NativeBackground {
-  /** @param {{ directory: string; bin: string; inputs: import('./native-inputs.mjs').NativeInputs; policy: import('../types.d.ts').BackgroundPolicy; onResult: (request: import('../types.d.ts').LaunchRequest, raw: string) => void | Promise<void>; onError?: (code: string) => void; failpoint?: (point: string) => void }} options */
-  constructor({ directory, bin, inputs, policy, onResult, onError = () => {}, failpoint = () => {} }) {
+  /** @param {{ directory: string; bin: string; inputs: import('./native-inputs.mjs').NativeInputs; policy: import('../types.d.ts').BackgroundPolicy; onResult: (request: import('../types.d.ts').LaunchRequest, raw: string) => void | Promise<void>; onError?: (code: string) => void; failpoint?: (point: string) => void; boot?: ()=>string|null }} options */
+  constructor({ directory, bin, inputs, policy, onResult, onError = () => {}, failpoint = () => {}, boot = bootIdentity }) {
     requireValue(isAbsolute(bin) && !bin.includes('\0'), 'Native executable must be explicit and absolute');
     requireValue(!inputs.installation || inputs.installation.bin === bin, 'Native wrapper does not match the probed installation', 'UNSUPPORTED_CAPABILITY');
-    this.bin = bin; this.inputs = inputs; this.policy = backgroundPolicy(policy); requireValue(this.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Native output budget exceeds transport limit'); this.onResult = onResult; this.onError = onError; this.failpoint = failpoint;
+    this.boot = boot; this.bin = bin; this.inputs = inputs; this.policy = backgroundPolicy(policy); requireValue(this.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Native output budget exceeds transport limit'); this.onResult = onResult; this.onError = onError; this.failpoint = failpoint;
     for (const role of /** @type {const} */ (['implementer', 'reviewer', 'integrator'])) requireNativeCapabilities(inputs.capabilities, role, 'background');
     this.capabilities = /** @type {import('../types.d.ts').AgentPort['capabilities']} */ (['implementer', 'reviewer', 'integrator'].map((role) => ({ role, mode: 'background' })));
     mkdirSync(directory, { recursive: true, mode: 0o700 }); this.directory = realpathSync(directory);
@@ -85,7 +86,7 @@ export class NativeBackground {
     requireValue(!pathExists(directory), 'Native directory has no launch owner', 'OWNERSHIP_UNCERTAIN');
     mkdirSync(directory, { mode: 0o700 });
     const identity = `native:${request.operationId}:${randomUUID()}`;
-    writeFileSync(requestPath, JSON.stringify({ schemaVersion: 1, identity, binding, request }), { mode: 0o600, flag: 'wx' });
+    writeFileSync(requestPath, JSON.stringify({ schemaVersion: 1, identity, binding, request, bootId: this.boot() }), { mode: 0o600, flag: 'wx' });
     this.managed.add(request.operationId);
     let sent = false;
     try {
@@ -134,7 +135,9 @@ export class NativeBackground {
       if (pathExists(outcomePath)) { await this.deliver(operationId); return; }
       requireValue(worker.stamp && stamp === worker.stamp, 'Native supervisor identity cannot be verified', 'OWNERSHIP_UNCERTAIN');
       requireValue(Date.now() < Math.min(deadline, this.shutdownDeadline), 'Native supervisor has not settled within its deadline', 'OWNERSHIP_UNCERTAIN');
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      // The supervisor enforces execution limits independently. This observer
+      // only discovers receipts; do not spawn ps at terminal-refresh frequency.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     this.failpoint('outcome'); await this.deliver(operationId);
   }
@@ -164,16 +167,19 @@ export class NativeBackground {
     const request = this.read(requestPath);
     requireValue(request.binding?.operationId === operationId && JSON.stringify(nativeBinding(request.request)) === JSON.stringify(request.binding), 'Native request binding changed', 'OWNERSHIP_UNCERTAIN');
     this.managed.add(operationId);
+    const currentBoot = this.boot();
+    const priorBoot = typeof request.bootId === 'string' && currentBoot && request.bootId !== currentBoot;
     if (pathExists(join(directory, 'not-sent.json'))) return { status: 'stopped', identity: request.identity };
     const outcomePath = join(directory, 'outcome.json');
     if (pathExists(outcomePath)) {
       await this.deliver(operationId); const completed = this.read(outcomePath);
       requireValue(completed.identity === request.identity, 'Native outcome identity changed', 'OWNERSHIP_UNCERTAIN');
-      if (completed.outcome.workerState === 'stopped') return { status: 'stopped', identity: request.identity };
+      if (completed.outcome.workerState === 'stopped' || priorBoot) return { status: 'stopped', identity: request.identity };
       // Escaped descendants can outlive the original group. Its disappearance
       // cannot override the executor's durable unknown-termination evidence.
       return { status: 'unknown', identity: request.identity };
     }
+    if (priorBoot) return { status: 'stopped', identity: request.identity };
     const identityPath = join(directory, 'identity.json');
     if (!pathExists(identityPath)) return { status: 'unknown', identity: null };
     const worker = this.read(identityPath); requireValue(worker.identity === request.identity && Number.isSafeInteger(worker.pid) && worker.pid > 0, 'Native worker identity changed', 'OWNERSHIP_UNCERTAIN');
@@ -211,7 +217,7 @@ export class NativeBackground {
       const deadline = Date.now() + this.policy.killGraceMs * 2 + 1000;
       let observation = await this.observe(operationId);
       while (observation.status !== 'stopped' && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 250));
         observation = await this.observe(operationId);
       }
       requireValue(observation.status === 'stopped', 'Native worker termination is uncertain', 'OWNERSHIP_UNCERTAIN');

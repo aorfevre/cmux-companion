@@ -37,7 +37,10 @@ for (const point of ['goal_reserved', 'proposal_recorded', 'proposed', 'advanced
   const f = await fixture(t);
   const crashing = new GitIntegration({ repositories: f.repositories, failpoint: (at) => { if (at === point) throw new Error('interrupted'); } });
   await assert.rejects(crashing.integrate(f.input), /interrupted/);
-  const result = await new GitIntegration({ repositories: f.repositories }).integrate(f.input);
+  const recovered = new GitIntegration({ repositories: f.repositories });
+  const observed = await recovered.observeIntegration(f.input.operationId);
+  assert.equal(observed.status, point === 'advanced' ? 'integrated' : 'pending');
+  const result = observed.status === 'integrated' ? observed : await recovered.integrate(f.input);
   assert.equal(result.status, 'integrated');
   assert.equal(await fixtureGit(f.repo.repository, ['rev-list', '--count', `${f.repo.baseSha}..${result.headSha}`]), '1');
   assert.equal(await fixtureGit(f.repo.repository, ['rev-parse', 'refs/companion/integrations/integrate_a/applied']), result.headSha);

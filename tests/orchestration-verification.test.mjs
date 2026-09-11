@@ -99,3 +99,117 @@ test('verification receipts cannot be rebound to a different request or approved
     assert.throws(() => f.runner.receipt(f.input.operationId), { code: 'OWNERSHIP_UNCERTAIN' });
   }
 });
+
+test('verification watchdog survives service SIGKILL and recovery never launches unchecked remaining commands', { timeout: 20000 }, async t => {
+  const f = await fixture(t);
+  const { spawn } = await import('node:child_process');
+  const { once } = await import('node:events');
+  const { existsSync } = await import('node:fs');
+  const pidPath = join(f.repo.directory, 'check.pid'), forbidden = join(f.repo.directory, 'must-not-launch');
+  const input = { ...f.input, checks: [
+    { id: 'slow', argv: ['node', '-e', `require('node:fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); setInterval(() => {}, 1000)`] },
+    { id: 'later', argv: ['node', '-e', `require('node:fs').writeFileSync(${JSON.stringify(forbidden)}, 'ran')`] },
+  ] };
+  const configPath = join(f.repo.directory, 'verification-child.json');
+  writeFileSync(configPath, JSON.stringify({ repository: f.repo.repository, resources: f.repositories.directory, artifacts: f.artifacts.directory, input }));
+  const script = `import { readFileSync } from 'node:fs';
+    import { GitRepository } from './server/orchestration/adapters/git.mjs';
+    import { ArtifactStore } from './server/orchestration/storage/artifacts.mjs';
+    import { VerificationRunner } from './server/orchestration/adapters/verification.mjs';
+    const config = JSON.parse(readFileSync(process.argv[1], 'utf8'));
+    const repositories = new GitRepository({ repositories: new Map([['repo',config.repository]]), directory:config.resources, artifacts:new ArtifactStore({directory:config.artifacts}) });
+    const runner = new VerificationRunner({repositories, resolveCheck: (_id,check)=>({bin:process.execPath,argv:check.argv.slice(1),env:{PATH:process.env.PATH},environmentId:'crash-fixture',policy:{ceilingMs:3000,idleMs:5000,maxOutputBytes:8192,killGraceMs:100}})});
+    await runner.run(config.input);`;
+  const service = spawn(process.execPath, ['--input-type=module', '-e', script, configPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = ''; service.stderr.on('data', chunk => stderr += chunk);
+  t.after(() => { if (service.exitCode === null && service.signalCode === null) service.kill('SIGKILL'); });
+  const deadline = Date.now() + 15000;
+  while (!existsSync(pidPath)) {
+    assert.equal(service.exitCode, null, stderr); assert.ok(Date.now() < deadline, 'check did not start');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const checkPid = Number(readFileSync(pidPath, 'utf8'));
+  t.after(() => { try { process.kill(-checkPid, 'SIGKILL'); } catch { /* test-owned process already stopped */ } });
+  const exit = once(service, 'exit'); service.kill('SIGKILL'); assert.equal((await exit)[1], 'SIGKILL');
+  const reopened = new VerificationRunner(f.options);
+  assert.equal(await reopened.observe(input.operationId), null);
+  let result;
+  while (!(result = await reopened.observe(input.operationId))) {
+    assert.ok(Date.now() < deadline, 'independent watchdog did not finish'); await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(result.workerState, 'stopped'); assert.deepEqual(result.verification.checks.map(check => check.passed), [false, false]);
+  assert.equal(JSON.parse(f.artifacts.get(result.verification.checks[0].artifactId).toString()).code, 'CEILING_LIMIT');
+  assert.equal(JSON.parse(f.artifacts.get(result.verification.checks[1].artifactId).toString()).code, 'NOT_STARTED');
+  assert.equal(existsSync(forbidden), false); assert.equal(f.resolved(), 0);
+  assert.throws(() => process.kill(checkPid, 0), { code: 'ESRCH' });
+  assert.deepEqual(await reopened.run(input), result);
+});
+
+for (const proof of ['boot', 'outcome']) test(`${proof} evidence proves uncertain verification stopped without rewriting completed checks`, async t => {
+  const f = await fixture(t), runner = new VerificationRunner({ ...f.options, boot: () => 'boot-a', failpoint: point => { if (point === 'before_launch') throw new Error('interrupted'); } });
+  await assert.rejects(runner.run(f.input), /interrupted/);
+  const { mkdirSync } = await import('node:fs');
+  const directory = join(runner.directory, f.input.operationId, 'workers', 'unit');
+  mkdirSync(directory);
+  writeFileSync(join(directory, 'request.json'), JSON.stringify({ identity: 'uncertain-fixture', startedAt: 0, bootId: 'boot-a' }));
+  const unknown = await runner.observe(f.input.operationId);
+  assert.equal(unknown.workerState, 'unknown'); assert.equal(unknown.verification.checks[0].passed, false);
+  runner.boot = () => null;
+  assert.deepEqual(await runner.observe(f.input.operationId), unknown);
+  if (proof === 'boot') runner.boot = () => 'boot-b';
+  else {
+    runner.boot = () => 'boot-a';
+    writeFileSync(join(directory, 'outcome.json'), JSON.stringify({ identity: 'uncertain-fixture', outcome: { status: 'failed', workerState: 'stopped', cause: { code: 'ABORTED', exitCode: null, signal: null }, stdout: '', stderr: '' } }));
+  }
+  const stopped = await runner.observe(f.input.operationId);
+  assert.equal(stopped.workerState, 'stopped'); assert.deepEqual(stopped.verification, unknown.verification);
+  assert.notEqual(stopped.artifactId, unknown.artifactId);
+});
+
+test('legacy verification launch without supervisor proof remains uncertain', async t => {
+  const f = await fixture(t), runner = new VerificationRunner({ ...f.options, failpoint: point => { if (point === 'before_launch') throw new Error('interrupted'); } });
+  await assert.rejects(runner.run(f.input), /interrupted/);
+  const path = join(runner.directory, f.input.operationId, 'request.json');
+  const request = JSON.parse(readFileSync(path, 'utf8')); delete request.supervised; delete request.bootId;
+  writeFileSync(path, JSON.stringify(request));
+  assert.equal(await runner.observe(f.input.operationId), null);
+});
+
+test('reboot recovery preserves a real successful supervised check outcome', async t => {
+  const f = await fixture(t), runner = new VerificationRunner({ ...f.options, boot: () => 'boot-a', failpoint: point => { if (point === 'identity_recorded') throw new Error('service interrupted'); } });
+  await assert.rejects(runner.run(f.input), /service interrupted/);
+  const { existsSync } = await import('node:fs');
+  const outcomePath = join(runner.directory, f.input.operationId, 'workers', 'unit', 'outcome.json');
+  const deadline = Date.now() + 10000;
+  while (!existsSync(outcomePath)) { assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 50)); }
+  assert.equal(JSON.parse(readFileSync(outcomePath, 'utf8')).outcome.status, 'succeeded');
+  const result = await new VerificationRunner({ ...f.options, boot: () => 'boot-b' }).observe(f.input.operationId);
+  assert.equal(result.workerState, 'stopped'); assert.equal(result.verification.checks[0].passed, true);
+  assert.equal(f.resolved(), 1);
+});
+
+for (const boundary of ['prepared', 'sent']) test(`supervisor ${boundary} crash distinguishes proven no-send from uncertainty`, async t => {
+  const f = await fixture(t);
+  const { runSupervisedProcess, observeSupervisedProcess } = await import('../server/orchestration/adapters/supervised-process.mjs');
+  const directory = join(f.repositories.directory, 'supervisor-claim');
+  await assert.rejects(runSupervisedProcess({ bin: process.execPath, argv: ['-e', 'process.exit(0)'], cwd: f.repo.repository, env: {} }, { directory, policy, onIdentity() {}, failpoint: point => { if (point === boundary) throw new Error('interrupted'); } }), /interrupted/);
+  if (boundary === 'prepared') {
+    const observed = await observeSupervisedProcess(directory);
+    assert.equal(observed.workerState, 'stopped'); assert.equal(observed.cause.code, 'NOT_STARTED');
+  } else {
+    assert.equal(await observeSupervisedProcess(directory), null);
+    const path = join(directory, 'request.json'), request = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(path, JSON.stringify({ ...request, startedAt: 0 }));
+    assert.equal((await observeSupervisedProcess(directory)).workerState, 'unknown');
+  }
+});
+
+test('legacy launched check recovered after boot is not mislabeled as never started', async t => {
+  const f = await fixture(t), runner = new VerificationRunner({ ...f.options, boot: () => 'boot-a', failpoint: point => { if (point === 'before_launch') throw new Error('interrupted'); } });
+  await assert.rejects(runner.run(f.input), /interrupted/);
+  const path = join(runner.directory, f.input.operationId, 'request.json'), request = JSON.parse(readFileSync(path, 'utf8')); delete request.supervised;
+  writeFileSync(path, JSON.stringify(request)); runner.boot = () => 'boot-b';
+  const result = await runner.observe(f.input.operationId);
+  assert.equal(result.workerState, 'stopped');
+  assert.equal(JSON.parse(f.artifacts.get(result.verification.checks[0].artifactId).toString()).code, 'OWNERSHIP_UNCERTAIN');
+});

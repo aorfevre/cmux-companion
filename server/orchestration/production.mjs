@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { createRuntime } from './create-runtime.mjs';
 import { assertCutover, acquireRepositoryOwnership } from './cutover.mjs';
 import { probeNativeCapabilities } from './adapters/native-capabilities.mjs';
+import { probeGitCapabilities } from './adapters/git-capabilities.mjs';
 import { createNativeAgents } from './adapters/native-agents.mjs';
 import { GitHubCli } from './adapters/github-cli.mjs';
 import { GitRemote } from './adapters/git-remote.mjs';
@@ -32,11 +33,12 @@ export function loadProductionConfig(path) {
 }
 /** Explicit production composition; metadata probes precede all worker launch.
  * The monitor callback is encapsulated so its auth/error hooks cannot replace core authority.
- * @param {{config:ProductionConfig;token:string;sessions:()=>Promise<string[]>;monitor?:(app:import('fastify').FastifyInstance)=>Promise<void>; probe?:typeof probeNativeCapabilities; agents?:typeof createNativeAgents; publisher?:Parameters<typeof createRuntime>[0]['createPublisher']}} options */
-export async function createProductionRuntime({ config, token, sessions, monitor, probe = probeNativeCapabilities, agents = createNativeAgents, publisher }) {
+ * @param {{config:ProductionConfig;token:string;sessions:()=>Promise<string[]>;monitor?:(app:import('fastify').FastifyInstance)=>Promise<void>; probe?:typeof probeNativeCapabilities; probeGit?:typeof probeGitCapabilities; agents?:typeof createNativeAgents; publisher?:Parameters<typeof createRuntime>[0]['createPublisher']}} options */
+export async function createProductionRuntime({ config, token, sessions, monitor, probe = probeNativeCapabilities, probeGit = probeGitCapabilities, agents = createNativeAgents, publisher }) {
   await assertCutover(config.cutover, { sessions });
   const replacement = existsSync(config.storage.database) ? realpathSync(config.storage.database) : resolve(config.storage.database);
   requireValue(!config.cutover.legacyDatabases.some(path => realpathSync(path) === replacement || resolve(path) === replacement), 'Replacement storage must be separate from legacy databases', 'CUTOVER_REQUIRED');
+  await probeGit();
   const repositories = new Map(config.repositories.map(repo => [repo.id, realpathSync(repo.path)]));
   const ownership = await acquireRepositoryOwnership(repositories, config.storage.database);
   /** @type {Awaited<ReturnType<typeof createRuntime>> | undefined} */ let runtime;

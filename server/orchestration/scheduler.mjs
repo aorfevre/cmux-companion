@@ -82,16 +82,34 @@ export class Scheduler {
     if (!this.integrations) return;
     if (this.integrations.acceptRepair && this.integrations.observeRepair) await new IntegrationRepairs({ service: this.service, integrations: { acceptRepair: this.integrations.acceptRepair.bind(this.integrations), observeRepair: this.integrations.observeRepair.bind(this.integrations) }, ownership: this.ownership, id: this.id }).run();
     for (const operation of this.store.operations().filter((entry) => entry.kind === 'integrate')) {
-      const goal = this.store.get(operation.goalId);
-      if (goal?.integrationResults?.some((result) => result.operationId === operation.id)) {
-        this.ownership.assertOwned(); this.store.advanceOperation(operation.id, operation.status, 'completed');
-      } else if (operation.status === 'dispatching' && goal?.integration?.operationId === operation.id && this.integrations.observeIntegration) {
-        const observed = await this.integrations.observeIntegration(operation.id);
-        this.ownership.assertOwned();
-        if (observed.status === 'integrated' && observed.headSha) {
-          this.reconciler.record(goal.id, 'record_integration', { operationId: operation.id, headSha: observed.headSha });
-          this.store.advanceOperation(operation.id, operation.status, 'completed');
+      try {
+        const goal = this.store.get(operation.goalId);
+        if (goal?.integrationResults?.some((result) => result.operationId === operation.id)) {
+          this.ownership.assertOwned(); this.store.advanceOperation(operation.id, operation.status, 'completed');
+        } else if (goal?.integration?.operationId === operation.id && goal.integration.state === 'conflict') {
+          this.ownership.assertOwned(); this.store.advanceOperation(operation.id, operation.status, 'completed');
+        } else if (goal?.integration?.operationId === operation.id && this.integrations.observeIntegration) {
+          if (goal.results?.some((result) => result.status === 'pending' && result.repair?.integrationOperationId === operation.id)) continue;
+          const observed = await this.integrations.observeIntegration(operation.id);
+          this.ownership.assertOwned();
+          if (observed.status === 'integrated' && observed.headSha) {
+            this.reconciler.record(goal.id, 'record_integration', { operationId: operation.id, headSha: observed.headSha });
+            this.store.advanceOperation(operation.id, operation.status, 'completed');
+          } else if (observed.status === 'pending' && ['aborted', 'merged'].includes(goal.status)) {
+            this.reconciler.record(goal.id, 'cancel_integration', { operationId: operation.id });
+            this.store.advanceOperation(operation.id, operation.status, 'completed');
+          } else if (goal.integration.state === 'failed' && goal.integration.retryRequested && goal.status === 'building' && this.service.repositoryIds.has(goal.repositoryId)) {
+            this.reconciler.record(goal.id, observed.status === 'pending' ? 'resume_integration' : 'record_integration_failure', { operationId: operation.id, code: 'OWNERSHIP_UNCERTAIN' });
+          } else if (observed.status === 'unknown' && goal.integration.state === 'applying') {
+            this.reconciler.record(goal.id, 'record_integration_failure', { operationId: operation.id, code: 'OWNERSHIP_UNCERTAIN' });
+          }
         }
+      } catch (error) {
+        // A damaged receipt must retain its unresolved intent without starving
+        // unrelated goals. Loss of scheduler ownership still stops the pass.
+        this.ownership.assertOwned();
+        if (!(error instanceof DomainError)) throw error;
+        this.onError(error);
       }
     }
     for (const snapshot of this.store.list()) {

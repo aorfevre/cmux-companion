@@ -45,14 +45,15 @@ export class GitRemote {
     requireValue((await git(directory, ['rev-parse', '--is-bare-repository'])).trim() === 'true', 'Remote staging repository is not bare', 'OWNERSHIP_UNCERTAIN');
     return directory;
   }
-  /** @param {string} repositoryId @param {string[]} argv */
-  async remote(repositoryId, argv) {
+  /** @param {string} repositoryId @param {string[]} argv @param {()=>boolean} [beforeSend] */
+  async remote(repositoryId, argv, beforeSend) {
     const policy = this.destination(repositoryId), cwd = await this.stage(repositoryId);
+    if (beforeSend && !beforeSend()) return '';
     return new Promise((resolve, reject) => {
-      execFile('git', ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'protocol.allow=never', '-c', `protocol.${policy.protocol}.allow=always`, ...argv], {
+      const child = execFile('git', ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'protocol.allow=never', '-c', `protocol.${policy.protocol}.allow=always`, ...argv], {
         cwd, env: { PATH: policy.env.PATH, HOME: policy.env.HOME, SSH_AUTH_SOCK: policy.env.SSH_AUTH_SOCK, LANG: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' },
         timeout: 30000, maxBuffer: 1024 * 1024,
-      }, (error, stdout) => error ? reject(new DomainError('REMOTE_OPERATION_UNCERTAIN', 'Remote operation did not return confirmed success')) : resolve(stdout));
+      }, (error, stdout) => error ? reject(new DomainError(child.pid === undefined ? 'EXTERNAL_NOT_SENT' : 'REMOTE_OPERATION_UNCERTAIN', 'Remote operation did not return confirmed success')) : resolve(stdout));
     });
   }
   /** @param {string} repositoryId @param {string} branch */
@@ -65,8 +66,8 @@ export class GitRemote {
     requireValue(ref === `refs/heads/${branch}`, 'Remote returned another branch', 'OWNERSHIP_UNCERTAIN');
     return sha(head);
   }
-  /** @param {Parameters<import('../types.d.ts').RemotePort['push']>[0]} input */
-  async push({ repositoryId, branch, headSha, expectedHead }) {
+  /** @param {Parameters<import('../types.d.ts').RemotePort['push']>[0]} input @param {{ beforeSend?: ()=>boolean }} [options] */
+  async push({ repositoryId, branch, headSha, expectedHead }, { beforeSend } = {}) {
     sha(headSha); if (expectedHead !== null) sha(expectedHead);
     branchName(branch);
     const { repository } = await this.repositories.repository(repositoryId);
@@ -77,6 +78,6 @@ export class GitRemote {
     const digest = sha((await git(repository, ['pack-objects', '--revs', prefix], `${headSha}\n`)).trim());
     for (const extension of ['pack', 'idx']) renameSync(`${prefix}-${digest}.${extension}`, join(directory, 'objects', 'pack', `pack-${digest}.${extension}`));
     await git(directory, ['cat-file', '-e', `${headSha}^{commit}`]);
-    await this.remote(repositoryId, ['push', '--porcelain', `--force-with-lease=refs/heads/${branch}:${expectedHead ?? ''}`, this.destination(repositoryId).url, `${headSha}:refs/heads/${branch}`]);
+    await this.remote(repositoryId, ['push', '--porcelain', `--force-with-lease=refs/heads/${branch}:${expectedHead ?? ''}`, this.destination(repositoryId).url, `${headSha}:refs/heads/${branch}`], beforeSend);
   }
 }

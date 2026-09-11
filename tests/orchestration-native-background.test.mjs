@@ -95,7 +95,10 @@ test('a sent launch with lost identity remains uncertain and cannot relaunch', a
   await assert.rejects(access(f.launches), { code: 'ENOENT' });
   // This test killed the boundary before spawn and can prove there is no worker.
   // Clear only this test instance's shutdown responsibility; receipt remains uncertain.
-  f.driver.managed.clear(); reopened.managed.clear(); await reopened.close();
+  assert.equal((await reopened.observe('operation')).status, 'unknown');
+  reopened.boot = () => 'simulated-next-kernel-boot';
+  assert.equal((await reopened.observe('operation')).status, 'stopped');
+  f.driver.managed.clear(); await reopened.close();
 });
 
 test('close terminates an owned live native worker and retains its recovery evidence', async (t) => {
@@ -170,7 +173,10 @@ test('escaped native descendant remains uncertain after the original group disap
   process.kill(-escapedPid, 'SIGKILL');
   // The test owns the extra process and performs explicit cleanup. Production
   // remains uncertain without stronger provider-wide evidence.
-  f.driver.managed.clear(); reopened.managed.clear(); await reopened.close();
+  assert.equal((await reopened.observe('operation')).status, 'unknown');
+  reopened.boot = () => 'simulated-next-kernel-boot';
+  assert.equal((await reopened.observe('operation')).status, 'stopped');
+  f.driver.managed.clear(); await reopened.close();
 });
 
 
@@ -220,4 +226,17 @@ test('shutdown attempts other owned workers after one termination fails', async 
     assert.equal((await f.driver.observe('second')).status, 'stopped');
   } finally { f.driver.terminate = terminate; }
   await f.driver.close();
+});
+
+test('reboot recovery delivers a durable successful native result before releasing its worker', async t => {
+  const f = await fixture(t);
+  f.driver.onResult = async () => { throw new Error('service intake unavailable'); };
+  await f.driver.launch(f.request); await f.waitReady(); await f.release();
+  await Promise.all([...f.driver.active.values()].map(active => active.job));
+  assert.equal(f.delivered.length, 0);
+  const reopened = new NativeBackground({ ...f.options, boot: () => 'next-kernel-boot' });
+  assert.equal((await reopened.observe('operation')).status, 'stopped');
+  assert.equal(f.delivered.length, 1);
+  assert.equal((await reopened.observe('operation')).status, 'stopped');
+  assert.equal(f.delivered.length, 1); await reopened.close();
 });

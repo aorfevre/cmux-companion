@@ -258,7 +258,12 @@ function preparedRepair(f, duplicate = false) {
   const result = { schemaVersion: 1, goalId: 'g', attemptId, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: 'integrator', target: attempt.target,
     output: { headSha: 'c'.repeat(40), operationId: 'conflict_a', summary: 'Resolve conflict', evidence: [] } };
   f.command('g', 'receive_role_result', { resultId: 'repair_result', attemptId, artifactId: 'a'.repeat(64) });
-  if (duplicate) f.command('g', 'receive_role_result', { resultId: 'early_duplicate', attemptId, artifactId: 'c'.repeat(64) });
+  if (duplicate) {
+    // Reopen-era state written before the one-pending-result intake limit.
+    const legacy = f.store.get('g');
+    legacy.results.push({ ...legacy.results[0], id: 'early_duplicate', artifactId: 'c'.repeat(64) });
+    f.store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(legacy), 'g');
+  }
   f.command('g', 'prepare_repair_result', { resultId: 'repair_result', effectId: 'repair_effect', result, proofArtifactId: 'b'.repeat(64) });
   f.command('g', 'record_stopped', { attemptId });
   return attemptId;
@@ -444,6 +449,57 @@ function publishableGoal(f) {
 }
 const publishedResult = (input) => ({ status: 'published', baseHeadSha: input.baseSha, pr: { number: 1, url: 'https://github.invalid/pull/1', headSha: input.headSha } });
 
+test('moved target pauses remote polling until exact user acceptance and retains final evidence', async t => {
+  const f = fixture(t); publishableGoal(f); let calls = 0;
+  const moved = 'e'.repeat(40);
+  const publisher = { publish: async input => {
+    calls++;
+    return input.acceptedTargets?.at(-1)?.baseHeadSha === moved ? { ...publishedResult(input), baseHeadSha: moved } : { status: 'target_moved', baseHeadSha: moved, pr: null };
+  }, observe: async () => ({ status: 'target_moved', baseHeadSha: moved, pr: null }) };
+  const options = { service: f.service, publisher, ownership: { assertOwned() {} } };
+  const run = async coordinator => { await coordinator.run(); await Promise.all([...coordinator.active.values()].map(entry => entry.job)); };
+  await run(new PublicationCoordinator(options));
+  const before = f.store.get('g'), operationId = before.publication.operationId;
+  for (let i = 0; i < 3; i++) await run(new PublicationCoordinator(options));
+  assert.equal(calls, 1);
+  assert.throws(() => f.command('g', 'accept_moved_target', { operationId, baseHeadSha: moved }), { code: 'FORBIDDEN' });
+  assert.throws(() => f.command('g', 'accept_moved_target', { operationId, baseHeadSha: BASE }, 'user'), { code: 'STALE_TARGET' });
+  assert.throws(() => f.command('g', 'accept_moved_target', { operationId: 'stale', baseHeadSha: moved }, 'user'), { code: 'STALE_OPERATION' });
+  assert.ok((await import('../server/orchestration/domain/action-view.mjs')).actionView(before).actions.some(action => action.type === 'accept_moved_target'));
+  f.command('g', 'accept_moved_target', { operationId, baseHeadSha: moved }, 'user');
+  assert.throws(() => f.command('g', 'accept_moved_target', { operationId, baseHeadSha: moved }, 'user'), { code: 'STALE_TARGET' });
+  assert.deepEqual(f.store.get('g').reviews, before.reviews); assert.deepEqual(f.store.get('g').verification, before.verification);
+  assert.equal(f.store.get('g').integrationHead, before.integrationHead); assert.equal(f.store.get('g').publication.plan.baseSha, BASE);
+  await run(new PublicationCoordinator(options));
+  assert.equal(calls, 2); assert.equal(f.store.get('g').status, 'delivered');
+  assert.equal(f.store.get('g').publication.operationId, operationId);
+});
+
+test('abort revokes moved-target acceptance and settles the paused publication without sending', async t => {
+  const f = fixture(t); publishableGoal(f); f.command('g', 'request_publication', { operationId: 'publish' });
+  f.store.advanceOperation('publish', 'pending', 'dispatching');
+  const observation = { status: 'target_moved', baseHeadSha: 'e'.repeat(40), pr: null };
+  f.command('g', 'record_publication_observation', { operationId: 'publish', observation });
+  f.command('g', 'abort', {}, 'user');
+  assert.throws(() => f.command('g', 'accept_moved_target', { operationId: 'publish', baseHeadSha: observation.baseHeadSha }, 'user'), { code: 'TERMINAL_GOAL' });
+  const coordinator = new PublicationCoordinator({ service: f.service, ownership: { assertOwned() {} }, publisher: { publish: async () => { throw new Error('Must not publish'); }, observe: async () => observation } });
+  await coordinator.run(); await Promise.all([...coordinator.active.values()].map(entry => entry.job));
+  assert.equal(f.store.get('g').publication.observation.status, 'cancelled');
+  assert.ok(!f.store.operations().some(operation => operation.kind === 'publish'));
+});
+
+test('a missing target branch remains observable so restoring it can recover publication', async t => {
+  const f = fixture(t); publishableGoal(f); let calls = 0;
+  const coordinator = new PublicationCoordinator({ service: f.service, ownership: { assertOwned() {} }, publisher: {
+    publish: async input => ++calls === 1 ? { status: 'target_moved', baseHeadSha: null, pr: null } : publishedResult(input),
+    observe: async () => { throw new Error('Active publication uses publish'); },
+  } });
+  await coordinator.run(); await Promise.all([...coordinator.active.values()].map(entry => entry.job));
+  assert.equal(f.store.get('g').publication.observation.baseHeadSha, null);
+  await coordinator.run(); await Promise.all([...coordinator.active.values()].map(entry => entry.job));
+  assert.equal(calls, 2); assert.equal(f.store.get('g').status, 'delivered');
+});
+
 for (const scenario of ['normal', 'receipt_loss', 'pending_abort', 'sent_abort', 'unknown']) test(`publication coordinator retains exact operation ownership across ${scenario}`, async (t) => {
   const f = fixture(t); publishableGoal(f); let calls = 0, receipt = null;
   const publisher = {
@@ -498,4 +554,111 @@ test('scheduler continues agent admission and joins publication before releasing
   const restarted = new PublicationCoordinator({ service: f.service, ownership: { assertOwned() {} }, publisher: { publish: async (input) => publishedResult(input), observe: async () => ({ status: 'unknown', baseHeadSha: null, pr: null }) } });
   await restarted.run(); await Promise.all([...restarted.active.values()].map((run) => run.job));
   assert.equal(f.store.get('g').status, 'delivered');
+});
+
+test('an unreadable integration receipt preserves its intent and does not starve other goals', async (t) => {
+  const f = fixture(t); acceptedTask(f);
+  f.command('g', 'request_integration', { taskId: 'A', operationId: 'damaged_integration' });
+  f.store.advanceOperation('damaged_integration', 'pending', 'dispatching');
+  f.command('g', 'record_integration_failure', { operationId: 'damaged_integration', code: 'OWNERSHIP_UNCERTAIN' });
+  f.create('h');
+  const agents = new FakeAgents(), errors = [];
+  f.service.agents = agents;
+  const scheduler = new Scheduler({ service: f.service, repositories: {
+    provision: async ({ branch, baseSha }) => ({ worktree: '/tmp/isolated-receipt-test', branch, baseSha }),
+  }, ownership: { assertOwned() {} }, onError: (error) => errors.push(error), integrations: {
+    observeIntegration: async () => { throw new DomainError('OWNERSHIP_UNCERTAIN', 'Receipt changed'); },
+    integrate: async () => { throw new Error('Uncertain integration must not be replayed'); },
+  } });
+  scheduler.stopped = false;
+  await scheduler.pass();
+  assert.equal(errors.length, 1); assert.equal(errors[0].code, 'OWNERSHIP_UNCERTAIN');
+  assert.ok(agents.launches.some((entry) => entry.goalId === 'h' && entry.attempt.role === 'planner'));
+  assert.equal(f.store.operations().find((entry) => entry.id === 'damaged_integration').status, 'dispatching');
+  assert.equal(f.store.get('g').integration.state, 'failed');
+});
+
+for (const observation of ['pending', 'integrated', 'unknown']) test(`explicit integration retry observes ${observation} before any replay`, async (t) => {
+  const f = fixture(t); acceptedTask(f); let calls = 0, observed = false;
+  const scheduler = new Scheduler({ service: f.service, repositories: {}, ownership: { assertOwned() {} }, integrations: {
+    integrate: async () => { calls++; if (calls === 1) throw new DomainError('GIT_OPERATION_FAILED', 'Timed out'); assert.ok(observed); return { status: 'integrated', headSha: 'c'.repeat(40) }; },
+    observeIntegration: async () => { observed = true; return { status: observation, headSha: observation === 'integrated' ? 'c'.repeat(40) : null }; },
+  } });
+  scheduler.stopped = false; await scheduler.integrate();
+  const operationId = f.store.get('g').integration.operationId;
+  if (observation !== 'integrated') { await scheduler.integrate(); assert.equal(calls, 1); }
+  f.command('g', 'retry_integration', { operationId }, 'user');
+  assert.throws(() => f.command('g', 'retry_integration', { operationId }, 'user'), { code: 'NOT_READY' });
+  await scheduler.integrate();
+  assert.equal(calls, observation === 'pending' ? 2 : 1);
+  const goal = f.store.get('g');
+  if (observation === 'unknown') {
+    assert.equal(goal.integration.state, 'failed'); assert.equal(goal.integration.retryRequested, false);
+    assert.equal(goal.integration.code, 'OWNERSHIP_UNCERTAIN'); assert.ok(f.store.operations().some((op) => op.id === operationId));
+  } else { assert.equal(goal.integration, null); assert.equal(goal.integrationResults.length, 1); }
+});
+
+for (const state of ['pending', 'failed', 'conflict']) test(`abort settles proven non-applied ${state} integration intent`, async (t) => {
+  const f = fixture(t); acceptedTask(f);
+  f.command('g', 'request_integration', { taskId: 'A', operationId: 'abandoned' });
+  if (state !== 'pending') f.store.advanceOperation('abandoned', 'pending', 'dispatching');
+  if (state === 'failed') f.command('g', 'record_integration_failure', { operationId: 'abandoned', code: 'GIT_OPERATION_FAILED' });
+  if (state === 'conflict') f.command('g', 'record_integration_conflict', { operationId: 'abandoned' });
+  f.command('g', 'abort', {}, 'user');
+  const scheduler = new Scheduler({ service: f.service, repositories: {}, ownership: { assertOwned() {} }, integrations: {
+    observeIntegration: async () => ({ status: 'pending', headSha: null }),
+    integrate: async () => { throw new Error('Terminal integration must never mutate Git'); },
+  } });
+  scheduler.stopped = false; await scheduler.integrate();
+  assert.ok(!f.store.operations().some((op) => op.id === 'abandoned'));
+  assert.equal(f.store.get('g').integrationHead, BASE);
+});
+
+for (const final of [false, true]) for (const observation of ['pending', 'integrated', 'unknown']) test(`explicit repair retry observes ${observation}, final=${final}`, async (t) => {
+  const f = fixture(t); if (final) preparedFinalRepair(f); else preparedRepair(f); let calls = 0;
+  const coordinator = new IntegrationRepairs({ service: f.service, ownership: { assertOwned() {} }, integrations: {
+    acceptRepair: async () => { calls++; if (calls === 1) throw new DomainError('GIT_OPERATION_FAILED', 'Timed out'); return { status: 'integrated', headSha: 'd'.repeat(40) }; },
+    observeRepair: async () => ({ status: observation, headSha: observation === 'integrated' ? 'd'.repeat(40) : null }),
+  } });
+  await coordinator.run(); const operationId = f.store.get('g').integration.operationId;
+  f.command('g', 'retry_integration', { operationId }, 'user'); await coordinator.run();
+  assert.equal(calls, observation === 'pending' ? 2 : 1);
+  if (observation === 'unknown') { assert.equal(f.store.get('g').integration.state, 'failed'); assert.equal(f.store.get('g').integration.retryRequested, false); }
+  else { assert.equal(f.store.get('g').integration, null); assert.equal(f.store.get('g').results[0].status, 'accepted'); }
+});
+
+for (const observation of ['pending', 'unknown']) test(`aborted dispatching repair ${observation} evidence controls settlement`, async (t) => {
+  const f = fixture(t); preparedRepair(f);
+  f.store.advanceOperation('repair_effect', 'pending', 'dispatching'); f.command('g', 'abort', {}, 'user');
+  const coordinator = new IntegrationRepairs({ service: f.service, ownership: { assertOwned() {} }, integrations: {
+    observeRepair: async () => ({ status: observation, headSha: null }),
+    acceptRepair: async () => { throw new Error('Aborted repair must never mutate Git'); },
+  } });
+  await coordinator.run();
+  assert.equal(f.store.operations().some((op) => op.id === 'repair_effect'), observation === 'unknown');
+  assert.equal(f.store.get('g').results[0].status, observation === 'unknown' ? 'pending' : 'rejected');
+});
+
+for (const repair of [false, true]) test(`abort recovery releases cleanup and rollback gates, repair=${repair}`, async (t) => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+  const { assertRollback } = await import('../server/orchestration/cutover.mjs');
+  const { ResourceCleanup } = await import('../server/orchestration/cleanup.mjs');
+  const directory = mkdtempSync(join(tmpdir(), 'integration-recovery-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const f = fixture(t);
+  if (repair) { preparedRepair(f); f.store.advanceOperation('repair_effect', 'pending', 'dispatching'); }
+  else { acceptedTask(f); f.command('g', 'request_integration', { taskId: 'A', operationId: 'failed' }); f.store.advanceOperation('failed', 'pending', 'dispatching'); }
+  f.command('g', 'record_integration_failure', { operationId: f.store.get('g').integration.operationId, code: 'GIT_OPERATION_FAILED' });
+  for (const op of f.store.operations().filter((entry) => ['launch', 'terminate'].includes(entry.kind))) f.store.advanceOperation(op.id, op.status, 'completed');
+  f.command('g', 'abort', {}, 'user');
+  const cleanup = new ResourceCleanup({ service: f.service, repositories: {}, assertOwned() {} });
+  assert.throws(() => cleanup.eligible('g', f.store.get('g').version), { code: 'NOT_READY' });
+  const scheduler = new Scheduler({ service: f.service, repositories: {}, ownership: { assertOwned() {} }, integrations: {
+    observeIntegration: async () => ({ status: 'pending', headSha: null }), observeRepair: async () => ({ status: 'pending', headSha: null }),
+    integrate: async () => { throw new Error('No aborted mutations'); }, acceptRepair: async () => { throw new Error('No aborted mutations'); },
+  } });
+  scheduler.stopped = false; await scheduler.integrate();
+  assert.equal(cleanup.eligible('g', f.store.get('g').version).status, 'aborted');
+  const database = join(directory, 'snapshot.sqlite'); f.store.db.prepare('VACUUM INTO ?').run(database);
+  assert.deepEqual(assertRollback(database), { safe: true, goals: 1 });
 });

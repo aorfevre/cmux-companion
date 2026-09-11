@@ -22,10 +22,12 @@ Full verification passed 615 backend tests with one platform skip and all 114
 UI tests, lint, types and build. A further competing-owner regression passes
 and directly audits that reopening/refused startup performs no readiness writes.
 The real-service Cypress writable journey passes 2/2; its read-only case runs in
-a separate mode. Updated backend coverage and a native Fable post-fix review
-remain pending. The separate full PR
-review is still running; it started at `5de0b86`, and any findings will be checked
-against the final source because focused fixes began before that report returned.
+a separate mode. Updated backend coverage passes at 98.33% lines (616 passed, one platform skip).
+The native Fable post-fix review accepted all three fixes with no remaining
+blockers in the changed code. Its scope was the patch and directly relevant
+source; it did not rerun tests. The separate full PR
+review subsequently completed; it started at `5de0b86`, and its findings were
+validated against current source because focused fixes landed while it ran.
 
 Questions remain explicitly separate from defects: empty legacy inventory is an
 operator declaration for fresh installations; failed shutdown retains ownership
@@ -67,3 +69,23 @@ No confirmed high-severity defect. Startup cannot launch two owners, cannot rebi
 ## Scope and limits
 
 I did not read the reconciler's adoption path, the native worker supervisor, or `app.mjs` beyond its hooks. Claims about adopting orphaned workers from a previous crash rest on the `managed.add` call at `native-background.mjs:166` and were not traced further. Installed updater compatibility was excluded as instructed.
+
+
+## Post-fix native review
+
+Fable accepted the patch in `f2fef6e`. It confirmed deferred binding validation,
+missing-journal classification and transactional ownership-checked readiness
+backfill. It noted that cross-database write failure can still leave a mixed
+binding set after all owners were successfully validated; recovery remains
+conservative. Non-ENOENT filesystem errors retain their existing classification.
+
+Clarification of its wording: constructors still initialize schema/metadata;
+the fix removes pre-ownership **readiness-index** writes. The missing-journal
+message describes restoring the recorded path without exposing the path value.
+The competing-owner test audits zero readiness writes, not zero metadata writes.
+The migration test checks the ownership assertion inside the transaction.
+
+The [full PR review](pr115-xclaude-full.md) has returned 12 reported findings.
+They are being validated against the current head; remediation remains active.
+
+GitHub CI `verify` passed on `f2fef6e`: https://github.com/aorfevre/cmux-companion/actions/runs/34635048100.

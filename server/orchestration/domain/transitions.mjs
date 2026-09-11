@@ -1,7 +1,7 @@
 import { DomainError, identifier, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
-import { parseRoleResult } from './role-result.mjs';
+import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
 
 /** @typedef {import('../types.d.ts').Goal} Goal */
 /** @typedef {import('../types.d.ts').Attempt} Attempt */
@@ -64,7 +64,7 @@ export function transition(before, command, authority) {
   requireValue(before && before.id === command.goalId, 'Goal not found', 'NOT_FOUND');
   validateAuthority(before, authority);
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
-  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_publication_observation', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'settle_repair_result', 'cancel_repair_result', 'record_verification_result', 'cancel_verification', 'verification_uncertain', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
+  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_publication_observation', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'cancel_integration', 'settle_repair_result', 'cancel_repair_result', 'record_verification_result', 'cancel_verification', 'verification_uncertain', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
   const goal = structuredClone(before);
   /** @type {Transition} */
   const result = { goal, events: [], intents: [] };
@@ -81,6 +81,7 @@ export function transition(before, command, authority) {
       requireValue(/^[a-f0-9]{64}$/.test(artifactId), 'Invalid result artifact');
       goal.results ??= [];
       requireValue(!goal.results.some((entry) => entry.id === id), 'Result id already exists', 'IDEMPOTENCY_CONFLICT');
+      requireResultCapacity(goal.results, attempt.id);
       requireValue(!goal.results.some((entry) => entry.attemptId === attempt.id && entry.repair), 'Repair result already owns this attempt', 'IDEMPOTENCY_CONFLICT');
       goal.results.push({ id, attemptId: attempt.id, artifactId, status: 'pending', code: null });
       emit('agent_result_received', { resultId: id, attemptId: attempt.id, artifactId }); break;
@@ -401,8 +402,29 @@ export function transition(before, command, authority) {
     case 'record_integration_failure': {
       requireAuthority(authority, 'system');
       requireValue(goal.integration && goal.integration.operationId === input.operationId, 'Integration operation changed', 'STALE_OPERATION');
-      goal.integration.state = 'failed';
+      if (goal.integration.state !== 'failed') goal.integration.failedFrom = goal.integration.state === 'repairing' ? 'repairing' : 'applying';
+      goal.integration.state = 'failed'; goal.integration.code = identifier(input.code); goal.integration.retryRequested = false;
       emit('integration_failed', { operationId: goal.integration.operationId, code: identifier(input.code) }); break;
+    }
+    case 'retry_integration': {
+      requireAuthority(authority, 'user');
+      const operation = goal.integration;
+      requireValue(goal.status === 'building' && operation?.state === 'failed' && operation.operationId === input.operationId && !operation.retryRequested, 'Integration retry is unavailable', 'NOT_READY');
+      requireValue(!goal.attempts.some((attempt) => attempt.role === 'integrator' && ownsWorker(attempt)), 'Repair worker is not stopped', 'OWNERSHIP_UNCERTAIN');
+      operation.retryRequested = true; emit('integration_retry_requested', { operationId: operation.operationId }); break;
+    }
+    case 'resume_integration': {
+      requireAuthority(authority, 'system');
+      const operation = goal.integration;
+      requireValue(goal.status === 'building' && operation?.state === 'failed' && operation.operationId === input.operationId && operation.retryRequested, 'Integration retry changed', 'STALE_OPERATION');
+      operation.state = operation.failedFrom ?? (goal.results?.some((result) => result.status === 'pending' && result.repair?.integrationOperationId === operation.operationId) ? 'repairing' : 'applying');
+      operation.retryRequested = false; emit('integration_resumed', { operationId: operation.operationId }); break;
+    }
+    case 'cancel_integration': {
+      requireAuthority(authority, 'system');
+      requireValue(goal.integration && ['aborted', 'merged'].includes(goal.status) && goal.integration.operationId === input.operationId, 'Integration cancellation is unavailable', 'STALE_OPERATION');
+      goal.integration.state = 'cancelled'; goal.integration.retryRequested = false;
+      emit('integration_cancelled', { operationId: goal.integration.operationId }); break;
     }
     case 'record_integration_conflict': {
       requireAuthority(authority, 'system');
@@ -489,6 +511,17 @@ export function transition(before, command, authority) {
       const plan = { operationId: identifier(input.operationId), goalId: goal.id, repositoryId: goal.repositoryId, headSha: goal.integrationHead, branch: `companion-goals/${goal.id}`, baseBranch: goal.baseBranch, baseSha: goal.baseSha, marker: `<!-- companion-goal:${goal.id} -->` };
       goal.publication = { operationId: plan.operationId, headSha: goal.integrationHead, generation: goal.generation, revision: goal.revision, plan };
       goal.status = 'ready_to_publish'; intent('publish', goal.publication.operationId, null, { ...plan }); emit('publication_requested', { headSha: goal.integrationHead }); break;
+    }
+    case 'accept_moved_target': {
+      requireAuthority(authority, 'user');
+      const publication = goal.publication, baseHeadSha = sha(input.baseHeadSha);
+      requireValue(goal.status === 'ready_to_publish' && publication && publication.operationId === input.operationId && publication.generation === goal.generation && publication.revision === goal.revision, 'Publication is not awaiting target acceptance', 'STALE_OPERATION');
+      requireValue(publication.observation?.status === 'target_moved' && publication.observation.baseHeadSha === baseHeadSha, 'The observed target changed; accept its current commit', 'STALE_TARGET');
+      const previousBaseSha = publication.plan.acceptedTargets?.at(-1)?.baseHeadSha ?? publication.plan.baseSha;
+      requireValue(baseHeadSha !== previousBaseSha, 'The target is already accepted', 'STALE_TARGET');
+      publication.plan.acceptedTargets = [...publication.plan.acceptedTargets ?? [], { id: command.id, previousBaseSha, baseHeadSha }];
+      delete publication.observation;
+      emit('moved_target_accepted', { operationId: publication.operationId, previousBaseSha, baseHeadSha }); break;
     }
     case 'record_publication_observation': {
       requireAuthority(authority, 'system');

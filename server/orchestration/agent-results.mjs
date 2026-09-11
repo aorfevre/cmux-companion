@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { DomainError, identifier, requireValue } from './domain/contracts.mjs';
-import { parseRoleResult } from './domain/role-result.mjs';
+import { parseRoleResult, requireResultCapacity } from './domain/role-result.mjs';
 
 /** Durable result inbox in the authoritative aggregate. Raw output is written to
  * private artifacts first; accepted/rejected disposition commits with lifecycle
@@ -38,12 +38,15 @@ export class AgentResults {
     const goal = this.store.get(authority.goalId), attempt = goal?.attempts.find((entry) => entry.id === authority.attemptId);
     requireValue(authority.kind === 'agent' && goal && attempt && attempt.role === authority.role && attempt.generation === authority.generation && attempt.revision === authority.revision, 'Result authority does not match its recorded attempt', 'FORBIDDEN');
     requireValue(typeof raw === 'string', 'Result must be raw structured output');
-    const artifact = this.artifacts.put(raw);
+    requireValue(Buffer.byteLength(raw) <= this.artifacts.maxBytes, 'Artifact too large');
+    const digest = createHash('sha256').update(raw).digest('hex');
     const existing = goal.results?.find((entry) => entry.id === resultId);
     if (existing) {
-      requireValue(existing.attemptId === attempt.id && existing.artifactId === artifact.id, 'Result id was reused with different evidence', 'IDEMPOTENCY_CONFLICT');
+      requireValue(existing.attemptId === attempt.id && existing.artifactId === digest, 'Result id was reused with different evidence', 'IDEMPOTENCY_CONFLICT');
       return existing;
     }
+    requireResultCapacity(goal.results, attempt.id);
+    const artifact = this.artifacts.put(raw);
     this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version, type: 'receive_role_result', payload: { resultId, attemptId: attempt.id, artifactId: artifact.id } }, { kind: 'system' });
     return this.store.get(goal.id)?.results?.find((entry) => entry.id === resultId);
   }

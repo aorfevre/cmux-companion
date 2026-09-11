@@ -43,3 +43,11 @@ export function parseRoleResult(value, { goalId, attempt }) {
       return { ...common, role: 'integrator', output: { headSha: sha(output.headSha), operationId: output.operationId === null ? null : identifier(output.operationId), summary: text(output.summary, 8000), evidence: evidence(output.evidence) } };
   }
 }
+export const MAX_ROLE_RESULTS_PER_ATTEMPT = 8;
+/** Bound both pending intake and retained rejected evidence for a worker.
+ * @param {import('../types.d.ts').Goal['results']} results @param {string} attemptId
+ */
+export function requireResultCapacity(results, attemptId) {
+  const own = (results ?? []).filter(entry => entry.attemptId === attemptId);
+  requireValue(own.length < MAX_ROLE_RESULTS_PER_ATTEMPT && !own.some(entry => entry.status === 'pending' || entry.repair), 'Attempt result intake is already occupied or exhausted', 'IDEMPOTENCY_CONFLICT');
+}

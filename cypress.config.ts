@@ -21,6 +21,15 @@ export default defineConfig({
         if (!manifest.browserHarness) throw new Error('Expected a disposable browser fixture');
         on('task', {
           orchestrationPairing() { return readFileSync(manifest.tokenFile, 'utf8'); },
+          orchestrationAdvanceTarget() {
+            // Fixed operation on the account-free fixture remote only; no input
+            // can select a command, repository, branch or configured destination.
+            const git = (argv: string[]) => execFileSync('git', ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false', '-c', 'user.name=Orchestration Fixture', '-c', 'user.email=fixture@example.invalid', ...argv], { cwd: manifest.remote, env: { NODE_ENV: 'test', PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }, encoding: 'utf8', timeout: 10000 }).trim();
+            const previous = git(['rev-parse', 'refs/heads/main']);
+            const head = git(['commit-tree', `${previous}^{tree}`, '-p', previous, '-m', 'Disposable target advancement']);
+            git(['update-ref', 'refs/heads/main', head, previous]);
+            return head;
+          },
           orchestrationRelease(stage: string) {
             if (!['siblings', 'final', 'reset'].includes(stage)) throw new Error('Unknown fixture barrier');
             for (const name of stage === 'reset' ? ['siblings', 'final'] : [stage]) {

@@ -84,6 +84,15 @@ test('disposable production composition exposes one core plus inert monitoring a
   const f = await fixture(t), storage = { database: join(f.repo.directory, 'new.sqlite'), artifacts: join(f.repo.directory, 'artifacts'), resources: join(f.repo.directory, 'resources') };
   const config = { schemaVersion: 1, storage, cutover: f.cutover, native: { directory: join(f.repo.directory, 'native'), ccsBin: process.execPath, claudeBin: process.execPath, engine: { provider: 'claude', model: 'default' }, env: {}, cmux: { bin: process.execPath, env: {} } }, repositories: [{ id: 'repo', path: f.repo.repository, github: 'fixture/repo', remote: { url: 'ssh://git@github.com/fixture/repo.git', protocol: 'ssh', env: {} }, checks: [{ id: 'unit', argv: ['node', '--test'], bin: process.execPath, env: {}, environmentId: 'fixture-node' }] }], policy: { ceilingMs: 10000, idleMs: 2000, maxOutputBytes: 8192, killGraceMs: 100 } };
   const path = join(f.repo.directory, 'production.json'); writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
+  const { probeGitCapabilities } = await import('../server/orchestration/adapters/git-capabilities.mjs');
+  let nativeProbes = 0;
+  await assert.rejects(createProductionRuntime({ config: loadProductionConfig(path), token, sessions: async () => [],
+    probeGit: () => probeGitCapabilities({ bin: join(f.repo.directory, 'missing-git') }),
+    probe: async () => { nativeProbes++; return {}; }, agents: () => { throw new Error('Agents must not be constructed'); },
+  }), { code: 'UNSUPPORTED_CAPABILITY' });
+  assert.equal(nativeProbes, 0);
+  assert.equal(existsSync(storage.database), false);
+  assert.equal(existsSync(join(f.repo.repository, '.git', 'companion-orchestration-owner.sqlite')), false);
   let terminalCalls = 0;
   const agents = new FakeAgents(); agents.close = async () => {};
   const runtime = await createProductionRuntime({ config: loadProductionConfig(path), token, sessions: async () => [], probe: async () => ({}), agents: () => agents, publisher: () => ({ publish: async () => { throw new Error('No publication expected'); } }), monitor: async app => buildApp({ app, token, eventHub: { stop() {} }, accountUsage: { snapshot: async () => ({ accounts: [] }) }, ccsReconnect: {}, cmux: { workspaceListDetailed: async () => ({ workspaces: [] }), sendText: async () => { terminalCalls++; }, sendPrompt: async () => { terminalCalls++; } }, modelSettings: {}, repoCatalog: {} }) });

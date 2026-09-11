@@ -66,3 +66,27 @@ test('actual child-process death releases ownership without relying on a lease t
   const exited = new Promise((resolve) => child.once('exit', resolve)); child.kill('SIGKILL'); await exited;
   assert.equal(processLiveness(child.pid), 'dead'); owner.acquire(); owner.assertOwned(); owner.release();
 });
+
+for (const changed of ['boot', 'birth']) test(`reused live PID is reclaimable only with a proven different ${changed}`, t => {
+  const { path } = fixture(t), store = connection(t, path);
+  const original = new SchedulerOwnership({ store, boot: () => 'boot-a', birth: () => 'birth-a' }).acquire();
+  const replacement = new SchedulerOwnership({ store, liveness: () => 'alive', boot: () => changed === 'boot' ? 'boot-b' : 'boot-a', birth: () => changed === 'birth' ? 'birth-b' : 'birth-a' });
+  replacement.acquire(); replacement.assertOwned();
+  assert.throws(() => original.assertOwned(), { code: 'OWNERSHIP_UNCERTAIN' });
+  replacement.release();
+});
+
+test('missing birth and boot evidence never permits takeover of a live or uncertain PID', t => {
+  const { path } = fixture(t), store = connection(t, path);
+  const original = new SchedulerOwnership({ store, boot: () => 'boot-a', birth: () => 'birth-a' }).acquire();
+  for (const state of ['alive', 'unknown']) assert.throws(() => new SchedulerOwnership({ store, liveness: () => state, boot: () => null, birth: () => null }).acquire(), { code: 'OWNERSHIP_UNCERTAIN' });
+  original.assertOwned(); original.release();
+});
+
+test('kernel evidence identifies this boot and process without command text', async () => {
+  const { bootIdentity, processBirth } = await import('../server/orchestration/adapters/process-evidence.mjs');
+  assert.match(bootIdentity(), /^[a-f0-9]{64}$/);
+  assert.equal(bootIdentity(), bootIdentity());
+  assert.match(processBirth(process.pid), /^[a-f0-9]{64}$/);
+  assert.equal(processBirth(-1), null); assert.equal(processBirth(2147483647), null);
+});
