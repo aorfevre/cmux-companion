@@ -149,37 +149,42 @@ test('repair copies are isolated, replayable and preserve edits; substituted con
   assert.equal(f.repositories.resource('repair_b_op'), null);
 });
 
-async function repairedFixture(t) {
-  const f = await fixture(t, { conflict: true });
+async function repairedFixture(t, final = false) {
+  const f = await fixture(t, { conflict: !final });
   const a = await f.adapter.integrate(f.input);
-  await f.adapter.integrate({ ...f.input, operationId: 'integrate_b', expectedHead: a.headSha, candidateSha: f.bSha });
-  const attempt = { id: 'repair_a', operationId: 'repair_op', role: 'integrator', taskId: 'B', baseSha: a.headSha, target: a.headSha };
-  Object.assign(attempt, await f.adapter.provisionRepair({ goalId: 'g', repositoryId: 'repo', integrationOperationId: 'integrate_b', attempt }));
+  if (!final) await f.adapter.integrate({ ...f.input, operationId: 'integrate_b', expectedHead: a.headSha, candidateSha: f.bSha });
+  const attempt = { id: 'repair_a', operationId: 'repair_op', role: 'integrator', taskId: final ? null : 'B', baseSha: a.headSha, target: a.headSha };
+  Object.assign(attempt, final ? await f.repositories.provision({ operationId: attempt.operationId, repositoryId: 'repo', baseSha: attempt.baseSha, branch: 'companion/g/final_repair' }) : await f.adapter.provisionRepair({ goalId: 'g', repositoryId: 'repo', integrationOperationId: 'integrate_b', attempt }));
   writeFileSync(join(attempt.worktree, 'src/composition.mjs'), "export function composition() { return 'Resolved'; }\n");
   await fixtureGit(attempt.worktree, ['add', 'src']);
   await fixtureGit(attempt.worktree, ['commit', '-m', 'Repair conflict']);
   const headSha = await fixtureGit(attempt.worktree, ['rev-parse', 'HEAD']);
   const proof = await f.repositories.candidate({ repositoryId: 'repo', attempt, headSha, ownedAreas: ['src/b.mjs', 'src/composition.mjs'] });
-  return { ...f, repair: { goalId: 'g', repositoryId: 'repo', integrationOperationId: 'integrate_b', effectId: 'repair_effect', attempt, headSha, proofArtifactId: proof.artifactId } };
+  return { ...f, repair: { goalId: 'g', repositoryId: 'repo', integrationOperationId: final ? 'repair_effect' : 'integrate_b', effectId: 'repair_effect', attempt, headSha, proofArtifactId: proof.artifactId } };
 }
 
-test('repair acceptance binds the candidate proof and replays one integrated tree', async (t) => {
-  const f = await repairedFixture(t);
+for (const final of [false, true]) test(`repair acceptance binds the candidate proof and replays one integrated tree, final=${final}`, async (t) => {
+  const f = await repairedFixture(t, final);
   const accepted = await f.adapter.acceptRepair(f.repair);
   assert.equal(accepted.status, 'integrated');
   assert.deepEqual(await new GitIntegration({ repositories: f.repositories }).acceptRepair(f.repair), accepted);
   assert.deepEqual(await f.adapter.observeRepair(f.repair), accepted);
   assert.equal(await fixtureGit(f.repo.repository, ['rev-parse', `${accepted.headSha}^{tree}`]), await fixtureGit(f.repo.repository, ['rev-parse', `${f.repair.headSha}^{tree}`]));
   assert.equal(await fixtureGit(f.repo.repository, ['rev-parse', `${accepted.headSha}^`]), f.repair.attempt.baseSha);
-  await assert.rejects(f.adapter.acceptRepair({ ...f.repair, effectId: 'other_effect' }), { code: 'OWNERSHIP_UNCERTAIN' });
+  await assert.rejects(f.adapter.acceptRepair({ ...f.repair, effectId: 'other_effect' }), { code: final ? 'STALE_TARGET' : 'OWNERSHIP_UNCERTAIN' });
   assert.equal((await f.adapter.observeRepair({ ...f.repair, effectId: 'other_effect' })).status, 'unknown');
   for (const changed of [{ goalId: 'wrong' }, { repositoryId: 'wrong' }, { attempt: { ...f.repair.attempt, baseSha: f.repo.baseSha } }, { attempt: { ...f.repair.attempt, role: 'implementer' } }]) assert.equal((await f.adapter.observeRepair({ ...f.repair, ...changed })).status, 'unknown');
+  for (const taskId of [null, 'A', 'B'].filter((taskId) => taskId !== f.repair.attempt.taskId)) {
+    const changed = { ...f.repair, attempt: { ...f.repair.attempt, taskId } };
+    assert.equal((await f.adapter.observeRepair(changed)).status, 'unknown');
+    await assert.rejects(f.adapter.acceptRepair(changed));
+  }
   unlinkSync(f.repositories.artifacts.path(f.repair.proofArtifactId));
   assert.equal((await f.adapter.observeRepair(f.repair)).status, 'unknown');
 });
 
-for (const boundary of ['repair_proposal_recorded', 'repair_proposed', 'repair_advanced']) test(`real SIGKILL preserves repair identity after ${boundary}`, async (t) => {
-  const f = await repairedFixture(t);
+for (const final of [false, true]) for (const boundary of [...(final ? ['final_repair_requested'] : []), 'repair_proposal_recorded', 'repair_proposed', 'repair_advanced']) test(`real SIGKILL preserves repair identity after ${boundary}, final=${final}`, async (t) => {
+  const f = await repairedFixture(t, final);
   const path = join(f.repo.directory, 'repair-crash.json');
   writeFileSync(path, JSON.stringify({ action: 'repair', repository: f.repo.repository, directory: f.repositories.directory, artifacts: f.repositories.artifacts.directory, boundary, input: f.repair }));
   const child = spawn(process.execPath, [fileURLToPath(new URL('./helpers/orchestration/integration-crash-child.mjs', import.meta.url)), path], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -191,4 +196,12 @@ for (const boundary of ['repair_proposal_recorded', 'repair_proposed', 'repair_a
     assert.equal(await fixtureGit(f.repo.repository, ['rev-list', '--count', `${f.repair.attempt.baseSha}..${result.headSha}`]), '1');
     assert.deepEqual(await f.adapter.observeRepair(f.repair), result);
   }
+});
+
+test('final repair refuses a moved goal head without overwriting it', async (t) => {
+  const f = await repairedFixture(t, true);
+  await fixtureGit(f.repo.repository, ['update-ref', 'refs/heads/companion-goals/g', f.bSha, f.repair.attempt.baseSha]);
+  await assert.rejects(f.adapter.acceptRepair(f.repair));
+  assert.equal(await fixtureGit(f.repo.repository, ['rev-parse', 'refs/heads/companion-goals/g']), f.bSha);
+  assert.equal(await f.repositories.ref(f.repo.repository, 'refs/companion/integrations/repair_effect/applied'), null);
 });

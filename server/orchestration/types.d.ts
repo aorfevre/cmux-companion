@@ -42,11 +42,11 @@ export interface Goal {
   attempts: Attempt[]; reviews: Review[]; integrationHead: string;
   verification: Verification | null; finalRepairCount: number; finalRepairLimit: number;
   pr: { number: number; url: string; headSha: string } | null;
-  integration: { operationId: string; taskId: string; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' } | null;
+  integration: { operationId: string; taskId: string | null; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number } | null;
   planningRequest?: { message: string; basedOnRevision: number } | null;
   verificationRuns?: { operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
-  integrationResults?: { operationId: string; taskId: string; headSha: string }[];
+  integrationResults?: { operationId: string; taskId: string | null; headSha: string }[];
   results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; repair?: { effectId: string; integrationOperationId: string; headSha: string }; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
 }
 export interface EvidenceReference { path: string; line: number; description: string }

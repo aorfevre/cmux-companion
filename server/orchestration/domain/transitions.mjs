@@ -122,8 +122,14 @@ export function transition(before, command, authority) {
       requireValue(submission?.status === 'pending' && !submission.repair, 'Repair result is not pending', 'STALE_ATTEMPT');
       const attempt = attemptById(goal, submission.attemptId); ownsResult(authority, attempt);
       const parsed = parseRoleResult(input.result, { goalId: goal.id, attempt });
-      requireValue(parsed.role === 'integrator' && attempt.taskId && goal.status === 'building' && goal.approvedRevision === goal.revision, 'Conflict repair is not approved', 'FORBIDDEN');
-      requireValue(goal.integration?.state === 'conflict' && goal.integration.taskId === attempt.taskId && goal.integration.operationId === parsed.output.operationId && goal.integrationHead === attempt.target, 'Conflict target changed', 'STALE_TARGET');
+      requireValue(parsed.role === 'integrator' && goal.status === 'building' && goal.approvedRevision === goal.revision, 'Integration repair is not approved', 'FORBIDDEN');
+      requireValue(goal.integrationHead === attempt.target && parsed.output.headSha !== attempt.target, 'Repair target changed', 'STALE_TARGET');
+      if (attempt.taskId) {
+        requireValue(goal.integration?.state === 'conflict' && goal.integration.taskId === attempt.taskId && goal.integration.operationId === parsed.output.operationId, 'Conflict target changed', 'STALE_TARGET');
+      } else {
+        requireValue(parsed.output.operationId === null && !goal.integration && goal.tasks.every((task) => task.status === 'integrated') && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Final repair target is not available', 'STALE_TARGET');
+        goal.integration = { operationId: identifier(input.effectId), taskId: null, expectedHead: goal.integrationHead, candidateSha: parsed.output.headSha, baseSha: attempt.baseSha, state: 'repairing' };
+      }
       const proofArtifactId = text(input.proofArtifactId, 64);
       requireValue(/^[a-f0-9]{64}$/.test(proofArtifactId), 'Invalid repair proof artifact');
       submission.proofArtifactId = proofArtifactId;
@@ -369,12 +375,12 @@ export function transition(before, command, authority) {
       requireAuthority(authority, 'system');
       const operation = goal.integration;
       requireValue(operation && operation.operationId === input.operationId && operation.expectedHead === goal.integrationHead, 'Integration ownership changed', 'STALE_TARGET');
-      const task = taskById(goal, operation.taskId);
-      requireValue(task.status === 'accepted' && task.candidateSha === operation.candidateSha, 'Accepted candidate changed');
+      const task = operation.taskId === null ? null : taskById(goal, operation.taskId);
+      requireValue(task ? task.status === 'accepted' && task.candidateSha === operation.candidateSha : ['repairing', 'failed'].includes(operation.state), 'Accepted integration candidate changed');
       goal.integrationHead = sha(input.headSha); goal.verification = null; goal.integration = null;
-      task.status = 'integrated'; task.integratedSha = goal.integrationHead;
-      (goal.integrationResults ??= []).push({ operationId: operation.operationId, taskId: task.id, headSha: goal.integrationHead });
-      emit('task_integrated', { operationId: operation.operationId, taskId: task.id, headSha: goal.integrationHead }); break;
+      if (task) { task.status = 'integrated'; task.integratedSha = goal.integrationHead; }
+      (goal.integrationResults ??= []).push({ operationId: operation.operationId, taskId: operation.taskId, headSha: goal.integrationHead });
+      emit(task ? 'task_integrated' : 'integration_repaired', { operationId: operation.operationId, taskId: operation.taskId, headSha: goal.integrationHead }); break;
     }
     case 'record_integration_failure': {
       requireAuthority(authority, 'system');

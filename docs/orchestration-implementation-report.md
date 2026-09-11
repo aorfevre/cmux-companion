@@ -571,3 +571,62 @@ above apply to `f4a9cdd`; this follow-up runs the affected fixture consumers.
 
 The remaining fixture consumers (candidate-result and runtime suites) passed
 24/24. Log: `/tmp/cmux-orchestration-script-dependents.log`.
+
+## T09 final-review and failed-check repair
+
+Final integrator results now pass the same independent Git candidate proof as
+conflict repairs, bounded to the union of approved task-owned areas. Intake reserves
+a durable final integration effect before mutation. The existing scheduler-owned
+repair coordinator applies it; agents cannot advance the integration ref or accept
+their own output. Task checkpoints remain history, while the final repair records
+its own integration receipt and clears verification at the previous head.
+
+Final repair uses a private operation manifest, verified candidate tree, proposal
+identity and atomic goal/applied refs. The durable identity includes taskId, which
+distinguishes final and conflict repair. Replays cannot switch that identity or
+overwrite a moved goal head. A new head requires independent final review and a
+fresh run of every approved check.
+
+The real scheduled fixture now has four journeys: ordinary siblings, a sibling
+conflict, a blocking final review, and a failing required combined-commit check.
+The failing check verifies dependency injection in composition; final repair adds
+that behavior without changing verification or test files. Both final-repair
+journeys assert publication is blocked before repair, one bounded repair, two
+distinct verification targets and accepted independent review at the final head.
+
+Independent domain review found a recovery blocker: an externally completed final
+repair followed by a DomainError left integration failed, and later observed
+success could not settle. The final path now accepts proven success for its owned
+failed operation, matching conflict recovery. The expanded coordinator matrix
+covers both kinds across unsent cancellation/withdrawal, sent abort, unknown
+observation, external success followed by error, and before/after database
+settlement interruption; exactly one application is required.
+
+Reviewer `/root/domain_review` approved the fix and independently ran 38/38
+scheduler tests. Reviewer `/root/scheduler_admission_review` approved the adapter
+and independently ran three identity/replay/moved-head regressions. An initial
+review comment that taskId was missing relied on stale code; the reviewer re-read
+the diff and explicitly retracted it. The added null/A/B mismatch tests confirm
+both acceptance and observation refuse a different repair identity.
+
+Targeted real Git acceptance and actual SIGKILL checks passed 9/9 before the
+additional moved-head regression. Final repair adds four process-kill boundaries:
+manifest recorded, private proposal recorded, proposed ref and atomic advancement.
+Each reopens twice and proves one commit; these are completed durable boundaries,
+not arbitrary interruption of still-running Git commands. Checked-JS and targeted
+ESLint passed. Logs: `/tmp/cmux-orchestration-final-repair-git.log`,
+`/tmp/cmux-orchestration-final-repair-focused.log`, and
+`/tmp/cmux-orchestration-final-repair-coordinator.log`.
+
+T09 remains incomplete until target-branch observation, safe push, PR publication
+and remote-response reconciliation are implemented. Production/mobile composition,
+full process fault recovery, cleanup, retirement and final architecture review
+remain required. No installed or live integration, merge or release ran.
+
+Full `npm run verify` passed on the final reviewed implementation: 1,435 backend
+tests, one macOS filename skip, 257 UI tests, lint, frontend/backend typechecks and
+build. Log: `/tmp/cmux-orchestration-final-repair-verify.log`.
+
+Final backend coverage passed all 1,435 tests with one platform skip and **98.25%
+line coverage**. Log: `/tmp/cmux-orchestration-final-repair-coverage.log`.
+Real-backend mobile Cypress remains a later required gate; no UI code changed.

@@ -61,12 +61,12 @@ export class AgentResults {
         try { result = JSON.parse(bytes.toString('utf8')); }
         catch { throw new DomainError('MALFORMED_RESULT', 'Agent result was not a JSON object'); }
         const parsed = parseRoleResult(result, { goalId: goal.id, attempt });
-        if (parsed.role === 'implementer' || (parsed.role === 'integrator' && attempt.taskId && parsed.output.operationId !== null)) {
+        if (parsed.role === 'implementer' || parsed.role === 'integrator') {
           requireValue(this.repositories, 'Repository evidence verification is unavailable', 'UNSUPPORTED_CAPABILITY');
           requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
           const task = goal.tasks.find((entry) => entry.id === attempt.taskId);
-          requireValue(task, 'Candidate task disappeared');
-          const proof = await this.repositories.candidate({ repositoryId: goal.repositoryId, attempt, headSha: parsed.output.headSha, ownedAreas: task.ownedAreas });
+          requireValue(task || (parsed.role === 'integrator' && attempt.taskId === null), 'Candidate task disappeared');
+          const proof = await this.repositories.candidate({ repositoryId: goal.repositoryId, attempt, headSha: parsed.output.headSha, ownedAreas: task ? task.ownedAreas : [...new Set(goal.tasks.flatMap((entry) => entry.ownedAreas))] });
           requireValue(proof.headSha === parsed.output.headSha, 'Git proof targets a different candidate', 'STALE_TARGET');
           this.artifacts.get(proof.artifactId);
           requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');

@@ -102,7 +102,7 @@ export class GitIntegration {
   }
   /** @param {import('../types.d.ts').RepairInput} input */
   repairIdentity(input) {
-    return { goalId: input.goalId, repositoryId: input.repositoryId, integrationOperationId: input.integrationOperationId, baseSha: input.attempt.baseSha, target: input.attempt.target, role: input.attempt.role, generation: input.attempt.generation, revision: input.attempt.revision, effectId: input.effectId, attemptId: input.attempt.id, operationId: input.attempt.operationId, candidateSha: input.headSha, proofArtifactId: input.proofArtifactId };
+    return { goalId: input.goalId, repositoryId: input.repositoryId, integrationOperationId: input.integrationOperationId, baseSha: input.attempt.baseSha, target: input.attempt.target, role: input.attempt.role, taskId: input.attempt.taskId, generation: input.attempt.generation, revision: input.attempt.revision, effectId: input.effectId, attemptId: input.attempt.id, operationId: input.attempt.operationId, candidateSha: input.headSha, proofArtifactId: input.proofArtifactId };
   }
   /** @param {import('../types.d.ts').RepairInput} input */
   async observeRepair(input) {
@@ -131,15 +131,23 @@ export class GitIntegration {
     const { repository, common } = await this.repositories.repository(repositoryId);
     requireValue(realpathSync(this.directory) === this.directory, 'Integration directory changed', 'OWNERSHIP_UNCERTAIN');
     const manifestPath = join(this.directory, `${integrationOperationId}.json`);
+    if (attempt.taskId === null && !pathExists(manifestPath)) {
+      requireValue(integrationOperationId === effectId, 'Final repair operation changed', 'STALE_TARGET');
+      writeFileSync(manifestPath, JSON.stringify({ schemaVersion: 1, kind: 'final_repair', goalId, repositoryId, operationId: integrationOperationId, expectedHead: attempt.baseSha, baseSha: attempt.baseSha, candidateSha: headSha, repository, common }), { mode: 0o600, flag: 'wx' });
+      this.failpoint('final_repair_requested');
+    }
     requireValue(pathExists(manifestPath) && lstatSync(manifestPath).isFile() && !lstatSync(manifestPath).isSymbolicLink(), 'Integration manifest changed', 'OWNERSHIP_UNCERTAIN');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
     requireValue(manifest.goalId === goalId && manifest.repositoryId === repositoryId && manifest.repository === repository && manifest.common === common && manifest.expectedHead === attempt.baseSha && attempt.target === attempt.baseSha && attempt.role === 'integrator', 'Repair target changed', 'STALE_TARGET');
+    requireValue(attempt.taskId === null ? manifest.kind === 'final_repair' && integrationOperationId === effectId && manifest.candidateSha === headSha : manifest.kind !== 'final_repair', 'Repair operation kind changed', 'STALE_TARGET');
     const proof = JSON.parse(this.repositories.artifacts.get(proofArtifactId).toString('utf8'));
     requireValue(proof.repositoryId === repositoryId && proof.operationId === attempt.operationId && proof.baseSha === attempt.baseSha && proof.headSha === headSha, 'Repair proof belongs to another candidate', 'STALE_TARGET');
     this.repositories.artifacts.get(proof.deltaArtifactId);
     const prefix = `refs/companion/integrations/${integrationOperationId}`;
-    const tree = await this.repositories.ref(repository, `${prefix}/conflict`);
-    requireValue(tree, 'No recorded conflict tree', 'STALE_TARGET'); this.checkConflict(integrationOperationId, tree);
+    if (attempt.taskId !== null) {
+      const tree = await this.repositories.ref(repository, `${prefix}/conflict`);
+      requireValue(tree, 'No recorded conflict tree', 'STALE_TARGET'); this.checkConflict(integrationOperationId, tree);
+    }
     const proposalPath = join(this.directory, `${integrationOperationId}.proposal.json`);
     let proposal;
     if (pathExists(proposalPath)) {

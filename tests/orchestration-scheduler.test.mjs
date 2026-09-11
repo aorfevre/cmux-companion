@@ -236,8 +236,9 @@ function preparedRepair(f, duplicate = false) {
   return attemptId;
 }
 
-for (const scenario of ['pending_abort', 'withdrawal', 'sent_abort', 'unknown', 'before_commit', 'after_commit']) test(`repair coordinator preserves ownership across ${scenario}`, async (t) => {
-  const f = fixture(t), attemptId = preparedRepair(f); let applied = false, calls = 0, observations = 0;
+for (const final of [false, true]) for (const scenario of ['pending_abort', 'withdrawal', 'sent_abort', 'unknown', 'effect_error', 'before_commit', 'after_commit']) test(`repair coordinator preserves ownership across ${scenario}, final=${final}`, async (t) => {
+  const f = fixture(t), attemptId = final ? preparedFinalRepair(f) : preparedRepair(f); let applied = false, calls = 0, observations = 0;
+  const before = f.store.get('g');
   if (scenario === 'pending_abort') f.command('g', 'abort', {}, 'user');
   if (scenario === 'withdrawal') f.service.repositoryIds.delete('repo');
   if (scenario === 'sent_abort' || scenario === 'unknown') f.store.advanceOperation('repair_effect', 'pending', 'dispatching');
@@ -246,6 +247,7 @@ for (const scenario of ['pending_abort', 'withdrawal', 'sent_abort', 'unknown', 
     observeRepair: async () => { observations++; return { status: applied ? 'integrated' : 'unknown', headSha: applied ? 'd'.repeat(40) : null }; },
     acceptRepair: async () => {
       calls++; applied = true;
+      if (scenario === 'effect_error') throw new DomainError('OWNERSHIP_UNCERTAIN', 'Effect completed before response was lost');
       if (scenario.endsWith('commit')) f.store.failpoint = (point) => { if (point === scenario) throw new Error('settlement interrupted'); };
       return { status: 'integrated', headSha: 'd'.repeat(40) };
     },
@@ -265,9 +267,9 @@ for (const scenario of ['pending_abort', 'withdrawal', 'sent_abort', 'unknown', 
     assert.equal(result.status, stale ? 'rejected' : 'accepted');
     assert.equal(attempt.status, scenario === 'withdrawal' ? 'failed' : stale ? 'cancelled' : 'succeeded');
     assert.equal(attempt.workerState, 'stopped');
-    assert.equal(calls, scenario.endsWith('commit') ? 1 : 0);
-    if (applied) { assert.equal(goal.integrationHead, 'd'.repeat(40)); assert.equal(goal.integrationResults.length, 1); }
-    else assert.equal(goal.integrationHead, BASE);
+    assert.equal(calls, scenario.endsWith('commit') || scenario === 'effect_error' ? 1 : 0);
+    if (applied) { assert.equal(goal.integrationHead, 'd'.repeat(40)); assert.equal(goal.integrationResults.length, (before.integrationResults?.length ?? 0) + 1); }
+    else assert.equal(goal.integrationHead, before.integrationHead);
   }
 });
 
@@ -388,3 +390,19 @@ for (const restart of [false, true]) test(`unknown verification globally retains
   f.create('ordinary'); f.approve('ordinary');
   assert.ok(f.request('ordinary', 'implementer', 'A'));
 });
+
+function preparedFinalRepair(f) {
+  integratedGoal(f);
+  f.command('g', 'record_verification', { headSha: f.store.get('g').integrationHead, checks: [{ id: 'unit', passed: false, artifactId: 'failed_check' }] });
+  const attemptId = f.request('g', 'integrator'); f.dispatch('g', attemptId);
+  const attempt = f.store.get('g').attempts.find((entry) => entry.id === attemptId);
+  const result = { schemaVersion: 1, goalId: 'g', attemptId, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: 'integrator', target: attempt.target,
+    output: { headSha: 'c'.repeat(40), operationId: null, summary: 'Repair combined behavior', evidence: [] } };
+  f.command('g', 'receive_role_result', { resultId: 'repair_result', attemptId, artifactId: 'a'.repeat(64) });
+  f.command('g', 'prepare_repair_result', { resultId: 'repair_result', effectId: 'repair_effect', result, proofArtifactId: 'b'.repeat(64) });
+  f.command('g', 'record_stopped', { attemptId });
+  assert.throws(() => f.command('g', 'request_revision', { message: 'Change scope' }, 'user'), { code: 'OWNERSHIP_UNCERTAIN' });
+  assert.throws(() => f.command('g', 'request_verification', { operationId: 'premature' }), { code: 'NOT_READY' });
+  assert.throws(() => f.request('g', 'integrator'), { code: 'NOT_READY' });
+  return attemptId;
+}
