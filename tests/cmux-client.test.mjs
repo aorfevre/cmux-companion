@@ -3,7 +3,6 @@ import test from "node:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { CmuxClient, parseWorkspaceMetrics } from "../server/cmux-client.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
@@ -536,30 +535,6 @@ test("renames and closes a workspace through argv-only commands", async () => {
   await assert.rejects(() => client.workspaceRename("workspace:1", "x"), /Invalid cmux target/);
   await assert.rejects(() => client.workspaceClose("workspace:1"), /Invalid cmux target/);
   assert.equal(calls.length, 2);
-});
-
-test("starts the goal session runner with the checked-in entry point and quoted arguments only", async () => {
-  const { client, calls } = recordingClient();
-  const planId = "22222222-3333-4444-8555-666666666666";
-  const dispatchId = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
-  await client.workspaceStartGoalSessionRunner(ID, { planId, databasePath: "/data/it's.sqlite", generation: 3, dispatchId });
-  const sent = JSON.parse(calls[0].args[3]);
-  assert.equal(calls[0].args[2], "surface.send_text");
-  assert.equal(sent.workspace_id, ID);
-  assert.equal(sent.text, `'${process.execPath}' '${fileURLToPath(new URL("../server/goal-session-runner.mjs", import.meta.url))}' '${planId}' '/data/it'\\''s.sqlite' '3' '${dispatchId}'\n`);
-  const valid = { planId, databasePath: "/data/goals.sqlite", generation: 1, dispatchId };
-  for (const invalid of [
-    { ...valid, planId: "plan-1" },
-    { ...valid, databasePath: "relative.sqlite" },
-    { ...valid, databasePath: null },
-    { ...valid, generation: 0 },
-    { ...valid, generation: 1.5 },
-    { ...valid, dispatchId: "; rm -rf /" },
-  ]) {
-    await assert.rejects(() => client.workspaceStartGoalSessionRunner(ID, invalid), /Invalid goal session runner/);
-  }
-  await assert.rejects(() => client.workspaceStartGoalSessionRunner("ws", valid), /Invalid cmux target/);
-  assert.equal(calls.length, 1);
 });
 
 test("respawns a surface into a login shell with explicit targets", async () => {

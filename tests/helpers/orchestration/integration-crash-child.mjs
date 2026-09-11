@@ -1,0 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { GitRepository } from '../../../server/orchestration/adapters/git.mjs';
+import { GitIntegration } from '../../../server/orchestration/adapters/git-integration.mjs';
+import { ArtifactStore } from '../../../server/orchestration/storage/artifacts.mjs';
+const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const artifacts = new ArtifactStore({ directory: config.artifacts });
+const repositories = new GitRepository({ repositories: new Map([['repo', config.repository]]), directory: config.directory, artifacts });
+const adapter = new GitIntegration({ repositories, failpoint: (point) => { if (point === config.boundary) process.kill(process.pid, 'SIGKILL'); } });
+if (config.action === 'repair') await adapter.acceptRepair(config.input);
+else await adapter.integrate(config.input);
+throw new Error('Integration crash boundary was not reached');

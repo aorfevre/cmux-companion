@@ -42,3 +42,5 @@ yarn-error.log*
 /outputs/
 /work/
 *.tsbuildinfo
+
+/cypress/results/

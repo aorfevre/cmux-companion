@@ -3,57 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CmuxClient } from "../../server/cmux-client.mjs";
 import { buildApp } from "../../server/app.mjs";
-import { WorktreePlanStore } from "../../server/worktree-plan-store.mjs";
-import { BurstStore } from "../../server/burst-store.mjs";
-import { GitHubIssueStore } from "../../server/github-issue-store.mjs";
-import { GitHubReviewToken } from "../../server/github-review-token.mjs";
-import { AgentBriefs } from "../../server/agent-brief.mjs";
 import { ImageAttachments } from "../../server/image-attachments.mjs";
 import { AccountUsage } from "../../server/account-usage.mjs";
 import { RepoCatalog } from "../../server/repo-catalog.mjs";
-import { WorktreeDashboard } from "../../server/worktree-dashboard.mjs";
-import { WorktreeInventory } from "../../server/worktree-inventory.mjs";
-import { WorktreeCleanup } from "../../server/worktree-cleanup.mjs";
-import { RepositoryArchive } from "../../server/repository-archive.mjs";
-import { RepositoryFavorites } from "../../server/repository-favorites.mjs";
 
-// Each invocation owns its storage, including failures before app construction.
-// No process-wide HOME override or shared mutable test database is required.
+// Monitoring fixtures own their temporary data and never construct orchestration.
 export async function buildTestApp(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "cmux-api-fixture-"));
   let app;
-  let ownedStore;
-  let ownedBurstStore;
-  t.after(async () => {
-    try { await app?.close(); }
-    finally {
-      ownedStore?.close();
-      ownedBurstStore?.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-  const repoCatalog = options.repoCatalog || new RepoCatalog({ roots: [] });
-  const worktreePlanStore = options.worktreePlanStore || (options.worktreePlanner ? null : (ownedStore = new WorktreePlanStore({ path: join(directory, "plans.db") })));
-  app = await buildApp({
-    ...options,
+  t.after(async () => { try { await app?.close(); } finally { await rm(directory, { recursive: true, force: true }); } });
+  app = await buildApp({ ...options,
     cmux: options.cmux || new CmuxClient({ bin: "/fake/cmux", socketPassword: "" }),
-    repoCatalog,
-    worktreePlanStore,
-    // The app would otherwise open the real bursts.db beside the real plans.db.
-    burstStore: options.burstStore || (ownedBurstStore = new BurstStore({ path: ":memory:" })),
-    worktreeDashboard: options.worktreeDashboard || new WorktreeDashboard({
-      repoCatalog, managedReleaseRoots: [],
-      repositoryArchive: new RepositoryArchive({ path: join(directory, "archive.json") }),
-      repositoryFavorites: new RepositoryFavorites({ path: join(directory, "favorites.json") }),
-    }),
-    worktreeCleanup: options.worktreeCleanup || new WorktreeCleanup({
-      directory: join(directory, "cleanup"),
-      inventory: new WorktreeInventory({ roots: [], activity: async () => ({ available: true, processes: [] }) }),
-      onRemoved: (path) => worktreePlanStore?.recordWorktreeRemoved(path),
-    }),
-    githubIssueStore: options.githubIssueStore || new GitHubIssueStore({ path: join(directory, "issues.json") }),
-    githubReviewToken: options.githubReviewToken || new GitHubReviewToken({ path: join(directory, "review-token.json") }),
-    agentBriefs: options.agentBriefs || new AgentBriefs({ directory: join(directory, "briefs") }),
+    repoCatalog: options.repoCatalog || new RepoCatalog({ roots: [] }),
     imageAttachments: options.imageAttachments || new ImageAttachments({ directory: join(directory, "attachments") }),
     accountUsage: options.accountUsage || new AccountUsage({ sourceLoader: async () => { throw new Error("No account source in API fixture"); } }),
   });

@@ -1,10 +1,9 @@
 "use client";
-import { ProposalReview } from "./proposal-review";
+import { ReleaseRetentionPanel } from "./release-retention";
 import { sessionState } from "../server/session-state.mjs";
 import { relativeTime } from "./relative-time";
 /* eslint-disable jsx-a11y/no-autofocus, jsx-a11y/label-has-associated-control */
 
-import { useOwnedReads } from "./owned-reads";
 import { request as api } from "./api-request";
 import { AttachmentStrip, composedPrompt, useImageAttachments, type ImageAttachment } from "./image-attachments";
 import { useOwnedRead } from "./use-owned-read";
@@ -17,15 +16,8 @@ import { slashShortcuts } from "./slash-shortcuts.mjs";
 import { isNearBottom, nextFollowState } from "./terminal-follow.mjs";
 import { TerminalGrid, type TerminalView } from "./terminal-grid.tsx";
 import { terminalViewSignature } from "./terminal-grid.mjs";
-import { hasGoalPopup } from "./goal-popup-url";
 import { ModelSettingsPanel } from "./model-settings";
-import { WorktreeOverview } from "./worktree-overview";
-import { WorktreeCleanupPanel } from "./worktree-cleanup";
-import { WorktreeDashboardView } from "./worktree-dashboard";
 import { DeploymentHealth } from "./deployment-health";
-import type { PlanDraft } from "./worktree-planner";
-import { GoalOutcomes } from "./goal-outcomes";
-import { plannerReviewReady, approvalDeliveryMessage } from "../server/goal-options.mjs";
 
 type Terminal = { id: string; title: string; current_directory?: string | null; is_focused?: boolean; is_ready?: boolean };
 type WorkspaceStatus = { effective?: string; inferred?: string; signals?: Record<string, boolean> };
@@ -42,7 +34,6 @@ type PullRequest = { number: number; title: string; url: string; state: string; 
 type PromptQueueItem = { id: string; workspaceId: string; surfaceId: string; text: string; createdAt: string; updatedAt: string; attempts: number; lastError?: string | null };
 type View = "sessions" | "inbox" | "launch" | "apps" | "settings" | "usage" | "worktrees";
 type DetailTab = "terminal" | "tasks" | "changes";
-type HomeMode = "sessions" | "worktrees";
 
 
 
@@ -56,15 +47,13 @@ export default function Home() {
   const [auth, setAuth] = useState<"loading" | "paired" | "unpaired" | "offline">("loading");
   const [pairingToken, setPairingToken] = useState(""); const [pairingError, setPairingError] = useState("");
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null); const [inbox, setInbox] = useState<Inbox>({ items: [], actionableCount: 0, unreadCount: 0 }); const [repos, setRepos] = useState<Repo[]>([]);
-  const [view, setView] = useState<View>(() => { if (typeof window === "undefined") return "sessions"; if (hasGoalPopup(location.search)) return "sessions"; const value = new URLSearchParams(location.search).get("view"); return value === "inbox" || value === "launch" || value === "apps" || value === "settings" || value === "usage" || value === "worktrees" ? value : "sessions"; }); const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); return query.has("action") || (!query.has("workspace") && query.has("repo") && query.has("file")) ? null : query.get("workspace"); }); const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("surface")); const [detailTab, setDetailTab] = useState<DetailTab>(() => { if (typeof window === "undefined") return "terminal"; const tab = new URLSearchParams(location.search).get("tab"); return tab === "changes" || tab === "tasks" ? tab : "terminal"; });
+  const [view, setView] = useState<View>(() => { if (typeof window === "undefined") return "sessions"; const value = new URLSearchParams(location.search).get("view"); return value === "inbox" || value === "launch" || value === "apps" || value === "settings" || value === "usage" || value === "worktrees" ? value : "sessions"; }); const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); return query.has("action") || (!query.has("workspace") && query.has("repo") && query.has("file")) ? null : query.get("workspace"); }); const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("surface")); const [detailTab, setDetailTab] = useState<DetailTab>(() => { if (typeof window === "undefined") return "terminal"; const tab = new URLSearchParams(location.search).get("tab"); return tab === "changes" || tab === "tasks" ? tab : "terminal"; });
   const [draft, setDraft] = useState(""); const [sending, setSending] = useState(false); const [live, setLive] = useState(false); const [notice, setNotice] = useState("");
   const [actionId, setActionId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("action"));
   const [focusedPreviewId, setFocusedPreviewId] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(location.search).get("preview"));
   const [documentTarget, setDocumentTarget] = useState<{ repoId: string; path: string } | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); const repoId = query.get("repo"); const path = query.get("file"); return repoId && path && !query.has("workspace") && !query.has("action") ? { repoId, path } : null; });
   const [notificationContext, setNotificationContext] = useState<{ kind: string; file?: string | null } | null>(() => { if (typeof window === "undefined") return null; const query = new URLSearchParams(location.search); const kind = query.get("context"); return kind && query.has("workspace") ? { kind, file: query.get("file") } : null; });
   // Goals always owns the landing page; explicit legacy session links still work.
-  const [homeMode, setHomeMode] = useState<HomeMode>(() => typeof window !== "undefined" && !hasGoalPopup(location.search) && new URLSearchParams(location.search).get("mode") === "sessions" ? "sessions" : "worktrees");
-  const [dashboardVisit, setDashboardVisit] = useState(0);
   const [readOnly, setReadOnly] = useState(() => typeof window === "undefined" || localStorage.getItem("cmux-companion-read-only") !== "false");
   const [installPrompt, setInstallPrompt] = useState<(Event & { prompt?: () => Promise<void> }) | null>(null); const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const detectedUrls = useRef(new Set<string>());
@@ -130,8 +119,7 @@ export default function Home() {
   async function fixPreview(preview: Preview, prompt: string, queue: boolean) { const workspace = bootstrap?.workspaces.find((item) => item.id === preview.workspaceId); const terminal = workspace?.terminals.find((item) => item.is_focused) || workspace?.terminals[0]; if (!workspace || !terminal) throw new Error("That cmux session is no longer open"); if (queue) await api("/api/prompt-queue", { method: "POST", body: JSON.stringify({ workspaceId: workspace.id, surfaceId: terminal.id, text: prompt }) }); else await api(`/api/terminals/${terminal.id}/input`, { method: "POST", body: JSON.stringify({ text: prompt, enter: true }) }); if (selectedWorkspace?.id === workspace.id) await loadPromptQueue(true); setNotice(queue ? "Visual fix queued for the agent" : "Visual fix sent to the agent"); }
   async function sendKey(key: string) { if (!selectedTerminal || readOnly) return; setSending(true); try { await api(`/api/terminals/${selectedTerminal.id}/key`, { method: "POST", body: JSON.stringify({ key }) }); setTimeout(loadTerminal, 150); } catch (error) { setNotice(error instanceof Error ? error.message : "Could not send key"); } finally { setSending(false); } }
   function changeReadOnly(value: boolean) { setReadOnly(value); localStorage.setItem("cmux-companion-read-only", String(value)); }
-  function changeHomeMode(mode: HomeMode) { if (mode === "worktrees") setDashboardVisit((visit) => visit + 1); setHomeMode(mode); history.replaceState(null, "", `/?view=sessions&mode=${mode}`); }
-  function changeView(next: View) { if (next === "sessions") { setHomeMode("worktrees"); setDashboardVisit((visit) => visit + 1); } setSelectedWorkspaceId(null); setDocumentTarget(null); setActionId(null); setView(next); history.replaceState(null, "", `/?view=${next}`); }
+  function changeView(next: View) { setSelectedWorkspaceId(null); setDocumentTarget(null); setActionId(null); setView(next); history.replaceState(null, "", `/?view=${next}`); }
   function openDocument(repoId: string, path: string) { setDocumentTarget({ repoId, path: path.replace(/^\.\//, "") }); history.replaceState(null, "", `/?repo=${encodeURIComponent(repoId)}&file=${encodeURIComponent(path.replace(/^\.\//, ""))}`); }
   function openRepoWorkspace(repoId: string) { const repo = repos.find((item) => item.id === repoId); const workspace = bootstrap?.workspaces.find((item) => repo && (item.current_directory === repo.path || item.current_directory?.startsWith(`${repo.path}/`))); if (workspace) openWorkspace(workspace); else setNotice("No open cmux session uses this repository"); }
 
@@ -142,17 +130,12 @@ export default function Home() {
 
   return <main className="app-shell"><AppHeader connected={Boolean(bootstrap?.connected)} live={live} device={bootstrap?.host?.mac_display_name || "Your Mac"} /><Notice message={notice} onDismiss={() => setNotice("")} />
     {view !== "sessions" && view !== "inbox" && inbox.actionableCount > 0 && <button className="primary-small" onClick={() => changeView("inbox")}>{inbox.actionableCount} {inbox.actionableCount === 1 ? "item needs" : "items need"} your attention</button>}
-    {view === "sessions" && <><HomeModeSwitch mode={homeMode} onMode={changeHomeMode} onApps={() => changeView("apps")} inboxCount={inbox.actionableCount} onInbox={() => changeView("inbox")} />{homeMode === "sessions" ? <SessionsView bootstrap={bootstrap} onOpen={openWorkspace} onLaunch={() => changeView("launch")} onRefresh={loadBootstrap} /> : <WorktreeDashboardView readOnly={readOnly} onUsage={() => changeView("usage")} key={dashboardVisit} onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onLaunched={async () => { await loadBootstrap(); }} onGoalSessionStarted={async (workspaceId) => {
-      const latest = await loadBootstrap();
-      const workspace = latest?.workspaces.find((item) => item.id === workspaceId);
-      if (workspace) openWorkspace(workspace);
-      else setNotice("Goal session started, but cmux has not reported its workspace yet.");
-    }} onNotice={setNotice} />}</>}
+    {view === "sessions" && <><nav aria-label="Session tools"><a className="primary-button" href="/orchestration">Orchestration goals</a><button onClick={() => changeView("inbox")}>Inbox{inbox.actionableCount > 0 ? ` · ${inbox.actionableCount}` : ""}</button><button onClick={() => changeView("apps")}>Local apps</button></nav><SessionsView bootstrap={bootstrap} onOpen={openWorkspace} onLaunch={() => changeView("launch")} onRefresh={loadBootstrap} /></>}
     {view === "inbox" && <InboxView inbox={inbox} workspaces={bootstrap?.workspaces || []} repos={repos} focusedId={actionId} onCloseFocus={() => { setActionId(null); history.replaceState(null, "", "/?view=inbox"); }} onDocument={openDocument} onReload={loadInbox} onOpen={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); }} onNotice={setNotice} />}
     {view === "launch" && <LaunchView repos={repos} onReload={loadRepos} onLaunched={async (id) => { const data = await loadBootstrap(); const workspace = data?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else { setView("sessions"); setNotice("Workspace launched. It will appear in a moment."); } }} />}
     {view === "apps" && <AppsView focusedId={focusedPreviewId} onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onNotice={setNotice} onFix={fixPreview} />}
     {view === "settings" && <SettingsView bootstrap={bootstrap} readOnly={readOnly} installable={Boolean(installPrompt)} onReadOnly={changeReadOnly} onInstall={() => installPrompt?.prompt?.()} onApps={() => changeView("apps")} onUsage={() => changeView("usage")} onNotice={setNotice} onLogout={async () => { await api("/api/auth/logout", { method: "POST", body: "{}" }); setAuth("unpaired"); }} />}
-    {view === "worktrees" && <WorktreeOverview />}
+    {view === "worktrees" && <a className="primary-button" href="/orchestration">Open orchestration goals</a>}
     {view === "usage" && <AccountUsageView onBack={() => changeView("settings")} />}
     <BottomNav view={view} onView={changeView} /></main>;
 }
@@ -178,21 +161,6 @@ export function LastUpdateStamp() {
   if (!iso || !Number.isFinite(at)) return null;
   return <time className="last-update" dateTime={iso} title={iso}>Updated {updatedAgo(at)}</time>;
 }
-
-
-export function HomeModeSwitch({ mode, onMode, onApps, inboxCount = 0, onInbox }: { mode: HomeMode; onMode: (mode: HomeMode) => void; onApps?: () => void; inboxCount?: number; onInbox?: () => void }) {
-  const toolsRef = useRef<HTMLDetailsElement>(null);
-  function select(action: () => void) { if (toolsRef.current) toolsRef.current.open = false; action(); }
-  return <div className="dashboard-heading"><h1>{mode === "worktrees" ? "Goals board" : "Sessions"}</h1><div className="dashboard-heading-actions">
-    {inboxCount > 0 && onInbox && <button className="primary-small" onClick={onInbox}>Inbox · {inboxCount}</button>}
-    <details className="dashboard-tools" ref={toolsRef}><summary>Tools</summary><nav aria-label="Dashboard tools">
-      <button onClick={() => select(() => onMode("worktrees"))}>Goals board</button>
-      <button onClick={() => select(() => onMode("sessions"))}>Sessions</button>
-      {onApps && <button onClick={() => select(onApps)}>Local apps</button>}
-    </nav></details>
-  </div></div>;
-}
-
 
 
 function SessionsView({ bootstrap, onOpen, onLaunch, onRefresh }: { bootstrap: Bootstrap | null; onOpen: (workspace: Workspace) => void; onLaunch: () => void; onRefresh: () => void }) {
@@ -247,7 +215,6 @@ function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo
     <main className="detail-shell">
       <header className="detail-header"><button className="back-button" onClick={props.onBack}>‹ <span>Back</span></button><div><strong>{props.workspace.title}</strong><span>{compactPath(props.workspace.current_directory)}</span></div><button className="session-menu-button" aria-label="Session menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><span className={`status-orb ${sessionState(props.workspace).tone}`} />•••</button></header>
       {props.context && <aside className={`notification-context ${props.context.kind}`}><div><strong>{props.context.kind === "failure" ? "A command or test failed" : props.context.kind === "pullRequest" ? "Pull request updated" : props.context.kind === "completion" ? "Work is ready to review" : "Session update"}</strong><span>You opened this session from a notification.</span></div>{props.context.file && <button onClick={() => props.onMarkdown(props.context!.file!)}>Open {props.context.file.split("/").pop()}</button>}<button aria-label="Dismiss notification context" onClick={props.onDismissContext}>×</button></aside>}
-      <ManagedGoalControls workspaceId={props.workspace.id} readOnly={props.readOnly} />
       {props.tab === "terminal" && <TerminalPanel {...props} fontSize={fontSize} fitToPhone={fitToPhone} shortcutsOpen={shortcutsOpen} onShortcuts={setShortcutsOpen} />}
       {props.tab === "tasks" && <HealthPanel key={props.workspace.id} workspace={props.workspace} terminal={props.terminal} onChanged={props.onChanged} onNotice={props.onNotice} />}
       {props.tab === "changes" && <ChangesPanel key={props.repo?.id} repo={props.repo} onMarkdown={props.onMarkdown} />}
@@ -256,84 +223,6 @@ function WorkspaceDetail(props: { workspace: Workspace; terminal: Terminal; repo
   );
 }
 
-
-export function ManagedGoalControls({ workspaceId, readOnly = false }: { workspaceId: string; readOnly?: boolean }) {
-  return <GoalControlsForWorkspace key={workspaceId} workspaceId={workspaceId} readOnly={readOnly} />;
-}
-
-function GoalControlsForWorkspace({ workspaceId, readOnly }: { workspaceId: string; readOnly: boolean }) {
-  const [plan, setPlan] = useState<PlanDraft | null>(null);
-  const [changes, setChanges] = useState("");
-  const [busy, setBusy] = useState<"approve" | "changes" | "recover" | "resend" | null>(null);
-  const [error, setError] = useState("");
-  const [readError, setReadError] = useState("");
-  const ownedRead = useOwnedReads(workspaceId);
-  const mutation = useRef(0);
-  const load = useCallback(() => ownedRead("goal",
-    async (signal) => { const version = mutation.current; const result = await api<{ plan: PlanDraft | null }>(`/api/goal-sessions/workspace/${encodeURIComponent(workspaceId)}`, { signal }); return { ...result, version }; },
-    (result) => { if (result.version === mutation.current) { setPlan(result.plan); setReadError(""); } },
-    () => setReadError("Could not refresh this goal. Refresh before approving.")), [workspaceId, ownedRead]);
-  useEffect(() => {
-    const kickoff = setTimeout(() => { void load(); }, 0);
-    const poll = setInterval(() => { void load(); }, 2_500);
-    return () => { clearTimeout(kickoff); clearInterval(poll); };
-  }, [load]);
-  async function approve() {
-    if (readOnly || busy || readError || !plan?.proposalRevision || !plan.goalSessionGeneration || !plannerReviewReady(plan)) return;
-    mutation.current += 1;
-    setBusy("approve"); setError("");
-    try {
-      setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/approve`, { method: "POST", body: JSON.stringify({ generation: plan.goalSessionGeneration, revision: plan.proposalRevision }) }));
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not approve this proposal"); }
-    finally { mutation.current += 1; setBusy(null); }
-  }
-  async function requestChanges() {
-    if (readOnly || busy || readError || !plan?.proposalRevision || !plan.goalSessionGeneration || !changes.trim()) return;
-    mutation.current += 1;
-    setBusy("changes"); setError("");
-    try {
-      setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/request-changes`, { method: "POST", body: JSON.stringify({ generation: plan.goalSessionGeneration, revision: plan.proposalRevision, feedback: changes.trim() }) }));
-      setChanges("");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not request proposal changes"); }
-    finally { mutation.current += 1; setBusy(null); }
-  }
-  async function resendApproval() {
-    if (readOnly || busy || !plan) return;
-    mutation.current += 1; setBusy("resend"); setError("");
-    try { setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/resend-approval`, { method: "POST", body: "{}" })); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not send the approval again"); }
-    finally { mutation.current += 1; setBusy(null); }
-  }
-  async function recover() {
-    if (readOnly || busy || !plan) return;
-    mutation.current += 1; setBusy("recover"); setError("");
-    try { setPlan(await api<PlanDraft>(`/api/goal-sessions/${encodeURIComponent(plan.planId)}/recover`, { method: "POST", body: "{}" })); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not recover this goal"); }
-    finally { mutation.current += 1; setBusy(null); }
-  }
-  if (!plan) return readError ? <p role="alert">{readError}</p> : null;
-  const outcomes = <GoalOutcomes key={plan.planId} draft={plan} readOnly={readOnly || Boolean(readError) || Boolean(busy)} onReceive={(next) => { mutation.current += 1; setPlan(next); }} onLinked={(linked) => {
-    if (!linked.goalSessionWorkspaceId) throw new Error("Linked coding discovery is still starting. Retry to open its saved conversation.");
-    window.location.assign(`/?workspace=${encodeURIComponent(linked.goalSessionWorkspaceId)}`);
-  }} />;
-  const reviewReady = plannerReviewReady(plan);
-  const errors = <>{error && <p role="alert">{error}</p>}{readError && <p role="alert">{readError}</p>}</>;
-  const disconnected = plan.goalSessionRunnerPid === null && plan.goalSessionRunnerDispatchId === null && !plan.goalSessionError && plan.transitionStatus !== "uncertain";
-  const resume = disconnected ? <><p>Conversation closed. Discovery and saved proposals are preserved.</p><button type="button" disabled={readOnly || Boolean(readError) || Boolean(busy)} onClick={recover}>Resume conversation</button></> : null;
-  if (plan.boardStatus === "aborted" || plan.boardStatus === "merged") return <><section className="planner-delivery-status" aria-label="Goal status"><strong>{plan.boardStatus === "aborted" ? "Goal aborted" : "Goal merged"}</strong>{errors}</section>{outcomes}</>;
-  if (plan.goalSessionState === "awaiting_input") return <section className="planner-delivery-status" aria-label="Managed goal questions"><strong>Goal needs your answer</strong>{plan.questions.map((question) => <p key={question.id}>Question: {question.text}{question.options.length ? ` (${question.options.join(" / ")})` : ""}</p>)}<p>Reply in this visible conversation to continue planning.</p>{errors}</section>;
-  if (plan.goalSessionState !== "awaiting_approval" || !plan.proposal) return <><section className="planner-delivery-status" aria-label="Managed goal status"><strong>Goal</strong>{resume}<p>{plan.goalSessionError || approvalDeliveryMessage(plan) || (plan.transitionStatus === "uncertain" ? "The implementation handoff is uncertain and will not be retried automatically." : plan.goalSessionState === "analysis_ready" ? "Analysis saved. Read the report, challenge it or launch linked coding discovery below." : plan.goalSessionState === "analyzing" ? "Analysis is continuing read-only in this conversation." : plan.goalSessionState === "implementing" ? "Implementation is continuing in this conversation." : "Discovery is open in the interactive conversation. Ask questions and steer the agent here.")}</p>{errors}{plan.goalSessionError && <button type="button" disabled={readOnly || Boolean(busy)} onClick={recover}>{busy === "recover" ? "Recovering…" : "Recover failed turn"}</button>}{plan.transitionStatus === "pending" && plan.approvalDelivery?.reason && <button type="button" disabled={readOnly || Boolean(busy)} onClick={resendApproval}>{busy === "resend" ? "Sending…" : "Send approval again"}</button>}</section>{outcomes}</>;
-  if (!reviewReady) return <><section className="planner-delivery-status" aria-label="Plan review progress"><strong>Preparing your reviewed plan</strong>{resume}<p>The reviewer and planner are assessing this proposal. Your final plan will appear here when assessment finishes.</p><details><summary>Draft plan</summary><ProposalReview proposal={plan.proposal} goal={plan.goal} /></details>{errors}</section>{outcomes}</>;
-  return <><section className="planner-delivery-status proposal-review" aria-label="Proposal awaiting approval"><h2>Proposal revision {plan.proposalRevision}</h2>{resume}
-    <div className="proposal-layout"><ProposalReview proposal={plan.proposal} goal={plan.goal} /><div className="proposal-decision">
-    <p>Ready for your decision. Approve this exact final revision and the agent starts implementing it here.</p>
-    <label><span>Request changes</span><textarea aria-label="Request proposal changes" value={changes} disabled={readOnly || Boolean(busy)} maxLength={4_000} rows={2} onChange={(event) => setChanges(event.target.value)} /></label>
-    {errors}
-    {readOnly && <p>Enable input in the session menu to approve or request changes.</p>}
-    <div className="planner-actions"><button type="button" disabled={readOnly || Boolean(readError) || Boolean(busy) || !changes.trim()} onClick={requestChanges}>{busy === "changes" ? "Sending…" : "Request changes"}</button><button type="button" className="primary-button" disabled={readOnly || Boolean(readError) || Boolean(busy)} onClick={approve}>{busy === "approve" ? "Approving…" : plan.goalType === "analysis" ? "Approve analysis" : "Approve and implement"}</button></div>
-    </div></div>
-  </section>{outcomes}</>;
-}
 
 export function PullRequestBanner({ repo }: { repo: Repo | null }) {
   const [pullRequest, setPullRequest] = useState<PullRequest | null>(null);
@@ -457,7 +346,7 @@ function ChangesPanel({ repo, onMarkdown }: { repo: Repo | null; onMarkdown: (pa
   return <section className="changes-page"><div className="changes-summary"><div><p className="eyebrow">{repo.branch}</p><h2>{changes?.files.length || 0} changed files</h2><span>{changes?.recentCommit ? `Latest: ${changes.recentCommit.hash} ${changes.recentCommit.subject}` : "No commits yet"}</span></div><button onClick={load}>↻</button></div>{loading && !changes ? <div className="detail-loading">Reading Git state…</div> : changes?.files.length === 0 ? <Empty icon="✓" title="Working tree clean" body="There are no staged, unstaged, or untracked changes." /> : <div className="file-list">{changes?.files.map((file) => <button key={file.path} onClick={() => openFile(file)}><span className={`file-status s-${file.status.toLowerCase()}`}>{file.status}</span><div><strong>{file.path.split("/").pop()}</strong><span>{file.path}</span></div><em>{file.areas.join(" + ")}</em><b>›</b></button>)}</div>}</section>;
 }
 
-function SettingsView({ bootstrap, readOnly, installable, onReadOnly, onInstall, onApps, onUsage, onLogout, onNotice }: { bootstrap: Bootstrap | null; readOnly: boolean; installable: boolean; onReadOnly: (value: boolean) => void; onInstall: () => void; onApps: () => void; onUsage: () => void; onLogout: () => void; onNotice: (message: string) => void }) { return <section className="subpage"><p className="eyebrow">COMPANION</p><h1>Settings</h1><div className="settings-list"><div className="setting-row"><div><strong>Connection</strong><span>{bootstrap?.connected ? bootstrap.host?.mac_display_name || "Connected to cmux" : "Waiting for cmux"}</span></div><i className={bootstrap?.connected ? "good" : ""}>{bootstrap?.connected ? "Online" : "Offline"}</i></div><label className="setting-row"><div><strong>Read-only protection</strong><span>Prevent accidental terminal input</span></div><input type="checkbox" checked={readOnly} onChange={(event) => onReadOnly(event.target.checked)} /></label><button className="setting-row setting-button" onClick={onUsage}><div><strong>Licence usage</strong><span>Claude Code and OpenAI quota by account</span></div><i>Open ›</i></button><button className="setting-row setting-button" onClick={onApps}><div><strong>Local apps</strong><span>Manage private Tailscale preview links</span></div><i>Open ›</i></button></div><ModelSettingsPanel /><WorktreeCleanupPanel /><DeploymentHealth /><PushSettings onNotice={onNotice} />{installable && <button className="primary-button install-button" onClick={onInstall}>Add companion to home screen</button>}<div className="privacy-note"><strong>Private by design</strong><p>The backend listens only on this Mac. Access is encrypted and routed through your Tailscale network; pairing is still required per browser.</p></div><button className="logout-button" onClick={onLogout}>Unpair this device</button></section>; }
+function SettingsView({ bootstrap, readOnly, installable, onReadOnly, onInstall, onApps, onUsage, onLogout, onNotice }: { bootstrap: Bootstrap | null; readOnly: boolean; installable: boolean; onReadOnly: (value: boolean) => void; onInstall: () => void; onApps: () => void; onUsage: () => void; onLogout: () => void; onNotice: (message: string) => void }) { return <section className="subpage"><p className="eyebrow">COMPANION</p><h1>Settings</h1><div className="settings-list"><div className="setting-row"><div><strong>Connection</strong><span>{bootstrap?.connected ? bootstrap.host?.mac_display_name || "Connected to cmux" : "Waiting for cmux"}</span></div><i className={bootstrap?.connected ? "good" : ""}>{bootstrap?.connected ? "Online" : "Offline"}</i></div><label className="setting-row"><div><strong>Read-only protection</strong><span>Prevent accidental terminal input</span></div><input type="checkbox" checked={readOnly} onChange={(event) => onReadOnly(event.target.checked)} /></label><button className="setting-row setting-button" onClick={onUsage}><div><strong>Licence usage</strong><span>Claude Code and OpenAI quota by account</span></div><i>Open ›</i></button><button className="setting-row setting-button" onClick={onApps}><div><strong>Local apps</strong><span>Manage private Tailscale preview links</span></div><i>Open ›</i></button></div><ModelSettingsPanel /><ReleaseRetentionPanel /><DeploymentHealth /><PushSettings onNotice={onNotice} />{installable && <button className="primary-button install-button" onClick={onInstall}>Add companion to home screen</button>}<div className="privacy-note"><strong>Private by design</strong><p>The backend listens only on this Mac. Access is encrypted and routed through your Tailscale network; pairing is still required per browser.</p></div><button className="logout-button" onClick={onLogout}>Unpair this device</button></section>; }
 
 function PushSettings({ onNotice }: { onNotice: (message: string) => void }) {
   type AlertSettings = { attention: boolean; completion: boolean; failure: boolean; pullRequest: boolean; preview: boolean; hideContent: boolean; quietEnabled: boolean; quietStart: string; quietEnd: string };
@@ -473,7 +362,7 @@ function PushSettings({ onNotice }: { onNotice: (message: string) => void }) {
 }
 
 function urlBase64ToBytes(value: string) { const padding = "=".repeat((4 - value.length % 4) % 4); const raw = atob((value + padding).replaceAll("-", "+").replaceAll("_", "/")); return Uint8Array.from([...raw].map((char) => char.charCodeAt(0))); }
-export function BottomNav({ view, onView }: { view: View; onView: (view: View) => void }) { return <nav className="bottom-nav" aria-label="Main navigation">{[["sessions", "⌂", "Goals"], ["worktrees", "▤", "Worktrees"], ["usage", "◔", "Licence Usage"], ["settings", "⚙", "Settings"]].map(([id, icon, label]) => <button aria-label={label} className={view === id ? "active" : ""} onClick={() => onView(id as View)} key={id}><span aria-hidden="true">{icon}</span><small>{label}</small></button>)}</nav>; }
+export function BottomNav({ view, onView }: { view: View; onView: (view: View) => void }) { return <nav className="bottom-nav" aria-label="Main navigation">{[["sessions", "⌂", "Sessions"], ["worktrees", "▤", "Goals"], ["usage", "◔", "Licence Usage"], ["settings", "⚙", "Settings"]].map(([id, icon, label]) => <button aria-label={label} className={view === id ? "active" : ""} onClick={() => onView(id as View)} key={id}><span aria-hidden="true">{icon}</span><small>{label}</small></button>)}</nav>; }
 function Empty({ icon, title, body, action }: { icon: string; title: string; body: string; action?: React.ReactNode }) { return <div className="empty-card"><span>{icon}</span><strong>{title}</strong><p>{body}</p>{action}</div>; }
 function WorkspaceSkeleton() { return <div className="workspace-card skeleton"><i /><i /><i /></div>; }
 function LoadingScreen() { return <main className="center-screen"><div className="brand-mark large">c</div><p>Opening companion…</p></main>; }

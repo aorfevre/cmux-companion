@@ -11,20 +11,3 @@ beforeEach(() => {
   }));
   cy.intercept("GET", "**/sw.js", { statusCode: 404, body: "" });
 });
-
-// Reveal secondary controls through the same disclosure a person uses.
-Cypress.Commands.add("openBoardTools", () => {
-  cy.contains("summary", "Board tools").then(($summary) => {
-    if (!$summary.parent().prop("open")) cy.wrap($summary).click();
-  });
-});
-
-declare global {
-  // Cypress custom commands augment its global namespace.
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace Cypress {
-    interface Chainable {
-      openBoardTools(): Chainable<void>;
-    }
-  }
-}

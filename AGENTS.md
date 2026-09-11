@@ -8,23 +8,21 @@ See [product behavior](README.md#what-it-does) and [architecture](README.md#arch
 
 ## Important code
 - `app/page.tsx`: React 19/vinext sessions UI and pairing.
-- `app/worktree-dashboard.tsx`: project, worktree and goal board UI.
-- `app/api-request.ts`: shared fetch helper, deduplicated reads and mutation invalidation.
-- `server/index.mjs`: starts the loopback companion and wires persistent services.
-- `server/app.mjs`: Fastify API, authentication hooks and service wiring.
-- `server/goal-board.mjs`: shared pure derivation of goal board columns/state.
-- `server/goal-session-service.mjs`: managed discovery sessions, including the one approval prompt Companion sends to the agent conversation.
-- `server/worktree-plan-store.mjs`: node:sqlite saved plans and delivery history.
-- `server/repo-identity-store.mjs`: rebuildable SQLite repository/worktree cache.
-- `server/burst-service.mjs`, `server/burst-scanner.mjs`, `server/burst-store.mjs`: burst plans, the read-only per-repository scan and their storage.
-- `server/burst-review.mjs`: the extra reviewer sessions a burst goal buys.
-- `server/review-findings.mjs`: splits a planner review into structured findings for the planner assessment.
-- `server/planner-assessments.mjs`: the automatic read-only planner fork that assesses a completed review and publishes the final revision.
-- `server/burst-contract.mjs`, `server/burst-routes.mjs`: shared burst field/status contracts and the Fastify routes that expose them.
-- `worker/index.ts`: vinext Worker entry and image handling; build scaffolding, not the Mac bridge.
-- `tests/`: explicit Node backend tests and automatically selected Vitest UI tests.
-- `cypress/`: local browser configuration, fixtures and deterministic UI specs.
-- `scripts/`: development, verification and macOS installation/operator tooling.
+- `app/orchestration/`: mobile goal board and service-projected workflow actions.
+- `app/api-request.ts`: deduplicated reads and mutation invalidation.
+- `server/index.mjs`: explicit production configuration and loopback startup.
+- `server/app.mjs`: encapsulated monitoring API and authentication.
+- `server/orchestration/domain/`: pure commands, state, graphs and review rules.
+- `server/orchestration/service.mjs`, `scheduler.mjs`: authority, admission and effects.
+- `server/orchestration/storage/`: separate SQLite journal and ownership fencing.
+- `server/orchestration/adapters/`: Git, native processes, verification and publication.
+- `server/orchestration/production.mjs`, `cutover.mjs`: guarded composition and rollback.
+- `server/repo-identity-store.mjs`: rebuildable repository/worktree cache.
+- `worker/index.ts`: vinext Worker build scaffolding, not the Mac bridge.
+- `tests/`: Node backend and automatically selected Vitest UI tests.
+- `tests/helpers/orchestration/`: disposable Git repositories and fake external adapters.
+- `cypress/`: deterministic monitoring and real-service orchestration browser checks.
+- `docs/orchestration-retirement.md`: legacy removal and operator cutover contract.
 
 ## Prerequisites and configuration
 Use Node.js >=22.23.1 <23, with the version in `.nvmrc`, and npm with the checked-in
@@ -41,24 +39,17 @@ From the checkout, select `.nvmrc` (with nvm: `nvm install && nvm use`), then
 run `npm ci`. Preserve the lockfile. See [development](README.md#development).
 
 ## Local run and pairing
-In terminal one, use a disposable pairing token of at least 32 characters:
+Use the account-free disposable entry point:
 ```sh
-export CMUX_COMPANION_TOKEN="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
-npm run companion:dev
+npm run orchestration:dev -- --port 3211
 ```
-Keep that token private and enter it in browser pairing. In terminal two run
-`npm run dev`, open `http://localhost:3000`, and pair. The frontend proxies `/api`
-to the loopback Fastify backend on port 3210. Missing cmux should show
-**Waiting for cmux**; installing cmux is not necessary for this setup check.
-If a port is occupied, do not kill its owner: use `CMUX_COMPANION_PORT` for the
-backend, `npm run dev -- --port <port>` for the frontend and set
-`CMUX_COMPANION_API=http://127.0.0.1:<backend-port>` for that frontend.
-For isolated checks, point the documented data paths and repository roots at
-disposable locations so existing goals, queues and worktrees are not exercised.
-These overrides do not isolate the GitHub issue cache: its startup sync can rewrite
-`~/.config/cmux-companion/github-issues.json`. Use a separate OS account for a
-fully isolated run alongside an existing installation.
-Stop both processes with Ctrl-C and remove temporary configuration afterward.
+It prints private manifest and token paths, never the token. Set
+`CMUX_COMPANION_API` to its printed loopback address for `npm run dev`, open
+`http://localhost:3000/orchestration`, and pair using the disposable token.
+Use a free port rather than stopping an existing owner. Stop both owned processes
+with Ctrl-C. See `docs/orchestration-development.md` for fixture evidence and cleanup.
+`companion:dev` is production composition and requires a prepared private
+`CMUX_COMPANION_ORCHESTRATION_CONFIG`; do not use installed state for routine checks.
 
 ## Fast verification
 Run `npm test`, `npm run test:ui`, `npm run lint` and `npm run typecheck`.
@@ -78,8 +69,8 @@ Server tests are top-level `tests/*.test.mjs` files, automatically discovered by
 `scripts/run-backend-tests.mjs`; tests guard discovery and live-suite exclusion.
 Live suites use `*.live.mjs` and explicit opt-in scripts; legacy live names are
 also excluded.
-Vitest automatically selects `tests/ui-*.test.tsx`. Deterministic Cypress specs
-in `cypress/e2e` stub APIs and stay excluded from `npm test`, `npm run verify`
+Vitest automatically selects `tests/ui-*.test.tsx`. Monitoring Cypress specs stub APIs; the orchestration specs use a real disposable
+backend and Git with fake external adapters. Both stay excluded from `npm test`, `npm run verify`
 and CI. Live suites require separate authorization and the README safety opt-in.
 
 ## Security, live and release boundaries
@@ -90,8 +81,7 @@ Do not touch unrelated sessions, worktrees, credentials or user changes.
 Do not routinely run `npm run install:mac`, `npm run uninstall:mac`,
 `npm run update:check`, `npm run update:retry`, `npm run update:disable`,
 `npm run update:enable`, `npm run status -- --show-token`, `npm run test:live`,
-`npm run test:installed`, `npm run test:preview-live`, `npm run test:e2e:live-audit`
-or `npm run test:e2e:live-agent`: these expose credentials or exercise installed,
+`npm run test:preview-live`, the opt-in native adapter live suites: these expose credentials or exercise installed,
 live or release services and require explicit task authorization.
 Agents must not merge, deploy, expose secrets or alter external accounts/services
 without explicit task authorization. Worker/build scaffolding is not permission to publish.

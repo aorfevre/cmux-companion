@@ -1,0 +1,10 @@
+import { join } from 'node:path';
+import { writeFileSync } from 'node:fs';
+import { OrchestrationStore } from '../../../server/orchestration/storage/store.mjs';
+const [directory, boundary] = process.argv.slice(2);
+const command = { id: 'create', goalId: 'goal', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'transaction fixture', baseSha: 'a'.repeat(40) } };
+const store = new OrchestrationStore({ path: join(directory, 'state.sqlite'), failpoint(point) { if (point === boundary) { writeFileSync(join(directory, 'checkpoint'), point); process.kill(process.pid, 'SIGKILL'); } } });
+const before = { goal: store.get('goal'), cursor: store.cursor() };
+const result = store.apply(command, { kind: 'user' });
+process.stdout.write(JSON.stringify({ before, after: { version: result.goal.version, cursor: store.cursor() }, receipts: store.db.prepare('SELECT COUNT(*) AS n FROM command_receipts').get().n }));
+store.close();

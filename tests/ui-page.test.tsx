@@ -176,7 +176,7 @@ describe("sessions and launch", () => {
     await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
   });
 
-  test("the empty session list, the mode switch and the bottom navigation reach every view", async () => {
+  test("the empty session list, session tools and bottom navigation reach retained views", async () => {
     installHome("/?mode=sessions", (url) => url === "/api/bootstrap" ? response({ ...bootstrap, connected: false, workspaces: [] }) : undefined);
     render(<Home />);
     assert.ok(await screen.findByText("No sessions yet"));
@@ -184,19 +184,17 @@ describe("sessions and launch", () => {
     await userEvent.click(screen.getByRole("button", { name: "Launch a workspace" }));
     assert.ok(await screen.findByRole("heading", { name: "Start work" }));
     assert.equal(location.search, "?view=launch");
-    await userEvent.click(screen.getByRole("button", { name: "Worktrees" }));
-    assert.ok(await screen.findByRole("heading", { name: "Worktrees" }));
+    await userEvent.click(screen.getByRole("button", { name: "Goals" }));
+    assert.equal((await screen.findByRole("link", { name: "Open orchestration goals" })).getAttribute("href"), "/orchestration");
     await userEvent.click(screen.getByRole("button", { name: "Licence Usage" }));
     assert.ok(await screen.findByText("CCS is offline"));
     await userEvent.click(screen.getByRole("button", { name: "‹ Settings" }));
     assert.ok(await screen.findByRole("heading", { name: "Settings" }));
-    await userEvent.click(screen.getByRole("button", { name: "Goals" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sessions" }));
     assert.equal(location.search, "?view=sessions");
-    await userEvent.click(await screen.findByText("Tools"));
     await userEvent.click(screen.getByRole("button", { name: "Sessions" }));
     assert.ok(await screen.findByText("No sessions yet"));
-    assert.equal(location.search, "?view=sessions&mode=sessions");
-    await userEvent.click(screen.getByText("Tools"));
+    assert.equal(location.search, "?view=sessions");
     await userEvent.click(screen.getByRole("button", { name: "Local apps" }));
     assert.equal(location.search, "?view=apps");
   });
@@ -476,7 +474,6 @@ describe("session detail", () => {
     await userEvent.click(screen.getByRole("button", { name: "‹ Back" }));
     await userEvent.click(within(await openSessionMenu()).getByRole("button", { name: "Terminal" }));
     await userEvent.click(screen.getByRole("button", { name: /Back/ }));
-    await userEvent.click(await screen.findByText("Tools"));
     await userEvent.click(screen.getByRole("button", { name: "Sessions" }));
     await waitFor(() => assert.ok(screen.getByText("No sessions yet")));
   });
@@ -551,7 +548,7 @@ describe("inbox", () => {
     assert.ok(await screen.findByRole("textbox", { name: "Terminal input" }));
     await userEvent.click(screen.getByRole("button", { name: /Back/ }));
     assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
-    await userEvent.click(screen.getByRole("button", { name: "Goals" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sessions" }));
     await userEvent.click(await screen.findByRole("button", { name: "Inbox · 2" }));
     assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
   });

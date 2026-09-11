@@ -1,0 +1,91 @@
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { createBridge } from './bridge.mjs';
+import { requireValue, object, identifier, integer, sha, text } from './domain/contracts.mjs';
+
+/** @typedef {{ goalId: string; operationId: string; attemptId: string; generation: number; revision: number; role: import('./types.d.ts').Role; target: string }} Binding */
+const definitions = {
+  get_status: { name: 'get_status', description: 'Read authoritative goal state and contracts for this attempt.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  submit_result: { name: 'submit_result', description: 'Publish this planner attempt\'s structured contract. Receipt is not approval.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, output: { type: 'object' } }, required: ['id', 'output'], additionalProperties: false } },
+  commit_candidate: { name: 'commit_candidate', description: 'Commit changes in this attempt\'s recorded checkout and approved scope. Does not accept, integrate or publish.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, expectedHead: { type: 'string' }, message: { type: 'string' } }, required: ['id', 'expectedHead', 'message'], additionalProperties: false } },
+};
+/** @param {Binding['role']} role */
+const roleTools = (role) => role === 'planner' ? ['get_status', 'submit_result'] : role === 'implementer' || role === 'integrator' ? ['get_status', 'commit_candidate'] : [];
+
+/** Stateless bridge protocol. The credential's server-side binding remains
+ * authoritative even if an agent tampers with its local MCP request/config.
+ * @param {unknown} value @param {{ binding: Binding; bridge: ReturnType<typeof createBridge> }} context */
+export async function agentMcpRequest(value, { binding, bridge }) {
+  const request = object(value);
+  requireValue(request.jsonrpc === '2.0' && typeof request.method === 'string', 'Invalid MCP request');
+  if (!Object.hasOwn(request, 'id')) return null;
+  requireValue(typeof request.id === 'string' || typeof request.id === 'number', 'Invalid MCP id');
+  const reply = (/** @type {unknown} */ result) => ({ jsonrpc: '2.0', id: request.id, result });
+  if (request.method === 'initialize') return reply({ protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'companion', version: '1.0.0' } });
+  if (request.method === 'ping') return reply({});
+  if (request.method === 'tools/list') return reply({ tools: roleTools(binding.role).map((name) => definitions[/** @type {keyof typeof definitions} */ (name)]) });
+  if (request.method !== 'tools/call') return { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Unsupported MCP method' } };
+  try {
+    const params = object(request.params), name = text(params.name, 80), args = object(params.arguments ?? {});
+    requireValue(roleTools(binding.role).includes(name), 'Tool is outside this role', 'FORBIDDEN');
+    let result;
+    if (name === 'get_status') { requireValue(Object.keys(args).length === 0, 'Status takes no arguments'); result = await bridge.status(); }
+    else if (name === 'commit_candidate') {
+      requireValue(Object.keys(args).length === 3 && ['id', 'expectedHead', 'message'].every((key) => Object.hasOwn(args, key)), 'Expected commit id, head and message');
+      result = await bridge.commit({ id: identifier(args.id), expectedHead: sha(args.expectedHead), message: text(args.message, 1000) });
+    } else {
+      requireValue(Object.keys(args).length === 2 && Object.hasOwn(args, 'id') && Object.hasOwn(args, 'output'), 'Expected result id and output');
+      result = await bridge.submitResult({ id: identifier(args.id), raw: JSON.stringify({ schemaVersion: 1, ...binding, output: object(args.output) }) });
+    }
+    return reply({ content: [{ type: 'text', text: JSON.stringify(result) }] });
+  } catch (error) {
+    return reply({ isError: true, content: [{ type: 'text', text: JSON.stringify({ code: /** @type {{code?: string}} */ (error).code || 'REQUEST_FAILED' }) }] });
+  }
+}
+
+/** One bounded response is flushed before consuming another request. A native
+ * client that stops reading cannot accumulate replies indefinitely.
+ * @param {unknown} value @param {import('node:stream').Writable} output @param {number} [drainMs] */
+export async function writeMcpResponse(value, output, drainMs = 15000) {
+  integer(drainMs, 1); requireValue(drainMs <= 15000, 'MCP drain deadline exceeds limit');
+  const frame = `${JSON.stringify(value)}\n`;
+  requireValue(Buffer.byteLength(frame) <= 2 * 1024 * 1024, 'MCP response exceeds limit');
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => { output.destroy(); finish(new Error('MCP output stalled')); }, drainMs);
+    /** @param {Error | null | undefined} [error] */
+    function finish(error) { clearTimeout(timeout); output.removeListener('error', failed); if (error) reject(error); else resolve(undefined); }
+    /** @param {Error} error */ const failed = (error) => finish(error);
+    output.once('error', failed);
+    try { output.write(frame, (error) => finish(error)); } catch (error) { finish(/** @type {Error} */ (error)); }
+  });
+}
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  // Pipe errors are protocol failures, never unhandled errors printing context.
+  process.stdout.on('error', () => { process.exitCode = 2; });
+  try {
+    const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+    const context = { binding: config.binding, bridge: createBridge(config) };
+    /** @type {Buffer[]} */ let pending = []; let bytes = 0;
+    for await (const chunk of process.stdin) {
+      const buffer = Buffer.from(chunk);
+      for (let start = 0; start < buffer.length;) {
+        const newline = buffer.indexOf(10, start), end = newline < 0 ? buffer.length : newline;
+        const part = buffer.subarray(start, end); bytes += part.length;
+        requireValue(bytes <= 2 * 1024 * 1024, 'MCP input exceeds limit'); pending.push(part);
+        if (newline >= 0) {
+          const raw = Buffer.concat(pending).toString('utf8'); pending = []; bytes = 0;
+          let result;
+          try { result = await agentMcpRequest(JSON.parse(raw), context); }
+          catch { result = { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Invalid MCP request' } }; }
+          if (result) await writeMcpResponse(result, process.stdout, config.outputDrainMs ?? 15000);
+        }
+        start = end + 1;
+      }
+    }
+  } catch {
+    // This stateless bridge has no in-flight tool call here. Exit immediately:
+    // waiting for Node to flush a stalled stdout pipe would defeat the deadline.
+    process.stdin.destroy(); process.stdout.destroy(); process.exit(2);
+  }
+}

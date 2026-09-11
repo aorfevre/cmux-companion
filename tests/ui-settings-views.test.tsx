@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, test, vi } from "vitest";
 import { ReleaseRetentionPanel } from "../app/release-retention";
 import { ModelSettingsPanel, ModelSelect } from "../app/model-settings";
-import { WorktreeCleanupPanel } from "../app/worktree-cleanup";
 import { DEFAULT_MODEL_ROLES } from "../server/model-options.mjs";
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -112,13 +111,14 @@ describe("model settings panel", () => {
     assert.equal((save as HTMLButtonElement).disabled, true);
     assert.equal(screen.queryByRole("combobox", { name: "Issue analyzer default provider" }), null);
 
-    const plannerProvider = screen.getByRole("combobox", { name: "Planner default provider" }) as HTMLSelectElement;
-    assert.equal(plannerProvider.value, "codex");
-    await userEvent.selectOptions(plannerProvider, "claude");
+    assert.equal(screen.queryByRole("combobox", { name: "Planner default provider" }), null);
+    const coderModel = screen.getByRole("combobox", { name: "Coder Codex model" }) as HTMLSelectElement;
+    assert.equal(coderModel.value, "default");
+    await userEvent.selectOptions(coderModel, "gpt-5.6-sol");
     assert.equal((save as HTMLButtonElement).disabled, false);
     const discard = screen.getByRole("button", { name: "Discard changes" });
     await userEvent.click(discard);
-    assert.equal(plannerProvider.value, "codex");
+    assert.equal(coderModel.value, "default");
     assert.equal((save as HTMLButtonElement).disabled, true);
 
     const coderClaude = screen.getByRole("combobox", { name: "Coder Claude model" }) as HTMLSelectElement;
@@ -128,18 +128,18 @@ describe("model settings panel", () => {
     assert.equal(coderClaude.value, "default");
     assert.equal((save as HTMLButtonElement).disabled, true);
 
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Merge agent Codex model" }), "__custom__");
-    const custom = screen.getByRole("textbox", { name: "Merge agent Codex model ID" });
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Coder Codex model" }), "__custom__");
+    const custom = screen.getByRole("textbox", { name: "Coder Codex model ID" });
     await userEvent.type(custom, "gpt-7-nova");
     await userEvent.click(save);
     assert.ok(await screen.findByText("Model defaults saved"));
     const patch = calls.find((call) => call.method === "PATCH")?.body as { roles: Record<string, { models: Record<string, string> }> };
-    assert.equal(patch.roles.merger.models.codex, "gpt-7-nova");
-    assert.equal((screen.getByRole("textbox", { name: "Merge agent Codex model ID" }) as HTMLInputElement).value, "gpt-7-nova");
+    assert.equal(patch.roles.coder.models.codex, "gpt-7-nova");
+    assert.equal((screen.getByRole("textbox", { name: "Coder Codex model ID" }) as HTMLInputElement).value, "gpt-7-nova");
     assert.equal((save as HTMLButtonElement).disabled, true);
 
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Merge agent Codex model" }), "gpt-5.6-sol");
-    assert.equal(screen.queryByRole("textbox", { name: "Merge agent Codex model ID" }), null);
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Coder Codex model" }), "gpt-5.6-sol");
+    assert.equal(screen.queryByRole("textbox", { name: "Coder Codex model ID" }), null);
     assert.equal(screen.queryByText("Model defaults saved"), null);
   });
 
@@ -190,91 +190,5 @@ describe("model settings panel", () => {
     assert.deepEqual(onChange.mock.calls.at(-1), ["x"]);
     await userEvent.selectOptions(select, "default");
     assert.deepEqual(onChange.mock.calls.at(-1), ["default"]);
-  });
-});
-
-describe("worktree cleanup panel", () => {
-  const policy = { enabled: false, intervalHours: 24, graceDays: 7, pruneEnabled: false, pruneGraceDays: 30 };
-  const preview = () => ({ previewId: "preview-7", summary: { candidates: 1, protected: 1, estimatedBytes: 3 * 1024 ** 3 }, entries: [
-    { id: "wt-1", path: "/work/feature", branch: "feature/x", classification: "merged", eligible: true, reasons: ["merged PR"], estimatedBytes: 1024 ** 3 },
-    { id: "wt-2", path: "/work/dirty", branch: null, classification: "development root", eligible: false, reasons: ["uncommitted changes"], estimatedBytes: null },
-  ], errors: [{ path: "/work/broken", error: "not a git repository" }], prune: [{ common: "/repo/.git", repositoryPath: "/repo", paths: ["/gone"], eligible: true, reason: "missing for 40 days" }] });
-
-  test("opens, configures the policy, previews and runs a cleanup with prune", async () => {
-    let current = { ...policy };
-    const calls = stubApi(({ url, method, body }) => {
-      if (url.endsWith("/api/worktree-cleanup") && method === "PATCH") { current = { ...current, ...(body as object) }; return { policy: current }; }
-      if (url.endsWith("/api/worktree-cleanup")) return { policy: current, history: [{ at: "2026-09-01T00:00:00.000Z", estimatedReclaimedBytes: 1024 ** 3, results: [{ path: "/old", outcome: "removed" }, { path: "/kept", outcome: "skipped", reason: "dirty" }] }] };
-      if (url.endsWith("/preview")) return preview();
-      if (url.endsWith("/run")) return { at: "2026-09-02T00:00:00.000Z", results: [{ path: "/work/feature", outcome: "removed" }, { path: "/work/other", outcome: "failed", reason: "busy" }, { path: "/work/skip", outcome: "skipped" }] };
-      if (url.endsWith("/releases")) return { policy: { enabled: false, intervalHours: 24 }, history: [] };
-      throw new Error(`unexpected ${method} ${url}`);
-    });
-    render(<WorktreeCleanupPanel />);
-    const toggle = screen.getByRole("button", { name: "Worktree cleanup" });
-    assert.equal(toggle.getAttribute("aria-expanded"), "false");
-    await userEvent.click(toggle);
-    assert.ok(await screen.findByText("Automatic deletion disabled. Verified merged goal PRs qualify immediately. Other merged worktrees use the grace period from their first eligible observation. Managed releases have a separate updater retention policy."));
-    assert.ok(screen.getByText("Cleanup history (1)"));
-    assert.ok(screen.getByText(/estimated 1.00 GB reclaimed/));
-    assert.ok(screen.getByText("skipped: /kept — dirty"));
-    assert.ok(screen.getByText("removed: /old"));
-
-    await userEvent.click(screen.getByRole("checkbox", { name: "Enable automatic development worktree deletion" }));
-    assert.ok(await screen.findByText(/Automatic deletion enabled/));
-    await userEvent.click(screen.getByRole("checkbox", { name: "Allow Git to prune expired missing registrations" }));
-    await waitFor(() => assert.equal((screen.getByRole("checkbox", { name: "Allow Git to prune expired missing registrations" }) as HTMLInputElement).checked, true));
-    for (const [label, unchanged, changed, key] of [["Grace period (days)", "7", "3", "graceDays"], ["Schedule (hours)", "24", "12", "intervalHours"], ["Prune grace (days)", "30", "45", "pruneGraceDays"]] as const) {
-      const patches = calls.filter((call) => call.method === "PATCH").length;
-      fireEvent.blur(screen.getByRole("spinbutton", { name: label }), { target: { value: unchanged } });
-      assert.equal(calls.filter((call) => call.method === "PATCH").length, patches);
-      fireEvent.blur(screen.getByRole("spinbutton", { name: label }), { target: { value: changed } });
-      await waitFor(() => assert.equal(calls.filter((call) => call.method === "PATCH").length, patches + 1));
-      assert.deepEqual(calls.filter((call) => call.method === "PATCH").at(-1)?.body, { [key]: Number(changed) });
-    }
-    assert.equal(calls.filter((call) => call.url.endsWith("/api/worktree-cleanup") && call.method === "GET").length, 1, "policy patches update state without reloading");
-
-    await userEvent.click(screen.getByRole("button", { name: "Preview cleanup" }));
-    assert.ok(await screen.findByText("1 eligible · 1 protected · approximately 3.00 GB reclaimable"));
-    assert.ok(screen.getByText("Eligible: merged PR"));
-    assert.ok(screen.getByText("Protected: uncommitted changes"));
-    assert.ok(screen.getByText("Unknown"));
-    assert.ok(screen.getByText("development root"));
-    assert.ok(screen.getByRole("status"));
-    assert.ok(screen.getByText("/work/broken: not a git repository"));
-    const run = screen.getByRole("button", { name: "Run cleanup" }) as HTMLButtonElement;
-    assert.equal(run.disabled, true);
-    assert.equal((screen.getByRole("checkbox", { name: "Select /work/dirty" }) as HTMLInputElement).disabled, true);
-    const prune = screen.getByLabelText(/\/repo: missing for 40 days. \/gone/) as HTMLInputElement;
-    await userEvent.click(prune);
-    assert.equal(run.disabled, false);
-    await userEvent.click(prune);
-    assert.equal(run.disabled, true);
-    await userEvent.click(prune);
-    const select = screen.getByRole("checkbox", { name: "Select /work/feature" });
-    await userEvent.click(select);
-    await userEvent.click(select);
-    await userEvent.click(select);
-    await userEvent.click(run);
-    assert.ok(await screen.findByText("1 worktrees removed; 2 skipped or failed."));
-    assert.deepEqual(calls.find((call) => call.url.endsWith("/run"))?.body, { previewId: "preview-7", ids: ["wt-1"], prune: ["/repo/.git"] });
-    assert.equal(screen.queryByRole("button", { name: "Run cleanup" }), null);
-
-    await userEvent.click(toggle);
-    assert.equal(screen.queryByText("Cleanup history (1)"), null);
-    assert.equal(toggle.getAttribute("aria-expanded"), "false");
-  });
-
-  test("reports failures from the preview and a status load that is not an Error", async () => {
-    stubApi(({ url }) => url.endsWith("/preview") ? jsonResponse({ error: "Scan in progress" }, 409) : { policy, history: [] });
-    render(<WorktreeCleanupPanel />);
-    await userEvent.click(screen.getByRole("button", { name: "Worktree cleanup" }));
-    await screen.findByText("Cleanup history (0)");
-    await userEvent.click(screen.getByRole("button", { name: "Preview cleanup" }));
-    assert.equal((await screen.findByRole("alert")).textContent, "Scan in progress");
-    vi.stubGlobal("fetch", vi.fn(async () => { throw "offline"; }));
-    await userEvent.click(screen.getByRole("button", { name: "Worktree cleanup" }));
-    await userEvent.click(screen.getByRole("button", { name: "Worktree cleanup" }));
-    assert.equal((await screen.findByRole("alert")).textContent, "Cleanup failed");
   });
 });

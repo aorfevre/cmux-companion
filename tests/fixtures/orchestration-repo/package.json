@@ -1,0 +1,6 @@
+{
+  "name": "orchestration-test-repository",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test test/acceptance.test.mjs" }
+}

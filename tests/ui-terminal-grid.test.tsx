@@ -3,8 +3,6 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, test, vi } from "vitest";
 import { TerminalGrid, type TerminalView } from "../app/terminal-grid.tsx";
-import { ProposalReview } from "../app/proposal-review";
-import { PromptDisclosure } from "../app/prompt-markdown";
 
 type Grid = Extract<TerminalView, { mode: "grid" }>["render_grid"];
 const baseGrid = (extra: Partial<Grid> = {}): Grid => ({
@@ -128,56 +126,5 @@ describe("TerminalGrid", () => {
     await userEvent.click(screen.getByRole("button", { name: "http://localhost:3000" }));
     assert.deepEqual(local.mock.calls, [["http://localhost:3000"]]);
     assert.equal(log.querySelectorAll(".terminal-cursor").length, 0, "reflow never draws the cursor");
-  });
-});
-
-describe("ProposalReview", () => {
-  test("shows the goal when no intended behaviour is saved and hides empty sections", () => {
-    render(<ProposalReview proposal={{}} goal="Ship the thing" />);
-    const region = screen.getByRole("region", { name: "Proposal details" });
-    assert.equal(region.tabIndex, 0);
-    assert.ok(within(region).getByText("Ship the thing"));
-    assert.equal(within(region).queryByText("In scope"), null);
-    assert.equal(within(region).queryByText(/Acceptance criteria/), null);
-  });
-
-  test("renders every saved section with counts and optional verification", () => {
-    render(<ProposalReview proposal={{ intendedBehavior: "Users can log in", scope: ["auth"], exclusions: ["billing", "reports"], assumptions: ["SSO exists"], acceptanceCriteria: [{ text: "Login works", verification: "Run e2e" }, { text: "Logout works", verification: "" }], verification: ["npm test"] }} goal="ignored" />);
-    assert.ok(screen.getByText("Users can log in"));
-    assert.equal(screen.queryByText("ignored"), null);
-    assert.equal(screen.getByRole("heading", { name: "In scope 1" }).tagName, "H3");
-    assert.ok(screen.getByRole("heading", { name: "Out of scope 2" }));
-    assert.ok(screen.getByRole("heading", { name: "Assumptions 1" }));
-    assert.ok(screen.getByRole("heading", { name: "Acceptance criteria 2" }));
-    assert.ok(screen.getByRole("heading", { name: "Verification plan 1" }));
-    assert.equal(screen.getAllByText("How to verify").length, 1);
-    assert.ok(screen.getByText("Run e2e"));
-    assert.ok(screen.getByText("Logout works"));
-  });
-});
-
-describe("PromptDisclosure", () => {
-  test("renders Markdown with safe links and toggles to the raw prompt", async () => {
-    const text = "## Task\n\n- Edit `app/page.tsx`\n- See [docs](https://example.com/docs) and [local](docs/plan.md)\n\n<script>alert(1)</script>";
-    render(<PromptDisclosure label="task prompt" summary={<b>Task 1</b>} text={text}><em>extra</em></PromptDisclosure>);
-    assert.ok(screen.getByText("Task 1"));
-    assert.ok(screen.getByText("extra"));
-    assert.ok(screen.getByRole("heading", { name: "Task" }));
-    assert.equal(screen.getByText("app/page.tsx").tagName, "CODE");
-    const external = screen.getByRole("link", { name: "docs" });
-    assert.equal(external.getAttribute("href"), "https://example.com/docs");
-    assert.equal(external.getAttribute("target"), "_blank");
-    assert.equal(screen.queryByRole("link", { name: "local" }), null);
-    assert.equal(screen.getByText("local").tagName, "SPAN");
-    assert.equal(document.querySelector("script"), null);
-    assert.ok(screen.getByText(/alert\(1\)/));
-    const toggle = screen.getByRole("button", { name: "Show task prompt as raw text" });
-    assert.equal(toggle.textContent, "Raw");
-    await userEvent.click(toggle);
-    assert.equal(screen.getByRole("button", { name: "Show task prompt as Markdown" }).textContent, "Rendered");
-    assert.equal(document.querySelector(".planner-prompt-raw")?.textContent, text);
-    assert.equal(screen.queryByRole("heading", { name: "Task" }), null);
-    await userEvent.click(screen.getByRole("button", { name: "Show task prompt as Markdown" }));
-    assert.ok(screen.getByRole("heading", { name: "Task" }));
   });
 });

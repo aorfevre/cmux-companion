@@ -1,0 +1,151 @@
+import { isAuthorized, isSafeOrigin, safeEqual, sessionCookie } from '../security.mjs';
+import { DomainError, identifier, integer, object, requireValue } from './domain/contracts.mjs';
+import { parseCommand, USER_COMMANDS, AGENT_COMMANDS } from './domain/commands.mjs';
+import { eventView } from './domain/event-view.mjs';
+import { goalView } from './domain/state-view.mjs';
+
+const PREFIX = '/api/orchestration';
+/** @param {import('fastify').FastifyInstance} app
+ * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup }} options
+ */
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly = false, configuration, reconcile, cleanup }) {
+  requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
+  /** @type {Map<string, { count: number; until: number }>} */
+  const pairingAttempts = new Map();
+  app.addHook('onRequest', async (request, reply) => {
+    // Fastify matches decoded paths. Security follows the registered route,
+    // never the caller's raw spelling (for example /api/%6frchestration/...).
+    const routePath = request.routeOptions.url;
+    if (!routePath?.startsWith(PREFIX)) return;
+    reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff');
+    if (request.method !== 'GET' && !isSafeOrigin(request)) return reply.code(403).send({ code: 'BAD_ORIGIN', error: 'Origin rejected' });
+    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/ready`, `${PREFIX}/agent/results`, `${PREFIX}/agent/commit`].includes(routePath)) return;
+    if (!isAuthorized(request, token)) return reply.code(401).send({ code: 'UNAUTHORIZED', error: 'Pair this device to continue' });
+  });
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof DomainError) {
+      const code = error.code;
+      const status = code === 'UNAUTHORIZED' ? 401 : code === 'FORBIDDEN' ? 403 : code === 'NOT_FOUND' ? 404
+        : /CONFLICT|STALE|UNCERTAIN|TERMINAL|NOT_READY|ALREADY_RUNNING|REVIEW_REQUIRED|RETRY_REQUIRED|CAPACITY_FULL|CURSOR_EXPIRED/.test(code) ? 409 : 400;
+      return reply.code(status).send({ code, error: error.message });
+    }
+    // Provider errors and raw request bodies may contain private input; never echo them.
+    return reply.code((/** @type {{statusCode?: number}} */ (error)).statusCode === 413 ? 413 : 500).send({ code: 'REQUEST_FAILED', error: 'The request could not be completed' });
+  });
+  app.post(`${PREFIX}/pair`, { bodyLimit: 1024 }, async (request, reply) => {
+    const now = Date.now();
+    for (const [key, entry] of pairingAttempts) if (entry.until < now) pairingAttempts.delete(key);
+    const entry = pairingAttempts.get(request.ip) ?? { count: 0, until: now + 15 * 60_000 };
+    entry.count++; pairingAttempts.set(request.ip, entry);
+    if (entry.count > 10) return reply.code(429).send({ code: 'RATE_LIMITED', error: 'Too many pairing attempts' });
+    const supplied = /** @type {{token?: unknown}} */ (request.body)?.token;
+    if (typeof supplied !== 'string' || !safeEqual(supplied, token)) return reply.code(401).send({ code: 'UNAUTHORIZED', error: 'Invalid pairing token' });
+    pairingAttempts.delete(request.ip);
+    return reply.header('Set-Cookie', sessionCookie(request, token)).send({ paired: true });
+  });
+  app.get(`${PREFIX}/configuration`, async () => ({ limits: service.limits, capabilities: service.agents.capabilities, terminal: Boolean(service.agents.open), readOnly, repositories: configuration ? await configuration() : [] }));
+  app.post(`${PREFIX}/goals/:id/reconcile`, async (request) => {
+    requireValue(!readOnly && reconcile, 'Reconciliation is unavailable', 'FORBIDDEN');
+    const goal = service.store.get(/** @type {{id:string}} */ (request.params).id), input = object(request.body);
+    requireValue(goal && input.expectedVersion === goal.version, 'Goal version changed', 'VERSION_CONFLICT');
+    await reconcile(); return { reconciled: true };
+  });
+  app.get(`${PREFIX}/goals/:id/cleanup`, async request => {
+    requireValue(cleanup, 'Cleanup is unavailable', 'NOT_READY');
+    return cleanup.preview(/** @type {{id:string}} */ (request.params).id);
+  });
+  app.post(`${PREFIX}/goals/:id/cleanup`, async request => {
+    requireValue(!readOnly && cleanup, 'Cleanup is unavailable', 'FORBIDDEN');
+    const input = object(request.body);
+    return cleanup.execute({ goalId: /** @type {{id:string}} */ (request.params).id, expectedVersion: integer(input.expectedVersion), attemptId: identifier(input.attemptId) });
+  });
+  app.get(`${PREFIX}/snapshot`, async () => {
+    const snapshot = service.store.snapshot(); return { goals: snapshot.goals.map(goalView), cursor: snapshot.cursor, journalId: service.store.journalId, readOnly };
+  });
+  app.get(`${PREFIX}/goals/:id`, async (request) => {
+    const id = /** @type {{id: string}} */ (request.params).id;
+    const goal = service.store.get(id); requireValue(goal, 'Goal not found', 'NOT_FOUND');
+    return { ...goalView(goal), contracts: goal.contracts };
+  });
+  app.post(`${PREFIX}/goals/:id/terminal`, async (request) => {
+    requireValue(!readOnly, 'This client interface is read-only', 'FORBIDDEN');
+    const goal = service.store.get(/** @type {{id:string}} */ (request.params).id);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Goal is unavailable', 'NOT_FOUND');
+    const input = object(request.body);
+    requireValue(Object.keys(input).length === 2 && Number.isSafeInteger(input.expectedVersion) && input.expectedVersion === goal.version, 'Goal version changed', 'VERSION_CONFLICT');
+    const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
+    requireValue(['discovering', 'awaiting_approval'].includes(goal.status) && attempt && attempt.status === 'running' && attempt.role === 'planner' && attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.workerState === 'running', 'Owned planner terminal is unavailable', 'NOT_READY');
+    requireValue(service.ownership && service.agents.open, 'Native terminal is unavailable', 'UNSUPPORTED_CAPABILITY');
+    service.ownership.assertOwned(); await service.agents.open(attempt.operationId);
+    return { opened: true };
+  });
+  app.get(`${PREFIX}/events`, async (request) => {
+    const query = /** @type {{ since?: string; limit?: string }} */ (request.query);
+    return { events: service.store.events({ since: Number(query.since ?? 0), limit: Number(query.limit ?? 100) }).map(eventView), journalId: service.store.journalId };
+  });
+  if (stream) app.get(`${PREFIX}/stream`, async (request, reply) => {
+    const token = request.headers['last-event-id'];
+    requireValue(token === undefined || typeof token === 'string', 'Invalid event cursor');
+    const initial = stream.prepare(token);
+    reply.hijack();
+    reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' });
+    stream.attach(reply.raw, initial);
+  });
+  app.post(`${PREFIX}/commands`, async (request) => {
+    requireValue(!readOnly, 'This client interface is read-only', 'FORBIDDEN');
+    const command = parseCommand(request.body);
+    requireValue(USER_COMMANDS.has(command.type), 'Command is not available to this client', 'FORBIDDEN');
+    const result = service.execute(command, { kind: 'user' });
+    return { goal: goalView(result.goal), cursor: result.cursor };
+  });
+  /** @param {import('fastify').FastifyRequest} request */
+  function agentAuthority(request) {
+    const header = request.headers.authorization ?? '';
+    requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
+    return bridgeAuth.authenticate(header.slice(7));
+  }
+  app.get(`${PREFIX}/agent/ready`, async (request, reply) => {
+    const header = request.headers.authorization ?? '';
+    requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
+    const authority = bridgeAuth.ready(header.slice(7)), goal = service.store.get(authority.goalId);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+    requireValue(service.ownership, 'Scheduler ownership is unavailable', 'OWNERSHIP_UNCERTAIN');
+    service.ownership.assertOwned();
+    return reply.code(204).send();
+  });
+  app.get(`${PREFIX}/agent/status`, async (request) => {
+    const authority = agentAuthority(request), goal = service.store.get(authority.goalId);
+    requireValue(goal, 'Goal not found', 'NOT_FOUND');
+    return { ...goalView(goal), contracts: goal.contracts };
+  });
+  app.post(`${PREFIX}/agent/commit`, async (request) => {
+    const authority = agentAuthority(request);
+    requireValue(agentTools, 'Scoped commit tools are unavailable', 'UNSUPPORTED_CAPABILITY');
+    return agentTools.commit(authority, request.body);
+  });
+  app.post(`${PREFIX}/agent/results`, { bodyLimit: 2 * 1024 * 1024 }, async (request, reply) => {
+    const header = request.headers.authorization ?? '';
+    requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
+    const credential = header.slice(7), binding = bridgeAuth.receiptAuthority(credential);
+    requireValue(results, 'Structured result intake is unavailable', 'UNSUPPORTED_CAPABILITY');
+    const input = object(request.body);
+    requireValue(Object.keys(input).length === 2 && Object.hasOwn(input, 'id') && Object.hasOwn(input, 'raw') && typeof input.id === 'string' && typeof input.raw === 'string', 'Expected result id and raw output');
+    const received = results.receipt(binding, input.id, input.raw)
+      ?? results.receive(bridgeAuth.authenticate(credential), input.id, input.raw);
+    requireValue(received, 'Result receipt unavailable');
+    // A durable receipt is not workflow acceptance. Raw output, artifact paths and
+    // provider credentials never appear in this response.
+    return reply.code(202).send({ id: received.id, status: received.status, code: received.code });
+  });
+  app.post(`${PREFIX}/agent/commands`, async (request) => {
+    const authority = agentAuthority(request), command = parseCommand(request.body);
+    requireValue(command.goalId === authority.goalId && AGENT_COMMANDS[authority.role].has(command.type), 'Agent command is outside its authority', 'FORBIDDEN');
+    if (command.type === 'submit_candidate' || command.type === 'submit_integration_repair') {
+      // Candidate mutations use the durable structured-result endpoint, where
+      // trusted Git proof precedes acceptance. Direct commands cannot bypass it.
+      throw new DomainError('UNSUPPORTED_CAPABILITY', 'Submit candidate evidence through the structured result endpoint');
+    }
+    const result = service.execute(command, authority);
+    return { goal: goalView(result.goal), cursor: result.cursor };
+  });
+}

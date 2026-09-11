@@ -2,7 +2,7 @@ import { DEFAULT_MODEL_ROLES } from "../../server/model-options.mjs";
 
 const now = "2026-09-08T09:00:00.000Z";
 
-// The paired home needs the Goals board fixtures; the pair screen itself only
+// The paired home uses disposable monitoring fixtures; the pair screen itself only
 // needs auth/status. Every other route stays a loud 501.
 function pairedHome() {
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "Pairing Mac" }, workspaces: [], error: null, refreshedAt: now }).as("bootstrap");
@@ -44,7 +44,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       cy.get("@bootstrap.all").should("have.length", 0);
     });
 
-    it("pairs with a trimmed token and lands on the Goals home", () => {
+    it("pairs with a trimmed token and lands on the sessions home", () => {
       fixtures(false);
       cy.intercept("POST", "**/api/auth/pair", { paired: true, identity: null }).as("pair");
       cy.visit("/");
@@ -52,7 +52,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       cy.findByRole("button", { name: "Pair securely" }).should("be.enabled").click();
       cy.wait("@pair").its("request.body").should("deep.equal", { token: "fixture-pairing-code-0123456789abcdef" });
       cy.wait("@bootstrap");
-      cy.findByRole("heading", { name: "Goals board" }).should("be.visible");
+      cy.findByRole("link", { name: "Orchestration goals" }).should("have.attr", "href", "/orchestration");
       cy.findByRole("navigation", { name: "Main navigation" }).should("be.visible");
       cy.contains("Pairing Mac").should("be.visible");
       cy.findByPlaceholderText("Pairing code").should("not.exist");
@@ -114,7 +114,7 @@ describe("Pairing failures and offline", () => {
     cy.intercept("GET", "**/api/auth/status", { paired: true }).as("onlineStatus");
     cy.findByRole("button", { name: "Try again" }).click();
     cy.wait("@onlineStatus");
-    cy.findByRole("heading", { name: "Goals board" }).should("be.visible");
+    cy.findByRole("link", { name: "Orchestration goals" }).should("have.attr", "href", "/orchestration");
   });
 
   it("unpairs from Settings and returns to the pair screen without reloading", () => {

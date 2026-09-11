@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { act, renderHook, waitFor } from "@testing-library/react";
+
 import { afterEach, describe, test, vi } from "vitest";
 import { localUrlPort, resolveAssetPath, resolveMarkdownPath, splitContextLinks, terminalContext } from "../app/context-links.mjs";
 import { isNearBottom, nextFollowState } from "../app/terminal-follow.mjs";
 import { nativeComposerStartRow, normalizeRenderGrid, safeTerminalColor, terminalViewSignature, withoutNativeComposer } from "../app/terminal-grid.mjs";
 import { relativeTime } from "../app/relative-time";
-import { DEV_SETUP_GOAL } from "../app/dev-setup-goal";
-import { AGENT_REPLY_FORMAT } from "../server/agent-reply-format.mjs";
 import { ImageUploadSession } from "../app/image-upload-session";
-import { closeGoalPopup, goalPopupUrl, hasGoalPopup, openGoalPopup, useGoalPopup } from "../app/goal-popup-url";
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
@@ -193,12 +190,6 @@ describe("small helpers", () => {
     assert.equal(relativeTime(now - 3 * 86_400), "3d");
   });
 
-  test("the development setup goal ends with the shared reply convention", () => {
-    assert.ok(DEV_SETUP_GOAL.startsWith("Make this repository easy"));
-    assert.ok(DEV_SETUP_GOAL.endsWith(AGENT_REPLY_FORMAT));
-    assert.ok(DEV_SETUP_GOAL.includes("AGENTS.md, CLAUDE.md"));
-  });
-
   test("image upload sessions track generation so stale uploads can be dropped", () => {
     const session = new ImageUploadSession("terminal-1");
     assert.equal(session.key, "terminal-1");
@@ -220,108 +211,5 @@ describe("small helpers", () => {
     assert.equal(session.generation, 2);
     assert.equal(session.pending, 0);
     assert.deepEqual(session.images, []);
-  });
-});
-
-describe("goal popup URLs", () => {
-  test("detects goal popups and builds URLs that drop unrelated navigation state", () => {
-    assert.equal(hasGoalPopup("?plan=abc"), true);
-    assert.equal(hasGoalPopup("?newGoal=repo"), true);
-    assert.equal(hasGoalPopup("?view=sessions"), false);
-    const base = "http://localhost/?view=usage&repo=x&file=y&tab=z&context=c&surface=s&action=a&workspace=w&preview=p&keep=1";
-    const plan = goalPopupUrl({ planId: "plan-1", repositoryId: "repo-1" }, base);
-    assert.equal(plan.searchParams.get("plan"), "plan-1");
-    assert.equal(plan.searchParams.get("newGoal"), null);
-    assert.equal(plan.searchParams.get("view"), "sessions");
-    assert.equal(plan.searchParams.get("mode"), "worktrees");
-    assert.equal(plan.searchParams.get("keep"), "1");
-    for (const key of ["repo", "file", "tab", "context", "surface", "action", "workspace", "preview"]) assert.equal(plan.searchParams.get(key), null);
-    const fresh = goalPopupUrl({ repositoryId: "repo-1", devSetup: true }, base);
-    assert.equal(fresh.searchParams.get("newGoal"), "repo-1");
-    assert.equal(fresh.searchParams.get("goalTemplate"), "dev-setup");
-    assert.equal(goalPopupUrl({ repositoryId: "repo-1" }, base).searchParams.get("goalTemplate"), null);
-    assert.equal(goalPopupUrl({}, base).searchParams.get("newGoal"), null);
-  });
-
-  test("opening pushes an owned history entry and closing returns through history", async () => {
-    const back = vi.spyOn(history, "back").mockImplementation(() => {});
-    const changed = vi.fn();
-    window.addEventListener("companion:goal-url", changed);
-    try {
-      openGoalPopup({ repository: { id: "repo-1", name: "Repo" }, initialGoal: DEV_SETUP_GOAL });
-      assert.equal(location.search, "?view=sessions&mode=worktrees&newGoal=repo-1&goalTemplate=dev-setup");
-      assert.equal(history.state.companionGoalPopup, true);
-      openGoalPopup({ repository: { id: "repo-1", name: "Repo" }, planId: "plan-9" }, true);
-      assert.equal(location.search, "?view=sessions&mode=worktrees&plan=plan-9");
-      assert.equal(history.state.companionGoalPopup, true);
-      closeGoalPopup();
-      assert.equal(back.mock.calls.length, 1);
-      assert.equal(changed.mock.calls.length, 2);
-    } finally { window.removeEventListener("companion:goal-url", changed); }
-  });
-
-  test("closing a popup opened from a shared link rewrites the URL in place", () => {
-    const back = vi.spyOn(history, "back").mockImplementation(() => {});
-    history.replaceState({ other: 1 } as Record<string, unknown>, "", "/?view=sessions&plan=plan-2&goalTemplate=dev-setup&keep=1");
-    const changed = vi.fn();
-    window.addEventListener("companion:goal-url", changed);
-    try {
-      closeGoalPopup();
-      assert.equal(back.mock.calls.length, 0);
-      assert.equal(location.search, "?view=sessions&keep=1");
-      assert.deepEqual(history.state, { other: 1 });
-      assert.equal(changed.mock.calls.length, 1);
-      openGoalPopup({ repository: { id: "repo-3", name: "Repo" } }, true);
-      assert.equal((history.state as Record<string, unknown>).companionGoalPopup, false, "a replace never claims ownership of a foreign entry");
-    } finally { window.removeEventListener("companion:goal-url", changed); }
-  });
-
-  test("the hook resolves saved goals by id and reports unresolvable links", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith("/api/worktree-plans/plan-ok")) return new Response(JSON.stringify({ planId: "plan-ok", repositoryId: "repo-1", repositoryName: "Repo" }), { status: 200 });
-      if (url.endsWith("/api/worktree-plans/plan-empty")) return new Response(JSON.stringify({ planId: "plan-empty" }), { status: 200 });
-      return new Response(JSON.stringify({ error: "Plan not found" }), { status: 404 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    history.replaceState(null, "", "/?plan=plan-ok");
-    const { result } = renderHook(() => useGoalPopup([{ id: "repo-1", name: "Repo" }]));
-    assert.equal(result.current.open, true);
-    await waitFor(() => assert.ok(result.current.target));
-    assert.equal(result.current.target?.repository.name, "Repo");
-    assert.equal(result.current.target?.initialDraft?.planId, "plan-ok");
-    act(() => { history.replaceState(null, "", "/?plan=plan-empty"); window.dispatchEvent(new Event("companion:goal-url")); });
-    await waitFor(() => assert.equal(result.current.error, "This goal link could not be resolved"));
-    assert.equal(result.current.target, undefined);
-    act(() => { history.replaceState(null, "", "/?plan=plan-missing"); window.dispatchEvent(new Event("popstate")); });
-    await waitFor(() => assert.equal(result.current.error, "Plan not found"));
-    act(() => { history.replaceState(null, "", "/"); window.dispatchEvent(new Event("companion:goal-url")); });
-    await waitFor(() => assert.equal(result.current.open, false));
-    assert.equal(result.current.error, undefined);
-  });
-
-  test("the hook resolves saved goals with a fallback repository name", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ planId: "plan-x", repositoryId: "repo-2" }), { status: 200 })));
-    history.replaceState(null, "", "/?plan=plan-x&newGoal=ignored");
-    const { result } = renderHook(() => useGoalPopup());
-    await waitFor(() => assert.ok(result.current.target));
-    assert.equal(result.current.target?.repository.name, "Goal repository");
-    assert.equal(result.current.key, JSON.stringify(["plan-x", "", false]));
-  });
-
-  test("the hook resolves new-goal links once repositories are known", async () => {
-    history.replaceState(null, "", "/?newGoal=repo-1&goalTemplate=dev-setup");
-    const { result, rerender } = renderHook(({ repositories }: { repositories?: { id: string; name: string }[] }) => useGoalPopup(repositories), { initialProps: {} as { repositories?: { id: string; name: string }[] } });
-    assert.equal(result.current.open, true);
-    await act(async () => { await Promise.resolve(); });
-    assert.equal(result.current.target, undefined, "nothing resolves until repositories are known");
-    rerender({ repositories: [{ id: "repo-1", name: "Repo" }] });
-    await waitFor(() => assert.ok(result.current.target));
-    const resolved = result.current.target as unknown as { initialGoal?: string };
-    assert.equal(resolved.initialGoal, DEV_SETUP_GOAL);
-    act(() => { history.replaceState(null, "", "/?newGoal=repo-1"); window.dispatchEvent(new Event("companion:goal-url")); });
-    await waitFor(() => assert.equal(result.current.target?.initialGoal, ""));
-    act(() => { history.replaceState(null, "", "/?newGoal=repo-unknown"); window.dispatchEvent(new Event("companion:goal-url")); });
-    await waitFor(() => assert.equal(result.current.error, "The repository for this new-goal link is unavailable"));
   });
 });
