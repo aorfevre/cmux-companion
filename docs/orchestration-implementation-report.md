@@ -835,3 +835,49 @@ was launched. Production process/session execution, durable identity/recovery,
 cmux ownership, native input-file lifecycle and opt-in live adapter cases remain
 T11 work. Native permission enforcement is unverified until the authorized live
 suite runs; offline hook/argv tests do not establish it.
+
+## T11 in progress: independent native background supervisor
+
+Native input preparation now writes immutable private context, hook/settings and
+scoped bridge files outside the worktree. A durable background adapter records
+operation bindings before spawning a separate Node supervisor. That supervisor
+owns the native process group, output bounds, idle/ceiling timers and atomic result
+receipt independently of the service process. Recovery verifies process birth and
+command identity, replays result delivery, and never relaunches an uncertain sent
+operation. Shutdown attempts all managed workers and retains ownership unless
+bounded observation establishes stopped evidence. Constructors start no workers.
+
+Independent incremental reviews by `/root/domain_review` and
+`/root/scheduler_admission_review` identified and verified corrections for:
+
+- Service-owned timers disappearing on service SIGKILL: moved execution limits to
+  the independent supervisor and tested actual service death.
+- Concurrent duplicate bindings and retained completed handles: reject mismatched
+  in-flight requests and release completed in-memory handles.
+- Escaped descendants losing uncertainty when the original group disappears:
+  preserve the executor's durable unknown evidence across reopen.
+- PID reuse: require the unique operation-directory command marker when capturing
+  process stamps, and revalidate stamps during watcher polling and termination.
+- JSON control-byte expansion: cap raw output at 2 MiB in both driver and worker;
+  allow a bounded 16 MiB serialized receipt. Invalid output preserves stopped proof
+  while producing `INVALID_RESULT`, including exactly 2 MiB of NUL bytes.
+- Partial shutdown failure and the signal/receipt race: signal every managed worker,
+  join watchers and poll independently for durable stopped evidence within a bound.
+  Initial added regression failures exposed immediate unknown observations before
+  receipt persistence; the corrected tests and independent re-review pass.
+
+Passed: **11 native-background tests**, **29 related runtime/native-policy/scoped-tool
+tests**, backend checked-JavaScript and targeted lint. Evidence:
+`/tmp/cmux-orchestration-native-revision.log` and
+`/tmp/cmux-orchestration-native-contracts.log`. The two reviewers independently
+passed the serialization and lifecycle regressions and reported no remaining
+blockers within this slice. Tests use disposable executable fixtures, actual
+subprocesses and explicit ready/release barriers; no live providers were used.
+The escaped-descendant test explicitly kills only its own extra process and clears
+test-instance shutdown bookkeeping afterward; production uncertainty is preserved.
+
+T11 remains incomplete: interactive cmux ownership/resume, production capability
+probing, composition/credential handshake and opt-in live contracts remain.
+T12–T15 and final full verification/coverage/browser gates remain outstanding.
+The prior T10 full-suite snapshot still applies only to its committed code.
+Installed cutover, live acceptance, merge and release have not been performed.
