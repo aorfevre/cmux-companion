@@ -87,6 +87,74 @@ path. T10 depends on T03 and T06; T11 depends on T04, T05 and T10; T12 depends o
 T09–T11. T13 depends on T09–T12; T14 depends on T13; T15 depends on T14.
 Cross-cutting crash/abort tests start with the relevant task, not only at T13.
 
+## Test repository and test layers
+
+T05 introduces a checked-in fixture under `tests/fixtures/orchestration-repo/`:
+a small dependency-free Node project with a `package.json`, source modules and
+`node --test` checks. A fixture builder creates a fresh Git repository, initial
+commit and local bare remote in a temporary directory for each scenario. Never
+commit a nested `.git` directory or use the Companion checkout as the task repo.
+
+Task A implements one module, B implements another, and C depends on both and
+composes their behavior. Tests in the fixture verify the combined result. Include
+variants for an intentional conflicting edit, a failing repository check and a
+repair that changes the candidate SHA. Scripted fake agents make real edits and
+commits in their assigned worktrees through the agent adapter; they do not mark
+tasks accepted or insert integration records directly into SQLite.
+
+| Layer | Real components | Controlled external boundaries |
+| --- | --- | --- |
+| Unit | Domain transitions, graph validation, review policy, UI helpers | Clock and identity sources where needed |
+| Backend integration | Service, SQLite, bridge subprocesses, scheduler, Git/worktrees, fixture verification commands | Scripted agent responses and stateful fake GitHub |
+| Browser E2E | Mobile UI, HTTP/API, auth, event stream, service, SQLite, fixture Git repository and local remote | Agent/provider and GitHub adapters only |
+| Opt-in live adapter tests | Actual supported provider CLI, cmux and authorized GitHub integration | Only boundaries explicitly identified by the test |
+
+T07 uses this fixture for worktree/candidate tests; T08–T09 exercise its real
+integration commits and verification command. T12 uses the same builder in the
+browser journey, proving two worker attempts overlap, C starts from their combined
+head, an intentional failing check prevents PR publication, and repair plus renewed
+review/verification permits exactly one PR. Assert repository contents, commit SHAs
+and operation counts as well as visible cards. Capture fixture diffs, sanitized
+logs and Cypress failure artifacts before cleaning only the fixture's resources.
+
+The first three layers are deterministic and account-free. They do not establish
+real model quality or production CLI permission enforcement; T11 reports those
+live checks separately. No test listed here exists merely because it is planned.
+
+## Implementation code-quality review gate
+
+This gate reviews the Companion implementation itself. It is separate from the
+planner/task/integration reviews that the finished product will orchestrate.
+
+Before closing each milestone, obtain an independent review of the implementation
+diff against the spec, tests and affected callers. The reviewer must be a person
+or a separate agent conversation from the author. The delivery owner resolves
+findings and remains accountable; an author's self-review is useful but does not
+replace this gate. No recursive delegation is required.
+
+The review checks:
+
+- Clear domain/application/adapter boundaries, one lifecycle authority, readable
+  interfaces and no retained duplicate scheduling or review policy.
+- Transaction boundaries, races, stale identity handling, resource cleanup and
+  retry behavior across external side effects.
+- Input validation, approval enforcement, restricted agent capabilities and
+  credential/private-data handling at the actual integration boundary.
+- Tests that exercise observable failure cases and real integration boundaries,
+  rather than mirroring implementation or stubbing the behavior being verified.
+- Maintainable error handling, bounded queues/output, lifecycle disposal and
+  documentation/configuration that a new contributor can follow.
+- Completion of the retirement inventory, without removing still-required safety
+  tests or broadening production capability as a shortcut.
+
+Record the reviewed commit SHA, reviewer, findings with severity/file references,
+fix commit and final disposition in the PR. Resolve blocking findings and have
+the fixes reviewed before closing the milestone; track nonblocking items explicitly
+with rationale. Changed code after review receives an incremental review. At T15,
+review the combined architecture and end-to-end flow after legacy removal, not
+only the individual task diffs. Lint, typecheck, coverage and passing tests support
+this review but do not substitute for it.
+
 ## T01 — Establish the domain and capability contracts
 
 **Owner:** Delivery owner. **Dependencies:** None.
@@ -564,6 +632,8 @@ not introduce replacement product acceptance criteria.
 - Accountable delivery owner and completed task/milestone list.
 - Retained/removed behavior inventory and changed public interfaces.
 - Local checks: command, result, coverage and evidence artifact.
+- Independent implementation reviews: milestone, reviewed commit SHA, reviewer,
+  findings, fix commits and remaining nonblocking items.
 - Fault matrix: case results, duplicate counts and unresolved uncertainty.
 - Live paths: explicitly passed, failed or unverified, with authorization recorded
   if any live check was run.
