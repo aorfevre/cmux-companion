@@ -14,12 +14,12 @@ substitute acceptance criterion for the whole replacement.
 | --- | --- | --- |
 | T01: domain and ports | Foundation implemented | Typed pure graph/state/review rules, explicit result versus worker liveness, command identities and adapter capability contracts. |
 | T02: persistence | Foundation implemented | Explicit-path SQLite state, immutable contracts, indexed attempt ownership, atomic event/intent/receipt writes, private artifacts and journal cursors. |
-| T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Structured candidate and conflict-repair submission now connect independent Git proof to durable acceptance; final-check repair remains unfinished. |
+| T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Structured candidate, conflict and final repair submissions connect independent Git proof to durable acceptance. |
 | M1 durable-decision gate | Passed for foundation | Review and verification below; no production scheduling activated. |
 | T04: scheduler and recovery | Implemented, independently reviewed | Exclusive nonce-fenced ownership, transactional capacity, durable FIFO, explicit retries, abort reconciliation and fresh-process crash recovery. |
-| T05–T06 / M2 | In progress | Runtime, concurrent real-Git fake implementers, scheduled planning/review, revision requests and durable role-result intake pass targeted tests. Scheduled A/B/C task review, repair and integration now pass; cancellation ownership and remaining M2 fault gates remain. |
-| T07–T09 / M3 | In progress | Real Git worktrees, candidate proof/acceptance, serialized delta integration and crash receipts implemented. Conflict-repair acceptance now includes durable effects and receipts; combined verification and PR adapter remain. |
-| T10–T12 / M4 | Pending | Runnable isolated composition, durable consumers, actual provider/cmux adapters and new mobile/Cypress journey. |
+| T05–T06 / M2 | Implemented foundation | Runtime, concurrent real-Git fake implementers, scheduled planning/review, revision requests, bounded repair and durable result intake pass. Scripted cancellation retains worker ownership until jobs stop; complete fault matrix remains T13. |
+| T07–T09 / M3 | Passed account-free journey gate | Four real scheduled Git journeys reach one fake-GitHub PR at the verified/reviewed SHA, including conflicts and final review/check repairs. Durable publication receipts reconcile lost responses. Live adapter behavior remains unverified. |
+| T10–T12 / M4 | In progress | Isolated composition, durable consumers, public SSE and disposable development entry implemented; provider/cmux adapters and mobile real-backend Cypress remain. |
 | T13–T15 / M5 | Pending | Full crash matrix, cleanup, disposable cutover rehearsal, legacy removal, documentation and final acceptance. |
 
 ## M1 foundation: commit `8994832`
@@ -717,3 +717,57 @@ remaining M4/M5 work is not implied complete.
 Final backend coverage passed: 1,460 tests, one platform skip, **98.23% line
 coverage**. Log: `/tmp/cmux-orchestration-publication-coverage.log`.
 No UI code changed in this slice; real-backend mobile Cypress remains outstanding.
+
+## T10: isolated composition, durable consumers and disposable development
+
+The explicit asynchronous composition root now constructs the new service,
+repository/check/publication adapters, scoped result intake, scheduler, journal
+consumers, public SSE and paired HTTP routes without constructing legacy services.
+Construction is inert. Listener binding precedes scheduling; concurrent start/bind
+paths cannot bypass that ordering. Shutdown joins work while retaining exclusive
+scheduler ownership, and a failed cleanup permits only cleanup retry, never restart.
+
+A persistent journal identity namespaces consumer idempotency keys and browser
+cursors across database reopen/replacement. Durable consumers acknowledge only
+after delivery; sinks must deduplicate the stable key across delivery-before-ack
+crashes. Public events omit private payloads/command IDs and invalidate snapshots.
+SSE supports consistent snapshot/replay and expired/foreign-cursor resync. Each
+client buffers at most one bounded frame and pauses until drain; a bounded drain
+timeout removes stalled clients without pinning journal retention.
+
+`npm run orchestration:dev` runs real temporary SQLite/Git/check adapters with
+scripted agents and fake GitHub. Pairing/token files are private; stdout contains
+only connection paths/address. Explicit loopback ports fail safely if occupied.
+Inherited Companion configuration cannot activate live adapters. The HTTP journey
+covers separate A/B workers, C review/repair, an intentional final-check failure,
+renewed review/checks on the repaired SHA, and exactly one fake PR. SIGTERM cleanup
+is tested in a real child process. See [development instructions](orchestration-development.md).
+
+Independent review:
+
+- `/root/domain_review` reproduced P1 ownership release before adapter cleanup and
+  P1 concurrent start bypassing listener binding. Ownership is now retained until
+  cleanup joins, and startup paths are coordinated. Barrier-driven regressions
+  cover both. Reviewer then found P2 successful startup after failed cleanup;
+  permanent shutdown fencing fixes it while preserving close retries.
+- `/root/scheduler_admission_review` reproduced P1 healthy-client disconnect for a
+  113,965-byte snapshot above Node's 65,536-byte high-water mark. The stream now
+  honors accepted writes and pauses until drain. A real HTTP large-snapshot
+  regression and deterministic drain/timeout/error tests cover the correction.
+- Both reviewers approved their corrected slices. Domain reviewer independently
+  passed 11 composition and two dev tests; stream reviewer passed the event suite
+  and real HTTP regression. No remaining blocking findings in these slices.
+
+Checks passed: 92 targeted backend tests, checked-JS, repository lint and
+`npm run verify` (1,481 backend passes, one existing macOS filename skip; 257 UI
+passes; lint, both typechecks and build). An initial lint failure was one unused
+import, removed. One initial dev test failed because its assertion used the wrong
+verification-run field; corrected to the recorded result's verification checks.
+No safety assertion or coverage threshold was removed.
+
+Logs: `/tmp/cmux-orchestration-t10-focused.log`,
+`/tmp/cmux-orchestration-t10-lint.log`, `/tmp/cmux-orchestration-t10-verify.log`.
+Backend coverage passed with 1,481 tests, one platform skip and **98.24% line coverage**; log: `/tmp/cmux-orchestration-t10-coverage.log`. No UI code changed; new mobile
+controls and real-backend Cypress remain T12. Production provider/cmux adapters,
+full fault matrix, cleanup/cutover/retirement and final combined review remain
+required. Live adapters, installed cutover, merge and release were not exercised.

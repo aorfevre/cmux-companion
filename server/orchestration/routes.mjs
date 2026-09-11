@@ -1,13 +1,14 @@
 import { isAuthorized, isSafeOrigin, safeEqual, sessionCookie } from '../security.mjs';
 import { DomainError, object, requireValue } from './domain/contracts.mjs';
 import { parseCommand, USER_COMMANDS, AGENT_COMMANDS } from './domain/commands.mjs';
+import { eventView } from './domain/event-view.mjs';
 import { goalView } from './domain/state-view.mjs';
 
 const PREFIX = '/api/orchestration';
 /** @param {import('fastify').FastifyInstance} app
- * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults }} options
+ * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean }} options
  */
-export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results }) {
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, stream, readOnly = false }) {
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
@@ -43,7 +44,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     return reply.header('Set-Cookie', sessionCookie(request, token)).send({ paired: true });
   });
   app.get(`${PREFIX}/snapshot`, async () => {
-    const snapshot = service.store.snapshot(); return { goals: snapshot.goals.map(goalView), cursor: snapshot.cursor };
+    const snapshot = service.store.snapshot(); return { goals: snapshot.goals.map(goalView), cursor: snapshot.cursor, journalId: service.store.journalId, readOnly };
   });
   app.get(`${PREFIX}/goals/:id`, async (request) => {
     const id = /** @type {{id: string}} */ (request.params).id;
@@ -52,9 +53,18 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
   });
   app.get(`${PREFIX}/events`, async (request) => {
     const query = /** @type {{ since?: string; limit?: string }} */ (request.query);
-    return { events: service.store.events({ since: Number(query.since ?? 0), limit: Number(query.limit ?? 100) }) };
+    return { events: service.store.events({ since: Number(query.since ?? 0), limit: Number(query.limit ?? 100) }).map(eventView), journalId: service.store.journalId };
+  });
+  if (stream) app.get(`${PREFIX}/stream`, async (request, reply) => {
+    const token = request.headers['last-event-id'];
+    requireValue(token === undefined || typeof token === 'string', 'Invalid event cursor');
+    const initial = stream.prepare(token);
+    reply.hijack();
+    reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' });
+    stream.attach(reply.raw, initial);
   });
   app.post(`${PREFIX}/commands`, async (request) => {
+    requireValue(!readOnly, 'This client interface is read-only', 'FORBIDDEN');
     const command = parseCommand(request.body);
     requireValue(USER_COMMANDS.has(command.type), 'Command is not available to this client', 'FORBIDDEN');
     const result = service.execute(command, { kind: 'user' });
@@ -89,8 +99,9 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     const authority = agentAuthority(request), command = parseCommand(request.body);
     requireValue(command.goalId === authority.goalId && AGENT_COMMANDS[authority.role].has(command.type), 'Agent command is outside its authority', 'FORBIDDEN');
     if (command.type === 'submit_candidate' || command.type === 'submit_integration_repair') {
-      // Git evidence adapters are connected in T07/T08. Fail closed until then.
-      throw new DomainError('UNSUPPORTED_CAPABILITY', 'Repository evidence verification is unavailable');
+      // Candidate mutations use the durable structured-result endpoint, where
+      // trusted Git proof precedes acceptance. Direct commands cannot bypass it.
+      throw new DomainError('UNSUPPORTED_CAPABILITY', 'Submit candidate evidence through the structured result endpoint');
     }
     const result = service.execute(command, authority);
     return { goal: goalView(result.goal), cursor: result.cursor };

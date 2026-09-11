@@ -41,6 +41,7 @@ export class OrchestrationStore {
     try { initializeSchema(this.db); }
     catch (error) { this.db.close(); throw error; }
     if (path !== ':memory:') chmodSync(this.path, 0o600);
+    this.journalId = String(this.db.prepare('SELECT identity FROM journal_identity WHERE id=1').get()?.identity);
     this.now = now; this.failpoint = failpoint; this.onCommit = onCommit; this.onNotificationError = onNotificationError;
     // An earlier foundation database has goals but no ready queue. Backfill its
     // current work atomically; reopening a current database preserves ordering.

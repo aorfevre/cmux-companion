@@ -23,20 +23,22 @@ export class Scheduler {
     /** @param {number} cursor */
     this.notify = (cursor) => { try { this.previousNotify(cursor); } finally { this.verifications?.cancelRevoked(); this.publications?.cancelRevoked(); void this.tick().catch(this.onError); } };
   }
-  async start() {
+  /** @param {{ releaseOwnershipOnFailure?: boolean }} [options] */
+  async start({ releaseOwnershipOnFailure = true } = {}) {
     requireValue(this.stopped, 'Scheduler is already started'); this.ownership.acquire();
     this.service.ownership = this.ownership; this.stopped = false; if (this.verifications) this.verifications.stopped = false; if (this.publications) this.publications.stopped = false; this.store.onCommit = this.notify;
     this.timer = setInterval(() => { void this.tick().catch(this.onError); }, this.intervalMs); this.timer.unref();
-    try { await this.tick(); } catch (error) { await this.stop(); throw error; }
+    try { await this.tick(); } catch (error) { await this.stop({ releaseOwnership: releaseOwnershipOnFailure }); throw error; }
   }
-  async stop() {
+  /** @param {{ releaseOwnership?: boolean }} [options] */
+  async stop({ releaseOwnership = true } = {}) {
     this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null;
     if (this.store.onCommit === this.notify) this.store.onCommit = this.previousNotify;
     try {
       const settled = await Promise.allSettled([this.sweep, this.verifications?.stop(), this.publications?.stop()]);
       const failures = settled.filter((entry) => entry.status === 'rejected');
       if (failures.length) throw new AggregateError(failures.map((entry) => entry.reason), 'Scheduler shutdown failed');
-    } finally { this.ownership.release(); }
+    } finally { if (releaseOwnership) this.ownership.release(); }
   }
   tick() {
     if (this.stopped) return Promise.resolve();

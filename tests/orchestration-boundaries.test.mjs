@@ -34,7 +34,7 @@ test('domain and browser projection imports stay transitively pure', () => {
   for (const file of readdirSync(`${root}/domain`).filter((file) => file.endsWith('.mjs'))) walk(`${root}/domain/${file}`);
 });
 test('application core does not import concrete adapters or legacy orchestration', () => {
-  for (const file of ['service.mjs', 'scheduler.mjs', 'integration-repairs.mjs', 'verification-coordinator.mjs', 'publication-coordinator.mjs', 'reconciler.mjs', 'ports.mjs']) {
+  for (const file of ['service.mjs', 'scheduler.mjs', 'integration-repairs.mjs', 'verification-coordinator.mjs', 'publication-coordinator.mjs', 'reconciler.mjs', 'ports.mjs', 'event-consumers.mjs', 'event-stream.mjs']) {
     const path = `${root}/${file}`;
     if (!existsSync(path)) continue;
     for (const dependency of inspect(path).imports) {

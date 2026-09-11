@@ -559,6 +559,11 @@ Use the Node version in `.nvmrc` (`nvm install && nvm use`), then `npm ci`.
 See [development setup and completion](docs/development.md) for verification,
 code-path evidence and the per-project **Review dev setup** workflow.
 
+The replacement orchestration API has an account-free
+[disposable development mode](docs/orchestration-development.md):
+`npm run orchestration:dev -- --port 3211`. It uses real temporary Git repositories
+and fake agents/GitHub; its mobile frontend is still under implementation.
+
 Run the bridge and frontend in separate terminals:
 
 ```bash

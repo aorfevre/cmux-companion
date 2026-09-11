@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 /** @param {import('node:sqlite').DatabaseSync} db */
 export function initializeSchema(db) {
   const version = Number(db.prepare('PRAGMA user_version').get()?.user_version ?? 0);
@@ -46,8 +47,10 @@ export function initializeSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS goal_events ON events(goal_id, id);
     CREATE TABLE IF NOT EXISTS consumers (id TEXT PRIMARY KEY, cursor INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS journal_identity (id INTEGER PRIMARY KEY CHECK(id = 1), identity TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS journal_meta (id INTEGER PRIMARY KEY CHECK(id = 1), floor INTEGER NOT NULL);
     INSERT OR IGNORE INTO journal_meta(id, floor) VALUES (1, 0);
     PRAGMA user_version = 1;
   `);
+  db.prepare('INSERT OR IGNORE INTO journal_identity(id,identity) VALUES (1,?)').run(randomUUID());
 }
