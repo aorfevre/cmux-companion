@@ -34,6 +34,31 @@ test('legacy process uncertainty is never converted into permission to start', a
   for (const state of ['alive', 'unknown']) await assert.rejects(assertCutover({ ...f.cutover, legacyOwnerPids: [123] }, { sessions: async () => [], liveness: () => state }), { code: 'OWNERSHIP_UNCERTAIN' });
   await assertCutover({ ...f.cutover, legacyOwnerPids: [123] }, { sessions: async () => [], liveness: () => 'dead' });
 });
+test('a later repository ownership refusal preserves earlier bindings', async t => {
+  const one = await fixture(t), two = await fixture(t);
+  const [a, b] = [one, two].sort((left, right) => left.repo.repository.localeCompare(right.repo.repository));
+  const previous = join(a.repo.directory, 'previous.sqlite');
+  (await acquireRepositoryOwnership(new Map([['a', a.repo.repository]]), previous)).close();
+  const occupied = await acquireRepositoryOwnership(new Map([['b', b.repo.repository]]), join(b.repo.directory, 'occupied.sqlite'));
+  t.after(() => occupied.close());
+  const binding = () => {
+    const db = new DatabaseSync(join(a.repo.repository, '.git', 'companion-orchestration-owner.sqlite'), { readOnly: true });
+    try { return db.prepare('SELECT * FROM repository_binding').get(); } finally { db.close(); }
+  };
+  const before = binding();
+  await assert.rejects(acquireRepositoryOwnership(new Map([['a', a.repo.repository], ['b', b.repo.repository]]), join(a.repo.directory, 'replacement.sqlite')), { code: 'OWNERSHIP_UNCERTAIN' });
+  assert.deepEqual(binding(), before);
+  // Refusal also releases the earlier repository owner for a legitimate restart.
+  (await acquireRepositoryOwnership(new Map([['a', a.repo.repository]]), previous)).close();
+});
+test('a missing previously bound journal is reported as uncertain ownership', async t => {
+  const f = await fixture(t), prior = join(f.repo.directory, 'prior.sqlite');
+  const roots = new Map([['repo', f.repo.repository]]);
+  (await acquireRepositoryOwnership(roots, prior)).close();
+  renameSync(prior, join(f.repo.directory, 'moved.sqlite'));
+  assert.throws(() => assertRollback(prior), { code: 'OWNERSHIP_UNCERTAIN' });
+  await assert.rejects(acquireRepositoryOwnership(roots, join(f.repo.directory, 'new.sqlite')), { code: 'OWNERSHIP_UNCERTAIN' });
+});
 test('repository ownership fences another database and rollback refuses active or uncertain replacement workers', async t => {
   const f = await fixture(t), database = join(f.repo.directory, 'new.sqlite'), store = new OrchestrationStore({ path: database }); t.after(() => store.close());
   const scheduler = new SchedulerOwnership({ store }); scheduler.acquire();

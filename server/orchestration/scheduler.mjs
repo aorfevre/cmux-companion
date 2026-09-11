@@ -28,7 +28,10 @@ export class Scheduler {
     requireValue(this.stopped, 'Scheduler is already started'); this.ownership.acquire();
     this.service.ownership = this.ownership; this.stopped = false; if (this.verifications) this.verifications.stopped = false; if (this.publications) this.publications.stopped = false; this.store.onCommit = this.notify;
     this.timer = setInterval(() => { void this.tick().catch(this.onError); }, this.intervalMs); this.timer.unref();
-    try { await this.tick(); } catch (error) { await this.stop({ releaseOwnership: releaseOwnershipOnFailure }); throw error; }
+    try {
+      this.store.rebuildReady(() => this.ownership.assertOwned());
+      await this.tick();
+    } catch (error) { await this.stop({ releaseOwnership: releaseOwnershipOnFailure }); throw error; }
   }
   /** @param {{ releaseOwnership?: boolean }} [options] */
   async stop({ releaseOwnership = true } = {}) {

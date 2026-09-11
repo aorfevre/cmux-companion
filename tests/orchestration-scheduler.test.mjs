@@ -6,6 +6,7 @@ import { VerificationCoordinator } from '../server/orchestration/verification-co
 import { FakeAgents, barrier } from './helpers/orchestration/fake-agents.mjs';
 import { IntegrationRepairs } from '../server/orchestration/integration-repairs.mjs';
 import { Scheduler } from '../server/orchestration/scheduler.mjs';
+import { SchedulerOwnership } from '../server/orchestration/storage/ownership.mjs';
 import { DomainError } from '../server/orchestration/domain/contracts.mjs';
 import { OrchestrationService } from '../server/orchestration/service.mjs';
 import { contract, BASE } from './helpers/orchestration/domain-fixture.mjs';
@@ -119,14 +120,40 @@ test('failed planner and reviewer work requires explicit user retry after proven
   assert.equal(f.store.ready()[0].role, 'reviewer'); f.request('g', 'reviewer');
 });
 
-test('opening a pre-queue database backfills readiness without changing goal version', async (t) => {
+test('pre-queue readiness backfill requires ownership and preserves goal version', async (t) => {
   const { mkdtempSync, rmSync } = await import('node:fs'); const { join } = await import('node:path'); const { tmpdir } = await import('node:os');
   const directory = mkdtempSync(join(tmpdir(), 'orchestration-ready-upgrade-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'state.sqlite'); let store = new OrchestrationStore({ path });
   store.apply({ id: 'create', goalId: 'g', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'goal', baseSha: BASE } }, { kind: 'user' });
   store.db.exec('DROP TABLE ready_work'); store.close();
   store = new OrchestrationStore({ path }); t.after(() => store.close());
+  assert.deepEqual(store.ready(), []);
+  const owner = new SchedulerOwnership({ store });
+  assert.throws(() => store.rebuildReady(() => owner.assertOwned()), { code: 'OWNERSHIP_UNCERTAIN' });
+  assert.deepEqual(store.ready(), []);
+  owner.acquire();
+  try { store.rebuildReady(() => owner.assertOwned()); } finally { owner.release(); }
   assert.equal(store.ready()[0].role, 'planner'); assert.equal(store.get('g').version, 1);
+});
+
+test('a competing scheduler cannot refresh the active owners readiness index', async t => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { join } = await import('node:path'); const { tmpdir } = await import('node:os');
+  const directory = mkdtempSync(join(tmpdir(), 'orchestration-ready-owner-'));
+  const path = join(directory, 'state.sqlite'), first = new OrchestrationStore({ path });
+  let owner, second;
+  t.after(() => { owner?.release(); second?.close(); first.close(); rmSync(directory, { recursive: true, force: true }); });
+  first.apply({ id: 'create', goalId: 'g', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'goal', baseSha: BASE } }, { kind: 'user' });
+  first.db.exec('CREATE TABLE ready_audit(action TEXT); CREATE TRIGGER audit_ready BEFORE INSERT ON ready_work BEGIN INSERT INTO ready_audit VALUES (\'insert\'); END;');
+  owner = new SchedulerOwnership({ store: first }); owner.acquire();
+  const before = first.ready(); second = new OrchestrationStore({ path });
+  const service = new OrchestrationService({ store: second, agents: new FakeAgents(), repositoryIds: new Set(['other']) });
+  const scheduler = new Scheduler({ service, repositories: { provision: async () => { throw new Error('Must not provision'); } } });
+  await assert.rejects(scheduler.start(), { code: 'OWNERSHIP_UNCERTAIN' });
+  owner.assertOwned();
+  assert.deepEqual(first.ready(), before);
+  assert.equal(first.db.prepare('SELECT COUNT(*) AS n FROM ready_audit').get().n, 0);
+  assert.equal(first.get('g').version, 1);
 });
 
 test('continuous implementer readiness keeps its FIFO position when integration head advances', (t) => {

@@ -43,12 +43,14 @@ export class OrchestrationStore {
     if (path !== ':memory:') chmodSync(this.path, 0o600);
     this.journalId = String(this.db.prepare('SELECT identity FROM journal_identity WHERE id=1').get()?.identity);
     this.now = now; this.failpoint = failpoint; this.onCommit = onCommit; this.onNotificationError = onNotificationError;
-    // An earlier foundation database has goals but no ready queue. Backfill its
-    // current work atomically; reopening a current database preserves ordering.
+  }
+  /** Backfill an earlier readiness index only after scheduler ownership.
+   * Existing queue sequence numbers remain stable. @param {()=>void} assertOwned
+   */
+  rebuildReady(assertOwned) {
     this.db.exec('BEGIN IMMEDIATE');
-    try { for (const goal of this.list()) this.refreshReady(goal); this.db.exec('COMMIT'); }
-    catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
-
+    try { assertOwned(); for (const goal of this.list()) this.refreshReady(goal); this.db.exec('COMMIT'); }
+    catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   /** Rebuildable readiness index; existing sequence numbers survive refresh.
    * @param {Goal} goal

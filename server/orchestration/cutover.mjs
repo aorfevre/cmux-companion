@@ -90,9 +90,14 @@ export async function acquireRepositoryOwnership(repositories, database) {
         const previous = store.db.prepare('SELECT workflow_database,workflow_identity FROM repository_binding WHERE singleton=1').get();
         if (previous && previous.workflow_database === databaseIdentity) requireValue(previous.workflow_identity === workflowIdentity, 'Workflow database identity changed; reconcile the original state', 'OWNERSHIP_UNCERTAIN');
         if (previous && previous.workflow_database !== databaseIdentity) assertRollback(String(previous.workflow_database), String(previous.workflow_identity));
-        store.db.prepare('INSERT INTO repository_binding VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET workflow_database=excluded.workflow_database,workflow_identity=excluded.workflow_identity').run(databaseIdentity, workflowIdentity);
         held.push({ store, owner });
       } catch (error) { if (owner.acquired) owner.release(); store.close(); throw error; }
+    }
+    // Validate the complete repository set before changing any existing binding.
+    // A refusal on a later repository must preserve earlier ownership history.
+    for (const { store, owner } of held) {
+      owner.assertOwned();
+      store.db.prepare('INSERT INTO repository_binding VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET workflow_database=excluded.workflow_database,workflow_identity=excluded.workflow_identity').run(databaseIdentity, workflowIdentity);
     }
     return { assertOwned() { for (const entry of held) entry.owner.assertOwned(); }, close() { for (const entry of held.splice(0).reverse()) { try { entry.owner.release(); } finally { entry.store.close(); } } } };
   } catch (error) { for (const entry of held.reverse()) { try { entry.owner.release(); } finally { entry.store.close(); } } throw error; }
@@ -100,7 +105,13 @@ export async function acquireRepositoryOwnership(repositories, database) {
 /** Rollback is a read-only decision. It never kills a worker or edits either DB.
  * @param {string} path @param {string} [expectedIdentity] */
 export function assertRollback(path, expectedIdentity) {
-  const db = new DatabaseSync(realpathSync(path), { readOnly: true });
+  let canonical;
+  try { canonical = realpathSync(path); }
+  catch (error) {
+    requireValue(/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT', 'Previously bound workflow database is missing; restore its recorded path before changing ownership', 'OWNERSHIP_UNCERTAIN');
+    throw error;
+  }
+  const db = new DatabaseSync(canonical, { readOnly: true });
   try {
     const identity = db.prepare('SELECT identity FROM journal_identity WHERE id=1').get();
     requireValue(identity && (!expectedIdentity || identity.identity === expectedIdentity), 'Replacement journal identity changed', 'OWNERSHIP_UNCERTAIN');
