@@ -17,7 +17,7 @@ substitute acceptance criterion for the whole replacement.
 | T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Candidate/repair submission deliberately remains unavailable until the Git evidence adapters in T07–T08 are connected. |
 | M1 durable-decision gate | Passed for foundation | Review and verification below; no production scheduling activated. |
 | T04: scheduler and recovery | Implemented, independently reviewed | Exclusive nonce-fenced ownership, transactional capacity, durable FIFO, explicit retries, abort reconciliation and fresh-process crash recovery. |
-| T05–T06 / M2 | Pending | Complete execution-mode contracts, real Git fixture agents and scheduled review/repair workflow. M2 has not passed. |
+| T05–T06 / M2 | In progress | Runtime primitives and real-Git concurrent fake implementers now pass targeted tests; scheduled role-result/review/repair workflow and complete result crash cases remain. M2 has not passed. |
 | T07–T09 / M3 | Pending | Disposable real Git task repository, worktrees, integration, verification and PR adapter. |
 | T10–T12 / M4 | Pending | Runnable isolated composition, durable consumers, actual provider/cmux adapters and new mobile/Cypress journey. |
 | T13–T15 / M5 | Pending | Full crash matrix, cleanup, disposable cutover rehearsal, legacy removal, documentation and final acceptance. |
@@ -166,3 +166,57 @@ This validates the fixture itself, using explicit Git commands in the harness.
 It does not yet prove the service schedules/integrates these commits; runtime
 contracts and fake-agent/service wiring remain T05–T09 work. Full verification
 reported above precedes this fixture addition.
+
+## T05 in progress: execution contracts and parallel implementers
+
+`adapters/agent-runtime.mjs` now routes interactive planning/resume through its
+own injected driver and uses durable attempt lookup for observation/termination.
+Unknown lookup never becomes stopped evidence. Background execution uses argv,
+explicit environment, injected identity/clock, mandatory ceiling/idle/output/grace
+limits, process-group signals and a separate private-output/structured-error result.
+Identity recording precedes launch acknowledgement. Process success is not a
+workflow acceptance command or proof about provider resources outside its group.
+
+The real scheduler now launches two scripted implementers into different fixture
+worktrees. Named barriers prove A and B overlap while occupying two slots; each
+makes a real commit descended from the recorded base. C remains pending even
+after both commits exist, because no accepted integration checkpoint exists yet.
+The fixture seeds plan review through service commands; this test does not claim
+scheduled planning/review, candidate proof or actual service integration is done.
+
+### Independent runtime review and corrections
+
+Reviewer: `/root/scheduler_admission_review`, separate read-only conversation.
+Review found these issues, all corrected with direct regressions:
+
+- Parent close cancelled SIGKILL escalation while resistant descendants remained:
+  group cleanup now retains escalation and checks group disappearance.
+- An unresolved asynchronous identity callback stranded launch after process exit:
+  identity acknowledgement now races bounded process completion.
+- UTF-8 replacement characters could expand truncated output beyond the byte cap:
+  returned encoded output is bounded and incomplete suffixes are omitted.
+- An escaped descendant could hold pipes open indefinitely and prevent close:
+  bounded drain cleanup destroys readers and reports unknown worker ownership.
+
+The reviewer independently reran runtime and parallel tests: 16/16 passed; no
+remaining blocker identified in this slice. Test-owned descendant groups were
+explicitly cleaned up. Production identity/permissions remain unverified.
+`ScriptedAgents` is currently used for concurrent commits, not abort correctness;
+cooperative cancellation/drain semantics must precede its use for abort coverage.
+
+### Checks and remaining work
+
+- Targeted orchestration/security suites: 102/102 passed.
+- Backend checked-JavaScript types, targeted lint and `git diff --check`: passed.
+- An initial spawn-failure test exposed notification before timer cleanup; launch
+  rejection now follows cleanup. An initial parallel harness run rejected UUIDs
+  beginning with a digit as fixture checkout names; names now have an explicit
+  `op_` prefix, and the test asserts launch count before waiting at barriers.
+- `npm run verify`: 1,312 backend tests, 257 UI tests, lint, frontend/backend types
+  and build passed for this runtime slice on Node 22.23.1.
+- `npm run test:coverage`: 1,312 tests passed; backend line coverage 98.14%.
+
+T05/M2 is not declared complete. Role output schemas, result reception/commit
+crash coverage, scheduled review/repair and an A/B/C integration journey remain
+required in T05–T09. The native interactive driver and production permission waits
+are still T11 work; fake routing does not establish live terminal behavior.

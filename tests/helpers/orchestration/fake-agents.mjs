@@ -32,3 +32,28 @@ export function barrier() {
   const promise = new Promise((resolve) => { release = resolve; });
   return { promise, release };
 }
+
+/** Scripted processes use the adapter result boundary. They never accept tasks,
+ * integrate branches, or write workflow state themselves. Script barriers model
+ * work in flight separately from a lost launch acknowledgement.
+ */
+export class ScriptedAgents extends FakeAgents {
+  constructor({ script, onResult = async () => {} }) {
+    super(); this.script = script; this.onResult = onResult;
+    this.jobs = new Map(); this.results = []; this.errors = [];
+  }
+  async launch(request) {
+    const launched = await super.launch(request);
+    const job = Promise.resolve().then(async () => {
+      try {
+        const result = await this.script(structuredClone(request));
+        this.results.push({ operationId: request.operationId, result: structuredClone(result) });
+        await this.onResult(request, result);
+      } catch (error) { this.errors.push({ operationId: request.operationId, error }); }
+      finally { this.stop(request.operationId); }
+    });
+    this.jobs.set(request.operationId, job);
+    return launched;
+  }
+  async drain() { await Promise.all([...this.jobs.values()]); }
+}

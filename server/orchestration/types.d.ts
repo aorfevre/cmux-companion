@@ -65,6 +65,21 @@ export interface AgentPort {
   terminate(identity: string): Promise<void>;
 }
 
+export interface BackgroundPolicy { ceilingMs: number; idleMs: number; maxOutputBytes: number; killGraceMs: number }
+export interface RuntimeClock { schedule(callback: () => void, delayMs: number): unknown; cancel(handle: unknown): void }
+export interface ProcessOutcome {
+  status: 'succeeded' | 'failed';
+  workerState: 'stopped' | 'unknown';
+  cause: null | { code: string; exitCode: number | null; signal: string | null };
+  stdout: string; stderr: string;
+}
+export interface BackgroundHandle {
+  identity: string; pid: number; result: Promise<ProcessOutcome>; terminate(): void;
+}
+export interface InteractiveAgentPort extends AgentPort {
+  resume(request: LaunchRequest): Promise<{ identity: string }>;
+}
+
 export interface ClockPort { now(): string }
 export interface IdentityPort { next(): string }
 export interface RepositoryPort {
