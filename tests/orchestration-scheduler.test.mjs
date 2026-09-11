@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OrchestrationStore } from '../server/orchestration/storage/store.mjs';
+import { PublicationCoordinator } from '../server/orchestration/publication-coordinator.mjs';
 import { VerificationCoordinator } from '../server/orchestration/verification-coordinator.mjs';
 import { FakeAgents, barrier } from './helpers/orchestration/fake-agents.mjs';
 import { IntegrationRepairs } from '../server/orchestration/integration-repairs.mjs';
@@ -406,3 +407,68 @@ function preparedFinalRepair(f) {
   assert.throws(() => f.request('g', 'integrator'), { code: 'NOT_READY' });
   return attemptId;
 }
+
+function publishableGoal(f) {
+  integratedGoal(f);
+  f.command('g', 'record_verification', { headSha: f.store.get('g').integrationHead, checks: [{ id: 'unit', passed: true, artifactId: 'verified' }] });
+  const reviewer = f.request('g', 'reviewer'); f.dispatch('g', reviewer);
+  f.command('g', 'record_review', { attemptId: reviewer, reviewId: 'final_review', review: { schemaVersion: 1, target: f.store.get('g').integrationHead, disposition: 'accept', findings: [] } });
+  f.command('g', 'record_stopped', { attemptId: reviewer });
+}
+const publishedResult = (input) => ({ status: 'published', baseHeadSha: input.baseSha, pr: { number: 1, url: 'https://github.invalid/pull/1', headSha: input.headSha } });
+
+for (const scenario of ['normal', 'receipt_loss', 'pending_abort', 'sent_abort', 'unknown']) test(`publication coordinator retains exact operation ownership across ${scenario}`, async (t) => {
+  const f = fixture(t); publishableGoal(f); let calls = 0, receipt = null;
+  const publisher = {
+    publish: async (input) => {
+      calls++;
+      receipt = publishedResult(input);
+      if (scenario === 'sent_abort') { f.command('g', 'abort', {}, 'user'); throw new Error('PR succeeded after abort'); }
+      if (scenario === 'unknown') return { status: 'unknown', baseHeadSha: input.baseSha, pr: null };
+      if (scenario === 'receipt_loss') f.store.failpoint = (point) => { if (point === 'after_commit' && f.store.get('g').pr) throw new Error('Lost database acknowledgement'); };
+      return receipt;
+    },
+    observe: async () => receipt,
+  };
+  const options = { service: f.service, publisher, ownership: { assertOwned() {} } };
+  if (scenario === 'pending_abort') { f.command('g', 'request_publication', { operationId: 'publish' }); f.command('g', 'abort', {}, 'user'); }
+  const coordinator = new PublicationCoordinator(options); await coordinator.run();
+  const jobs = [...coordinator.active.values()].map((run) => run.job);
+  if (scenario === 'receipt_loss') await assert.rejects(Promise.all(jobs), /Lost database acknowledgement/); else await Promise.all(jobs);
+  f.store.failpoint = () => {};
+  if (scenario !== 'unknown') {
+    const restarted = new PublicationCoordinator(options); await restarted.run(); await Promise.all([...restarted.active.values()].map((run) => run.job));
+  }
+  const goal = f.store.get('g');
+  assert.equal(calls, scenario === 'pending_abort' ? 0 : 1);
+  if (scenario === 'unknown') {
+    assert.equal(goal.status, 'ready_to_publish'); assert.equal(goal.pr, null);
+    assert.equal(goal.publication.observation.status, 'unknown');
+    assert.ok(f.store.operations().some((operation) => operation.kind === 'publish' && operation.status === 'dispatching'));
+  } else {
+    assert.equal(goal.status, scenario.endsWith('abort') ? 'aborted' : 'delivered');
+    assert.equal(goal.pr?.headSha ?? null, scenario === 'pending_abort' ? null : goal.integrationHead);
+    assert.ok(!f.store.operations().some((operation) => operation.kind === 'publish'));
+  }
+});
+
+test('scheduler continues agent admission and joins publication before releasing ownership', async (t) => {
+  const f = fixture({ after() {} }); publishableGoal(f); f.service.agents = new FakeAgents();
+  const started = barrier(), cancelled = barrier(), release = barrier();
+  const scheduler = new Scheduler({ service: f.service, repositories: { provision: async ({ operationId, branch, baseSha }) => ({ worktree: `/tmp/${operationId}`, branch, baseSha }) }, publisher: {
+    publish: async (input, { signal }) => { started.release(); signal.addEventListener('abort', () => cancelled.release(), { once: true }); await release.promise; return { status: 'cancelled', baseHeadSha: input.baseSha, pr: null }; },
+    observe: async () => ({ status: 'unknown', baseHeadSha: null, pr: null }),
+  } });
+  t.after(async () => { release.release(); await scheduler.stop(); f.store.close(); });
+  await scheduler.start(); await started.promise;
+  f.create('other'); await scheduler.tick();
+  assert.ok(f.service.agents.launches.some((entry) => entry.goalId === 'other'));
+  const stopped = scheduler.stop(); await cancelled.promise;
+  assert.equal(scheduler.ownership.acquired, true);
+  release.release(); await stopped;
+  assert.equal(scheduler.ownership.acquired, false);
+  assert.ok(f.store.operations().some((operation) => operation.kind === 'publish'), 'Shutdown keeps a resumable publication');
+  const restarted = new PublicationCoordinator({ service: f.service, ownership: { assertOwned() {} }, publisher: { publish: async (input) => publishedResult(input), observe: async () => ({ status: 'unknown', baseHeadSha: null, pr: null }) } });
+  await restarted.run(); await Promise.all([...restarted.active.values()].map((run) => run.job));
+  assert.equal(f.store.get('g').status, 'delivered');
+});

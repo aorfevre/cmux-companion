@@ -1,4 +1,4 @@
-import { DomainError, identifier, integer, object, requireValue, sha, text, array } from './contracts.mjs';
+import { DomainError, identifier, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
 import { parseRoleResult } from './role-result.mjs';
@@ -54,7 +54,7 @@ export function transition(before, command, authority) {
     requireAuthority(authority, 'user');
     requireValue(!before && command.expectedVersion === 0, 'Goal already exists', 'VERSION_CONFLICT');
     const goal = /** @type {Goal} */ ({ id: command.goalId, version: 1, generation: 1,
-      repositoryId: identifier(input.repositoryId), title: text(input.title, 500),
+      repositoryId: identifier(input.repositoryId), title: text(input.title, 500), baseSha: sha(input.baseSha), baseBranch: branchName(input.baseBranch ?? 'main'),
       status: 'discovering', revision: 0, approvedRevision: null, contracts: [], tasks: [],
       attempts: [], reviews: [], integrationHead: sha(input.baseSha), verification: null,
       finalRepairCount: 0, finalRepairLimit: 2, pr: null, integration: null, publication: null,
@@ -64,7 +64,7 @@ export function transition(before, command, authority) {
   requireValue(before && before.id === command.goalId, 'Goal not found', 'NOT_FOUND');
   validateAuthority(before, authority);
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
-  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'settle_repair_result', 'cancel_repair_result', 'record_verification_result', 'cancel_verification', 'verification_uncertain', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
+  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_publication_observation', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'settle_repair_result', 'cancel_repair_result', 'record_verification_result', 'cancel_verification', 'verification_uncertain', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
   const goal = structuredClone(before);
   /** @type {Transition} */
   const result = { goal, events: [], intents: [] };
@@ -468,10 +468,28 @@ export function transition(before, command, authority) {
     }
     case 'request_publication': {
       requireAuthority(authority, 'system');
-      requireValue(goal.status === 'building' && goal.verification?.headSha === goal.integrationHead && goal.verification.checks.every((check) => check.passed) && acceptedReview(goal, goal.integrationHead, 'integration'), 'Final evidence is missing or stale', 'NOT_READY');
+      requireValue(goal.status === 'building' && !goal.integration && goal.verification?.headSha === goal.integrationHead && goal.verification.checks.every((check) => check.passed) && acceptedReview(goal, goal.integrationHead, 'integration'), 'Final evidence is missing or stale', 'NOT_READY');
       requireValue(!goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && !goal.attempts.some(ownsWorker), 'Workers still active', 'NOT_READY');
-      goal.publication = { operationId: identifier(input.operationId), headSha: goal.integrationHead, generation: goal.generation, revision: goal.revision };
-      goal.status = 'ready_to_publish'; intent('publish', goal.publication.operationId, null, { headSha: goal.integrationHead }); emit('publication_requested', { headSha: goal.integrationHead }); break;
+      const plan = { operationId: identifier(input.operationId), goalId: goal.id, repositoryId: goal.repositoryId, headSha: goal.integrationHead, branch: `companion-goals/${goal.id}`, baseBranch: goal.baseBranch, baseSha: goal.baseSha, marker: `<!-- companion-goal:${goal.id} -->` };
+      goal.publication = { operationId: plan.operationId, headSha: goal.integrationHead, generation: goal.generation, revision: goal.revision, plan };
+      goal.status = 'ready_to_publish'; intent('publish', goal.publication.operationId, null, { ...plan }); emit('publication_requested', { headSha: goal.integrationHead }); break;
+    }
+    case 'record_publication_observation': {
+      requireAuthority(authority, 'system');
+      requireValue(goal.publication && goal.publication.operationId === input.operationId, 'Publication operation changed', 'STALE_OPERATION');
+      const observed = object(input.observation);
+      requireValue(['pending', 'published', 'unknown', 'cancelled', 'target_moved'].includes(String(observed.status)), 'Invalid publication observation');
+      const baseHeadSha = observed.baseHeadSha === null ? null : sha(observed.baseHeadSha);
+      let pr = null;
+      if (observed.status === 'published') {
+        const received = object(observed.pr);
+        requireValue(received.state === undefined || ['open', 'closed', 'merged'].includes(String(received.state)), 'Invalid observed PR state');
+        pr = { number: integer(received.number, 1), url: text(received.url, 2000), headSha: sha(received.headSha), ...(received.state === undefined ? {} : { state: /** @type {'open' | 'closed' | 'merged'} */ (received.state) }) };
+        requireValue(pr.headSha === goal.publication.headSha && /^https:\/\/[^\s]+$/.test(pr.url), 'Published PR identity changed', 'STALE_TARGET');
+      } else requireValue(observed.pr === null, 'Unconfirmed observation cannot claim a PR');
+      goal.publication.observation = { status: /** @type {import('../types.d.ts').PublicationResult['status']} */ (observed.status), baseHeadSha, pr };
+      if (pr) return transition(goal, { ...command, type: 'record_pr', payload: { operationId: goal.publication.operationId, ...pr } }, authority);
+      emit('publication_observed', { operationId: goal.publication.operationId, status: String(observed.status), baseHeadSha }); break;
     }
     case 'record_pr': {
       requireAuthority(authority, 'system');

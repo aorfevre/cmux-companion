@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { OrchestrationStore } from '../server/orchestration/storage/store.mjs';
 import { ArtifactStore } from '../server/orchestration/storage/artifacts.mjs';
@@ -9,6 +9,9 @@ import { AgentResults } from '../server/orchestration/agent-results.mjs';
 import { Scheduler } from '../server/orchestration/scheduler.mjs';
 import { GitRepository } from '../server/orchestration/adapters/git.mjs';
 import { VerificationRunner } from '../server/orchestration/adapters/verification.mjs';
+import { GitRemote } from '../server/orchestration/adapters/git-remote.mjs';
+import { GitHubPublication } from '../server/orchestration/adapters/github.mjs';
+import { FakeGitHub } from './helpers/orchestration/fake-github.mjs';
 import { GitIntegration } from '../server/orchestration/adapters/git-integration.mjs';
 import { ScriptedAgents, barrier } from './helpers/orchestration/fake-agents.mjs';
 import { createRepositoryFixture, fixtureGit } from './helpers/orchestration/fixture.mjs';
@@ -20,6 +23,9 @@ for (const { conflict, finalFailure = null } of [{ conflict: false }, { conflict
   const artifacts = new ArtifactStore({ directory: join(repo.directory, 'artifacts') });
   const repositories = new GitRepository({ repositories: new Map([['repo', repo.repository]]), directory: join(repo.directory, 'resources'), artifacts });
   const integrations = new GitIntegration({ repositories });
+  const remote = new GitRemote({ repositories, directory: join(repo.directory, 'remote-stage'), destinations: new Map([['repo', { url: realpathSync(repo.remote), protocol: 'file', env: { PATH: process.env.PATH } }]]) });
+  const github = new FakeGitHub({ remote });
+  const publisher = new GitHubPublication({ directory: join(repo.directory, 'publications'), remote, github });
   const verifier = new VerificationRunner({ repositories, resolveCheck: (repositoryId, check) => {
     assert.equal(repositoryId, 'repo'); assert.equal(check.argv[0], 'node');
     return { bin: process.execPath, argv: check.argv.slice(1), env: { PATH: process.env.PATH }, environmentId: 'fixture-node', policy: { ceilingMs: 10000, idleMs: 2000, maxOutputBytes: 8192, killGraceMs: 100 } };
@@ -60,7 +66,7 @@ for (const { conflict, finalFailure = null } of [{ conflict: false }, { conflict
   });
   const service = new OrchestrationService({ store, agents, repositoryIds: new Set(['repo']), limits: { global: 2, perGoal: 2 } });
   results = new AgentResults({ service, artifacts, repositories });
-  const errors = [], scheduler = new Scheduler({ service, repositories, integrations, verifier, results, onError: (error) => errors.push(error) });
+  const errors = [], scheduler = new Scheduler({ service, repositories, integrations, verifier, publisher, results, onError: (error) => errors.push(error) });
   t.after(async () => { release.release(); await agents.drain(); await scheduler.stop(); store.close(); await repo.close(); });
   service.execute({ id: 'create', goalId: 'g', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'Deliver fixture', baseSha: repo.baseSha } }, { kind: 'user' });
   await scheduler.start();
@@ -84,6 +90,11 @@ for (const { conflict, finalFailure = null } of [{ conflict: false }, { conflict
     const latest = store.get('g');
     if (finalRepairs && latest.verification?.headSha === latest.integrationHead && latest.verification.checks.every((check) => check.passed) && latest.reviews.some((review) => review.kind === 'integration' && review.target === latest.integrationHead && review.disposition === 'accept')) break;
   }
+  for (let i = 0; i < 10 && store.get('g').status !== 'delivered'; i++) {
+    await agents.drain(); await scheduler.tick();
+    await Promise.all([...scheduler.verifications.active.values()].map((run) => run.job));
+    await Promise.all([...scheduler.publications.active.values()].map((run) => run.job));
+  }
   const goal = store.get('g');
   if (finalFailure) {
     assert.equal(finalRepairs, 1); assert.equal(goal.finalRepairCount, 1);
@@ -98,8 +109,9 @@ for (const { conflict, finalFailure = null } of [{ conflict: false }, { conflict
   if (conflict) assert.equal(goal.results.filter((result) => result.repair && result.status === 'accepted').length, 1);
   assert.equal(goal.verification.headSha, goal.integrationHead);
   assert.ok(goal.verification.checks.every((check) => check.passed));
-  service.execute({ id: 'request_publication', goalId: 'g', expectedVersion: goal.version, type: 'request_publication', payload: { operationId: 'publish_fixture' } }, { kind: 'system' });
-  assert.equal(store.get('g').status, 'ready_to_publish');
+  assert.equal(goal.status, 'delivered', JSON.stringify(goal.publication));
+  assert.equal(github.creates.length, 1); assert.equal(goal.pr.headSha, goal.integrationHead);
+  assert.equal(await remote.head('repo', goal.publication.plan.branch), goal.integrationHead);
   assert.equal(cAttempts, 2); assert.equal(goal.tasks[2].repairCount, 1);
   const combined = goal.integrationResults.filter((result) => result.taskId === 'A' || result.taskId === 'B').at(-1).headSha;
   assert.ok(goal.attempts.filter((attempt) => attempt.role === 'implementer' && attempt.taskId === 'C').every((attempt) => attempt.baseSha === combined));

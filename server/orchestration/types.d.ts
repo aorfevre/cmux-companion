@@ -36,14 +36,14 @@ export interface Verification {
   headSha: string; checks: { id: string; passed: boolean; artifactId: string }[];
 }
 export interface Goal {
-  id: string; version: number; generation: number; repositoryId: string; title: string;
+  id: string; version: number; generation: number; repositoryId: string; title: string; baseSha: string; baseBranch: string;
   status: GoalStatus; revision: number; approvedRevision: number | null;
   contracts: { revision: number; contract: Contract }[]; tasks: Task[];
   attempts: Attempt[]; reviews: Review[]; integrationHead: string;
   verification: Verification | null; finalRepairCount: number; finalRepairLimit: number;
   pr: { number: number; url: string; headSha: string } | null;
   integration: { operationId: string; taskId: string | null; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' } | null;
-  publication: { operationId: string; headSha: string; generation: number; revision: number } | null;
+  publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; observation?: PublicationResult } | null;
   planningRequest?: { message: string; basedOnRevision: number } | null;
   verificationRuns?: { operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
   integrationResults?: { operationId: string; taskId: string | null; headSha: string }[];
@@ -106,11 +106,31 @@ export interface VerificationPort {
   run(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; checks: Check[]; signal?: AbortSignal }): Promise<VerificationRunResult>;
   observe(operationId: string): Promise<VerificationRunResult | null>;
 }
-export interface PullRequestPort {
-  publish(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; branch: string; baseBranch: string }): Promise<{ number: number; url: string; headSha: string }>;
-  observe(input: { goalId: string; repositoryId: string; branch: string }): Promise<{ status: 'missing' | 'unknown' | 'open' | 'merged'; number: number | null; url: string | null; headSha: string | null }>;
-}
+
 
 export interface RepairInput { goalId: string; repositoryId: string; integrationOperationId: string; effectId: string; attempt: Attempt; headSha: string; proofArtifactId: string }
 
 export interface VerificationRunResult { verification: Verification; workerState: 'stopped' | 'unknown'; artifactId: string }
+
+export interface PublicationInput {
+  operationId: string; goalId: string; repositoryId: string; headSha: string;
+  branch: string; baseBranch: string; baseSha: string; marker: string;
+}
+export interface PublicationResult {
+  status: 'pending' | 'published' | 'unknown' | 'cancelled' | 'target_moved';
+  baseHeadSha: string | null; pr: { number: number; url: string; headSha: string; state?: 'open' | 'closed' | 'merged' } | null;
+}
+export interface RemotePort {
+  identity(repositoryId: string): string;
+  head(repositoryId: string, branch: string): Promise<string | null>;
+  push(input: { repositoryId: string; branch: string; headSha: string; expectedHead: string | null }): Promise<void>;
+}
+export interface GitHubPort {
+  identity(repositoryId: string): string;
+  find(repositoryId: string, branch: string): Promise<{ number: number; url: string; branch: string; baseBranch: string; headSha: string; marker: string | null; state: 'open' | 'closed' | 'merged' }[]>;
+  create(input: PublicationInput): Promise<void>;
+}
+export interface PublicationPort {
+  publish(input: PublicationInput, options?: { signal?: AbortSignal }): Promise<PublicationResult>;
+  observe(input: PublicationInput): Promise<PublicationResult>;
+}

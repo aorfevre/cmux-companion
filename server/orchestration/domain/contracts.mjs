@@ -53,3 +53,12 @@ export function canonicalJson(value) {
   requireValue(Object.getPrototypeOf(source) === Object.prototype || Object.getPrototypeOf(source) === null, 'Expected plain JSON');
   return `{${Object.keys(source).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(source[key])}`).join(',')}}`;
 }
+/** Conservative supported Git branch syntax, shared before any remote effect.
+ * @param {unknown} value
+ */
+export function branchName(value) {
+  const result = text(value, 500);
+  requireValue(/^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(result) && !result.includes('..') && !result.endsWith('.')
+    && result.split('/').every((part) => part.length > 0 && !part.startsWith('.') && !part.endsWith('.lock')), 'Unsupported branch name');
+  return result;
+}

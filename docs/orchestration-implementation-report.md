@@ -630,3 +630,90 @@ build. Log: `/tmp/cmux-orchestration-final-repair-verify.log`.
 Final backend coverage passed all 1,435 tests with one platform skip and **98.25%
 line coverage**. Log: `/tmp/cmux-orchestration-final-repair-coverage.log`.
 Real-backend mobile Cypress remains a later required gate; no UI code changed.
+
+## T09 durable publication through an observed PR
+
+Publication intent now records repository, head branch/SHA, base branch/SHA and
+stable goal marker before external work. The scheduler admits publication only
+after passing required checks and independent final review at the current head,
+with no live workers or integration effect. Asynchronous publication does not
+block ordinary agent admission; shutdown joins local requests and retains a
+resumable intent for an otherwise authorized goal.
+
+A private publication manifest binds configured remote and GitHub identities.
+Exclusive sent-marker claims precede conditional push and PR creation. Replay
+observes exact remote/PR identity; absence after an uncertain sent request never
+causes a second create. Abort fences requests not yet sent, while a previously
+sent PR is recorded honestly without reactivating the goal. Matching closed/merged
+PRs remain historical delivery evidence even if their source branch was deleted;
+an open missing branch or present mismatching branch remains uncertain.
+
+Git pushes run from an isolated bare staging repository, excluding source-repo
+URL rewrites, credential helpers and remote hooks. Git writes pack/index files
+directly to private disk; reachable history is not buffered in Node. Destinations
+and transport environments are explicitly injected. GitHub CLI calls use bounded
+API requests and JSON stdin, with exact repository, branch, marker and head checks.
+The fake composition uses only a disposable local bare remote and fake GitHub,
+without loading account credentials or invoking gh.
+
+Target movement before a PR request is explicit and blocks publication. Movement
+after an already sent request is reported alongside its observed result. No
+automatic rebase or target-branch rewrite is performed; abort remains available.
+Changing an integration commit continues to require renewed review/verification.
+
+All four real scheduled Git journeys now finish with one fake-GitHub PR whose
+head equals the verified/reviewed integration commit and the actual remote branch.
+Adapter tests cover lost successful responses, interrupted request boundaries,
+ambiguous/unrelated PRs, remote branch conflicts, target movement, abort timing,
+tampered receipts, concurrent resumes, staging initialization and an 18 MiB
+incompressible history. Offline GitHub CLI tests verify canonical repository
+casing, request identities, JSON stdin and malformed inventory refusal.
+
+Independent review and corrections:
+
+- The adapter initially overwrote PR sent markers after an awaited observation,
+  permitting two concurrent creates. Atomic exclusive claims fixed the reproduced
+  race; the concurrent-resume regression proves one create.
+- A bounded stdout buffer initially constrained full repository history. Disk
+  pack/index output removes that limit; the large-history regression passes.
+- GitHub URL casing now accepts canonical owner/repository casing while retaining
+  the exact host, repository identity and PR number.
+- Coordinator restart initially attempted dispatching → dispatching, an invalid
+  transition. Only pending operations now transition; existing sends reconcile.
+- Shutdown initially completed cancelled intents for still-ready goals, stranding
+  them. The intent now remains resumable, and a restart regression reaches delivery.
+- A test used a nonexistent ownership property and closed its database before
+  failed-test cleanup joined scheduler work. The assertion and cleanup order were
+  corrected; no safety assertions or coverage thresholds were removed.
+- A later review extended closed/merged PR reconciliation to deleted branches,
+  preserving exact sent evidence and the PR head SHA.
+
+Reviewer `/root/domain_review` independently passed 44 scheduler tests after
+the recovery corrections. Reviewer `/root/scheduler_admission_review` passed
+five adapter regressions, then the terminal-PR/real-branch-deletion regression.
+Both approved their final incremental slices. Earlier combined testing had
+69 passes and two scheduler failures; corrected targeted scheduler checks passed
+44/44. Adapter checks passed 19/19 before the final terminal-state expansion,
+which passed separately. Checked-JS and targeted lint passed at those snapshots.
+
+Logs: `/tmp/cmux-orchestration-publication-journey.log` (initial scheduler failures),
+`/tmp/cmux-orchestration-publication-coordinator.log`,
+`/tmp/cmux-orchestration-publication-adapter-final.log`, and
+`/tmp/cmux-orchestration-publication-terminal-pr.log`.
+
+Publication interruption tests here use failpoints and durable filesystem receipts.
+The full service-process/external-subprocess fault matrix remains T13 work.
+Native SSH/GitHub authentication and subprocess survival are unverified; no live
+adapter test, installed service, merge, deployment or release ran. Isolated runtime
+composition, event consumers, provider/cmux permissions, mobile real-backend Cypress,
+cleanup, cutover/retirement and final architecture review remain required.
+
+Full `npm run verify` passed on the final reviewed publication slice: 1,460
+backend tests, one macOS filename skip, 257 UI tests, lint, frontend/backend
+typechecks and build. Log: `/tmp/cmux-orchestration-publication-verify.log`.
+The four account-free real-Git journeys now reach the M3 observed-PR outcome;
+remaining M4/M5 work is not implied complete.
+
+Final backend coverage passed: 1,460 tests, one platform skip, **98.23% line
+coverage**. Log: `/tmp/cmux-orchestration-publication-coverage.log`.
+No UI code changed in this slice; real-backend mobile Cypress remains outstanding.
