@@ -26,7 +26,7 @@ export interface Attempt {
   id: string; operationId: string; role: Role; mode: Mode; taskId: string | null;
   target: string; generation: number; revision: number; status: AttemptStatus;
   workerState: 'pending' | 'unknown' | 'running' | 'stopped'; identity: string | null; baseSha: string; worktree: string | null; branch: string | null;
-  conversationId: string; error: string | null;
+  conversationId: string; error: string | null; retryRequested?: boolean;
 }
 export interface Task extends TaskContract {
   status: TaskStatus; candidateSha: string | null; candidateBase: string | null;

@@ -16,7 +16,8 @@ substitute acceptance criterion for the whole replacement.
 | T02: persistence | Foundation implemented | Explicit-path SQLite state, immutable contracts, indexed attempt ownership, atomic event/intent/receipt writes, private artifacts and journal cursors. |
 | T03: authority transport | Foundation implemented | Paired user API, scoped hashed agent credentials, bridge subprocess commands, repository allow-list and stale-authority checks. Candidate/repair submission deliberately remains unavailable until the Git evidence adapters in T07–T08 are connected. |
 | M1 durable-decision gate | Passed for foundation | Review and verification below; no production scheduling activated. |
-| T04–T06 / M2 | Pending | Exclusive scheduler ownership, real capacity reservation, reconciliation, deterministic agent harness and scheduled review/repair workflow. |
+| T04: scheduler and recovery | Implemented, independently reviewed | Exclusive nonce-fenced ownership, transactional capacity, durable FIFO, explicit retries, abort reconciliation and fresh-process crash recovery. |
+| T05–T06 / M2 | Pending | Complete execution-mode contracts, real Git fixture agents and scheduled review/repair workflow. M2 has not passed. |
 | T07–T09 / M3 | Pending | Disposable real Git task repository, worktrees, integration, verification and PR adapter. |
 | T10–T12 / M4 | Pending | Runnable isolated composition, durable consumers, actual provider/cmux adapters and new mobile/Cypress journey. |
 | T13–T15 / M5 | Pending | Full crash matrix, cleanup, disposable cutover rehearsal, legacy removal, documentation and final acceptance. |
@@ -91,3 +92,61 @@ waived as a requirement exception.
 The installed application remains untouched. New routes/modules are exercised
 through isolated tests and are not wired into installed-service startup. The
 pre-existing untracked burst-scan plan is unchanged.
+
+## T04: exclusive scheduling and recovery
+
+The scheduler reserves capacity and launch intents in the same SQLite transaction,
+uses persisted first-readiness order and waits for integrated dependencies. Planner
+capacity is separate; uncertain and successful-but-live workers still occupy slots.
+Failed, confirmed-stopped planners/reviewers require explicit user retry. Readiness
+is backfilled when opening an earlier foundation database.
+
+Ownership uses an atomic PID/nonce record on a canonical database path. Only kernel
+ESRCH permits takeover; live/reused/ambiguous PIDs block it. Hardlinked database
+files are rejected to prevent separate WAL aliases. Dispatch persists resources
+before launch, checks authority again after provisioning, and reconciles uncertain
+responses by operation identity. Shutdown joins all started dispatches before
+releasing ownership.
+
+### Independent implementation review
+
+Reviewer: `/root/scheduler_admission_review`, separate read-only conversation.
+Incremental review identified and resolved:
+
+- FIFO reset when an unrelated integration advanced the head: logical task keys
+  and upsert now preserve continuous readiness order.
+- Failed planner/reviewer attempts lacked explicit retry: added stopped-worker
+  retry authorization without automatic relaunch.
+- Earlier databases lacked ready entries: added constructor backfill.
+- Abort followed by provisioning rejection retained capacity despite no launch:
+  record confirmed termination for the fenced attempt.
+- A dispatch rejection released ownership while a sibling launch still awaited:
+  join every dispatch with `Promise.allSettled` before propagating errors.
+- A completion-commit acknowledgement failure could misclassify a live launch as
+  a provisioning failure: track the crossed launch boundary independently of the
+  pending-operation query.
+
+Reviewer reran ownership, scheduler and reconciler tests: 24/24 passed, with no
+remaining blocker identified. The additional real-process recovery harness was
+independently reviewed and rerun: 3/3 passed. Each case SIGKILLs its owned service
+child after intent commit, external launch, or completion commit, then restarts
+twice against the same SQLite database. An independent persistent launch log
+proves exactly one external launch. External workers are a persistent fake
+inventory; this does not establish production process survival/provider lookup.
+
+### Verification and interventions
+
+- `npm run verify`: 1,294 backend tests and 257 UI tests passed; lint, checked
+  backend/frontend types and production build passed on Node 22.23.1.
+- Targeted backend type/lint checks and `git diff --check` passed.
+- The first coverage run passed 1,293/1,294 tests (98.15% backend lines), failing
+  the existing `streamExecFile does not kill a child that keeps printing` test
+  on its 200 ms idle limit while full verification ran concurrently. The same
+  instrumented test passed alone. No timeout or coverage assertion was weakened;
+  full coverage then passed 1,294/1,294 tests with 98.13% backend line coverage
+  without a competing full suite.
+
+The scheduler currently dispatches launches and reconciles termination; actual
+Git integration and PR publication effects remain T07–T09. Execution-mode/provider
+contracts, the checked-in Git fixture, mobile E2E and legacy retirement remain
+outstanding. No installed or live service was exercised.

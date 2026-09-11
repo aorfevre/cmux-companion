@@ -22,6 +22,11 @@ export function initializeSchema(db) {
       (goal_id, generation, revision, role, COALESCE(task_id, ''), target) WHERE worker_state != 'stopped';
     CREATE UNIQUE INDEX IF NOT EXISTS one_task_worker ON attempts(goal_id, task_id) WHERE worker_state != 'stopped' AND role = 'implementer';
     CREATE UNIQUE INDEX IF NOT EXISTS one_integration_worker ON attempts(goal_id) WHERE worker_state != 'stopped' AND role = 'integrator';
+    CREATE TABLE IF NOT EXISTS ready_work (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT, goal_id TEXT NOT NULL REFERENCES goals(id),
+      generation INTEGER NOT NULL, revision INTEGER NOT NULL, work_key TEXT NOT NULL,
+      body TEXT NOT NULL CHECK(json_valid(body)), UNIQUE(goal_id, generation, revision, work_key)
+    );
     CREATE TABLE IF NOT EXISTS command_receipts (
       goal_id TEXT NOT NULL REFERENCES goals(id), id TEXT NOT NULL,
       input_hash TEXT NOT NULL, authority_hash TEXT NOT NULL,

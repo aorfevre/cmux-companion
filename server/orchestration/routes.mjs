@@ -25,7 +25,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth })
     if (error instanceof DomainError) {
       const code = error.code;
       const status = code === 'UNAUTHORIZED' ? 401 : code === 'FORBIDDEN' ? 403 : code === 'NOT_FOUND' ? 404
-        : /CONFLICT|STALE|UNCERTAIN|TERMINAL|NOT_READY|ALREADY_RUNNING|REVIEW_REQUIRED|CURSOR_EXPIRED/.test(code) ? 409 : 400;
+        : /CONFLICT|STALE|UNCERTAIN|TERMINAL|NOT_READY|ALREADY_RUNNING|REVIEW_REQUIRED|RETRY_REQUIRED|CAPACITY_FULL|CURSOR_EXPIRED/.test(code) ? 409 : 400;
       return reply.code(status).send({ code, error: error.message });
     }
     // Provider errors and raw request bodies may contain private input; never echo them.

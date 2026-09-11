@@ -1,9 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, chmodSync, openSync, closeSync, constants } from 'node:fs';
+import { mkdirSync, chmodSync, openSync, closeSync, constants, fstatSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { initializeSchema } from './schema.mjs';
 import { canonicalJson, identifier, integer, requireValue } from '../domain/contracts.mjs';
+import { readyWork } from '../domain/scheduling.mjs';
 import { transition, validateAuthority } from '../domain/transitions.mjs';
 
 /** @typedef {import('../types.d.ts').Goal} Goal */
@@ -26,7 +27,9 @@ export class OrchestrationStore {
     if (path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     if (path !== ':memory:') {
       const descriptor = openSync(this.path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
-      closeSync(descriptor); chmodSync(this.path, 0o600);
+      try { requireValue(fstatSync(descriptor).nlink === 1, 'Hard-linked database paths are not supported'); }
+      finally { closeSync(descriptor); }
+      this.path = realpathSync(this.path); chmodSync(this.path, 0o600);
       for (const suffix of ['-wal', '-shm']) {
         try { chmodSync(`${this.path}${suffix}`, 0o600); }
         catch (error) { if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error; }
@@ -39,6 +42,21 @@ export class OrchestrationStore {
     catch (error) { this.db.close(); throw error; }
     if (path !== ':memory:') chmodSync(this.path, 0o600);
     this.now = now; this.failpoint = failpoint; this.onCommit = onCommit; this.onNotificationError = onNotificationError;
+    // An earlier foundation database has goals but no ready queue. Backfill its
+    // current work atomically; reopening a current database preserves ordering.
+    this.db.exec('BEGIN IMMEDIATE');
+    try { for (const goal of this.list()) this.refreshReady(goal); this.db.exec('COMMIT'); }
+    catch (error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
+
+  }
+  /** Rebuildable readiness index; existing sequence numbers survive refresh.
+   * @param {Goal} goal
+   */
+  refreshReady(goal) {
+    const ready = readyWork(goal);
+    const existing = this.db.prepare('SELECT sequence,generation,revision,work_key FROM ready_work WHERE goal_id=?').all(goal.id);
+    for (const row of existing) if (row.generation !== goal.generation || row.revision !== goal.revision || !ready.some((work) => work.key === row.work_key)) this.db.prepare('DELETE FROM ready_work WHERE sequence=?').run(row.sequence);
+    for (const work of ready) this.db.prepare('INSERT INTO ready_work(goal_id,generation,revision,work_key,body) VALUES (?,?,?,?,?) ON CONFLICT(goal_id,generation,revision,work_key) DO UPDATE SET body=excluded.body').run(goal.id, goal.generation, goal.revision, work.key, JSON.stringify(work));
   }
   close() { this.db.close(); }
   /** @param {string} id @returns {Goal | null} */
@@ -89,6 +107,7 @@ export class OrchestrationStore {
       this.db.prepare('DELETE FROM attempts WHERE goal_id = ?').run(goal.id);
       const insertAttempt = this.db.prepare(`INSERT INTO attempts(goal_id,id,generation,revision,role,mode,task_id,target,status,worker_state,body) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
       for (const attempt of goal.attempts) insertAttempt.run(goal.id, attempt.id, attempt.generation, attempt.revision, attempt.role, attempt.mode, attempt.taskId, attempt.target, attempt.status, attempt.workerState, JSON.stringify(attempt));
+      this.refreshReady(goal);
       this.failpoint('after_state');
       for (const intent of change.intents) this.db.prepare('INSERT INTO operations(id,goal_id,kind,generation,revision,attempt_id,body,created_at) VALUES (?,?,?,?,?,?,?,?)')
         .run(intent.id, goal.id, intent.kind, intent.generation, intent.revision, intent.attemptId, JSON.stringify(intent), at);
@@ -131,8 +150,40 @@ export class OrchestrationStore {
     try { const snapshot = { goals: this.list(), cursor: this.cursor() }; this.db.exec('COMMIT'); return snapshot; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
+  /** @returns {(import('../domain/scheduling.mjs').ReadyWork & { sequence: number; goalId: string; generation: number; revision: number })[]} */
+  ready() {
+    return this.db.prepare('SELECT * FROM ready_work ORDER BY sequence').all().map((row) => ({ ...JSON.parse(String(row.body)), sequence: Number(row.sequence), goalId: String(row.goal_id), generation: Number(row.generation), revision: Number(row.revision) }));
+  }
+  /** Called inside the command write transaction so reservation and capacity check
+   * cannot race across service instances. @param {string} goalId @param {import('../types.d.ts').Mode} mode
+   */
+  ownedCapacity(goalId, mode) {
+    const row = this.db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(goal_id = ?),0) AS goal
+      FROM attempts WHERE worker_state != 'stopped' AND mode = ?`).get(goalId, mode);
+    return { total: Number(row?.total ?? 0), goal: Number(row?.goal ?? 0) };
+  }
   /** @returns {(import('../types.d.ts').Intent & { status: string })[]} */
   operations() { return this.db.prepare("SELECT body,status FROM operations WHERE status != 'completed' ORDER BY created_at,id").all().map((row) => ({ ...JSON.parse(String(row.body)), status: String(row.status) })); }
+  /** Compare-and-set operation progress with its journal event. No external effect
+   * occurs inside this transaction. @param {string} id @param {string} expected @param {string} next
+   */
+  advanceOperation(id, expected, next) {
+    requireValue((expected === 'pending' && (next === 'dispatching' || next === 'completed')) || (expected === 'dispatching' && next === 'completed'), 'Invalid operation transition');
+    this.db.exec('BEGIN IMMEDIATE');
+    let cursor = 0;
+    try {
+      const row = this.db.prepare('SELECT * FROM operations WHERE id=? AND status=?').get(id, expected);
+      if (!row) { this.db.exec('COMMIT'); return false; }
+      const goal = this.get(String(row.goal_id)); requireValue(goal, 'Operation goal disappeared');
+      this.db.prepare('UPDATE operations SET status=? WHERE id=? AND status=?').run(next, id, expected);
+      this.db.prepare('INSERT INTO events(goal_id,version,generation,revision,command_id,kind,payload,created_at) VALUES (?,?,?,?,?,?,?,?)')
+        .run(goal.id, goal.version, Number(row.generation), Number(row.revision), `${id}_${next}`, 'operation_progress', JSON.stringify({ operationId: id, status: next }), this.now());
+      this.failpoint('before_commit'); cursor = this.cursor(); this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    this.failpoint('after_commit');
+    try { this.onCommit(cursor); } catch (error) { try { this.onNotificationError(error); } catch { /* committed progress outlives telemetry */ } }
+    return true;
+  }
   /** @param {string} consumerId @param {number} [from] */
   registerConsumer(consumerId, from = 0) {
     identifier(consumerId); integer(from);

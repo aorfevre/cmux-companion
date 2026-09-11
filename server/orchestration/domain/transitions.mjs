@@ -63,7 +63,7 @@ export function transition(before, command, authority) {
   requireValue(before && before.id === command.goalId, 'Goal not found', 'NOT_FOUND');
   validateAuthority(before, authority);
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
-  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_pr'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
+  requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
   const goal = structuredClone(before);
   /** @type {Transition} */
   const result = { goal, events: [], intents: [] };
@@ -137,18 +137,32 @@ export function transition(before, command, authority) {
         } else requireValue(goal.status === 'awaiting_approval', 'No reviewable contract', 'NOT_READY');
       }
       requireValue(!goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || (attempt.taskId === taskId && (role === 'implementer' || attempt.target === target)))), 'Attempt already active', 'ALREADY_RUNNING');
+      if (role === 'planner' || role === 'reviewer') {
+        const previous = goal.attempts.filter((attempt) => attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.role === role && attempt.taskId === taskId && attempt.target === target).at(-1);
+        requireValue(!previous || previous.retryRequested, 'Explicit retry is required for this attempt', 'RETRY_REQUIRED');
+      }
       const conversationId = identifier(input.conversationId);
       requireValue(!goal.attempts.some((attempt) => attempt.conversationId === conversationId), 'Independent attempts require fresh conversation identities');
       /** @type {Attempt} */
       const attempt = { id, operationId, role, mode, taskId, target, generation: goal.generation, revision: goal.revision, status: 'queued', workerState: 'pending', identity: null, baseSha: goal.integrationHead, worktree: null, branch: null, conversationId, error: null };
       goal.attempts.push(attempt); intent('launch', operationId, id, { role, mode, target, taskId }); emit('attempt_queued', { attemptId: id, role }); break;
     }
+    case 'record_provision': {
+      requireAuthority(authority, 'system'); const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
+      requireValue(attempt && attempt.status === 'queued' && ['pending', 'unknown'].includes(attempt.workerState) && input.baseSha === attempt.baseSha, 'Provisioning target changed', 'STALE_ATTEMPT');
+      const worktree = text(input.worktree, 2000), branch = text(input.branch, 500);
+      requireValue(!attempt.worktree || (attempt.worktree === worktree && attempt.branch === branch), 'Attempt checkout changed', 'STALE_TARGET');
+      attempt.worktree = worktree; attempt.branch = branch; emit('attempt_provisioned', { attemptId: attempt.id }); break;
+    }
     case 'record_dispatch': {
       requireAuthority(authority, 'system');
       const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
-      requireValue(attempt && (attempt.status === 'queued' || attempt.status === 'uncertain') && attempt.workerState !== 'stopped', 'Dispatch was already recorded', 'STALE_ATTEMPT');
+      requireValue(attempt && (attempt.status === 'queued' || attempt.status === 'uncertain' || (attempt.status === 'succeeded' && attempt.workerState === 'unknown')) && attempt.workerState !== 'stopped', 'Dispatch was already recorded', 'STALE_ATTEMPT');
+      requireValue(!attempt.worktree || (attempt.worktree === input.worktree && attempt.branch === input.branch), 'Dispatch checkout changed', 'STALE_TARGET');
+      requireValue(!attempt.identity || attempt.identity === input.identity, 'Worker identity changed', 'OWNERSHIP_UNCERTAIN');
       attempt.identity = text(input.identity, 1000); attempt.worktree = text(input.worktree, 2000); attempt.branch = text(input.branch, 500);
-      attempt.status = 'running'; attempt.workerState = 'running';
+      if (attempt.status !== 'succeeded') attempt.status = 'running';
+      attempt.workerState = 'running';
       if (attempt.generation !== goal.generation || ['aborted', 'merged'].includes(goal.status)) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
       emit('attempt_running', { attemptId: attempt.id }); break;
     }
@@ -207,6 +221,14 @@ export function transition(before, command, authority) {
         task.repairLimit++;
       } else { requireValue(goal.finalRepairCount >= goal.finalRepairLimit, 'Final repair budget is not exhausted'); goal.finalRepairLimit++; }
       emit('repair_authorized', { taskId: input.taskId ? identifier(input.taskId) : null }); break;
+    }
+    case 'retry_attempt': {
+      requireAuthority(authority, 'user'); const attempt = attemptById(goal, input.attemptId);
+      requireValue(['planner', 'reviewer'].includes(attempt.role) && ['failed', 'cancelled'].includes(attempt.status) && !ownsWorker(attempt), 'Confirm worker termination before retrying', 'NOT_READY');
+      const latest = goal.attempts.filter((entry) => entry.generation === goal.generation && entry.revision === goal.revision && entry.role === attempt.role && entry.taskId === attempt.taskId && entry.target === attempt.target).at(-1);
+      const target = attempt.role === 'planner' || goal.status === 'awaiting_approval' ? planTarget(goal) : attempt.taskId ? taskById(goal, attempt.taskId).candidateSha : goal.integrationHead;
+      requireValue(latest?.id === attempt.id && target === attempt.target && !attempt.retryRequested, 'Retry target changed or retry is already requested', 'STALE_TARGET');
+      attempt.retryRequested = true; emit('attempt_retry_authorized', { attemptId: attempt.id }); break;
     }
     case 'retry_task': {
       requireAuthority(authority, 'user'); const task = taskById(goal, input.taskId);
