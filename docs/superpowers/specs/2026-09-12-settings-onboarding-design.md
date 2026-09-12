@@ -1,7 +1,7 @@
 # Local settings and open-source onboarding
 
 Date: 2026-09-12
-Status: Proposed for human review before implementation planning.
+Status: Approved by the user on 2026-09-12 after spec commit a3b0a9d.
 Owner: The implementing agent owns UI, API, persistence, adapter integration,
 verification and cleanup as one delivery.
 
