@@ -1,0 +1,23 @@
+.local-settings-page { max-width: 780px; margin: 0 auto; padding: 32px 20px 100px; color: var(--text, #e4ece8); }
+.local-settings-page nav { display: flex; gap: 24px; margin-bottom: 28px; }
+.local-settings-page a { color: #a4d5b5; }
+.local-settings-page h1 { font-size: clamp(28px, 5vw, 42px); margin: 12px 0; }
+.local-settings-page h2 { font-size: 22px; }
+.local-settings-page p { line-height: 1.6; }
+.local-settings-page fieldset { border: 0; padding: 0; min-width: 0; }
+.local-settings-page section { background: #151d1a; border: 1px solid #34443b; border-radius: 16px; padding: 24px; margin: 24px 0; }
+.local-settings-page article { border-top: 1px solid #34443b; margin-top: 24px; padding-top: 16px; }
+.local-settings-page label { display: grid; gap: 8px; margin: 16px 0; font-weight: 600; }
+.local-settings-page input:not([type=checkbox]), .local-settings-page textarea, .local-settings-page select { width: 100%; min-width: 0; min-height: 44px; background: #0c120f; color: inherit; border: 1px solid #53685b; border-radius: 8px; padding: 10px 12px; font: inherit; }
+.local-settings-page textarea { min-height: 70px; }
+.local-settings-page button { min-height: 44px; padding: 10px 16px; color: #edf7ee; background: #2e503b; border: 1px solid #6b9479; border-radius: 8px; cursor: pointer; }
+.local-settings-page button:disabled { opacity: .5; cursor: wait; }
+.local-settings-page :focus-visible { outline: 3px solid #b6e7c1; outline-offset: 3px; }
+.local-settings-page .settings-check { display: flex; align-items: center; gap: 12px; }
+.local-settings-page .settings-path { overflow-wrap: anywhere; color: #b1c2b6; font-size: 14px; }
+.local-settings-page .settings-command { border-left: 2px solid #53685b; padding-left: 16px; }
+.local-settings-page .settings-save { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; }
+.local-settings-page [role=alert] { color: #ffc5b7; }
+@media (max-width: 480px) { .local-settings-page section { padding: 16px; } }
+
+.local-settings-page .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

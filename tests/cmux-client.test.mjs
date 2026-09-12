@@ -209,10 +209,10 @@ test("uses structured RPC for safe workspace launch and shell-quotes prompts", a
   assert.deepEqual(JSON.parse(calls[0][3]), { cwd: repo, title: "Test", focus: false });
   const send = JSON.parse(calls[1][3]);
   assert.equal(send.workspace_id, ID);
-  assert.equal(send.text, "xcodex 'fix '\\''quotes'\\''; touch /tmp/nope'\n");
+  assert.equal(send.text, "'ccs' 'codex' 'fix '\\''quotes'\\''; touch /tmp/nope'\n");
   calls.length = 0;
   await client.workspaceCreate({ cwd: repo, title: "Claude", agent: "claude" });
-  assert.equal(JSON.parse(calls[1][3]).text, "xclaude\n");
+  assert.equal(JSON.parse(calls[1][3]).text, "'ccs' 'claude'\n");
   await assert.rejects(() => client.workspaceCreate({ cwd: "/tmp", title: "x", agent: "evil" }), /Unsupported agent/);
   // cmux creates a workspace on a missing cwd and silently leaves the shell in
   // the directory it launched from, so the agent reads the wrong repository.
@@ -349,7 +349,7 @@ test("passes a custom model to the agent command and refuses shell syntax before
     const client = new CmuxClient({ execute: async (_bin, args) => { calls.push(args); return { stdout: JSON.stringify({ workspace_id: ID }) }; } });
     await client.workspaceCreate({ cwd: repo, title: "Custom model", agent, model: "provider/custom-v2", prompt: "Do the task" });
     const text = JSON.parse(calls[1][3]).text;
-    assert.match(text, new RegExp(`^x${agent} --model 'provider/custom-v2' 'Do the task'\\n$`));
+    assert.match(text, new RegExp(`^'ccs' '${agent}' --model 'provider/custom-v2' 'Do the task'\\n$`));
     const before = calls.length;
     await assert.rejects(() => client.workspaceCreate({ cwd: repo, title: "Bad model", agent, model: "$(touch /tmp/unsafe)" }), /Model must/);
     assert.equal(calls.length, before);
@@ -502,7 +502,7 @@ test("stamps only well-formed identity variables into the session shell before t
   await client.workspaceCreate({ cwd: repo, title: "Stamped", agent: "claude", env });
   const text = JSON.parse(calls[1].args[3]).text;
   assert.equal(text.startsWith(`export CMUX_GOAL_ID='goal-1'; export CMUX_TASK_ID='${"x".repeat(200)}'; export QUOTED='it'\\''s'; `), true);
-  assert.equal(text.endsWith("; xclaude\n"), true);
+  assert.equal(text.endsWith("; 'ccs' 'claude'\n"), true);
   assert.equal((text.match(/export /g) || []).length, 12, "the export list is capped");
   assert.doesNotMatch(text, /lower_case|BAD NAME|EMPTY|NUMBER|dropped/);
 

@@ -15,7 +15,15 @@ export default defineConfig({
         throw new Error("Cypress is local-only. Run npm run test:e2e:local outside CI.");
       }
       const manifestPath = process.env.CMUX_ORCHESTRATION_CYPRESS_MANIFEST;
-      config.expose = { ...config.expose, orchestration: Boolean(manifestPath), orchestrationReadOnly: process.env.CMUX_ORCHESTRATION_CYPRESS_READ_ONLY === '1' };
+      const settingsManifestPath = process.env.CMUX_SETTINGS_CYPRESS_MANIFEST;
+      if (settingsManifestPath) {
+        const settingsManifest = JSON.parse(readFileSync(settingsManifestPath, 'utf8'));
+        on('task', {
+          settingsPairing: () => readFileSync(settingsManifest.tokenFile, 'utf8'),
+          settingsProjectPath: () => settingsManifest.repository,
+        });
+      }
+      config.expose = { ...config.expose, settings: Boolean(settingsManifestPath), orchestration: Boolean(manifestPath), orchestrationReadOnly: process.env.CMUX_ORCHESTRATION_CYPRESS_READ_ONLY === '1' };
       if (manifestPath) {
         const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
         if (!manifest.browserHarness) throw new Error('Expected a disposable browser fixture');

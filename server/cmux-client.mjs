@@ -1,3 +1,4 @@
+import { providerCommand } from "./local-settings.mjs";
 import { normalizeModelId } from "./model-options.mjs";
 import { withWorkspaceLaunch } from "./worktree-operations.mjs";
 import { execFile } from "node:child_process";
@@ -35,7 +36,9 @@ export class CmuxClient {
     execute = execFileAsync,
     socketPassword = readCredential(process.env.CMUX_SOCKET_PASSWORD_FILE || DEFAULT_PASSWORD_FILE),
     maxConcurrent = 2,
+    providerSettings = null,
   } = {}) {
+    this.providerSettings = providerSettings;
     this.bin = bin;
     this.execute = execute;
     this.socketPassword = socketPassword;
@@ -273,13 +276,17 @@ export class CmuxClient {
     // env parameter is not part of the surface this client has verified.
     const modelId = normalizeModelId(model);
     const modelFlag = modelId === "default" ? "" : ` --model ${shellQuote(modelId)}`;
+    const configured = agent === "codex" || agent === "claude"
+      ? providerCommand(this.providerSettings?.()[agent] ?? { executable: "ccs", args: [agent], model: "default" }, agent) : null;
     const exports = envExports(env);
     const created = await this.rpc("workspace.create", { cwd, title: title.trim(), focus: false });
     const workspaceId = created.workspace_id || created.workspace_ref;
     assertTarget(workspaceId);
     let command = "";
     if (script) command = `npm run ${script}`;
-    else if (agent === "codex" || agent === "claude") command = `${agent === "codex" ? "xcodex" : "xclaude"}${modelFlag}${prompt.trim() ? ` ${shellQuote(prompt.trim())}` : ""}`;
+    else if (agent === "codex" || agent === "claude") {
+      command = `${[configured.executable, ...configured.args].map(shellQuote).join(" ")}${modelFlag}${prompt.trim() ? ` ${shellQuote(prompt.trim())}` : ""}`;
+    }
     else if (prompt.trim()) command = `printf '%s\\n' ${shellQuote(prompt.trim())}`;
     const text = `${exports}${command}`;
     if (text) await this.rpc("surface.send_text", { workspace_id: workspaceId, text: `${text}\n` });

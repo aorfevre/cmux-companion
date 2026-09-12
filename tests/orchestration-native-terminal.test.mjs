@@ -9,6 +9,8 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { NativeInputs } from '../server/orchestration/adapters/native-inputs.mjs';
+import { CodexInputs } from '../server/codex-native.mjs';
+import { probeNativeCapabilities } from '../server/orchestration/adapters/native-capabilities.mjs';
 import { NativeTerminal } from '../server/orchestration/adapters/native-terminal.mjs';
 
 const capabilities = { restricted: true, manualPermissions: true, hooks: true, strictMcp: true, streamJson: true, permissionPromptsNone: true, terminal: true };
@@ -19,19 +21,28 @@ async function waitFor(read, predicate, timeout = 5000) {
   while (Date.now() < deadline) { let value; try { value = await read(); } catch { /* Waiting for an atomic fixture receipt. */ } if (predicate(value)) return value; await delay(20); }
   assert.fail('Fixture did not reach its named terminal barrier');
 }
-async function fixture(t) {
+async function fixture(t, codex = false) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'orchestration-terminal-'))), worktree = join(root, 'worktree'); await mkdir(worktree);
   const calls = join(root, 'native-calls'), bin = join(root, 'native-fixture');
   await writeFile(bin, `#!${process.execPath}
 const fs = require('node:fs');
+if (${codex} && process.argv.includes('--version')) { console.log('codex-cli 0.154.0'); process.exit(0); }
+if (${codex} && process.argv.includes('--help')) { console.log('--config --sandbox --ask-for-approval --strict-config --dangerously-bypass-hook-trust'); process.exit(0); }
+if (${codex}) {
+ const path = require('node:path'), directory = path.dirname(process.env.CODEX_HOME);
+ const config = JSON.parse(fs.readFileSync(path.join(directory, 'codex-hook.json'), 'utf8'));
+ fs.writeFileSync(path.join(directory, 'codex-session.json'), JSON.stringify({conversationId:config.conversationId,sessionId:'fixture-native-session'}));
+}
 const arg = name => process.argv[process.argv.indexOf(name) + 1];
-fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({ fresh: process.argv.includes('--session-id'), conversation: arg(process.argv.includes('--resume') ? '--resume' : '--session-id'), tty: [process.stdin.isTTY,process.stdout.isTTY,process.stderr.isTTY] }) + '\\n');
+fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({ fresh: ${codex} ? !process.argv.includes('resume') : process.argv.includes('--session-id'), conversation: ${codex} ? (process.argv.includes('resume') ? arg('resume') : 'fixture-native-session') : arg(process.argv.includes('--resume') ? '--resume' : '--session-id'), tty: [process.stdin.isTTY,process.stdout.isTTY,process.stderr.isTTY] }) + '\\n');
 const readline = require('node:readline').createInterface({ input: process.stdin });
 readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); process.exit(0); } });
 `, { mode: 0o700 });
   const server = createServer((req, res) => { res.writeHead(204); res.end(); }); server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const bridge = { endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-activation-credential-at-least-32-characters' };
-  const inputs = new NativeInputs({ engine: { provider: 'default', model: 'fixture' }, capabilities, env: { PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', activation: bridge, bridge }) });
+  const installation = codex ? await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }) : undefined;
+  const Inputs = codex ? CodexInputs : NativeInputs;
+  const inputs = new Inputs({ installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', activation: bridge, bridge }) });
   let child, creates = 0, starts = 0, opens = 0;
   const terminal = {
     async create() { creates++; return { workspaceId }; },
@@ -130,4 +141,18 @@ process.stdout.write(JSON.stringify({ workspace_id: ${JSON.stringify(workspaceId
   await assert.rejects(terminal.start('other-target', '/private/config'));
   terminal.env.FIXTURE_FAIL = '1';
   await assert.rejects(terminal.open(workspaceId), error => error.code === 'CMUX_UNAVAILABLE' && !error.message.includes('private-credential'));
+});
+
+
+test('Codex terminal resumes its recorded native session through the real PTY supervisor', { timeout: 15000 }, async t => {
+  const f = await fixture(t, true);
+  const launched = await f.driver.launch(f.request); f.request.attempt.identity = launched.identity;
+  const first = await waitFor(f.records, records => records?.length === 1);
+  assert.deepEqual(first[0], { fresh: true, conversation: 'fixture-native-session', tty: [true, true, true] });
+  f.input('exit\n'); await waitFor(f.session, session => session?.phase === 'paused');
+  await f.driver.resume({ ...f.request, resumeId: 'codex-resume' });
+  await f.driver.resume({ ...f.request, resumeId: 'codex-resume' });
+  const records = await waitFor(f.records, entries => entries?.length === 2);
+  assert.deepEqual(records[1], { fresh: false, conversation: 'fixture-native-session', tty: [true, true, true] });
+  await f.driver.close(); assert.equal((await f.driver.observe('operation')).status, 'stopped');
 });

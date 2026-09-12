@@ -3,8 +3,9 @@ import { transition } from './domain/transitions.mjs';
 import { requireCapability } from './ports.mjs';
 
 export class OrchestrationService {
-  /** @param {{ store: import('./storage/store.mjs').OrchestrationStore; agents: import('./types.d.ts').AgentPort; repositoryIds?: ReadonlySet<string>; limits?: { global?: number; perGoal?: number; planners?: number }; ownership?: { assertOwned(): void } }} options */
-  constructor({ store, agents, repositoryIds = new Set(), limits = {}, ownership }) {
+  /** @param {{ store: import('./storage/store.mjs').OrchestrationStore; agents: import('./types.d.ts').AgentPort; repositoryIds?: ReadonlySet<string>; limits?: { global?: number; perGoal?: number; planners?: number }; ownership?: { assertOwned(): void }; goalLimits?: (goalId: string) => {global:number;perGoal:number;planners:number} }} options */
+  constructor({ store, agents, repositoryIds = new Set(), limits = {}, ownership, goalLimits }) {
+    this.goalLimits = goalLimits;
     this.store = store; this.agents = agents; this.repositoryIds = repositoryIds; this.ownership = ownership;
     this.limits = Object.freeze({ global: integer(limits.global ?? 4, 1), perGoal: integer(limits.perGoal ?? 4, 1), planners: integer(limits.planners ?? 2, 1) });
   }
@@ -23,8 +24,9 @@ export class OrchestrationService {
         requireCapability(this.agents, role, mode);
         this.ownership?.assertOwned();
         const capacity = this.store.ownedCapacity(input.goalId, mode);
-        requireValue(capacity.total < (mode === 'interactive' ? this.limits.planners : this.limits.global), 'Global agent capacity is occupied', 'CAPACITY_FULL');
-        requireValue(mode === 'interactive' || capacity.goal < this.limits.perGoal, 'Goal agent capacity is occupied', 'CAPACITY_FULL');
+        const limits = this.goalLimits?.(input.goalId) ?? this.limits;
+        requireValue(capacity.total < (mode === 'interactive' ? limits.planners : limits.global), 'Global agent capacity is occupied', 'CAPACITY_FULL');
+        requireValue(mode === 'interactive' || capacity.goal < limits.perGoal, 'Goal agent capacity is occupied', 'CAPACITY_FULL');
       }
       const change = transition(goal, input, caller);
       if (change.intents.some((intent) => intent.kind !== 'terminate')) {

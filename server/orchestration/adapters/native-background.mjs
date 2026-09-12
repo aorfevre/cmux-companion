@@ -24,10 +24,11 @@ export function nativeBinding(request) {
  * starts another worker. No constructor starts a process or timer.
  */
 export class NativeBackground {
-  /** @param {{ directory: string; bin: string; inputs: import('./native-inputs.mjs').NativeInputs; policy: import('../types.d.ts').BackgroundPolicy; onResult: (request: import('../types.d.ts').LaunchRequest, raw: string) => void | Promise<void>; onError?: (code: string) => void; failpoint?: (point: string) => void; boot?: ()=>string|null }} options */
-  constructor({ directory, bin, inputs, policy, onResult, onError = () => {}, failpoint = () => {}, boot = bootIdentity }) {
+  /** @param {{ directory: string; bin: string; inputs: import('./native-inputs.mjs').NativeInputs; policy: import('../types.d.ts').BackgroundPolicy; onResult: (request: import('../types.d.ts').LaunchRequest, raw: string) => void | Promise<void>; parseResult?: (stdout: string, conversationId: string, directory: string) => string; onError?: (code: string) => void; failpoint?: (point: string) => void; boot?: ()=>string|null }} options */
+  constructor({ directory, bin, inputs, policy, onResult, parseResult = nativeResult, onError = () => {}, failpoint = () => {}, boot = bootIdentity }) {
     requireValue(isAbsolute(bin) && !bin.includes('\0'), 'Native executable must be explicit and absolute');
     requireValue(!inputs.installation || inputs.installation.bin === bin, 'Native wrapper does not match the probed installation', 'UNSUPPORTED_CAPABILITY');
+    this.parseResult = parseResult;
     this.boot = boot; this.bin = bin; this.inputs = inputs; this.policy = backgroundPolicy(policy); requireValue(this.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Native output budget exceeds transport limit'); this.onResult = onResult; this.onError = onError; this.failpoint = failpoint;
     for (const role of /** @type {const} */ (['implementer', 'reviewer', 'integrator'])) requireNativeCapabilities(inputs.capabilities, role, 'background');
     this.capabilities = /** @type {import('../types.d.ts').AgentPort['capabilities']} */ (['implementer', 'reviewer', 'integrator'].map((role) => ({ role, mode: 'background' })));
@@ -153,7 +154,7 @@ export class NativeBackground {
       requireValue(completed.identity === saved.identity, 'Native result identity changed', 'OWNERSHIP_UNCERTAIN');
       if (completed.outcome.status !== 'succeeded') { this.save(join(directory, 'delivery.json'), { code: completed.outcome.cause?.code ?? 'NATIVE_FAILED' }); return; }
       let raw;
-      try { raw = nativeResult(completed.outcome.stdout, saved.binding.conversationId); }
+      try { raw = this.parseResult(completed.outcome.stdout, saved.binding.conversationId, directory); }
       catch { this.save(join(directory, 'delivery.json'), { code: 'INVALID_RESULT' }); return; }
       await this.onResult(saved.request, raw);
       this.save(join(directory, 'delivery.json'), { code: null });

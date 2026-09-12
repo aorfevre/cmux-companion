@@ -6,9 +6,9 @@ import { goalView } from './domain/state-view.mjs';
 
 const PREFIX = '/api/orchestration';
 /** @param {import('fastify').FastifyInstance} app
- * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup }} options
+ * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; suspension?: () => string | null; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup; beforeCommand?: (command: import('./types.d.ts').Command) => Promise<void> }} options
  */
-export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly = false, configuration, reconcile, cleanup }) {
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly = false, suspension = () => null, configuration, reconcile, cleanup, beforeCommand }) {
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
@@ -43,9 +43,9 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     pairingAttempts.delete(request.ip);
     return reply.header('Set-Cookie', sessionCookie(request, token)).send({ paired: true });
   });
-  app.get(`${PREFIX}/configuration`, async () => ({ limits: service.limits, capabilities: service.agents.capabilities, terminal: Boolean(service.agents.open), readOnly, repositories: configuration ? await configuration() : [] }));
+  app.get(`${PREFIX}/configuration`, async () => ({ limits: service.limits, capabilities: service.agents.capabilities, terminal: Boolean(service.agents.open), readOnly: Boolean(readOnly || suspension()), suspensionReason: suspension(), repositories: configuration ? await configuration() : [] }));
   app.post(`${PREFIX}/goals/:id/reconcile`, async (request) => {
-    requireValue(!readOnly && reconcile, 'Reconciliation is unavailable', 'FORBIDDEN');
+    requireValue(!(readOnly || suspension()) && reconcile, 'Reconciliation is unavailable', 'FORBIDDEN');
     const goal = service.store.get(/** @type {{id:string}} */ (request.params).id), input = object(request.body);
     requireValue(goal && input.expectedVersion === goal.version, 'Goal version changed', 'VERSION_CONFLICT');
     await reconcile(); return { reconciled: true };
@@ -55,12 +55,12 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     return cleanup.preview(/** @type {{id:string}} */ (request.params).id);
   });
   app.post(`${PREFIX}/goals/:id/cleanup`, async request => {
-    requireValue(!readOnly && cleanup, 'Cleanup is unavailable', 'FORBIDDEN');
+    requireValue(!(readOnly || suspension()) && cleanup, 'Cleanup is unavailable', 'FORBIDDEN');
     const input = object(request.body);
     return cleanup.execute({ goalId: /** @type {{id:string}} */ (request.params).id, expectedVersion: integer(input.expectedVersion), attemptId: identifier(input.attemptId) });
   });
   app.get(`${PREFIX}/snapshot`, async () => {
-    const snapshot = service.store.snapshot(); return { goals: snapshot.goals.map(goalView), cursor: snapshot.cursor, journalId: service.store.journalId, readOnly };
+    const snapshot = service.store.snapshot(); return { goals: snapshot.goals.map(goalView), cursor: snapshot.cursor, journalId: service.store.journalId, readOnly: Boolean(readOnly || suspension()) };
   });
   app.get(`${PREFIX}/goals/:id`, async (request) => {
     const id = /** @type {{id: string}} */ (request.params).id;
@@ -68,7 +68,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     return { ...goalView(goal), contracts: goal.contracts };
   });
   app.post(`${PREFIX}/goals/:id/terminal`, async (request) => {
-    requireValue(!readOnly, 'This client interface is read-only', 'FORBIDDEN');
+    requireValue(!(readOnly || suspension()), 'This client interface is read-only', 'FORBIDDEN');
     const goal = service.store.get(/** @type {{id:string}} */ (request.params).id);
     requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Goal is unavailable', 'NOT_FOUND');
     const input = object(request.body);
@@ -92,14 +92,16 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     stream.attach(reply.raw, initial);
   });
   app.post(`${PREFIX}/commands`, async (request) => {
-    requireValue(!readOnly, 'This client interface is read-only', 'FORBIDDEN');
+    requireValue(!(readOnly || suspension()), 'This client interface is read-only', 'FORBIDDEN');
     const command = parseCommand(request.body);
     requireValue(USER_COMMANDS.has(command.type), 'Command is not available to this client', 'FORBIDDEN');
+    await beforeCommand?.(command);
     const result = service.execute(command, { kind: 'user' });
     return { goal: goalView(result.goal), cursor: result.cursor };
   });
   /** @param {import('fastify').FastifyRequest} request */
   function agentAuthority(request) {
+    requireValue(!suspension(), 'Restore the saved project directory and restart Companion', 'NOT_READY');
     const header = request.headers.authorization ?? '';
     requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
     return bridgeAuth.authenticate(header.slice(7));

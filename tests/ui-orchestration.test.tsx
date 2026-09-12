@@ -64,6 +64,13 @@ test('a definitive stale conflict refreshes and allows a new deliberate command'
   await waitFor(() => expect(screen.getByRole('button', { name: 'Start planning' })).toHaveProperty('disabled', false));
   expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull();
 });
+test('provider readiness errors retain actionable settings guidance', async () => {
+  await start(); const original = api.getMockImplementation()!;
+  api.mockImplementation(async (url, options) => { if (url.endsWith('/commands')) throw new ApiError('Configure a supported provider in Settings', 409, 'NOT_READY'); return original(url, options); });
+  fireEvent.click(screen.getByRole('button', { name: 'Start planning' }));
+  await screen.findByText('Configure a supported provider in Settings');
+  expect(screen.queryByText(/The goal changed/)).toBeNull();
+});
 test('stream resync refreshes authoritative state and unmount closes the stream', async () => {
   const view = render(<GoalBoard />);
   await screen.findByRole('heading', { name: 'Start a goal' });

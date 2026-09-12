@@ -49,13 +49,21 @@ export async function runNativeTerminal(configPath) {
     while (!controller.signal.aborted) {
       if (config.installation) {
         assertNativeInstallation(config.installation);
-        requireValue(config.command.bin === config.installation.bin && config.command.env.CCS_CLAUDE_PATH === config.installation.nativeBin, 'Terminal executable binding changed', 'UNSUPPORTED_CAPABILITY');
+        requireValue(config.command.bin === config.installation.bin && config.command.env[config.installation.provider === 'codex' ? 'CCS_CODEX_PATH' : 'CCS_CLAUDE_PATH'] === config.installation.nativeBin, 'Terminal executable binding changed', 'UNSUPPORTED_CAPABILITY');
       }
       const argv = [...config.command.argv];
       if (runId !== 'initial') {
+        if (config.installation?.provider === 'codex') {
+          const session = JSON.parse(readFileSync(join(directory, 'codex-session.json'), 'utf8'));
+          requireValue(session.conversationId === request.binding.conversationId && /^[A-Za-z0-9_-]{1,160}$/.test(session.sessionId), 'Codex session identity changed');
+          const prompt = argv.pop();
+          requireValue(typeof prompt === 'string', 'Codex resume context is missing');
+          argv.push('resume', session.sessionId, prompt);
+        } else {
         const index = argv.indexOf('--session-id');
         requireValue(index >= 0 && argv[index + 1] === request.binding.conversationId && !argv.includes('--print'), 'Invalid native resume contract');
         argv[index] = '--resume';
+        }
       }
       // Resume is a durable idempotent command, not a new attempt or conversation.
       writeFileSync(join(directory, `run-${runId}.json`), JSON.stringify({ identity: config.identity }), { flag: 'wx', mode: 0o600 });
