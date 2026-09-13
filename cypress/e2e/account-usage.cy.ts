@@ -32,6 +32,7 @@ function usageFixture() {
 
 function scenario() {
   cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing deterministic Cypress API fixture" } });
+  cy.intercept("GET", "**/api/settings/local", { statusCode: 404, body: { error: "Legacy settings" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "E2E Mac" }, workspaces: [], error: null, refreshedAt: iso(0) });
   cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
@@ -116,8 +117,9 @@ describe("licence usage", () => {
     cy.get(".usage-summary").should("contain.text", "Updated now");
     cy.findByRole("button", { name: "‹ Settings" }).click();
     cy.findByRole("heading", { name: /^Settings$/ }).should("be.visible");
-    cy.location("search").should("eq", "?view=settings");
-    cy.findByRole("button", { name: /Licence usage/ }).click();
+    cy.location("pathname").should("eq", "/settings");
+    cy.visit("/settings#agents");
+    cy.findByRole("link", { name: "View account usage" }).click();
     cy.findByRole("heading", { name: "Licence usage" }).should("be.visible");
     cy.location("search").should("eq", "?view=usage");
   });

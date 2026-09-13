@@ -4,6 +4,7 @@ import "./globals.css";
 import "./features.css";
 import "./highlight.css";
 import "./context-banner.css";
+import "./design-system.css";
 
 export const metadata: Metadata = {
   title: "cmux companion",

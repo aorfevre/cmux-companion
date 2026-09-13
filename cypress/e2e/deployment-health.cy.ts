@@ -22,6 +22,7 @@ function status(overrides: { summary: "healthy" | "updating" | "attention" | "pa
 
 function scenario() {
   cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing deterministic Cypress API fixture" } });
+  cy.intercept("GET", "**/api/settings/local", { statusCode: 404, body: { error: "Legacy settings" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "E2E Mac" }, workspaces: [], error: null, refreshedAt: iso(0) });
   cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
@@ -34,7 +35,7 @@ function scenario() {
 
 function visitSettings() {
   cy.clock(frozenNow.getTime(), ["Date"]);
-  cy.visit("/?view=settings");
+  cy.visit("/settings#advanced");
   cy.findByRole("heading", { name: /^Settings$/ }).should("be.visible");
 }
 
@@ -59,7 +60,7 @@ describe("deployment health", () => {
         cy.get(".deployment-error").should("not.exist");
       });
       // The header stamp prefers the updater's last successful rollout.
-      cy.get("header.topbar .last-update").should("have.text", "Updated 2h ago").and("have.attr", "dateTime", iso(-125));
+      cy.get("header.settings-header .last-update").should("have.text", "Updated 2h ago").and("have.attr", "dateTime", iso(-125));
       cy.document().then((doc) => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
     });
   }
@@ -132,7 +133,7 @@ describe("deployment health", () => {
       cy.contains("Updater status is unavailable. The Companion is online, but updater health cannot be confirmed.").should("be.visible");
       cy.get(".deployment-service").should("not.exist");
     });
-    cy.get("header.topbar .last-update").should("have.text", "Updated 1d ago").and("have.attr", "dateTime", iso(-60 * 26));
+    cy.get("header.settings-header .last-update").should("have.text", "Updated 1d ago").and("have.attr", "dateTime", iso(-60 * 26));
     cy.then(() => { mode = "error"; });
     cy.findByRole("button", { name: "Refresh deployment health" }).click();
     cy.wait("@updater");

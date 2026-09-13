@@ -6,9 +6,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { normalizeModelId } from './model-options.mjs';
 
+import { assertDevChild, contains, inspectDevRepo, macPath, suggestedChecks } from './dev-repositories.mjs';
 const execute = promisify(execFile);
 export const DEFAULT_DATA_DIRECTORY = join(homedir(), '.config', 'cmux-companion');
 export const defaultSettings = () => ({
+  devRepos: [],
   projects: [],
   providers: {
     claude: { executable: 'ccs', args: ['claude'], model: 'default' },
@@ -50,7 +52,7 @@ export function providerCommand(value, provider) {
   return structuredClone(value);
 }
 function validateSettings(value) {
-  keys(value, ['projects', 'providers', 'provider', 'tools', 'execution', 'previews', 'onboarding'], 'settings');
+  keys(value, ['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'previews', 'onboarding'], 'settings');
   keys(value.providers, ['claude', 'codex'], 'providers');
   for (const provider of ['claude', 'codex']) providerCommand(value.providers[provider], provider);
   if (!['claude', 'codex'].includes(value.provider)) invalid('Choose Claude or Codex');
@@ -65,10 +67,21 @@ function validateSettings(value) {
   keys(value.onboarding, ['completed'], 'onboarding');
   if (typeof value.onboarding.completed !== 'boolean') invalid('Invalid onboarding progress');
   if (!Array.isArray(value.projects) || value.projects.length > 500) invalid('Invalid projects');
+  if (!Array.isArray(value.devRepos) || value.devRepos.length > 500) invalid('Invalid Dev repos');
+  const rootIds = new Set(), rootNames = new Set(), rootPaths = [];
+  for (const root of value.devRepos) {
+    keys(root, ['id', 'name', 'path'], 'Dev repo');
+    if (typeof root.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(root.id) || rootIds.has(root.id)) invalid('Dev repo IDs must be unique');
+    string(root.name, 'Dev repo name', 160); string(root.path, 'Dev repo path');
+    if (root.name !== root.name.trim() || rootNames.has(root.name.toLowerCase())) invalid('Dev repo names must be trimmed and unique');
+    if (!isAbsolute(root.path) || rootPaths.some(path => contains(path, root.path) || contains(root.path, path))) invalid('Dev repo directories must be distinct and must not overlap');
+    rootIds.add(root.id); rootNames.add(root.name.toLowerCase()); rootPaths.push(root.path);
+  }
   const ids = new Set(), paths = new Set();
   for (const project of value.projects) {
-    keys(project, ['id', 'name', 'path', 'enabled', 'github', 'remote', 'checks'], 'project');
+    keys(project, ['id', 'name', 'path', 'enabled', 'github', 'remote', 'checks', 'devRepoId'], 'project');
     if (typeof project.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(project.id) || ids.has(project.id)) invalid('Project IDs must be unique letters, numbers, underscores or hyphens');
+    if (project.devRepoId != null && !rootIds.has(project.devRepoId)) invalid('Unknown Dev repo');
     ids.add(project.id); string(project.name, 'project name', 160); string(project.path, 'project path');
     if (!isAbsolute(project.path) || paths.has(project.path)) invalid('Project paths must be unique absolute paths');
     paths.add(project.path);
@@ -101,21 +114,24 @@ export function resolveExecutable(command, searchPath = process.env.PATH || '') 
   return null;
 }
 
-export async function inspectProject(path, run = execute) {
+export async function inspectProject(path, run = execute, { timeout = 5000 } = {}) {
+  path = macPath(path);
   string(path, 'project path');
   if (!isAbsolute(path)) invalid('Enter an absolute project directory on this Mac');
+  const deadline = Date.now() + timeout;
+  const options = () => ({ timeout: Math.max(1, deadline - Date.now()), maxBuffer: 32768 });
   let canonical;
   try {
     canonical = realpathSync(path);
-    const result = await run('git', ['-C', canonical, 'rev-parse', '--show-toplevel'], { timeout: 5000, maxBuffer: 32768 });
+    const result = await run('git', ['-C', canonical, 'rev-parse', '--show-toplevel'], options());
     if (realpathSync(result.stdout.trim()) !== canonical) invalid('Select the root directory of the Git repository');
   } catch { invalid('Project must be an accessible Git repository root on this Mac'); }
   let remote = null;
-  try { remote = (await run('git', ['-C', canonical, 'remote', 'get-url', 'origin'], { timeout: 5000, maxBuffer: 32768 })).stdout.trim(); } catch { /* Local-only repositories are valid. */ }
+  try { remote = (await run('git', ['-C', canonical, 'remote', 'get-url', 'origin'], options())).stdout.trim(); } catch { /* Local-only repositories are valid. */ }
   // A repository's config is untrusted and may embed a token. Return only a
   // recognized credential-free GitHub destination as a suggestion.
   const match = remote?.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/)([\w-]+\/[\w.-]+?)(?:\.git)?$/);
-  return { path: canonical, name: basename(canonical), github: match?.[1] ?? null, remote: match ? remote : null };
+  return { path: canonical, name: basename(canonical), github: match?.[1] ?? null, remote: match ? remote : null, suggestedChecks: await suggestedChecks(canonical) };
 }
 
 export class LocalSettings {
@@ -133,12 +149,22 @@ export class LocalSettings {
       if (path !== ':memory:') chmodSync(path, 0o600);
       this.db.exec('PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;');
       const version = Number(this.db.prepare('PRAGMA user_version').get().user_version);
-      if (version > 1) invalid('Settings database is newer than this version of Companion');
+      if (version > 2) invalid('Settings database is newer than this version of Companion');
       this.db.exec(`BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS local_settings (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS goal_configuration (goal_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
-        PRAGMA user_version=1; COMMIT;`);
+        COMMIT;`);
       this.db.prepare('INSERT OR IGNORE INTO local_settings(id,revision,value) VALUES(1,0,?)').run(JSON.stringify(defaultSettings()));
+      if (version < 2) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          const current = this.read().settings;
+          current.devRepos ??= [];
+          validateSettings(current);
+          this.db.prepare('UPDATE local_settings SET value=? WHERE id=1').run(JSON.stringify(current));
+          this.db.exec('PRAGMA user_version=2; COMMIT;');
+        } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      }
       validateSettings(this.read().settings);
     } catch (error) { this.db.close(); throw error; }
   }
@@ -147,14 +173,34 @@ export class LocalSettings {
     return { revision: Number(row.revision), settings: JSON.parse(String(row.value)), imported: Boolean(row.imported) };
   }
   async update(expectedRevision, settings, { inspect = inspectProject } = {}) {
+    settings = structuredClone(settings);
+    if (Array.isArray(settings.devRepos) && Array.isArray(settings.projects)) {
+      const saved = this.read().settings;
+      for (const project of settings.projects) if (project.devRepoId && !settings.devRepos.some(root => root.id === project.devRepoId) && saved.devRepos.some(root => root.id === project.devRepoId)) delete project.devRepoId;
+    }
     validateSettings(settings);
     const before = this.read();
     this.assertRevision(expectedRevision, before.revision);
     const next = structuredClone(settings);
+    for (const root of next.devRepos) {
+      const existing = before.settings.devRepos.find(entry => entry.id === root.id);
+      if (existing && existing.path !== root.path) invalid('Dev repo paths cannot be changed; add another Dev repo');
+      if (!existing) root.path = (await inspectDevRepo(root.path)).path;
+    }
     for (const project of next.projects) {
       const existing = before.settings.projects.find(entry => entry.id === project.id);
       if (existing && existing.path !== project.path) invalid('Project paths cannot be changed; add another project');
       if (!existing || !existing.enabled && project.enabled) project.path = (await inspect(project.path)).path;
+    }
+    for (const project of next.projects) {
+      const existing = before.settings.projects.find(entry => entry.id === project.id);
+      const root = next.devRepos.find(entry => dirname(project.path) === entry.path);
+      const priorRoot = before.settings.devRepos.find(entry => entry.id === existing?.devRepoId);
+      if (project.devRepoId && !next.devRepos.some(entry => entry.id === project.devRepoId)) delete project.devRepoId;
+      if (root && (!existing || !existing.devRepoId || project.devRepoId !== root.id || !existing.enabled && project.enabled)) {
+        await assertDevChild(root.path, project.path); project.devRepoId = root.id;
+      } else if (project.devRepoId && (!priorRoot || priorRoot.id !== project.devRepoId)) invalid('Repository must belong to its containing Dev repo');
+      if (project.devRepoId && next.devRepos.find(entry => entry.id === project.devRepoId)?.path !== dirname(project.path)) invalid('Repository is outside its Dev repo');
     }
     validateSettings(next);
     // Disabling preserves the identity used by historical and running goals.

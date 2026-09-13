@@ -36,6 +36,7 @@ function fixtures() {
   let subscribed = false;
   let settings: AlertSettings = { ...defaultSettings };
   cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing deterministic Cypress API fixture" } });
+  cy.intercept("GET", "**/api/settings/local", { statusCode: 404, body: { error: "Legacy settings" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "Settings Mac" }, workspaces: [], error: null, refreshedAt: now }).as("bootstrap");
   cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
@@ -69,12 +70,12 @@ function fixtures() {
 }
 
 function visitSettings(options: { push?: "none" | "fresh" | "existing"; readOnly?: string | null } = {}) {
-  cy.visit("/?view=settings", { onBeforeLoad(win) {
+  cy.visit(options.push ? "/settings#notifications" : "/settings#general", { onBeforeLoad(win) {
     if (options.readOnly !== undefined && options.readOnly !== null) win.localStorage.setItem("cmux-companion-read-only", options.readOnly);
     if (options.push === "fresh" || options.push === "existing") stubPush(win as PushWindow, options.push === "existing");
     else delete (win as PushWindow).PushManager;
   } });
-  cy.wait("@bootstrap");
+  if (!options.push) cy.wait("@bootstrap");
   cy.findByRole("heading", { name: "Settings" }).should("be.visible");
 }
 
@@ -85,34 +86,36 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
     it("defaults to read-only protection and persists the toggle across a reload", () => {
       fixtures();
       visitSettings();
-      cy.findByLabelText(/Read-only protection/).should("be.checked");
-      cy.contains(".setting-row", "Connection").should("contain.text", "Settings Mac").and("contain.text", "Online");
-      cy.findByLabelText(/Read-only protection/).uncheck();
+      cy.findByLabelText(/Protect terminal input/).should("be.checked");
+      cy.contains(".preference-row", "Connected Mac").should("contain.text", "Settings Mac");
+      cy.findByLabelText(/Protect terminal input/).uncheck();
       cy.window().its("localStorage").invoke("getItem", "cmux-companion-read-only").should("eq", "false");
       cy.reload();
-      cy.findByLabelText(/Read-only protection/).should("not.be.checked");
-      cy.findByLabelText(/Read-only protection/).check();
+      cy.findByLabelText(/Protect terminal input/).should("not.be.checked");
+      cy.findByLabelText(/Protect terminal input/).check();
       cy.window().its("localStorage").invoke("getItem", "cmux-companion-read-only").should("eq", "true");
       cy.reload();
-      cy.findByLabelText(/Read-only protection/).should("be.checked");
+      cy.findByLabelText(/Protect terminal input/).should("be.checked");
     });
 
     it("opens Licence usage and Local apps from Settings and comes back", () => {
       fixtures();
       visitSettings();
-      cy.findByRole("button", { name: /^Licence usage/ }).click();
+      cy.visit("/settings#agents");
+      cy.findByRole("link", { name: "View account usage" }).click();
       cy.location("search").should("eq", "?view=usage");
       cy.wait("@usage");
       cy.findByRole("heading", { name: "Licence usage" }).should("be.visible");
       cy.findByRole("button", { name: "‹ Settings" }).click();
-      cy.location("search").should("eq", "?view=settings");
+      cy.location("pathname").should("eq", "/settings");
       cy.findByRole("heading", { name: "Settings" }).should("be.visible");
-      cy.findByRole("button", { name: /^Local apps/ }).click();
+      cy.visit("/settings#advanced");
+      cy.findByRole("link", { name: "Local apps and preview links" }).click();
       cy.location("search").should("eq", "?view=apps");
       cy.wait("@previews");
       cy.findByRole("heading", { name: "Local apps" }).should("be.visible");
-      cy.findByRole("navigation", { name: "Main navigation" }).findByRole("button", { name: "Settings" }).click();
-      cy.location("search").should("eq", "?view=settings");
+      cy.findByRole("navigation", { name: "Main navigation" }).findByRole("link", { name: "Settings" }).click();
+      cy.location("pathname").should("eq", "/settings");
       cy.findByRole("heading", { name: "Settings" }).should("be.visible");
     });
   });
@@ -159,7 +162,7 @@ describe("Background alerts", () => {
     cy.wait("@pushStatus").its("request.url").should("not.include", "endpoint=");
     cy.wait("@subscribe").its("request.body").should("deep.equal", { subscription: { endpoint, expirationTime: null, keys: { p256dh: "fixture-p256dh", auth: "fixture-auth" } } });
     cy.wait("@pushStatus").its("request.url").should("include", `endpoint=${encodeURIComponent(endpoint)}`);
-    cy.get(".toast").should("contain.text", "Background alerts enabled");
+    cy.get("[role=status]").should("contain.text", "Background alerts enabled");
     cy.window().its("pushFixture").should("deep.include", { subscribed: 1, permissionRequests: 1 });
     cy.get("@card").findByRole("button", { name: "Disable" }).should("be.visible");
     cy.findByLabelText(/^Failures/).should("be.checked").uncheck();
@@ -176,7 +179,7 @@ describe("Background alerts", () => {
     });
     cy.findByRole("button", { name: "Send test alert" }).click();
     cy.wait("@testAlert").its("request.body").should("deep.equal", { endpoint });
-    cy.get(".toast").should("contain.text", "Test alert delivered");
+    cy.get("[role=status]").should("contain.text", "Test alert delivered");
     cy.get("@card").findByRole("button", { name: "Disable" }).click();
     cy.wait("@unsubscribe").its("request.body").should("deep.equal", { endpoint });
     cy.window().its("pushFixture.unsubscribed").should("equal", 1);
@@ -192,8 +195,7 @@ describe("Background alerts", () => {
     cy.wait("@pushStatus").its("request.url").should("include", "endpoint=");
     cy.findByLabelText(/^Agent completed/).should("be.checked").uncheck();
     cy.wait("@rejectedSettings");
-    cy.get(".toast").should("contain.text", "Alert settings could not be saved");
-    cy.wait("@pushStatus");
+    cy.get("[role=status]").should("contain.text", "Alert settings could not be saved");
     cy.findByLabelText(/^Agent completed/).should("be.checked");
   });
 
@@ -204,7 +206,7 @@ describe("Background alerts", () => {
     cy.wait("@pushStatus");
     cy.contains(".push-card", "Background alerts").findByRole("button", { name: "Enable" }).click();
     cy.wait("@refused");
-    cy.get(".toast").should("contain.text", "Push alerts are unavailable");
+    cy.get("[role=status]").should("contain.text", "Push alerts are unavailable");
     cy.contains(".push-card", "Background alerts").findByRole("button", { name: "Enable" }).should("be.enabled");
     cy.findByLabelText(/^Failures/).should("not.exist");
   });
@@ -217,7 +219,7 @@ describe("Background alerts", () => {
     cy.wait("@pushStatus");
     cy.findByRole("button", { name: "Send test alert" }).click();
     cy.wait("@testAlert");
-    cy.get(".toast").should("contain.text", "This device is no longer registered. Disable and re-enable alerts.");
+    cy.get("[role=status]").should("contain.text", "This device is no longer registered. Disable and re-enable alerts.");
   });
 });
 

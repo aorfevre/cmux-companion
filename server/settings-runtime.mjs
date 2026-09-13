@@ -1,3 +1,4 @@
+import { assertDevChild } from './dev-repositories.mjs';
 import { join } from 'node:path';
 import { createRuntime } from './orchestration/create-runtime.mjs';
 import { acquireRepositoryOwnership } from './orchestration/cutover.mjs';
@@ -86,6 +87,8 @@ export async function createSettingsRuntime({ settings, directory, token, create
         requireValue(project.github && project.remote && project.checks.length > 0, 'Configure a GitHub destination, remote and verification command for this project in Settings before starting a goal', 'NOT_READY');
         const readiness = await probeProvider(before.settings.provider, before.settings.providers[before.settings.provider], before.settings.tools);
         requireValue(readiness.ready, readiness.reason || 'Configure a supported provider in Settings', 'NOT_READY');
+        const root = before.settings.devRepos?.find(entry => entry.id === project.devRepoId);
+        if (root) await assertDevChild(root.path, project.path);
         await probeGit(); await ownership(project);
         requireValue(settings.read().revision === before.revision, 'Settings changed; review the current configuration and retry', 'VERSION_CONFLICT');
         const snapshot = settings.snapshotGoal(command.goalId, project.id);
@@ -93,7 +96,8 @@ export async function createSettingsRuntime({ settings, directory, token, create
       },
       projectStatus: id => {
         const project = settings.read().settings.projects.find(entry => entry.id === id);
-        return { name: project?.name, enabled: Boolean(project?.enabled), error: project && (!project.github || !project.remote || !project.checks.length) ? 'Add a GitHub destination, remote and verification command in Settings to start a goal.' : null };
+        const root = settings.read().settings.devRepos?.find(entry => entry.id === project?.devRepoId);
+        return { name: project?.name, devRepoName: root?.name, github: project?.github, enabled: Boolean(project?.enabled), error: project && (!project.github || !project.remote || !project.checks.length) ? 'Add a GitHub destination, remote and verification command in Settings to start a goal.' : null };
       },
       goalLimits: goalId => configured(goalId).execution,
       resolveCheck: (repositoryId, check, goalId) => {

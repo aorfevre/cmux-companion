@@ -1,0 +1,59 @@
+/* Shared interface foundation; terminal cell colors remain owned by the terminal. */
+:root { --bg:#111214; --panel:#1b1d20; --panel-raised:#23262a; --input-bg:#151719; --text:#eeeff1; --muted:#a9afb9; --line:#41464e; --accent:#b9c8ff; --on-accent:#17213f; --lime:var(--accent); --orange:#f0bc78; --red:#ffaaa5; --radius:9px; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
+button, input, select, textarea { font-family: inherit; }
+button, a, summary { touch-action: manipulation; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+button:disabled { cursor: not-allowed; }
+.app-navigation { position: fixed; bottom: 0; left: 0; right: 0; z-index: 60; min-height: 72px; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--line); }
+.app-navigation a { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 4px; min-height: 48px; font-size: 12px; color: var(--muted); text-decoration: none; border-radius: var(--radius); }
+.app-navigation a span { font-size: 20px; }
+.app-navigation a[aria-current] { background: var(--panel); color: var(--accent); }
+.app-shell, .orchestration { padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
+.orchestration, .local-settings-page, .app-shell { color:var(--text); }
+.orchestration a { color:var(--accent); }
+.orch-card, .orch-goals button, .settings-list, .push-card, .deployment-card, .privacy-note { background:var(--panel); border-color:var(--line); }
+.orchestration input, .orchestration textarea, .orchestration select { background:var(--input-bg); color:var(--text); border-color:var(--line); }
+.orchestration button { background:var(--panel-raised); color:var(--text); border-color:var(--line); }
+.orch-goals button[aria-current=true] { border-color:var(--accent); background:var(--panel-raised); }
+.orch-state, .orch-eyebrow, .orch-pr { color:var(--accent); }
+.orch-error { background:#382323; color:var(--red); }
+.orch-capacity, .orchestration small, .orch-header>span { color:var(--muted); }
+.orch-header, .orch-attempt, .orch-review { border-color:var(--line); }
+.app-shell button, .detail-shell button { min-height:44px; }
+.app-shell input:not([type=checkbox]), .app-shell select, .app-shell textarea { font-size:16px; }
+.subpage p, .privacy-note p, .push-guidance { font-size:14px; }
+.subpage { overflow-wrap:anywhere; }
+.setting-row strong, .push-title strong { font-size:14px; }
+.setting-row span, .push-title span { color:var(--muted); font-size:12px; }
+.update-settings { color:var(--text); }
+.update-settings p { overflow-wrap:anywhere; }
+.update-notice { flex-wrap:wrap; }
+@media(min-width:1000px) {
+  body { padding-left:160px; }
+  .app-navigation { top:0; bottom:0; right:auto; width:160px; display:flex; flex-direction:column; padding:32px 12px; border-top:0; border-right:1px solid var(--line); }
+  .app-navigation a { flex-direction:row; justify-content:flex-start; padding:12px; gap:12px; font-size:14px; }
+}
+@media(max-width:700px) {
+  .orch-actions { flex-wrap:wrap; }
+  .orch-task-grid, .orch-workspace, .orch-card { min-width:0; }
+  .orch-task-grid li>div, .orch-header { flex-wrap:wrap; }
+  .control-head { flex-wrap:wrap; }
+}
+@media(prefers-reduced-motion:reduce) { *, *:before, *:after { animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; scroll-behavior:auto!important; } }
+.update-notice { background:var(--panel); border-color:var(--line); color:var(--text); }
+.update-notice a { color:var(--accent); }
+.app-shell nav[aria-label="Session tools"] { display:flex; gap:8px; flex-wrap:wrap; padding:16px 20px 0; }
+.app-shell nav[aria-label="Session tools"] a, .app-shell nav[aria-label="Session tools"] button { border:1px solid var(--line); border-radius:var(--radius); background:var(--panel); color:var(--text); padding:10px 12px; font:500 14px/1.5 system-ui; text-decoration:none; }
+.hero { padding-top:24px; padding-bottom:8px; }
+.hero h1 { font-size:28px; line-height:1.2; }
+.summary-row { margin-top:20px; padding-top:16px; }
+.orch-heading { padding:20px 0; }
+.orchestration h1 { font-size:32px; }
+/* Icon controls keep the same touch target as labeled actions. */
+button, .app-navigation a { min-width:44px; }
+.detail-shell button, .session-menu button, .queue-sheet button, .writing-mode button { min-height:44px; }
+.compact-composer .expand-writer { width:44px; height:44px; top:0; right:0; }
+.compact-composer .queue-draft { width:44px; height:44px; top:0; right:44px; }
+.compact-composer .composer-editor textarea { padding-right:92px; }
+.detail-shell textarea, .queue-sheet textarea { font-size:16px; }

@@ -176,7 +176,8 @@ changes do not update that installation.
 ## Configuration
 
 New installations need no environment configuration: pair and open `/onboarding`
-to configure projects, Claude/Codex commands and local preferences. `/settings`
+to add named Dev repos (folders containing Git repositories), choose repositories,
+and configure Claude/Codex and local preferences. `/settings`
 keeps them in a private SQLite registry. See [settings and migration](docs/settings-onboarding.md).
 Existing installations can import their private orchestration/model JSON once;
 repository ownership and [cutover](docs/orchestration-retirement.md) safeguards

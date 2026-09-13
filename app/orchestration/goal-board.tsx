@@ -5,15 +5,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, request } from '../api-request';
 import type { goalView } from '../../server/orchestration/domain/state-view.mjs';
 import type { Contract } from '../../server/orchestration/types';
+import { AppNavigation } from '../navigation';
 import { GoalDetail } from './goal-detail';
 
 export type Goal = ReturnType<typeof goalView>;
 export type Action = Goal['actions'][number];
 type Snapshot = { goals: Goal[]; cursor: number; journalId: string; readOnly: boolean };
-type Configuration = { suspensionReason?: string | null; readOnly: boolean; terminal: boolean; limits: { global: number; perGoal: number; planners: number }; capabilities: { role: string; mode: string }[]; repositories: { id: string; name?: string; baseSha: string | null; baseBranch: string | null; error: string | null }[] };
+type Configuration = { suspensionReason?: string | null; readOnly: boolean; terminal: boolean; limits: { global: number; perGoal: number; planners: number }; capabilities: { role: string; mode: string }[]; repositories: { id: string; name?: string; devRepoName?: string; github?: string; baseSha: string | null; baseBranch: string | null; error: string | null }[] };
 type Command = { id: string; goalId: string; expectedVersion: number; type: string; payload: Record<string, unknown> };
 const prefix = '/api/orchestration';
 export function GoalBoard() {
+  const [repoSearch, setRepoSearch] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [configuration, setConfiguration] = useState<Configuration | null>(null);
   const [selected, setSelected] = useState<string | null>(null), [detail, setDetail] = useState<(Goal & { contracts: { revision: number; contract: Contract }[] }) | null>(null);
   const [auth, setAuth] = useState<'loading' | 'paired' | 'unpaired'>('loading');
@@ -75,10 +77,11 @@ export function GoalBoard() {
     finally { setBusy(false); }
   };
   const readOnly = Boolean(snapshot?.readOnly || configuration?.readOnly), disabled = busy || readOnly || Boolean(pending);
-  const chosenRepo = configuration?.repositories.find((entry) => entry.id === repository) ?? configuration?.repositories[0];
-  return <main className="orchestration">
+  const visibleRepos = configuration?.repositories.filter(entry => `${entry.devRepoName ?? ''} ${entry.name ?? entry.id} ${entry.github ?? ''}`.toLowerCase().includes(repoSearch.toLowerCase()));
+  const chosenRepo = visibleRepos?.find((entry) => entry.id === repository) ?? visibleRepos?.[0];
+  return <main className="orchestration"><AppNavigation active="goals" />
     <header className="orch-header"><a href="/">cmux companion</a><span role="status">{auth === 'paired' ? connected ? 'Live updates' : 'Reconnecting · polling' : 'Orchestration'}</span></header>
-    <div className="orch-heading"><div><p className="orch-eyebrow">GOAL WORKSPACE</p><h1>From intent to reviewed work.</h1><p>Plan together. Build in parallel. Review one combined result.</p></div></div>
+    <div className="orch-heading"><div><p className="orch-eyebrow">GOAL WORKSPACE</p><h1>From intent to reviewed work.</h1><p>Plan and review work across your repositories.</p></div></div>
     {error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}
     {auth === 'unpaired' ? <form className="orch-card" onSubmit={async event => {
       event.preventDefault(); setBusy(true); setError('');
@@ -90,7 +93,7 @@ export function GoalBoard() {
       <div className="orch-capacity">Capacity: {configuration?.limits.global} background · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</div>
       {!configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Interactive planning is unavailable with this adapter configuration.</p>}
       <form className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo?.baseSha || !chosenRepo.baseBranch) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { title, repositoryId: chosenRepo.id, baseSha: chosenRepo.baseSha, baseBranch: chosenRepo.baseBranch } }); }}>
-        <h2>Start a goal</h2><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<label>Repository<select disabled={disabled} value={chosenRepo?.id ?? ''} onChange={event => setRepository(event.target.value)}>{configuration?.repositories.map(entry => <option key={entry.id} value={entry.id}>{entry.name ?? entry.id}{entry.baseBranch ? ` · ${entry.baseBranch}` : ' · unavailable'}</option>)}</select></label>
+        <h2>Start a goal</h2><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<label>Search repositories<input type="search" value={repoSearch} onChange={event => setRepoSearch(event.target.value)} placeholder="Folder, repository or owner" /></label><label>Repository<select disabled={disabled} value={chosenRepo?.id ?? ''} onChange={event => setRepository(event.target.value)}>{configuration?.repositories.filter(entry => `${entry.devRepoName ?? ''} ${entry.name ?? entry.id} ${entry.github ?? ''}`.toLowerCase().includes(repoSearch.toLowerCase())).map(entry => <option key={entry.id} value={entry.id}>{entry.devRepoName ? `${entry.devRepoName} / ` : ''}{entry.name ?? entry.id}{entry.baseBranch ? ` · ${entry.baseBranch}` : ' · unavailable'}</option>)}</select></label>
         {chosenRepo?.error && <p role="alert">{chosenRepo.error}</p>}
         <label>What should we accomplish?<textarea value={title} maxLength={500} onChange={event => setTitle(event.target.value)} disabled={disabled} required rows={3} /></label>
         <button disabled={disabled || !chosenRepo?.baseSha || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start planning</button>
