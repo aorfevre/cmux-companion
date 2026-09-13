@@ -2,6 +2,8 @@
 
 Date: 2026-09-13
 Status: Awaiting human review before the implementation plan.
+Review feedback: On 2026-09-13 the user requested an opt-in automatic-installation
+toggle, disabled by default; incorporated below.
 Owner: The implementing agent owns packaging, UI, API, durable requests,
 admission coordination, updater recovery, verification and cleanup.
 
@@ -9,7 +11,10 @@ admission coordination, updater recovery, verification and cleanup.
 
 One Companion checkout contains the application and its updater. A paired user
 is notified in the app when a newer eligible main commit exists and explicitly
-chooses whether to install it. Background discovery never authorizes installation.
+chooses whether to install it. Automatic installation is disabled by default and
+can be explicitly enabled with a persistent Settings toggle. Discovery alone never
+authorizes installation: each transaction requires either exact-commit manual
+approval or a currently enabled automatic-installation policy.
 The updater remains a separate process that can recover a failed application.
 
 This contract supersedes unattended installation and independent updater-repository
@@ -24,7 +29,8 @@ the operator's live services, publish a release, or change repository visibility
    old enabled state never grants automatic installation permission.
 2. While online, the updater checks the configured trusted GitHub repository's main
    branch periodically (default five minutes). Settings also offers Check for updates.
-   Checks inspect eligibility without building or activating a release.
+   Checks inspect eligibility; a separate authorized transaction handles building
+   and activation. With automatic installation off, checking never installs.
 3. A nonblocking in-app Update available notice leads to Settings. Show installed
    and candidate commit identifiers, a changes link, last check and any check error.
    Only a successful Verify workflow run for the exact main commit qualifies.
@@ -49,6 +55,19 @@ the operator's live services, publish a release, or change repository visibility
    reports the observed running commit. Failed startup triggers verified recovery
    of the previous compatible release; recovery failure remains visible and stops
    further activation until explicitly resolved.
+9. Settings offers an Automatic installation toggle, off on fresh installation and
+   legacy migration. Explain beside it: install eligible updates when agents are
+   idle, with a brief reconnect. Turning it on is explicit ongoing authorization;
+   no per-update confirmation is required while it remains on. Each eligible
+   candidate receives its own durable request and uses the same CI, idle, fencing,
+   validation and recovery rules as manual updates. Show automatically queued work.
+10. Turning the toggle off persists immediately, revokes automatically authorized
+    requests that have not started staging, and preserves discovery, notifications
+    and independently confirmed manual requests. Serialize disable versus transaction
+    start so no new automatic transaction can begin after disable succeeds. An
+    already-started transaction completes or recovers safely; show this explicitly.
+    Cancelling an automatic queued request suppresses that candidate until a manual
+    request or an explicit off/on opt-in; periodic checks do not silently recreate it.
 
 ## Boundaries and invariants
 
@@ -58,7 +77,8 @@ the operator's live services, publish a release, or change repository visibility
   Both components derive from one approved Companion commit. Preserve a minimal
   stable bootstrap and recovery-capable process outside the application lifetime.
 - UI/API: retain pairing, same-origin validation and loopback binding. Expose only
-  fixed check, confirm, queue and cancellation operations with strict schemas.
+  fixed check, confirm, queue, cancellation and automatic-installation preference
+  operations with strict schemas and revision-checked preference writes.
   No browser-supplied remote, branch, executable, script or filesystem path. Apply
   the UI's mutation protection to update actions. Status returns no credentials,
   private paths, terminal content or raw external command errors.
@@ -71,6 +91,12 @@ the operator's live services, publish a release, or change repository visibility
   outcome are durable and atomically written with private permissions. Discovery
   and approval are distinct state. Cancellation before staging revokes permission;
   after transaction start, recovery owns completion and the UI explains that state.
+  Persist automatic installation as an installation-wide boolean defaulting to
+  false, with its policy revision and each request's manual/automatic authorization
+  source. Restart and reinstall preserve an explicit choice; missing, malformed or
+  legacy enabled values never imply opt-in. Recheck the automatic policy atomically
+  at transaction start; discovery cannot manufacture approval. Quarantined failures
+  retain existing explicit retry requirements even while automatic installation is on.
 - Background: admission fencing must coordinate with the authoritative orchestration
   service and relevant monitoring launches/queued prompts, not just a UI count.
   Revalidate service identity and fence after crashes; unavailable evidence blocks
@@ -92,7 +118,7 @@ the operator's live services, publish a release, or change repository visibility
 
 ## Non-goals
 
-Automatic installation, stable-release channels, arbitrary refs, public webhooks,
+Stable-release channels, arbitrary refs, public webhooks,
 OS/tool updates, fleet management, remote shell access, automatically merging main,
 and push/OS update notifications are excluded. Initial notifications are in-app.
 Do not remove legacy compatibility until its installation migration is verified.
@@ -104,7 +130,10 @@ implementation validation; those remain separately authorized operator actions.
 | Criterion | One verification |
 | --- | --- |
 | A single checkout supplies installer, bootstrap and updater with preserved attribution. | Disposable packaging/installer test without a sibling repository. |
-| Discovery never installs, including an imported legacy enabled configuration. | Updater integration test with a successful candidate and zero activation calls. |
+| Automatic installation defaults off, including an imported legacy enabled configuration, and checks alone never install. | Updater integration test with a successful candidate and zero activation calls. |
+| Explicit toggle opt-in persists and installs eligible commits only through the shared safe transaction. | Cypress toggle journey with a disposable service, restart and fake updater effects. |
+| Disabling prevents new automatic transactions without disabling checks or cancelling manual approvals. | Concurrent disable/start and queued-request integration suite. |
+| Cancelling an automatic candidate prevents silent requeue; failed candidates remain quarantined. | Repeated-discovery test covering cancellation, restart, opt-in renewal and failed activation. |
 | Only the exact trusted main commit with successful Verify evidence is offered. | Mocked GitHub eligibility suite covering wrong workflow/repository/SHA, pending, failure, missing evidence, divergence and rate limits. |
 | Notice, changes, Later, confirmation and refresh behave correctly. | Cypress journey using a real disposable service and fake update discovery. |
 | Approval is durable, idempotent and cannot retarget a newer commit. | Restart/concurrent-request test against private temporary updater state. |
@@ -123,8 +152,10 @@ separately authorized rehearsals establish them.
 ## Success measure
 
 In the disposable end-to-end update journey, one eligible commit produces one
-notice and exactly one healthy activation after explicit confirmation, with zero
-activation before confirmation or while managed work is active or uncertain.
+notice and exactly one healthy activation after explicit confirmation or persisted
+toggle opt-in, with zero activation without either authorization or while managed
+work is active or uncertain. Repeat with the default-off policy and verify that
+discovery alone produces zero installations.
 
 ## Inspection evidence
 
