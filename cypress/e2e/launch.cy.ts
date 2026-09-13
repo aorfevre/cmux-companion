@@ -1,6 +1,6 @@
 const now = "2026-09-08T09:00:00.000Z";
-const billingRepo = { id: "repo-billing", name: "billing-service", root: "karven", path: "/Users/dev/karven/billing-service", branch: "feature/invoices", ahead: 2, behind: 0, changedFiles: 3, dirty: true, lastActivity: 1_788_000_000, scripts: ["dev", "test"] };
-const docsRepo = { id: "repo-docs", name: "docs-site", root: "rekord", path: "/Users/dev/rekord/docs-site", branch: "main", ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1_787_000_000, scripts: [] };
+const billingRepo = { id: "repo-billing", name: "billing-service", root: "projects", path: "/Users/dev/projects/billing-service", branch: "feature/invoices", ahead: 2, behind: 0, changedFiles: 3, dirty: true, lastActivity: 1_788_000_000, scripts: ["dev", "test"] };
+const docsRepo = { id: "repo-docs", name: "docs-site", root: "examples", path: "/Users/dev/examples/docs-site", branch: "main", ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1_787_000_000, scripts: [] };
 const launched = { id: "workspace-launched", title: "billing-service", current_directory: billingRepo.path, terminals: [{ id: "terminal-launched", title: "Codex", is_focused: true }] };
 
 function fixtures() {
@@ -42,14 +42,14 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       }).as("launch");
       visitLaunch();
       cy.get(".repo-list button").should("have.length", 2);
-      cy.contains(".repo-list button", "billing-service").should("contain.text", "karven · feature/invoices").and("contain.text", "3 changed");
+      cy.contains(".repo-list button", "billing-service").should("contain.text", "projects · feature/invoices").and("contain.text", "3 changed");
       cy.contains(".repo-list button", "docs-site").should("not.contain.text", "changed");
-      cy.findByPlaceholderText("Find a repository…").type("rekord");
+      cy.findByPlaceholderText("Find a repository…").type("examples");
       cy.get(".repo-list button").should("have.length", 1).and("contain.text", "docs-site");
       cy.findByPlaceholderText("Find a repository…").clear().type("invoices");
       cy.contains(".repo-list button", "billing-service").click();
       cy.findByLabelText("Workspace name").should("have.value", "billing-service").clear().type("Invoice totals");
-      cy.contains(".selected-repo", "~/karven/billing-service · feature/invoices").should("be.visible");
+      cy.contains(".selected-repo", "~/projects/billing-service · feature/invoices").should("be.visible");
       cy.findByRole("button", { name: "Codex" }).should("have.class", "selected");
       cy.findByLabelText("Initial task").type("Add invoice totals to the billing summary");
       cy.findByRole("button", { name: "Launch codex" }).click();

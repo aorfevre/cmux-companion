@@ -10,7 +10,6 @@ test("desktop layout expands beyond the mobile shell without changing mobile def
   assert.match(desktop, /\.hero\{[^}]*grid-template-columns:/);
   assert.match(desktop, /\.workspace-list,\.preview-list,\.inbox-list,\.repo-list\{[^}]*auto-fit/);
   assert.match(desktop, /\.usage-providers\{[^}]*repeat\(2/);
-  assert.match(desktop, /\.worktree-list\{[^}]*auto-fit/);
   assert.match(desktop, /\.document-shell,\.detail-shell\{[^}]*1500px/);
-  assert.match(desktop, /\.session-menu,\.queue-sheet,\.reconnect-sheet,\.worktree-launcher\{[^}]*top:50%/);
+  assert.match(desktop, /\.session-menu,\.queue-sheet,\.reconnect-sheet\{[^}]*top:50%/);
 });

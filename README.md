@@ -64,7 +64,7 @@ The explicit `configure-cmux-automation.mjs` setup step enables cmux’s support
 
 ## Requirements
 
-- macOS with cmux installed in `/Applications/cmux.app`
+- macOS with cmux installed (defaults to `/Applications/cmux.app`; Tools settings accepts another installed path)
 - Node.js 22.23.1 (the supported Node 22 runtime is pinned in `.nvmrc`)
 - Tailscale connected on both the Mac and phone
 
@@ -198,6 +198,8 @@ and recovery are documented in [recovery](docs/orchestration-recovery.md).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `CMUX_COMPANION_HOME` | Current account home | Updater installation/state root; also used by updater CLI lookup, not a replacement for service data/token overrides |
+| `CMUX_COMPANION_UPDATER_REPOSITORY` | Installed bundled updater, then `<checkout>/updater` | Optional absolute updater directory containing `scripts/`; only for operator wrapper lookup |
 | `CMUX_BIN` | `/Applications/cmux.app/Contents/Resources/bin/cmux` | cmux CLI location |
 | `CMUX_COMPANION_HOST` | `127.0.0.1` | Local bind address |
 | `CMUX_COMPANION_PORT` | `3210` | Companion HTTP port |
@@ -226,6 +228,12 @@ and recovery are documented in [recovery](docs/orchestration-recovery.md).
 - **Logs:** inspect `~/Library/Logs/cmux-companion.log` and `~/Library/Logs/cmux-companion.error.log`.
 - **Installed upgrade:** complete the bundled migration and cutover prerequisites above before restarting with this source.
 
+## Open-source readiness
+
+See the [open-source readiness audit](docs/open-source-readiness.md) and
+[security reporting guidance](SECURITY.md) before changing repository visibility.
+
 ## License
 
-MIT
+MIT; retain the [root notice](LICENSE), [updater notice](updater/LICENSE) and
+[third-party attribution](THIRD_PARTY.md).

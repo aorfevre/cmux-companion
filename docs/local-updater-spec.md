@@ -2,7 +2,8 @@
 
 Status: Historical unattended-update design; notification and installation policy
 is superseded by [the bundled manual-update contract](superpowers/specs/2026-09-13-manual-self-update-design.md)
-once that contract receives human review. Until then it remains proposed.
+approved and delivered in PR #117. This document is retained only as historical
+recovery/migration context; use [the current operator guide](updates.md) for setup.
 Target platform: macOS  
 Repository: `aorfevre/cmux-companion`  
 Default channel: `origin/main`
@@ -163,7 +164,7 @@ Configuration and state directories must use mode `0700`. State, handoff, and cr
 {
   "schemaVersion": 1,
   "enabled": true,
-  "repositoryPath": "/Users/example/Developers/karven/cmux-companion",
+  "repositoryPath": "/Users/example/Projects/cmux-companion",
   "expectedRemote": "https://github.com/aorfevre/cmux-companion.git",
   "remote": "origin",
   "branch": "main",

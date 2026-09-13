@@ -10,7 +10,6 @@ export type ImageAttachment = { path: string; name: string; mime: string; size: 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_COUNT = 4;
-const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 
 export { request } from "./api-request";
 
@@ -25,10 +24,6 @@ function imagePromptLines(attachments: { path: string }[]) {
 
 export function composedPrompt(draft: string, attachments: { path: string }[]) {
   return [draft.trim(), imagePromptLines(attachments)].filter(Boolean).join("\n\n");
-}
-
-export function imageReferences(attachments: ImageAttachment[]) {
-  return attachments.map((image) => ({ path: image.path, name: image.name }));
 }
 
 // One uploader for every sheet: it validates the files, saves each one through
@@ -96,22 +91,4 @@ export function AttachmentStrip({ attachments, className = "worktree-attachments
     <span>{image.name}</span>
     <button type="button" aria-label={`Remove ${image.name}`} onClick={() => onRemove(image.path)}>×</button>
   </div>)}</div>;
-}
-
-// The review panel shows what was sent, so it has no remove button. A draft
-// restored in a new sheet holds paths but no preview data URL, so it names the
-// file instead of rendering a broken image.
-export function AttachmentReview({ attachments }: { attachments: { path: string; name: string; preview?: string }[] }) {
-  if (!attachments.length) return null;
-  return <div className="attachment-strip worktree-attachments review">{attachments.map((image) => <div key={image.path}>
-    {image.preview ? <img src={image.preview} alt={image.name} /> : <em className="attachment-missing" aria-hidden="true">no preview</em>}
-    <span>{image.name}</span>
-  </div>)}</div>;
-}
-
-export function ImagePickerButton({ attachments, disabled, inputRef, label = "Choose images", onFiles }: { attachments: ImageAttachment[]; disabled: boolean; inputRef: React.RefObject<HTMLInputElement | null>; label?: string; onFiles: (files: File[]) => void }) {
-  return <>
-    <input ref={inputRef} className="image-input" aria-label={label} type="file" accept={ACCEPT} multiple onChange={(event) => { onFiles([...(event.currentTarget.files || [])]); event.currentTarget.value = ""; }} />
-    <button type="button" className="worktree-add-images" disabled={disabled || attachments.length >= MAX_IMAGE_COUNT} onClick={() => inputRef.current?.click()}>＋ Image{attachments.length ? ` · ${attachments.length}/${MAX_IMAGE_COUNT}` : ""}</button>
-  </>;
 }

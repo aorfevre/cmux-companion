@@ -3,6 +3,8 @@
 resolve_updater_script() {
   local script_name="$1"
   local checkout_root="${0:A:h:h}"
+  local updater_home="${CMUX_COMPANION_HOME:-${HOME}}"
+  [[ "${updater_home}" == /* ]] || return 1
   local candidate_dir
   if [[ -n "${CMUX_COMPANION_UPDATER_REPOSITORY:-}" ]]; then
     [[ "${CMUX_COMPANION_UPDATER_REPOSITORY}" == /* ]] || return 1
@@ -10,7 +12,7 @@ resolve_updater_script() {
     print -r -- "${CMUX_COMPANION_UPDATER_REPOSITORY}/scripts/${script_name}"
     return
   fi
-  for candidate_dir in "${HOME}/.local/share/cmux-companion/current/updater" "${checkout_root}/updater"; do
+  for candidate_dir in "${updater_home}/.local/share/cmux-companion/current/updater" "${checkout_root}/updater"; do
     if [[ -f "${candidate_dir}/scripts/${script_name}" ]]; then
       print -r -- "${candidate_dir}/scripts/${script_name}"
       return

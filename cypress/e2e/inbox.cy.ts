@@ -1,7 +1,7 @@
 const now = "2026-09-08T09:00:00.000Z";
-const billing = { id: "workspace-billing", title: "Billing rewrite", current_directory: "/Users/dev/karven/billing", has_unread: true, terminals: [{ id: "terminal-billing", title: "Billing agent", is_focused: true }] };
-const docs = { id: "workspace-docs", title: "Docs sweep", current_directory: "/Users/dev/karven/docs", terminals: [{ id: "terminal-docs", title: "Docs agent" }] };
-const docsRepo = { id: "repo-docs", name: "Docs", root: "karven", path: "/Users/dev/karven/docs", branch: "main", ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1_788_000_000, scripts: [] };
+const billing = { id: "workspace-billing", title: "Billing rewrite", current_directory: "/Users/dev/projects/billing", has_unread: true, terminals: [{ id: "terminal-billing", title: "Billing agent", is_focused: true }] };
+const docs = { id: "workspace-docs", title: "Docs sweep", current_directory: "/Users/dev/projects/docs", terminals: [{ id: "terminal-docs", title: "Docs agent" }] };
+const docsRepo = { id: "repo-docs", name: "Docs", root: "projects", path: "/Users/dev/projects/docs", branch: "main", ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1_788_000_000, scripts: [] };
 
 type Item = Record<string, unknown> & { id: string; type: "request" | "notification" };
 const question: Item = { id: "req-question", requestId: "req-question", type: "request", kind: "question", workspaceId: billing.id, surfaceId: "terminal-billing", title: "Agent question", subtitle: "Billing agent", body: "Which database should invoices use?", toolName: null, toolInput: null, questionOptions: ["Postgres", "SQLite", "Write reply…"] };

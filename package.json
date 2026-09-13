@@ -78,5 +78,6 @@
     "vitest": "^4.1.11",
     "wrangler": "^4.127.1"
   },
-  "type": "module"
+  "type": "module",
+  "license": "MIT"
 }

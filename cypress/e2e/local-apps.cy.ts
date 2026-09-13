@@ -9,7 +9,7 @@ const capturePng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAA
 
 type PreviewFixture = { id: string; workspaceId: string; repoId: string | null; name: string; targetPort: number; publicPort: number | null; sourceUrl: string; url: string | null; status: "detected" | "active" | "stopped"; updatedAt: string };
 
-const workspace = { id: "ws-dashboard", title: "Dashboard session", current_directory: "/Users/test/Developers/karven/dashboard", terminals: [{ id: "term-main", title: "Main", is_focused: true }, { id: "term-side", title: "Side" }] };
+const workspace = { id: "ws-dashboard", title: "Dashboard session", current_directory: "/Users/test/Developers/projects/dashboard", terminals: [{ id: "term-main", title: "Main", is_focused: true }, { id: "term-side", title: "Side" }] };
 
 function previews(): PreviewFixture[] {
   return [

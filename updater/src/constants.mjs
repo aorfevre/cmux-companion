@@ -1,9 +1,10 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { SERVICE_LABEL, UPDATER_LABEL } from "../../server/service-identity.mjs";
 
 export const LABELS = {
-  companion: "org.cmux-companion.service",
-  updater: "org.cmux-companion.updater",
+  companion: SERVICE_LABEL,
+  updater: UPDATER_LABEL,
 };
 
 export function defaultPaths(home = homedir()) {
@@ -17,8 +18,6 @@ export function defaultPaths(home = homedir()) {
     control: join(configRoot, "updater", "control.sqlite"),
     transaction: join(configRoot, "updater", "transaction.json"),
     lock: join(configRoot, "updater", "lock"),
-    bootstrapNext: join(configRoot, "updater", "bootstrap.next"),
-    notifications: join(configRoot, "updater", "notifications.json"),
     libexec: join(home, ".local", "libexec"),
     bootstrap: join(home, ".local", "libexec", "cmux-companion-updater"),
     launcher: join(home, ".local", "libexec", "cmux-companion-launch"),

@@ -14,8 +14,8 @@ import { launchAgentPlist } from "../src/launchd.mjs";
 import { defaultPaths } from "../src/constants.mjs";
 
 test("normalizes equivalent GitHub remotes and validates full SHAs", () => {
-  assert.equal(normalizeRemote("git@github.com:aorfevre/cmux-companion.git"), "https://github.com/aorfevre/cmux-companion");
-  assert.equal(normalizeRemote("https://github.com/aorfevre/cmux-companion.git/"), "https://github.com/aorfevre/cmux-companion");
+  assert.equal(normalizeRemote("git@github.com:example/companion.git"), "https://github.com/example/companion");
+  assert.equal(normalizeRemote("https://github.com/example/companion.git/"), "https://github.com/example/companion");
   assert.equal(validateSha("a".repeat(40)), "a".repeat(40));
   assert.throws(() => validateSha("main"), /40-character/);
 });

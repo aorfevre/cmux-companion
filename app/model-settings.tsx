@@ -1,13 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DEFAULT_MODEL_ROLES, MODEL_CATALOG, MODEL_PROVIDERS, ACTIVE_MODEL_ROLES } from "../server/model-options.mjs";
+import { MODEL_CATALOG, MODEL_PROVIDERS, ACTIVE_MODEL_ROLES } from "../server/model-options.mjs";
 import { request } from "./image-attachments";
 
 export type ModelProvider = "claude" | "codex";
 export type ModelRoles = Record<string, { provider?: ModelProvider; models: Record<ModelProvider, string> }>;
 export type ModelSettingsStatus = { roles: ModelRoles; defaults: ModelRoles; warning: string | null };
-export const BUILTIN_MODEL_ROLES = DEFAULT_MODEL_ROLES as ModelRoles;
 
 export function ModelSettingsPanel() {
   const [settings, setSettings] = useState<ModelSettingsStatus | null>(null);

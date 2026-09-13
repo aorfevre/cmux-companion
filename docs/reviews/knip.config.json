@@ -9,7 +9,11 @@
     "worker/index.ts",
     "public/sw.js",
     "experiments/local-spa/main.tsx",
-    "experiments/local-spa/vite.config.ts"
+    "experiments/local-spa/vite.config.ts",
+    "app/**/page.tsx",
+    "tests/helpers/orchestration/*-child.mjs",
+    "updater/scripts/*.mjs",
+    "updater/tests/*.test.mjs"
   ],
   "project": [
     "app/**/*.{ts,tsx,mjs,css}",
@@ -21,10 +25,12 @@
     "worker/**/*.ts",
     "public/*.js",
     "experiments/**/*.{ts,tsx}",
-    "server/**/*.d.ts"
+    "server/**/*.d.ts",
+    "updater/**/*.mjs"
   ],
   "ignoreDependencies": [
     "tailwindcss",
     "next"
-  ]
+  ],
+  "ignoreExportsUsedInFile": true
 }

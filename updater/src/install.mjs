@@ -1,3 +1,4 @@
+import { LEGACY_SERVICE_LABEL, LEGACY_UPDATER_LABEL } from '../../server/service-identity.mjs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { lstat, mkdir, readFile, rm } from 'node:fs/promises';
@@ -27,7 +28,7 @@ export function installationConfig({ sourceRoot, repository, paths, port = 3210,
 export async function assertMigrationReady({ paths, existing, migrate, execute = run }) {
   if (await readJson(paths.transaction)) throw new Error('An active transaction must finish or recover before installation');
   if (existing && existing.schemaVersion !== 2 && !migrate) throw new Error('Legacy installation requires --migrate after stopping its identified service and updater owners');
-  const labels = existing?.schemaVersion === 1 ? ['com.aorfevre.cmux-companion', 'com.aorfevre.cmux-companion-updater'] : [LABELS.companion, LABELS.updater];
+  const labels = existing?.schemaVersion === 1 ? [LEGACY_SERVICE_LABEL, LEGACY_UPDATER_LABEL] : [LABELS.companion, LABELS.updater];
   for (const label of labels) {
     const status = await execute('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`], { allowFailure: true });
     if (status.code === 0) throw new Error('Stop the identified installed LaunchAgents before explicit installation or migration');
@@ -43,7 +44,7 @@ export async function installBundled({ sourceRoot, repository, migrate = false, 
   // Existing private transport identity must survive reinstall/migration. Values
   // are read from the backed-up plist, never guessed from another account.
   let preservedEnvironment = {}, priorPath = null;
-  const priorLabel = existing?.schemaVersion === 1 ? 'com.aorfevre.cmux-companion' : LABELS.companion;
+  const priorLabel = existing?.schemaVersion === 1 ? LEGACY_SERVICE_LABEL : LABELS.companion;
   const priorPlist = join(paths.launchAgents, `${priorLabel}.plist`);
   if (existing) {
     try {
@@ -70,7 +71,7 @@ export async function installBundled({ sourceRoot, repository, migrate = false, 
   const oldFiles = new Map();
   let control, priorControl, dataBackup, attemptedStart = false;
   const registered = new Set();
-  const legacyPlists = existing?.schemaVersion === 1 ? ['com.aorfevre.cmux-companion', 'com.aorfevre.cmux-companion-updater'].map(label => join(paths.launchAgents, `${label}.plist`)) : [];
+  const legacyPlists = existing?.schemaVersion === 1 ? [LEGACY_SERVICE_LABEL, LEGACY_UPDATER_LABEL].map(label => join(paths.launchAgents, `${label}.plist`)) : [];
   const companionPlist = join(paths.launchAgents, `${LABELS.companion}.plist`), updaterPlist = join(paths.launchAgents, `${LABELS.updater}.plist`);
   try {
     for (const [index, path] of [paths.config, paths.state, paths.bootstrap, paths.launcher, companionPlist, updaterPlist, ...legacyPlists].entries()) {

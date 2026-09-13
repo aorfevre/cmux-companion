@@ -6,8 +6,8 @@ import Home, { InboxView, LastUpdateStamp, updatedAgo } from "../app/page";
 
 // One cmux workspace with two terminals inside a catalogued repository, so the
 // session detail can reach the terminal, health and change panels.
-const repoPath = "/Users/me/karven/companion";
-const repo = { id: "repo-1", name: "companion", root: "karven", path: repoPath, branch: "main", ahead: 1, behind: 0, changedFiles: 1, dirty: true, lastActivity: 0, scripts: ["dev"] };
+const repoPath = "/Users/me/projects/companion";
+const repo = { id: "repo-1", name: "companion", root: "projects", path: repoPath, branch: "main", ahead: 1, behind: 0, changedFiles: 1, dirty: true, lastActivity: 0, scripts: ["dev"] };
 const terminals = [
   { id: "t-1", title: "shell", is_focused: true, current_directory: repoPath },
   { id: "t-2", title: "logs", is_focused: false, current_directory: repoPath },
@@ -166,7 +166,7 @@ describe("sessions and launch", () => {
     installHome("/?mode=sessions");
     render(<Home />);
     assert.ok(await screen.findByText("Your agents are moving."));
-    assert.ok(screen.getByText("~/karven/companion"));
+    assert.ok(screen.getByText("~/projects/companion"));
     await userEvent.click(screen.getByRole("button", { name: /Companion session/ }));
     assert.ok(await screen.findByRole("button", { name: "Session menu" }));
     assert.equal(new URLSearchParams(location.search).get("workspace"), "ws-1");
@@ -203,7 +203,7 @@ describe("sessions and launch", () => {
     let refuse = true;
     const { calls } = installHome("/?view=launch", (url, init) => {
       if (url === "/api/workspaces" && init?.method === "POST") return refuse ? response({ error: "cmux is not running" }, 503) : response({ workspace: { workspace_id: "ws-1" } });
-      if (url === "/api/repos") return response({ repos: [repo, { ...repo, id: "repo-2", name: "ledger", path: "/Users/me/rekord/ledger", scripts: [], dirty: false }] });
+      if (url === "/api/repos") return response({ repos: [repo, { ...repo, id: "repo-2", name: "ledger", path: "/Users/me/examples/ledger", scripts: [], dirty: false }] });
       return undefined;
     });
     render(<Home />);

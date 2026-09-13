@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -42,10 +42,6 @@ export function parseWorktreePorcelain(output) {
 
 export const cleanupHome = () => join(process.env.CMUX_COMPANION_HOME || homedir(), ".config", "cmux-companion", "worktree-cleanup");
 export const digest = (value) => createHash("sha256").update(value).digest("hex");
-export async function readJson(path, fallback) {
-  try { return JSON.parse(await readFile(path, "utf8")); }
-  catch (error) { if (error.code === "ENOENT") return fallback; throw error; }
-}
 export async function writeJson(path, value) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temp = `${path}.${randomUUID()}.tmp`;

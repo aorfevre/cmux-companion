@@ -91,10 +91,10 @@ test("parses NUL-delimited rename status", () => {
 });
 
 test("recognizes HTTPS and SSH GitHub remotes without accepting other hosts", () => {
-  assert.equal(parseGitHubRepository("remote.origin.url https://github.com/karven/companion.git\n"), "karven/companion");
-  assert.equal(parseGitHubRepository("remote.origin.url git@github.com:karven/companion.git\n"), "karven/companion");
-  assert.equal(parseGitHubRepository("remote.origin.url ssh://git@github.com/karven/companion\n"), "karven/companion");
-  assert.equal(parseGitHubRepository("remote.origin.url https://gitlab.com/karven/companion.git\n"), null);
+  assert.equal(parseGitHubRepository("remote.origin.url https://github.com/projects/companion.git\n"), "projects/companion");
+  assert.equal(parseGitHubRepository("remote.origin.url git@github.com:projects/companion.git\n"), "projects/companion");
+  assert.equal(parseGitHubRepository("remote.origin.url ssh://git@github.com/projects/companion\n"), "projects/companion");
+  assert.equal(parseGitHubRepository("remote.origin.url https://gitlab.com/projects/companion.git\n"), null);
 });
 
 test("normalizes open pull request review and check state", () => {

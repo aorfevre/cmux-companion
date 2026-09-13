@@ -1,9 +1,9 @@
 const now = "2026-09-08T09:00:00.000Z";
-const alpha = { id: "terminal-alpha", title: "Alpha shell", current_directory: "/Users/dev/karven/billing" };
-const beta = { id: "terminal-beta", title: "Beta agent", current_directory: "/Users/dev/karven/billing", is_focused: true };
-const gamma = { id: "terminal-gamma", title: "Gamma logs", current_directory: "/Users/dev/karven/billing" };
-const billing = { id: "workspace-billing", title: "Billing rewrite", current_directory: "/Users/dev/karven/billing", has_unread: true, last_activity_at: 1_788_000_000, preview: "Waiting for your answer", terminals: [alpha, beta, gamma], status: { effective: "idle", signals: { any_agent_needs_input: true } } };
-const docs = { id: "workspace-docs", title: "Docs sweep", current_directory: "/Users/dev/karven/docs", has_unread: false, last_activity_at: 1_788_000_000, preview: "Rewriting README", terminals: [{ id: "terminal-docs", title: "Docs agent", is_focused: true }], status: { effective: "working", signals: { any_agent_running: true } } };
+const alpha = { id: "terminal-alpha", title: "Alpha shell", current_directory: "/Users/dev/projects/billing" };
+const beta = { id: "terminal-beta", title: "Beta agent", current_directory: "/Users/dev/projects/billing", is_focused: true };
+const gamma = { id: "terminal-gamma", title: "Gamma logs", current_directory: "/Users/dev/projects/billing" };
+const billing = { id: "workspace-billing", title: "Billing rewrite", current_directory: "/Users/dev/projects/billing", has_unread: true, last_activity_at: 1_788_000_000, preview: "Waiting for your answer", terminals: [alpha, beta, gamma], status: { effective: "idle", signals: { any_agent_needs_input: true } } };
+const docs = { id: "workspace-docs", title: "Docs sweep", current_directory: "/Users/dev/projects/docs", has_unread: false, last_activity_at: 1_788_000_000, preview: "Rewriting README", terminals: [{ id: "terminal-docs", title: "Docs agent", is_focused: true }], status: { effective: "working", signals: { any_agent_running: true } } };
 const grid = {
   mode: "grid",
   surface_id: beta.id,
@@ -89,7 +89,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       cy.findByRole("heading", { name: "Sessions", level: 2 }).should("be.visible");
       cy.contains(".hero h1", "1 session need you.").should("be.visible");
       cy.get(".summary-row").should("contain.text", "2sessions").and("contain.text", "1needs you").and("contain.text", "1working");
-      cy.findByRole("button", { name: /Billing rewrite/ }).should("contain.text", "~/karven/billing").and("contain.text", "Needs you").and("contain.text", "3 terminals").and("contain.text", "Waiting for your answer");
+      cy.findByRole("button", { name: /Billing rewrite/ }).should("contain.text", "~/projects/billing").and("contain.text", "Needs you").and("contain.text", "3 terminals").and("contain.text", "Waiting for your answer");
       cy.findByRole("button", { name: /Docs sweep/ }).should("contain.text", "Working").and("contain.text", "1 terminal");
       openBilling();
       cy.get("@alphaReplay.all").should("have.length", 0);
@@ -100,7 +100,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
         cy.contains("All tests passed").should("be.visible");
       });
       cy.contains(".detail-header strong", "Billing rewrite").should("be.visible");
-      cy.contains(".detail-header span", "~/karven/billing").should("be.visible");
+      cy.contains(".detail-header span", "~/projects/billing").should("be.visible");
     });
 
     it("switches terminals from the session menu and closes back to the sessions list", () => {

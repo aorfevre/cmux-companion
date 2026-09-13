@@ -2348,9 +2348,9 @@ const REPO_A = "repoBurstE2E000001";
 const REPO_B = "repoBurstE2E000002";
 
 function repository(id: string, name: string) {
-  return { id, name, root: "karven", path: `/Users/test/Developers/karven/${name}`, favorite: true, archived: false, pullRequestsAvailable: true,
+  return { id, name, root: "projects", path: `/Users/test/Developers/projects/${name}`, favorite: true, archived: false, pullRequestsAvailable: true,
     summary: { worktrees: 1, releases: 0, sessions: 0, needsYou: 0, working: 0, dirty: 0 },
-    worktrees: [{ id: `wt-${id}`, repoId: id, path: `/Users/test/Developers/karven/${name}`, name, branch: "main", isPrimary: true, detached: false, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }], releases: [] };
+    worktrees: [{ id: `wt-${id}`, repoId: id, path: `/Users/test/Developers/projects/${name}`, name, branch: "main", isPrimary: true, detached: false, ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 1, pullRequest: null, sessions: [], state: { label: "No session", tone: "ready" } }], releases: [] };
 }
 
 const weekly = { cadence: "weekly", label: "Weekly", remainingPercent: 55, resetAt: "2026-09-09T06:00:00.000Z" };

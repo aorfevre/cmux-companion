@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, readFile, realpath, rename, rm, symlink } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, realpath, rename, symlink } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 
 export async function ensurePrivateDir(path) {
@@ -55,11 +55,4 @@ export async function atomicSymlink(target, linkPath) {
   const temp = `${linkPath}.${process.pid}.${randomUUID()}.tmp`;
   await symlink(target, temp);
   await rename(temp, linkPath);
-}
-
-export async function removePlainPath(path) {
-  const stat = await lstat(path);
-  if (stat.isSymbolicLink() || stat.isFile()) return rm(path);
-  if (!stat.isDirectory()) throw new Error(`Refusing to remove unexpected path: ${path}`);
-  return rm(path, { recursive: true });
 }

@@ -8,8 +8,10 @@ if (!['check', 'retry', 'disable', 'enable'].includes(action)) throw new Error('
 const explicit = process.env.CMUX_COMPANION_UPDATER_REPOSITORY;
 if (explicit && !isAbsolute(explicit)) throw new Error('Updater repository must be an absolute directory');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const updaterHome = process.env.CMUX_COMPANION_HOME || homedir();
+if (!isAbsolute(updaterHome)) throw new Error('Companion home must be an absolute directory');
 const candidates = explicit ? [join(explicit, 'scripts', 'operator.mjs')] : [
-  join(homedir(), '.local', 'share', 'cmux-companion', 'current', 'updater', 'scripts', 'operator.mjs'),
+  join(updaterHome, '.local', 'share', 'cmux-companion', 'current', 'updater', 'scripts', 'operator.mjs'),
   join(root, 'updater', 'scripts', 'operator.mjs'),
 ];
 const script = candidates.find(path => existsSync(path));
