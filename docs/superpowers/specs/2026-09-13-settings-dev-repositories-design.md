@@ -1,7 +1,8 @@
 # Unified settings, named Dev repos, and interface consistency
 
 Date: 2026-09-13
-Status: Goals-first navigation and folder-picker amendment awaiting human review.
+Status: Goals-first navigation and folder-picker amendment approved by the user
+(“go”) after spec commit 2645a3a.
 The original implementation was approved after spec commit 89b1073 and shipped in PR #119.
 Owner: The implementing agent owns integration and verification across all layers.
 
