@@ -1119,3 +1119,16 @@
 .goal-board-verification.failed{border:1px solid rgba(255,109,120,.35);background:rgba(255,109,120,.07);color:#ff9d9d}
 .goal-board-verification.unavailable{border:1px solid #2c343c;background:#151a1f;color:#96a0aa}
 .board-read-only{margin:10px 0 0;border:1px solid rgba(255,200,120,.35);border-radius:10px;background:rgba(255,200,120,.06);padding:8px 10px;color:#e8d3a3;font-size:12px;line-height:1.45}
+
+.update-notice { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; padding: 10px 16px; background: #173d32; color: #f0fff8; border-bottom: 1px solid #36745f; font-size: 14px; }
+.update-notice a { color: inherit; text-decoration: underline; }
+.update-notice button, .update-settings button { min-height: 44px; padding: 8px 14px; border: 1px solid #49605a; border-radius: 8px; background: #192923; color: #edf8f3; cursor: pointer; }
+.update-settings { margin: 24px 0; padding: 20px; border: 1px solid var(--border, #29323d); border-radius: 16px; background: var(--panel, #11161c); scroll-margin-top: 20px; }
+.update-settings p { line-height: 1.5; overflow-wrap: anywhere; }
+.update-settings button:disabled { opacity: .5; cursor: default; }
+.update-settings .update-toggle { display: flex; align-items: center; gap: 12px; min-height: 48px; margin-top: 12px; }
+.update-settings .update-toggle input[type="checkbox"] { width: 38px; height: 22px; padding: 0; margin: 0; flex: 0 0 38px; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.update-confirmation { padding: 14px; margin-top: 16px; border: 1px solid #65c995; border-radius: 8px; }
+.update-confirmation button { margin-right: 8px; margin-top: 8px; }
+.update-settings [role="alert"] { color: #ffb5a8; }

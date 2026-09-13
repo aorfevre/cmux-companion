@@ -9,11 +9,11 @@ const explicit = process.env.CMUX_COMPANION_UPDATER_REPOSITORY;
 if (explicit && !isAbsolute(explicit)) throw new Error('Updater repository must be an absolute directory');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const candidates = explicit ? [join(explicit, 'scripts', 'operator.mjs')] : [
-  join(homedir(), '.local', 'share', 'cmux-companion-updater', 'current', 'scripts', 'operator.mjs'),
-  join(root, '..', 'cmux-companion-updater', 'scripts', 'operator.mjs'),
+  join(homedir(), '.local', 'share', 'cmux-companion', 'current', 'updater', 'scripts', 'operator.mjs'),
+  join(root, 'updater', 'scripts', 'operator.mjs'),
 ];
 const script = candidates.find(path => existsSync(path));
-if (!script) throw new Error('Updater not found. Install cmux-companion-updater or set CMUX_COMPANION_UPDATER_REPOSITORY to its checkout.');
+if (!script) throw new Error('Updater not found. Install the bundled updater or set CMUX_COMPANION_UPDATER_REPOSITORY to its checkout.');
 const child = spawn(process.execPath, [script, action], { stdio: 'inherit' });
 child.once('error', () => { process.exitCode = 1; });
 child.once('exit', code => { process.exitCode = code ?? 1; });

@@ -1,0 +1,68 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import Fastify from 'fastify';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { UpdateControl } from '../updater/src/control.mjs';
+import { registerUpdateRoutes } from '../server/update-routes.mjs';
+import { installUpdateMaintenance, managedWorkBusy } from '../server/update-maintenance.mjs';
+import { sessionValue } from '../server/security.mjs';
+const sha = 'a'.repeat(40), token = 't'.repeat(32);
+async function fixture(t) {
+  const root = mkdtempSync(join(tmpdir(), 'update-routes-')), control = new UpdateControl(join(root, 'control.sqlite'));
+  const app = Fastify({ ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
+  const runtime = { app, scheduler: { sweep: null, verifications: { active: new Map() }, publications: { active: new Map() } }, store: { operations: () => [], list: () => [] } };
+  const cmux = { workspaceList: async () => ({ workspaces: [] }), workspaceStatus: async () => ({ signals: { any_agent_running: false, any_agent_needs_input: false } }) };
+  const promptQueue = { inFlight: new Set() };
+  const maintenance = installUpdateMaintenance({ runtime, control, cmux, promptQueue, serviceId: 'service' });
+  app.post('/api/launch', async () => ({ launched: true }));
+  await app.register(async scope => registerUpdateRoutes(scope, { control, token, maintenance }));
+  const headers = { host: 'localhost', authorization: `Bearer ${token}`, origin: 'http://localhost' };
+  const send = (url, payload, method = 'POST', supplied = headers) => app.inject({ method, url, payload, headers: supplied });
+  t.after(async () => { await app.close(); control.close(); rmSync(root, { recursive: true, force: true }); });
+  control.checked({ candidate: { sha }, observedSha: sha, deployedSha: 'b'.repeat(40) });
+  return { control, app, runtime, cmux, promptQueue, maintenance, send };
+}
+test('update routes require pairing, origin and strict payloads; private transaction evidence is not returned', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.send('/api/updater/preferences', { revision: 0, automatic: true }, 'PATCH', {})).statusCode, 401);
+  assert.equal((await f.send('/api/updater/preferences', { revision: 0, automatic: true }, 'PATCH', { authorization: `Bearer ${token}`, origin: 'https://evil.test' })).statusCode, 403);
+  for (const body of [{ revision: 0, automatic: true, command: 'shell' }, { revision: 0, automatic: 'true' }]) assert.equal((await f.send('/api/updater/preferences', body, 'PATCH')).statusCode, 400);
+  assert.equal((await f.send('/api/updater/preferences', { revision: 0, automatic: true }, 'PATCH')).statusCode, 200);
+  assert.equal((await f.send('/api/updater/preferences', { revision: 0, automatic: false }, 'PATCH')).statusCode, 409);
+  assert.equal((await f.send('/api/updater/check', {})).json().checking, true);
+  assert.equal((await f.send('/api/updater/requests', { id: 'manual-001', sha, whenIdle: true })).statusCode, 200);
+  f.control.change(state => { state.requests['manual-001'].backup = { path: '/private/data' }; });
+  const status = await f.send('/api/updater/updates', undefined, 'GET'); assert.doesNotMatch(status.body, /private|backup|serviceId/);
+  const cookie = { host: 'localhost', cookie: `cmux_session=${sessionValue(token)}`, origin: 'http://localhost' };
+  assert.equal((await f.send('/api/updater/maintenance', { id: 'manual-001', action: 'acquire' }, 'POST', cookie)).statusCode, 403);
+  assert.equal((await f.send('/api/updater/cancel', { id: 'manual-001' })).json().request.status, 'cancelled');
+});
+test('durable maintenance fences HTTP launches and prompt draining, requires same service and fails closed on uncertain work', async t => {
+  const f = await fixture(t); f.control.request({ id: 'manual-002', sha, whenIdle: true });
+  const acquire = await f.send('/api/updater/maintenance', { id: 'manual-002', action: 'acquire' });
+  assert.equal(acquire.json().ready, true); assert.equal(f.runtime.scheduler.paused(), true); assert.equal(f.promptQueue.paused(), true);
+  assert.equal((await f.send('/api/launch', {})).statusCode, 503);
+  assert.equal((await f.send('/api/updater/maintenance', { id: 'manual-002', action: 'verify', serviceId: 'old-service' })).statusCode, 409);
+  assert.equal((await f.send('/api/updater/maintenance', { id: 'manual-002', action: 'verify', serviceId: 'service' })).json().ready, true);
+  f.control.unfence('manual-002'); assert.equal((await f.send('/api/launch', {})).statusCode, 200);
+  f.runtime.store.list = () => [{ attempts: [{ workerState: 'unknown' }], status: 'aborted' }];
+  assert.equal((await f.maintenance.acquire('manual-002')).ready, false); assert.equal(f.control.status().maintenance, false);
+  f.runtime.store.list = () => []; f.cmux.workspaceList = async () => ({ workspaces: [{ id: 'workspace' }] });
+  f.cmux.workspaceStatus = async () => ({}); assert.equal((await f.maintenance.acquire('manual-002')).ready, false);
+  f.cmux.workspaceStatus = async () => { throw new Error('offline'); }; assert.equal((await f.maintenance.acquire('manual-002')).ready, false);
+});
+test('in-flight launches and coordinator effects cannot race the idle fence', async t => {
+  const f = await fixture(t); let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  let entered; const started = new Promise(resolve => { entered = resolve; });
+  f.app.post('/api/slow-launch', async () => { entered(); await waiting; return {}; });
+  const launch = f.send('/api/slow-launch', {}); await started;
+  f.control.request({ id: 'manual-003', sha });
+  assert.equal((await f.maintenance.acquire('manual-003')).ready, false); release(); await launch;
+  f.runtime.scheduler.verifications.active.set('check', {}); assert.equal(managedWorkBusy(f.runtime), true); f.runtime.scheduler.verifications.active.clear();
+  f.runtime.store.operations = () => [{ status: 'dispatching' }]; assert.equal(managedWorkBusy(f.runtime), true);
+  f.runtime.store.operations = () => []; f.promptQueue.inFlight.add('prompt'); assert.equal((await f.maintenance.acquire('manual-003')).ready, false);
+  assert.equal(managedWorkBusy(null), true);
+});

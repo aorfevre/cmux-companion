@@ -10,7 +10,7 @@ import { releaseRetention } from "../server/release-retention.mjs";
 function installFakeOperator(t, body) {
   const home = mkdtempSync(join(tmpdir(), "release-retention-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  const scripts = join(home, ".local", "share", "cmux-companion-updater", "current", "scripts");
+  const scripts = join(home, ".local", "share", "cmux-companion", "current", "updater", "scripts");
   mkdirSync(scripts, { recursive: true });
   writeFileSync(join(scripts, "operator.mjs"), body);
   return home;

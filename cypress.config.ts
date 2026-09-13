@@ -21,6 +21,14 @@ export default defineConfig({
         on('task', {
           settingsPairing: () => readFileSync(settingsManifest.tokenFile, 'utf8'),
           settingsProjectPath: () => settingsManifest.repository,
+          updatesBusy: (busy: boolean) => {
+            if (typeof busy !== 'boolean') throw new Error('Expected a fixture boolean');
+            const path = join(settingsManifest.directory, 'updates-busy');
+            if (busy) writeFileSync(path, 'busy', { mode: 0o600 });
+            else if (existsSync(path)) unlinkSync(path);
+            return null;
+          },
+          updatesEvidence: () => JSON.parse(readFileSync(join(settingsManifest.directory, 'updates-evidence.json'), 'utf8')),
         });
       }
       config.expose = { ...config.expose, settings: Boolean(settingsManifestPath), orchestration: Boolean(manifestPath), orchestrationReadOnly: process.env.CMUX_ORCHESTRATION_CYPRESS_READ_ONLY === '1' };

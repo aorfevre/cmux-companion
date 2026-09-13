@@ -40,7 +40,9 @@ export function deploymentStatus(state, releaseVersion, now = Date.now(), { upda
   const phase = value(state?.phase) || "idle";
   const lastCheckAt = value(state?.lastCheckAt);
   const lastCheckTime = lastCheckAt ? Date.parse(lastCheckAt) : Number.NaN;
-  const checkAge = Number.isFinite(lastCheckTime) ? now - lastCheckTime : Number.POSITIVE_INFINITY;
+  const heartbeat = Date.parse(value(state?.lastHeartbeatAt) || "");
+  const activityTime = Number.isFinite(heartbeat) ? heartbeat : lastCheckTime;
+  const checkAge = Number.isFinite(activityTime) ? now - activityTime : Number.POSITIVE_INFINITY;
   const nextEligibleTime = Date.parse(value(state?.nextEligibleCheckAt) || "");
   const recentCheck = checkAge <= UPDATER_STALE_AFTER_MS;
   const activeRollout = phase !== "idle" && phase !== "failed";

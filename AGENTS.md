@@ -48,8 +48,8 @@ It prints private manifest and token paths, never the token. Set
 `http://localhost:3000/orchestration`, and pair using the disposable token.
 Use a free port rather than stopping an existing owner. Stop both owned processes
 with Ctrl-C. See `docs/orchestration-development.md` for fixture evidence and cleanup.
-`companion:dev` is production composition and requires a prepared private
-`CMUX_COMPANION_ORCHESTRATION_CONFIG`; do not use installed state for routine checks.
+`companion:dev` is production composition with local settings/onboarding; legacy
+JSON startup remains a migration path. Do not use installed state for routine checks.
 
 ## Fast verification
 Run `npm test`, `npm run test:ui`, `npm run lint` and `npm run typecheck`.

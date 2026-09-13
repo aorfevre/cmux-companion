@@ -1,3 +1,8 @@
+import { UpdateControl } from '../updater/src/control.mjs';
+import { updateCycle } from '../updater/src/transaction.mjs';
+import { registerUpdateRoutes } from '../server/update-routes.mjs';
+import { installUpdateMaintenance } from '../server/update-maintenance.mjs';
+import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -15,7 +20,7 @@ export async function startSettingsDemo() {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'companion-settings-dev-')));
   const repository = await createRepositoryFixture(), settings = new LocalSettings({ path: join(directory, 'settings.sqlite') });
   const token = randomBytes(32).toString('hex'), tokenFile = join(directory, 'pairing-token');
-  let runtime;
+  let runtime, updateControl, updateTimer, updatePending = Promise.resolve();
   try {
     const probeProvider = async () => ({ ready: true });
     runtime = await createSettingsRuntime({ settings, directory, token, probeProvider,
@@ -26,10 +31,27 @@ export async function startSettingsDemo() {
       cmux: { hostStatus: async () => ({}), workspaceList: async () => ({ workspaces: [] }), capabilities: async () => ({}) },
       onSettingsChange: async () => { catalog.invalidate(); await runtime.settingsChanged(); },
     }));
+    updateControl = new UpdateControl(join(directory, 'updates.sqlite'));
+    const cmux = { workspaceList: async () => ({ workspaces: [] }) };
+    const maintenance = installUpdateMaintenance({ runtime, control: updateControl, cmux });
+    await runtime.app.register(async app => registerUpdateRoutes(app, { control: updateControl, token, maintenance }));
+    const sha = 'a'.repeat(40), base = 'b'.repeat(40), evidence = { activations: [], checks: 0 };
+    const adapter = {
+      prepare: async () => {}, verifyFence: async () => {}, backup: async () => ({ previousSha: base, files: [] }),
+      activate: async sha => { evidence.activations.push(sha); }, restart: async () => {}, health: async () => {}, accept: async () => {}, stop: async () => {}, restore: async () => {},
+    };
+    const cycle = async () => {
+      await updateCycle({ control: updateControl, deployedSha: updateControl.status().deployedSha || base,
+        discover: async deployedSha => { evidence.checks++; return { candidate: deployedSha === sha ? null : { sha, changesUrl: `https://github.com/example/disposable/compare/${base}...${sha}` }, deployedSha, observedSha: sha }; },
+        revalidate: async () => {}, maintenance: async id => existsSync(join(directory, 'updates-busy')) ? { ready: false } : maintenance.acquire(id), adapter });
+      await writeFile(join(directory, 'updates-evidence.json'), JSON.stringify(evidence), { mode: 0o600 });
+    };
+    await cycle();
+    updateTimer = setInterval(() => { updatePending = updatePending.then(cycle); }, 100);
     const address = await runtime.listen({ port: 0 });
     const manifest = { directory, tokenFile, address, repository: repository.repository };
     const manifestFile = join(directory, 'connection.json');
     await writeFile(tokenFile, token, { mode: 0o600 }); await writeFile(manifestFile, JSON.stringify(manifest), { mode: 0o600 });
-    return { manifest, manifestFile, async close() { await runtime.close(); settings.close(); await repository.close(); await rm(directory, { recursive: true, force: true }); } };
-  } catch (error) { await runtime?.close(); settings.close(); await repository.close(); await rm(directory, { recursive: true, force: true }); throw error; }
+    return { manifest, manifestFile, async close() { clearInterval(updateTimer); await updatePending; await runtime.close(); updateControl.close(); settings.close(); await repository.close(); await rm(directory, { recursive: true, force: true }); } };
+  } catch (error) { clearInterval(updateTimer); await updatePending; await runtime?.close(); updateControl?.close(); settings.close(); await repository.close(); await rm(directory, { recursive: true, force: true }); throw error; }
 }
