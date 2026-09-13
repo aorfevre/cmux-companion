@@ -192,9 +192,9 @@ describe("sessions and launch", () => {
     assert.equal(location.search, "?view=launch");
     assert.equal(screen.getByRole("link", { name: "Goals" }).getAttribute("href"), "/orchestration");
     assert.equal(screen.getByRole("link", { name: "Settings" }).getAttribute("href"), "/settings");
-    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
+    act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
     assert.equal(location.search, "?view=sessions");
-    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
+    act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
     assert.ok(await screen.findByText("No sessions yet"));
     assert.equal(location.search, "?view=sessions");
     await userEvent.click(screen.getByRole("button", { name: "Local apps" }));
@@ -476,7 +476,7 @@ describe("session detail", () => {
     await userEvent.click(screen.getByRole("button", { name: "‹ Back" }));
     await userEvent.click(within(await openSessionMenu()).getByRole("button", { name: "Terminal" }));
     await userEvent.click(screen.getByRole("button", { name: /Back/ }));
-    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
+    act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
     await waitFor(() => assert.ok(screen.getByText("No sessions yet")));
   });
 });
@@ -542,7 +542,7 @@ describe("inbox", () => {
     assert.ok(await screen.findByText("Hello from the guide."));
     await userEvent.click(screen.getByRole("button", { name: "‹ Back" }));
     assert.equal(location.search, "?view=sessions");
-    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
+    act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
     await userEvent.click(screen.getByRole("button", { name: "Local apps" }));
     await userEvent.click(await screen.findByRole("button", { name: "2 items need your attention" }));
     assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
@@ -551,7 +551,7 @@ describe("inbox", () => {
     assert.ok(await screen.findByRole("textbox", { name: "Terminal input" }));
     await userEvent.click(screen.getByRole("button", { name: /Back/ }));
     assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
-    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
+    act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
     await userEvent.click(await screen.findByRole("button", { name: "Inbox · 2" }));
     assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
   });

@@ -1,5 +1,6 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { FolderPicker } from './folder-picker';
 import { request } from '../api-request';
 import type { Check, DevRepo, Project, Settings } from './settings-panel';
 type Inspected = Pick<Project, 'name' | 'path' | 'github' | 'remote'> & { suggestedChecks?: Check[]; error?: string };
@@ -9,6 +10,8 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
   const [working, setWorking] = useState(false), [scans, setScans] = useState<Record<string, Scan>>({}), [selected, setSelected] = useState<string[]>([]);
   const [openGroup, setOpenGroup] = useState<string | null>(null), [editing, setEditing] = useState<string | null>(null), [search, setSearch] = useState('');
   const [suggestions, setSuggestions] = useState<Record<string, Check[]>>({}), [individual, setIndividual] = useState(false), [individualPath, setIndividualPath] = useState('');
+  const [picker, setPicker] = useState<'dev' | 'individual' | null>(null), [lastFolder, setLastFolder] = useState<string>(), [gitFolder, setGitFolder] = useState<string | null>(null);
+  const savingRoot = useRef(false);
   const roots = draft.devRepos ?? [], disabled = busy || working;
   const failure = (cause: unknown) => onError(cause instanceof Error ? cause.message : 'Could not inspect this directory');
   async function scan(root: DevRepo) {
@@ -17,9 +20,12 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
     catch (cause) { failure(cause); } finally { setWorking(false); }
   }
   async function addRoot() {
-    if (!validated) return;
-    const root = { id: crypto.randomUUID(), name: name.trim(), path: validated };
-    if (await save({ ...draft, devRepos: [...roots, root] })) { setAdding(false); setName(''); setPath(''); setValidated(null); await scan(root); }
+    if (!validated || savingRoot.current) return;
+    savingRoot.current = true;
+    try {
+      const root = { id: crypto.randomUUID(), name: name.trim(), path: validated };
+      if (await save({ ...draft, devRepos: [...roots, root] })) { setAdding(false); setName(''); setPath(''); setValidated(null); await scan(root); }
+    } finally { savingRoot.current = false; }
   }
   const updateProject = (id: string, change: Partial<Project>) => onChange({ ...draft, projects: draft.projects.map(project => project.id === id ? { ...project, ...change } : project) });
   async function openProject(project: Project) {
@@ -36,12 +42,33 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
       onChange({ ...draft, projects: [...draft.projects, project] }); setEditing(project.id); setSuggestions(current => ({ ...current, [project.id]: result.suggestedChecks ?? [] })); setIndividualPath(''); setIndividual(false); onNotice('Repository inspected. Review its destination and checks, then save.');
     } catch (cause) { failure(cause); } finally { setWorking(false); }
   }
+  async function chooseFolder(folder: { name: string; path: string }, signal?: AbortSignal) {
+    if (picker === 'individual') { setIndividualPath(folder.path); setLastFolder(folder.path); setPicker(null); return; }
+    let value: { path: string };
+    try { value = await request<{ path: string }>('/api/settings/dev-repos/inspect', { method: 'POST', body: JSON.stringify({ path: folder.path }), signal }); }
+    catch (cause) {
+      if (signal?.aborted) return;
+      if (cause instanceof Error && cause.message.includes('Git root')) { setGitFolder(folder.path); setLastFolder(folder.path); setPicker(null); return; }
+      throw cause;
+    }
+    if (signal?.aborted) return;
+    const baseName = folder.name.trim().slice(0, 150) || 'Dev repo';
+    let suggested = baseName, suffix = 2;
+    while (roots.some(root => root.name.toLowerCase() === suggested.toLowerCase())) suggested = `${baseName} ${suffix++}`;
+    setName(suggested); setPath(value.path); setValidated(value.path); setGitFolder(null); setLastFolder(value.path); setPicker(null);
+  }
   const project = draft.projects.find(entry => entry.id === editing);
   const matching = (entry: Project | Inspected, root?: DevRepo) => `${root?.name ?? ''} ${entry.name} ${entry.github ?? ''}`.toLowerCase().includes(search.toLowerCase());
   return <section><header className="settings-section-heading"><div><h2>Dev repos</h2><p>Folders containing Git repositories on your connected Mac.</p></div><button disabled={disabled} onClick={() => setAdding(!adding)}>Add Dev repo</button></header>
-    {adding && <div className="settings-editor"><h3>Add a development folder</h3><label>Dev repo name<input placeholder="e.g. karven" value={name} onChange={event => setName(event.target.value)} /></label><label>Directory on this Mac<input placeholder="~/Developers/karven" value={path} onChange={event => { setPath(event.target.value); setValidated(null); }} autoCapitalize="none" spellCheck={false} /></label>
-      <button disabled={disabled || !path.trim() || !name.trim()} onClick={() => { setWorking(true); onError(''); void request<{ path: string }>('/api/settings/dev-repos/inspect', { method: 'POST', body: JSON.stringify({ path }) }).then(value => setValidated(value.path)).catch(failure).finally(() => setWorking(false)); }}>Validate directory</button>
-      {validated && <><p>Directory on this Mac: <span className="settings-path">{validated}</span></p><button disabled={disabled} onClick={() => void addRoot()}>Save Dev repo and discover</button></>}<button disabled={disabled} onClick={() => setAdding(false)}>Cancel</button>
+    {picker && <FolderPicker initialPath={lastFolder} onChoose={chooseFolder} onCancel={last => { if (last) setLastFolder(last); setPicker(null); }} />}
+    {adding && <div className="settings-editor"><h3>Add a development folder</h3><p>Choose a folder containing your Git repositories. Its name fills in automatically.</p>
+      <button disabled={disabled} onClick={() => setPicker('dev')}>{validated ? 'Choose another folder' : 'Choose folder'}</button>
+      {gitFolder && <div role="status"><p>This is one repository. Add it individually, or choose its parent folder to group repositories.</p><button disabled={disabled} onClick={() => { setIndividualPath(gitFolder); setIndividual(true); setAdding(false); setGitFolder(null); }}>Add this individual repository</button></div>}
+      <details><summary>Enter a path (advanced)</summary><label>Directory on this Mac<input placeholder="~/Developers" value={path} onChange={event => { setPath(event.target.value); setValidated(null); }} autoCapitalize="none" spellCheck={false} /></label>
+        <button disabled={disabled || !path.trim()} onClick={() => { setWorking(true); onError(''); void chooseFolder({ name: path.split('/').filter(Boolean).at(-1) || 'Dev repo', path }).catch(failure).finally(() => setWorking(false)); }}>Validate directory</button>
+      </details>
+      {validated && <><p>Selected folder: <span className="settings-path">{validated}</span></p><label>Dev repo name<input value={name} onChange={event => setName(event.target.value)} /></label><p>You can rename this folder in Companion without changing it on your Mac.</p><button disabled={disabled || !name.trim()} onClick={() => void addRoot()}>Save Dev repo and discover</button></>}
+      <button disabled={disabled} onClick={() => { setAdding(false); setValidated(null); setGitFolder(null); }}>Cancel</button>
     </div>}
     <label>Search repositories<input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Folder, repository or GitHub owner" /></label>
     {!roots.length && <div className="settings-empty"><h3>Your repositories, organized</h3><p>Add a folder like karven or rekord, then choose which repositories Companion can use.</p></div>}
@@ -62,7 +89,7 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
       </div>}
     </article>)}
     <article><div className="settings-section-heading"><h3>Individual repositories</h3><button disabled={disabled} onClick={() => setIndividual(!individual)}>Add individual repository</button></div>
-      {individual && <div className="settings-editor"><label>Project directory<input value={individualPath} placeholder="~/Developers/my-repository" onChange={event => setIndividualPath(event.target.value)} autoCapitalize="none" spellCheck={false} /></label><button disabled={disabled || !individualPath.trim()} onClick={() => void addIndividual()}>Validate and add project</button></div>}
+      {individual && <div className="settings-editor"><button disabled={disabled} onClick={() => setPicker('individual')}>Choose repository folder</button>{individualPath && <p className="settings-path">{individualPath}</p>}<details><summary>Enter a repository path (advanced)</summary><label>Project directory<input value={individualPath} placeholder="~/Developers/my-repository" onChange={event => setIndividualPath(event.target.value)} autoCapitalize="none" spellCheck={false} /></label></details><button disabled={disabled || !individualPath.trim()} onClick={() => void addIndividual()}>Validate and add project</button><button disabled={disabled} onClick={() => setIndividual(false)}>Cancel</button></div>}
       {draft.projects.filter(entry => !entry.devRepoId && matching(entry)).map(entry => <RepositoryRow key={entry.id} project={entry} open={() => void openProject(entry)} />)}
     </article>
     {project && <article className="settings-editor" aria-label="Repository details"><h3>{project.name}</h3><p className="settings-path">{project.path}</p><fieldset disabled={disabled}><legend className="sr-only">Repository preferences</legend>

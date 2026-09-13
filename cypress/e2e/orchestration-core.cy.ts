@@ -7,8 +7,8 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.task('orchestrationRelease', 'reset');
     cy.visit('/orchestration');
     cy.task<string>('orchestrationPairing', null, { log: false }).then(token => {
-      cy.findByLabelText('Pairing token').type(token, { log: false });
-      cy.findByRole('button', { name: 'Pair device' }).click();
+      cy.findByLabelText('Pairing code').type(token, { log: false });
+      cy.findByRole('button', { name: 'Pair this device' }).click();
     });
     cy.findByRole('heading', { name: 'Start a goal' }).should('be.visible');
   });
@@ -16,13 +16,13 @@ suite('Mobile orchestration with real service and disposable Git', () => {
   const readonly = Cypress.expose('orchestrationReadOnly') ? it : it.skip;
   readonly('protects the real service in read-only mode', () => {
     cy.contains('Read-only mode · controls are disabled.').should('be.visible');
-    cy.findByRole('button', { name: 'Start planning' }).should('be.disabled');
+    cy.findByRole('button', { name: 'New goal' }).should('be.disabled');
     cy.request({ method: 'POST', url: '/api/orchestration/commands', body: { id: 'readonly', goalId: 'readonly', expectedVersion: 0, type: 'create_goal', payload: {} }, failOnStatusCode: false }).its('status').should('equal', 403);
     cy.task<Evidence>('orchestrationEvidence').its('goals').should('have.length', 0);
   });
   writable('reviews a plan, overlaps implementers, repairs review and verification, then publishes one exact-head PR', () => {
     cy.findByLabelText('What should we accomplish?').type('Build the parallel fixture');
-    cy.findByRole('button', { name: 'Start planning' }).click();
+    cy.findByRole('button', { name: 'New goal' }).click();
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).should('be.enabled').click();
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.get('[data-task="B"]').should('contain.text', 'running');
@@ -69,7 +69,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
   });
   writable('aborts waiting siblings and reconciles without running their dependent task', () => {
     cy.findByLabelText('What should we accomplish?').type('Abort this fixture');
-    cy.findByRole('button', { name: 'Start planning' }).click();
+    cy.findByRole('button', { name: 'New goal' }).click();
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).click();
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.findByRole('button', { name: 'Abort goal' }).click();

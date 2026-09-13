@@ -7,14 +7,15 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); history.replaceSt
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 function fixture(category = 'agents', settings = defaults()) {
   history.replaceState(null, '', `/settings#${category}`);
-  const state = { saved: { revision: 3, settings, imported: false }, fail: false, paired: true, scanError: false, calls: [] as { url: string; method?: string; body: Record<string, unknown> }[] };
+  const state = { saved: { revision: 3, settings, imported: false }, fail: false, paired: true, scanError: false, gitFolder: false, calls: [] as { url: string; method?: string; body: Record<string, unknown> }[] };
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     state.calls.push({ url, method: init?.method, body });
     if (url.endsWith('/pair')) { state.paired = true; return json({ paired: true }); }
     if (!state.paired) return json({ error: 'Pair this device' }, 401);
     if (url.endsWith('/scan')) return state.scanError ? json({ error: 'Directory unavailable' }, 400) : json({ repositories: [{ path: '/projects/karven/example', name: 'Example', github: 'example/repo', remote: 'git@github.com:example/repo.git' }], partial: true, reason: 'Partial scan' });
-    if (url.endsWith('dev-repos/inspect')) return json({ path: '/projects/karven' });
+    if (url.endsWith('/folders')) return json({ macName: 'Fixture Mac', path: body.path || '/projects', name: body.path ? 'karven' : 'projects', parent: body.path ? '/projects' : null, roots: [{ name: 'Home', path: '/projects' }], breadcrumbs: [{ name: 'Home', path: '/projects' }], folders: body.path ? [] : [{ name: 'karven', path: '/projects/karven' }], partial: false, examined: 1 });
+    if (url.endsWith('dev-repos/inspect')) return state.gitFolder ? json({ error: 'Choose a folder containing repositories, or use Add individual repository for a Git root' }, 400) : json({ path: '/projects/karven' });
     if (url.endsWith('projects/inspect')) return json({ path: String(body.path), name: 'Example', github: 'example/repo', remote: 'git@github.com:example/repo.git', suggestedChecks: [{ id: 'test', executable: 'npm', args: ['run', 'test'], script: 'node --test' }] });
     if (url.endsWith('/validate')) return json({ ready: true });
     if (url === '/api/bootstrap') return json({ connected: true, host: { mac_display_name: 'Fixture Mac' } });
@@ -26,6 +27,7 @@ function fixture(category = 'agents', settings = defaults()) {
     }
     return json(structuredClone(state.saved));
   }));
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   vi.spyOn(window, 'confirm').mockReturnValue(true);
   return state;
 }
@@ -61,7 +63,7 @@ test('pairing resumes setup; navigation guards unsaved fields and completion use
 });
 test('Dev repo journey validates canonical path, saves a named group, discovers then explicitly selects and configures repositories', async () => {
   const state = fixture('dev-repos'); render(<LocalSettingsPanel />); await screen.findByText('Your repositories, organized');
-  click('Add Dev repo'); change('Dev repo name', 'karven'); change('Directory on this Mac', '~/Developers/karven'); click('Validate directory'); await screen.findByText('/projects/karven'); click('Save Dev repo and discover');
+  click('Add Dev repo'); change('Directory on this Mac', '~/Developers/karven'); click('Validate directory'); await screen.findByText('/projects/karven'); click('Save Dev repo and discover');
   await screen.findByText('Partial scan'); assert.equal(state.saved.settings.projects.length, 0); click('Select all available'); click('Add selected repositories'); await screen.findByText('Selected repositories added. Configure checks to enable goals.');
   assert.equal(state.saved.settings.projects.length, 1); click(/Example.*Configure for goals/); await screen.findByText('node --test'); fireEvent.click(screen.getByRole('checkbox', { name: /npm run test/ })); change('Repository name', 'Renamed'); click('Save changes'); await saved(); assert.equal(state.saved.settings.projects[0].checks.length, 1);
   change('Search repositories', 'not-found'); assert.equal(screen.queryByRole('button', { name: /Renamed.*Repository configured/ }), null); change('Search repositories', 'example');
@@ -86,4 +88,26 @@ test('advanced preferences convert human units, save all owning fields and suppo
 test('failed group discovery is actionable and duplicate individual additions do not duplicate settings', async () => {
   const settings = defaults(); settings.devRepos = [{ id: 'karven', name: 'karven', path: '/projects/karven' }]; settings.projects = [{ id: 'one', name: 'One', path: '/projects/one', enabled: true, github: null, remote: null, checks: [] }];
   const state = fixture('dev-repos', settings); state.scanError = true; render(<LocalSettingsPanel />); await screen.findByText('karven'); click('Open / Refresh'); await screen.findByText('Directory unavailable'); click('Add individual repository'); change('Project directory', '/projects/one'); click('Validate and add project'); await screen.findByText('This repository is already added.'); assert.equal(state.saved.settings.projects.length, 1);
+});
+
+async function chooseKarven() {
+  click('Choose folder'); fireEvent.click(await screen.findByRole('button', { name: 'karven' }));
+  await screen.findByText('No visible subfolders. You can use this folder or go back.'); click('Use this folder');
+}
+test('folder picker prefills a unique name, preserves failed saves and needs no typed paths', async () => {
+  const settings = defaults(); settings.devRepos = [{ id: 'existing', name: 'karven', path: '/different' }];
+  const state = fixture('dev-repos', settings); render(<LocalSettingsPanel />); await screen.findByText('/different'); click('Add Dev repo'); await chooseKarven();
+  assert.equal((await screen.findByLabelText('Dev repo name') as HTMLInputElement).value, 'karven 2');
+  state.fail = true; click('Save Dev repo and discover'); await screen.findByText('Save failed'); assert.equal((screen.getByLabelText('Dev repo name') as HTMLInputElement).value, 'karven 2');
+  state.fail = false; click('Save Dev repo and discover'); await screen.findByText('Partial scan'); assert.equal(state.saved.settings.devRepos?.length, 2);
+});
+test('Git-root selection offers the individual flow without automatically adding execution permission', async () => {
+  const state = fixture('dev-repos'); state.gitFolder = true; render(<LocalSettingsPanel />); await screen.findByText('Your repositories, organized'); click('Add Dev repo'); await chooseKarven();
+  await screen.findByText(/This is one repository/); assert.equal(state.saved.settings.projects.length, 0); click('Add this individual repository'); click('Validate and add project'); await screen.findByLabelText('Repository name'); assert.equal(state.saved.settings.projects.length, 0);
+});
+test('cancelling the folder explorer leaves the Dev repo editor unchanged and restores focus', async () => {
+  fixture('dev-repos'); render(<LocalSettingsPanel />); await screen.findByText('Your repositories, organized'); click('Add Dev repo');
+  const trigger = screen.getByRole('button', { name: 'Choose folder' }); trigger.focus(); click('Choose folder'); fireEvent.click(await screen.findByRole('button', { name: 'karven' })); await screen.findByText('No visible subfolders. You can use this folder or go back.');
+  fireEvent(screen.getByRole('dialog'), new Event('cancel', { bubbles: false, cancelable: true })); assert.equal(screen.queryByRole('dialog'), null); assert.equal(document.activeElement, trigger); assert.equal(screen.queryByLabelText('Dev repo name'), null);
+  click('Choose folder'); await screen.findByText('No visible subfolders. You can use this folder or go back.');
 });

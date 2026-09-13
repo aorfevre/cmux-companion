@@ -64,3 +64,24 @@
 .local-settings-page .settings-categories button[aria-current] { background: var(--panel); color: var(--accent); }
 .local-settings-page .settings-back { background: transparent; border-color: transparent; padding-left: 0; }
 @media(max-width:700px) { .settings-header { margin-bottom: 16px; } .settings-back { margin-bottom: 12px; } .settings-section-heading { flex-direction: row; flex-wrap: wrap; } }
+
+.folder-picker { width: min(38rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); border: 1px solid var(--line, #ddd); border-radius: 16px; padding: 1.25rem; background: var(--panel, #fff); color: var(--text, #222); overflow: auto; }
+.folder-picker::backdrop { background: #0008; }
+.folder-picker fieldset { border: 0; padding: 0; min-width: 0; }
+.folder-picker nav, .folder-picker footer { display: flex; flex-wrap: wrap; gap: .5rem; margin-block: .75rem; }
+.folder-picker footer { justify-content: flex-end; }
+.folder-picker button { min-height: 44px; }
+.folder-picker label { display: grid; gap: .5rem; }
+.folder-picker input { width: 100%; min-width: 0; }
+.folder-list { display: grid; gap: .375rem; max-height: 40dvh; overflow: auto; }
+.folder-list button { display: flex; gap: .75rem; text-align: left; align-items: center; }
+.folder-list button span:nth-child(2) { flex: 1; overflow-wrap: anywhere; }
+.folder-picker nav button { overflow-wrap: anywhere; max-width: 100%; }
+
+.folder-picker[open] { display: flex; flex-direction: column; max-height: min(48rem, calc(100dvh - 2rem)); }
+.folder-picker > header, .folder-picker > footer { flex: none; }
+.folder-picker-body { flex: 1; min-height: 0; overflow: auto; }
+.folder-picker-body fieldset { margin: 0; }
+.folder-picker footer { display: grid; grid-template-columns: auto minmax(0, 1fr); background: var(--panel); padding-top: .75rem; margin-bottom: 0; border-top: 1px solid var(--line); }
+.local-settings-page .folder-picker button { margin: 0; }
+.local-settings-page .folder-picker .primary-button { background: var(--accent); color: var(--on-accent); }

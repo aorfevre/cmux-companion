@@ -104,7 +104,7 @@ describe("Launch options and outcomes", () => {
     cy.wait("@launch");
     cy.wait("@bootstrap");
     cy.get(".toast").should("be.visible").and("contain.text", "Workspace launched. It will appear in a moment.");
-    cy.findByRole("link", { name: "Orchestration goals" }).should("have.attr", "href", "/orchestration");
+    cy.findByRole("link", { name: "← Back to Goals" }).should("have.attr", "href", "/orchestration");
     cy.location("search").should("not.contain", "workspace=");
     cy.get("@replay.all").should("have.length", 0);
   });

@@ -11,7 +11,9 @@ Missing native tools do not prevent pairing or configuring projects.
 
 Settings has one destination, with categories on desktop and a category list on
 phones. Existing `/?view=settings` links redirect to `/settings`; update links
-open `/settings#updates`. Main navigation opens Sessions, Goals, Inbox and Settings.
+open `/settings#updates`. Main navigation opens Goals, Inbox and Settings.
+Home and the installed app open Goals. **Browse sessions** under Goals opens
+optional standalone sessions; existing session and notification links still work.
 
 - **General**: connected Mac, this-browser terminal input protection and pairing.
 - **Dev repos**: named development folders and individually added repositories.
@@ -29,9 +31,14 @@ own clearly labeled protection control on the single Updates screen.
 
 ## Add Dev repos
 
-1. Open **Dev repos → Add Dev repo**. Enter a name such as `karven` or `rekord`
-   and the containing directory on the connected Mac. `~/` means that Mac's home.
-2. Validate the directory, review its canonical path, then save and discover.
+1. Open **Dev repos → Add Dev repo → Choose folder**. Browse folders on the
+   connected Mac, even when using your phone. Open the desired folder and select
+   **Use this folder**; its name fills automatically. No typing or native Finder
+   dialog is required. Cancel leaves the editor unchanged.
+2. Review the selected folder and suggested name, then **Save Dev repo and
+   discover**. A Git checkout offers the individual-repository flow instead.
+   Optional **Enter a path (advanced)** supports `~/` and absolute Mac paths for
+   locations outside the explorer's Home and saved-root boundaries.
 3. Select the repositories to add. Discovery never enables a repository by itself
    or executes package scripts. Use **Open / Refresh** after adding repositories
    on disk. Search by folder name, repository name or GitHub owner.

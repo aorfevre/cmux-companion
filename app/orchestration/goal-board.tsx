@@ -18,8 +18,9 @@ export function GoalBoard() {
   const [repoSearch, setRepoSearch] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [configuration, setConfiguration] = useState<Configuration | null>(null);
   const [selected, setSelected] = useState<string | null>(null), [detail, setDetail] = useState<(Goal & { contracts: { revision: number; contract: Contract }[] }) | null>(null);
-  const [auth, setAuth] = useState<'loading' | 'paired' | 'unpaired'>('loading');
+  const [auth, setAuth] = useState<'loading' | 'paired' | 'unpaired' | 'unavailable'>('loading');
   const [token, setToken] = useState(''), [title, setTitle] = useState(''), [repository, setRepository] = useState('');
+  const [connectionError, setConnectionError] = useState('');
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false), [connected, setConnected] = useState(false);
   const [pending, setPending] = useState<Command | null>(null);
   const sequence = useRef(0), mounted = useRef(false), selection = useRef(selected);
@@ -33,11 +34,11 @@ export function GoalBoard() {
         selected ? request<Goal & { contracts: { revision: number; contract: Contract }[] }>(`${prefix}/goals/${encodeURIComponent(selected)}`) : Promise.resolve(null),
       ]);
       if (!mounted.current || sequence.current !== version || selection.current !== selected) return;
-      setSnapshot(next); setConfiguration(config); setDetail(goal); setAuth('paired');
+      setSnapshot(next); setConfiguration(config); setDetail(goal); setAuth('paired'); setConnectionError('');
     } catch (cause) {
       if (!mounted.current || sequence.current !== version || selection.current !== selected) return;
       if (cause instanceof ApiError && cause.status === 401) setAuth('unpaired');
-      else setError(cause instanceof Error ? cause.message : 'Could not refresh goals');
+      else { setAuth(current => current === 'paired' ? current : 'unavailable'); setConnectionError(cause instanceof Error ? cause.message : 'Could not refresh goals'); }
     }
   }, [selected]);
   useEffect(() => {
@@ -80,27 +81,28 @@ export function GoalBoard() {
   const visibleRepos = configuration?.repositories.filter(entry => `${entry.devRepoName ?? ''} ${entry.name ?? entry.id} ${entry.github ?? ''}`.toLowerCase().includes(repoSearch.toLowerCase()));
   const chosenRepo = visibleRepos?.find((entry) => entry.id === repository) ?? visibleRepos?.[0];
   return <main className="orchestration"><AppNavigation active="goals" />
-    <header className="orch-header"><a href="/">cmux companion</a><span role="status">{auth === 'paired' ? connected ? 'Live updates' : 'Reconnecting · polling' : 'Orchestration'}</span></header>
-    <div className="orch-heading"><div><p className="orch-eyebrow">GOAL WORKSPACE</p><h1>From intent to reviewed work.</h1><p>Plan and review work across your repositories.</p></div></div>
+    <header className="orch-header"><a href="/">cmux companion</a><span role="status">{auth === 'paired' ? connected ? 'Live updates' : 'Reconnecting · polling' : 'Connect your Mac'}</span></header>
+    <div className="orch-heading"><div><p className="orch-eyebrow">GOAL WORKSPACE</p><h1>Goals</h1><p>What would you like to accomplish?</p><a href="/?view=sessions">Browse sessions</a></div></div>
+    {connectionError && <div role="alert" className="orch-error"><p>{connectionError}</p><button onClick={() => void refresh()}>Try again</button></div>}
     {error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}
     {auth === 'unpaired' ? <form className="orch-card" onSubmit={async event => {
       event.preventDefault(); setBusy(true); setError('');
-      try { await request(`${prefix}/pair`, { method: 'POST', body: JSON.stringify({ token }) }); setToken(''); await refresh(); }
+      try { await request(`${prefix}/pair`, { method: 'POST', body: JSON.stringify({ token: token.trim() }) }); setToken(''); await refresh(); }
       catch (cause) { setError(cause instanceof Error ? cause.message : 'Pairing failed'); } finally { setBusy(false); }
-    }}><h2>Pair this device</h2><label>Pairing token<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></label><button disabled={busy}>Pair device</button></form> : auth === 'loading' ? <p>Connecting to the orchestration service…</p> : <>
+    }}><h2>Pair this device</h2><label>Pairing code<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></label><button disabled={busy}>Pair this device</button></form> : auth === 'unavailable' ? <section className="orch-card"><h2>Goals are unavailable</h2><p>Check your connection to the Mac and try again. If this is a new installation, complete <a href="/onboarding">goal setup</a>.</p></section> : auth === 'loading' ? <p>Connecting to your Mac…</p> : <>
       {readOnly && <p className="orch-banner">{configuration?.suspensionReason || 'Read-only mode · controls are disabled.'}</p>}
       {pending && <div className="orch-banner">The request outcome is uncertain. Retry the same request to reconcile its receipt. <button disabled={busy || readOnly} onClick={() => void submit(pending)}>Retry pending request</button></div>}
-      <div className="orch-capacity">Capacity: {configuration?.limits.global} background · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</div>
-      {!configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Interactive planning is unavailable with this adapter configuration.</p>}
-      <form className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo?.baseSha || !chosenRepo.baseBranch) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { title, repositoryId: chosenRepo.id, baseSha: chosenRepo.baseSha, baseBranch: chosenRepo.baseBranch } }); }}>
+      <details className="orch-capacity"><summary>Execution capacity</summary>{configuration?.limits.global} background · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</details>
+      {Boolean(configuration?.repositories.length) && !configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Your planning agent is not ready. <a href="/settings#agents">Choose an agent</a> to start a goal.</p>}
+      {configuration?.repositories.length ? <form className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo?.baseSha || !chosenRepo.baseBranch) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { title, repositoryId: chosenRepo.id, baseSha: chosenRepo.baseSha, baseBranch: chosenRepo.baseBranch } }); }}>
         <h2>Start a goal</h2><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<label>Search repositories<input type="search" value={repoSearch} onChange={event => setRepoSearch(event.target.value)} placeholder="Folder, repository or owner" /></label><label>Repository<select disabled={disabled} value={chosenRepo?.id ?? ''} onChange={event => setRepository(event.target.value)}>{configuration?.repositories.filter(entry => `${entry.devRepoName ?? ''} ${entry.name ?? entry.id} ${entry.github ?? ''}`.toLowerCase().includes(repoSearch.toLowerCase())).map(entry => <option key={entry.id} value={entry.id}>{entry.devRepoName ? `${entry.devRepoName} / ` : ''}{entry.name ?? entry.id}{entry.baseBranch ? ` · ${entry.baseBranch}` : ' · unavailable'}</option>)}</select></label>
         {chosenRepo?.error && <p role="alert">{chosenRepo.error}</p>}
         <label>What should we accomplish?<textarea value={title} maxLength={500} onChange={event => setTitle(event.target.value)} disabled={disabled} required rows={3} /></label>
-        <button disabled={disabled || !chosenRepo?.baseSha || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start planning</button>
-      </form>
-      <div className="orch-workspace"><nav className="orch-goals" aria-label="Goals"><h2>Your goals</h2>{snapshot?.goals.length === 0 && <p>No goals yet. Start with a clear outcome.</p>}{snapshot?.goals.map(goal => <button key={goal.id} aria-current={selected === goal.id ? 'true' : undefined} onClick={() => { setSelected(goal.id); setDetail(null); }}><strong>{goal.title}</strong><span>{goal.status.replaceAll('_', ' ')} · revision {goal.revision}</span></button>)}</nav>
+        <button className="primary-button" disabled={disabled || !chosenRepo?.baseSha || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>New goal</button>
+      </form> : <section className="orch-card"><h2>Start with your first goal</h2><p>Choose your repositories and an agent, then describe what you want done.</p><a className="primary-button" href="/onboarding">Set up goals</a></section>}
+      {Boolean(snapshot?.goals.length) && <div className="orch-workspace"><nav className="orch-goals" aria-label="Goals"><h2>Your goals</h2>{snapshot?.goals.length === 0 && <p>No goals yet. Start with a clear outcome.</p>}{snapshot?.goals.map(goal => <button key={goal.id} aria-current={selected === goal.id ? 'true' : undefined} onClick={() => { setSelected(goal.id); setDetail(null); }}><strong>{goal.title}</strong><span>{goal.status.replaceAll('_', ' ')} · revision {goal.revision}</span></button>)}</nav>
         {selected ? detail ? <GoalDetail key={detail.id} goal={detail} disabled={disabled} terminal={Boolean(configuration?.terminal)} act={act} control={control} /> : <p>Loading goal…</p> : <section className="orch-card"><h2>One goal, one source of truth.</h2><p>Select a goal to inspect its plan, dependency graph, independent reviews and delivery evidence.</p></section>}
-      </div>
+      </div>}
     </>}
   </main>;
 }

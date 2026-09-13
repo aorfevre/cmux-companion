@@ -32,10 +32,10 @@ async function start() {
 test('pairs through the service and disables all creation controls in read-only mode', async () => {
   paired = false; readOnly = true;
   render(<GoalBoard />);
-  fireEvent.change(await screen.findByLabelText('Pairing token'), { target: { value: 'disposable' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Pair device' }));
+  fireEvent.change(await screen.findByLabelText('Pairing code'), { target: { value: 'disposable' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Pair this device' }));
   await screen.findByText('Read-only mode · controls are disabled.');
-  expect(screen.getByRole('button', { name: 'Start planning' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', true);
   expect(screen.getByLabelText('Repository')).toHaveProperty('disabled', true);
   expect(api).toHaveBeenCalledWith('/api/orchestration/pair', expect.objectContaining({ body: JSON.stringify({ token: 'disposable' }) }));
 });
@@ -47,10 +47,10 @@ test('uncertain command retries exactly the original id, payload and expected ve
     if (url.endsWith('/commands')) { commands.push(String(options?.body)); throw new Error('Network disconnected'); }
     return original(url, options);
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Start planning' }));
+  fireEvent.click(screen.getByRole('button', { name: 'New goal' }));
   const retry = await screen.findByRole('button', { name: 'Retry pending request' });
   await waitFor(() => expect(retry).toHaveProperty('disabled', false));
-  expect(screen.getByRole('button', { name: 'Start planning' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', true);
   fireEvent.click(retry);
   await waitFor(() => expect(commands).toHaveLength(2));
   expect(commands[1]).toBe(commands[0]);
@@ -59,15 +59,15 @@ test('uncertain command retries exactly the original id, payload and expected ve
 test('a definitive stale conflict refreshes and allows a new deliberate command', async () => {
   await start(); const original = api.getMockImplementation()!;
   api.mockImplementation(async (url, options) => { if (url.endsWith('/commands')) throw new ApiError('Stale', 409, 'VERSION_CONFLICT'); return original(url, options); });
-  fireEvent.click(screen.getByRole('button', { name: 'Start planning' }));
+  fireEvent.click(screen.getByRole('button', { name: 'New goal' }));
   await screen.findByText(/The goal changed/);
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Start planning' })).toHaveProperty('disabled', false));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', false));
   expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull();
 });
 test('provider readiness errors retain actionable settings guidance', async () => {
   await start(); const original = api.getMockImplementation()!;
   api.mockImplementation(async (url, options) => { if (url.endsWith('/commands')) throw new ApiError('Configure a supported provider in Settings', 409, 'NOT_READY'); return original(url, options); });
-  fireEvent.click(screen.getByRole('button', { name: 'Start planning' }));
+  fireEvent.click(screen.getByRole('button', { name: 'New goal' }));
   await screen.findByText('Configure a supported provider in Settings');
   expect(screen.queryByText(/The goal changed/)).toBeNull();
 });

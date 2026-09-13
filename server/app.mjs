@@ -34,6 +34,7 @@ export async function buildApp({
   localSettings = null,
   onSettingsChange = async () => {},
   probeProvider,
+  browseSettingsFolders,
   token,
   app: suppliedApp = null,
   frontendUpstream = null,
@@ -270,7 +271,7 @@ export async function buildApp({
     if (hub.bin !== value.settings.tools.cmux) { hub.stop(); hub.bin = value.settings.tools.cmux; hub.start(); }
     bootstrapSnapshot = null;
     await onSettingsChange(value);
-  }, probeProvider });
+  }, probeProvider, browse: browseSettingsFolders });
 
   if (!localSettings) app.get("/api/settings/local", async (_request, reply) => reply.code(409).send({ code: "SETTINGS_IMPORT_REQUIRED", error: "This installation uses the previous configuration format. Import its settings on the Mac to enable project management." }));
   app.get("/api/settings/models", async () => modelSettings.status());
