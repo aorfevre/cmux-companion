@@ -1,6 +1,8 @@
 # Local Updater Specification
 
-Status: Proposed  
+Status: Historical unattended-update design; notification and installation policy
+is superseded by [the bundled manual-update contract](superpowers/specs/2026-09-13-manual-self-update-design.md)
+once that contract receives human review. Until then it remains proposed.
 Target platform: macOS  
 Repository: `aorfevre/cmux-companion`  
 Default channel: `origin/main`
