@@ -1,7 +1,8 @@
 # Unified settings, named Dev repos, and interface consistency
 
 Date: 2026-09-13
-Status: Approved by the user (“agree. Do it”) after spec commit 89b1073.
+Status: Goals-first navigation and folder-picker amendment awaiting human review.
+The original implementation was approved after spec commit 89b1073 and shipped in PR #119.
 Owner: The implementing agent owns integration and verification across all layers.
 
 ## Outcome
@@ -9,6 +10,9 @@ Owner: The implementing agent owns integration and verification across all layer
 A user registers named **Dev repos** such as `karven` and `rekord`: directories
 on the connected Mac containing Git repositories. Companion discovers their
 repositories for selection without requiring users to configure each path by hand.
+Goals is the default destination; Sessions is an optional secondary destination
+within Goals. Adding a Dev repo requires no path or name typing in the normal
+flow: browse folders on the connected Mac and use its folder name by default.
 One coherent Settings destination replaces the current two settings experiences.
 Sessions, Goals, repository selection and Settings share navigation, terminology,
 controls and feedback.
@@ -42,11 +46,27 @@ neutral surfaces, labeled preference rows, short descriptions and focused detail
 editors. These are design references, not a claim to have inspected their current
 signed-in interfaces or an instruction to copy branding.
 
-Application navigation: **Sessions · Goals · Inbox · Settings**. Usage and local
-apps remain reachable from relevant contextual links and Settings. On desktop use
-a persistent rail; on mobile use the same destinations in a bottom navigation bar.
-Terminal detail may use a focused shell with an explicit Back action. Browser Back
-restores the originating screen, selection and scroll without losing a draft.
+Application navigation: **Goals · Inbox · Settings**. Goals is first and opens
+by default on a plain `/` visit, after pairing and when launching the installed
+PWA. `/orchestration` remains a supported Goals destination. Sessions is a
+secondary link within Goals, with a clear “Back to Goals” action. Mark Goals
+active while viewing Sessions; do not give Sessions a fourth main navigation
+item. Standalone sessions remain available and do not require a goal. Creating,
+viewing or managing goals never requires visiting Sessions first.
+
+Preserve explicit existing session/workspace/surface, inbox, document, preview
+and notification URLs; only an untargeted home visit changes its destination.
+Goal execution details retain contextual access to their sessions. Do not imply
+that an unrelated session belongs to a goal. Usage and local apps remain reachable
+from relevant contextual links and Settings. On desktop use a persistent rail;
+on mobile use the same three destinations in a bottom navigation bar. Terminal
+detail may use a focused shell with an explicit Back action. Browser Back restores
+the originating screen, selection and scroll without losing a draft.
+
+The empty Goals screen explains the next action with one primary “New goal”
+button, or “Set up goals” when required configuration is missing. Setup returns
+to Goals; “Browse sessions” is an optional secondary action. Pairing/offline and
+unavailable-provider states explain what to do without making Sessions a gate.
 
 Settings uses a category sidebar on desktop and a category list leading to a
 full-width detail screen on mobile. Direct links identify the selected category;
@@ -76,13 +96,29 @@ Pending, loading, unavailable and failed states must be distinct.
 
 ## User journey: named Dev repos
 
-1. Open Settings → Dev repos → Add Dev repo. Enter a display name and directory
-   on the connected Mac. Helper: “A folder containing your Git repositories.”
-   Support absolute paths and `~/` relative to that Mac's home, not the phone.
-   Example names are karven and rekord; never preconfigure personal paths.
-2. Validate the directory and show its canonical path before saving. Names are
-   trimmed, unique ignoring case, editable and independent of directory basenames.
-   Persist a stable ID; allow 1..n entries (empty is valid before setup).
+1. Open Settings → Dev repos → Add Dev repo → **Choose folder**. Open an
+   in-app folder explorer labeled “Folders on [connected Mac]”, also usable from
+   a phone. This browses the Mac running Companion, never the phone's files and
+   never a native Finder dialog requiring someone at the Mac. Start in that
+   Mac's home directory; show breadcrumb navigation, Back/Up, folder rows and
+   “Use this folder”. Single activation opens a folder; selection is a distinct
+   action. Show a count/partial indicator when enumeration reaches its limit.
+   Cancel returns to the unchanged editor; reopening starts at the last location
+   for this editor. Do not upload files or require filesystem browser permission.
+2. Validate the chosen folder and show its canonical location in a confirmation
+   card. Prefill its display name from the folder name (karven or rekord, for
+   example); renaming is optional. Trim names and enforce case-insensitive
+   uniqueness. A collision offers an editable suggested unique name rather than
+   requiring the user to diagnose a save error. One **Add Dev repo** action saves
+   the validated choice. Prevent duplicate submissions; preserve the selection
+   on failure. Loading, empty, permission-denied, disconnected and unavailable
+   folders have distinct messages and Retry/Back actions. A Git checkout explains
+   “This is one repository” and offers Add individual repository, reusing the
+   selected path. The individual-repository flow uses the same picker.
+   Advanced “Enter a path” remains an optional escape hatch for locations outside
+   the explorer boundary, supporting absolute paths and `~/` on the Mac. Normal
+   setup never requires it. Persist a stable ID; allow 1..n entries (empty is
+   valid before setup). Never preconfigure personal paths.
 3. Save the directory, then scan its immediate child directories for Git roots.
    Show progress and a result list with repository name, safe GitHub destination
    if present, and Added / Available / Needs attention status. Offer Refresh.
@@ -100,8 +136,8 @@ Pending, loading, unavailable and failed states must be distinct.
 6. Show monitoring availability separately from readiness for goals. A missing
    destination, check or provider has a precise fix link, not a generic error.
    Onboarding uses these same editors: add directory, select a repository,
-   configure a provider, review readiness. Progress persists; monitoring remains
-   accessible before setup completion.
+   configure a provider, review readiness. Progress persists; Goals remains the main destination and sessions remain
+   optionally accessible before setup completion.
 7. Add rekord using the same flow. Repository selectors display, for example,
    `karven / cmux-companion`, with names and GitHub owners to disambiguate collisions.
 8. Rename a Dev repo without changing repository IDs or any running goal. Removing
@@ -132,8 +168,23 @@ Settings              Dev repos                     [Add Dev repo]
   containing Dev repo associates matching canonical paths without duplicating
   or reenabling them. Bump schema version so incompatible old binaries fail
   explicitly; verify installer backup/restore for the version boundary.
-- Discovery: paired and same-origin endpoints only. Scan only a saved, validated
-  root by its ID; do not expose an unrestricted directory listing endpoint.
+- Folder explorer: a separate paired, same-origin, read-only directory-only API.
+  Browse within the connected user's canonical home directory or existing saved
+  Dev repo roots; never offer the filesystem root as an unrestricted browser.
+  Exclude hidden folders, Library, dependency/build internals and symbolic links.
+  List folder names and navigation metadata only, never files or file contents.
+  Canonicalize and revalidate containment on every request, reject traversal and
+  symlink escapes, and revalidate the chosen directory before saving. Bound each
+  listing to 1,000 examined entries and a five-second deadline; show truncation
+  explicitly, with a directory-name filter to narrow bounded results. Abort
+  obsolete requests and ignore late replies when navigation or dialogs change.
+  No recursive search/index, shell command, native desktop prompt, filesystem
+  writes or new persisted permission model is introduced. Folder browsing grants
+  no repository execution permission. The existing advanced path inspector and
+  repository allow-list checks retain their boundaries.
+- Repository discovery: paired and same-origin endpoints only. Scan Git children
+  only within a saved, validated Dev repo root by its ID; the folder explorer
+  does not turn unsaved folders into approved repository scan roots.
   Immediate children only, no symlink traversal or hidden directories, `.git`,
   node_modules or generated worktree internals. Deduplicate canonical paths;
   reject identical or overlapping Dev repo roots with an actionable explanation.
@@ -190,7 +241,10 @@ Each row has one designated verification scenario.
 
 | Observable acceptance | Verification |
 | --- | --- |
-| Add karven and rekord, discover children, choose repositories and see grouped searchable pickers after restart. | Real-service disposable Cypress directory-to-goal-selection journey. |
+| Add karven and rekord using only folder navigation and prefilled names, discover children, choose repositories and see grouped searchable pickers after restart. | Real-service disposable Cypress no-typing directory-to-goal-selection journey. |
+| Plain home, pairing completion and PWA launch open Goals; Sessions is secondary, standalone sessions and explicit old deep links still work. | Cypress Goals-first navigation, launch and Back scenario. |
+| Picker cancellation, permission errors, empty/partial results, duplicate names, repeated taps and late responses preserve the user's selection or draft with a clear next action. | UI folder-picker interaction scenario. |
+| Folder browsing rejects unpaired/cross-origin requests, traversal and symlink escapes, and returns bounded directory-only data without executing scripts. | Backend folder-browser security and limit fixture suite. |
 | Duplicate names/roots, overlap, symlink escapes, nested/worktree candidates, unavailable paths and scan limits give safe actionable results. | Discovery boundary fixture suite. |
 | Discovery cannot run package scripts, expose remote credentials or admit unselected repositories. | Malicious repository inspection/selection integration scenario. |
 | Migration and root rename/removal preserve project identities, checks, disabled state and historical/running goals. | SQLite migration and scheduler recovery scenario. |
@@ -207,12 +261,14 @@ Each row has one designated verification scenario.
 In a disposable usability walkthrough, a person unfamiliar with internal config
 can add two named directories, select a discovered repository and reach a ready
 goal form in under three minutes when provider tools are already available,
-without editing JSON, argv or individual repository paths. Record observed
+without typing a folder path or name, editing JSON/argv, or visiting Sessions. Record observed
 results; automated completion alone is not evidence of human usability.
 
 ## Delivery and review boundary
 
-Commit this spec, obtain a person's review, then commit its implementation plan.
+Commit this amended spec, obtain a person's review of this revision, then commit
+its implementation plan. This amendment changes navigation and folder browsing
+only; it does not reopen the completed PR #119 implementation scope.
 Review implementation through a PR targeting main. Require `npm run verify`,
 backend/UI line coverage at least 90%, `npm run test:e2e:local` and the recorded
 visual/accessibility matrix. Report passed, failed and unverified paths separately.
