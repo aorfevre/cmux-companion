@@ -34,7 +34,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
 
     it("shows the pair screen for an unpaired browser and never loads the paired home", () => {
       fixtures(false);
-      cy.visit("/");
+      cy.visit("/?view=sessions");
       cy.wait("@authStatus");
       cy.findByRole("heading", { name: "Pair this phone." }).should("be.visible");
       cy.contains("Enter the private pairing code shown by the installer on your Mac.").should("be.visible");
@@ -47,12 +47,12 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
     it("pairs with a trimmed token and lands on the sessions home", () => {
       fixtures(false);
       cy.intercept("POST", "**/api/auth/pair", { paired: true, identity: null }).as("pair");
-      cy.visit("/");
+      cy.visit("/?view=sessions");
       cy.findByPlaceholderText("Pairing code").type("   fixture-pairing-code-0123456789abcdef   ");
       cy.findByRole("button", { name: "Pair securely" }).should("be.enabled").click();
       cy.wait("@pair").its("request.body").should("deep.equal", { token: "fixture-pairing-code-0123456789abcdef" });
       cy.wait("@bootstrap");
-      cy.findByRole("link", { name: "Orchestration goals" }).should("have.attr", "href", "/orchestration");
+      cy.findByRole("link", { name: "← Back to Goals" }).should("have.attr", "href", "/orchestration");
       cy.findByRole("navigation", { name: "Main navigation" }).should("be.visible");
       cy.contains("Pairing Mac").should("be.visible");
       cy.findByPlaceholderText("Pairing code").should("not.exist");
@@ -66,7 +66,7 @@ describe("Pairing failures and offline", () => {
   it("keeps the typed code and reports a rejected pairing code", () => {
     fixtures(false);
     cy.intercept("POST", "**/api/auth/pair", { statusCode: 401, body: { error: "That pairing code is not valid", code: "INVALID_TOKEN" } }).as("pair");
-    cy.visit("/");
+    cy.visit("/?view=sessions");
     cy.findByPlaceholderText("Pairing code").type("wrong-code");
     cy.findByRole("button", { name: "Pair securely" }).click();
     cy.wait("@pair");
@@ -79,7 +79,7 @@ describe("Pairing failures and offline", () => {
   it("reports rate limiting and origin rejection with the server's message", () => {
     fixtures(false);
     cy.intercept("POST", "**/api/auth/pair", { statusCode: 429, body: { error: "Too many pairing attempts. Try again later.", code: "PAIR_RATE_LIMIT" } }).as("limited");
-    cy.visit("/");
+    cy.visit("/?view=sessions");
     cy.findByPlaceholderText("Pairing code").type("any-code");
     cy.findByRole("button", { name: "Pair securely" }).click();
     cy.wait("@limited");
@@ -94,7 +94,7 @@ describe("Pairing failures and offline", () => {
   it("falls back to a generic message when the pairing reply is not JSON", () => {
     fixtures(false);
     cy.intercept("POST", "**/api/auth/pair", { statusCode: 502, headers: { "content-type": "text/html" }, body: "<h1>Bad gateway</h1>" }).as("pair");
-    cy.visit("/");
+    cy.visit("/?view=sessions");
     cy.findByPlaceholderText("Pairing code").type("some-code");
     cy.findByRole("button", { name: "Pair securely" }).click();
     cy.wait("@pair");
@@ -105,7 +105,7 @@ describe("Pairing failures and offline", () => {
     cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing deterministic Cypress API fixture" } });
     cy.intercept("GET", "**/api/auth/status", { forceNetworkError: true }).as("offlineStatus");
     pairedHome();
-    cy.visit("/");
+    cy.visit("/?view=sessions");
     cy.wait("@offlineStatus");
     cy.findByRole("heading", { name: "Your companion is offline." }).should("be.visible");
     cy.contains("Connect to Tailscale and reload this page.").should("be.visible");
@@ -114,21 +114,22 @@ describe("Pairing failures and offline", () => {
     cy.intercept("GET", "**/api/auth/status", { paired: true }).as("onlineStatus");
     cy.findByRole("button", { name: "Try again" }).click();
     cy.wait("@onlineStatus");
-    cy.findByRole("link", { name: "Orchestration goals" }).should("have.attr", "href", "/orchestration");
+    cy.findByRole("link", { name: "← Back to Goals" }).should("have.attr", "href", "/orchestration");
   });
 
   it("unpairs from Settings and returns to the pair screen without reloading", () => {
     fixtures(true);
     cy.intercept("POST", "**/api/auth/logout", { paired: false }).as("logout");
     cy.intercept("GET", "**/api/auth/status", { paired: false });
+    cy.intercept("GET", "**/api/orchestration/*", { statusCode: 401, body: { error: "Pair this device" } });
     cy.visit("/settings#general");
     cy.wait("@bootstrap");
     cy.findByRole("heading", { name: "Settings" }).should("be.visible");
     cy.findByRole("button", { name: "Unpair this device" }).click();
     cy.wait("@logout").its("request.body").should("deep.equal", {});
-    cy.findByRole("heading", { name: "Pair this phone." }).should("be.visible");
-    cy.findByRole("navigation", { name: "Main navigation" }).should("not.exist");
-    cy.findByPlaceholderText("Pairing code").should("have.value", "");
+    cy.findByRole("heading", { name: "Pair this device" }).should("be.visible");
+    cy.findByRole("navigation", { name: "Main navigation" }).should("be.visible");
+    cy.findByLabelText("Pairing code").should("have.value", "");
   });
 });
 

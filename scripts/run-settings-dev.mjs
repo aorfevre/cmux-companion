@@ -1,3 +1,4 @@
+import { browseFolders } from '../server/folder-browser.mjs';
 import { UpdateControl } from '../updater/src/control.mjs';
 import { updateCycle } from '../updater/src/transaction.mjs';
 import { registerUpdateRoutes } from '../server/update-routes.mjs';
@@ -30,7 +31,7 @@ export async function startSettingsDemo() {
       createAgents: () => Object.assign(new FakeAgents(), { close: async () => {} }),
     });
     const catalog = new RepoCatalog({ roots: [], projects: () => { const current = settings.read().settings; return current.projects.map(project => ({ ...project, devRepoName: current.devRepos?.find(root => root.id === project.devRepoId)?.name, devRepoPath: current.devRepos?.find(root => root.id === project.devRepoId)?.path })); } });
-    await runtime.app.register(app => buildApp({ app, token, localSettings: settings, probeProvider, repoCatalog: catalog,
+    await runtime.app.register(app => buildApp({ app, token, localSettings: settings, probeProvider, browseSettingsFolders: (input, options) => browseFolders(input, { ...options, home: directory, name: 'Disposable Mac' }), repoCatalog: catalog,
       cmux: { hostStatus: async () => ({}), workspaceList: async () => ({ workspaces: [] }), capabilities: async () => ({}) },
       onSettingsChange: async () => { catalog.invalidate(); await runtime.settingsChanged(); },
     }));

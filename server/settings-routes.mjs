@@ -1,8 +1,9 @@
+import { browseFolders } from './folder-browser.mjs';
 import { inspectDevRepo, scanDevRepo } from './dev-repositories.mjs';
 import { inspectProject, providerCommand, resolveExecutable } from './local-settings.mjs';
 
 // Registered inside the monitoring scope, after its pairing/origin hooks.
-export function registerSettingsRoutes(app, { settings, onChange = async () => {}, inspect = inspectProject, probeProvider = async () => ({ ready: false, reason: 'Native capability validation is required before starting goals' }) }) {
+export function registerSettingsRoutes(app, { settings, onChange = async () => {}, browse = browseFolders, inspect = inspectProject, probeProvider = async () => ({ ready: false, reason: 'Native capability validation is required before starting goals' }) }) {
   const status = () => settings.read();
   app.get('/api/settings/local', async () => status());
   app.put('/api/settings/local', { bodyLimit: 256 * 1024 }, async request => {
@@ -29,6 +30,7 @@ export function registerSettingsRoutes(app, { settings, onChange = async () => {
     await onChange(result);
     return result;
   });
+  app.post('/api/settings/folders', { bodyLimit: 8192 }, async request => browse(request.body, { roots: settings.read().settings.devRepos }));
   app.post('/api/settings/dev-repos/inspect', async request => {
     if (!request.body || Object.keys(request.body).some(key => key !== 'path')) throw new TypeError('Expected a Dev repo directory');
     return inspectDevRepo(request.body.path);

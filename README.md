@@ -6,6 +6,7 @@ No cloud application server is involved. Terminal output and input travel direct
 
 ## What it does
 
+- Opens Goals first, with optional Sessions beneath Goals and a Mac folder explorer for Dev repo setup.
 - Monitors cmux sessions, terminal replay, repository changes and process health from a paired phone.
 - Provides an Inbox for native agent questions and permissions, manual repository launches, prompt queues and private local-app previews.
 - Opens `/orchestration` for a goal workflow with a reviewed plan and explicit approval, parallel implementers in isolated worktrees, independent code review, serialized integration and one verified pull request.

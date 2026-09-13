@@ -1,4 +1,5 @@
 "use client";
+import { HomeDestination } from './home-destination';
 import { LastUpdateStamp } from './last-update';
 export { LastUpdateStamp, updatedAgo } from './last-update';
 import { AppNavigation } from './navigation';
@@ -44,7 +45,9 @@ function compactPath(path?: string | null) { return path ? path.replace(/^\/User
 
 function formatBytes(bytes = 0) { if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`; if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(0)} MB`; return `${(bytes / 1024 ** 3).toFixed(1)} GB`; }
 
-export default function Home() {
+export default function Home() { return <HomeDestination sessions={<SessionsHome />} />; }
+
+function SessionsHome() {
   useEffect(() => {
     const query = new URLSearchParams(location.search);
     if (query.get('view') === 'settings') location.replace(`/settings${location.hash}`);
@@ -135,7 +138,7 @@ export default function Home() {
 
   return <main className="app-shell">{bootstrap?.setupRequired && <aside className="privacy-note"><strong>Welcome to Companion</strong><p><a href="/onboarding">Set up your projects and agents</a> to start your first goal.</p></aside>}<AppHeader connected={Boolean(bootstrap?.connected)} live={live} device={bootstrap?.host?.mac_display_name || "Your Mac"} /><Notice message={notice} onDismiss={() => setNotice("")} />
     {view !== "sessions" && view !== "inbox" && inbox.actionableCount > 0 && <button className="primary-small" onClick={() => changeView("inbox")}>{inbox.actionableCount} {inbox.actionableCount === 1 ? "item needs" : "items need"} your attention</button>}
-    {view === "sessions" && <><nav aria-label="Session tools"><a className="primary-button" href="/orchestration">Orchestration goals</a><button onClick={() => changeView("inbox")}>Inbox{inbox.actionableCount > 0 ? ` · ${inbox.actionableCount}` : ""}</button><button onClick={() => changeView("apps")}>Local apps</button></nav><SessionsView bootstrap={bootstrap} onOpen={openWorkspace} onLaunch={() => changeView("launch")} onRefresh={loadBootstrap} /></>}
+    {view === "sessions" && <><nav aria-label="Session tools"><a className="primary-button" href="/orchestration">← Back to Goals</a><button onClick={() => changeView("inbox")}>Inbox{inbox.actionableCount > 0 ? ` · ${inbox.actionableCount}` : ""}</button><button onClick={() => changeView("apps")}>Local apps</button></nav><SessionsView bootstrap={bootstrap} onOpen={openWorkspace} onLaunch={() => changeView("launch")} onRefresh={loadBootstrap} /></>}
     {view === "inbox" && <InboxView inbox={inbox} workspaces={bootstrap?.workspaces || []} repos={repos} focusedId={actionId} onCloseFocus={() => { setActionId(null); history.replaceState(null, "", "/?view=inbox"); }} onDocument={openDocument} onReload={loadInbox} onOpen={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); }} onNotice={setNotice} />}
     {view === "launch" && <LaunchView repos={repos} onReload={loadRepos} onLaunched={async (id) => { const data = await loadBootstrap(); const workspace = data?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else { setView("sessions"); setNotice("Workspace launched. It will appear in a moment."); } }} />}
     {view === "apps" && <AppsView focusedId={focusedPreviewId} onOpenWorkspace={(id) => { const workspace = bootstrap?.workspaces.find((item) => item.id === id); if (workspace) openWorkspace(workspace); else setNotice("That cmux session is no longer open"); }} onNotice={setNotice} onFix={fixPreview} />}

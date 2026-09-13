@@ -5,7 +5,7 @@ button, input, select, textarea { font-family: inherit; }
 button, a, summary { touch-action: manipulation; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 button:disabled { cursor: not-allowed; }
-.app-navigation { position: fixed; bottom: 0; left: 0; right: 0; z-index: 60; min-height: 72px; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--line); }
+.app-navigation { position: fixed; bottom: 0; left: 0; right: 0; z-index: 60; min-height: 72px; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--line); }
 .app-navigation a { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 4px; min-height: 48px; font-size: 12px; color: var(--muted); text-decoration: none; border-radius: var(--radius); }
 .app-navigation a span { font-size: 20px; }
 .app-navigation a[aria-current] { background: var(--panel); color: var(--accent); }

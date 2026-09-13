@@ -21,8 +21,9 @@ describe("contextual mobile features", () => {
     assert.equal(screen.getByRole("link", { name: "Goals" }).getAttribute("href"), "/orchestration");
     assert.equal(screen.getByRole("link", { name: "Settings" }).getAttribute("href"), "/settings");
     assert.equal(screen.queryByRole("link", { name: "Licence Usage" }), null);
-    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
-    assert.deepEqual(navigate.mock.calls[0], ["sessions"]);
+    assert.equal(screen.queryByRole("link", { name: "Sessions" }), null);
+    await userEvent.click(screen.getByRole("link", { name: "Inbox" }));
+    assert.deepEqual(navigate.mock.calls[0], ["inbox"]);
   });
 
   test("shows CCS quota by account while treating absent windows as unreported", async () => {
