@@ -1,7 +1,7 @@
 # Unified settings, named Dev repos, and interface consistency
 
 Date: 2026-09-13
-Status: Proposed; awaiting human review before implementation planning.
+Status: Approved by the user (“agree. Do it”) after spec commit 89b1073.
 Owner: The implementing agent owns integration and verification across all layers.
 
 ## Outcome
