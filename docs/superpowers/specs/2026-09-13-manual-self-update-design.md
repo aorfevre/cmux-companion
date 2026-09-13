@@ -1,7 +1,7 @@
 # Bundled updater with update notifications
 
 Date: 2026-09-13
-Status: Awaiting human review before the implementation plan.
+Status: Approved by the user on 2026-09-13 after spec commit 392144c.
 Review feedback: On 2026-09-13 the user requested an opt-in automatic-installation
 toggle, disabled by default; incorporated below.
 Owner: The implementing agent owns packaging, UI, API, durable requests,
