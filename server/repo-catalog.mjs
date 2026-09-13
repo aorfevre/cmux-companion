@@ -2,19 +2,17 @@ import { readCommitTime } from "./commit-time.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
-import { basename, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { runGit } from "./worktree-operations.mjs";
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_ROOTS = [
-  "/Users/aorfevre/Developers/karven",
-  "/Users/aorfevre/Developers/rekord",
-];
+const DEFAULT_ROOTS = [];
 
 export class RepoCatalog {
   constructor({
     roots = parseRoots(process.env.CMUX_COMPANION_REPO_ROOTS) || DEFAULT_ROOTS,
+    projects = null,
     execute = execFileAsync,
     cacheMs = 10_000,
     inspectConcurrency = 8,
@@ -23,6 +21,7 @@ export class RepoCatalog {
     // opts in, so a test that builds an app never opens the real database.
     identityStore = null,
   } = {}) {
+    this.projects = projects;
     this.roots = roots.map((root) => resolve(root));
     this.execute = execute;
     this.cacheMs = cacheMs;
@@ -55,7 +54,7 @@ export class RepoCatalog {
   }
 
   async scan(generation) {
-    const candidates = [];
+    const candidates = (this.projects?.() ?? []).filter(project => project.enabled).map(project => ({ root: dirname(project.path), path: project.path }));
     for (const root of this.roots) {
       let entries = [];
       try {

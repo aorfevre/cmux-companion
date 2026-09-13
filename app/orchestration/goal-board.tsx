@@ -10,7 +10,7 @@ import { GoalDetail } from './goal-detail';
 export type Goal = ReturnType<typeof goalView>;
 export type Action = Goal['actions'][number];
 type Snapshot = { goals: Goal[]; cursor: number; journalId: string; readOnly: boolean };
-type Configuration = { readOnly: boolean; terminal: boolean; limits: { global: number; perGoal: number; planners: number }; capabilities: { role: string; mode: string }[]; repositories: { id: string; baseSha: string | null; baseBranch: string | null; error: string | null }[] };
+type Configuration = { suspensionReason?: string | null; readOnly: boolean; terminal: boolean; limits: { global: number; perGoal: number; planners: number }; capabilities: { role: string; mode: string }[]; repositories: { id: string; name?: string; baseSha: string | null; baseBranch: string | null; error: string | null }[] };
 type Command = { id: string; goalId: string; expectedVersion: number; type: string; payload: Record<string, unknown> };
 const prefix = '/api/orchestration';
 export function GoalBoard() {
@@ -62,7 +62,7 @@ export function GoalBoard() {
       return true;
     } catch (cause) {
       if (cause instanceof ApiError && cause.status < 500) setPending(null);
-      setError(cause instanceof ApiError && cause.status === 409 ? 'The goal changed. Refreshed its current state; review it before trying again.' : cause instanceof Error ? cause.message : 'Request failed');
+      setError(cause instanceof ApiError && cause.status === 409 && cause.code === 'VERSION_CONFLICT' ? 'The goal changed. Refreshed its current state; review it before trying again.' : cause instanceof Error ? cause.message : 'Request failed');
       await refresh();
       return false;
     } finally { setBusy(false); }
@@ -85,15 +85,15 @@ export function GoalBoard() {
       try { await request(`${prefix}/pair`, { method: 'POST', body: JSON.stringify({ token }) }); setToken(''); await refresh(); }
       catch (cause) { setError(cause instanceof Error ? cause.message : 'Pairing failed'); } finally { setBusy(false); }
     }}><h2>Pair this device</h2><label>Pairing token<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></label><button disabled={busy}>Pair device</button></form> : auth === 'loading' ? <p>Connecting to the orchestration service…</p> : <>
-      {readOnly && <p className="orch-banner">Read-only mode · controls are disabled.</p>}
+      {readOnly && <p className="orch-banner">{configuration?.suspensionReason || 'Read-only mode · controls are disabled.'}</p>}
       {pending && <div className="orch-banner">The request outcome is uncertain. Retry the same request to reconcile its receipt. <button disabled={busy || readOnly} onClick={() => void submit(pending)}>Retry pending request</button></div>}
       <div className="orch-capacity">Capacity: {configuration?.limits.global} background · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</div>
       {!configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Interactive planning is unavailable with this adapter configuration.</p>}
       <form className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo?.baseSha || !chosenRepo.baseBranch) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { title, repositoryId: chosenRepo.id, baseSha: chosenRepo.baseSha, baseBranch: chosenRepo.baseBranch } }); }}>
-        <h2>Start a goal</h2><label>Repository<select disabled={disabled} value={chosenRepo?.id ?? ''} onChange={event => setRepository(event.target.value)}>{configuration?.repositories.map(entry => <option key={entry.id} value={entry.id}>{entry.id}{entry.baseBranch ? ` · ${entry.baseBranch}` : ' · unavailable'}</option>)}</select></label>
+        <h2>Start a goal</h2><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<label>Repository<select disabled={disabled} value={chosenRepo?.id ?? ''} onChange={event => setRepository(event.target.value)}>{configuration?.repositories.map(entry => <option key={entry.id} value={entry.id}>{entry.name ?? entry.id}{entry.baseBranch ? ` · ${entry.baseBranch}` : ' · unavailable'}</option>)}</select></label>
         {chosenRepo?.error && <p role="alert">{chosenRepo.error}</p>}
         <label>What should we accomplish?<textarea value={title} maxLength={500} onChange={event => setTitle(event.target.value)} disabled={disabled} required rows={3} /></label>
-        <button disabled={disabled || !chosenRepo?.baseSha || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start planning</button>
+        <button disabled={disabled || !chosenRepo?.baseSha || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start planning</button>
       </form>
       <div className="orch-workspace"><nav className="orch-goals" aria-label="Goals"><h2>Your goals</h2>{snapshot?.goals.length === 0 && <p>No goals yet. Start with a clear outcome.</p>}{snapshot?.goals.map(goal => <button key={goal.id} aria-current={selected === goal.id ? 'true' : undefined} onClick={() => { setSelected(goal.id); setDetail(null); }}><strong>{goal.title}</strong><span>{goal.status.replaceAll('_', ' ')} · revision {goal.revision}</span></button>)}</nav>
         {selected ? detail ? <GoalDetail key={detail.id} goal={detail} disabled={disabled} terminal={Boolean(configuration?.terminal)} act={act} control={control} /> : <p>Loading goal…</p> : <section className="orch-card"><h2>One goal, one source of truth.</h2><p>Select a goal to inspect its plan, dependency graph, independent reviews and delivery evidence.</p></section>}

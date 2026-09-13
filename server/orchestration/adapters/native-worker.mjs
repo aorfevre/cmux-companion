@@ -34,7 +34,7 @@ export async function runNativeWorker(configPath) {
     if (config.activation) await awaitNativeActivation(config.activation, controller.signal);
     if (config.installation) {
       assertNativeInstallation(config.installation);
-      requireValue(config.command.bin === config.installation.bin && config.command.env.CCS_CLAUDE_PATH === config.installation.nativeBin, 'Native executable binding changed', 'UNSUPPORTED_CAPABILITY');
+      requireValue(config.command.bin === config.installation.bin && config.command.env[config.installation.provider === 'codex' ? 'CCS_CODEX_PATH' : 'CCS_CLAUDE_PATH'] === config.installation.nativeBin, 'Native executable binding changed', 'UNSUPPORTED_CAPABILITY');
     }
     if (controller.signal.aborted) {
       save('outcome.json', { identity: config.identity, outcome: { status: 'failed', workerState: 'stopped', cause: { code: 'ABORTED', exitCode: null, signal: null }, stdout: '', stderr: '' } }); return;

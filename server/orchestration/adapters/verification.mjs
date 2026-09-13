@@ -13,7 +13,7 @@ import { pathExists } from './git.mjs';
  * uncertain on reopen; absence of a completion receipt never authorizes rerun.
  */
 export class VerificationRunner {
-  /** @param {{ repositories: import('./git.mjs').GitRepository; resolveCheck: (repositoryId: string, check: import('../types.d.ts').Check) => ResolvedCheck; failpoint?: (point: string) => void; boot?: ()=>string|null }} options */
+  /** @param {{ repositories: import('./git.mjs').GitRepository; resolveCheck: (repositoryId: string, check: import('../types.d.ts').Check, goalId: string) => ResolvedCheck; failpoint?: (point: string) => void; boot?: ()=>string|null }} options */
   constructor({ repositories, resolveCheck, failpoint = () => {}, boot = bootIdentity }) {
     this.boot = boot; this.repositories = repositories; this.resolveCheck = resolveCheck; this.failpoint = failpoint;
     this.directory = join(repositories.directory, 'verification');
@@ -71,7 +71,7 @@ export class VerificationRunner {
       else if (signal?.aborted) code = 'ABORTED';
       else {
         try {
-          resolved = this.resolveCheck(repositoryId, structuredClone(check));
+          resolved = this.resolveCheck(repositoryId, structuredClone(check), goalId);
           requireValue(isAbsolute(resolved.bin) && resolved.environmentId.length > 0 && JSON.stringify(resolved.argv) === JSON.stringify(check.argv.slice(1)), 'Repository policy did not resolve the approved argv', 'UNSUPPORTED_CAPABILITY');
           backgroundPolicy(resolved.policy);
           requireValue(resolved.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Verification output budget exceeds supervisor transport limit', 'UNSUPPORTED_CAPABILITY');

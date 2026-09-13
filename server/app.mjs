@@ -5,6 +5,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
+import { resolveExecutable } from "./local-settings.mjs";
+import { registerSettingsRoutes } from "./settings-routes.mjs";
 import { ModelSettings } from "./model-settings.mjs";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
 import { CmuxEventHub } from "./event-hub.mjs";
@@ -29,6 +31,9 @@ const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 export async function buildApp({
   cmux = new CmuxClient(),
   modelSettings = new ModelSettings(),
+  localSettings = null,
+  onSettingsChange = async () => {},
+  probeProvider,
   token,
   app: suppliedApp = null,
   frontendUpstream = null,
@@ -87,7 +92,7 @@ export async function buildApp({
     reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     reply.header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
 
-    const path = request.url.split("?")[0];
+    const path = request.routeOptions.url || request.url.split("?")[0];
     if (path.startsWith("/api/")) {
       reply.header("Cache-Control", "no-store");
       const authorized = isAuthorized(request, token);
@@ -206,6 +211,7 @@ export async function buildApp({
       }
       const value = {
         connected,
+        ...(localSettings ? { setupRequired: !localSettings.read().settings.onboarding.completed } : {}),
         host: host.status === "fulfilled" ? host.value : null,
         workspaces: connected ? workspacePayload.value.workspaces || [] : [],
         groups: connected ? workspacePayload.value.groups || [] : [],
@@ -260,6 +266,13 @@ export async function buildApp({
   app.post("/api/worktree-cleanup/releases/preview", async () => releaseRetention("preview"));
   app.post("/api/worktree-cleanup/releases/run", async (request) => releaseRetention("run", { previewId: request.body?.previewId, ids: request.body?.ids }));
 
+  if (localSettings) registerSettingsRoutes(app, { settings: localSettings, onChange: async value => {
+    if (hub.bin !== value.settings.tools.cmux) { hub.stop(); hub.bin = value.settings.tools.cmux; hub.start(); }
+    bootstrapSnapshot = null;
+    await onSettingsChange(value);
+  }, probeProvider });
+
+  if (!localSettings) app.get("/api/settings/local", async (_request, reply) => reply.code(409).send({ code: "SETTINGS_IMPORT_REQUIRED", error: "This installation uses the previous configuration format. Import its settings on the Mac to enable project management." }));
   app.get("/api/settings/models", async () => modelSettings.status());
   app.patch("/api/settings/models", async (request) => modelSettings.configure(request.body));
 
@@ -373,6 +386,7 @@ export async function buildApp({
       targetPort: preview.targetPort,
       width: request.body?.width,
       height: request.body?.height,
+      ...(localSettings ? { executablePath: resolveExecutable(localSettings.read().settings.tools.chrome) || localSettings.read().settings.tools.chrome } : {}),
     });
     if (captured.buffer.length > MAX_IMAGE_BYTES) throw new TypeError("The captured preview is too large to annotate");
     const dataUrl = `data:image/png;base64,${captured.buffer.toString("base64")}`;

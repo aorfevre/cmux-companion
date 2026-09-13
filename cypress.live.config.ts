@@ -24,7 +24,10 @@ export default defineConfig({
       if (process.env.CI || process.env.CMUX_COMPANION_LIVE_E2E !== "I_UNDERSTAND") {
         throw new Error("Real-agent Cypress tests are local-only and require CMUX_COMPANION_LIVE_E2E=I_UNDERSTAND.");
       }
-      const fixtureRoot = resolve(process.env.CMUX_COMPANION_E2E_FIXTURE_ROOT || join(homedir(), "Developers", "karven", "cmux-e2e-cypress"));
+      const fixtureDirectory = process.env.CMUX_COMPANION_E2E_FIXTURE_ROOT;
+      const fixtureRepository = process.env.CMUX_COMPANION_E2E_GITHUB_REPOSITORY;
+      if (!fixtureDirectory?.startsWith('/') || !fixtureRepository || !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(fixtureRepository)) throw new Error('Set explicit disposable fixture directory and GitHub repository.');
+      const fixtureRoot = resolve(fixtureDirectory);
       const run = promisify(execFile);
       config.env.fixtureRoot = fixtureRoot;
 
@@ -123,7 +126,7 @@ export default defineConfig({
         },
         async mergeFixturePullRequest(input: { url: string; runId: string }) {
           const { url, runId } = input;
-          if (!/^https:\/\/github\.com\/aorfevre\/cmux-e2e-cypress\/pull\/\d+$/.test(url)) {
+          if (!url.startsWith(`https://github.com/${fixtureRepository}/pull/`) || !/^\d+$/.test(url.slice(`https://github.com/${fixtureRepository}/pull/`.length))) {
             throw new Error("Refusing to merge a pull request outside the disposable fixture repository.");
           }
           if (!/^cypress-[a-z0-9]+$/.test(runId)) throw new Error("Invalid fixture run id for pull request merge.");

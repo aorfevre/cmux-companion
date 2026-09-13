@@ -159,8 +159,8 @@ terminal set `CMUX_COMPANION_API` to the printed loopback address and run
 `npm run dev`. Open `http://localhost:3000/orchestration` and pair using the private
 disposable token. Ctrl-C stops owned fixture resources; a failed shutdown keeps
 them for inspection. See [the development guide](docs/orchestration-development.md).
-Production `companion:dev` requires the explicit cutover configuration and is not
-the disposable contributor entry point.
+Production `companion:dev` uses local settings/onboarding and is not the disposable
+contributor entry point; existing legacy configuration still requires cutover.
 
 ```sh
 npm run verify
@@ -177,10 +177,13 @@ changes do not update that installation.
 
 ## Configuration
 
-Production requires `CMUX_COMPANION_ORCHESTRATION_CONFIG`, an absolute path to a
-mode-0600 regular JSON file. There is no implicit production configuration.
-Repository allow-list entries, separate storage, native capabilities and cutover
-inventory are mandatory; details are in the [cutover runbook](docs/orchestration-retirement.md).
+New installations need no environment configuration: pair and open `/onboarding`
+to configure projects, Claude/Codex commands and local preferences. `/settings`
+keeps them in a private SQLite registry. See [settings and migration](docs/settings-onboarding.md).
+Existing installations can import their private orchestration/model JSON once;
+repository ownership and [cutover](docs/orchestration-retirement.md) safeguards
+still apply. The legacy JSON startup path is retained only until a settings
+database exists.
 Git on the service's `PATH` must support `merge-tree --write-tree`,
 `--no-messages` and `--merge-base` (upstream Git 2.40 or newer). Production probes
 these options before reserving repository ownership or constructing agents;
@@ -204,7 +207,9 @@ and recovery are documented in [recovery](docs/orchestration-recovery.md).
 | `CMUX_COMPANION_TAILSCALE_PORT` | `8443` | Private HTTPS port |
 | `CMUX_COMPANION_TAILSCALE_BIN` | Tailscale macOS app CLI, then `tailscale` | CLI used to manage private preview links |
 | `CMUX_COMPANION_TOKEN_FILE` | `~/.config/cmux-companion/token` | Pairing token path |
-| `CMUX_COMPANION_REPO_ROOTS` | `~/Developers/karven:~/Developers/rekord` (expanded defaults for this install) | Colon-separated repository roots |
+| `CMUX_COMPANION_DATA_DIR` | `~/.config/cmux-companion` | Local settings, workflow and artifact directory |
+| `CMUX_COMPANION_SETTINGS_DB` | `<data directory>/settings.sqlite` | Optional settings database location |
+| `CMUX_COMPANION_REPO_ROOTS` | Empty | Legacy catalog override; database-backed production uses explicit projects |
 | `CMUX_COMPANION_PUSH_FILE` | `~/.config/cmux-companion/push.json` | Private push keys and device subscriptions |
 | `CMUX_COMPANION_VAPID_SUBJECT` | Installed private Tailscale HTTPS URL | Web Push sender identity advertised to Apple and other push services |
 | `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |

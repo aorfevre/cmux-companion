@@ -388,7 +388,7 @@ test("repository roots come from the environment when configured", async (t) => 
   process.env.CMUX_COMPANION_REPO_ROOTS = " /tmp/one : :/tmp/two ";
   assert.deepEqual(new RepoCatalog().roots, ["/tmp/one", "/tmp/two"]);
   process.env.CMUX_COMPANION_REPO_ROOTS = " : ";
-  assert.equal(new RepoCatalog().roots.length, 2, "an empty list falls back to the defaults");
+  assert.equal(new RepoCatalog().roots.length, 0, "an empty list does not discover personal projects");
   delete process.env.CMUX_COMPANION_REPO_ROOTS;
   assert.equal(new RepoCatalog({ inspectConcurrency: 0, gitConcurrency: "x" }).inspectConcurrency, 8);
 });

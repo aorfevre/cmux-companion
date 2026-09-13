@@ -1,3 +1,4 @@
+import { UPDATER_LABEL, LEGACY_UPDATER_LABEL } from "./service-identity.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -21,12 +22,13 @@ function statusFor({ runningSha = null, deployedSha, observedRemoteSha, pendingS
 
 export async function updaterLaunchAgentRunning() {
   if (process.platform !== "darwin" || typeof process.getuid !== "function") return false;
-  try {
-    const { stdout } = await run("/bin/launchctl", ["print", `gui/${process.getuid()}/com.aorfevre.cmux-companion-updater`], { timeout: 2_000 });
-    return launchAgentIsRunning(stdout);
-  } catch {
-    return false;
+  for (const label of [UPDATER_LABEL, LEGACY_UPDATER_LABEL]) {
+    try {
+      const { stdout } = await run("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`], { timeout: 2_000 });
+      if (launchAgentIsRunning(stdout)) return true;
+    } catch { /* Check the legacy label during migration. */ }
   }
+  return false;
 }
 
 export function launchAgentIsRunning(output) {
