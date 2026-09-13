@@ -92,12 +92,12 @@ No history rewrite or credential rotation was indicated by a confirmed finding.
 
 ## Licensing and dependencies
 
-- Root MIT notice is retained; `license: "MIT"` added to npm metadata/lockfile.
+- Root MIT license terms are retained; `license: "MIT"` added to npm metadata/lockfile.
   `private: true` remains to prevent accidental npm publication.
 - Imported updater MIT notice and exact-source provenance remain unchanged.
-- The root notice names **Alexandre Orfèvre**; the updater notice names
-  **Aurelien Orfevre**. The maintainer must confirm the intended root attribution
-  and rights before publication; this audit does not silently rewrite either.
+- The maintainer confirmed **AlphaOscar (alphaoscar.fr)** as the root copyright
+  holder on 2026-09-14; the root notice now reflects that attribution. The imported
+  updater notice still names **Aurelien Orfevre** and remains unchanged.
 - All resolved lockfile packages have a declared license. Direct runtime packages
   are MIT, Apache-2.0 or MPL-2.0; optional build tooling also includes LGPL and
   attribution-licensed data. See [third-party inventory](../THIRD_PARTY.md).
