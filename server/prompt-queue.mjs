@@ -16,6 +16,7 @@ export class PromptQueue extends EventEmitter {
     this.now = now;
     this.state = this.load();
     this.inFlight = new Set();
+    this.paused = () => false;
     this.drainTimers = new Map();
   }
 
@@ -93,6 +94,7 @@ export class PromptQueue extends EventEmitter {
   }
 
   async dispatch(item, cmux) {
+    if (this.paused()) return { sent: false, reason: "update-maintenance" };
     if (!cmux?.sendPrompt) throw new TypeError("cmux input is unavailable");
     if (this.inFlight.has(item.id)) return { sent: false, reason: "already-sending" };
     this.inFlight.add(item.id);

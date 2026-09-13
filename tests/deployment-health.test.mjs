@@ -22,3 +22,10 @@ test("the updater launch agent probe reads the real launchd answer on macOS", { 
   const running = await updaterLaunchAgentRunning();
   assert.equal(typeof running, "boolean");
 });
+
+test('bundled updater heartbeat stays fresh between five-minute discovery checks', async () => {
+  const { deploymentStatus } = await import('../server/deployment-health.mjs');
+  const now = Date.now(), sha = 'a'.repeat(40);
+  const status = deploymentStatus({ phase: 'idle', deployedSha: sha, observedRemoteSha: sha, updaterDeployedSha: sha, updaterObservedRemoteSha: sha, lastCheckAt: new Date(now - 240000).toISOString(), lastHeartbeatAt: new Date(now - 1000).toISOString() }, { gitSha: sha }, now, { updaterProcessRunning: true });
+  assert.equal(status.services.updater.alive, true); assert.equal(status.summary, 'healthy');
+});

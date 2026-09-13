@@ -15,6 +15,7 @@ export class Scheduler {
     this.reconciler = new Reconciler({ service, ownership, results, id });
     this.results = results; this.integrations = integrations;
     this.stopped = true; this.again = false;
+    this.paused = () => false;
     /** @type {Promise<void> | null} */ this.sweep = null;
     /** @type {ReturnType<typeof setInterval> | null} */ this.timer = null;
     this.verifications = verifier ? new VerificationCoordinator({ service, verifier, ownership, id, onError }) : null;
@@ -44,10 +45,10 @@ export class Scheduler {
     } finally { if (releaseOwnership) this.ownership.release(); }
   }
   tick() {
-    if (this.stopped) return Promise.resolve();
+    if (this.stopped || this.paused()) return Promise.resolve();
     this.again = true;
     if (!this.sweep) this.sweep = Promise.resolve().then(async () => {
-      while (!this.stopped && this.again) { this.again = false; await this.pass(); }
+      while (!this.stopped && !this.paused() && this.again) { this.again = false; await this.pass(); }
     }).finally(() => { this.sweep = null; });
     return this.sweep;
   }

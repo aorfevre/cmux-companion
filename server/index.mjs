@@ -1,3 +1,6 @@
+import { UpdateControl } from '../updater/src/control.mjs';
+import { registerUpdateRoutes } from './update-routes.mjs';
+import { installUpdateMaintenance } from './update-maintenance.mjs';
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -44,6 +47,7 @@ export async function startServer({
   // real database file.
   const repoCatalog = new RepoCatalog({ identityStore: openRepoIdentityStore(localSettings ? { path: join(directory, "repo-identity.db") } : {}), ...(localSettings ? { roots: [], projects: () => localSettings.read().settings.projects } : {}) });
   let runtime;
+  let updateControl = null;
   const monitor = async app => { await buildApp({ app, cmux,
     localSettings, probeProvider,
     onSettingsChange: async () => {
@@ -65,8 +69,18 @@ export async function startServer({
       await runtime.app.register(monitor);
     }
   } catch (error) { localSettings?.close(); throw error; }
-  try { await runtime.listen({ port }); } catch (error) { localSettings?.close(); throw error; }
-  const app = { close: async () => { await runtime.close(); localSettings?.close(); } };
+  try {
+    if (process.env.CMUX_COMPANION_UPDATER_CONTROL) {
+      updateControl = new UpdateControl(process.env.CMUX_COMPANION_UPDATER_CONTROL);
+      const maintenance = installUpdateMaintenance({ runtime, control: updateControl, cmux, promptQueue });
+      await runtime.app.register(async app => registerUpdateRoutes(app, { control: updateControl, token, maintenance }));
+    }
+    await runtime.listen({ port });
+  } catch (error) {
+    try { await runtime.close(); } finally { updateControl?.close(); localSettings?.close(); }
+    throw error;
+  }
+  const app = { close: async () => { await runtime.close(); updateControl?.close(); localSettings?.close(); } };
   const address = runtime.app.server.address();
   return { app, tokenPath, host, port: address && typeof address !== "string" ? address.port : port };
 }

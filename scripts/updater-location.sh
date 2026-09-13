@@ -10,7 +10,7 @@ resolve_updater_script() {
     print -r -- "${CMUX_COMPANION_UPDATER_REPOSITORY}/scripts/${script_name}"
     return
   fi
-  for candidate_dir in "${HOME}/.local/share/cmux-companion-updater/current" "${checkout_root:h}/cmux-companion-updater"; do
+  for candidate_dir in "${HOME}/.local/share/cmux-companion/current/updater" "${checkout_root}/updater"; do
     if [[ -f "${candidate_dir}/scripts/${script_name}" ]]; then
       print -r -- "${candidate_dir}/scripts/${script_name}"
       return

@@ -54,13 +54,13 @@ cmux companion :3210
 cmux CLI → replay grid / safe input RPCs → cmux Unix socket → cmux.app
 ```
 
-The service binds only to `127.0.0.1`. Tailscale Serve is the only network-facing listener. The installer uses HTTPS port 8443 so it does not replace an existing Tailscale Serve handler on port 443.
+The service binds only to `127.0.0.1`. Tailscale Serve is the only network-facing listener. The documented transport defaults to HTTPS port 8443 to preserve an existing Tailscale Serve handler on port 443; the bundled installer leaves transport configuration to the operator.
 
 Local app previews use separate HTTPS ports from 8500 through 8599. This preserves application root paths, redirects, assets, and WebSockets better than path-prefix proxying. A detected app is not exposed until you tap **Create private link**; links remain tailnet-only and Companion never enables Tailscale Funnel.
 
 By default, the phone reflows the full Mac-width replay grid locally, keeping the Mac terminal unchanged while preserving enough history to scroll. The **Fit** control switches between this readable phone layout and the exact terminal grid. Older cmux versions automatically fall back to the authenticated plain-text screen endpoint.
 
-The installer also enables cmux’s supported password-protected automation mode. It creates a separate socket credential at `~/.config/cmux-companion/cmux-socket-password` and makes a timestamped `cmux.json.*.bak` before changing cmux configuration.
+The explicit `configure-cmux-automation.mjs` setup step enables cmux’s supported password-protected automation mode. It creates a separate socket credential at `~/.config/cmux-companion/cmux-socket-password` and makes a timestamped `cmux.json.*.bak` before changing cmux configuration.
 
 ## Requirements
 
@@ -70,18 +70,16 @@ The installer also enables cmux’s supported password-protected automation mode
 
 ## Install
 
-Installed cutover is a separate operator task. The existing `install:mac` wrapper
-delegates to the sibling updater installer, whose LaunchAgent environment does
-not yet carry `CMUX_COMPANION_ORCHESTRATION_CONFIG`. Exporting it only in the
-calling shell does not establish persistent configuration. Installer compatibility
-and an installed startup rehearsal remain pending; do not treat this revision's
-local build as a runnable installed upgrade.
+The updater is bundled in this repository. Fresh installations use `npm run
+install:mac` from a reviewed committed checkout, then explicit cmux automation and
+private Tailscale setup. Existing installations require a guarded migration after
+stopping their identified owners. See [installation, updates and recovery](docs/updates.md).
 
-Before an installed rollout, persist the private configuration path in the actual
-service launch environment and follow the [cutover runbook](docs/orchestration-retirement.md).
-The approved operator procedure must preserve the existing token, Tailscale
-configuration and unrelated sessions. No installation or live cutover is performed
-by the contributor checks below.
+Settings offers an update notice, **Update now**, **Update when idle**, and an
+**Automatic installation** toggle that defaults **off**. Only exact main commits
+with successful CI qualify. Installation waits for safely idle agents and retains
+verified recovery of the previous compatible version. Checking alone never
+installs. Source review, merge and local tests do not change installed services.
 
 ## Daily use
 
@@ -226,7 +224,7 @@ and recovery are documented in [recovery](docs/orchestration-recovery.md).
 - **Waiting for cmux:** open cmux on the Mac. The companion will reconnect without a restart.
 - **Mac is sleeping:** Tailscale and the companion cannot respond while macOS is asleep.
 - **Logs:** inspect `~/Library/Logs/cmux-companion.log` and `~/Library/Logs/cmux-companion.error.log`.
-- **Installed upgrade:** complete the installer compatibility and cutover prerequisites above before restarting with this source.
+- **Installed upgrade:** complete the bundled migration and cutover prerequisites above before restarting with this source.
 
 ## License
 

@@ -3,6 +3,7 @@
 /* eslint-disable @next/next/no-html-link-for-pages */
 import { useEffect, useState } from 'react';
 import { ApiError, request } from '../api-request';
+import { UpdateSettings } from '../updates';
 import { ModelSelect } from '../model-settings';
 
 type Provider = 'claude' | 'codex';
@@ -125,5 +126,6 @@ export function LocalSettingsPanel({ onboarding = false }: { onboarding?: boolea
             <div className="settings-save"><button type="submit">{busy ? 'Saving…' : 'Save settings'}</button>{setup && <button type="button" onClick={() => void save(true)}>Complete setup</button>}<a href="/orchestration">Go to goals</a></div>
           </fieldset>
         </form>}
+  {draft && !unpaired && <UpdateSettings />}
   </main>;
 }

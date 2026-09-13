@@ -21,7 +21,7 @@
     "update:disable": "node scripts/updater-operator.mjs disable",
     "update:enable": "node scripts/updater-operator.mjs enable",
     "test": "node scripts/run-backend-tests.mjs",
-    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='server/**' --test-coverage-exclude='server/index.mjs' --test-coverage-exclude='server/supervisor.mjs' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/backend.lcov $(node scripts/run-backend-tests.mjs --list)",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='server/**' --test-coverage-include='updater/src/**' --test-coverage-exclude='server/index.mjs' --test-coverage-exclude='server/supervisor.mjs' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/backend.lcov $(node scripts/run-backend-tests.mjs --list)",
     "test:live": "node --test tests/cmux.live.mjs",
     "test:preview-live": "node --test tests/tailscale-preview.live.mjs",
     "test:ui": "vitest run --config vitest.config.ts",
