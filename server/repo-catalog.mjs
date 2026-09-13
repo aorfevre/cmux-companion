@@ -1,3 +1,4 @@
+import { assertDevChild } from './dev-repositories.mjs';
 import { readCommitTime } from "./commit-time.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -54,7 +55,7 @@ export class RepoCatalog {
   }
 
   async scan(generation) {
-    const candidates = (this.projects?.() ?? []).filter(project => project.enabled).map(project => ({ root: dirname(project.path), path: project.path }));
+    const candidates = (this.projects?.() ?? []).filter(project => project.enabled).map(project => ({ root: dirname(project.path), path: project.path, project }));
     for (const root of this.roots) {
       let entries = [];
       try {
@@ -86,7 +87,8 @@ export class RepoCatalog {
     return repos;
   }
 
-  async inspect({ root, path }) {
+  async inspect({ root, path, project }) {
+    if (project?.devRepoPath) await assertDevChild(project.devRepoPath, path);
     const canonicalRoot = await realpath(root);
     const canonicalPath = await realpath(path);
     assertInside(canonicalRoot, canonicalPath);
@@ -115,8 +117,8 @@ export class RepoCatalog {
     const lastActivity = read.lastActivity;
     return {
       id: repoId(canonicalPath),
-      name: basename(canonicalPath),
-      root: basename(canonicalRoot),
+      name: project?.name ?? basename(canonicalPath),
+      root: project?.devRepoName ?? (project ? "Individual repositories" : basename(canonicalRoot)),
       rootPath: canonicalRoot,
       path: canonicalPath,
       // The dashboard groups aliases of one repository by this directory. It
@@ -173,6 +175,12 @@ export class RepoCatalog {
     const repos = await this.list();
     const repo = repos.find((item) => item.id === id);
     if (!repo) throw new TypeError("Unknown repository");
+    if (this.projects) {
+      const project = this.projects().find(entry => entry.enabled && entry.path === repo.path);
+      if (!project) throw new TypeError("Repository is no longer enabled");
+      // Cache freshness cannot authorize a path changed since discovery.
+      if (project.devRepoPath) await assertDevChild(project.devRepoPath, repo.path);
+    }
     return repo;
   }
 

@@ -3,7 +3,7 @@ updatesSuite('User-approved bundled updates with a real disposable service', () 
   it('defaults off, confirms an exact commit, queues safely and supports opt-in without installing early', () => {
     cy.viewport(390, 844);
     cy.task('updatesBusy', true);
-    cy.visit('/settings');
+    cy.visit('/settings#updates');
     cy.task<string>('settingsPairing', null, { log: false }).then(token => {
       cy.findByLabelText('Pairing code').type(token, { log: false });
       cy.findByRole('button', { name: 'Pair this device' }).click();

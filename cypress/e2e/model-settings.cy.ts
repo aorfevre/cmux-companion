@@ -5,6 +5,7 @@ const now = "2026-09-06T12:00:00Z";
 function scenario() {
   const state = { roles: structuredClone(DEFAULT_MODEL_ROLES) as Roles, failSave: false, failLoad: false };
   cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing local fixture" } });
+  cy.intercept("GET", "**/api/settings/local", { statusCode: 404, body: { error: "Legacy settings" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "E2E Mac" }, workspaces: [], refreshedAt: now });
   cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
@@ -21,7 +22,7 @@ function scenario() {
   }).as("saveModels");
   return state;
 }
-function settings() { cy.visit("/?view=settings"); cy.wait("@loadModels"); }
+function settings() { cy.visit("/settings#agents"); cy.wait("@loadModels"); }
 describe("model defaults", () => {
   it("saves manual-session defaults on mobile, survives reload and resets the supported role", () => {
     scenario(); cy.viewport(390, 844); settings();

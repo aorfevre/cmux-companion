@@ -21,6 +21,7 @@ export default defineConfig({
         on('task', {
           settingsPairing: () => readFileSync(settingsManifest.tokenFile, 'utf8'),
           settingsProjectPath: () => settingsManifest.repository,
+          settingsDevRepoPath: (name: string) => { if (!['karven', 'rekord'].includes(name)) throw new Error('Unknown fixture folder'); return settingsManifest.devRepos[name]; },
           updatesBusy: (busy: boolean) => {
             if (typeof busy !== 'boolean') throw new Error('Expected a fixture boolean');
             const path = join(settingsManifest.directory, 'updates-busy');

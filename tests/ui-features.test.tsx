@@ -16,14 +16,13 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe("contextual mobile features", () => {
   test("keeps permanent navigation focused on frequent mobile destinations", async () => {
     const navigate = vi.fn();
-    render(<BottomNav view="usage" onView={navigate} />);
-    assert.ok(screen.getByRole("button", { name: "Licence Usage" }).classList.contains("active"));
-    assert.equal(screen.queryByRole("button", { name: "Apps" }), null);
-    assert.ok(screen.getByRole("button", { name: "Sessions" }));
-    assert.equal(screen.queryByRole("button", { name: "Inbox" }), null);
-    assert.equal(screen.queryByRole("button", { name: "Launch" }), null);
-    await userEvent.click(screen.getByRole("button", { name: "Goals" }));
-    assert.deepEqual(navigate.mock.calls[0], ["worktrees"]);
+    render(<BottomNav view="inbox" onView={navigate} />);
+    assert.equal(screen.getByRole("link", { name: "Inbox" }).getAttribute("aria-current"), "page");
+    assert.equal(screen.getByRole("link", { name: "Goals" }).getAttribute("href"), "/orchestration");
+    assert.equal(screen.getByRole("link", { name: "Settings" }).getAttribute("href"), "/settings");
+    assert.equal(screen.queryByRole("link", { name: "Licence Usage" }), null);
+    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
+    assert.deepEqual(navigate.mock.calls[0], ["sessions"]);
   });
 
   test("shows CCS quota by account while treating absent windows as unreported", async () => {

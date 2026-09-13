@@ -1,3 +1,4 @@
+import { inspectDevRepo, scanDevRepo } from './dev-repositories.mjs';
 import { inspectProject, providerCommand, resolveExecutable } from './local-settings.mjs';
 
 // Registered inside the monitoring scope, after its pairing/origin hooks.
@@ -17,6 +18,25 @@ export function registerSettingsRoutes(app, { settings, onChange = async () => {
     const result = await settings.update(body.expectedRevision, body.settings, { inspect });
     await onChange(result);
     return result;
+  });
+  app.patch('/api/settings/local', { bodyLimit: 256 * 1024 }, async request => {
+    const body = request.body;
+    if (!body || Object.keys(body).some(key => !['expectedRevision', 'changes'].includes(key)) || !body.changes || typeof body.changes !== 'object' || Array.isArray(body.changes)) throw new TypeError('Expected edited fields and revision');
+    const before = settings.read();
+    settings.assertRevision(body.expectedRevision, before.revision);
+    if (Object.keys(body.changes).some(key => !['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'previews'].includes(key))) throw new TypeError('Unknown editable settings field');
+    const result = await settings.update(body.expectedRevision, { ...before.settings, ...body.changes }, { inspect });
+    await onChange(result);
+    return result;
+  });
+  app.post('/api/settings/dev-repos/inspect', async request => {
+    if (!request.body || Object.keys(request.body).some(key => key !== 'path')) throw new TypeError('Expected a Dev repo directory');
+    return inspectDevRepo(request.body.path);
+  });
+  app.post('/api/settings/dev-repos/:id/scan', async request => {
+    const root = settings.read().settings.devRepos.find(entry => entry.id === request.params.id);
+    if (!root) throw new TypeError('Choose a saved Dev repo');
+    return scanDevRepo(root, inspect);
   });
   app.post('/api/settings/projects/inspect', async request => {
     if (!request.body || Object.keys(request.body).some(key => key !== 'path')) throw new TypeError('Expected a project directory');

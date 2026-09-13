@@ -2,12 +2,54 @@
 
 New installations start with no project directories and no personal account
 assumptions. Start the loopback service, pair your browser, and open `/onboarding`.
-Add a Git root on the Mac, choose Claude or Codex, configure local tools and save.
+Add a named Dev repo (a folder containing Git repositories), choose the repositories
+to use, then choose Claude or Codex and approve the checks for your first goal.
 Setup progress survives restarts. `/settings` remains available for later edits.
 Missing native tools do not prevent pairing or configuring projects.
 
+## Find your preferences
+
+Settings has one destination, with categories on desktop and a category list on
+phones. Existing `/?view=settings` links redirect to `/settings`; update links
+open `/settings#updates`. Main navigation opens Sessions, Goals, Inbox and Settings.
+
+- **General**: connected Mac, this-browser terminal input protection and pairing.
+- **Dev repos**: named development folders and individually added repositories.
+- **Agents**: default provider/model, direct CLI or CCS profile, readiness and usage.
+- **Notifications**: permission and preferences for this browser's subscription.
+- **Updates**: manual installation and the automatic installation opt-in, off by default.
+- **Advanced**: capacity, time limits in human units, tool paths, previews and diagnostics.
+
+Multi-field edits show Save and Discard. Leaving an edited category asks whether
+to discard; failed saves retain the draft. Concurrent changes to the same edited
+fields show saved and draft values for review. Changes in other categories are
+preserved. Immediate toggles acknowledge saving and restore their prior value
+on failure. Terminal input protection is device-local; update changes use their
+own clearly labeled protection control on the single Updates screen.
+
+## Add Dev repos
+
+1. Open **Dev repos → Add Dev repo**. Enter a name such as `karven` or `rekord`
+   and the containing directory on the connected Mac. `~/` means that Mac's home.
+2. Validate the directory, review its canonical path, then save and discover.
+3. Select the repositories to add. Discovery never enables a repository by itself
+   or executes package scripts. Use **Open / Refresh** after adding repositories
+   on disk. Search by folder name, repository name or GitHub owner.
+4. Open an added repository to confirm its GitHub destination and remote and
+   choose approved npm scripts, or define executable/argument checks in Advanced
+   verification. Repository configuration and provider readiness are both required
+   before creating a goal. Monitoring does not require delivery checks.
+
+Scanning examines immediate child directories only, with bounded entry count,
+concurrency and time. Partial results are identified. Hidden folders, symlinks,
+linked worktrees, generated worktree folders and nested repositories are excluded.
+Add repositories outside collections through **Add individual repository**.
+Dev repo names must be unique; collection paths cannot overlap. Rename a group
+without changing repository IDs. Removing a group moves its selected repositories
+to **Individual repositories** and does not remove files or goal history.
+
 Settings are private local SQLite data in `~/.config/cmux-companion/settings.sqlite`.
-The registry is authoritative for project identities, provider commands/models,
+The registry is authoritative for Dev repo names and paths, project identities, provider commands/models,
 tool paths, execution limits and preview ports. `repo-identity.db` remains a
 rebuildable cache; deleting it cannot remove configured projects. Back up the
 settings database along with the workflow database and artifacts while stopped.
@@ -80,11 +122,19 @@ update the installer-provided plist, remove the old registration, then load the
 new registration. Never run both labels against the same state. Rollback restores
 the old registration only after the new service and its owned work are stopped.
 
-The optional updater is a separate project. Set
-`CMUX_COMPANION_UPDATER_REPOSITORY` to its checkout/bundle, or install its standard
-bundle. Operator commands prefer that explicit path, then the installed bundle,
-then a sibling checkout for contributors. Installing, checking updates and
-changing update policy are operator actions, not routine verification.
+The updater is bundled with Companion. Automatic installation remains off until
+explicitly enabled; manual installation still requires confirmation. Settings
+schema v2 migrates existing v1 data transactionally, preserving projects, disabled
+states, import markers and admitted-goal snapshots. Existing projects initially
+appear under Individual repositories. Adding their containing Dev repo associates
+them without duplicating or reenabling them.
+
+This release changes the settings data contract. The bundled updater's existing
+compatibility guard deliberately refuses unattended schema-changing releases;
+use the explicit stopped-service installation/migration procedure with a backup.
+An older binary refuses a v2 database. Rollback must restore the verified v1
+settings backup before starting that binary; switching code alone is insufficient.
+Disposable tests verify the v1 → v2 migration and backup restoration.
 
 Live Cypress runs require both `CMUX_COMPANION_E2E_FIXTURE_ROOT` (absolute path)
 and `CMUX_COMPANION_E2E_GITHUB_REPOSITORY` (`owner/repository`) in addition to the

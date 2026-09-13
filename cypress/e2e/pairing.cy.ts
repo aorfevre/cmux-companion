@@ -120,7 +120,8 @@ describe("Pairing failures and offline", () => {
   it("unpairs from Settings and returns to the pair screen without reloading", () => {
     fixtures(true);
     cy.intercept("POST", "**/api/auth/logout", { paired: false }).as("logout");
-    cy.visit("/?view=settings");
+    cy.intercept("GET", "**/api/auth/status", { paired: false });
+    cy.visit("/settings#general");
     cy.wait("@bootstrap");
     cy.findByRole("heading", { name: "Settings" }).should("be.visible");
     cy.findByRole("button", { name: "Unpair this device" }).click();

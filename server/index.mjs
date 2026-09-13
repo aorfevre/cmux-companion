@@ -45,7 +45,7 @@ export async function startServer({
   // Only the running companion opts into the identity cache. buildApp defaults
   // its catalog to a live one, so no test that builds an app ever touches the
   // real database file.
-  const repoCatalog = new RepoCatalog({ identityStore: openRepoIdentityStore(localSettings ? { path: join(directory, "repo-identity.db") } : {}), ...(localSettings ? { roots: [], projects: () => localSettings.read().settings.projects } : {}) });
+  const repoCatalog = new RepoCatalog({ identityStore: openRepoIdentityStore(localSettings ? { path: join(directory, "repo-identity.db") } : {}), ...(localSettings ? { roots: [], projects: () => { const current = localSettings.read().settings; return current.projects.map(project => ({ ...project, devRepoName: current.devRepos?.find(root => root.id === project.devRepoId)?.name, devRepoPath: current.devRepos?.find(root => root.id === project.devRepoId)?.path })); } } : {}) });
   let runtime;
   let updateControl = null;
   const monitor = async app => { await buildApp({ app, cmux,

@@ -9,15 +9,17 @@ export type Updates = { available: boolean; revision: number; automatic: boolean
 const endpoint = '/api/updater/updates';
 function useUpdates() {
   const [status, setStatus] = useState<Updates | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(true);
   const generation = useRef(0);
   const load = useCallback(async () => {
     const current = ++generation.current;
-    try { const next = await request<Updates>(endpoint); if (generation.current === current) setStatus(next); }
-    catch { if (generation.current === current) setStatus(null); }
+    try { const next = await request<Updates>(endpoint); if (generation.current === current) { setStatus(next); setLoadError(''); setLoading(false); } }
+    catch { if (generation.current === current) { setLoadError('Could not check update status. Try again.'); setLoading(false); } }
   }, []);
   useEffect(() => { const invalidate = () => { generation.current++; }; const kickoff = setTimeout(() => void load(), 0), poll = setInterval(() => void load(), 5000); return () => { invalidate(); clearTimeout(kickoff); clearInterval(poll); }; }, [load]);
   const accept = (next: Updates) => { generation.current++; setStatus(next); };
-  return { status, load, accept };
+  return { status, load, accept, loading, loadError };
 }
 export function UpdateNotice() {
   const { status } = useUpdates();
@@ -28,24 +30,25 @@ export function UpdateNotice() {
 }
 const phaseLabels: Record<string, string> = { waiting: 'Waiting to update', preparing: 'Preparing update', verifying: 'Verifying update', switching: 'Activating update', restarting: 'Restarting Companion', 'health-checking': 'Checking startup', accepted: 'Finishing update', 'rolling-back': 'Recovering previous version', restoring: 'Restoring previous data', succeeded: 'Update complete', failed: 'Update failed', recovery_required: 'Recovery needs attention' };
 export function UpdateSettings({ readOnly }: { readOnly?: boolean }) {
-  const { status, load, accept } = useUpdates();
+  const { status, load, accept, loading, loadError } = useUpdates();
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const [unlocked, setUnlocked] = useState(false);
+  const [unlocked, setUnlocked] = useState(false), [notice, setNotice] = useState('');
   const [confirmation, setConfirmation] = useState<{ candidate: Candidate; whenIdle: boolean; id: string } | null>(null);
   const protectedMode = readOnly ?? !unlocked;
   useEffect(() => { if (window.location.hash === '#updates') document.getElementById('updates')?.scrollIntoView(); }, []);
   async function mutate(path: string, body: unknown, method = 'POST') {
     if (protectedMode || busy) return;
-    setBusy(true); setError('');
-    try { accept(await request<Updates>(path, { method, body: JSON.stringify(body) })); setConfirmation(null); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Update request failed'); void load(); }
+    setBusy(true); setError(''); setNotice('Saving…');
+    try { accept(await request<Updates>(path, { method, body: JSON.stringify(body) })); setConfirmation(null); setNotice('Saved.'); }
+    catch (cause) { setNotice(''); setError(cause instanceof Error ? cause.message : 'Update request failed'); void load(); }
     finally { setBusy(false); }
   }
   const active = status?.request && ['queued', 'running', 'recovery_required'].includes(status.request.status);
   const candidate = status?.candidate;
   return <section id="updates" className="update-settings" aria-label="Companion updates">
     <h2>Companion updates</h2>
-    {!status?.available ? <p>Update controls are unavailable. An installed bundled updater is required.</p> : <>
+    {loadError && <p role="alert">{loadError} <button type="button" onClick={() => void load()}>Retry update status</button></p>}
+    {loading ? <p role="status">Loading update status…</p> : !status?.available ? <p>Update controls are unavailable. An installed bundled updater is required.</p> : <>
       <p>Installed <code>{status.deployedSha?.slice(0, 7) || 'unknown'}</code>{status.lastCheckAt && <> · Last checked {new Date(status.lastCheckAt).toLocaleString()}</>}</p>
       <button type="button" disabled={busy || status.checking || protectedMode} onClick={() => void mutate('/api/updater/check', {})}>{status.checking ? 'Checking for updates…' : 'Check for updates'}</button>
       {readOnly === undefined && <label className="update-toggle"><input type="checkbox" checked={unlocked} onChange={event => setUnlocked(event.target.checked)} />Allow update changes on this device</label>}
@@ -68,6 +71,6 @@ export function UpdateSettings({ readOnly }: { readOnly?: boolean }) {
       </div>}
       {status.checkError && <p role="alert">{status.checkError}</p>}
     </>}
-    {error && <p role="alert">{error}</p>}
+    {notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}
   </section>;
 }

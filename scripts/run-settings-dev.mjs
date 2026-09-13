@@ -4,7 +4,7 @@ import { registerUpdateRoutes } from '../server/update-routes.mjs';
 import { installUpdateMaintenance } from '../server/update-maintenance.mjs';
 import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, realpath, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, writeFile, rm, mkdir, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalSettings } from '../server/local-settings.mjs';
@@ -22,11 +22,14 @@ export async function startSettingsDemo() {
   const token = randomBytes(32).toString('hex'), tokenFile = join(directory, 'pairing-token');
   let runtime, updateControl, updateTimer, updatePending = Promise.resolve();
   try {
+    await mkdir(join(directory, 'karven')); await mkdir(join(directory, 'rekord'));
+    await cp(repository.repository, join(directory, 'karven', 'example'), { recursive: true });
+    await cp(repository.repository, join(directory, 'rekord', 'example'), { recursive: true });
     const probeProvider = async () => ({ ready: true });
     runtime = await createSettingsRuntime({ settings, directory, token, probeProvider,
       createAgents: () => Object.assign(new FakeAgents(), { close: async () => {} }),
     });
-    const catalog = new RepoCatalog({ roots: [], projects: () => settings.read().settings.projects });
+    const catalog = new RepoCatalog({ roots: [], projects: () => { const current = settings.read().settings; return current.projects.map(project => ({ ...project, devRepoName: current.devRepos?.find(root => root.id === project.devRepoId)?.name, devRepoPath: current.devRepos?.find(root => root.id === project.devRepoId)?.path })); } });
     await runtime.app.register(app => buildApp({ app, token, localSettings: settings, probeProvider, repoCatalog: catalog,
       cmux: { hostStatus: async () => ({}), workspaceList: async () => ({ workspaces: [] }), capabilities: async () => ({}) },
       onSettingsChange: async () => { catalog.invalidate(); await runtime.settingsChanged(); },
@@ -49,7 +52,7 @@ export async function startSettingsDemo() {
     await cycle();
     updateTimer = setInterval(() => { updatePending = updatePending.then(cycle); }, 100);
     const address = await runtime.listen({ port: 0 });
-    const manifest = { directory, tokenFile, address, repository: repository.repository };
+    const manifest = { directory, tokenFile, address, repository: repository.repository, devRepos: { karven: join(directory, 'karven'), rekord: join(directory, 'rekord') } };
     const manifestFile = join(directory, 'connection.json');
     await writeFile(tokenFile, token, { mode: 0o600 }); await writeFile(manifestFile, JSON.stringify(manifest), { mode: 0o600 });
     return { manifest, manifestFile, async close() { clearInterval(updateTimer); await updatePending; await runtime.close(); updateControl.close(); settings.close(); await repository.close(); await rm(directory, { recursive: true, force: true }); } };

@@ -45,9 +45,7 @@ export default defineConfig(async () => {
 
   return {
     server: {
-      ...(isCodexSeatbeltSandbox
-        ? { watch: { useFsEvents: false, usePolling: true } }
-        : {}),
+      watch: { ignored: ["**/coverage/**", "**/cypress/screenshots/**", "**/cypress/results/**"], ...(isCodexSeatbeltSandbox ? { useFsEvents: false, usePolling: true } : {}) },
       proxy: {
         "/api": {
           target: process.env.CMUX_COMPANION_API || "http://127.0.0.1:3210",

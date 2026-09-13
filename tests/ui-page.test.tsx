@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { DeviceSettings } from "../app/settings/device-settings";
+import { PushSettings } from "../app/settings/notifications";
+import { useState } from "react";
 import Home, { InboxView, LastUpdateStamp, updatedAgo } from "../app/page";
 
 // One cmux workspace with two terminals inside a catalogued repository, so the
@@ -71,6 +74,8 @@ function installHome(search: string, handler: Handler = () => undefined, { readO
   return { fetchMock, calls };
 }
 
+function NotificationsFixture() { const [notice, setNotice] = useState(""); return <><PushSettings onNotice={setNotice} />{notice && <p className="toast">{notice}</p>}</>; }
+
 const toast = () => document.querySelector(".toast") as HTMLElement | null;
 const findToast = () => waitFor(() => { const element = toast(); if (!element) throw new Error("No toast"); return element; });
 const posted = (calls: { url: string; init?: RequestInit }[], url: string, method = "POST") => calls.filter((call) => call.url === url && (call.init?.method || "GET").toUpperCase() === method);
@@ -95,7 +100,7 @@ describe("pairing and connectivity", () => {
 
   test("pairing rejects a wrong code, accepts the right one and unpairs from settings", async () => {
     let paired = false;
-    const { calls } = installHome("/?view=settings", (url, init) => {
+    const { calls } = installHome("/?mode=sessions", (url, init) => {
       if (url === "/api/auth/status") return response({ paired });
       if (url === "/api/auth/pair") {
         const token = JSON.parse(String(init?.body)).token;
@@ -106,7 +111,7 @@ describe("pairing and connectivity", () => {
       if (url === "/api/auth/logout") { paired = false; return response({}); }
       return undefined;
     });
-    render(<Home />);
+    const view = render(<Home />);
     assert.ok(await screen.findByText("Pair this phone."));
     const code = screen.getByPlaceholderText("Pairing code");
     assert.equal((screen.getByRole("button", { name: "Pair securely" }) as HTMLButtonElement).disabled, true);
@@ -116,11 +121,12 @@ describe("pairing and connectivity", () => {
     await userEvent.clear(code);
     await userEvent.type(code, " secret-code ");
     await userEvent.click(screen.getByRole("button", { name: "Pair securely" }));
-    assert.ok(await screen.findByRole("heading", { name: "Settings" }));
+    assert.ok(await screen.findByText("Your agents are moving."));
     assert.equal(JSON.parse(String(posted(calls, "/api/auth/pair").at(-1)?.init?.body)).token, "secret-code");
     assert.ok((await screen.findAllByText("Studio Mac")).length >= 1);
+    view.unmount(); render(<DeviceSettings />);
     await userEvent.click(screen.getByRole("button", { name: "Unpair this device" }));
-    assert.ok(await screen.findByText("Pair this phone."));
+    await waitFor(() => assert.equal(paired, false));
     assert.equal(posted(calls, "/api/auth/logout").length, 1);
   });
 
@@ -184,15 +190,11 @@ describe("sessions and launch", () => {
     await userEvent.click(screen.getByRole("button", { name: "Launch a workspace" }));
     assert.ok(await screen.findByRole("heading", { name: "Start work" }));
     assert.equal(location.search, "?view=launch");
-    await userEvent.click(screen.getByRole("button", { name: "Goals" }));
-    assert.equal((await screen.findByRole("link", { name: "Open orchestration goals" })).getAttribute("href"), "/orchestration");
-    await userEvent.click(screen.getByRole("button", { name: "Licence Usage" }));
-    assert.ok(await screen.findByText("CCS is offline"));
-    await userEvent.click(screen.getByRole("button", { name: "‹ Settings" }));
-    assert.ok(await screen.findByRole("heading", { name: "Settings" }));
-    await userEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    assert.equal(screen.getByRole("link", { name: "Goals" }).getAttribute("href"), "/orchestration");
+    assert.equal(screen.getByRole("link", { name: "Settings" }).getAttribute("href"), "/settings");
+    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
     assert.equal(location.search, "?view=sessions");
-    await userEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
     assert.ok(await screen.findByText("No sessions yet"));
     assert.equal(location.search, "?view=sessions");
     await userEvent.click(screen.getByRole("button", { name: "Local apps" }));
@@ -474,7 +476,7 @@ describe("session detail", () => {
     await userEvent.click(screen.getByRole("button", { name: "‹ Back" }));
     await userEvent.click(within(await openSessionMenu()).getByRole("button", { name: "Terminal" }));
     await userEvent.click(screen.getByRole("button", { name: /Back/ }));
-    await userEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
     await waitFor(() => assert.ok(screen.getByText("No sessions yet")));
   });
 });
@@ -540,7 +542,8 @@ describe("inbox", () => {
     assert.ok(await screen.findByText("Hello from the guide."));
     await userEvent.click(screen.getByRole("button", { name: "‹ Back" }));
     assert.equal(location.search, "?view=sessions");
-    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Local apps" }));
     await userEvent.click(await screen.findByRole("button", { name: "2 items need your attention" }));
     assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
     assert.ok(screen.getByText("Approve the plan"));
@@ -548,29 +551,23 @@ describe("inbox", () => {
     assert.ok(await screen.findByRole("textbox", { name: "Terminal input" }));
     await userEvent.click(screen.getByRole("button", { name: /Back/ }));
     assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
-    await userEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    await userEvent.click(screen.getByRole("link", { name: "Sessions" }));
     await userEvent.click(await screen.findByRole("button", { name: "Inbox · 2" }));
     assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
   });
 });
 
 describe("settings", () => {
-  test("toggles read-only protection, reaches usage and apps, and explains missing push support", async () => {
-    installHome("/?view=settings");
-    render(<Home />);
-    assert.ok(await screen.findByRole("heading", { name: "Settings" }));
-    assert.ok(await screen.findByText("Online"));
+  test("device settings retain read-only protection and explain unsupported notifications", async () => {
+    installHome("/settings#general");
+    render(<><DeviceSettings /><NotificationsFixture /></>);
+    assert.ok(await screen.findByText("Studio Mac"));
     assert.ok(screen.getByText(/add this web app to your Home Screen first/));
     assert.equal((screen.getByRole("button", { name: "Enable" }) as HTMLButtonElement).disabled, true);
-    const readOnly = screen.getByRole("checkbox", { name: /Read-only protection/ }) as HTMLInputElement;
+    const readOnly = screen.getByRole("switch", { name: /Protect terminal input/ }) as HTMLInputElement;
     assert.equal(readOnly.checked, false);
     await userEvent.click(readOnly);
     assert.equal(localStorage.getItem("cmux-companion-read-only"), "true");
-    await userEvent.click(screen.getByRole("button", { name: /Local apps/ }));
-    assert.equal(location.search, "?view=apps");
-    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
-    await userEvent.click(await screen.findByRole("button", { name: /Licence usage/ }));
-    assert.equal(location.search, "?view=usage");
   });
 
   test("push alerts can be enabled, tuned, tested and disabled when the browser supports them", async () => {
@@ -593,8 +590,7 @@ describe("settings", () => {
       return undefined;
     });
     try {
-      render(<Home />);
-      assert.ok(await screen.findByRole("heading", { name: "Settings" }));
+      render(<NotificationsFixture />);
       assert.ok(await screen.findByText(/Install to your Home Screen/));
       await userEvent.click(await screen.findByRole("button", { name: "Enable" }));
       assert.match((await findToast()).textContent || "", /Background alerts enabled/);
@@ -632,7 +628,7 @@ describe("settings", () => {
     Object.defineProperty(window, "matchMedia", { value: () => ({ matches: true }), configurable: true });
     installHome("/?view=settings", (url) => url === "/api/push/status" ? response({ supported: true, publicKey: "AQID", subscribed: false }) : undefined);
     try {
-      render(<Home />);
+      render(<NotificationsFixture />);
       await userEvent.click(await screen.findByRole("button", { name: "Enable" }));
       assert.match((await findToast()).textContent || "", /Notification permission was not granted/);
       assert.equal(registration.pushManager.subscribe.mock.calls.length, 0);
