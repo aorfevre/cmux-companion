@@ -15,6 +15,7 @@ beforeEach(() => {
     addEventListener(type: string, fn: () => void) { this.listeners[type] = fn; }
   });
   api.mockReset().mockImplementation(async (url, options) => {
+    if (url.endsWith('/favorites')) return { revision: 0, ids: [] };
     if (url.endsWith('/pair')) { paired = true; return {}; }
     if (!paired) throw new ApiError('Unauthorized', 401, 'UNAUTHORIZED');
     if (url.endsWith('/configuration')) return { ...config, readOnly };
@@ -27,6 +28,9 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 async function start() {
   render(<GoalBoard />);
   await screen.findByRole('heading', { name: 'Start a goal' });
+  fireEvent.click(screen.getByRole('button', { name: 'Project Choose a project' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Show all projects/ }));
+  fireEvent.click(screen.getAllByRole('button', { name: /^(repo Individual project|Example karven)$/ })[0]);
   fireEvent.change(screen.getByLabelText('What should we accomplish?'), { target: { value: 'A useful goal' } });
 }
 test('pairs through the service and disables all creation controls in read-only mode', async () => {
@@ -36,7 +40,7 @@ test('pairs through the service and disables all creation controls in read-only 
   fireEvent.click(screen.getByRole('button', { name: 'Pair this device' }));
   await screen.findByText('Read-only mode · controls are disabled.');
   expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', true);
-  expect(screen.getByLabelText('Repository')).toHaveProperty('disabled', true);
+  expect(screen.getByRole('button', { name: 'Project Choose a project' })).toHaveProperty('disabled', true);
   expect(api).toHaveBeenCalledWith('/api/orchestration/pair', expect.objectContaining({ body: JSON.stringify({ token: 'disposable' }) }));
 });
 test('uncertain command retries exactly the original id, payload and expected version', async () => {
@@ -144,7 +148,7 @@ test('automatic discovery keeps disabled repositories visible and reports partia
     return original(url, options);
   });
   await start(); await screen.findByText(/Scan limit reached/);
-  expect(screen.getByRole('option', { name: 'karven / Example · disabled' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Project Example karven' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', true);
   expect(screen.getByRole('link', { name: 'Configure repository' }).getAttribute('href')).toBe('/settings?repository=repo#dev-repos');
 });

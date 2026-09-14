@@ -21,6 +21,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.task<Evidence>('orchestrationEvidence').its('goals').should('have.length', 0);
   });
   writable('reviews a plan, overlaps implementers, repairs review and verification, then publishes one exact-head PR', () => {
+    cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click(); cy.get('.project-choice').first().click();
     cy.findByLabelText('What should we accomplish?').type('Build the parallel fixture');
     cy.findByRole('button', { name: 'New goal' }).click();
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).should('be.enabled').click();
@@ -68,6 +69,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.document().then(doc => { expect(doc.documentElement.scrollWidth).to.be.at.most(390); });
   });
   writable('aborts waiting siblings and reconciles without running their dependent task', () => {
+    cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click(); cy.get('.project-choice').first().click();
     cy.findByLabelText('What should we accomplish?').type('Abort this fixture');
     cy.findByRole('button', { name: 'New goal' }).click();
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).click();

@@ -25,7 +25,9 @@ test('simultaneous discovery coalesces, retains concurrent preferences and never
   assert.equal(saved.settings.projects.length, 1); assert.deepEqual(saved.settings.projects[0].checks, []);
   const project = { ...saved.settings.projects[0], enabled: false, name: 'Custom', checks: [{ id: 'test', executable: 'npm', args: ['test'] }] };
   await settings.update(saved.revision, { ...saved.settings, projects: [project] });
+  settings.setFavorite(settings.read().revision, project.id, true);
   const revision = settings.read().revision; await tracking.one(root.id);
+  assert.deepEqual(settings.favorites().ids, [project.id]);
   assert.equal(settings.read().revision, revision); assert.deepEqual(settings.read().settings.projects, [project]);
 });
 test('a removed root cannot be resurrected by an in-flight scan', async t => {

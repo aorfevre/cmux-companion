@@ -12,6 +12,12 @@ export function registerSettingsRoutes(app, { settings, onChange = async () => {
     return added.length ? tracking.all(added.map(root => root.id)) : result;
   };
   const status = () => settings.read();
+  app.get('/api/settings/favorites', async () => settings.favorites());
+  app.patch('/api/settings/projects/:id/favorite', { bodyLimit: 1024 }, async request => {
+    const body = request.body;
+    if (!body || Object.keys(body).some(key => !['expectedRevision', 'favorite'].includes(key))) throw new TypeError('Expected favorite and revision');
+    return settings.setFavorite(body.expectedRevision, request.params.id, body.favorite);
+  });
   app.get('/api/settings/local', async () => status());
   app.put('/api/settings/local', { bodyLimit: 256 * 1024 }, async request => {
     const body = request.body;

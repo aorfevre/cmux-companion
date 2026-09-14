@@ -6,6 +6,7 @@ import { ApiError, request } from '../api-request';
 import type { goalView } from '../../server/orchestration/domain/state-view.mjs';
 import type { Contract } from '../../server/orchestration/types';
 import { AppNavigation } from '../navigation';
+import { ProjectPicker } from './project-picker';
 import { GoalDetail } from './goal-detail';
 
 export type Goal = ReturnType<typeof goalView>;
@@ -15,7 +16,6 @@ type Configuration = { suspensionReason?: string | null; readOnly: boolean; term
 type Command = { id: string; goalId: string; expectedVersion: number; type: string; payload: Record<string, unknown> };
 const prefix = '/api/orchestration';
 export function GoalBoard() {
-  const [repoSearch, setRepoSearch] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [configuration, setConfiguration] = useState<Configuration | null>(null);
   const [selected, setSelected] = useState<string | null>(null), [detail, setDetail] = useState<(Goal & { contracts: { revision: number; contract: Contract }[] }) | null>(null);
   const [auth, setAuth] = useState<'loading' | 'paired' | 'unpaired' | 'unavailable'>('loading');
@@ -93,8 +93,7 @@ export function GoalBoard() {
     finally { setBusy(false); }
   };
   const readOnly = Boolean(snapshot?.readOnly || configuration?.readOnly), disabled = busy || readOnly || Boolean(pending);
-  const visibleRepos = configuration?.repositories.filter(entry => `${entry.devRepoName ?? ''} ${entry.name ?? entry.id} ${entry.github ?? ''}`.toLowerCase().includes(repoSearch.toLowerCase()));
-  const chosenRepo = visibleRepos?.find((entry) => entry.id === repository) ?? visibleRepos?.[0];
+  const chosenRepo = configuration?.repositories.find(entry => entry.id === repository);
   return <main className="orchestration"><AppNavigation active="goals" />
     <header className="orch-header"><a href="/">cmux companion</a><span role="status">{auth === 'paired' ? connected ? 'Live updates' : 'Reconnecting · polling' : 'Connect your Mac'}</span></header>
     {discoveryNotice && <p role="status">{discoveryNotice} <a href="/settings#dev-repos">Review Dev repos</a></p>}
@@ -111,7 +110,8 @@ export function GoalBoard() {
       <details className="orch-capacity"><summary>Execution capacity</summary>{configuration?.limits.global} background · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</details>
       {Boolean(configuration?.repositories.length) && !configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Your planning agent is not ready. <a href="/settings#agents">Choose an agent</a> to start a goal.</p>}
       {configuration?.repositories.length ? <form className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo?.baseSha || !chosenRepo.baseBranch) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { title, repositoryId: chosenRepo.id, baseSha: chosenRepo.baseSha, baseBranch: chosenRepo.baseBranch } }); }}>
-        <h2>Start a goal</h2><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<label>Search repositories<input type="search" value={repoSearch} onChange={event => setRepoSearch(event.target.value)} placeholder="Folder, repository or owner" /></label><label>Repository<select disabled={disabled} value={chosenRepo?.id ?? ''} onChange={event => setRepository(event.target.value)}>{configuration?.repositories.filter(entry => `${entry.devRepoName ?? ''} ${entry.name ?? entry.id} ${entry.github ?? ''}`.toLowerCase().includes(repoSearch.toLowerCase())).map(entry => <option key={entry.id} value={entry.id}>{entry.devRepoName ? `${entry.devRepoName} / ` : ''}{entry.name ?? entry.id}{entry.enabled === false ? ' · disabled' : entry.error ? ` · ${entry.setupLabel && entry.baseSha ? entry.setupLabel : 'needs attention'}` : entry.baseBranch ? ` · ${entry.baseBranch}` : ' · unavailable'}</option>)}</select></label>
+        <h2>Start a goal</h2><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<ProjectPicker repositories={configuration.repositories} selected={repository} onSelect={setRepository} disabled={disabled} />
+        {chosenRepo?.baseBranch && <p className="project-context">Branch: {chosenRepo.baseBranch}</p>}
         {chosenRepo?.error && <p role="alert">{chosenRepo.error} <a href={`/settings?repository=${encodeURIComponent(chosenRepo.id)}#dev-repos`}>{chosenRepo.setupLabel === 'Choose checks' ? 'Choose checks' : 'Configure repository'}</a></p>}
         <label>What should we accomplish?<textarea value={title} maxLength={500} onChange={event => setTitle(event.target.value)} disabled={disabled} required rows={3} /></label>
         <button className="primary-button" disabled={disabled || !chosenRepo?.baseSha || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>New goal</button>

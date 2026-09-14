@@ -153,3 +153,20 @@ test('executable lookup ignores relative PATH entries and settings refuse symlin
   assert.deepEqual(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name), ['goals']);
   db.close();
 });
+
+test('favorites survive restart and preserve settings and admitted goal snapshots', async t => {
+  const { store, path, project } = fixture(t);
+  await store.update(0, { ...defaultSettings(), projects: [project] });
+  assert.deepEqual(store.favorites(), { revision: 1, ids: [] });
+  const snapshot = store.snapshotGoal('goal', project.id);
+  const before = store.read().settings;
+  assert.deepEqual(store.setFavorite(1, project.id, true), { revision: 2, ids: [project.id] });
+  assert.deepEqual(store.read().settings, before);
+  assert.deepEqual(store.goalConfiguration('goal'), snapshot);
+  const reopened = new LocalSettings({ path }); t.after(() => reopened.close());
+  assert.deepEqual(reopened.favorites(), store.favorites());
+  assert.throws(() => store.setFavorite(1, project.id, false), error => error.statusCode === 409);
+  assert.throws(() => store.setFavorite(2, 'unknown', true), /saved project/);
+  assert.throws(() => store.setFavorite(2, project.id, 'true'), /boolean/);
+  assert.deepEqual(store.setFavorite(2, project.id, false), { revision: 3, ids: [] });
+});

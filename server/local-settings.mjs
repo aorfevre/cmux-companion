@@ -152,6 +152,7 @@ export class LocalSettings {
       if (version > 2) invalid('Settings database is newer than this version of Companion');
       this.db.exec(`BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS local_settings (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS project_favorites (project_id TEXT PRIMARY KEY, favorite INTEGER NOT NULL CHECK(favorite IN (0,1)));
         CREATE TABLE IF NOT EXISTS goal_configuration (goal_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
         COMMIT;`);
       this.db.prepare('INSERT OR IGNORE INTO local_settings(id,revision,value) VALUES(1,0,?)').run(JSON.stringify(defaultSettings()));
@@ -219,6 +220,24 @@ export class LocalSettings {
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return this.read();
+  }
+  favorites() {
+    const { revision, settings } = this.read();
+    const ids = new Set(this.db.prepare('SELECT project_id FROM project_favorites WHERE favorite=1').all().map(row => String(row.project_id)));
+    return { revision, ids: settings.projects.filter(project => ids.has(project.id)).map(project => project.id) };
+  }
+  setFavorite(expectedRevision, id, favorite) {
+    if (typeof favorite !== 'boolean') invalid('Expected a boolean favorite');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const before = this.read();
+      this.assertRevision(expectedRevision, before.revision);
+      if (!before.settings.projects.some(entry => entry.id === id)) invalid('Choose a saved project');
+      this.db.prepare('INSERT INTO project_favorites VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET favorite=excluded.favorite').run(id, Number(favorite));
+      this.db.prepare('UPDATE local_settings SET revision=revision+1 WHERE id=1').run();
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.favorites();
   }
   async importLegacy(expected, { orchestration, models }, options) {
     const before = this.read(); this.assertRevision(expected, before.revision);

@@ -33,3 +33,19 @@ test('setup completion requires a project and provider validation cannot run she
   assert.equal(missing.statusCode, 200); assert.equal(missing.json().ready, false);
   assert.equal((await app.inject({ method: 'POST', url: '/api/settings/projects/inspect', headers, payload: { path: 'relative' } })).statusCode, 400);
 });
+
+test('favorite routes authenticate scoped writes and reject invalid and stale updates', async t => {
+  const { app, settings, changes } = await fixture(t);
+  settings.write(0, { ...defaultSettings(), projects: [{ id: 'p', name: 'P', path: '/disposable', enabled: false, github: null, remote: null, checks: [] }] });
+  const url = '/api/settings/projects/p/favorite', payload = { expectedRevision: 1, favorite: true };
+  assert.equal((await app.inject({ url: '/api/settings/favorites' })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'PATCH', url, payload })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'PATCH', url, headers: { ...headers, origin: 'https://foreign.example' }, payload })).statusCode, 403);
+  for (const body of [{ ...payload, enabled: true }, { ...payload, favorite: 'yes' }, { favorite: true }]) assert.equal((await app.inject({ method: 'PATCH', url, headers, payload: body })).statusCode, 400);
+  assert.equal((await app.inject({ method: 'PATCH', url: '/api/settings/projects/unknown/favorite', headers, payload })).statusCode, 400);
+  assert.deepEqual((await app.inject({ method: 'PATCH', url, headers, payload })).json(), { revision: 2, ids: ['p'] });
+  assert.equal((await app.inject({ method: 'PATCH', url, headers, payload })).statusCode, 409);
+  assert.deepEqual((await app.inject({ url: '/api/settings/favorites', headers })).json(), { revision: 2, ids: ['p'] });
+  assert.equal(settings.read().settings.projects[0].enabled, false);
+  assert.deepEqual(changes, []); // Preference writes do not recompose the runtime.
+});
