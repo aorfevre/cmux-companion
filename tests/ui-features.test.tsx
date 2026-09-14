@@ -17,13 +17,12 @@ describe("contextual mobile features", () => {
   test("keeps permanent navigation focused on frequent mobile destinations", async () => {
     const navigate = vi.fn();
     render(<BottomNav view="inbox" onView={navigate} />);
-    assert.equal(screen.getByRole("link", { name: "Inbox" }).getAttribute("aria-current"), "page");
+    assert.equal(screen.queryByRole("link", { name: "Inbox" }), null);
     assert.equal(screen.getByRole("link", { name: "Goals" }).getAttribute("href"), "/orchestration");
     assert.equal(screen.getByRole("link", { name: "Settings" }).getAttribute("href"), "/settings");
     assert.equal(screen.queryByRole("link", { name: "Licence Usage" }), null);
     assert.equal(screen.queryByRole("link", { name: "Sessions" }), null);
-    await userEvent.click(screen.getByRole("link", { name: "Inbox" }));
-    assert.deepEqual(navigate.mock.calls[0], ["inbox"]);
+    assert.equal(navigate.mock.calls.length, 0);
   });
 
   test("shows CCS quota by account while treating absent windows as unreported", async () => {

@@ -9,6 +9,7 @@ let readOnly = false, paired = true;
 let stream: { onopen?: () => void; onerror?: () => void; close: ReturnType<typeof vi.fn>; listeners: Record<string, () => void> };
 beforeEach(() => {
   readOnly = false; paired = true;
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   vi.stubGlobal('EventSource', class {
     listeners: Record<string, () => void> = {}; close = vi.fn();
     constructor() { stream = { close: this.close, listeners: this.listeners }; }
@@ -27,7 +28,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 async function start() {
   render(<GoalBoard />);
-  await screen.findByRole('heading', { name: 'Start a goal' });
+  fireEvent.click(await screen.findByRole('button', { name: 'Start a goal' }));
   fireEvent.click(screen.getByRole('button', { name: 'Project Choose a project' }));
   fireEvent.click(await screen.findByRole('button', { name: /Show all projects/ }));
   fireEvent.click(screen.getAllByRole('button', { name: /^(repo Individual project|Example karven)$/ })[0]);
@@ -39,8 +40,8 @@ test('pairs through the service and disables all creation controls in read-only 
   fireEvent.change(await screen.findByLabelText('Pairing code'), { target: { value: 'disposable' } });
   fireEvent.click(screen.getByRole('button', { name: 'Pair this device' }));
   await screen.findByText('Read-only mode · controls are disabled.');
-  expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', true);
-  expect(screen.getByRole('button', { name: 'Project Choose a project' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('button', { name: 'Start a goal' })).toHaveProperty('disabled', true);
+  expect(screen.queryByRole('button', { name: 'Project Choose a project' })).toBeNull();
   expect(api).toHaveBeenCalledWith('/api/orchestration/pair', expect.objectContaining({ body: JSON.stringify({ token: 'disposable' }) }));
 });
 test('uncertain command retries exactly the original id, payload and expected version', async () => {
@@ -77,7 +78,7 @@ test('provider readiness errors retain actionable settings guidance', async () =
 });
 test('stream resync refreshes authoritative state and unmount closes the stream', async () => {
   const view = render(<GoalBoard />);
-  await screen.findByRole('heading', { name: 'Start a goal' });
+  fireEvent.click(await screen.findByRole('button', { name: 'Start a goal' }));
   const before = api.mock.calls.length;
   stream.listeners.resync();
   await waitFor(() => expect(api.mock.calls.length).toBeGreaterThan(before));
@@ -214,6 +215,8 @@ test('creation submits a full request from main without the current checkout SHA
   await screen.findByText('Goal saved. Its planning agent will start automatically.');
   const body = JSON.parse(String(api.mock.calls.find(([url]) => url.endsWith('/commands'))?.[1]?.body));
   expect(body.payload).toEqual({ title: 'A useful goal', description: 'A useful goal', repositoryId: 'repo', baseBranch: 'main' });
+  expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Start a goal' }));
   expect(screen.getByLabelText('What should we accomplish?')).toHaveProperty('value', '');
   expect(screen.queryByText('Loading goal…')).toBeNull();
 });
@@ -243,4 +246,32 @@ test('terminal goals retain their result without stale attention from unanswered
   render(<GoalKanban goals={goals} selected={null} select={vi.fn()} projectName={() => 'Example'} />);
   expect(screen.getByText('Aborted')).toBeTruthy();
   expect(screen.queryByText(/Needs attention/)).toBeNull();
+});
+
+
+test('Kanban opens first and cancelling creation restores focus and retains the draft', async () => {
+  render(<GoalBoard />);
+  const startButton = await screen.findByRole('button', { name: 'Start a goal' });
+  expect(screen.getByRole('region', { name: 'Goals Kanban' })).toBeTruthy();
+  expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();
+  fireEvent.click(startButton);
+  expect(screen.getByRole('heading', { name: 'Start a goal' })).toBe(document.activeElement);
+  fireEvent.change(screen.getByLabelText('What should we accomplish?'), { target: { value: 'Keep my draft' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(startButton).toBe(document.activeElement);
+  expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();
+  fireEvent.click(startButton);
+  expect(screen.getByLabelText('What should we accomplish?')).toHaveProperty('value', 'Keep my draft');
+});
+
+test('goal panel closes with Escape and restores the card focus', async () => {
+  const { GoalPanel } = await import('../app/orchestration/goal-panel');
+  const card = document.createElement('button'); card.textContent = 'Goal card'; document.body.append(card); card.focus();
+  const close = vi.fn();
+  const view = render(<GoalPanel close={close}><p>Goal content</p></GoalPanel>);
+  fireEvent.keyDown(screen.getByRole('dialog', { name: 'Goal details' }), { key: 'Escape' });
+  expect(close).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole('dialog', { name: 'Goal details' }), { clientX: -1 });
+  expect(close).toHaveBeenCalledTimes(2);
+  view.unmount(); expect(document.activeElement).toBe(card); card.remove();
 });

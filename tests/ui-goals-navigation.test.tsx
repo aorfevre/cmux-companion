@@ -11,8 +11,8 @@ it('lands on Goals for home and campaign URLs, preserving explicit legacy destin
   act(() => { history.pushState(null, '', '/?view=sessions'); window.dispatchEvent(new PopStateEvent('popstate')); }); expect(screen.getByRole('heading').textContent).toBe('Sessions view');
   act(() => { history.replaceState(null, '', '/'); window.dispatchEvent(new PopStateEvent('popstate')); }); expect(screen.getByRole('heading').textContent).toBe('Goals landing');
 });
-it('shows three main destinations and treats Sessions as part of Goals', () => {
+it('shows Goals and Settings and treats Sessions as part of Goals', () => {
   render(<AppNavigation active="sessions" />);
-  expect(screen.getAllByRole('link').map(link => link.textContent)).toEqual(['▤Goals', '▣Inbox', '⚙Settings']);
+  expect(screen.getAllByRole('link').map(link => link.textContent)).toEqual(['▤Goals', '⚙Settings']);
   expect(screen.getByRole('link', { name: 'Goals' }).getAttribute('aria-current')).toBe('page'); expect(screen.queryByRole('link', { name: 'Sessions' })).toBeNull();
 });

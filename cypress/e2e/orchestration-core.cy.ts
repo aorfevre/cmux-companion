@@ -10,13 +10,14 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       cy.findByLabelText('Pairing code').type(token, { log: false });
       cy.findByRole('button', { name: 'Pair this device' }).click();
     });
-    cy.findByRole('heading', { name: 'Start a goal' }).should('be.visible');
+    cy.findByRole('button', { name: 'Start a goal' }).should('be.visible');
+    if (!Cypress.expose('orchestrationReadOnly')) cy.findByRole('button', { name: 'Start a goal' }).click();
   });
   const writable = Cypress.expose('orchestrationReadOnly') ? it.skip : it;
   const readonly = Cypress.expose('orchestrationReadOnly') ? it : it.skip;
   readonly('protects the real service in read-only mode', () => {
     cy.contains('Read-only mode · controls are disabled.').should('be.visible');
-    cy.findByRole('button', { name: 'Start goal' }).should('be.disabled');
+    cy.findByRole('button', { name: 'Start a goal' }).should('be.disabled');
     cy.request({ method: 'POST', url: '/api/orchestration/commands', body: { id: 'readonly', goalId: 'readonly', expectedVersion: 0, type: 'create_goal', payload: {} }, failOnStatusCode: false }).its('status').should('equal', 403);
     cy.task<Evidence>('orchestrationEvidence').its('goals').should('have.length', 0);
   });
