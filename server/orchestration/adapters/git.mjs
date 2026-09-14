@@ -20,6 +20,9 @@ export async function gitBytes(cwd, argv, input, allowConflict = false) {
       if (error && !(allowConflict && error.code === 1)) reject(Object.assign(new DomainError('GIT_OPERATION_FAILED', 'Local Git operation failed; reconcile recorded repository evidence'), { exitCode: error.code }));
       else resolveResult(stdout);
     });
+    // Git may reject a command before consuming stdin. Its exit callback owns
+    // the operation result; a broken pipe must not escape as an uncaught error.
+    child.stdin?.on('error', () => {});
     child.stdin?.end(input);
   });
 }

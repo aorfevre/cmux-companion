@@ -4,10 +4,33 @@ import { join } from 'node:path';
 import { ensurePrivateDir, sha256, writeJson, readJson, atomicWrite } from './fs-safe.mjs';
 
 const CONTRACT_FILES = ['server/local-settings.mjs', 'server/orchestration/storage/schema.mjs'];
+// Immutable fingerprints identify the two legacy settings implementations whose
+// additive favorites compatibility is exercised with the archived reader fixture.
+const LEGACY_SETTINGS = new Set([
+  '82e6ec9beaf625545c8ca55813819446f29da43a293ad1d27a36c332fa35c042',
+  'fe85e7672a9ea77d780d5e6e35c7e66fa838a4878d1a0bd4717ce0bcb88150fa',
+]);
+const LEGACY_CORE = '564255c30427e672335236cb9046da8ad246986ba8d00577546ff1efcf28ec1c';
+const compatibilityError = () => Object.assign(new Error('Update changes the data contract; explicit migration is required'), { code: 'DATA_COMPATIBILITY' });
+async function dataContract(root, hashes) {
+  const file = join(root, 'server/data-contract.json');
+  let info;
+  try { info = await lstat(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (!info) return LEGACY_SETTINGS.has(hashes[0]) && hashes[1] === LEGACY_CORE ? { version: 1, settings: 2, orchestration: 1 } : null;
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 1024) throw compatibilityError();
+  let value;
+  try { value = JSON.parse(await readFile(file, 'utf8')); } catch { throw compatibilityError(); }
+  if (!value || Object.keys(value).sort().join(',') !== 'orchestration,settings,version' || value.version !== 1
+      || !Number.isSafeInteger(value.settings) || value.settings < 1 || !Number.isSafeInteger(value.orchestration) || value.orchestration < 1) throw compatibilityError();
+  return value;
+}
 export async function assertDataCompatibility(previous, candidate) {
-  // Initial updater accepts unchanged migration code only. A schema-changing
-  // release needs a separately verified migration contract, not optimistic rollback.
-  for (const path of CONTRACT_FILES) if (await sha256(join(previous, path)) !== await sha256(join(candidate, path))) throw new Error('Update changes the data contract; explicit migration is required');
+  const hashes = await Promise.all([previous, candidate].map(root => Promise.all(CONTRACT_FILES.map(path => sha256(join(root, path))))));
+  const [before, after] = await Promise.all([dataContract(previous, hashes[0]), dataContract(candidate, hashes[1])]);
+  // Legacy-to-legacy releases retain the original strict fallback. Declared
+  // contracts separate compatible implementation edits from data-format changes.
+  if (!before && !after && hashes[0].every((hash, index) => hash === hashes[1][index])) return;
+  if (!before || !after || before.settings !== after.settings || before.orchestration !== after.orchestration) throw compatibilityError();
 }
 export async function backupData({ root, id, files, previousSha }) {
   const directory = join(root, id); await ensurePrivateDir(directory);

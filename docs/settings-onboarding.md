@@ -174,3 +174,22 @@ save immediately on the connected Mac and are shared by its paired devices.
 The picker opens with favorites only. **Show all projects** reveals the rest,
 grouped by Dev repo; search filters the visible groups. Select a project name
 to use it for a goal. Favoriting does not enable a project or approve its checks.
+
+## Update compatibility
+
+Companion can restart while unrelated cmux sessions continue. Update admission
+waits only for Companion-owned work, verification/publication effects, active API
+mutations and prompt delivery; unknown owned workers still block activation.
+
+`server/data-contract.json` declares the compatible settings and orchestration
+formats separately from implementation source. Keep its versions unchanged only
+for data-compatible edits, with cross-version fixture evidence. Incompatible
+changes require a reviewed migration/restore contract and a version change;
+unknown legacy versions are refused. SQLite backups and exact-version health
+checks remain mandatory before accepting an update.
+
+Older installed updaters compare entire storage source files and cannot admit
+this compatibility repair themselves. A one-time backed-up reinstall of a
+verified main release upgrades that engine while preserving paired identity and
+automatic-installation preferences. Do not edit installed release files or bypass
+the release checks to work around this limitation.

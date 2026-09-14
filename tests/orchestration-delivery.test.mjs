@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { writeFileSync, realpathSync } from 'node:fs';
+import { writeFileSync, realpathSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { resolveExecutable } from '../server/local-settings.mjs';
 import { OrchestrationStore } from '../server/orchestration/storage/store.mjs';
 import { ArtifactStore } from '../server/orchestration/storage/artifacts.mjs';
 import { OrchestrationService } from '../server/orchestration/service.mjs';
@@ -18,6 +19,24 @@ import { createRepositoryFixture, fixtureGit } from './helpers/orchestration/fix
 
 for (const { conflict, finalFailure = null, movedTarget = false } of [{ conflict: false }, { conflict: true }, { conflict: false, finalFailure: 'review' }, { conflict: false, finalFailure: 'check' }, { conflict: false, movedTarget: true }]) test(`scheduler plans, overlaps A/B, integrates siblings and repairs C; conflict=${conflict}, final=${finalFailure}, moved=${movedTarget}`, { timeout: 60000 }, async (t) => {
   const repo = await createRepositoryFixture({ conflict });
+  // Fixture-only Git stderr makes intermittent provisioning failures actionable;
+  // production errors deliberately do not expose repository-controlled output.
+  const nativeGit = resolveExecutable('git'), priorPath = process.env.PATH;
+  const traceBin = join(repo.directory, 'trace-bin'), gitErrors = join(repo.directory, 'git-errors.log');
+  mkdirSync(traceBin);
+  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+  writeFileSync(join(traceBin, 'git'), `#!/bin/sh
+${quote(nativeGit)} "$@" 2> ${quote(gitErrors)}.$$
+code=$?
+/bin/cat ${quote(gitErrors)}.$$ >&2
+if [ "$code" -gt 1 ]; then
+  { printf 'git exit %s:' "$code"; printf ' %s' "$@"; printf '\n'; /bin/cat ${quote(gitErrors)}.$$; } >> ${quote(gitErrors)}
+fi
+/bin/rm -f ${quote(gitErrors)}.$$
+exit "$code"
+`, { mode: 0o700 });
+  process.env.PATH = `${traceBin}:${priorPath}`;
+  t.after(() => { process.env.PATH = priorPath; });
   if (movedTarget) {
     const target = await repo.checkout('remote_target');
     writeFileSync(join(target.worktree, 'target-update.txt'), 'Remote advanced before goal creation\n');
@@ -132,7 +151,11 @@ for (const { conflict, finalFailure = null, movedTarget = false } of [{ conflict
     assert.equal(goal.integrationResults.filter((result) => result.taskId === null).length, 1);
   }
   assert.deepEqual(errors, []); assert.deepEqual(agents.errors, []);
-  assert.ok(goal.tasks.every((task) => task.status === 'integrated'), JSON.stringify(goal.tasks));
+  assert.ok(goal.tasks.every((task) => task.status === 'integrated'), JSON.stringify({
+    tasks: goal.tasks, gitErrors: existsSync(gitErrors) ? readFileSync(gitErrors, 'utf8').slice(-12000) : '',
+    attempts: goal.attempts.map(({ id, taskId, role, status, workerState, error, target }) => ({ id, taskId, role, status, workerState, error, target })),
+    results: goal.results, reviews: goal.reviews, ready: store.ready(), operations: store.operations(),
+  }));
   assert.equal(goal.attempts.filter((attempt) => attempt.role === 'integrator').length, (conflict ? 1 : 0) + (finalFailure ? 1 : 0), JSON.stringify(goal.attempts.filter((attempt) => attempt.role === 'integrator').map(({ id, taskId, status, workerState }) => ({ id, taskId, status, workerState }))));
   if (conflict) assert.equal(goal.results.filter((result) => result.repair && result.status === 'accepted').length, 1);
   assert.equal(goal.verification.headSha, goal.integrationHead);

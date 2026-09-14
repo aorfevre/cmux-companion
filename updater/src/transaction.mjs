@@ -51,7 +51,7 @@ export async function executeUpdate({ control, request, adapter }) {
         return;
       }
     }
-    control.finish(id, { success: false, error: switched ? 'The update failed; the previous version and its data were restored.' : 'The update could not be prepared safely. The running version was preserved.' });
+    control.finish(id, { success: false, error: !switched && error.code === 'DATA_COMPATIBILITY' ? 'This update requires a supported data migration. The running version was preserved.' : switched ? 'The update failed; the previous version and its data were restored.' : 'The update could not be prepared safely. The running version was preserved.' });
   }
 }
 
@@ -73,7 +73,7 @@ export async function updateCycle({ control, discover, revalidate, deployedSha, 
   let fence;
   try { fence = await maintenance(request.id); } catch { return; }
   if (!fence.ready) {
-    control.change(state => { const item = state.requests[request.id]; if (item.status === 'queued') { item.error = 'Waiting for agents or uncertain work to finish'; if (!item.whenIdle) { item.status = 'cancelled'; item.error = 'Agents are busy. Choose Update when idle to queue this update.'; } } });
+    control.change(state => { const item = state.requests[request.id]; if (item.status === 'queued') { item.error = 'Waiting for Companion-managed work to finish'; if (!item.whenIdle) { item.status = 'cancelled'; item.error = 'Companion-managed work is busy. Choose Update when idle to queue this update.'; } } });
     control.unfence(request.id); return;
   }
   try { await revalidate(deployedSha, request.sha); }

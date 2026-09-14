@@ -12,7 +12,7 @@ export function managedWorkBusy(runtime) {
 
 // Installed before listen: HTTP mutations, scheduler admission and prompt draining
 // all observe the same durable fence, including after an application restart.
-export function installUpdateMaintenance({ runtime, control, cmux, promptQueue, serviceId = randomUUID() }) {
+export function installUpdateMaintenance({ runtime, control, promptQueue, serviceId = randomUUID() }) {
   let mutations = 0;
   const fenced = () => Boolean(control.read().fence);
   runtime.scheduler.paused = fenced;
@@ -27,15 +27,8 @@ export function installUpdateMaintenance({ runtime, control, cmux, promptQueue, 
   runtime.app.addHook('onResponse', async request => { if (request.updateMutation) { request.updateMutation = false; mutations--; } });
   async function busy() {
     if (mutations || managedWorkBusy(runtime) || promptQueue?.inFlight.size) return true;
-    // Query every workspace directly: the UI's bounded/cached status sampling is
-    // not sufficient evidence for an installation decision.
-    const { workspaces } = await cmux.workspaceList();
-    if (!Array.isArray(workspaces)) return true;
-    for (const workspace of workspaces) {
-      const status = await cmux.workspaceStatus(workspace.id);
-      const signals = status?.signals ?? status?.status?.signals;
-      if (signals?.any_agent_running !== false || signals?.any_agent_needs_input !== false) return true;
-    }
+    // Standalone cmux agents live independently of Companion's service process.
+    // Only effects owned by this service participate in its restart fence.
     return false;
   }
   return {
@@ -44,12 +37,12 @@ export function installUpdateMaintenance({ runtime, control, cmux, promptQueue, 
       control.fence(id, serviceId);
       try {
         await runtime.scheduler.sweep;
-        if (await busy()) { control.unfence(id); return { ready: false, serviceId, reason: 'Waiting for agents or uncertain work to finish' }; }
+        if (await busy()) { control.unfence(id); return { ready: false, serviceId, reason: 'Waiting for Companion-managed work to finish' }; }
         // Include requests that entered before the fence while external evidence
         // was being collected; new requests cannot pass onRequest during it.
         if (mutations || managedWorkBusy(runtime) || promptQueue?.inFlight.size) throw updateError('Work changed during update admission');
         return { ready: true, serviceId };
-      } catch { control.unfence(id); return { ready: false, serviceId, reason: 'Unable to establish that agents are safely idle' }; }
+      } catch { control.unfence(id); return { ready: false, serviceId, reason: 'Unable to establish that Companion-managed work is safely idle' }; }
     },
     async verify(id, expectedServiceId) {
       const fence = control.read().fence;

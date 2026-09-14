@@ -72,7 +72,7 @@ export async function startServer({
   try {
     if (process.env.CMUX_COMPANION_UPDATER_CONTROL) {
       updateControl = new UpdateControl(process.env.CMUX_COMPANION_UPDATER_CONTROL);
-      const maintenance = installUpdateMaintenance({ runtime, control: updateControl, cmux, promptQueue });
+      const maintenance = installUpdateMaintenance({ runtime, control: updateControl, promptQueue });
       await runtime.app.register(async app => registerUpdateRoutes(app, { control: updateControl, token, maintenance }));
     }
     await runtime.listen({ port });
