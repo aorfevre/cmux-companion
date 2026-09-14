@@ -1,3 +1,4 @@
+import { AgentPreparationError } from './orchestration/agent-preparation-error.mjs';
 import { projectCode } from './orchestration/domain/goal-presentation.mjs';
 import { repositoryReadiness } from './repository-readiness.mjs';
 import { assertDevChild } from './dev-repositories.mjs';
@@ -65,7 +66,13 @@ export async function createSettingsRuntime({ settings, directory, token, create
   const localAgents = {
     capabilities,
     async prepareHandoff(request) { const owner = await agent(request.goalId); requireValue(owner.prepareHandoff, 'Existing planning agent needs update-compatible recovery', 'HANDOFF_UNSUPPORTED'); return owner.prepareHandoff(request); },
-    async launch(request) { return (await agent(request.goalId)).launch(request); },
+    async launch(request) {
+      let owner;
+      try { owner = await agent(request.goalId); }
+      catch { throw new AgentPreparationError(); }
+      // Once delegated, every failure requires native worker observation.
+      return owner.launch(request);
+    },
     async resume(request) { return (await agent(request.goalId)).resume(request); },
     async observe(key) { const goal = find(key); return goal ? (await agent(goal.id)).observe(key) : { status: 'unknown', identity: null }; },
     async terminate(key) { const goal = find(key); requireValue(goal, 'Worker identity is unknown', 'OWNERSHIP_UNCERTAIN'); return (await agent(goal.id)).terminate(key); },

@@ -1,3 +1,4 @@
+import { AgentPreparationError } from './agent-preparation-error.mjs';
 import { randomUUID } from 'node:crypto';
 import { DomainError, integer, requireValue } from './domain/contracts.mjs';
 import { requireCapability } from './ports.mjs';
@@ -209,6 +210,12 @@ export class Scheduler {
     } catch (error) {
       this.ownership.assertOwned();
       const pending = this.store.operations().find((entry) => entry.id === operation.id);
+      if (launchStarted && error instanceof AgentPreparationError) {
+        const latest = this.store.get(operation.goalId);
+        if (latest && latest.generation === operation.generation && !['aborted', 'merged'].includes(latest.status)) this.reconciler.record(latest.id, 'record_failure', { attemptId: operation.attemptId, confirmedStopped: true, error: error.message });
+        else if (latest) this.reconciler.record(latest.id, 'record_stopped', { attemptId: operation.attemptId });
+        this.store.advanceOperation(operation.id, 'dispatching', 'completed'); return;
+      }
       if (launchStarted || pending?.status === 'dispatching') { await this.reconciler.observe(operation.goalId, operation.attemptId ?? ''); return; }
       const latest = this.store.get(operation.goalId);
       if (latest && latest.generation === operation.generation && !['aborted', 'merged'].includes(latest.status)) this.reconciler.record(latest.id, 'record_failure', { attemptId: operation.attemptId, confirmedStopped: true, error: error instanceof DomainError ? error.message : 'Workspace provisioning failed' });
