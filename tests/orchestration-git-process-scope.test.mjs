@@ -120,3 +120,21 @@ const child=spawn(process.execPath,['-e','setTimeout(()=>{},${lingerMs})'],{stdi
     assert.equal(gitScopeStopped(scope), false, 'elapsed time must not become stopped proof');
   }
 });
+
+test('interrupted Git leader close cannot cancel cleanup of its TERM-resistant descendant', async t => {
+  const repo = await createRepositoryFixture(); t.after(() => repo.close());
+  const root = realpathSync(repo.directory), bin = join(root, 'bin'), scope = join(root, 'scope'), ready = join(root, 'resistant-ready'), group = join(root, 'group'); mkdirSync(bin);
+  const descendant = `process.on('SIGTERM',()=>{}); require('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(()=>{},1000);`;
+  writeFileSync(join(bin, 'git'), `#!${process.execPath}
+const fs=require('node:fs'),{spawn}=require('node:child_process'); fs.writeFileSync(${JSON.stringify(group)},String(process.pid));
+const child=spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'}); child.unref();
+const ready=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(ready);process.stdout.write(Buffer.alloc(17*1024*1024));}},5);
+`, { mode: 0o700 });
+  const original = process.env.PATH; process.env.PATH = bin; let ownedGroup = null;
+  t.after(() => { process.env.PATH = original; if (ownedGroup) { try { process.kill(-ownedGroup, 'SIGKILL'); } catch { /* Owned fixture group already stopped. */ } } });
+  const rejected = assert.rejects(withGitProcessScope(scope, () => gitBytes(repo.repository, ['fixture'])), { code: 'GIT_OPERATION_FAILED' });
+  await until(() => existsSync(group)); ownedGroup = Number(readFileSync(group, 'utf8'));
+  await rejected;
+  await until(() => gitScopeStopped(scope));
+  assert.throws(() => process.kill(Number(readFileSync(ready, 'utf8')), 0), { code: 'ESRCH' });
+});
