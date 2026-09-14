@@ -89,8 +89,8 @@ Do not run the old and bundled updater simultaneously.
 4. Export those explicit paths and run `npm run install:mac -- --migrate` from the
    reviewed committed source. Legacy migration requires explicit data-directory
    and token-file values; it does not infer them from an old shell session.
-5. The installer refuses active transactions, registered old/new owners or changed
-   schema code. It retains configuration/plist backups and the old release stores.
+5. The installer refuses active transactions, registered old/new owners or unsupported
+   data contracts. It retains configuration/plist backups and the old release stores.
    On success it removes the backed-up legacy plist files so login cannot revive
    the old updater. Existing legacy `enabled: true` is not automatic opt-in.
 6. Rehearse installed startup, cmux continuity and recovery separately before
@@ -100,15 +100,18 @@ Do not run the old and bundled updater simultaneously.
 ## Activation and recovery
 
 Before staging, the service proves agents/effects are idle and installs a durable
-admission fence. Unknown worker state, in-flight commands and unavailable cmux
-status block activation. HTTP mutations, orchestration scheduling and queued
-prompts respect the fence. Existing cmux sessions remain open.
+admission fence. Unknown Companion-owned worker state and in-flight Companion
+commands block activation. HTTP mutations, orchestration scheduling and queued
+prompts respect the fence. Unrelated cmux sessions do not block an update and
+remain open; Companion-managed work must finish before activation.
 
 The updater stages an isolated release and validates it locally. Build commands
 have an independent watchdog and durable process receipts; restart cannot launch
-a duplicate build over uncertain prior ownership. The current implementation
-requires identical settings/schema migration source in the old and new release;
-a data-contract change is refused rather than treated as a safe binary rollback.
+a duplicate build over uncertain prior ownership. The release manifest binds
+`server/data-contract.json`, which declares settings and orchestration format
+versions. Matching supported contracts allow compatible implementation changes;
+recognized legacy releases have explicitly tested compatibility. Unknown or
+incompatible contracts are refused rather than treated as a safe binary rollback.
 It takes private SQLite backups before activation and checks the fence again.
 
 After atomically switching `current`, the new service must report the exact SHA,
@@ -137,6 +140,35 @@ Operator `check`, `enable`, `disable`, `retry`, `install <sha> [--when-idle]` an
 `cancel <request-id>` all use the same durable control protocol. `enable` is an
 explicit opt-in to automatic installation. Retention remains separately opt-in
 and preserves the running release, rollback target and uncertain evidence.
+
+## Troubleshooting an update
+
+Follow the update through four stages:
+
+1. **Eligibility:** the exact main commit needs a successful main-push Verify run.
+   A merge or passing PR check alone does not make it installable.
+2. **Discovery:** inspect the last check and available commit in Settings →
+   Companion updates. Use Check for updates after CI finishes. Automatic
+   installation must be enabled for unattended installation.
+3. **Preparation:** the updater waits for Companion-managed work, stages the
+   candidate and verifies it. An open unrelated cmux session is not a reason to
+   close terminals. A failed candidate is quarantined; inspect the failure before
+   explicitly choosing Retry update.
+4. **Activation:** success requires the running service to report the target SHA
+   and pass frontend health checks. A successful discovery check is not evidence
+   that the application updated. To verify automatic installation, confirm a
+   succeeded request with source `automatic` and a matching running SHA through
+   the authenticated updater and health APIs.
+
+“This update requires a supported data migration. The running version was
+preserved.” identifies a compatibility refusal. Do not edit contract versions or
+remove safety state to force acceptance. Older updater engines can report the
+less specific “The update could not be prepared safely” for the same problem.
+If an old engine cannot install its own repair, an operator may need one backed-up
+installation of the reviewed, verified repair release using the bundled installer,
+after checking owned work and transaction recovery. This is a manual repair;
+verify a later automatic version transition before claiming self-update works.
+Never include pairing tokens or private database contents in troubleshooting logs.
 
 ## Validation boundary
 
