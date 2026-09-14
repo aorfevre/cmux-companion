@@ -1,3 +1,4 @@
+import { prepareCcsLaunch } from './ccs-managed-launcher.mjs';
 import { randomUUID } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -39,8 +40,9 @@ export async function runNativeWorker(configPath) {
     if (controller.signal.aborted) {
       save('outcome.json', { identity: config.identity, outcome: { status: 'failed', workerState: 'stopped', cause: { code: 'ABORTED', exitCode: null, signal: null }, stdout: '', stderr: '' } }); return;
     }
+    const command = prepareCcsLaunch(config.command, config.installation, directory, 'initial');
     writeFileSync(join(directory, 'provider-sent.json'), JSON.stringify({ identity: config.identity }), { mode: 0o600, flag: 'wx' }); sent = true;
-    const handle = await startBackgroundProcess(config.command, {
+    const handle = await startBackgroundProcess(command, {
       policy: config.policy, signal: controller.signal, identity: () => config.identity,
       onIdentity: async ({ pid }) => { save('provider.json', { identity: config.identity, pid, stamp: await nativeProcessStamp(pid, directory) }); },
     });
