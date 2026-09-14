@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { GoalBoard } from '../app/orchestration/goal-board';
@@ -10,6 +11,7 @@ let stream: { onopen?: () => void; onerror?: () => void; close: ReturnType<typeo
 beforeEach(() => {
   readOnly = false; paired = true;
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
   vi.stubGlobal('EventSource', class {
     listeners: Record<string, () => void> = {}; close = vi.fn();
     constructor() { stream = { close: this.close, listeners: this.listeners }; }
@@ -274,4 +276,44 @@ test('goal panel closes with Escape and restores the card focus', async () => {
   fireEvent.click(screen.getByRole('dialog', { name: 'Goal details' }), { clientX: -1 });
   expect(close).toHaveBeenCalledTimes(2);
   view.unmount(); expect(document.activeElement).toBe(card); card.remove();
+});
+
+
+test('a lost response remains retryable inside the modal with the exact original command', async () => {
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const goal = { ...goalView(fixture().goal), id: 'modal-goal', title: 'Modal goal', contracts: [] };
+  const original = api.getMockImplementation()!;
+  const commands: string[] = [];
+  api.mockImplementation(async (url, options) => {
+    if (url.endsWith('/snapshot')) return { goals: [goal], cursor: 1, journalId: 'journal', readOnly: false };
+    if (url.endsWith('/goals/modal-goal')) return goal;
+    if (url.endsWith('/commands')) { commands.push(String(options?.body)); if (commands.length === 1) throw new Error('Connection lost'); return {}; }
+    return original(url, options);
+  });
+  render(<GoalBoard />);
+  fireEvent.click(await screen.findByRole('button', { name: /Modal goal/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
+  const retry = await screen.findByRole('button', { name: 'Retry pending request' });
+  expect(retry.closest('dialog')).toBe(screen.getByRole('dialog', { name: 'Goal details' }));
+  await waitFor(() => expect(retry).toHaveProperty('disabled', false));
+  fireEvent.click(retry);
+  await waitFor(() => expect(commands).toHaveLength(2));
+  expect(commands[1]).toBe(commands[0]);
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull());
+});
+
+test('StrictMode closes the native modal before restoring outside focus', async () => {
+  const { GoalPanel } = await import('../app/orchestration/goal-panel');
+  const card = document.createElement('button'); document.body.append(card); card.focus();
+  const closed = vi.spyOn(HTMLDialogElement.prototype, 'close');
+  const focused = vi.spyOn(card, 'focus');
+  const view = render(<StrictMode><GoalPanel close={vi.fn()}><p>Content</p></GoalPanel></StrictMode>);
+  expect(screen.getByRole('dialog', { name: 'Goal details' })).toHaveProperty('open', true);
+  expect(closed).toHaveBeenCalledOnce();
+  view.unmount();
+  expect(closed).toHaveBeenCalledTimes(2);
+  expect(closed.mock.invocationCallOrder[1]).toBeLessThan(focused.mock.invocationCallOrder.at(-1)!);
+  expect(document.activeElement).toBe(card);
+  closed.mockRestore(); focused.mockRestore(); card.remove();
 });

@@ -4,8 +4,9 @@ export function GoalPanel({ children, close }: { children: ReactNode; close(): v
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    dialog.current?.showModal();
-    return () => { if (previous?.isConnected) previous.focus(); };
+    const element = dialog.current;
+    element?.showModal();
+    return () => { element?.close(); if (previous?.isConnected) previous.focus(); };
   }, []);
   useEffect(() => {
     const element = dialog.current;
