@@ -10,6 +10,12 @@ async function regular(path) {
   if (!info.isFile() || info.isSymbolicLink()) throw new Error(`Expected a regular candidate file: ${path}`);
 }
 
+async function dataContractDigest(root) {
+  const path = join(root, 'server/data-contract.json');
+  try { await regular(path); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  return sha256(path);
+}
+
 export async function buildCandidate(target, releasePath, sha, log, { execute = run } = {}) {
   const npm = target.npmPath || "npm";
   await regular(join(releasePath, "package.json"));
@@ -33,6 +39,7 @@ export async function buildCandidate(target, releasePath, sha, log, { execute = 
   const manifest = {
     schemaVersion: 1,
     bundledUpdater: target.bundled === true,
+    dataContractSha256: target.bundled === true ? await dataContractDigest(releasePath) : null,
     updaterDigests: target.bundled === true ? Object.fromEntries(await Promise.all(['local-updater.mjs', 'bootstrap.mjs', 'launch-companion.mjs'].map(async file => [file, await sha256(join(releasePath, 'updater', 'scripts', file))]))) : null,
     target: target.name,
     gitSha: sha,
@@ -50,6 +57,7 @@ export async function buildCandidate(target, releasePath, sha, log, { execute = 
   await atomicWrite(join(releasePath, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, 0o444);
   if (target.bundled === true) {
     if (!manifest.bundledUpdater) throw new Error('Bundled updater manifest required');
+    if (await dataContractDigest(releasePath) !== (manifest.dataContractSha256 ?? null)) throw new Error('Data contract digest mismatch');
     for (const file of ['local-updater.mjs', 'bootstrap.mjs', 'launch-companion.mjs']) if (await sha256(join(releasePath, 'updater', 'scripts', file)) !== manifest.updaterDigests?.[file]) throw new Error('Bundled updater digest mismatch');
   }
   return manifest;
@@ -66,6 +74,7 @@ export async function validateManifest(target, releasePath, sha) {
   }
   if (target.bundled === true) {
     if (!manifest.bundledUpdater) throw new Error('Bundled updater manifest required');
+    if (await dataContractDigest(releasePath) !== (manifest.dataContractSha256 ?? null)) throw new Error('Data contract digest mismatch');
     for (const file of ['local-updater.mjs', 'bootstrap.mjs', 'launch-companion.mjs']) if (await sha256(join(releasePath, 'updater', 'scripts', file)) !== manifest.updaterDigests?.[file]) throw new Error('Bundled updater digest mismatch');
   }
   return manifest;

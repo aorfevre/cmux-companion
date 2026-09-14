@@ -50,8 +50,10 @@ test('durable maintenance fences HTTP launches and prompt draining, requires sam
   f.runtime.store.list = () => [{ attempts: [{ workerState: 'unknown' }], status: 'aborted' }];
   assert.equal((await f.maintenance.acquire('manual-002')).ready, false); assert.equal(f.control.status().maintenance, false);
   f.runtime.store.list = () => []; f.cmux.workspaceList = async () => ({ workspaces: [{ id: 'workspace' }] });
-  f.cmux.workspaceStatus = async () => ({}); assert.equal((await f.maintenance.acquire('manual-002')).ready, false);
-  f.cmux.workspaceStatus = async () => { throw new Error('offline'); }; assert.equal((await f.maintenance.acquire('manual-002')).ready, false);
+  f.cmux.workspaceStatus = async () => ({}); assert.equal((await f.maintenance.acquire('manual-002')).ready, true);
+  f.cmux.workspaceList = async () => { throw new Error('cmux must not be queried during updates'); };
+  assert.equal((await f.maintenance.acquire('manual-002')).ready, true);
+  assert.equal((await f.maintenance.verify('manual-002', 'service')).ready, true);
 });
 test('in-flight launches and coordinator effects cannot race the idle fence', async t => {
   const f = await fixture(t); let release;

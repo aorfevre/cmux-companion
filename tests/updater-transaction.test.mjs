@@ -83,3 +83,11 @@ test('uncertain build ownership retains maintenance instead of allowing a replac
   await updateCycle({ ...f.options, adapter: { ...f.adapter, prepare: async () => { throw Object.assign(new Error('unknown'), { code: 'OWNERSHIP_UNCERTAIN' }); } } });
   assert.equal(f.control.status().request.status, 'recovery_required'); assert.equal(f.control.status().maintenance, true);
 });
+
+test('unsupported data migrations report a specific safe reason without exposing adapter details', async t => {
+  const f = fixture(t); await updateCycle(f.options); f.control.request({ id: 'migration-001', sha });
+  await updateCycle({ ...f.options, adapter: { ...f.adapter, prepare: async () => { throw Object.assign(new Error('private path and command output'), { code: 'DATA_COMPATIBILITY' }); } } });
+  assert.equal(f.control.status().request.error, 'This update requires a supported data migration. The running version was preserved.');
+  assert.equal(f.control.status().request.status, 'failed'); assert.equal(f.control.status().maintenance, false);
+  assert.deepEqual(f.calls, []);
+});
