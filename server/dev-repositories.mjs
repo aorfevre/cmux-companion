@@ -53,6 +53,8 @@ export async function scanDevRepo(root, inspect, { entryLimit = 1000, deadlineMs
       if (!entry.isDirectory() || entry.isSymbolicLink() || entry.name.startsWith('.') || ['node_modules', 'worktrees'].includes(entry.name)) continue;
       const path = join(root.path, entry.name);
       try {
+        // A .git file denotes a linked checkout, not a primary repository.
+        if (!(await lstat(join(path, '.git'))).isDirectory()) continue;
         await assertDevChild(root.path, path);
         const project = await inspect(path, undefined, { timeout: Math.max(1, Math.min(5000, deadlineMs - (now() - started))) });
         results.push(project);

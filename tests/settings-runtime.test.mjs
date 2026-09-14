@@ -48,7 +48,8 @@ test('saving a project immediately populates goals and admission snapshots confi
   assert.equal(settings.goalConfiguration('goal-one').provider, 'claude');
   value.projects[0].enabled = false; value.provider = 'codex';
   await settings.update(1, value); await runtime.settingsChanged();
-  assert.deepEqual((await runtime.app.inject({ url: '/api/orchestration/configuration', headers })).json().repositories, []);
+  const disabled = (await runtime.app.inject({ url: '/api/orchestration/configuration', headers })).json().repositories;
+  assert.equal(disabled[0].name, 'My project'); assert.equal(disabled[0].enabled, false); assert.match(disabled[0].error, /disabled/);
   assert.equal((await runtime.app.inject({ url: '/api/orchestration/goals/goal-one', headers })).statusCode, 200);
   assert.equal(settings.goalConfiguration('goal-one').provider, 'claude');
   const denied = await runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: { ...command, id: 'create-two', goalId: 'goal-two' } });

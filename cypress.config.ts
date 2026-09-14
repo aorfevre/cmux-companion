@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync, cpSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { defineConfig } from "cypress";
@@ -20,6 +20,12 @@ export default defineConfig({
         const settingsManifest = JSON.parse(readFileSync(settingsManifestPath, 'utf8'));
         on('task', {
           settingsPairing: () => readFileSync(settingsManifest.tokenFile, 'utf8'),
+          settingsAddRepository: () => {
+            const path = join(settingsManifest.devRepos.karven, 'new-repository');
+            cpSync(settingsManifest.repository, path, { recursive: true });
+            execFileSync('git', ['-C', path, 'worktree', 'add', '--detach', join(settingsManifest.devRepos.karven, 'excluded-worktree')]);
+            return null;
+          },
           settingsProjectPath: () => settingsManifest.repository,
           settingsDevRepoPath: (name: string) => { if (!['karven', 'rekord'].includes(name)) throw new Error('Unknown fixture folder'); return settingsManifest.devRepos[name]; },
           updatesBusy: (busy: boolean) => {

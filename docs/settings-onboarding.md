@@ -39,9 +39,12 @@ own clearly labeled protection control on the single Updates screen.
    discover**. A Git checkout offers the individual-repository flow instead.
    Optional **Enter a path (advanced)** supports `~/` and absolute Mac paths for
    locations outside the explorer's Home and saved-root boundaries.
-3. Select the repositories to add. Discovery never enables a repository by itself
-   or executes package scripts. Use **Open / Refresh** after adding repositories
-   on disk. Search by folder name, repository name or GitHub owner.
+3. All eligible Git repositories directly inside the folder are tracked and
+   appear in Goals automatically. Adding a folder, opening Dev repos or Goals,
+   and **Open / Refresh** discover new repositories. Existing disabled choices
+   and checks stay unchanged; discovery never executes package scripts or starts
+   agents. Search by folder name, repository name or GitHub owner. Disabled and
+   unconfigured repositories stay visible, with a link to configure them.
 4. Open an added repository to confirm its GitHub destination and remote and
    choose approved npm scripts, or define executable/argument checks in Advanced
    verification. Repository configuration and provider readiness are both required
@@ -52,7 +55,7 @@ concurrency and time. Partial results are identified. Hidden folders, symlinks,
 linked worktrees, generated worktree folders and nested repositories are excluded.
 Add repositories outside collections through **Add individual repository**.
 Dev repo names must be unique; collection paths cannot overlap. Rename a group
-without changing repository IDs. Removing a group moves its selected repositories
+without changing repository IDs. Removing a group moves its tracked repositories
 to **Individual repositories** and does not remove files or goal history.
 
 Settings are private local SQLite data in `~/.config/cmux-companion/settings.sqlite`.

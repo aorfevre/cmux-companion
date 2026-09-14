@@ -1,22 +1,31 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FolderPicker } from './folder-picker';
 import { request } from '../api-request';
-import type { Check, DevRepo, Project, Settings } from './settings-panel';
+import type { Check, DevRepo, Project, Settings, Snapshot } from './settings-panel';
 type Inspected = Pick<Project, 'name' | 'path' | 'github' | 'remote'> & { suggestedChecks?: Check[]; error?: string };
-type Scan = { repositories: Inspected[]; partial: boolean; reason: string | null };
-export function DevRepositories({ draft, onChange, save, busy, onError, onNotice }: { draft: Settings; onChange: (value: Settings) => void; save: (value: Settings) => Promise<boolean>; busy: boolean; onError: (message: string) => void; onNotice: (message: string) => void }) {
+type Scan = { repositories: Inspected[]; partial: boolean; reason: string | null; snapshot?: Snapshot };
+export function DevRepositories({ draft, onChange, save, busy, onError, onNotice, onSync }: { draft: Settings; onSync: (value: Snapshot) => void; onChange: (value: Settings) => void; save: (value: Settings) => Promise<boolean>; busy: boolean; onError: (message: string) => void; onNotice: (message: string) => void }) {
   const [adding, setAdding] = useState(false), [name, setName] = useState(''), [path, setPath] = useState(''), [validated, setValidated] = useState<string | null>(null);
-  const [working, setWorking] = useState(false), [scans, setScans] = useState<Record<string, Scan>>({}), [selected, setSelected] = useState<string[]>([]);
+  const [working, setWorking] = useState(false), [scans, setScans] = useState<Record<string, Scan>>({});
   const [openGroup, setOpenGroup] = useState<string | null>(null), [editing, setEditing] = useState<string | null>(null), [search, setSearch] = useState('');
   const [suggestions, setSuggestions] = useState<Record<string, Check[]>>({}), [individual, setIndividual] = useState(false), [individualPath, setIndividualPath] = useState('');
   const [picker, setPicker] = useState<'dev' | 'individual' | null>(null), [lastFolder, setLastFolder] = useState<string>(), [gitFolder, setGitFolder] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(true);
+  const [refreshError, setRefreshError] = useState('');
   const savingRoot = useRef(false);
+  useEffect(() => {
+    let active = true;
+    void request<Snapshot & { scans: Record<string, Scan> }>('/api/settings/dev-repos/reconcile', { method: 'POST', body: '{}' }).then(value => {
+      if (active) { setScans(value.scans); onSync(value); }
+    }).catch(() => { if (active) setRefreshError('Repositories could not be refreshed. Use Open / Refresh to retry.'); }).finally(() => { if (active) setRefreshing(false); });
+    return () => { active = false; };
+  }, [onSync]);
   const roots = draft.devRepos ?? [], disabled = busy || working;
   const failure = (cause: unknown) => onError(cause instanceof Error ? cause.message : 'Could not inspect this directory');
   async function scan(root: DevRepo) {
-    setWorking(true); onError(''); setOpenGroup(root.id);
-    try { const result = await request<Scan>(`/api/settings/dev-repos/${encodeURIComponent(root.id)}/scan`, { method: 'POST', body: '{}' }); setScans(current => ({ ...current, [root.id]: result })); }
+    setWorking(true); onError(''); setRefreshError(''); setOpenGroup(root.id);
+    try { const result = await request<Scan>(`/api/settings/dev-repos/${encodeURIComponent(root.id)}/scan`, { method: 'POST', body: '{}' }); setScans(current => ({ ...current, [root.id]: result })); if (result.snapshot) onSync(result.snapshot); }
     catch (cause) { failure(cause); } finally { setWorking(false); }
   }
   async function addRoot() {
@@ -61,7 +70,7 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
   const matching = (entry: Project | Inspected, root?: DevRepo) => `${root?.name ?? ''} ${entry.name} ${entry.github ?? ''}`.toLowerCase().includes(search.toLowerCase());
   return <section><header className="settings-section-heading"><div><h2>Dev repos</h2><p>Folders containing Git repositories on your connected Mac.</p></div><button disabled={disabled} onClick={() => setAdding(!adding)}>Add Dev repo</button></header>
     {picker && <FolderPicker initialPath={lastFolder} onChoose={chooseFolder} onCancel={last => { if (last) setLastFolder(last); setPicker(null); }} />}
-    {adding && <div className="settings-editor"><h3>Add a development folder</h3><p>Choose a folder containing your Git repositories. Its name fills in automatically.</p>
+    {adding && <div className="settings-editor"><h3>Add a development folder</h3><p>All repositories directly inside this folder will be tracked automatically. Worktrees are excluded. Its name fills in automatically.</p>
       <button disabled={disabled} onClick={() => setPicker('dev')}>{validated ? 'Choose another folder' : 'Choose folder'}</button>
       {gitFolder && <div role="status"><p>This is one repository. Add it individually, or choose its parent folder to group repositories.</p><button disabled={disabled} onClick={() => { setIndividualPath(gitFolder); setIndividual(true); setAdding(false); setGitFolder(null); }}>Add this individual repository</button></div>}
       <details><summary>Enter a path (advanced)</summary><label>Directory on this Mac<input placeholder="~/Developers" value={path} onChange={event => { setPath(event.target.value); setValidated(null); }} autoCapitalize="none" spellCheck={false} /></label>
@@ -70,22 +79,15 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
       {validated && <><p>Selected folder: <span className="settings-path">{validated}</span></p><label>Dev repo name<input value={name} onChange={event => setName(event.target.value)} /></label><p>You can rename this folder in Companion without changing it on your Mac.</p><button disabled={disabled || !name.trim()} onClick={() => void addRoot()}>Save Dev repo and discover</button></>}
       <button disabled={disabled} onClick={() => { setAdding(false); setValidated(null); setGitFolder(null); }}>Cancel</button>
     </div>}
+    {refreshing && <p role="status">Refreshing repositories…</p>}
+    {refreshError && <p role="status">{refreshError}</p>}
     <label>Search repositories<input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Folder, repository or GitHub owner" /></label>
-    {!roots.length && <div className="settings-empty"><h3>Your repositories, organized</h3><p>Add a folder like karven or rekord, then choose which repositories Companion can use.</p></div>}
+    {!roots.length && <div className="settings-empty"><h3>Your repositories, organized</h3><p>Add a folder like karven or rekord, and Companion tracks its repositories automatically.</p></div>}
     {roots.map(root => <article className="dev-repo" key={root.id}><div className="settings-section-heading"><div><h3>{root.name}</h3><p className="settings-path">{root.path}</p></div><button disabled={disabled} onClick={() => void scan(root)}>{working && openGroup === root.id ? 'Discovering…' : 'Open / Refresh'}</button></div>
       <details><summary>Manage {root.name}</summary><label>Rename {root.name}<input value={root.name} onChange={event => onChange({ ...draft, devRepos: roots.map(entry => entry.id === root.id ? { ...entry, name: event.target.value } : entry) })} /></label><button disabled={disabled} onClick={() => { if (window.confirm(`Remove ${root.name}? Added repositories move to Individual repositories. Files and goals stay intact.`)) onChange({ ...draft, devRepos: roots.filter(entry => entry.id !== root.id), projects: draft.projects.map(entry => entry.devRepoId === root.id ? { ...entry, devRepoId: undefined } : entry) }); }}>Remove Dev repo</button></details>
       {draft.projects.filter(entry => entry.devRepoId === root.id && matching(entry, root)).map(entry => <RepositoryRow key={entry.id} project={entry} open={() => void openProject(entry)} />)}
-      {openGroup === root.id && scans[root.id] && <div className="discovered-repos">{scans[root.id].partial && <p role="status">{scans[root.id].reason}</p>}{!scans[root.id].repositories.length && <p>No immediate-child Git repositories found. Nested folders and linked worktrees are excluded.</p>}
-        {scans[root.id].repositories.filter(entry => matching(entry, root)).map(entry => {
-          const added = draft.projects.some(project => project.path === entry.path);
-          return <label className="discovery-row" key={entry.path} htmlFor={`discover-${root.id}-${entry.name}`}><input id={`discover-${root.id}-${entry.name}`} type="checkbox" disabled={disabled || added || Boolean(entry.error)} checked={added || selected.includes(entry.path)} onChange={event => setSelected(current => event.target.checked ? [...current, entry.path] : current.filter(path => path !== entry.path))} /><span>{entry.name}<span className="setting-description">{entry.error ? 'Needs attention: ' + entry.error : added ? 'Added' : entry.github ?? 'Available · GitHub destination needed'}</span></span></label>;
-        })}
-        <button disabled={disabled} onClick={() => setSelected(current => [...new Set([...current, ...scans[root.id].repositories.filter(entry => !entry.error && matching(entry, root) && !draft.projects.some(project => project.path === entry.path)).map(entry => entry.path)])])}>Select all available</button>
-        <button disabled={disabled || !scans[root.id].repositories.some(entry => selected.includes(entry.path) && !draft.projects.some(project => project.path === entry.path))} onClick={() => {
-          const entries = scans[root.id].repositories.filter(entry => !entry.error && selected.includes(entry.path) && !draft.projects.some(project => project.path === entry.path));
-          const projects = entries.map(entry => ({ id: crypto.randomUUID(), name: entry.name, path: entry.path, github: entry.github, remote: entry.remote, devRepoId: root.id, enabled: true, checks: [] }));
-          void save({ ...draft, projects: [...draft.projects, ...projects] }).then(saved => { if (saved) { setSelected([]); onNotice('Selected repositories added. Configure checks to enable goals.'); } });
-        }}>Add selected repositories</button>
+      {scans[root.id] && <div className="discovered-repos">{scans[root.id].partial && <p role="status">{scans[root.id].reason} Use Open / Refresh to retry.</p>}{!scans[root.id].partial && !scans[root.id].repositories.length && <p>No immediate-child Git repositories found. Nested folders and linked worktrees are excluded.</p>}
+        {scans[root.id].repositories.filter(entry => entry.error && matching(entry, root)).map(entry => <p key={entry.path}>{entry.name}: {entry.error}</p>)}
       </div>}
     </article>)}
     <article><div className="settings-section-heading"><h3>Individual repositories</h3><button disabled={disabled} onClick={() => setIndividual(!individual)}>Add individual repository</button></div>
