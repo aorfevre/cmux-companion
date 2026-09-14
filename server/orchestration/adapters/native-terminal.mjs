@@ -15,8 +15,8 @@ import { nativeProcessStamp } from './native-process.mjs';
  * title. Only a verified runner receives termination; workspace cleanup is T13.
  */
 export class NativeTerminal {
-  /** @param {{directory:string; bin:string; inputs:import('./native-inputs.mjs').NativeInputs; terminal:Pick<import('./cmux.mjs').CmuxTerminal,'create'|'start'|'open'>; killGraceMs:number}} options */
-  constructor({ directory, bin, inputs, terminal, killGraceMs }) {
+  /** @param {{directory:string; bin:string; inputs:import('./native-inputs.mjs').NativeInputs; terminal:Pick<import('./cmux.mjs').CmuxTerminal,'create'|'start'|'open'>; killGraceMs:number; releaseDirectory?:string}} options */
+  constructor({ directory, bin, inputs, terminal, killGraceMs, releaseDirectory }) {
     requireValue(isAbsolute(bin) && !bin.includes('\0'), 'Explicit native executable required');
     requireNativeCapabilities(inputs.capabilities, 'planner', 'interactive');
     requireValue(!inputs.installation || inputs.installation.bin === bin, 'Terminal wrapper differs from the probed installation', 'UNSUPPORTED_CAPABILITY');
@@ -24,6 +24,9 @@ export class NativeTerminal {
     mkdirSync(directory, { recursive: true, mode: 0o700 }); this.directory = realpathSync(directory);
     requireValue(!lstatSync(directory).isSymbolicLink(), 'Terminal directory identity changed', 'OWNERSHIP_UNCERTAIN');
     this.bin = bin; this.inputs = inputs; this.terminal = terminal; this.killGraceMs = killGraceMs; this.stopping = false;
+    // Fixture compositions supply their own managed tree, even when verification
+    // itself runs inside an installed release. Production uses the module tree.
+    this.releaseDirectory = releaseDirectory;
     this.capabilities = [{ role: /** @type {const} */ ('planner'), mode: /** @type {const} */ ('interactive') }];
     this.managed = new Set();
     /** @type {Map<string, {timer: ReturnType<typeof setInterval> | null; pending: Promise<void> | null; drain: () => Promise<void>}>} */ this.outboxRecovery = new Map();
@@ -74,7 +77,7 @@ export class NativeTerminal {
       const created = await this.terminal.create(request.attempt.worktree ?? '', command.plannerName);
       this.save(join(directory, 'workspace.json'), { identity, workspaceId: created.workspaceId });
       const configPath = join(directory, 'worker.json');
-      const release = pinNativeRelease({ directory, identity, operationId: request.operationId });
+      const release = pinNativeRelease({ directory, identity, operationId: request.operationId }, this.releaseDirectory);
       this.save(configPath, { handoffProtocol: 1, release, identity, workspaceId: created.workspaceId, activation: command.activation, installation: this.inputs.installation?.identity,
         command: { bin: this.bin, argv: command.argv, env: command.env, cwd: request.attempt.worktree }, killGraceMs: this.killGraceMs });
       requireValue(!this.stopping, 'Terminal runtime stopped before runner send', 'NOT_READY');
