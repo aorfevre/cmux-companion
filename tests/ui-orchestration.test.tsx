@@ -135,3 +135,16 @@ test('finishing a command for A does not invalidate the selected B detail reques
   finishB(b);
   await screen.findByRole('heading', { name: 'Goal B' });
 });
+
+test('automatic discovery keeps disabled repositories visible and reports partial refresh without enabling work', async () => {
+  const original = api.getMockImplementation()!;
+  api.mockImplementation(async (url, options) => {
+    if (url.endsWith('/configuration')) return { ...config, repositories: [{ ...config.repositories[0], name: 'Example', devRepoName: 'karven', enabled: false, error: 'This repository is disabled.' }] };
+    if (url.endsWith('/reconcile')) return { scans: { root: { partial: true, reason: 'Scan limit reached.' } } };
+    return original(url, options);
+  });
+  await start(); await screen.findByText(/Scan limit reached/);
+  expect(screen.getByRole('option', { name: 'karven / Example · disabled' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('link', { name: 'Configure repository' }).getAttribute('href')).toBe('/settings#dev-repos');
+});

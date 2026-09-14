@@ -1,6 +1,6 @@
 const settingsSuite = Cypress.expose('settings') ? describe : describe.skip;
 settingsSuite('Named Dev repos and unified settings with a real disposable service', () => {
-  it('pairs, discovers two directories, selects explicitly, configures a repository and preserves settings', () => {
+  it('pairs, discovers two directories, tracks automatically, configures a repository and preserves settings', () => {
     cy.viewport(390, 844); cy.visit('/onboarding');
     cy.task<string>('settingsPairing', null, { log: false }).then(token => { cy.findByLabelText('Pairing code').type(token, { log: false }); cy.findByRole('button', { name: 'Pair this device' }).click(); });
     for (const name of ['karven', 'rekord']) {
@@ -15,8 +15,8 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
       });
       cy.findByLabelText('Dev repo name').should('have.value', name);
       cy.findByRole('button', { name: 'Save Dev repo and discover' }).click();
-      cy.findByRole('button', { name: 'Select all available' }).click(); cy.findByRole('button', { name: 'Add selected repositories' }).click();
-      cy.contains('Selected repositories added. Configure checks to enable goals.').should('be.visible');
+      cy.get('.repository-row').should('have.length', name === 'karven' ? 1 : 2);
+      cy.findByRole('button', { name: 'Add selected repositories' }).should('not.exist');
     }
     cy.get('.repository-row').first().click(); cy.findByLabelText('Repository name').clear().type('My project');
     cy.findByLabelText('GitHub destination').type('example/disposable'); cy.findByLabelText('Git remote').type('git@github.com:example/disposable.git');
@@ -30,6 +30,11 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
     cy.findByLabelText('Search repositories').type('karven'); cy.findByLabelText('Repository').find('option').should('have.length', 1);
     cy.findByLabelText('What should we accomplish?').type('Plan a disposable change'); cy.findByRole('button', { name: 'New goal' }).click(); cy.findByRole('navigation', { name: 'Goals' }).should('contain.text', 'Plan a disposable change');
     cy.findByRole('link', { name: 'Manage projects and providers' }).click(); cy.findByRole('button', { name: 'Dev repos' }).click(); cy.get('.repository-row').first().click(); cy.findByRole('switch', { name: 'Enabled for new work' }).uncheck(); cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
-    cy.visit('/orchestration'); cy.findByRole('navigation', { name: 'Goals' }).should('contain.text', 'Plan a disposable change'); cy.findByLabelText('Repository').find('option').should('not.contain.text', 'My project');
+    cy.visit('/orchestration'); cy.findByRole('navigation', { name: 'Goals' }).should('contain.text', 'Plan a disposable change'); cy.findByLabelText('Repository').find('option').should('contain.text', 'My project · disabled');
+    cy.findByLabelText('Repository').select(0); cy.findByRole('button', { name: 'New goal' }).should('be.disabled');
+    cy.findByRole('link', { name: 'Configure repository' }).should('be.visible');
+    cy.task('settingsAddRepository'); cy.visit('/orchestration');
+    cy.findByLabelText('Repository').find('option').should('have.length', 3).and('contain.text', 'karven / new-repository').and('not.contain.text', 'excluded-worktree');
+    cy.visit('/settings#dev-repos'); cy.get('.repository-row').should('have.length', 3); cy.contains('excluded-worktree').should('not.exist');
   });
 });

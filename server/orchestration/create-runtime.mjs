@@ -64,13 +64,13 @@ export async function createRuntime({ storage, repositories: configured, token, 
     const app = Fastify({ logger: logLevel ? { level: logLevel, redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]'] } : false, bodyLimit: 2 * 1024 * 1024, ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
     const cleanup = new ResourceCleanup({ service, repositories, assertOwned: () => scheduler.ownership.assertOwned() });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
-    registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly, suspension, cleanup, beforeCommand, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].filter(id => projectStatus?.(id).enabled !== false).map(async (id) => {
+    registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly, suspension, cleanup, beforeCommand, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {
       try {
         const { repository } = await repositories.repository(id);
         const baseBranch = (await git(repository, ['symbolic-ref', '--short', 'HEAD'])).trim();
         const baseSha = await repositories.ref(repository, `refs/heads/${baseBranch}`);
         return { id, baseBranch, baseSha, error: null, ...projectStatus?.(id) };
-      } catch { return { id, baseBranch: null, baseSha: null, error: 'Repository branch is unavailable' }; }
+      } catch { return { id, ...projectStatus?.(id), baseBranch: null, baseSha: null, error: 'Repository branch is unavailable' }; }
     })) });
     describe = (request) => {
       requireValue(!shutdownRequested && service.ownership, 'Runtime launch is unavailable', 'NOT_READY');

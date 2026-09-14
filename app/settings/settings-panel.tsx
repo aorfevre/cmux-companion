@@ -1,6 +1,6 @@
 'use client';
 /* eslint-disable @next/next/no-html-link-for-pages */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, request } from '../api-request';
 import { UpdateSettings } from '../updates';
 import { ModelSelect, ModelSettingsPanel } from '../model-settings';
@@ -22,7 +22,7 @@ export type Settings = {
   execution: { global: number; perGoal: number; planners: number; ceilingMs: number; idleMs: number; maxOutputBytes: number; killGraceMs: number };
   previews: { portStart: number; portEnd: number }; onboarding: { completed: boolean };
 };
-type Snapshot = { revision: number; settings: Settings; imported: boolean };
+export type Snapshot = { revision: number; settings: Settings; imported: boolean };
 const categories = { general: 'General', 'dev-repos': 'Dev repos', agents: 'Agents', notifications: 'Notifications', updates: 'Updates', advanced: 'Advanced' };
 type Category = keyof typeof categories;
 const editable: Partial<Record<Category, (keyof Settings)[]>> = { 'dev-repos': ['devRepos', 'projects'], agents: ['provider', 'providers'], advanced: ['tools', 'execution', 'previews'] };
@@ -40,7 +40,13 @@ export function LocalSettingsPanel({ onboarding = false }: { onboarding?: boolea
   const dirty = Boolean(draft && snapshot && !equal(draft, snapshot.settings));
   const dirtyRef = useRef(dirty), snapshotRef = useRef(snapshot), categoryRef = useRef(category);
   useEffect(() => { dirtyRef.current = dirty; snapshotRef.current = snapshot; categoryRef.current = category; }, [dirty, snapshot, category]);
-  const accept = (value: Snapshot) => { const normalized = { ...value, settings: { ...value.settings, devRepos: value.settings.devRepos ?? [] } }; setSnapshot(normalized); setDraft(structuredClone(normalized.settings)); setUnpaired(false); setConflict(null); };
+  const accept = (value: Snapshot) => { const normalized = { ...value, settings: { ...value.settings, devRepos: value.settings.devRepos ?? [] } }; snapshotRef.current = normalized; dirtyRef.current = false; setSnapshot(normalized); setDraft(structuredClone(normalized.settings)); setUnpaired(false); setConflict(null); };
+  const syncDiscovery = useCallback((value: Snapshot) => {
+    if (snapshotRef.current && value.revision <= snapshotRef.current.revision) return;
+    if (dirtyRef.current) { setConflict(value); setNotice('Repositories were refreshed. Your unsaved changes are preserved; review the saved settings before saving.'); return; }
+    const normalized = { ...value, settings: { ...value.settings, devRepos: value.settings.devRepos ?? [] } };
+    snapshotRef.current = normalized; setSnapshot(normalized); setDraft(structuredClone(normalized.settings));
+  }, []);
   const fail = (cause: unknown) => { if (cause instanceof ApiError && cause.status === 401) setUnpaired(true); setError(cause instanceof Error ? cause.message : 'Could not update settings'); };
   useEffect(() => {
     let active = true;
@@ -93,7 +99,7 @@ export function LocalSettingsPanel({ onboarding = false }: { onboarding?: boolea
           {legacy && category === 'agents' && <><a href="/?view=usage">View account usage</a><ModelSettingsPanel /></>}
           {!draft && editable[category] && !legacy && <p role="status">{error ? 'Settings could not be loaded.' : 'Loading settings…'}</p>}
           {draft && <>
-            {category === 'dev-repos' && <DevRepositories draft={draft} onChange={setDraft} save={save} busy={busy} onError={setError} onNotice={setNotice} />}
+            {category === 'dev-repos' && <DevRepositories draft={draft} onChange={value => { dirtyRef.current = true; setDraft(value); }} onSync={syncDiscovery} save={save} busy={busy} onError={setError} onNotice={setNotice} />}
             {category === 'agents' && <section><h2>Agents</h2><p>Shared on this Mac. Changes apply to new goals and sessions.</p><a href="/?view=usage">View account usage</a><fieldset disabled={busy}><legend className="sr-only">Agent preferences</legend><label>Default provider<select value={draft.provider} onChange={event => setDraft({ ...draft, provider: event.target.value as Provider })}><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
               {(['claude', 'codex'] as const).map(provider => <article key={provider}><h3>{provider === 'claude' ? 'Claude' : 'Codex'}</h3><label>{provider} connection<select value={draft.providers[provider].executable.split('/').at(-1) === 'ccs' ? 'ccs' : 'direct'} onChange={event => changeProvider(provider, event.target.value === 'ccs' ? { executable: 'ccs', args: [provider] } : { executable: provider, args: [] })}><option value="ccs">CCS profile</option><option value="direct">Direct CLI</option></select></label>
                 {draft.providers[provider].executable.split('/').at(-1) === 'ccs' && <label>{provider} profile<input value={draft.providers[provider].args[0] ?? ''} onChange={event => changeProvider(provider, { args: [event.target.value] })} /></label>}

@@ -97,7 +97,7 @@ export async function createSettingsRuntime({ settings, directory, token, create
       projectStatus: id => {
         const project = settings.read().settings.projects.find(entry => entry.id === id);
         const root = settings.read().settings.devRepos?.find(entry => entry.id === project?.devRepoId);
-        return { name: project?.name, devRepoName: root?.name, github: project?.github, enabled: Boolean(project?.enabled), error: project && (!project.github || !project.remote || !project.checks.length) ? 'Add a GitHub destination, remote and verification command in Settings to start a goal.' : null };
+        return { name: project?.name, devRepoName: root?.name, github: project?.github, enabled: Boolean(project?.enabled), error: !project?.enabled ? 'This repository is disabled. Enable it in Settings to start new work.' : project && (!project.github || !project.remote || !project.checks.length) ? 'Add a GitHub destination, remote and verification command in Settings to start a goal.' : null };
       },
       goalLimits: goalId => configured(goalId).execution,
       resolveCheck: (repositoryId, check, goalId) => {

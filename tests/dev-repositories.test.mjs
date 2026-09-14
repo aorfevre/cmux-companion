@@ -66,7 +66,7 @@ test('discovery excludes symlinks, hidden folders, generated folders, nested Git
   writeFileSync(join(project.path, 'package.json'), JSON.stringify({ scripts }));
   execFileSync('git', ['-C', project.path, 'remote', 'add', 'origin', 'https://secret@github.com/example/private.git']);
   const scan = await scanDevRepo(roots[0], inspectProject);
-  assert.equal(scan.partial, false); assert.deepEqual(scan.repositories.filter(entry => !entry.error).map(entry => entry.name), ['example']);
+  assert.equal(scan.partial, false); assert.deepEqual(scan.repositories.map(entry => entry.name), ['example']);
   const found = scan.repositories.find(entry => entry.name === 'example'); assert.equal(found.remote, null); assert.equal(JSON.stringify(scan).includes('secret'), false);
   assert.deepEqual(found.suggestedChecks.map(check => check.args), [['run', 'test'], ['run', 'build']]);
   const { existsSync } = await import('node:fs'); assert.equal(existsSync(join(project.path, 'should-never-run')), false);
@@ -87,6 +87,8 @@ test('paired scoped writes preserve unrelated preferences and reject stale write
   const app = await buildApp({ token, localSettings: store, repoCatalog: { list: async () => [] } }); t.after(async () => { await app.close(); store.close(); });
   const headers = { host: 'localhost', authorization: `Bearer ${token}`, origin: 'http://localhost' };
   const post = (url, payload, custom = headers) => app.inject({ method: 'POST', url, headers: custom, payload });
+  assert.equal((await post('/api/settings/dev-repos/reconcile', {}, {})).statusCode, 401);
+  assert.equal((await post('/api/settings/dev-repos/reconcile', {}, { ...headers, origin: 'https://evil.test' })).statusCode, 403);
   assert.equal((await post('/api/settings/dev-repos/inspect', { path: roots[0].path }, {})).statusCode, 401);
   assert.equal((await post('/api/settings/dev-repos/inspect', { path: roots[0].path }, { ...headers, origin: 'https://evil.test' })).statusCode, 403);
   assert.equal((await post('/api/settings/dev-repos/inspect', { path: roots[0].path, secret: 'no' })).statusCode, 400);
@@ -95,11 +97,12 @@ test('paired scoped writes preserve unrelated preferences and reject stale write
   const patch = payload => app.inject({ method: 'PATCH', url: '/api/settings/local', headers, payload });
   assert.equal((await patch({ expectedRevision: 0, changes: { devRepos: roots } })).statusCode, 200);
   assert.equal((await post(`/api/settings/dev-repos/${roots[0].id}/scan`, {})).json().repositories[0].path, project.path);
-  assert.deepEqual(store.read().settings.projects, []);
-  assert.equal((await patch({ expectedRevision: 1, changes: { provider: 'codex' } })).statusCode, 200);
+  assert.equal(store.read().settings.projects.length, 1);
+  assert.deepEqual(store.read().settings.projects[0].checks, []);
+  assert.equal((await patch({ expectedRevision: 2, changes: { provider: 'codex' } })).statusCode, 200);
   assert.deepEqual(store.read().settings.devRepos, roots);
   assert.equal((await patch({ expectedRevision: 1, changes: { provider: 'claude' } })).statusCode, 409);
-  for (const payload of [{ expectedRevision: 2, changes: [] }, { expectedRevision: 2, changes: { onboarding: { completed: true } } }, { expectedRevision: 2, changes: {}, extra: 1 }]) assert.equal((await patch(payload)).statusCode, 400);
+  for (const payload of [{ expectedRevision: 3, changes: [] }, { expectedRevision: 3, changes: { onboarding: { completed: true } } }, { expectedRevision: 3, changes: {}, extra: 1 }]) assert.equal((await patch(payload)).statusCode, 400);
 });
 
 
