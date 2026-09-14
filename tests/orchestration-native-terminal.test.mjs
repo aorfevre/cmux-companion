@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, realpath, readFile, writeFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, readFile, writeFile, rm, access, cp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { NativeInputs } from '../server/orchestration/adapters/native-inputs.mjs';
 import { CodexInputs } from '../server/codex-native.mjs';
 import { probeNativeCapabilities } from '../server/orchestration/adapters/native-capabilities.mjs';
@@ -21,8 +21,9 @@ async function waitFor(read, predicate, timeout = 5000) {
   while (Date.now() < deadline) { let value; try { value = await read(); } catch { /* Waiting for an atomic fixture receipt. */ } if (predicate(value)) return value; await delay(20); }
   assert.fail('Fixture did not reach its named terminal barrier');
 }
-async function fixture(t, codex = false) {
+async function fixture(t, codex = false, Driver = NativeTerminal) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'orchestration-terminal-'))), worktree = join(root, 'worktree'); await mkdir(worktree);
+  const releaseDirectory = join(root, 'releases', 'a'.repeat(40)); await mkdir(releaseDirectory, { recursive: true });
   const calls = join(root, 'native-calls'), bin = join(root, 'native-fixture');
   await writeFile(bin, `#!${process.execPath}
 const fs = require('node:fs');
@@ -55,7 +56,7 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
     },
     async open(id) { assert.equal(id, workspaceId); opens++; },
   };
-  const driver = new NativeTerminal({ directory: join(root, 'native'), bin, inputs, terminal, killGraceMs: 100 });
+  const driver = new Driver({ directory: join(root, 'native'), bin, inputs, terminal, killGraceMs: 100, releaseDirectory });
   const request = { goalId: 'goal', operationId: 'operation', attempt: { id: 'planner', operationId: 'operation', role: 'planner', mode: 'interactive', generation: 1, revision: 0, conversationId, target: 'contract:0', baseSha: 'a'.repeat(40), worktree, branch: 'companion/planner' } };
   t.after(async () => { try { await driver.close(); } finally { if (child) { child.stdin.end(); if (child.exitCode === null) child.kill('SIGTERM'); } await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true }); } });
   const records = async () => (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
@@ -69,6 +70,8 @@ test('interactive native planner inherits a real PTY, waits for input and resume
   assert.deepEqual(await f.driver.launch(f.request), launched);
   const first = await waitFor(f.records, records => records?.length === 1);
   assert.deepEqual(first[0], { fresh: true, conversation: conversationId, tty: [true, true, true] });
+  const pin = JSON.parse(await readFile(join(f.root, 'planner-pins/operation.json'), 'utf8'));
+  assert.deepEqual(pin, { version: 1, directory: join(f.root, 'native/operation'), identity: launched.identity, operationId: 'operation', release: f.driver.releaseDirectory });
   await delay(200); assert.equal((await f.driver.observe('operation')).status, 'running');
   await f.driver.open('operation');
   await assert.rejects(f.driver.resume({ ...f.request, resumeId: 'resume1' }), { code: 'ALREADY_RUNNING' });
@@ -80,6 +83,24 @@ test('interactive native planner inherits a real PTY, waits for input and resume
   assert.deepEqual(records[1], { fresh: false, conversation: conversationId, tty: [true, true, true] });
   assert.deepEqual(f.counts(), { creates: 1, starts: 1, opens: 1 });
   await f.driver.close(); assert.equal((await f.driver.observe('operation')).status, 'stopped');
+});
+
+test('terminal fixtures imported from a managed release preserve its existing planner pins', { timeout: 15000 }, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'terminal-installed-layout-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const release = join(root, 'releases', 'b'.repeat(40));
+  await cp(fileURLToPath(new URL('../server', import.meta.url)), join(release, 'server'), { recursive: true });
+  await mkdir(join(root, 'planner-pins'));
+  const pinPath = join(root, 'planner-pins/operation.json'), sentinel = '{"existing":"planner pin must remain untouched"}';
+  await writeFile(pinPath, sentinel);
+  const { NativeTerminal: InstalledTerminal } = await import(pathToFileURL(join(release, 'server/orchestration/adapters/native-terminal.mjs')));
+  const f = await fixture(t, false, InstalledTerminal);
+  const launched = await f.driver.launch(f.request);
+  await waitFor(f.records, entries => entries?.length === 1);
+  assert.equal(await readFile(pinPath, 'utf8'), sentinel);
+  const pin = JSON.parse(await readFile(join(f.root, 'planner-pins/operation.json'), 'utf8'));
+  assert.equal(pin.identity, launched.identity); assert.equal(pin.release, f.driver.releaseDirectory);
+  await f.driver.close();
 });
 
 test('lost cmux creation response remains uncertain and cannot create another terminal', async (t) => {
@@ -167,13 +188,13 @@ test('update handoff preserves a real terminal runner and adopts the same conver
   const evidence = await f.driver.prepareHandoff(f.request);
   await f.driver.close({ preserve: [f.request] });
   assert.equal((await f.driver.observe('operation')).status, 'running');
-  const replacement = new NativeTerminal({ directory: f.driver.directory, bin: f.driver.bin, inputs: f.driver.inputs, terminal: f.terminal, killGraceMs: 150 });
+  const replacement = new NativeTerminal({ directory: f.driver.directory, bin: f.driver.bin, inputs: f.driver.inputs, terminal: f.terminal, killGraceMs: 150, releaseDirectory: f.driver.releaseDirectory });
   assert.deepEqual(await replacement.prepareHandoff(f.request), evidence);
   assert.deepEqual(JSON.parse(await readFile(identityPath, 'utf8')), before);
   assert.deepEqual(f.counts(), { creates: 1, starts: 1, opens: 0 });
   // A failed candidate can detach again; the restored owner adopts identically.
   await replacement.close({ preserve: [f.request] });
-  const restored = new NativeTerminal({ directory: f.driver.directory, bin: f.driver.bin, inputs: f.driver.inputs, terminal: f.terminal, killGraceMs: 150 });
+  const restored = new NativeTerminal({ directory: f.driver.directory, bin: f.driver.bin, inputs: f.driver.inputs, terminal: f.terminal, killGraceMs: 150, releaseDirectory: f.driver.releaseDirectory });
   assert.deepEqual(await restored.prepareHandoff(f.request), evidence);
   f.input('exit\n'); await waitFor(f.session, value => value?.phase === 'paused');
   await restored.resume({ ...f.request, resumeId: 'after-update' });
@@ -217,7 +238,7 @@ test('stopped supervisor outbox is recovered by the replacement adapter after an
   await waitFor(async () => JSON.parse(await readFile(join(directory, 'outcome.json'), 'utf8')), value => value?.workerState === 'stopped');
   await f.driver.close();
   assert.equal(outbox.entries()[0].value.status, 'queued');
-  const replacement = new NativeTerminal({ directory: f.driver.directory, bin: f.driver.bin, inputs: f.driver.inputs, terminal: f.terminal, killGraceMs: 150 });
+  const replacement = new NativeTerminal({ directory: f.driver.directory, bin: f.driver.bin, inputs: f.driver.inputs, terminal: f.terminal, killGraceMs: 150, releaseDirectory: f.driver.releaseDirectory });
   assert.equal((await replacement.observe('operation')).pendingOutbox, true);
   online = true;
   await replacement.observe('operation');
