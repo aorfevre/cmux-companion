@@ -7,7 +7,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); history.replaceSt
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 function fixture(category = 'agents', settings = defaults()) {
   history.replaceState(null, '', `/settings#${category}`);
-  const state = { saved: { revision: 3, settings, imported: false }, fail: false, paired: true, scanError: false, gitFolder: false, calls: [] as { url: string; method?: string; body: Record<string, unknown> }[] };
+  const state = { saved: { revision: 3, settings, imported: false }, fail: false, paired: true, scanError: false, gitFolder: false, validation: { ready: true, reason: '', resolution: { message: '' } }, calls: [] as { url: string; method?: string; body: Record<string, unknown> }[] };
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     state.calls.push({ url, method: init?.method, body });
@@ -24,7 +24,7 @@ function fixture(category = 'agents', settings = defaults()) {
     if (url.endsWith('/folders')) return json({ macName: 'Fixture Mac', path: body.path || '/projects', name: body.path ? 'karven' : 'projects', parent: body.path ? '/projects' : null, roots: [{ name: 'Home', path: '/projects' }], breadcrumbs: [{ name: 'Home', path: '/projects' }], folders: body.path ? [] : [{ name: 'karven', path: '/projects/karven' }], partial: false, examined: 1 });
     if (url.endsWith('dev-repos/inspect')) return state.gitFolder ? json({ error: 'Choose a folder containing repositories, or use Add individual repository for a Git root' }, 400) : json({ path: '/projects/karven' });
     if (url.endsWith('projects/inspect')) return json({ path: String(body.path), name: 'Example', github: 'example/repo', remote: 'git@github.com:example/repo.git', suggestedChecks: [{ id: 'test', executable: 'npm', args: ['run', 'test'], script: 'node --test' }] });
-    if (url.endsWith('/validate')) return json({ ready: true });
+    if (url.endsWith('/validate')) return json(state.validation);
     if (url === '/api/bootstrap') return json({ connected: true, host: { mac_display_name: 'Fixture Mac' } });
     if (url === '/api/updater/updates') return json({ available: false });
     if (init?.method === 'PATCH' || init?.method === 'PUT') {
@@ -142,4 +142,47 @@ test('Goals links open the matching repository editor with GitHub details summar
   assert.ok(screen.getByText('Used for goals and pull requests. No additional destination is needed.'));
   const details = screen.getByText('Advanced Git settings').closest('details'); assert.equal(details?.open, false);
   assert.equal((screen.getByRole('checkbox', { name: /npm run test/ }) as HTMLInputElement).checked, false);
+});
+
+test('terminal command entry stays stable while typing and preserves the selected model', async () => {
+  const settings = defaults(); settings.providers.claude.model = 'sonnet';
+  const state = fixture('agents', settings); render(<LocalSettingsPanel />); await screen.findByLabelText('claude connection');
+  change('claude connection', 'terminal');
+  change('claude terminal command', 'ccs');
+  assert.equal((screen.getByLabelText('claude connection') as HTMLSelectElement).value, 'terminal');
+  change('claude terminal command', 'xclaude');
+  click('Save changes'); await saved();
+  assert.deepEqual(state.saved.settings.providers.claude, { executable: 'xclaude', args: [], model: 'sonnet' });
+});
+
+test('terminal command save failures stay beside Save and preserve both drafts', async () => {
+  const state = fixture(); render(<LocalSettingsPanel />); await screen.findByLabelText('claude connection');
+  change('claude connection', 'terminal'); change('claude terminal command', 'xclaude');
+  change('codex connection', 'terminal'); change('codex terminal command', 'xcodex');
+  state.fail = true; click('Save changes');
+  const failure = await screen.findByText('Save failed');
+  assert.ok(failure.closest('.settings-save'));
+  assert.equal((screen.getByLabelText('claude terminal command') as HTMLInputElement).value, 'xclaude');
+  assert.equal((screen.getByLabelText('codex terminal command') as HTMLInputElement).value, 'xcodex');
+  assert.deepEqual(state.saved.settings.providers, defaults().providers);
+});
+
+
+test('Save validates only changed providers and reports safe alias resolution', async () => {
+  const state = fixture(); state.validation.resolution.message = 'Resolved xclaude to ccsxp claude. Permission bypass flags are ignored.';
+  render(<LocalSettingsPanel />); await screen.findByLabelText('claude connection');
+  change('claude connection', 'terminal'); change('claude terminal command', 'xclaude'); click('Save changes'); await saved();
+  assert.ok(screen.getByText(/Permission bypass flags are ignored/));
+  const validations = state.calls.filter(call => call.url.endsWith('/validate'));
+  assert.equal(validations.length, 1); assert.equal(validations[0].body.provider, 'claude');
+});
+
+test('an unsupported terminal alias blocks save with actionable visible failure', async () => {
+  const state = fixture(); state.validation = { ready: false, reason: 'Complex shell aliases are unsupported', resolution: { message: 'Managed permission flags are retained.' } };
+  render(<LocalSettingsPanel />); await screen.findByLabelText('claude connection');
+  change('claude connection', 'terminal'); change('claude terminal command', 'xclaude'); click('Save changes');
+  await screen.findByText('Claude: Complex shell aliases are unsupported');
+  assert.ok(screen.getByText(/Managed permission flags are retained/));
+  assert.equal(state.calls.some(call => call.method === 'PATCH'), false);
+  assert.equal((screen.getByLabelText('claude terminal command') as HTMLInputElement).value, 'xclaude');
 });
