@@ -72,13 +72,14 @@ threshold was relaxed.
 
 ## Limits
 
-[Phone screenshot](images/automatic-dev-repos/settings-390.png) ·
-[Desktop screenshot](images/automatic-dev-repos/settings-1440.png)
+[Phone screenshot](images/automatic-dev-repos/settings-390.png)
 
 The responsive Cypress journey checked document overflow at 360, 390 and 1440 CSS
-pixels. The 390px and desktop Settings screenshots were visually inspected: repository rows,
+pixels. The 390px Settings screenshot was visually inspected: repository rows,
 wrapping paths and bottom navigation are usable without selection controls.
-Physical-phone testing, VoiceOver, native 200% zoom and the spec's timed human
+The desktop image was clipped by the headless runner, so a complete desktop
+visual review remains unverified. Physical-phone testing, VoiceOver, native
+200% zoom and the spec's timed human
 usability walkthrough remain unverified. Automated completion is not evidence of
 the human success measure.
 
