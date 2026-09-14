@@ -8,8 +8,12 @@ export function managedWorkBusy(runtime) {
   if (runtime.store.operations().some(op => op.status !== 'completed')) return true;
   return runtime.store.list().some(goal => goal.attempts.some(attempt => attempt.workerState !== 'stopped')
     || goal.verificationRuns?.some(run => run.workerState !== 'stopped')
-    || ['discovering', 'building', 'ready_to_publish'].includes(goal.status));
+    || goal.results?.some(result => result.status === 'pending'));
 }
+
+// A goal's lifecycle label and queued work are durable, resumable state. The
+// maintenance fence pauses scheduler admission before awaiting its current sweep;
+// only owned effects that are still running or unsettled block a restart.
 
 // Installed before listen: HTTP mutations, scheduler admission and prompt draining
 // all observe the same durable fence, including after an application restart.

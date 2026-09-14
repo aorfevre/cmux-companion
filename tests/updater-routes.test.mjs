@@ -81,3 +81,73 @@ test('aborted goal with an owned base fetch still blocks update activation until
   assert.equal(managedWorkBusy(f.runtime), false);
   assert.equal((await f.maintenance.acquire('manual-004')).ready, true);
 });
+
+test('stopped planning and building goals permit updates while queued work stays behind the scheduler fence', async t => {
+  const { transition, planTarget } = await import('../server/orchestration/domain/transitions.mjs');
+  const make = () => transition(null, { id: 'create-idle', goalId: 'idle', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'Saved work', baseSha: sha } }, { kind: 'user' }).goal;
+  const f = await fixture(t); f.control.request({ id: 'manual-005', sha, whenIdle: true });
+  const planning = make();
+  planning.attempts.push({ id: 'planner', role: 'planner', taskId: null, target: planTarget(planning), generation: planning.generation, revision: planning.revision, status: 'failed', workerState: 'stopped' });
+  f.runtime.store.list = () => [planning];
+  assert.equal(managedWorkBusy(f.runtime), false);
+  assert.equal((await f.maintenance.acquire('manual-005')).ready, true);
+  f.control.unfence('manual-005');
+  planning.attempts[0].retryRequested = true;
+  assert.equal((await f.maintenance.acquire('manual-005')).ready, true);
+  assert.equal(f.runtime.scheduler.paused(), true);
+  planning.attempts[0].retryRequested = false;
+  planning.attempts[0].workerState = 'unknown'; assert.equal(managedWorkBusy(f.runtime), true);
+  planning.attempts[0].workerState = 'stopped';
+  const building = make(); building.status = 'building'; building.approvedRevision = building.revision;
+  building.tasks = [{ id: 'task', status: 'failed', dependsOn: [], repairCount: 0, repairLimit: 2 }];
+  f.runtime.store.list = () => [building];
+  assert.equal(managedWorkBusy(f.runtime), false);
+  building.tasks[0].status = 'pending'; assert.equal(managedWorkBusy(f.runtime), false);
+  building.tasks[0].status = 'accepted'; assert.equal(managedWorkBusy(f.runtime), false);
+  building.tasks[0].status = 'failed';
+  f.runtime.store.operations = () => [{ status: 'pending' }]; assert.equal(managedWorkBusy(f.runtime), true);
+  f.runtime.store.operations = () => [];
+  planning.attempts = []; planning.startup = { status: 'failed', error: 'GitHub unavailable' };
+  f.runtime.store.list = () => [planning]; assert.equal(managedWorkBusy(f.runtime), false);
+  planning.startup.status = 'pending'; assert.equal(managedWorkBusy(f.runtime), false);
+});
+
+test('an effect admitted by an in-flight sweep is observed before update activation', async t => {
+  const f = await fixture(t); f.control.request({ id: 'manual-006', sha, whenIdle: true });
+  let release;
+  f.runtime.scheduler.sweep = new Promise(resolve => { release = resolve; });
+  const admission = f.maintenance.acquire('manual-006');
+  assert.equal(f.runtime.scheduler.paused(), true);
+  f.runtime.store.operations = () => [{ status: 'pending' }];
+  release();
+  assert.equal((await admission).ready, false);
+  f.runtime.store.operations = () => [];
+  f.runtime.store.list = () => [{ attempts: [], results: [{ status: 'pending' }] }];
+  assert.equal(managedWorkBusy(f.runtime), true);
+  f.runtime.store.list = () => [{ attempts: [], verificationRuns: [{ workerState: 'unknown' }] }];
+  assert.equal(managedWorkBusy(f.runtime), true);
+});
+
+test('a real scheduler preserves a queued planner across the update fence and launches once after release', async t => {
+  const { OrchestrationStore } = await import('../server/orchestration/storage/store.mjs');
+  const { OrchestrationService } = await import('../server/orchestration/service.mjs');
+  const { Scheduler } = await import('../server/orchestration/scheduler.mjs');
+  const { FakeAgents } = await import('./helpers/orchestration/fake-agents.mjs');
+  const f = await fixture(t), store = new OrchestrationStore({ path: ':memory:' }), agents = new FakeAgents();
+  const service = new OrchestrationService({ store, agents, repositoryIds: new Set(['repo']) });
+  service.execute({ id: 'queued-create', goalId: 'queued', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'Saved goal', baseSha: sha } }, { kind: 'user' });
+  const scheduler = new Scheduler({ service, repositories: { provision: async request => ({ worktree: '/tmp/owned-queued', branch: request.branch, baseSha: request.baseSha }) } });
+  f.runtime.store = store; f.runtime.scheduler = scheduler;
+  scheduler.paused = () => Boolean(f.control.read().fence);
+  try {
+    f.control.request({ id: 'manual-007', sha, whenIdle: true });
+    assert.equal((await f.maintenance.acquire('manual-007')).ready, true);
+    await scheduler.start(); await scheduler.tick();
+    assert.equal(agents.launches.length, 0); assert.equal(store.get('queued').attempts.length, 0);
+    assert.equal((await f.maintenance.verify('manual-007', 'service')).ready, true);
+    f.control.unfence('manual-007');
+    await scheduler.tick(); await scheduler.tick();
+    assert.equal(agents.launches.length, 1); assert.equal(store.get('queued').attempts.length, 1);
+    assert.equal(managedWorkBusy(f.runtime), true);
+  } finally { await scheduler.stop(); store.close(); }
+});
