@@ -23,8 +23,15 @@ export class GitRemote {
     requireValue(policy, 'Publication destination is not configured', 'UNSUPPORTED_CAPABILITY');
     if (policy.protocol === 'file') requireValue(isAbsolute(policy.url) && realpathSync(policy.url) === policy.url, 'Local remote identity changed', 'OWNERSHIP_UNCERTAIN');
     else {
-      const url = new URL(policy.url);
-      requireValue(url.protocol === `${policy.protocol}:` && !url.password && (policy.protocol === 'ssh' || !url.username) && !url.search && !url.hash, 'Unsupported remote URL');
+      requireValue(!/[\s\0]/.test(policy.url), 'Unsupported remote URL');
+      // Git's SCP syntax is not a URL. Preserve it verbatim: rewriting its
+      // relative repository path as ssh://host/absolute would change the target
+      // and the durable publication identity.
+      const scp = policy.protocol === 'ssh' && /^git@[A-Za-z0-9][A-Za-z0-9.-]*:[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(policy.url);
+      if (!scp) {
+        let url; try { url = new URL(policy.url); } catch { /* Reject through the domain contract below. */ }
+        requireValue(url && url.protocol === `${policy.protocol}:` && !url.password && (policy.protocol === 'ssh' || !url.username) && !url.search && !url.hash, 'Unsupported remote URL');
+      }
     }
     return policy;
   }
