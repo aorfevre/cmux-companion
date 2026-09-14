@@ -1,3 +1,4 @@
+import { repositoryReadiness } from './repository-readiness.mjs';
 import { assertDevChild } from './dev-repositories.mjs';
 import { join } from 'node:path';
 import { createRuntime } from './orchestration/create-runtime.mjs';
@@ -84,7 +85,8 @@ export async function createSettingsRuntime({ settings, directory, token, create
         transition(null, command, { kind: 'user' });
         const before = settings.read(), project = before.settings.projects.find(entry => entry.id === command.payload.repositoryId && entry.enabled);
         requireValue(project, 'Choose an enabled project in Settings', 'NOT_READY');
-        requireValue(project.github && project.remote && project.checks.length > 0, 'Configure a GitHub destination, remote and verification command for this project in Settings before starting a goal', 'NOT_READY');
+        const readinessIssue = repositoryReadiness(project).reason;
+        requireValue(!readinessIssue, readinessIssue || 'Repository setup is incomplete', 'NOT_READY');
         const readiness = await probeProvider(before.settings.provider, before.settings.providers[before.settings.provider], before.settings.tools);
         requireValue(readiness.ready, readiness.reason || 'Configure a supported provider in Settings', 'NOT_READY');
         const root = before.settings.devRepos?.find(entry => entry.id === project.devRepoId);
@@ -97,7 +99,8 @@ export async function createSettingsRuntime({ settings, directory, token, create
       projectStatus: id => {
         const project = settings.read().settings.projects.find(entry => entry.id === id);
         const root = settings.read().settings.devRepos?.find(entry => entry.id === project?.devRepoId);
-        return { name: project?.name, devRepoName: root?.name, github: project?.github, enabled: Boolean(project?.enabled), error: !project?.enabled ? 'This repository is disabled. Enable it in Settings to start new work.' : project && (!project.github || !project.remote || !project.checks.length) ? 'Add a GitHub destination, remote and verification command in Settings to start a goal.' : null };
+        const readiness = repositoryReadiness(project);
+        return { name: project?.name, devRepoName: root?.name, github: project?.github, enabled: Boolean(project?.enabled), setupLabel: readiness.label, error: readiness.reason };
       },
       goalLimits: goalId => configured(goalId).execution,
       resolveCheck: (repositoryId, check, goalId) => {

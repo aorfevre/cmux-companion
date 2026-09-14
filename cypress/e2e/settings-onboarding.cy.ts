@@ -19,6 +19,7 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
       cy.findByRole('button', { name: 'Add selected repositories' }).should('not.exist');
     }
     cy.get('.repository-row').first().click(); cy.findByLabelText('Repository name').clear().type('My project');
+    cy.contains('summary', 'Check GitHub remote').click();
     cy.findByLabelText('GitHub destination').type('example/disposable'); cy.findByLabelText('Git remote').type('git@github.com:example/disposable.git');
     cy.findByRole('checkbox', { name: /npm run test/ }).check(); cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
     cy.findByRole('button', { name: 'Choose an agent' }).click(); cy.findByLabelText('Default provider').select('codex'); cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
@@ -33,8 +34,16 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
     cy.visit('/orchestration'); cy.findByRole('navigation', { name: 'Goals' }).should('contain.text', 'Plan a disposable change'); cy.findByLabelText('Repository').find('option').should('contain.text', 'My project · disabled');
     cy.findByLabelText('Repository').select(0); cy.findByRole('button', { name: 'New goal' }).should('be.disabled');
     cy.findByRole('link', { name: 'Configure repository' }).should('be.visible');
-    cy.task('settingsAddRepository'); cy.visit('/orchestration');
+    cy.viewport(390, 844); cy.task('settingsAddRepository'); cy.visit('/orchestration');
     cy.findByLabelText('Repository').find('option').should('have.length', 3).and('contain.text', 'karven / new-repository').and('not.contain.text', 'excluded-worktree');
-    cy.visit('/settings#dev-repos'); cy.get('.repository-row').should('have.length', 3); cy.contains('excluded-worktree').should('not.exist');
+    cy.findByLabelText('Repository').find('option').contains('karven / new-repository').invoke('val').then(value => cy.findByLabelText('Repository').select(String(value)));
+    cy.findByRole('link', { name: 'Choose checks' }).click();
+    cy.findByRole('article', { name: 'Repository details' }).should('be.visible');
+    cy.findByLabelText('Repository name').should('have.value', 'new-repository');
+    cy.contains('Used for goals and pull requests. No additional destination is needed.').should('be.visible');
+    cy.findByLabelText('GitHub destination').should('not.be.visible');
+    cy.findByRole('checkbox', { name: /npm run test/ }).should('not.be.checked');
+    cy.screenshot('repository-choose-checks', { capture: 'viewport' });
+    cy.get('.repository-row').should('have.length', 3); cy.contains('excluded-worktree').should('not.exist');
   });
 });
