@@ -151,3 +151,25 @@ test('a real scheduler preserves a queued planner across the update fence and la
     assert.equal(managedWorkBusy(f.runtime), true);
   } finally { await scheduler.stop(); store.close(); }
 });
+
+test('verified supported planners hand off across maintenance while old clients and background effects remain blocked', async t => {
+  const f = await fixture(t); f.control.request({ id: 'handoff-001', sha, whenIdle: true });
+  const attempt = { id: 'planner', operationId: 'operation', identity: 'terminal:operation:owner', role: 'planner', mode: 'interactive', status: 'running', workerState: 'running', generation: 1, revision: 0 };
+  f.runtime.store.list = () => [{ id: 'goal', generation: 1, revision: 0, attempts: [attempt] }];
+  f.runtime.prepareHandoff = async () => { throw Object.assign(new Error('legacy'), { code: 'HANDOFF_UNSUPPORTED' }); };
+  const blocked = await f.maintenance.acquire('handoff-001');
+  assert.equal(blocked.ready, false); assert.match(blocked.reason, /update-compatible recovery/);
+  const evidence = [{ goalId: 'goal', operationId: attempt.operationId, identity: attempt.identity, endpoint: 'http://127.0.0.1:3210', credentialDigest: 'a'.repeat(64) }];
+  f.runtime.prepareHandoff = async () => evidence;
+  assert.equal((await f.maintenance.acquire('handoff-001')).ready, true);
+  assert.deepEqual(f.control.read().fence.handoff, evidence);
+  await f.maintenance.adopt();
+  assert.equal((await f.maintenance.verify('handoff-001', 'service')).ready, true);
+  assert.equal((await f.send('/api/launch', {})).statusCode, 503);
+  f.runtime.scheduler.verifications.active.set('verification', {});
+  await assert.rejects(f.maintenance.verify('handoff-001', 'service'));
+  f.runtime.scheduler.verifications.active.clear();
+  f.control.unfence('handoff-001');
+  attempt.workerState = 'unknown'; assert.equal((await f.maintenance.acquire('handoff-001')).ready, false);
+  attempt.workerState = 'running'; attempt.mode = 'background'; assert.equal((await f.maintenance.acquire('handoff-001')).ready, false);
+});

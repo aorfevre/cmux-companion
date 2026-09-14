@@ -58,7 +58,7 @@ export class NativeInputs {
       requireValue(description.bridge && description.bridge.credential.length >= 32, 'Scoped native bridge configuration is required');
       const endpoint = new URL(description.bridge.endpoint);
       requireValue(endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1' && !endpoint.username && !endpoint.password, 'Native bridge must use loopback');
-      save(bridgeConfig, JSON.stringify({ ...description.bridge, binding }));
+      save(bridgeConfig, JSON.stringify({ ...description.bridge, binding, ...(attempt.role === 'planner' ? { handoffProtocol: 1, outbox: join(directory, 'outbox') } : {}) }));
       save(mcpPath, JSON.stringify({ mcpServers: { companion: { command: process.execPath, args: [mcp, bridgeConfig] } } }));
     }
     this.installation?.assertCurrent();

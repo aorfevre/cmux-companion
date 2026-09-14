@@ -1,3 +1,4 @@
+import { plannerReleasePinned } from './planner-retention.mjs';
 import { lstat, open, readdir, readlink, realpath } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -90,6 +91,7 @@ async function inspect(target, row, record, keep, activity) {
     if (!record || record.path !== row.path || !["success", "failed"].includes(record.outcome)) throw new Error("No verified deployment outcome; preserve legacy or unfinished release");
     if (record.outcome === "success") await validateManifest(target, row.path, row.sha);
     if (keep.has(row.sha)) entry.reasons.push(keep.get(row.sha));
+    if (await plannerReleasePinned(target.releaseRoot, row.path)) entry.reasons.push("A planning agent or result outbox depends on this release");
     if (!activity.available) entry.reasons.push("Process inventory unavailable");
     else if (activity.paths.some((path) => path === row.path || path.startsWith(`${row.path}/`))) entry.reasons.push("A process is using this release");
     const status = (await run("/usr/bin/git", ["-C", row.path, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"])).stdout.split("\0").filter(Boolean);

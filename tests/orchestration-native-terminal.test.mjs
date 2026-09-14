@@ -60,7 +60,7 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
   t.after(async () => { try { await driver.close(); } finally { if (child) { child.stdin.end(); if (child.exitCode === null) child.kill('SIGTERM'); } await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true }); } });
   const records = async () => (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
   const session = async () => JSON.parse(await readFile(join(root, 'native/operation/session.json'), 'utf8'));
-  return { root, driver, request, terminal, records, session, input: text => child.stdin.write(text), counts: () => ({ creates, starts, opens }) };
+  return { root, driver, request, terminal, records, session, server, input: text => child.stdin.write(text), counts: () => ({ creates, starts, opens }) };
 }
 
 test('interactive native planner inherits a real PTY, waits for input and resumes the same conversation once', { timeout: 15000 }, async (t) => {
@@ -156,4 +156,72 @@ test('Codex terminal resumes its recorded native session through the real PTY su
   const records = await waitFor(f.records, entries => entries?.length === 2);
   assert.deepEqual(records[1], { fresh: false, conversation: 'fixture-native-session', tty: [true, true, true] });
   await f.driver.close(); assert.equal((await f.driver.observe('operation')).status, 'stopped');
+});
+
+test('update handoff preserves a real terminal runner and adopts the same conversation without relaunch', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  const launched = await f.driver.launch(f.request); f.request.attempt.identity = launched.identity;
+  await waitFor(f.records, entries => entries?.length === 1);
+  const identityPath = join(f.root, 'native/operation/identity.json');
+  const before = JSON.parse(await readFile(identityPath, 'utf8'));
+  const evidence = await f.driver.prepareHandoff(f.request);
+  await f.driver.close({ preserve: [f.request] });
+  assert.equal((await f.driver.observe('operation')).status, 'running');
+  const replacement = new NativeTerminal({ directory: f.driver.directory, bin: f.driver.bin, inputs: f.driver.inputs, terminal: f.terminal, killGraceMs: 150 });
+  assert.deepEqual(await replacement.prepareHandoff(f.request), evidence);
+  assert.deepEqual(JSON.parse(await readFile(identityPath, 'utf8')), before);
+  assert.deepEqual(f.counts(), { creates: 1, starts: 1, opens: 0 });
+  // A failed candidate can detach again; the restored owner adopts identically.
+  await replacement.close({ preserve: [f.request] });
+  const restored = new NativeTerminal({ directory: f.driver.directory, bin: f.driver.bin, inputs: f.driver.inputs, terminal: f.terminal, killGraceMs: 150 });
+  assert.deepEqual(await restored.prepareHandoff(f.request), evidence);
+  f.input('exit\n'); await waitFor(f.session, value => value?.phase === 'paused');
+  await restored.resume({ ...f.request, resumeId: 'after-update' });
+  const calls = await waitFor(f.records, entries => entries?.length === 2);
+  assert.equal(calls[1].fresh, false); assert.equal(calls[1].conversation, conversationId);
+  await restored.close(); assert.equal((await restored.observe('operation')).status, 'stopped');
+});
+
+test('old terminal protocol and altered handoff identity fail closed without signalling a running planner', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  const launched = await f.driver.launch(f.request); f.request.attempt.identity = launched.identity;
+  await waitFor(f.records, entries => entries?.length === 1);
+  await assert.rejects(f.driver.prepareHandoff({ ...f.request, attempt: { ...f.request.attempt, identity: 'other' } }), { code: 'OWNERSHIP_UNCERTAIN' });
+  const path = join(f.root, 'native/operation/worker.json'), config = JSON.parse(await readFile(path, 'utf8'));
+  delete config.handoffProtocol; await writeFile(path, JSON.stringify(config));
+  await assert.rejects(f.driver.prepareHandoff(f.request), { code: 'HANDOFF_UNSUPPORTED' });
+  assert.equal((await f.driver.observe('operation')).status, 'running');
+  await f.driver.close();
+});
+
+
+test('stopped supervisor outbox is recovered by the replacement adapter after an update outage', { timeout: 15000 }, async t => {
+  const { ResultOutbox } = await import('../server/orchestration/result-outbox.mjs');
+  const f = await fixture(t);
+  const launched = await f.driver.launch(f.request); f.request.attempt.identity = launched.identity;
+  await waitFor(f.records, entries => entries?.length === 1);
+  let online = false, deliveries = 0;
+  f.server.removeAllListeners('request');
+  f.server.on('request', async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    const input = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+    res.writeHead(online ? 202 : 503, { 'content-type': 'application/json' });
+    if (online) deliveries++;
+    res.end(JSON.stringify(online ? { id: input.id, status: 'accepted' } : { code: 'UPDATE_MAINTENANCE' }));
+  });
+  const directory = join(f.root, 'native/operation');
+  const config = JSON.parse(await readFile(join(directory, 'bridge.json'), 'utf8'));
+  const outbox = new ResultOutbox({ directory: join(directory, 'outbox'), binding: config.binding });
+  outbox.enqueue({ id: 'during-update', raw: JSON.stringify({ schemaVersion: 1, ...config.binding, output: { question: 'Which audience?' } }) });
+  await f.driver.terminate(launched.identity);
+  await waitFor(async () => JSON.parse(await readFile(join(directory, 'outcome.json'), 'utf8')), value => value?.workerState === 'stopped');
+  await f.driver.close();
+  assert.equal(outbox.entries()[0].value.status, 'queued');
+  const replacement = new NativeTerminal({ directory: f.driver.directory, bin: f.driver.bin, inputs: f.driver.inputs, terminal: f.terminal, killGraceMs: 150 });
+  assert.equal((await replacement.observe('operation')).pendingOutbox, true);
+  online = true;
+  await replacement.observe('operation');
+  await waitFor(() => outbox.entries()[0].value.status, value => value === 'accepted');
+  assert.equal(deliveries, 1);
+  await replacement.close();
 });

@@ -200,3 +200,22 @@ GitHub/launchd/activation effects. They do not prove real launchd migration, liv
 GitHub eligibility, installed native cmux continuity or operator recovery. These
 remain separately authorized acceptance paths. See the delivery report for the
 specific checks run on this change.
+
+
+## Keeping planning terminals open during updates
+
+Supported native planning terminals can keep their existing runner, conversation
+and worktree while Companion reconnects. The updater verifies their identity and
+scoped credential, fences new workflow effects, and detaches only those verified
+interactive planners. New planner results are queued privately outside SQLite and
+retried with the same result identity after reconnect or rollback; local queueing
+is not plan acceptance or approval. Runtime releases remain pinned while a planner
+or unsettled result depends on them.
+
+Already-running older planners cannot gain this protocol just because Companion
+upgrades. “Existing planning agent needs update-compatible recovery” means that
+specific older planner must finish, or an operator must explicitly authorize its
+recovery; the updater never silently stops or replaces it. Unrelated cmux sessions
+never block updates. Background workers, active verification/publication/Git effects,
+mutations, prompt delivery and unknown ownership still require safe reconciliation.
+The automatic-installation toggle remains opt-in and disabled by default.

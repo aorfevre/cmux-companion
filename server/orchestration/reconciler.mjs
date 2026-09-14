@@ -24,6 +24,9 @@ export class Reconciler {
     await this.results?.drain();
     goal = this.store.get(goalId); attempt = goal?.attempts.find((entry) => entry.id === attemptId);
     if (!goal || !attempt || !ownsWorker(attempt)) return;
+    // A stopped supervisor can still own an undelivered durable result. Keep its
+    // submission authority until the original outbox obtains a disposition.
+    if (observation.pendingOutbox) return;
     if (observation.status === 'stopped') {
       const pending = goal.results?.some((entry) => entry.attemptId === attemptId && entry.status === 'pending');
       if (pending && ['queued', 'uncertain'].includes(attempt.status)) {

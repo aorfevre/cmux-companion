@@ -1,3 +1,4 @@
+import { assertHandoffCompatibility } from './handoff-compatibility.mjs';
 import { supervisedBuildRunner } from './build-process.mjs';
 import { access, readlink, rm } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
@@ -61,6 +62,7 @@ export function nativeUpdateAdapter({ paths, config, control, github, fetchImpl 
       }
       await validateManifest(target, path, sha); await lockWorktree(target, path);
       await assertDataCompatibility(release(previousSha), path);
+      if (control.read().fence?.handoff?.length) await assertHandoffCompatibility(target, release(previousSha), previousSha, path, sha);
       await recordRelease(paths, target, sha, 'verified'); return path;
     },
     async backup(id) {

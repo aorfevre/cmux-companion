@@ -149,6 +149,11 @@ export class AgentRuntime {
     requireCapability(this, 'planner', 'interactive');
     return this.interactive.resume(request);
   }
+  /** @param {import('../types.d.ts').LaunchRequest} request */
+  async prepareHandoff(request) {
+    requireValue(this.interactive.prepareHandoff && request.attempt.mode === 'interactive' && request.attempt.role === 'planner', 'Existing planning agent needs update-compatible recovery', 'HANDOFF_UNSUPPORTED');
+    return this.interactive.prepareHandoff(request);
+  }
   /** @param {string} operationId */
   async observe(operationId) {
     const mode = this.locate({ operationId });

@@ -2,21 +2,21 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-/** @param {{ endpoint: string; credential: string }} options */
-export function createBridge({ endpoint, credential }) {
+/** @param {{ endpoint: string; credential: string; timeoutMs?: number }} options */
+export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
   const url = new URL(endpoint);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password) throw new Error('Bridge requires an authenticated loopback endpoint');
   /** @param {string} path @param {unknown} input */
   const send = async (path, input) => {
       const response = await fetch(new URL(path, url), { method: 'POST', redirect: 'error',
-        headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(15000) });
+        headers: { authorization: `Bearer ${credential}`, 'content-type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(timeoutMs) });
       const body = await response.json();
       if (!response.ok) throw Object.assign(new Error(body.error || 'Agent command rejected'), { code: body.code || 'REQUEST_FAILED' });
       return body;
   };
   return {
     async status() {
-      const response = await fetch(new URL('/api/orchestration/agent/status', url), { redirect: 'error', headers: { authorization: `Bearer ${credential}` }, signal: AbortSignal.timeout(15000) });
+      const response = await fetch(new URL('/api/orchestration/agent/status', url), { redirect: 'error', headers: { authorization: `Bearer ${credential}` }, signal: AbortSignal.timeout(timeoutMs) });
       const body = await response.json();
       if (!response.ok) throw Object.assign(new Error('Agent status rejected'), { code: body.code || 'REQUEST_FAILED' });
       return body;

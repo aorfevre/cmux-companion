@@ -23,7 +23,7 @@ import { requireValue } from './domain/contracts.mjs';
  * @param {{
  * storage: { database: string; artifacts: string; resources: string };
  * repositories: ReadonlyMap<string,string>; token: string; readOnly?: boolean;
- * createAgents: (context: { locate: (key: {operationId?: string; identity?:string}) => import('./types.d.ts').Mode | null; describe: (request: import('./types.d.ts').LaunchRequest) => import('./adapters/native-inputs.mjs').NativeDescription; onResult: (request: import('./types.d.ts').LaunchRequest, raw: string) => void }) => import('./types.d.ts').AgentPort & { close(): Promise<void> };
+ * createAgents: (context: { locate: (key: {operationId?: string; identity?:string}) => import('./types.d.ts').Mode | null; describe: (request: import('./types.d.ts').LaunchRequest) => import('./adapters/native-inputs.mjs').NativeDescription; onResult: (request: import('./types.d.ts').LaunchRequest, raw: string) => void }) => import('./types.d.ts').AgentPort & { close(options?: {preserve?: import('./types.d.ts').LaunchRequest[]}): Promise<void> };
  * resolveCheck: ConstructorParameters<typeof VerificationRunner>[0]['resolveCheck'];
  * createPublisher: (context: { repositories: GitRepository }) => import('./types.d.ts').PublicationPort;
  * consumers?: { id: string; from?: number; handle: ConstructorParameters<typeof JournalConsumer>[0]['handle'] }[];
@@ -101,6 +101,24 @@ export async function createRuntime({ storage, repositories: configured, token, 
     /** @type {Promise<void> | null} */ let closing = null;
     const runtime = {
       app, store, service, artifacts, repositories, results, bridgeAuth, scheduler, stream, subscribers,
+      /** The maintenance installer supplies only an authenticated durable fence. */
+      handoffEndpoint: '',
+      updateHandoff: /** @type {() => import('./types.d.ts').HandoffIdentity[]} */ (() => []),
+      /** @param {import('./types.d.ts').HandoffIdentity[] | null} [expected] */
+      async prepareHandoff(expected = null) {
+        const requests = handoffRequests(expected);
+        requireValue(!requests.length || ownedAgents.prepareHandoff, 'Existing planning agent needs update-compatible recovery', 'HANDOFF_UNSUPPORTED');
+        const identities = [];
+        for (const request of requests) {
+          const evidence = await ownedAgents.prepareHandoff?.(request);
+          requireValue(evidence && (!runtime.handoffEndpoint || evidence.endpoint === runtime.handoffEndpoint), 'Handoff endpoint changed', 'OWNERSHIP_UNCERTAIN');
+          const row = store.db.prepare('SELECT authority FROM agent_credentials WHERE digest=? AND revoked=0').get(evidence.credentialDigest);
+          const authority = row ? JSON.parse(String(row.authority)) : null;
+          requireValue(authority && authority.goalId === request.goalId && authority.attemptId === request.attempt.id && authority.generation === request.attempt.generation && authority.revision === request.attempt.revision && authority.role === 'planner', 'Handoff credential changed', 'OWNERSHIP_UNCERTAIN');
+          identities.push(evidence);
+        }
+        return /** @type {import('./types.d.ts').HandoffIdentity[]} */ (identities);
+      },
       start() {
         requireValue(!binding, 'Runtime is binding its listener', 'ALREADY_RUNNING');
         return startWorkers();
@@ -125,7 +143,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
           await startup?.catch(report);
           stream.close(); await app.close();
           const stopped = await Promise.allSettled([scheduler.stop({ releaseOwnership: false }), ...subscribers.map((subscriber) => subscriber.stop())]);
-          await ownedAgents.close();
+          await ownedAgents.close({ preserve: handoffRequests(runtime.updateHandoff()) });
           const failed = stopped.filter((entry) => entry.status === 'rejected');
           if (failed.length) throw new AggregateError(failed.map((entry) => entry.reason), 'Runtime services failed to stop');
           scheduler.ownership.release();
@@ -134,6 +152,14 @@ export async function createRuntime({ storage, repositories: configured, token, 
         return closing;
       },
     };
+    /** @param {import('./types.d.ts').HandoffIdentity[] | null} expected */
+    function handoffRequests(expected) {
+      const requests = store.list().flatMap(goal => goal.attempts.filter(attempt => expected
+        ? expected.some(entry => entry.goalId === goal.id && entry.operationId === attempt.operationId && entry.identity === attempt.identity)
+        : attempt.workerState !== 'stopped').map(attempt => ({ goalId: goal.id, operationId: attempt.operationId, attempt })));
+      if (expected) requireValue(requests.length === expected.length, 'Handoff ledger identity changed', 'OWNERSHIP_UNCERTAIN');
+      return requests;
+    }
     function startWorkers() {
         requireValue(!shutdownRequested, 'Runtime is closed', 'NOT_READY');
         if (started) return Promise.resolve();
