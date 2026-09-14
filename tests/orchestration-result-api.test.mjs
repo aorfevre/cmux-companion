@@ -79,13 +79,19 @@ test('MCP malformed planner payload is correctable with the same id before durab
     const response = await app.inject({ method: 'POST', url: '/api/orchestration/agent/results', headers: { authorization: `Bearer ${credential}` }, payload });
     assert.equal(response.statusCode, 202, response.body); return response.json();
   } };
-  const call = output => agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'submit_result', arguments: { id: 'same-result', output } } }, { binding, bridge });
+  const invoke = args => agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'submit_result', arguments: args } }, { binding, bridge });
+  const call = output => invoke({ id: 'same-result', output });
   const nested = { schemaVersion: 1, ...binding, output: { question: 'private question must not appear in errors' } };
   for (const output of [nested, { output: { question: 'Nested' } }, { question: '' }, { question: 'Which audience?', contract: contract() }, { contract: {} }, { question: 'Question', goalId: 'other' }]) {
     const response = await call(output); assert.equal(response.result.isError, true);
     const error = JSON.parse(response.result.content[0].text); assert.equal(error.code, 'INVALID_PLANNER_OUTPUT');
     assert.match(error.message, /Nothing was queued/); assert.doesNotMatch(error.message, /private question/);
     assert.equal(submissions, 0); assert.deepEqual(store.get('goal'), goal, 'malformed input consumes neither journal version nor result id');
+  }
+  for (const args of [[], 'invalid arguments', null, { id: 'same-result', output: { question: 'Question' }, ...binding }, { output: { question: 'Question' } }, { id: 'invalid id', output: { question: 'Question' } }]) {
+    const response = await invoke(args); assert.equal(response.result.isError, true);
+    assert.equal(JSON.parse(response.result.content[0].text).code, 'INVALID_PLANNER_OUTPUT');
+    assert.equal(submissions, 0); assert.deepEqual(store.get('goal'), goal);
   }
   const listed = await agentMcpRequest({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, { binding, bridge });
   const schema = listed.result.tools.find(tool => tool.name === 'submit_result').inputSchema.properties.output;
@@ -114,7 +120,8 @@ test('MCP validates contract graph before submission and preserves server accept
   } };
   const call = value => agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'submit_result', arguments: { id: 'plan', output: { contract: value } } } }, { binding, bridge });
   const invalid = structuredClone(plan); invalid.criteria[0].verification = 'missing-check';
-  assert.equal((await call(invalid)).result.isError, true); assert.equal(submissions, 0); assert.equal(store.get('goal').results, undefined);
+  const invalidResponse = await call(invalid); assert.equal(invalidResponse.result.isError, true);
+  assert.match(JSON.parse(invalidResponse.result.content[0].text).reason, /unknown check/); assert.equal(submissions, 0); assert.equal(store.get('goal').results, undefined);
   assert.equal((await call(plan)).result.isError, undefined); assert.equal(submissions, 1);
   await results.drain();
   assert.equal(store.get('goal').results[0].status, 'accepted'); assert.equal(store.get('goal').revision, 1); assert.equal(store.get('goal').approvedRevision, null);
