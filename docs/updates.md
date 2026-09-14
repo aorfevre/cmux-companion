@@ -35,6 +35,16 @@ failures preserve the running installation. Discovery inspects a bounded window
 of 100 main commits; no eligible candidate in that window means no update offered.
 GitHub Enterprise and alternate channels are not supported in this version.
 
+Main's Verify run can reuse a successful pull-request verification when the merged
+Git tree is identical to the checkout that passed the full suite. It validates
+GitHub run, attempt, job and artifact evidence, and links the source run in its
+summary. Missing evidence, a changed tree, a failed rerun, fork-origin evidence or
+a direct push runs the full suite instead. PR checks and installation-time checks
+remain unchanged. This assumes verification depends on the checked-out source
+and the configured environment, rather than the branch name or merge commit ID.
+The updater still requires a successful main-push check for the exact installed
+commit; a PR check alone never authorizes installation.
+
 ## Fresh installation
 
 Select Node from `.nvmrc`, run `npm ci`, and use an authenticated `gh` where the
