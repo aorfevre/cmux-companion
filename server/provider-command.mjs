@@ -9,7 +9,7 @@ const known = new Set(['claude', 'codex', 'ccs', 'ccsxp']);
 
 /** Parse words only. No substitutions, operators, redirects, functions or expansion. */
 export function simpleAliasWords(source) {
-  requireValue(typeof source === 'string' && source.length <= 4096 && !/[\n\r\0;$`|&<>(){}\[\]\\!*?~#]/.test(source), 'Use a simple alias to claude, codex, ccs or ccsxp; shell expressions and functions are unsupported', 'UNSUPPORTED_CAPABILITY');
+  requireValue(typeof source === 'string' && source.length <= 4096 && !/[\n\r\0;$`|&<>(){}[\]\\!*?~#]/.test(source), 'Use a simple alias to claude, codex, ccs or ccsxp; shell expressions and functions are unsupported', 'UNSUPPORTED_CAPABILITY');
   const words = []; let word = '', quote = null, started = false;
   for (const character of source.trim()) {
     if (quote) { if (character === quote) quote = null; else word += character; started = true; }
