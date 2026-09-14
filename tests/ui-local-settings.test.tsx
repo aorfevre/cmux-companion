@@ -72,7 +72,7 @@ test('Dev repo journey validates canonical path, saves a named group, automatica
   const state = fixture('dev-repos'); render(<LocalSettingsPanel />); await screen.findByText('Your repositories, organized');
   click('Add Dev repo'); change('Directory on this Mac', '~/Developers/karven'); click('Validate directory'); await screen.findByText('/projects/karven'); click('Save Dev repo and discover');
   await screen.findByText(/Partial scan/); assert.equal(screen.queryByRole('button', { name: 'Add selected repositories' }), null);
-  assert.equal(state.saved.settings.projects.length, 1); click(/Example.*Choose checks/); await screen.findByText('node --test'); fireEvent.click(screen.getByRole('checkbox', { name: /npm run test/ })); change('Repository name', 'Renamed'); click('Save changes'); await saved(); assert.equal(state.saved.settings.projects[0].checks.length, 1);
+  assert.equal(state.saved.settings.projects.length, 1); click(/Example.*Repository ready/); await screen.findByText('node --test'); fireEvent.click(screen.getByRole('checkbox', { name: /npm run test/ })); change('Repository name', 'Renamed'); click('Save changes'); await saved(); assert.equal(state.saved.settings.projects[0].checks.length, 1);
   change('Search repositories', 'not-found'); assert.equal(screen.queryByRole('button', { name: /Renamed.*Repository ready/ }), null); change('Search repositories', 'example');
   change('Rename karven', 'Karven'); click('Save changes'); await saved();
   click('Remove Dev repo'); click('Save changes'); await saved(); assert.equal(state.saved.settings.devRepos?.length, 0); assert.equal(state.saved.settings.projects[0].devRepoId, undefined);
@@ -133,10 +133,10 @@ test('late automatic discovery preserves an edited draft and offers the saved ve
   click('Use saved settings'); await screen.findByRole('button', { name: /Discovered.*Check GitHub remote/ });
 });
 
-test('Goals links open the matching repository editor with GitHub details summarized and checks as the next step', async () => {
+test('Goals links open the matching repository editor with GitHub details summarized and checks as optional defaults', async () => {
   const settings = defaults(); settings.projects = [{ id: 'example', name: 'Example', path: '/projects/example', enabled: true, github: 'example/repo', remote: 'git@github.com:example/repo.git', checks: [] }];
   fixture('dev-repos', settings); history.replaceState(null, '', '/settings?repository=example#dev-repos');
-  render(<LocalSettingsPanel />); await screen.findByRole('heading', { name: 'Choose checks' });
+  render(<LocalSettingsPanel />); await screen.findByRole('heading', { name: 'Verification defaults (optional)' });
   await screen.findByText('node --test');
   assert.equal((screen.getByLabelText('Repository name') as HTMLInputElement).value, 'Example');
   assert.ok(screen.getByText('Used for goals and pull requests. No additional destination is needed.'));

@@ -134,18 +134,18 @@ Pending, loading, unavailable and failed states must be distinct.
    distinction and offer the separate Add individual repository action.
 4. No selection or “Add selected repositories” step is required. Automatically
    save new repositories with stable IDs, enabled for new work but with no
-   approved verification commands. Existing IDs, checks, names and disabled
+   default verification commands. Existing IDs, checks, names and disabled
    choices remain unchanged. Group all tracked repositories under the Dev repo
    in Settings and Goals; search matches group, repository and owner. Discovery
    alone never starts a goal or approves verification commands. A disabled or
    unconfigured repository stays visible, with its reason and a settings link.
 5. Open a repository detail editor. Detect origin and safe GitHub destination;
    let the user confirm or edit them. Suggest npm scripts only when present in
-   package.json and display exactly what would run. The user selects approved
+   package.json and display exactly what would run. The user may select optional default
    checks; scanning and saving never run those scripts. Keep executable/argv
    editing in Advanced and preserve existing non-npm checks.
 6. Show monitoring availability separately from readiness for goals. A missing
-   destination, check or provider has a precise fix link, not a generic error.
+   destination or provider has a precise fix link, not a generic error.
    Onboarding uses these same editors: add directory, choose a tracked repository,
    configure a provider, review readiness. Progress persists; Goals remains the main destination and sessions remain
    optionally accessible before setup completion.
@@ -227,7 +227,7 @@ Settings              Dev repos                     [Add Dev repo]
   imply that a phone's file picker can choose a server directory.
 - Runtime/background: adding a Dev repo authorizes tracking its eligible immediate
   children in the existing monitoring/goal catalog. Enabled state and existing
-  repository/provider/check readiness gates still control goal admission. Existing ownership fencing and admitted-goal
+  repository/provider readiness gates still control goal admission; checks are discovered during planning, as specified in [goal verification discovery](2026-09-14-goal-verification-discovery.md). Existing ownership fencing and admitted-goal
   snapshots remain authoritative. Renames, scans, group removal and new settings
   cannot retarget ongoing effects. Unavailable roots show a recoverable status.
 - External: configuration never clones, fetches, pushes, installs tools, starts

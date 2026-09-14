@@ -23,7 +23,7 @@ export function registerSettingsRoutes(app, { settings, onChange = async () => {
     const body = request.body;
     if (!body || Object.keys(body).some(key => !['expectedRevision', 'settings'].includes(key))) throw new TypeError('Expected settings and revision');
     if (body.settings?.onboarding?.completed && !settings.read().settings.onboarding.completed) {
-      if (!body.settings.projects?.some(project => project.enabled && project.github && project.remote && project.checks?.length)) throw new TypeError('Add an enabled project with a GitHub destination, remote and verification command before completing setup');
+      if (!body.settings.projects?.some(project => project.enabled && project.github && project.remote)) throw new TypeError('Add an enabled project with a GitHub destination and remote before completing setup');
       const provider = body.settings.provider;
       providerCommand(body.settings.providers?.[provider], provider);
       const readiness = await probeProvider(provider, body.settings.providers[provider], body.settings.tools);

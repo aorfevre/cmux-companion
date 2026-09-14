@@ -22,14 +22,14 @@ and automatic session collection have been retired; see the
 
 Create a goal for an explicitly configured repository and base commit. The planner
 publishes a versioned contract with task ownership, dependencies and verification.
-An independent review checks the contract before the user approves that revision.
+The agent discovers suitable verification from the project and goal; repository checks are optional defaults, never required setup. If validation is missing, the plan must address that gap. An independent review checks the contract before the user approves that revision and its exact verification commands.
 Requesting changes invalidates the proposal's approval authority.
 
 Eligible independent tasks run concurrently from day one. Each attempt owns an
 isolated worktree; dependents start from the integrated commits of their prerequisites.
 An independent reviewer checks the exact submitted task commit. Blocking findings
 require bounded repair and a fresh review. Integration serializes changes and
-preserves conflicts for scoped repair. Final review and configured checks must
+preserves conflicts for scoped repair. Final review and approved goal checks must
 agree on the exact goal-branch commit before publication opens one PR.
 
 A stopped process is not proof of a successful task. Uncertain ownership blocks

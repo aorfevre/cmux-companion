@@ -9,7 +9,7 @@ import { GitHubCli } from './orchestration/adapters/github-cli.mjs';
 import { GitHubPublication } from './orchestration/adapters/github.mjs';
 import { transition } from './orchestration/domain/transitions.mjs';
 import { requireValue } from './orchestration/domain/contracts.mjs';
-import { resolveExecutable } from './local-settings.mjs';
+import { resolveGoalCheck } from './goal-verification.mjs';
 
 // Every provider instance and publication adapter is bound to a durable goal
 // configuration, never to the mutable current Settings form.
@@ -78,7 +78,7 @@ export async function createSettingsRuntime({ settings, directory, token, create
     runtime = await createRuntime({ suspension: () => suspensionReason, storage, repositories, token, logLevel: process.env.CMUX_COMPANION_LOG_LEVEL, limits: settings.read().settings.execution,
       createAgents: context => { agentContext = { ...context, describe: request => {
         const description = context.describe(request), checks = configured(request.goalId).project.checks;
-        return { ...description, prompt: `${description.prompt}\nOperator-approved verification commands: ${JSON.stringify(checks.map(check => ({ id: check.id, argv: [check.executable, ...check.args] })))}` };
+        return { ...description, prompt: `${description.prompt}\nOptional repository verification defaults (discover and adapt checks for this goal): ${JSON.stringify(checks.map(check => ({ id: check.id, argv: [check.executable, ...check.args] })))}` };
       } }; return localAgents; },
       beforeCommand: async command => {
         if (command.type !== 'create_goal' || runtime.store.get(command.goalId)) return;
@@ -106,11 +106,8 @@ export async function createSettingsRuntime({ settings, directory, token, create
       resolveCheck: (repositoryId, check, goalId) => {
         const config = configured(goalId);
         requireValue(config.project.id === repositoryId, 'Verification repository changed', 'FORBIDDEN');
-        const allowed = config.project.checks.find(entry => entry.id === check.id && JSON.stringify([entry.executable, ...entry.args]) === JSON.stringify(check.argv));
-        requireValue(allowed, 'Verification command is not approved for this goal', 'UNSUPPORTED_CAPABILITY');
-        const bin = resolveExecutable(allowed.executable);
-        requireValue(bin, 'Configured verification executable is unavailable', 'UNSUPPORTED_CAPABILITY');
-        return { bin, argv: allowed.args, env: environment(), environmentId: `settings-${config.revision}`, policy: config.execution };
+        return resolveGoalCheck({ goal: runtime.store.get(goalId), repositoryId, check,
+          env: environment(), environmentId: `settings-${config.revision}`, policy: config.execution });
       },
       createPublisher: () => ({ publish: (input, options) => publication(input.goalId).publish(input, options), observe: input => publication(input.goalId).observe(input) }),
     });
