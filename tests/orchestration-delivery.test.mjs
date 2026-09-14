@@ -132,7 +132,11 @@ for (const { conflict, finalFailure = null, movedTarget = false } of [{ conflict
     assert.equal(goal.integrationResults.filter((result) => result.taskId === null).length, 1);
   }
   assert.deepEqual(errors, []); assert.deepEqual(agents.errors, []);
-  assert.ok(goal.tasks.every((task) => task.status === 'integrated'), JSON.stringify(goal.tasks));
+  assert.ok(goal.tasks.every((task) => task.status === 'integrated'), JSON.stringify({
+    tasks: goal.tasks,
+    attempts: goal.attempts.map(({ id, taskId, role, status, workerState, error, target }) => ({ id, taskId, role, status, workerState, error, target })),
+    results: goal.results, reviews: goal.reviews, ready: store.ready(), operations: store.operations(),
+  }));
   assert.equal(goal.attempts.filter((attempt) => attempt.role === 'integrator').length, (conflict ? 1 : 0) + (finalFailure ? 1 : 0), JSON.stringify(goal.attempts.filter((attempt) => attempt.role === 'integrator').map(({ id, taskId, status, workerState }) => ({ id, taskId, status, workerState }))));
   if (conflict) assert.equal(goal.results.filter((result) => result.repair && result.status === 'accepted').length, 1);
   assert.equal(goal.verification.headSha, goal.integrationHead);
