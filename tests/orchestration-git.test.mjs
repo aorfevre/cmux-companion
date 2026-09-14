@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
-import { GitRepository } from '../server/orchestration/adapters/git.mjs';
+import { GitRepository, gitBytes } from '../server/orchestration/adapters/git.mjs';
 import { ArtifactStore } from '../server/orchestration/storage/artifacts.mjs';
 import { createRepositoryFixture, fixtureGit } from './helpers/orchestration/fixture.mjs';
 
@@ -108,4 +108,9 @@ test('dangling resource symlinks are never treated as absent', async (t) => {
   await assert.rejects(f.adapter.provision(f.input), { code: 'OWNERSHIP_UNCERTAIN' });
   symlinkSync(join(f.repo.directory, 'missing-manifest'), join(f.options.directory, 'manifests', 'dangling.json'));
   assert.throws(() => f.adapter.resource('dangling'), { code: 'OWNERSHIP_UNCERTAIN' });
+});
+
+test('an early Git exit rejects its operation without an unhandled stdin broken pipe', async t => {
+  const f = await fixture(t);
+  await assert.rejects(gitBytes(f.repo.repository, ['not-a-companion-git-command'], Buffer.alloc(2 * 1024 * 1024, 'x')), { code: 'GIT_OPERATION_FAILED' });
 });
