@@ -73,6 +73,20 @@ for (const { conflict, finalFailure = null, movedTarget = false } of [{ conflict
   });
   const service = new OrchestrationService({ store, agents, repositoryIds: new Set(['repo']), limits: { global: 2, perGoal: 2 } });
   results = new AgentResults({ service, artifacts, repositories });
+  if (conflict) {
+    // Force the CI race: confirmed exit changes the version during Git proof.
+    // Result intake must retry its pending evidence before another repair launches.
+    const candidate = repositories.candidate.bind(repositories); let stoppedDuringProof = false;
+    repositories.candidate = async input => {
+      const proof = await candidate(input);
+      if (input.attempt.role === 'integrator' && !stoppedDuringProof) {
+        stoppedDuringProof = true;
+        const current = store.get('g');
+        service.execute({ id: 'stop_during_repair_proof', goalId: 'g', expectedVersion: current.version, type: 'record_stopped', payload: { attemptId: input.attempt.id } }, { kind: 'system' });
+      }
+      return proof;
+    };
+  }
   const errors = [], scheduler = new Scheduler({ service, repositories, integrations, verifier, publisher, results, onError: (error) => errors.push(error) });
   t.after(async () => { release.release(); await agents.drain(); await scheduler.stop(); store.close(); await repo.close(); });
   service.execute({ id: 'create', goalId: 'g', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'Deliver fixture', baseSha: repo.baseSha } }, { kind: 'user' });
@@ -119,7 +133,7 @@ for (const { conflict, finalFailure = null, movedTarget = false } of [{ conflict
   }
   assert.deepEqual(errors, []); assert.deepEqual(agents.errors, []);
   assert.ok(goal.tasks.every((task) => task.status === 'integrated'), JSON.stringify(goal.tasks));
-  assert.equal(goal.attempts.filter((attempt) => attempt.role === 'integrator').length, (conflict ? 1 : 0) + (finalFailure ? 1 : 0));
+  assert.equal(goal.attempts.filter((attempt) => attempt.role === 'integrator').length, (conflict ? 1 : 0) + (finalFailure ? 1 : 0), JSON.stringify(goal.attempts.filter((attempt) => attempt.role === 'integrator').map(({ id, taskId, status, workerState }) => ({ id, taskId, status, workerState }))));
   if (conflict) assert.equal(goal.results.filter((result) => result.repair && result.status === 'accepted').length, 1);
   assert.equal(goal.verification.headSha, goal.integrationHead);
   assert.ok(goal.verification.checks.every((check) => check.passed));

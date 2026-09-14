@@ -1,5 +1,5 @@
 import { readyTasks } from './graph.mjs';
-import { ownsWorker, planTarget } from './transitions.mjs';
+import { ownsWorker, planTarget, hasPendingRepairResult } from './transitions.mjs';
 import { currentReviews } from './review.mjs';
 /** @typedef {{ key: string; role: import('../types.d.ts').Role; taskId: string | null; target: string }} ReadyWork */
 /** Readiness is derived from accepted evidence; durable ordering is assigned by
@@ -12,6 +12,7 @@ export function readyWork(goal) {
   const result = [];
   /** @param {ReadyWork['role']} role @param {string | null} taskId @param {string} target */
   const add = (role, taskId, target) => {
+    if (role === 'integrator' && hasPendingRepairResult(goal)) return;
     const history = goal.attempts.filter((attempt) => attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.role === role && attempt.taskId === taskId && attempt.target === target);
     if ((role === 'planner' || role === 'reviewer') && history.length && !history.at(-1)?.retryRequested) return;
     if (goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || (attempt.taskId === taskId && (role === 'implementer' || attempt.target === target))))) return;

@@ -4,6 +4,7 @@ import { canonicalJson, integer, sha } from '../server/orchestration/domain/cont
 import { parseContract, ownedArea, readyTasks } from '../server/orchestration/domain/graph.mjs';
 import { parseReview } from '../server/orchestration/domain/review.mjs';
 import { transition, planTarget } from '../server/orchestration/domain/transitions.mjs';
+import { readyWork } from '../server/orchestration/domain/scheduling.mjs';
 import { goalView } from '../server/orchestration/domain/state-view.mjs';
 import { requireCapability } from '../server/orchestration/ports.mjs';
 import { fixture, contract, BASE, HEAD_A, HEAD_B } from './helpers/orchestration/domain-fixture.mjs';
@@ -282,4 +283,26 @@ test('a completed conflict result does not release the integration checkout whil
   fails(() => f.command('request_integration', { taskId: 'B', operationId: 'ib' }), 'NOT_READY');
   f.command('record_stopped', { attemptId: 'conflict' });
   f.command('request_integration', { taskId: 'B', operationId: 'ib' });
+});
+
+
+for (const final of [false, true]) test(`stopped repair results block duplicate admission until disposition; final=${final}`, () => {
+  const f = fixture(), c = contract(); c.tasks = [c.tasks[0]]; f.approve(c);
+  f.request('a', 'implementer', 'A'); f.dispatch('a'); f.command('confirm_candidate', { attemptId: 'a', headSha: HEAD_A }); f.command('record_stopped', { attemptId: 'a' });
+  f.request('ar', 'reviewer', 'A'); f.dispatch('ar'); f.review('ar', HEAD_A);
+  f.command('request_integration', { taskId: 'A', operationId: 'integrate' });
+  if (final) {
+    f.command('record_integration', { operationId: 'integrate', headSha: HEAD_A });
+    f.command('record_verification', { headSha: HEAD_A, checks: [{ id: 'unit', passed: false, artifactId: 'failure' }] });
+  } else f.command('record_integration_conflict', { operationId: 'integrate' });
+  f.request('repair', 'integrator'); f.dispatch('repair');
+  f.command('receive_role_result', { resultId: 'result', attemptId: 'repair', artifactId: 'a'.repeat(64) });
+  f.command('record_stopped', { attemptId: 'repair' });
+  const before = structuredClone(f.goal);
+  assert.equal(readyWork(f.goal).some(work => work.role === 'integrator'), false);
+  fails(() => f.request('duplicate', 'integrator'), 'NOT_READY');
+  assert.deepEqual(f.goal, before, 'Refused admission must not consume repair budget or create an attempt');
+  f.command('reject_role_result', { resultId: 'result', code: 'MALFORMED_RESULT' });
+  assert.equal(readyWork(f.goal).some(work => work.role === 'integrator'), true);
+  f.request('replacement', 'integrator');
 });

@@ -10,6 +10,10 @@ import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
 /** @typedef {import('../types.d.ts').Transition} Transition */
 /** Worker ownership outlives result submission and unsuccessful termination. @param {Attempt} attempt */
 export const ownsWorker = (attempt) => attempt.workerState !== 'stopped';
+/** A stopped repair worker can still own unsettled result evidence. @param {Goal} goal */
+export const hasPendingRepairResult = (goal) => Boolean(goal.results?.some((result) => result.status === 'pending'
+  && goal.attempts.some((attempt) => attempt.id === result.attemptId && attempt.role === 'integrator'
+    && attempt.generation === goal.generation && attempt.revision === goal.revision)));
 /** @param {Goal} goal */
 export const planTarget = (goal) => `contract:${goal.generation}:${goal.revision}`;
 /** @param {Goal} goal */
@@ -234,6 +238,7 @@ export function transition(before, command, authority) {
         task.status = 'running'; taskId = task.id; target = goal.integrationHead;
       }
       if (role === 'integrator') {
+        requireValue(!hasPendingRepairResult(goal), 'Previous repair result is not settled', 'NOT_READY');
         requireValue(!goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification worker is not settled', 'NOT_READY');
         requireValue(goal.status === 'building' && goal.approvedRevision === goal.revision, 'Integration is not approved', 'NOT_READY');
         if (goal.integration?.state === 'conflict') {
