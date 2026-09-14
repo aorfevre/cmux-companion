@@ -169,7 +169,7 @@ test('terminal command save failures stay beside Save and preserve both drafts',
 
 
 test('Save validates only changed providers and reports safe alias resolution', async () => {
-  const state = fixture(); state.validation.resolution.message = 'Resolved xclaude to ccsxp claude. Permission bypass flags are ignored.';
+  const state = fixture(); state.validation.resolution.message = 'Resolved xclaude to ccs claude. Permission bypass flags are ignored.';
   render(<LocalSettingsPanel />); await screen.findByLabelText('claude connection');
   change('claude connection', 'terminal'); change('claude terminal command', 'xclaude'); click('Save changes'); await saved();
   assert.ok(screen.getByText(/Permission bypass flags are ignored/));
@@ -185,4 +185,15 @@ test('an unsupported terminal alias blocks save with actionable visible failure'
   assert.ok(screen.getByText(/Managed permission flags are retained/));
   assert.equal(state.calls.some(call => call.method === 'PATCH'), false);
   assert.equal((screen.getByLabelText('claude terminal command') as HTMLInputElement).value, 'xclaude');
+});
+
+
+test('saved ccsxp commands reopen as terminal commands without an empty CCS profile', async () => {
+  const settings = defaults(); settings.providers.codex = { executable: '/opt/bin/ccsxp', args: [], model: 'default' };
+  fixture('agents', settings); render(<LocalSettingsPanel />);
+  const selector = await screen.findByLabelText('codex connection');
+  assert.equal((selector as HTMLSelectElement).value, 'terminal');
+  assert.equal((screen.getByLabelText('codex terminal command') as HTMLInputElement).value, '/opt/bin/ccsxp');
+  assert.equal(screen.queryByLabelText('codex profile'), null);
+  assert.equal((screen.getByLabelText('claude connection') as HTMLSelectElement).value, 'ccs');
 });

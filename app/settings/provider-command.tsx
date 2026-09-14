@@ -5,7 +5,7 @@ import type { Command, Provider } from './settings-panel';
 type Connection = 'ccs' | 'direct' | 'terminal';
 function connection(command: Command): Connection {
   const executable = command.executable.split('/').at(-1);
-  return executable === 'ccs' || executable === 'ccsxp' ? 'ccs' : executable === 'claude' || executable === 'codex' ? 'direct' : 'terminal';
+  return executable === 'ccs' ? 'ccs' : executable === 'claude' || executable === 'codex' ? 'direct' : 'terminal';
 }
 export function ProviderCommand({ provider, command, change, validate, validation }: { provider: Provider; command: Command; change(value: Partial<Command>): void; validate(): void; validation?: string }) {
   const [mode, setMode] = useState<Connection>(() => connection(command));
