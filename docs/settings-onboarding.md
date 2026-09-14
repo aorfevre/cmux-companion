@@ -164,3 +164,13 @@ selection and disabling against a real disposable service and Git repository,
 with fake provider capabilities. Standard monitoring and orchestration Cypress
 suites retain their separate entry points. These checks do not touch installed
 configuration, accounts, Tailscale or live agent sessions.
+
+## Favorite projects
+
+In Goals, open **Project**, click **Show all projects**, then select the ☆ beside
+a project. A filled ★ means it is a favorite; click it again to remove it. Stars
+save immediately on the connected Mac and are shared by its paired devices.
+
+The picker opens with favorites only. **Show all projects** reveals the rest,
+grouped by Dev repo; search filters the visible groups. Select a project name
+to use it for a goal. Favoriting does not enable a project or approve its checks.

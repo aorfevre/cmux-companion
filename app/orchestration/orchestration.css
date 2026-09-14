@@ -17,3 +17,27 @@
 .orchestration code { font-size:12px; color:var(--text); overflow-wrap:anywhere; } .orch-pr { display:inline-block; padding:12px 18px; border:1px solid var(--accent); border-radius:9px; } .orch-capacity { margin:12px 0; }
 @media(max-width:700px) { .orchestration { padding:14px 14px 60px; } .orch-workspace { display:block; } .orch-card { padding:17px; } .orch-header { align-items:flex-start; } .orch-task-grid li>div { align-items:flex-start; flex-direction:column; gap:5px; } }
 .orchestration .primary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 10px 16px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-weight: 600; }
+
+.project-picker { margin:16px 0; min-width:0; }
+.project-field-label { display:block; font-weight:600; margin-bottom:8px; }
+.orchestration .project-picker-trigger { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; text-align:left; background:var(--input-bg); }
+.project-picker-trigger strong,.project-choice strong { display:block; overflow-wrap:anywhere; }
+.project-picker-trigger small,.project-choice small { display:block; }
+.project-picker-panel { border:1px solid var(--line); border-radius:12px; padding:12px; margin-top:8px; background:var(--panel); }
+.orchestration .project-picker-panel input { font-size:16px; }
+.project-picker-results { max-height:min(360px,45dvh); overflow-y:auto; overscroll-behavior:contain; padding:4px; }
+.orchestration .project-picker-results h3 { font-size:12px; color:var(--muted); margin:12px 0 6px; }
+.project-picker-row { display:flex; align-items:center; gap:8px; margin:4px 0; }
+.orchestration .project-choice { flex:1; min-width:0; text-align:left; background:transparent; border-color:transparent; }
+.orchestration .project-choice[aria-pressed=true] { border-color:var(--accent); background:var(--panel-raised); }
+.orchestration .project-star { flex:0 0 44px; width:44px; padding:6px; font-size:24px; background:transparent; }
+.orchestration .project-star[aria-pressed=true] { color:var(--accent); }
+.orchestration .project-show-all { width:100%; margin-top:10px; }
+.project-context { color:var(--muted); font-size:12px; }
+.project-picker { container-type:inline-size; }
+@container (max-width:240px) {
+  .project-picker-panel { padding:6px; }
+  .project-picker-results { padding:2px; }
+  .project-picker-row { gap:4px; }
+  .orchestration .project-choice { padding:6px 2px; }
+}
