@@ -2,8 +2,9 @@
 
 Date: 2026-09-13
 Status: Original contract approved by the user on 2026-09-13 after spec commit 392144c.
-The 2026-09-14 native-planner handoff amendment below awaits human review; no
-implementation plan or handoff implementation is authorized by this document alone.
+The user approved the 2026-09-14 native-planner handoff amendment after reviewing
+standalone spec commit cc88275, with “Approve this handoff design”, before the
+implementation-plan commit.
 Review feedback: On 2026-09-13 the user requested an opt-in automatic-installation
 toggle, disabled by default; incorporated below.
 Owner: The implementing agent owns packaging, UI, API, durable requests,
