@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { ResultOutbox } from './result-outbox.mjs';
 import { createBridge } from './bridge.mjs';
 import { requireValue, object, identifier, integer, sha, text } from './domain/contracts.mjs';
 
 /** @typedef {{ goalId: string; operationId: string; attemptId: string; generation: number; revision: number; role: import('./types.d.ts').Role; target: string }} Binding */
 const definitions = {
   get_status: { name: 'get_status', description: 'Read authoritative goal state and contracts for this attempt.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  submit_result: { name: 'submit_result', description: 'Publish this planner attempt\'s structured contract. Receipt is not approval.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, output: { type: 'object' } }, required: ['id', 'output'], additionalProperties: false } },
+  submit_result: { name: 'submit_result', description: 'Queue this planner attempt\'s structured result durably. A queued receipt is not server acceptance or approval.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, output: { type: 'object' } }, required: ['id', 'output'], additionalProperties: false } },
   commit_candidate: { name: 'commit_candidate', description: 'Commit changes in this attempt\'s recorded checkout and approved scope. Does not accept, integrate or publish.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, expectedHead: { type: 'string' }, message: { type: 'string' } }, required: ['id', 'expectedHead', 'message'], additionalProperties: false } },
 };
 /** @param {Binding['role']} role */
@@ -65,7 +66,12 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   process.stdout.on('error', () => { process.exitCode = 2; });
   try {
     const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-    const context = { binding: config.binding, bridge: createBridge(config) };
+    const bridge = createBridge(config);
+    if (config.handoffProtocol === 1 && config.binding.role === 'planner') {
+      const outbox = new ResultOutbox({ directory: config.outbox, binding: config.binding });
+      bridge.submitResult = async input => outbox.enqueue(input);
+    }
+    const context = { binding: config.binding, bridge };
     /** @type {Buffer[]} */ let pending = []; let bytes = 0;
     for await (const chunk of process.stdin) {
       const buffer = Buffer.from(chunk);

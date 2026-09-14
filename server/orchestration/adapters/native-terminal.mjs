@@ -1,4 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { ResultOutbox } from '../result-outbox.mjs';
+import { createBridge } from '../bridge.mjs';
+import { pinNativeRelease } from './native-handoff.mjs';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, realpathSync, lstatSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -23,6 +26,7 @@ export class NativeTerminal {
     this.bin = bin; this.inputs = inputs; this.terminal = terminal; this.killGraceMs = killGraceMs; this.stopping = false;
     this.capabilities = [{ role: /** @type {const} */ ('planner'), mode: /** @type {const} */ ('interactive') }];
     this.managed = new Set();
+    /** @type {Map<string, {timer: ReturnType<typeof setInterval> | null; pending: Promise<void> | null; drain: () => Promise<void>}>} */ this.outboxRecovery = new Map();
     /** @type {Map<string,{binding:string;promise:Promise<{identity:string}>}>} */ this.launching = new Map();
   }
   /** @param {string} operationId */
@@ -70,7 +74,8 @@ export class NativeTerminal {
       const created = await this.terminal.create(request.attempt.worktree ?? '', command.plannerName);
       this.save(join(directory, 'workspace.json'), { identity, workspaceId: created.workspaceId });
       const configPath = join(directory, 'worker.json');
-      this.save(configPath, { identity, workspaceId: created.workspaceId, activation: command.activation, installation: this.inputs.installation?.identity,
+      const release = pinNativeRelease({ directory, identity, operationId: request.operationId });
+      this.save(configPath, { handoffProtocol: 1, release, identity, workspaceId: created.workspaceId, activation: command.activation, installation: this.inputs.installation?.identity,
         command: { bin: this.bin, argv: command.argv, env: command.env, cwd: request.attempt.worktree }, killGraceMs: this.killGraceMs });
       requireValue(!this.stopping, 'Terminal runtime stopped before runner send', 'NOT_READY');
       writeFileSync(join(directory, 'runner-sent.json'), JSON.stringify({ identity }), { flag: 'wx', mode: 0o600 });
@@ -86,7 +91,7 @@ export class NativeTerminal {
       throw error;
     }
   }
-  /** @param {string} operationId @returns {Promise<{status:'running'|'stopped'|'unknown';identity:string|null}>} */
+  /** @param {string} operationId @returns {Promise<{status:'running'|'stopped'|'unknown';identity:string|null;pendingOutbox?:boolean}>} */
   async observe(operationId) {
     const directory = this.path(operationId), path = join(directory, 'request.json');
     if (!existsSync(path)) return { status: 'unknown', identity: null };
@@ -94,12 +99,41 @@ export class NativeTerminal {
     requireValue(saved.binding.operationId === operationId && JSON.stringify(saved.binding) === JSON.stringify(nativeBinding(saved.request)), 'Terminal request changed', 'OWNERSHIP_UNCERTAIN');
     if (existsSync(join(directory, 'outcome.json'))) {
       const result = this.read(join(directory, 'outcome.json')); requireValue(result.identity === saved.identity, 'Terminal result identity changed', 'OWNERSHIP_UNCERTAIN');
-      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity };
+      const pendingOutbox = result.workerState === 'stopped' && await this.recoverOutbox(directory);
+      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity, ...(pendingOutbox ? { pendingOutbox: true } : {}) };
     }
     if (!existsSync(join(directory, 'identity.json'))) return { status: 'unknown', identity: null };
     const runner = this.read(join(directory, 'identity.json')), workspace = this.read(join(directory, 'workspace.json'));
     requireValue(runner.identity === saved.identity && workspace.identity === saved.identity && runner.workspaceId === workspace.workspaceId, 'Terminal workspace binding changed', 'OWNERSHIP_UNCERTAIN');
     return { status: runner.stamp && await nativeProcessStamp(runner.pid, directory) === runner.stamp ? 'running' : 'unknown', identity: saved.identity };
+  }
+  /** A stopped runner cannot drain its own spool. Recover with its original
+   * credential only; maintenance rejects writes until acceptance/rollback finishes.
+   * @param {string} directory */
+  async recoverOutbox(directory) {
+    const path = join(directory, 'bridge.json');
+    if (!existsSync(path)) return;
+    const config = this.read(path);
+    if (config.handoffProtocol !== 1) return;
+    const outbox = new ResultOutbox({ directory: join(directory, 'outbox'), binding: config.binding });
+    if (!outbox.entries().some(entry => entry.value.status === 'queued')) return;
+    let recovery = this.outboxRecovery.get(directory);
+    if (!recovery) {
+      const bridge = createBridge({ ...config, timeoutMs: 1000 });
+      const entry = { timer: /** @type {ReturnType<typeof setInterval> | null} */ (null), pending: /** @type {Promise<void> | null} */ (null), drain: /** @type {() => Promise<void>} */ (async () => {}) };
+      const drain = () => {
+        if (!entry.pending) entry.pending = outbox.drain(bridge).finally(() => {
+          entry.pending = null;
+          if (!outbox.entries().some(item => item.value.status === 'queued')) { if (entry.timer) clearInterval(entry.timer); this.outboxRecovery.delete(directory); }
+        });
+        return entry.pending;
+      };
+      entry.drain = drain;
+      entry.timer = setInterval(() => { void drain().catch(() => {}); }, 500); entry.timer.unref();
+      this.outboxRecovery.set(directory, entry); recovery = entry;
+      await drain();
+    } else await recovery.drain();
+    return outbox.entries().some(entry => entry.value.status === 'queued');
   }
   /** @param {import('../types.d.ts').LaunchRequest} request */
   async resume(request) {
@@ -139,9 +173,30 @@ export class NativeTerminal {
     const observed = await this.observe(operationId); requireValue(observed.status === 'running', 'Owned terminal is unavailable', 'OWNERSHIP_UNCERTAIN');
     await this.terminal.open(this.read(join(this.path(operationId), 'workspace.json')).workspaceId);
   }
-  async close() {
+  /** Validate the complete binding without launching, resuming or minting credentials.
+   * @param {import('../types.d.ts').LaunchRequest} request */
+  async prepareHandoff(request) {
+    requireValue(!this.launching.size && request.attempt.role === 'planner' && request.attempt.mode === 'interactive', 'Terminal effect is still in flight', 'NOT_READY');
+    const directory = this.path(request.operationId), saved = this.read(join(directory, 'request.json'));
+    requireValue(saved.identity === request.attempt.identity && JSON.stringify(saved.binding) === JSON.stringify(nativeBinding(request)), 'Handoff attempt identity changed', 'OWNERSHIP_UNCERTAIN');
+    const config = this.read(join(directory, 'worker.json'));
+    requireValue(config.handoffProtocol === 1 && existsSync(join(directory, 'handoff.json')), 'Existing planning agent needs update-compatible recovery', 'HANDOFF_UNSUPPORTED');
+    const protocol = this.read(join(directory, 'handoff.json'));
+    requireValue(protocol.version === 1 && protocol.identity === saved.identity, 'Handoff protocol identity changed', 'OWNERSHIP_UNCERTAIN');
+    const observed = await this.observe(request.operationId);
+    requireValue(observed.identity === saved.identity && observed.status !== 'unknown', 'Handoff worker identity is uncertain', 'OWNERSHIP_UNCERTAIN');
+    if (observed.status === 'running') requireValue(['running', 'paused'].includes(this.read(join(directory, 'session.json')).phase), 'Native activation is still in flight', 'NOT_READY');
+    requireValue(typeof config.activation?.credential === 'string' && typeof config.activation.endpoint === 'string', 'Handoff credential unavailable', 'OWNERSHIP_UNCERTAIN');
+    return { goalId: request.goalId, operationId: request.operationId, identity: saved.identity, endpoint: config.activation.endpoint, credentialDigest: createHash('sha256').update(config.activation.credential).digest('hex') };
+  }
+  /** @param {{preserve?: import('../types.d.ts').LaunchRequest[]}} [options] */
+  async close({ preserve = [] } = {}) {
     this.stopping = true; await Promise.allSettled([...this.launching.values()].map((entry) => entry.promise));
+    try {
+    const retained = new Set(preserve.map(request => request.operationId));
+    for (const request of preserve) await this.prepareHandoff(request);
     const settled = await Promise.allSettled([...this.managed].map(async (operationId) => {
+      if (retained.has(operationId)) { this.managed.delete(operationId); return; }
       const observed = await this.observe(operationId);
       if (observed.status !== 'stopped' && observed.identity) await this.terminate(observed.identity);
       const deadline = Date.now() + this.killGraceMs * 2 + 1000;
@@ -149,5 +204,10 @@ export class NativeTerminal {
       this.managed.delete(operationId);
     }));
     requireValue(settled.every((entry) => entry.status === 'fulfilled'), 'Owned terminals need reconciliation', 'OWNERSHIP_UNCERTAIN');
+    } finally {
+    for (const recovery of this.outboxRecovery.values()) if (recovery.timer) clearInterval(recovery.timer);
+    await Promise.allSettled([...this.outboxRecovery.values()].map(entry => entry.pending));
+    this.outboxRecovery.clear();
+    }
   }
 }

@@ -72,10 +72,12 @@ export interface Command {
   id: string; goalId: string; expectedVersion: number; type: string; payload: unknown;
 }
 export interface LaunchRequest { resumeId?: string; operationId: string; goalId: string; attempt: Attempt }
+export interface HandoffIdentity { goalId: string; operationId: string; identity: string; credentialDigest: string; endpoint: string }
 export interface AgentPort {
+  prepareHandoff?(request: LaunchRequest): Promise<HandoffIdentity>;
   capabilities: { role: Role; mode: Mode }[];
   launch(request: LaunchRequest): Promise<{ identity: string }>;
-  observe(operationId: string): Promise<{ status: 'running' | 'stopped' | 'unknown'; identity: string | null }>;
+  observe(operationId: string): Promise<{ status: 'running' | 'stopped' | 'unknown'; identity: string | null; pendingOutbox?: boolean }>;
   terminate(identity: string): Promise<void>;
   resume?(request: LaunchRequest): Promise<{identity:string}>;
   open?(operationId: string): Promise<void>;

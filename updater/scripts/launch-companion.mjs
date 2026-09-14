@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// companion-native-handoff: 1
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 

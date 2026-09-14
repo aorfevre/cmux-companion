@@ -73,7 +73,9 @@ export async function startServer({
   try {
     if (process.env.CMUX_COMPANION_UPDATER_CONTROL) {
       updateControl = new UpdateControl(process.env.CMUX_COMPANION_UPDATER_CONTROL);
+      runtime.handoffEndpoint = `http://127.0.0.1:${port}`;
       const maintenance = installUpdateMaintenance({ runtime, control: updateControl, promptQueue });
+      await maintenance.adopt();
       await runtime.app.register(async app => registerUpdateRoutes(app, { control: updateControl, token, maintenance }));
     }
     attachGoalAttention(runtime, pushService);

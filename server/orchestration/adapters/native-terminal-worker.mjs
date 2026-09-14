@@ -1,3 +1,5 @@
+import { ResultOutbox } from '../result-outbox.mjs';
+import { createBridge } from '../bridge.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { lstatSync, readFileSync, writeFileSync, renameSync, existsSync, realpathSync } from 'node:fs';
@@ -42,8 +44,17 @@ export async function runNativeTerminal(configPath) {
   const interrupt = () => signalProvider('SIGINT');
   process.on('SIGTERM', stop); process.on('SIGHUP', stop); process.on('SIGINT', interrupt);
   let code = 'ABORTED';
+  /** @type {ReturnType<typeof setInterval> | undefined} */ let outboxTimer;
+  /** @type {Promise<void> | null} */ let draining = null;
   try {
     save('identity.json', { identity: config.identity, pid: process.pid, stamp: await nativeProcessStamp(process.pid, directory), workspaceId: config.workspaceId });
+    const bridgeConfig = JSON.parse(readFileSync(join(directory, 'bridge.json'), 'utf8'));
+    requireValue(config.handoffProtocol === 1 && bridgeConfig.handoffProtocol === 1, 'Terminal handoff protocol is unavailable');
+    const outbox = new ResultOutbox({ directory: join(directory, 'outbox'), binding: bridgeConfig.binding });
+    const bridge = createBridge({ ...bridgeConfig, timeoutMs: 1000 });
+    save('handoff.json', { version: 1, identity: config.identity });
+    const drain = () => { if (!draining) draining = outbox.drain(bridge).catch(() => {}).finally(() => { draining = null; }); };
+    outboxTimer = setInterval(drain, 500); drain();
     await awaitNativeActivation(config.activation, controller.signal);
     let runId = 'initial';
     while (!controller.signal.aborted) {
@@ -99,6 +110,8 @@ export async function runNativeTerminal(configPath) {
     }
   } catch (error) { code = error instanceof DomainError ? error.code : 'NATIVE_TERMINAL_FAILED'; }
   finally {
+    if (outboxTimer) clearInterval(outboxTimer);
+    await draining;
     if (force) clearTimeout(force);
     if (!providerStopped && providerPid) {
       signalProvider('SIGTERM'); await delay(config.killGraceMs); signalProvider('SIGKILL'); await delay(config.killGraceMs);

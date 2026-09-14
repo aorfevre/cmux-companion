@@ -64,13 +64,14 @@ export async function createSettingsRuntime({ settings, directory, token, create
   }
   const localAgents = {
     capabilities,
+    async prepareHandoff(request) { const owner = await agent(request.goalId); requireValue(owner.prepareHandoff, 'Existing planning agent needs update-compatible recovery', 'HANDOFF_UNSUPPORTED'); return owner.prepareHandoff(request); },
     async launch(request) { return (await agent(request.goalId)).launch(request); },
     async resume(request) { return (await agent(request.goalId)).resume(request); },
     async observe(key) { const goal = find(key); return goal ? (await agent(goal.id)).observe(key) : { status: 'unknown', identity: null }; },
     async terminate(key) { const goal = find(key); requireValue(goal, 'Worker identity is unknown', 'OWNERSHIP_UNCERTAIN'); return (await agent(goal.id)).terminate(key); },
     async open(key) { const goal = find(key); requireValue(goal, 'Terminal identity is unknown', 'OWNERSHIP_UNCERTAIN'); return (await agent(goal.id)).open(key); },
-    async close() {
-      const results = await Promise.allSettled([...agents.values()].map(async pending => (await pending).close()));
+    async close({ preserve = [] } = {}) {
+      const results = await Promise.allSettled([...agents.entries()].map(async ([goalId, pending]) => (await pending).close({ preserve: preserve.filter(request => request.goalId === goalId) })));
       const failed = results.filter(result => result.status === 'rejected');
       if (failed.length) throw new AggregateError(failed.map(result => result.reason), 'Some native agents could not close');
     },

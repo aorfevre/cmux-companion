@@ -10,7 +10,7 @@ export async function awaitNativeActivation(activation, signal) {
   const url = new URL(activation.endpoint);
   requireValue(url.protocol === 'http:' && url.hostname === '127.0.0.1' && !url.username && !url.password
     && typeof activation.credential === 'string' && activation.credential.length >= 32 && activation.credential.length <= 128, 'Invalid private activation configuration');
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + 300000;
   while (Date.now() < deadline) {
     if (signal.aborted) throw new DomainError('ABORTED', 'Native activation was aborted');
     let response;
@@ -23,7 +23,7 @@ export async function awaitNativeActivation(activation, signal) {
     if (response) {
       await response.body?.cancel();
       if (response.status === 204) return;
-      requireValue(response.status === 409, 'Native dispatch authority was denied', 'FORBIDDEN');
+      requireValue(response.status === 409 || response.status === 503, 'Native dispatch authority was denied', 'FORBIDDEN');
     }
     await delay(50, undefined, { signal }).catch(() => {});
   }

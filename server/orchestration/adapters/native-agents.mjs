@@ -16,8 +16,10 @@ export function createNativeAgents({ directory, installation, engine, env, cmux,
   const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal: new CmuxTerminal(cmux), killGraceMs: policy.killGraceMs });
   const background = new NativeBackground({ directory: join(directory, 'background'), bin: installation.bin, inputs, policy, onResult: context.onResult });
   const runtime = new AgentRuntime({ interactive, background, locate: context.locate });
-  return Object.assign(runtime, { async close() {
-    const results = await Promise.allSettled([interactive.close(), background.close()]);
+  return Object.assign(runtime, {
+    /** @param {{preserve?: import('../types.d.ts').LaunchRequest[]}} [options] */
+    async close({ preserve = [] } = {}) {
+    const results = await Promise.allSettled([interactive.close({ preserve }), background.close()]);
     const failures = results.filter((result) => result.status === 'rejected');
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason), 'Native workers remain unresolved');
   } });
