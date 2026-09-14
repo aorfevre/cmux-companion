@@ -5,19 +5,44 @@ on:
     branches: [main]
 permissions:
   contents: read
+  actions: read
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - name: Check verified merge tree
+        id: proof
+        if: github.event_name == 'push'
+        run: node scripts/ci-verified-tree.mjs reuse
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Install dependencies
+        if: steps.proof.outputs.reused != 'true'
+        run: npm ci
       # Match the installed updater environment; UI scripts must select test mode.
-      - run: npm run verify
+      - name: Run full verification
+        if: steps.proof.outputs.reused != 'true'
+        run: npm run verify
         env:
           NODE_ENV: production
+      - name: Record verified checkout
+        if: github.event_name == 'pull_request'
+        run: node scripts/ci-verified-tree.mjs record
+      - name: Save verification evidence
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-tree-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ci-evidence/verified-tree.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       # Cypress is intentionally local-only; see AGENTS.md.
