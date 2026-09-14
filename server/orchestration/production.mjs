@@ -1,5 +1,6 @@
 import { readFileSync, lstatSync, realpathSync, existsSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { resolveGoalCheck } from '../goal-verification.mjs';
 import { createRuntime } from './create-runtime.mjs';
 import { assertCutover, acquireRepositoryOwnership } from './cutover.mjs';
 import { probeNativeCapabilities } from './adapters/native-capabilities.mjs';
@@ -9,7 +10,7 @@ import { GitHubCli } from './adapters/github-cli.mjs';
 import { GitRemote } from './adapters/git-remote.mjs';
 import { GitHubPublication } from './adapters/github.mjs';
 import { backgroundPolicy } from './adapters/agent-runtime.mjs';
-import { identifier, requireValue, canonicalJson } from './domain/contracts.mjs';
+import { identifier, requireValue } from './domain/contracts.mjs';
 
 /** @typedef {{schemaVersion:1; storage:{database:string;artifacts:string;resources:string}; native:{directory:string;ccsBin:string;claudeBin:string;engine:import('./adapters/ccs.mjs').Engine;env:NodeJS.ProcessEnv;cmux:{bin:string;env:NodeJS.ProcessEnv}}; repositories:{id:string;path:string;github:string;remote:{url:string;protocol:'ssh'|'https';env:NodeJS.ProcessEnv};checks:{id:string;argv:string[];bin:string;env:NodeJS.ProcessEnv;environmentId:string}[]}[]; policy:import('./types.d.ts').BackgroundPolicy; limits?:{global?:number;perGoal?:number;planners?:number};cutover:import('./cutover.mjs').Cutover;readOnly?:boolean}} ProductionConfig */
 /** Loading configuration never starts the installed service or imports old goals.
@@ -25,7 +26,7 @@ export function loadProductionConfig(path) {
   for (const repository of config.repositories) {
     identifier(repository.id); requireValue(!ids.has(repository.id) && isAbsolute(repository.path), 'Repository identity is invalid or duplicated'); ids.add(repository.id);
     requireValue(/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(repository.github) && repository.remote && ['ssh', 'https'].includes(repository.remote.protocol), 'Explicit GitHub destination required');
-    requireValue(Array.isArray(repository.checks) && repository.checks.length > 0, 'Configure required verification commands');
+    requireValue(Array.isArray(repository.checks), 'Verification defaults must be a list');
     for (const check of repository.checks) requireValue(typeof check.id === 'string' && Array.isArray(check.argv) && check.argv.length > 0 && check.argv.every(/** @param {unknown} arg */ arg => typeof arg === 'string') && isAbsolute(check.bin) && typeof check.environmentId === 'string' && check.environmentId.length > 0, 'Invalid configured verification command');
   }
   config.policy = backgroundPolicy(config.policy);
@@ -50,12 +51,13 @@ export async function createProductionRuntime({ config, token, sessions, monitor
       createAgents: context => agents({ ...config.native, installation, policy: config.policy }, { ...context, describe: request => {
         const description = context.describe(request);
         const repo = configured.get(request.goalId ? runtime?.store.get(request.goalId)?.repositoryId ?? '' : '');
-        return { ...description, prompt: `${description.prompt}\nOperator-approved verification commands: ${JSON.stringify(repo?.checks.map(({ id, argv }) => ({ id, argv })) ?? [])}` };
+        return { ...description, prompt: `${description.prompt}\nOptional repository verification defaults (discover and adapt checks for this goal): ${JSON.stringify(repo?.checks.map(({ id, argv }) => ({ id, argv })) ?? [])}` };
       } }),
-      resolveCheck: (repositoryId, check) => {
-        const allowed = configured.get(repositoryId)?.checks.find(candidate => canonicalJson({ id: candidate.id, argv: candidate.argv }) === canonicalJson(check));
-        requireValue(allowed, 'The proposed check is not configured for this repository', 'UNSUPPORTED_CAPABILITY');
-        return { bin: allowed.bin, argv: allowed.argv.slice(1), env: allowed.env, environmentId: allowed.environmentId, policy: config.policy };
+      resolveCheck: (repositoryId, check, goalId) => {
+        const resolved = resolveGoalCheck({ goal: runtime?.store.get(goalId), repositoryId, check,
+          env: config.native.env, environmentId: 'production', policy: config.policy });
+        const saved = configured.get(repositoryId)?.checks.find(entry => entry.id === check.id && JSON.stringify(entry.argv) === JSON.stringify(check.argv));
+        return saved ? { ...resolved, bin: saved.bin, env: saved.env, environmentId: `${saved.environmentId}-${resolved.environmentId}` } : resolved;
       },
       createPublisher: publisher ?? (({ repositories }) => {
         const remote = new GitRemote({ repositories, directory: join(config.storage.resources, 'remote-stage'), destinations: new Map(config.repositories.map(repo => [repo.id, repo.remote])) });

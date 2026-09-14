@@ -21,7 +21,7 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
     cy.get('.repository-row').first().click(); cy.findByLabelText('Repository name').clear().type('My project');
     cy.contains('summary', 'Check GitHub remote').click();
     cy.findByLabelText('GitHub destination').type('example/disposable'); cy.findByLabelText('Git remote').type('git@github.com:example/disposable.git');
-    cy.findByRole('checkbox', { name: /npm run test/ }).check(); cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
+    cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
     cy.findByRole('button', { name: 'Choose an agent' }).click(); cy.findByLabelText('Default provider').select('codex'); cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
     cy.findByRole('button', { name: 'Complete setup' }).click(); cy.location('pathname').should('equal', '/orchestration');
     cy.visit('/settings#agents'); cy.findByLabelText('Default provider').should('have.value', 'codex');
@@ -43,7 +43,7 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
       cy.get('.project-picker').screenshot(`project-favorites-${width}`);
     }
     cy.get('body').invoke('css', 'zoom', '2'); cy.viewport(390, 844);
-    cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
+    cy.document().then(doc => { const overflow = [...doc.querySelectorAll('body *')].filter(el => el.getBoundingClientRect().right > 391).map(el => `${el.tagName}.${el.className}:${Math.round(el.getBoundingClientRect().right)}`).join(', '); expect(doc.documentElement.scrollWidth, overflow).to.be.at.most(390); });
     cy.get('.project-picker').screenshot('project-favorites-zoom'); cy.get('body').invoke('css', 'zoom', '1');
     cy.findByLabelText('Search projects').type('{esc}'); cy.findByRole('button', { name: /^Project / }).should('have.focus').click();
     cy.findByLabelText('Search projects').type('karven'); cy.findByRole('button', { name: 'My project karven' }).click();
@@ -56,14 +56,11 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
     cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click();
     cy.get('.project-choice').should('have.length', 3); cy.contains('excluded-worktree').should('not.exist');
     cy.findByRole('button', { name: 'new-repository karven' }).click();
-    cy.findByRole('link', { name: 'Choose checks' }).click();
-    cy.findByRole('article', { name: 'Repository details' }).should('be.visible');
-    cy.findByLabelText('Repository name').should('have.value', 'new-repository');
-    cy.contains('Used for goals and pull requests. No additional destination is needed.').should('be.visible');
-    cy.findByLabelText('GitHub destination').should('not.be.visible');
-    cy.findByRole('checkbox', { name: /npm run test/ }).should('not.be.checked');
-    cy.screenshot('repository-choose-checks', { capture: 'viewport' });
-    cy.get('.repository-row').should('have.length', 3); cy.contains('excluded-worktree').should('not.exist');
+    cy.findByRole('link', { name: 'Choose checks' }).should('not.exist');
+    cy.findByLabelText('What should we accomplish?').type('Discover checks for this new goal');
+    cy.findByRole('button', { name: 'New goal' }).should('be.enabled').click();
+    cy.findByRole('navigation', { name: 'Goals' }).should('contain.text', 'Discover checks for this new goal');
+    cy.screenshot('goal-without-repository-checks', { capture: 'viewport' });
   });
   it('keeps a large projected catalog bounded and readable', () => {
     cy.intercept('GET', '/api/orchestration/configuration', req => req.continue(res => {
