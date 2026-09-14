@@ -1,3 +1,4 @@
+import { prepareCcsLaunch } from './ccs-managed-launcher.mjs';
 import { ResultOutbox } from '../result-outbox.mjs';
 import { createBridge } from '../bridge.mjs';
 import { spawn } from 'node:child_process';
@@ -79,9 +80,10 @@ export async function runNativeTerminal(configPath) {
       // Resume is a durable idempotent command, not a new attempt or conversation.
       writeFileSync(join(directory, `run-${runId}.json`), JSON.stringify({ identity: config.identity }), { flag: 'wx', mode: 0o600 });
       if (controller.signal.aborted) break;
+      const command = prepareCcsLaunch({ ...config.command, argv }, config.installation, directory, runId);
       providerSent = true; providerStopped = false;
       save('session.json', { phase: 'starting', runId });
-      const child = spawn(config.command.bin, argv, { cwd: config.command.cwd, env: config.command.env, stdio: 'inherit', detached: true });
+      const child = spawn(command.bin, command.argv, { cwd: command.cwd, env: command.env, stdio: 'inherit', detached: true });
       const exited = once(child, 'exit'); void exited.catch(() => {});
       try { await once(child, 'spawn'); } catch (error) { providerStopped = !child.pid; throw error; }
       providerPid = child.pid ?? null;
