@@ -1,7 +1,9 @@
 # Bundled updater with update notifications
 
 Date: 2026-09-13
-Status: Approved by the user on 2026-09-13 after spec commit 392144c.
+Status: Original contract approved by the user on 2026-09-13 after spec commit 392144c.
+The 2026-09-14 native-planner handoff amendment below awaits human review; no
+implementation plan or handoff implementation is authorized by this document alone.
 Review feedback: On 2026-09-13 the user requested an opt-in automatic-installation
 toggle, disabled by default; incorporated below.
 Owner: The implementing agent owns packaging, UI, API, durable requests,
@@ -16,6 +18,10 @@ can be explicitly enabled with a persistent Settings toggle. Discovery alone nev
 authorizes installation: each transaction requires either exact-commit manual
 approval or a currently enabled automatic-installation policy.
 The updater remains a separate process that can recover a failed application.
+Companion runs above cmux: unrelated sessions never delay its updates. A supported,
+positively identified Companion planning terminal can also remain open and working
+through an update, using the handoff contract below. Active in-process effects and
+unresolved ownership still delay activation; this does not detach every agent type.
 
 This contract supersedes unattended installation and independent updater-repository
 tracking in `docs/local-updater-spec.md`. Existing recovery and retention safeguards
@@ -43,23 +49,25 @@ the operator's live services, publish a release, or change repository visibility
 5. Confirmation creates one durable, idempotent request for that exact commit.
    A newer commit cannot inherit its permission. Duplicate clicks and service
    restarts cannot create duplicate transactions.
-6. If managed agents or effects are active, offer Update when idle. Queueing requires
-   explicit confirmation; show Waiting for agents and Cancel queued update.
-   Unknown worker ownership counts as busy. Existing work can finish normally.
-7. Once safely idle, the service fences new workflow admission before the updater
-   prepares and activates the authorized release. Recheck the fence and idle state
-   before switching. Never kill cmux sessions or interrupt their interactive work.
-   Unmanaged cmux sessions remain running; if safety cannot be established, explain
-   the blocking condition instead of inferring idleness from a missing process.
+6. If a non-transferable effect is active, offer Update when ready. Queueing requires
+   explicit confirmation; name the actual blocking effect and offer Cancel queued
+   update. A supported interactive planner or unrelated cmux session does not count
+   as busy solely because it is running. Unknown ownership remains blocking.
+7. Fence new workflow admission and establish the supported terminal handoff before
+   activation. Recheck effect quiescence, service identity and handoff evidence before
+   switching. Never kill cmux sessions or interrupt their interactive work. If safety
+   cannot be established, explain the precise blocker instead of inferring idleness
+   from a missing process. The app briefly reconnects while preserved planners keep
+   their existing terminal, conversation and worktree.
 8. Show preparing, verifying, restarting, success or failure. The PWA reconnects and
    reports the observed running commit. Failed startup triggers verified recovery
    of the previous compatible release; recovery failure remains visible and stops
    further activation until explicitly resolved.
 9. Settings offers an Automatic installation toggle, off on fresh installation and
-   legacy migration. Explain beside it: install eligible updates when agents are
-   idle, with a brief reconnect. Turning it on is explicit ongoing authorization;
+   legacy migration. Explain beside it: install eligible updates when Companion can
+   restart safely, keeping supported planning terminals open, with a brief reconnect. Turning it on is explicit ongoing authorization;
    no per-update confirmation is required while it remains on. Each eligible
-   candidate receives its own durable request and uses the same CI, idle, fencing,
+   candidate receives its own durable request and uses the same CI, handoff, fencing,
    validation and recovery rules as manual updates. Show automatically queued work.
 10. Turning the toggle off persists immediately, revokes automatically authorized
     requests that have not started staging, and preserves discovery, notifications
@@ -116,6 +124,85 @@ the operator's live services, publish a release, or change repository visibility
   paths, token, state, rollback target and disabled choices. Detect unsupported or
   active legacy transactions and refuse migration with useful guidance.
 
+## Native planning terminal handoff amendment (2026-09-14)
+
+This section replaces the blanket managed-agent idle requirement. Its scope is
+Companion's native **interactive planner** supervisor, which cmux owns independently
+of the Companion process. Existing background workers, verification, publication,
+Git integration, startup fetches, prompt delivery and unresolved external operations
+retain their effect-specific fences. An idle goal status alone is not a blocker;
+a worker count alone is not evidence that restart is safe.
+
+### Admission and shutdown
+
+- Acquire the durable update fence, stop new admission, and drain already-entered
+  mutations before recording a handoff. No launch, resume, termination or other
+  in-process effect may be in flight at the snapshot boundary.
+- Transfer only a fully dispatched planner with current attempt/generation/revision,
+  operation and conversation bindings, matching request/workspace/runner receipts,
+  verified runner PID stamp, stable loopback endpoint and durable scoped credential.
+  A missing process or ambiguous receipt never qualifies. Record an explicit
+  supported handoff-protocol version; observing a PID alone does not grant support.
+- The update-specific close path detaches these verified terminal supervisors without
+  signalling runner/provider groups or closing their cmux workspaces. Normal abort,
+  cancellation and non-update teardown retain their existing ownership rules. New
+  code must not turn every close call into silent abandonment of owned processes.
+- The replacement service adopts the same terminal/attempt identity without launch,
+  credential replacement, native conversation restart or worktree recreation. Verify
+  its ability to observe the handed-off runner before accepting application health.
+  A runner that exits naturally during reconnect is reconciled from durable receipts;
+  this must not trigger a duplicate launch or be mistaken for permission to retry.
+
+### Results and reconnect
+
+- Supported planner clients durably record submitted results outside the application's
+  SQLite rollback set before acknowledging local receipt. The outbox binds the exact
+  result id, bytes and attempt identity, with private permissions and bounded storage.
+  It survives maintenance responses, unavailable loopback service, client reconnect
+  and application rollback. Accepted server receipts retire entries; unknown delivery
+  retries exactly the same id and bytes and cannot manufacture approval.
+- Distinguish transient maintenance/offline failures from revoked authority. Retry
+  transient failures without exposing tokens or result contents; deny stale, aborted,
+  answered or explicitly revoked submissions under the existing authority rules.
+  Update interruption must not silently discard a completed plan or cause a planner
+  to issue an independently identified duplicate submission.
+- Initial activation and resume must understand the supported handoff protocol and
+  reconnect window. Preserve explicit cancellation and finite failure reporting;
+  do not replace authentication errors with unlimited retries.
+
+### Data recovery and release lifetime
+
+- Keep the fence across replacement startup and exact-SHA health acceptance. Candidate
+  startup may inspect/reconcile handoff evidence but must not dispatch new work, mint
+  replacement agent credentials, accept outbox mutations or advance goal lifecycle
+  before acceptance. Existing credentials and attempt identities are in the consistent
+  pre-activation SQLite backup.
+- Failed activation restores the transaction's original SQLite state while keeping
+  handed-off runners and their outboxes intact. The restored service adopts those
+  runners, validates their original credentials, then drains results after recovery
+  releases the fence. Restoration must not duplicate an acknowledged result, lose an
+  unacknowledged result, or accept a result under a different generation.
+- Pin every originating Companion release needed by a live/paused supervisor, MCP
+  process, hook or resume command until stopped evidence and outbox settlement allow
+  release. Retention must consult durable handoff dependencies; current/previous
+  symlinks and process cwd/executable inventory alone are insufficient. Never delete
+  a release merely because several newer updates have completed.
+
+### Rollout and user-visible limitations
+
+Already-running terminals retain their original client/runner code; upgrading the
+Companion service does not retrofit an outbox or handoff support into them. A legacy
+terminal without verified protocol support must wait until it finishes, or use a
+separately authorized operator recovery with explicit consequences. Show this as
+“Existing planning agent needs update-compatible recovery” with the affected goal;
+do not claim that cmux itself blocks updates. Do not silently stop/relaunch a legacy
+planner, rewrite its private files, or promise uninterrupted work from a PID check.
+
+The first rollout can therefore require a one-time compatibility transition. Normal
+updates afterward must complete while supported planning terminals remain open.
+No change to the default-off automatic-installation preference or update authorization
+rules is implied. Other agent types require their own reviewed continuity contract.
+
 ## Non-goals
 
 Stable-release channels, arbitrary refs, public webhooks,
@@ -137,7 +224,12 @@ implementation validation; those remain separately authorized operator actions.
 | Only the exact trusted main commit with successful Verify evidence is offered. | Mocked GitHub eligibility suite covering wrong workflow/repository/SHA, pending, failure, missing evidence, divergence and rate limits. |
 | Notice, changes, Later, confirmation and refresh behave correctly. | Cypress journey using a real disposable service and fake update discovery. |
 | Approval is durable, idempotent and cannot retarget a newer commit. | Restart/concurrent-request test against private temporary updater state. |
-| Busy and uncertain work delays activation; cancellation and the admission race are safe. | Orchestration/updater integration test racing launches, idle fencing and cancellation. |
+| Non-transferable effects and uncertain ownership delay activation; unrelated cmux sessions and verified supported planners do not. | Orchestration/updater admission test racing launches, handoff, fencing and cancellation. |
+| Successful update preserves the same planner runner PID, conversation, worktree and attempt without duplicate launch. | Disposable terminal-supervisor update rehearsal with recorded identities before/after. |
+| Result submission survives maintenance/offline and lost-response boundaries exactly once without automatic approval. | Durable outbox crash/replay test with stable result id/bytes and revoked-authority rejection. |
+| Failed candidate health restores SQLite and reconnects the same planner and credentials without lost results. | Fault-injection handoff rollback rehearsal spanning snapshot, restart, restore and outbox drain. |
+| Retention protects live planner runtime dependencies across multiple releases. | Release-cleanup test with a planner originating more than three releases earlier and pending outbox evidence. |
+| Legacy terminal protocol gaps remain visible and never trigger implicit termination or recovery. | Admission/UI regression with an old client fixture and zero signal/relaunch calls. |
 | Failed activation and process interruption recover without false success. | Fault-injection transaction suite with exact-SHA health and compatible data restoration. |
 | Legacy migration preserves private state and refuses competing owners. | Disposable two-store migration rehearsal with active-transaction refusal. |
 | Update mutations enforce pairing, origin, schema and replay rules. | Backend security-route suite with fake updater effects. |
@@ -153,11 +245,13 @@ separately authorized rehearsals establish them.
 
 In the disposable end-to-end update journey, one eligible commit produces one
 notice and exactly one healthy activation after explicit confirmation or persisted
-toggle opt-in, with zero activation without either authorization or while managed
-work is active or uncertain. Repeat with the default-off policy and verify that
-discovery alone produces zero installations.
+toggle opt-in while a supported planner continues in the same terminal and its plan
+is accepted exactly once after reconnect. Require zero activation without either
+authorization, or while non-transferable effects or unknown ownership remain. Repeat
+with default-off and with a failed candidate: discovery alone installs nothing, and
+rollback preserves the same planner and its submitted result.
 
-## Inspection evidence
+## Original inspection evidence (2026-09-13)
 
 Inspected updater source commit: `c9557aa0859f60b21c42edf04d9dc4dcf7f20190`.
 
