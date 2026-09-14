@@ -34,7 +34,7 @@
 .orchestration .project-star[aria-pressed=true] { color:var(--accent); }
 .orchestration .project-show-all { width:100%; margin-top:10px; }
 .project-context { color:var(--muted); font-size:12px; }
-.project-picker { container-type:inline-size; }
+.project-picker { container-type:inline-size; max-width:560px; }
 @container (max-width:240px) {
   .project-picker-panel { padding:6px; }
   .project-picker-results { padding:2px; }
