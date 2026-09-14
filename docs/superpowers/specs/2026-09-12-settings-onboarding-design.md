@@ -30,6 +30,14 @@ to cut over or modify the operator's installed service.
    `ccs codex`, and select a model (default or a custom valid model ID).
    Edit each calling command as an executable and ordered arguments, with a
    readable command preview. Support direct `claude` and `codex` entry points.
+   The user also explicitly requested terminal names such as `xclaude` and
+   `xcodex`: resolve a simple alias to known Claude, Codex, CCS-profile or CCSXP
+   executable/argv without executing the alias. Reject functions, substitutions,
+   shell operators and arbitrary wrapper commands. Show the resolved command and
+   any permission-bypass alias flags discarded in favor of Companion's managed
+   permissions/hooks. Freeze this normalized command in each goal's configuration;
+   editing a shell alias must never retarget an existing goal. CCSXP must keep the
+   generated private Codex home, MCP and hooks through `CCSXP_CODEX_HOME`.
    Validate installation and supported capabilities without launching a paid job.
 4. Add a project by its local Mac directory. Validate and canonicalize the Git
    root; suggest its existing remote and GitHub destination for confirmation.
@@ -111,6 +119,7 @@ contain multiple assertions.
 | Fresh startup without orchestration JSON or agent binaries exposes paired, resumable onboarding with generic defaults. | Disposable startup/setup integration test with an empty home/data directory. |
 | Adding a validated project makes it selectable in monitoring and goals and survives restart. | Real-service Cypress onboarding/project scenario. |
 | Claude and Codex commands/models can be edited and persist; each produces its provider's valid launch contract. | Adapter contract suite using fake CCS and direct-provider executables for both providers. |
+| Simple terminal aliases resolve visibly, are frozen per goal and preserve CCSXP private configuration. | Resolver/snapshot regressions and CCSXP argv/home tests with account-free metadata fixtures. |
 | Invalid executable configuration and shell constructs cannot become generic execution; unsupported providers remain visibly unready. | Provider settings boundary test with malicious/unsupported command fixtures. |
 | Project/command/settings mutations preserve authentication, origin enforcement and concurrent-write detection. | Settings API security/concurrency integration scenario. |
 | Settings and import are durable and atomic, independent of the monitoring cache, and exclude credentials. | SQLite migration/import/restart scenario including invalid imports and cache deletion. |
