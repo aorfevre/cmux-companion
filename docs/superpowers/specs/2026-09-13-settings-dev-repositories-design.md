@@ -1,7 +1,8 @@
 # Unified settings, named Dev repos, and interface consistency
 
 Date: 2026-09-13
-Status: Automatic repository tracking amendment awaiting human review.
+Status: Automatic repository tracking amendment approved by the user (“do it”)
+after spec commit 6ccf292 on 2026-09-14.
 Goals-first navigation and folder picker were approved after spec commit 2645a3a.
 The original implementation was approved after spec commit 89b1073 and shipped in PR #119.
 Owner: The implementing agent owns integration and verification across all layers.
