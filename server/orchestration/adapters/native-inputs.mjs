@@ -16,11 +16,11 @@ const quote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
  * lifecycle belongs to the process adapter; preparation never starts a worker.
  */
 export class NativeInputs {
-  /** @param {{ profile?: string; direct?: boolean; engine: import('./ccs.mjs').Engine; capabilities: import('./ccs.mjs').NativeCapabilities; env: NodeJS.ProcessEnv; installation?: Awaited<ReturnType<typeof import('./native-capabilities.mjs').probeNativeCapabilities>>; describe: (request: import('../types.d.ts').LaunchRequest) => Promise<NativeDescription> | NativeDescription }} options */
-  constructor({ engine, capabilities, env, describe, installation, direct = false, profile }) {
+  /** @param {{ profile?: string; direct?: boolean; ccsxp?: boolean; engine: import('./ccs.mjs').Engine; capabilities: import('./ccs.mjs').NativeCapabilities; env: NodeJS.ProcessEnv; installation?: Awaited<ReturnType<typeof import('./native-capabilities.mjs').probeNativeCapabilities>>; describe: (request: import('../types.d.ts').LaunchRequest) => Promise<NativeDescription> | NativeDescription }} options */
+  constructor({ engine, capabilities, env, describe, installation, direct = false, profile, ccsxp = false }) {
     validateNativeEnvironment(env);
     installation?.assertCurrent();
-    this.installation = installation; this.direct = direct; this.profile = profile ?? engine.provider;
+    this.installation = installation; this.ccsxp = ccsxp; this.direct = direct; this.profile = profile ?? engine.provider;
     requireValue(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(this.profile), 'Invalid CCS profile');
     this.engine = engine; this.capabilities = installation?.capabilities ?? capabilities; this.env = { ...env, ...installation?.env }; this.describe = describe;
   }

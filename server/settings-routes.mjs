@@ -63,7 +63,7 @@ export function registerSettingsRoutes(app, { settings, onChange = async () => {
     if (!body || !['claude', 'codex'].includes(body.provider) || Object.keys(body).some(key => !['provider', 'command'].includes(key))) throw new TypeError('Choose Claude or Codex');
     const command = providerCommand(body.command, body.provider);
     const executable = resolveExecutable(command.executable);
-    if (!executable) return { ready: false, reason: 'Executable not found on this Mac. Install the tool or enter its absolute path.' };
+    if (!executable && command.executable.includes('/')) return { ready: false, reason: 'Executable not found on this Mac. Install the tool or enter its absolute path.' };
     return probeProvider(body.provider, command, settings.read().settings.tools);
   });
 }

@@ -29,12 +29,14 @@ test('Codex metadata probes only the pinned native executable and supports direc
 });
 test('Codex inputs isolate config, deny shell/hosted tools and generate native argv for both launch modes', async t => {
   const { root, worktree } = fixture(t);
-  for (const direct of [false, true]) for (const role of ['planner', 'reviewer', 'implementer', 'integrator']) {
-    const directory = join(root, `${role}-${direct}`); mkdirSync(directory);
+  for (const kind of ['ccs', 'direct', 'ccsxp']) for (const role of ['planner', 'reviewer', 'implementer', 'integrator']) {
+    const direct = kind === 'direct', ccsxp = kind === 'ccsxp';
+    const directory = join(root, `${role}-${kind}`); mkdirSync(directory);
     const request = { goalId: 'goal', operationId: 'op', attempt: { id: 'attempt', generation: 0, revision: 0, role, mode: role === 'planner' ? 'interactive' : 'background', conversationId: '00000000-0000-4000-8000-000000000001', worktree, target: null } };
-    const inputs = new CodexInputs({ direct, capabilities: caps, engine: { provider: 'codex', model: 'default' }, env: { HOME: root }, describe: () => ({ prompt: 'Pinned scope', bridge: { endpoint: 'http://127.0.0.1:1234', credential: 'c'.repeat(48) } }) });
+    const inputs = new CodexInputs({ direct, ccsxp, capabilities: caps, engine: { provider: 'codex', model: 'default' }, env: { HOME: root }, describe: () => ({ prompt: 'Pinned scope', bridge: { endpoint: 'http://127.0.0.1:1234', credential: 'c'.repeat(48) } }) });
     const result = await inputs.prepare(request, directory);
-    assert.equal(result.argv.includes('--target'), !direct);
+    assert.equal(result.argv.includes('--target'), !direct && !ccsxp);
+    if (ccsxp) { assert.equal(result.env.CCSXP_CODEX_HOME, result.env.CODEX_HOME); assert.equal(result.argv[0], '--strict-config'); }
     assert.equal(result.argv.includes('exec'), role !== 'planner');
     assert.equal(result.argv.includes('--json'), role !== 'planner');
     assert.equal(result.argv.includes('--session-id'), false);

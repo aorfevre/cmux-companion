@@ -70,17 +70,17 @@ export class CodexInputs extends NativeInputs {
     save(join(home, 'config.toml'), config.join('\n') + '\n');
     // The pinned CCS adapter passes CODEX_HOME through and uses CCS_CODEX_PATH;
     // --target prevents a profile named codex from selecting the Claude target.
-    const argv = this.direct ? [] : [this.profile, '--target', 'codex'];
+    const argv = this.direct || this.ccsxp ? [] : [this.profile, '--target', 'codex'];
     argv.push('--strict-config', '--dangerously-bypass-hook-trust');
     if (this.engine.model !== 'default') argv.push('--model', this.engine.model);
     if (request.attempt.mode === 'background') argv.push('exec', '--json');
     argv.push('Follow the pinned role context. Read project files using the files MCP server. Use only the scoped role tools. Return the required JSON role envelope as your final answer.');
-    return { plannerName: prepared.plannerName, argv, env: { ...prepared.env, CODEX_HOME: home }, ...(prepared.activation ? { activation: prepared.activation } : {}) };
+    return { plannerName: prepared.plannerName, argv, env: { ...prepared.env, CODEX_HOME: home, ...(this.ccsxp ? { CCSXP_CODEX_HOME: home } : {}) }, ...(prepared.activation ? { activation: prepared.activation } : {}) };
   }
 }
 
-export function createCodexAgents({ directory, installation, direct, profile, engine, env, cmux, policy }, context) {
-  const inputs = new CodexInputs({ installation, direct, profile, engine, env, capabilities: installation.capabilities, describe: context.describe });
+export function createCodexAgents({ directory, installation, direct, ccsxp, profile, engine, env, cmux, policy }, context) {
+  const inputs = new CodexInputs({ installation, direct, ccsxp, profile, engine, env, capabilities: installation.capabilities, describe: context.describe });
   const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal: new CmuxTerminal(cmux), killGraceMs: policy.killGraceMs });
   const background = new NativeBackground({ directory: join(directory, 'background'), bin: installation.bin, inputs, policy, onResult: context.onResult, parseResult: codexResult });
   const runtime = new AgentRuntime({ interactive, background, locate: context.locate });
