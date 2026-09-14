@@ -13,6 +13,7 @@ import { createSettingsRuntime } from '../server/settings-runtime.mjs';
 import { buildApp } from '../server/app.mjs';
 import { RepoCatalog } from '../server/repo-catalog.mjs';
 import { createRepositoryFixture } from '../tests/helpers/orchestration/fixture.mjs';
+import { GitRemote } from '../server/orchestration/adapters/git-remote.mjs';
 import { FakeAgents } from '../tests/helpers/orchestration/fake-agents.mjs';
 
 // Explicit fake providers only. This fixture never discovers installed tools,
@@ -28,6 +29,7 @@ export async function startSettingsDemo() {
     await cp(repository.repository, join(directory, 'rekord', 'example'), { recursive: true });
     const probeProvider = async () => ({ ready: true });
     runtime = await createSettingsRuntime({ settings, directory, token, probeProvider,
+      prepareGoal: ({ goal, repositories }) => new GitRemote({ repositories, directory: join(directory, 'fixture-remotes'), destinations: new Map([[goal.repositoryId, { url: repository.remote, protocol: 'file', env: { PATH: process.env.PATH } }]]) }).fetchBase(goal.repositoryId, goal.baseBranch),
       createAgents: () => Object.assign(new FakeAgents(), { close: async () => {} }),
     });
     const catalog = new RepoCatalog({ roots: [], projects: () => { const current = settings.read().settings; return current.projects.map(project => ({ ...project, devRepoName: current.devRepos?.find(root => root.id === project.devRepoId)?.name, devRepoPath: current.devRepos?.find(root => root.id === project.devRepoId)?.path })); } });

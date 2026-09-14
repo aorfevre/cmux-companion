@@ -170,6 +170,19 @@ after checking owned work and transaction recovery. This is a manual repair;
 verify a later automatic version transition before claiming self-update works.
 Never include pairing tokens or private database contents in troubleshooting logs.
 
+## Goal startup and rollback
+
+New goals persist their startup and clarification state alongside the existing
+journal format. Historical goals retain their original base commit. The normal
+updater rollback restores its verified database backup before restarting the
+previous release, so that release sees its own pre-update state.
+
+Do not manually switch an older executable onto a database containing new pending
+startup or clarification state: older schedulers do not understand those execution
+fences. Use the supported backed-up recovery procedure instead of an executable-only
+downgrade. Restoring an older backup discards subsequent journal changes and requires
+an explicit recovery decision.
+
 ## Validation boundary
 
 Local unit, UI and Cypress checks use temporary repositories/databases and fake

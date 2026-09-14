@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { join } from 'node:path';
-import { realpathSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { realpathSync, readFileSync, writeFileSync, copyFileSync, renameSync, rmSync } from 'node:fs';
 import { GitRepository } from '../server/orchestration/adapters/git.mjs';
 import { GitRemote } from '../server/orchestration/adapters/git-remote.mjs';
 import { GitHubPublication } from '../server/orchestration/adapters/github.mjs';
@@ -253,4 +253,33 @@ for (const kind of ['push', 'pr']) test(`proven ${kind} spawn failure is retryab
   restore();
   assert.equal((await f.publisher.publish(f.input)).status, 'published');
   assert.equal(f.github.creates.length, 1);
+});
+
+test('goal base fetch imports latest main without changing a dirty feature checkout or refs', async t => {
+  const f = await fixture(t);
+  let copies = 0;
+  f.remote.baseFiles = { copyFileSync: (...args) => { copies++; return copyFileSync(...args); }, rmSync,
+    renameSync: (from, to) => {
+      if (dirname(from) !== dirname(to)) throw Object.assign(new Error('Cross-device rename'), { code: 'EXDEV' });
+      return renameSync(from, to);
+    },
+  };
+  const other = join(f.repo.directory, 'other-clone');
+  await fixtureGit(f.repo.directory, ['clone', f.repo.remote, other]);
+  const remoteHead = await f.repo.implement(other, 'B');
+  await fixtureGit(other, ['push', 'origin', 'main']);
+  await assert.rejects(fixtureGit(f.repo.repository, ['cat-file', '-e', remoteHead]));
+  await fixtureGit(f.repo.repository, ['switch', '-c', 'feature-user']);
+  writeFileSync(join(f.repo.repository, 'user-untracked.txt'), 'preserve me');
+  const status = await fixtureGit(f.repo.repository, ['status', '--porcelain']);
+  const refs = await fixtureGit(f.repo.repository, ['show-ref']);
+  const fetched = await f.remote.fetchBase('repo', 'main');
+  assert.equal(fetched, remoteHead); assert.equal(copies, 2);
+  assert.equal(await fixtureGit(f.repo.repository, ['symbolic-ref', '--short', 'HEAD']), 'feature-user');
+  assert.equal(await fixtureGit(f.repo.repository, ['status', '--porcelain']), status);
+  assert.equal(await fixtureGit(f.repo.repository, ['show-ref']), refs);
+  const worktree = await f.repositories.provision({ operationId: 'goal-base-proof', repositoryId: 'repo', branch: 'companion/newgoal/planner', baseSha: fetched });
+  assert.equal(await fixtureGit(worktree.worktree, ['rev-parse', 'HEAD']), fetched);
+  await assert.rejects(f.remote.fetchBase('repo', 'missing-branch'), { code: 'BASE_FETCH_FAILED' });
+  await assert.rejects(f.remote.fetchBase('repo', '--upload-pack=evil'), /branch/i);
 });

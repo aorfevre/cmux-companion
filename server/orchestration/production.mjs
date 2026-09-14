@@ -53,6 +53,12 @@ export async function createProductionRuntime({ config, token, sessions, monitor
         const repo = configured.get(request.goalId ? runtime?.store.get(request.goalId)?.repositoryId ?? '' : '');
         return { ...description, prompt: `${description.prompt}\nOptional repository verification defaults (discover and adapt checks for this goal): ${JSON.stringify(repo?.checks.map(({ id, argv }) => ({ id, argv })) ?? [])}` };
       } }),
+      prepareGoal: async goal => {
+        requireValue(runtime, 'Runtime is not ready', 'NOT_READY');
+        ownership.assertOwned();
+        const remote = new GitRemote({ repositories: runtime.repositories, directory: join(config.storage.resources, 'goal-base', goal.id), destinations: new Map(config.repositories.map(repo => [repo.id, repo.remote])) });
+        return remote.fetchBase(goal.repositoryId, goal.baseBranch);
+      },
       resolveCheck: (repositoryId, check, goalId) => {
         const resolved = resolveGoalCheck({ goal: runtime?.store.get(goalId), repositoryId, check,
           env: config.native.env, environmentId: 'production', policy: config.policy });

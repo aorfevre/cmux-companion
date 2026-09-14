@@ -1,3 +1,4 @@
+import { projectCode } from './orchestration/domain/goal-presentation.mjs';
 import { repositoryReadiness } from './repository-readiness.mjs';
 import { assertDevChild } from './dev-repositories.mjs';
 import { join } from 'node:path';
@@ -13,7 +14,7 @@ import { resolveGoalCheck } from './goal-verification.mjs';
 
 // Every provider instance and publication adapter is bound to a durable goal
 // configuration, never to the mutable current Settings form.
-export async function createSettingsRuntime({ settings, directory, token, createAgents, probeProvider, probeGit = probeGitCapabilities, own = acquireRepositoryOwnership, publisherFactory }) {
+export async function createSettingsRuntime({ settings, directory, token, createAgents, probeProvider, probeGit = probeGitCapabilities, own = acquireRepositoryOwnership, publisherFactory, prepareGoal }) {
   const storage = { database: join(directory, 'core.sqlite'), artifacts: join(directory, 'artifacts'), resources: join(directory, 'resources') };
   const repositories = new Map(settings.read().settings.projects.map(project => [project.id, project.path]));
   const agents = new Map(), publications = new Map(), owners = new Map();
@@ -80,18 +81,32 @@ export async function createSettingsRuntime({ settings, directory, token, create
         const description = context.describe(request), checks = configured(request.goalId).project.checks;
         return { ...description, prompt: `${description.prompt}\nOptional repository verification defaults (discover and adapt checks for this goal): ${JSON.stringify(checks.map(check => ({ id: check.id, argv: [check.executable, ...check.args] })))}` };
       } }; return localAgents; },
+      prepareGoal: async goal => {
+        const config = configured(goal.id), project = config.project;
+        if (prepareGoal) return prepareGoal({ goal, config, repositories: runtime.repositories });
+        const readiness = await probeProvider(config.provider, config.command, config.tools);
+        requireValue(readiness.ready, `${readiness.reason || 'The saved planning provider is unavailable'}. Restore this goal's saved provider and retry; create a new goal to use changed provider settings.`, 'NOT_READY');
+        await probeGit(); await ownership(project);
+        requireValue(project.remote, 'Configure the GitHub destination and retry startup', 'NOT_READY');
+        const remote = new GitRemote({ repositories: runtime.repositories, directory: join(storage.resources, 'goal-base', goal.id), destinations: new Map([[project.id, { url: project.remote, protocol: project.remote.startsWith('https:') ? 'https' : 'ssh', env: environment() }]]) });
+        return remote.fetchBase(project.id, goal.baseBranch);
+      },
       beforeCommand: async command => {
-        if (command.type !== 'create_goal' || runtime.store.get(command.goalId)) return;
-        transition(null, command, { kind: 'user' });
+        if (command.type !== 'create_goal') return;
+        if (runtime.store.get(command.goalId)) { if (command.payload.description !== undefined) command.payload.projectCode = projectCode(configured(command.goalId).project.name); return; }
         const before = settings.read(), project = before.settings.projects.find(entry => entry.id === command.payload.repositoryId && entry.enabled);
         requireValue(project, 'Choose an enabled project in Settings', 'NOT_READY');
         const readinessIssue = repositoryReadiness(project).reason;
         requireValue(!readinessIssue, readinessIssue || 'Repository setup is incomplete', 'NOT_READY');
-        const readiness = await probeProvider(before.settings.provider, before.settings.providers[before.settings.provider], before.settings.tools);
-        requireValue(readiness.ready, readiness.reason || 'Configure a supported provider in Settings', 'NOT_READY');
         const root = before.settings.devRepos?.find(entry => entry.id === project.devRepoId);
         if (root) await assertDevChild(root.path, project.path);
-        await probeGit(); await ownership(project);
+        if (command.payload.baseSha !== undefined) {
+          const readiness = await probeProvider(before.settings.provider, before.settings.providers[before.settings.provider], before.settings.tools);
+          requireValue(readiness.ready, readiness.reason || 'Configure a supported provider in Settings', 'NOT_READY');
+          await probeGit(); await ownership(project);
+        }
+        if (command.payload.description !== undefined) command.payload.projectCode = projectCode(project.name);
+        transition(null, command, { kind: 'user' });
         requireValue(settings.read().revision === before.revision, 'Settings changed; review the current configuration and retry', 'VERSION_CONFLICT');
         const snapshot = settings.snapshotGoal(command.goalId, project.id);
         requireValue(snapshot.project.id === project.id, 'Goal identity was reused with another project', 'IDEMPOTENCY_CONFLICT');

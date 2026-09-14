@@ -12,7 +12,7 @@ import { FakeGitHub } from '../tests/helpers/orchestration/fake-github.mjs';
 
 /** Account-free demo. All external adapters are fixed here, never selected by env. */
 export async function startOrchestrationDemo({ port = 0, readOnly = false, browserHarness = false } = {}) {
-  let fixtureAgents, fixtureGithub; const overlaps = new Set();
+  let fixtureAgents, fixtureGithub, fixtureRemote; const overlaps = new Set();
   const demo = await createDevelopmentServer({ port, configure: async (directory) => {
     const repo = await createRepositoryFixture();
     repo.contract.verification.push({ id: 'injected_dependencies', argv: ['node', '--input-type=module', '-e', "import { composition } from './src/composition.mjs'; if (composition(() => 7, () => 11) !== 18) process.exit(1);"] });
@@ -22,6 +22,7 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
       metadata: { repositoryId: 'repo', baseSha: repo.baseSha, repository: repo.repository, remote: repo.remote, browserHarness },
       options: {
         repositories: new Map([['repo', repo.repository]]), readOnly, limits: { global: 2, perGoal: 2 },
+        prepareGoal: goal => fixtureRemote.fetchBase(goal.repositoryId, goal.baseBranch),
         createAgents: ({ onResult }) => {
           const agents = new ScriptedAgents({
             script: async ({ goalId, attempt }, { signal }) => {
@@ -63,6 +64,7 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
         },
         createPublisher: ({ repositories }) => {
           const remote = new GitRemote({ repositories, directory: join(directory, 'remote-stage'), destinations: new Map([['repo', { url: realpathSync(repo.remote), protocol: 'file', env: { PATH: process.env.PATH } }]]) });
+          fixtureRemote = remote;
           fixtureGithub = new FakeGitHub({ remote });
           return new GitHubPublication({ directory: join(directory, 'publications'), remote, github: fixtureGithub });
         },

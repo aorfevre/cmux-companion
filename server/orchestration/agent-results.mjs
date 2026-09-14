@@ -24,8 +24,14 @@ export class AgentResults {
     if (attempt.role !== authority.role || attempt.generation !== authority.generation || attempt.revision !== authority.revision) return null;
     const current = goal.generation === attempt.generation && goal.revision === attempt.revision;
     const ownPublication = attempt.role === 'planner' && result.status === 'accepted' && goal.generation === attempt.generation + 1 && goal.revision === attempt.revision + 1;
-    if (!current && !ownPublication) return null;
-    return createHash('sha256').update(raw).digest('hex') === result.artifactId ? result : null;
+    if (createHash('sha256').update(raw).digest('hex') !== result.artifactId) return null;
+    // A question revokes its planner without publishing a new revision. Only
+    // that exact accepted result may be acknowledged while its question waits.
+    const ownQuestion = attempt.role === 'planner' && result.status === 'accepted'
+      && goal.status === 'discovering' && goal.generation === attempt.generation + 1
+      && goal.revision === attempt.revision && goal.clarification?.answer === undefined
+      && goal.clarification && JSON.parse(raw).output?.question === goal.clarification.question;
+    return current || ownPublication || ownQuestion ? result : null;
   }
   /** Caller supplies authority authenticated by transport or bound by the trusted
    * adapter to its recorded attempt, never identity parsed from raw agent output.

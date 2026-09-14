@@ -22,10 +22,10 @@ export class CmuxTerminal {
       return JSON.parse(result.stdout);
     } catch { throw new DomainError('CMUX_UNAVAILABLE', 'The owned cmux operation could not be confirmed'); }
   }
-  /** @param {string} cwd */
-  async create(cwd) {
+  /** @param {string} cwd @param {string} [title] */
+  async create(cwd, title = 'Companion planning') {
     requireValue(isAbsolute(cwd), 'Absolute terminal checkout required');
-    const result = await this.rpc('workspace.create', { cwd, title: 'Companion planning', focus: false });
+    const result = await this.rpc('workspace.create', { cwd, title, focus: false });
     target(result.workspace_id); return { workspaceId: String(result.workspace_id) };
   }
   /** Only a checked-in runner plus a private config path can be sent to a new

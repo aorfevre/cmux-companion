@@ -144,3 +144,24 @@ test('checks discovered after creation resolve from the approved journal after r
   assert.throws(() => restored('project', { id: 'unit', argv: ['node', '--version'] }, 'discovered'), { code: 'UNSUPPORTED_CAPABILITY' });
   assert.deepEqual(settings.goalConfiguration('discovered').project.checks, []);
 });
+
+test('new goal persists once before provider checks and exposes a retryable startup failure', async t => {
+  const f = await fixture(t), value = defaultSettings();
+  value.projects.push({ id: 'project', name: 'My project', path: f.path, enabled: true, github: 'example/project', remote: 'git@github.com:example/project.git', checks: [] });
+  await f.settings.update(0, value); await f.runtime.settingsChanged();
+  const command = { id: 'new-create', goalId: 'new-goal', expectedVersion: 0, type: 'create_goal', payload: { title: 'Do the work', description: 'Do the work', repositoryId: 'project' } };
+  const post = () => f.runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: command });
+  assert.equal((await post()).statusCode, 200);
+  assert.equal((await post()).statusCode, 200);
+  assert.equal(f.runtime.store.list().length, 1);
+  assert.equal(f.runtime.store.get('new-goal').startup.status, 'pending');
+  assert.equal(f.runtime.store.get('new-goal').baseBranch, 'main');
+  assert.deepEqual(f.acquired, []); assert.deepEqual(f.launched, []);
+  await f.runtime.close();
+  const reopened = await createSettingsRuntime({ ...f.options, probeProvider: async () => ({ ready: false, reason: 'Sign into the planning provider, then retry startup' }) });
+  f.extraRuntimes.push(reopened);
+  await reopened.listen({ port: 0 });
+  assert.equal(reopened.store.get('new-goal').startup.status, 'failed');
+  assert.match(reopened.store.get('new-goal').startup.error, /Sign into/);
+  assert.deepEqual(f.launched, []);
+});

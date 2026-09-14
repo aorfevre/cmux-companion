@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, realpathSync, lstatSync, renameSync } from 'node:fs';
+import { mkdirSync, realpathSync, lstatSync, renameSync, copyFileSync, rmSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { DomainError, identifier, requireValue, sha, branchName } from '../domain/contracts.mjs';
 import { randomUUID } from 'node:crypto';
@@ -10,9 +10,10 @@ import { git, pathExists } from './git.mjs';
  * The composition supplies each allowed destination and its transport policy.
  */
 export class GitRemote {
-  /** @param {{ repositories: import('./git.mjs').GitRepository; directory: string; destinations: ReadonlyMap<string, { url: string; protocol: 'file' | 'ssh' | 'https'; env: NodeJS.ProcessEnv }> }} options */
-  constructor({ repositories, directory, destinations }) {
+  /** @param {{ repositories: import('./git.mjs').GitRepository; directory: string; destinations: ReadonlyMap<string, { url: string; protocol: 'file' | 'ssh' | 'https'; env: NodeJS.ProcessEnv }>; baseFiles?: { copyFileSync: typeof copyFileSync; renameSync: typeof renameSync; rmSync: typeof rmSync } }} options */
+  constructor({ repositories, directory, destinations, baseFiles = { copyFileSync, renameSync, rmSync } }) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
+    this.baseFiles = baseFiles;
     this.directory = realpathSync(directory); this.repositories = repositories; this.destinations = destinations;
     /** @type {Map<string,Promise<string>>} */ this.initializations = new Map();
   }
@@ -65,6 +66,37 @@ export class GitRemote {
     const [head, ref] = entries[0].split('\t');
     requireValue(ref === `refs/heads/${branch}`, 'Remote returned another branch', 'OWNERSHIP_UNCERTAIN');
     return sha(head);
+  }
+  /** Fetch into private staging, then import immutable objects without moving any user refs.
+   * @param {string} repositoryId @param {string} branch */
+  async fetchBase(repositoryId, branch) {
+    branchName(branch);
+    const directory = await this.stage(repositoryId);
+    const ref = `refs/companion/fetch/${randomUUID()}`;
+    try {
+      await this.remote(repositoryId, ['fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', this.destination(repositoryId).url, `refs/heads/${branch}:${ref}`]);
+    } catch {
+      throw new DomainError('BASE_FETCH_FAILED', `Could not fetch ${branch}. Check that the branch exists and GitHub access is available, then retry startup.`);
+    }
+    const head = sha((await git(directory, ['rev-parse', `${ref}^{commit}`])).trim());
+    const { repository, common } = await this.repositories.repository(repositoryId);
+    const prefix = join(directory, `base-${randomUUID()}`);
+    const digest = sha((await git(directory, ['pack-objects', '--revs', prefix], `${head}\n`)).trim());
+    for (const extension of ['pack', 'idx']) {
+      const source = `${prefix}-${digest}.${extension}`;
+      const destination = join(common, 'objects', 'pack', `pack-${digest}.${extension}`);
+      const temporary = `${destination}.${randomUUID()}.tmp`;
+      try {
+        // Copy across volumes, then publish atomically on the repository's own volume.
+        this.baseFiles.copyFileSync(source, temporary);
+        this.baseFiles.renameSync(temporary, destination);
+      } finally {
+        this.baseFiles.rmSync(temporary, { force: true });
+        this.baseFiles.rmSync(source, { force: true });
+      }
+    }
+    await git(repository, ['cat-file', '-e', `${head}^{commit}`]);
+    return head;
   }
   /** @param {Parameters<import('../types.d.ts').RemotePort['push']>[0]} input @param {{ beforeSend?: ()=>boolean }} [options] */
   async push({ repositoryId, branch, headSha, expectedHead }, { beforeSend } = {}) {

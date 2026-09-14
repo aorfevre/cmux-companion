@@ -13,15 +13,35 @@ No cloud application server is involved. Terminal output and input travel direct
 - Shows task dependencies, workers, review findings, verification and publication evidence, with revision, retry, abort and reconciliation actions derived by the service.
 - Keeps account quota and manual-session model settings available without using quota as scheduler policy.
 
-The home screen opens Sessions. Session tools reach Inbox, Local apps and
-Orchestration goals. Legacy burst scheduling, issue-topic planning, old goal boards
+The home screen opens the Goals Kanban. Sessions remain a secondary view;
+Inbox and Local apps are still available. Legacy burst scheduling, issue-topic planning, old goal boards
 and automatic session collection have been retired; see the
 [retirement inventory and cutover procedure](docs/orchestration-retirement.md).
 
 ## Goal workflow
 
-Create a goal for an explicitly configured repository and base commit. The planner
-publishes a versioned contract with task ownership, dependencies and verification.
+Select a tracked project, describe the outcome and click **Start goal**. A Planning
+card appears immediately. Companion fetches the configured remote's latest `main`,
+pins its exact commit and starts one named planner in an isolated worktree; it does
+not switch, pull or reset your current checkout. Advanced allows another explicit
+base branch. A failed fetch/provider check stays on the card with Retry startup.
+
+The planner name is `<Project Code> Planning <short goal title>`; the project code
+defaults to its normalized uppercase project name. The card keeps the complete
+request and links in its description. Its short title is editable; the assigned
+planner/session name remains stable for that attempt's identity.
+
+Follow Planning → Needs approval → In progress → Review → Done. Open a card for
+its plan, task board and relevant evidence. On mobile, select a column with its
+count. Tasks show dependencies and blockers, with the dependency graph available
+under an optional disclosure. Completed publication stays in Review until merged.
+
+The planner publishes a versioned contract with task ownership, dependencies and
+verification. Essential questions appear inside the goal; answering resumes
+planning automatically after the prior worker is confirmed stopped. Existing
+opt-in background alerts notify for questions and independently reviewed plans
+ready for approval. Push delivery is best effort; the goal remains the durable
+source of attention and no terminal needs to be opened to submit an answer.
 The agent discovers suitable verification from the project and goal; repository checks are optional defaults, never required setup. If validation is missing, the plan must address that gap. An independent review checks the contract before the user approves that revision and its exact verification commands.
 Requesting changes invalidates the proposal's approval authority.
 

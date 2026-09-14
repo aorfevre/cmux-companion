@@ -47,3 +47,22 @@ test('rejected receipt replay is read-only while explicit revocation and abort r
   bridgeAuth.revoke('goal', 'planner');
   assert.equal((await app.inject({ method: 'POST', url, headers, payload })).statusCode, 401);
 });
+
+test('accepted planner question receipt survives lost response but cannot revive after answer', async t => {
+  const { app, planner, store, results, service } = await apiFixture(t, { resultIntake: true });
+  const credential = planner(), attempt = store.get('goal').attempts[0];
+  const url = '/api/orchestration/agent/results', headers = { authorization: `Bearer ${credential}` };
+  const raw = JSON.stringify({ schemaVersion: 1, goalId: 'goal', attemptId: attempt.id, operationId: attempt.operationId,
+    generation: attempt.generation, revision: attempt.revision, role: 'planner', target: attempt.target, output: { question: 'Which audience?' } });
+  const payload = { id: 'question', raw };
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload })).statusCode, 202);
+  await results.drain();
+  assert.equal(store.get('goal').results[0].status, 'accepted');
+  const version = store.get('goal').version;
+  const replay = await app.inject({ method: 'POST', url, headers, payload });
+  assert.equal(replay.statusCode, 202); assert.equal(replay.json().status, 'accepted');
+  assert.equal(store.get('goal').version, version);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, raw: raw.replace('Which audience?', 'Changed question') } })).statusCode, 403);
+  service.execute({ id: 'answer', goalId: 'goal', expectedVersion: version, type: 'answer_clarification', payload: { answer: 'Beginners' } }, { kind: 'user' });
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload })).statusCode, 403);
+});

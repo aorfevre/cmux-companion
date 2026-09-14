@@ -31,6 +31,7 @@ export function parseRoleResult(value, { goalId, attempt }) {
   const output = object(input.output);
   switch (attempt.role) {
     case 'planner':
+      if (Object.hasOwn(output, 'question')) { fields(output, ['question']); return { ...common, role: 'planner', output: { question: text(output.question, 4000) } }; }
       fields(output, ['contract']); return { ...common, role: 'planner', output: { contract: parseContract(output.contract) } };
     case 'reviewer':
       fields(output, ['schemaVersion', 'target', 'disposition', 'findings']);

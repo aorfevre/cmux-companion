@@ -9,7 +9,7 @@ import { requireValue } from '../domain/contracts.mjs';
  * @typedef {{ provider: string; model: string; effort?: string }} Engine
  */
 export const NATIVE_TOOLS = Object.freeze({
-  planner: ['Read', 'Grep', 'Glob', 'AskUserQuestion'],
+  planner: ['Read', 'Grep', 'Glob'],
   reviewer: ['Read', 'Grep', 'Glob'],
   implementer: ['Read', 'Grep', 'Glob', 'Edit', 'Write'],
   integrator: ['Read', 'Grep', 'Glob', 'Edit', 'Write'],

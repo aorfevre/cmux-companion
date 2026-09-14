@@ -662,3 +662,74 @@ for (const repair of [false, true]) test(`abort recovery releases cleanup and ro
   const database = join(directory, 'snapshot.sqlite'); f.store.db.prepare('VACUUM INTO ?').run(database);
   assert.deepEqual(assertRollback(database), { safe: true, goals: 1 });
 });
+
+test('new goals persist before fetch, recover retryably and pin their base once before launch', async t => {
+  const f = fixture(t);
+  f.command('fresh', 'create_goal', { repositoryId: 'repo', title: 'fresh', baseBranch: 'main' }, 'user');
+  assert.equal(f.store.get('fresh').startup.status, 'pending');
+  assert.equal(f.store.ready().length, 0);
+  assert.throws(() => f.request('fresh', 'planner'), { code: 'NOT_READY' });
+  let fetches = 0, launches = 0;
+  f.agents.launch = async () => { launches++; return { identity: 'planner' }; };
+  f.agents.observe = async () => ({ status: 'running', identity: 'planner' });
+  const scheduler = new Scheduler({ service: f.service,
+    prepareGoal: async () => { if (++fetches === 1) throw new DomainError('BASE_FETCH_FAILED', 'Check GitHub access and retry'); return BASE; },
+    repositories: { provision: async request => ({ worktree: '/tmp/owned-planner', branch: request.branch, baseSha: request.baseSha }) },
+  });
+  await scheduler.start();
+  assert.equal(f.store.get('fresh').startup.status, 'failed');
+  assert.match(f.store.get('fresh').startup.error, /GitHub/);
+  await scheduler.tick(); assert.equal(fetches, 1); assert.equal(launches, 0);
+  f.command('fresh', 'retry_startup', {}, 'user');
+  await scheduler.tick();
+  assert.equal(f.store.get('fresh').baseSha, BASE);
+  assert.equal(f.store.get('fresh').startup.status, 'ready');
+  assert.equal(launches, 1);
+  await scheduler.stop(); await scheduler.start(); await scheduler.tick();
+  assert.equal(fetches, 2); assert.equal(launches, 1);
+  f.create('historical'); await scheduler.tick();
+  assert.equal(f.store.get('historical').baseSha, BASE);
+  assert.equal(fetches, 2);
+  await scheduler.stop();
+});
+
+test('abort during base fetch preserves the terminal goal and never provisions a planner', async t => {
+  const f = fixture(t);
+  f.command('aborted-fetch', 'create_goal', { repositoryId: 'repo', title: 'Stop this' }, 'user');
+  const scheduler = new Scheduler({ service: f.service,
+    prepareGoal: async () => { f.command('aborted-fetch', 'abort', {}, 'user'); return BASE; },
+    repositories: { provision: async () => { assert.fail('aborted goal must never provision'); } },
+  });
+  try {
+    await scheduler.start();
+    assert.equal(f.store.get('aborted-fetch').status, 'aborted');
+    assert.equal(f.store.get('aborted-fetch').baseSha, '');
+    assert.equal(f.store.get('aborted-fetch').attempts.length, 0);
+    await scheduler.tick();
+  } finally { await scheduler.stop(); }
+});
+
+test('stalled base fetch is bounded and does not block other goals or reconciliation; stop awaits ownership', async t => {
+  const f = fixture(t), fetching = barrier();
+  for (const id of ['fetch-one', 'fetch-two']) f.command(id, 'create_goal', { repositoryId: 'repo', title: id }, 'user');
+  f.create('runnable');
+  let fetches = 0, observed = 0;
+  f.agents.launch = async () => ({ identity: 'live-worker' });
+  f.agents.observe = async () => { observed++; return { status: 'running', identity: 'live-worker' }; };
+  const scheduler = new Scheduler({ service: f.service, prepareGoal: async () => { fetches++; await fetching.promise; return BASE; },
+    repositories: { provision: async request => ({ worktree: '/tmp/owned-other', branch: request.branch, baseSha: request.baseSha }) },
+  });
+  try {
+    await scheduler.start();
+    assert.equal(f.store.get('runnable').attempts[0].status, 'running');
+    assert.equal(fetches, 1); assert.equal(scheduler.startupJobs.size, 1);
+    await scheduler.tick(); assert.ok(observed > 0); assert.equal(fetches, 1);
+    f.command('fetch-one', 'abort', {}, 'user');
+    let stopped = false;
+    const shutdown = scheduler.stop().then(() => { stopped = true; });
+    await Promise.resolve(); assert.equal(stopped, false);
+    fetching.release(); await shutdown;
+    assert.equal(scheduler.startupJobs.size, 0);
+    assert.equal(fetches, 1); assert.equal(f.store.get('fetch-one').baseSha, '');
+  } finally { fetching.release(); await scheduler.stop(); }
+});

@@ -8,11 +8,13 @@ import { IntegrationRepairs } from './integration-repairs.mjs';
 import { Reconciler } from './reconciler.mjs';
 
 export class Scheduler {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration' | 'acceptRepair' | 'observeRepair'>>; verifier?: import('./types.d.ts').VerificationPort; publisher?: import('./types.d.ts').PublicationPort; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; onError?: (error: unknown) => void }} options */
-  constructor({ service, repositories, integrations, verifier, publisher, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, onError = () => {} }) {
+  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration' | 'acceptRepair' | 'observeRepair'>>; verifier?: import('./types.d.ts').VerificationPort; publisher?: import('./types.d.ts').PublicationPort; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; prepareGoal?: (goal: import('./types.d.ts').Goal) => Promise<string>; onError?: (error: unknown) => void }} options */
+  constructor({ service, repositories, integrations, verifier, publisher, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, prepareGoal, onError = () => {} }) {
     this.service = service; this.store = service.store; this.agents = service.agents; this.repositories = repositories;
     this.ownership = ownership; this.id = id; this.intervalMs = integer(intervalMs, 1); this.onError = onError;
     this.reconciler = new Reconciler({ service, ownership, results, id });
+    this.prepareGoal = prepareGoal;
+    /** @type {Map<string, Promise<void>>} */ this.startupJobs = new Map();
     this.results = results; this.integrations = integrations;
     this.stopped = true; this.again = false;
     this.paused = () => false;
@@ -39,7 +41,7 @@ export class Scheduler {
     this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null;
     if (this.store.onCommit === this.notify) this.store.onCommit = this.previousNotify;
     try {
-      const settled = await Promise.allSettled([this.sweep, this.verifications?.stop(), this.publications?.stop()]);
+      const settled = await Promise.allSettled([this.sweep, ...this.startupJobs.values(), this.verifications?.stop(), this.publications?.stop()]);
       const failures = settled.filter((entry) => entry.status === 'rejected');
       if (failures.length) throw new AggregateError(failures.map((entry) => entry.reason), 'Scheduler shutdown failed');
     } finally { if (releaseOwnership) this.ownership.release(); }
@@ -55,6 +57,7 @@ export class Scheduler {
   async pass() {
     this.ownership.assertOwned(); await this.results?.drain(); await this.reconciler.run();
     if (this.stopped) return;
+    this.prepareGoals();
     await this.integrate();
     await this.verifications?.run();
     await this.publications?.run();
@@ -73,6 +76,34 @@ export class Scheduler {
     const dispatched = await Promise.allSettled(this.store.operations().filter((operation) => operation.kind === 'launch' && operation.status === 'pending').map((operation) => this.dispatch(operation)));
     const failures = dispatched.filter((result) => result.status === 'rejected');
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason), 'Agent dispatch failed');
+  }
+  prepareGoals() {
+    // One bounded fetch job at a time; network latency must not stall agent
+    // reconciliation, dispatch, verification or publication for other goals.
+    if (this.stopped || this.paused() || this.startupJobs.size) return;
+    const goal = this.store.list().find(goal => goal.startup?.status === 'pending' && goal.status === 'discovering');
+    if (!goal) return;
+    const job = Promise.resolve().then(async () => {
+      if (this.stopped || this.paused()) return;
+      try {
+        this.ownership.assertOwned();
+        requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+        requireValue(this.prepareGoal, 'Fetching the goal base is unavailable; configure a supported GitHub repository and retry', 'NOT_READY');
+        const baseSha = await this.prepareGoal(goal);
+        this.ownership.assertOwned();
+        const latest = this.store.get(goal.id);
+        if (latest?.startup?.status === 'pending' && latest.status === 'discovering') this.reconciler.record(goal.id, 'record_startup', { baseSha });
+      } catch (error) {
+        this.ownership.assertOwned();
+        const latest = this.store.get(goal.id);
+        if (latest?.startup?.status === 'pending' && latest.status === 'discovering') this.reconciler.record(goal.id, 'fail_startup', { error: error instanceof DomainError ? error.message : 'Could not fetch the goal base. Check repository access and retry.' });
+      }
+    }).finally(() => {
+      this.startupJobs.delete(goal.id);
+      void this.tick().catch(this.onError);
+    });
+    this.startupJobs.set(goal.id, job);
+    void job.catch(this.onError);
   }
   /** @param {import('./types.d.ts').Goal} goal @param {import('./types.d.ts').Attempt} attempt */
   async provisionRepair(goal, attempt) {

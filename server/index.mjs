@@ -1,3 +1,4 @@
+import { attachGoalAttention } from './orchestration/goal-attention.mjs';
 import { UpdateControl } from '../updater/src/control.mjs';
 import { registerUpdateRoutes } from './update-routes.mjs';
 import { installUpdateMaintenance } from './update-maintenance.mjs';
@@ -75,6 +76,7 @@ export async function startServer({
       const maintenance = installUpdateMaintenance({ runtime, control: updateControl, promptQueue });
       await runtime.app.register(async app => registerUpdateRoutes(app, { control: updateControl, token, maintenance }));
     }
+    attachGoalAttention(runtime, pushService);
     await runtime.listen({ port });
   } catch (error) {
     try { await runtime.close(); } finally { updateControl?.close(); localSettings?.close(); }
