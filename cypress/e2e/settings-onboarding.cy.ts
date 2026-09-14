@@ -27,14 +27,14 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
     cy.visit('/settings#agents'); cy.findByLabelText('Default provider').should('have.value', 'codex');
     cy.visit('/settings#dev-repos'); cy.get('.repository-row').should('have.length', 2); cy.findByLabelText('Search repositories').type('karven'); cy.get('.repository-row').should('have.length', 1);
     for (const width of [360, 390, 1440]) { cy.viewport(width, 900); cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width)); cy.screenshot(`settings-dev-repos-${width}`, { capture: "viewport" }); }
-    cy.visit('/'); cy.findByRole('heading', { name: /^Goals$/ }).should('be.visible'); cy.findByRole('navigation', { name: 'Main navigation' }).find('a').should('have.length', 3); cy.findByRole('link', { name: 'Browse sessions' }).click(); cy.location('search').should('equal', '?view=sessions'); cy.findByRole('link', { name: '← Back to Goals' }).click(); cy.findByRole('button', { name: /^Project / }).click();
+    cy.visit('/'); cy.findByRole('heading', { name: /^Goals$/ }).should('be.visible'); cy.findByRole('navigation', { name: 'Main navigation' }).find('a').should('have.length', 2); cy.findByRole('link', { name: 'Browse sessions' }).click(); cy.location('search').should('equal', '?view=sessions'); cy.findByRole('link', { name: '← Back to Goals' }).click(); cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('button', { name: /^Project / }).click();
     cy.findByRole('button', { name: 'My project karven' }).should('not.exist');
     cy.findByRole('button', { name: /Show all projects/ }).click();
     cy.findByRole('button', { name: 'My project karven' }).should('be.visible');
     cy.findByRole('button', { name: 'example rekord' }).should('be.visible');
     cy.findByRole('button', { name: 'Add to favorites: My project (karven)' }).click();
     cy.contains('Saved on this Mac.').should('be.visible');
-    cy.reload(); cy.findByRole('button', { name: /^Project / }).click();
+    cy.reload(); cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('button', { name: /^Project / }).click();
     cy.findByRole('button', { name: 'My project karven' }).should('be.visible');
     cy.findByRole('button', { name: 'example rekord' }).should('not.exist');
     for (const width of [360, 390, 1440]) {
@@ -48,12 +48,12 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
     cy.findByLabelText('Search projects').type('{esc}'); cy.findByRole('button', { name: /^Project / }).should('have.focus').click();
     cy.findByLabelText('Search projects').type('karven'); cy.findByRole('button', { name: 'My project karven' }).click();
     cy.findByLabelText('What should we accomplish?').type('Plan a disposable change'); cy.findByRole('button', { name: 'Start goal' }).click(); cy.findByRole('region', { name: 'Goals Kanban' }).should('contain.text', 'Plan a disposable change');
-    cy.findByRole('link', { name: 'Manage projects and providers' }).click(); cy.findByRole('button', { name: 'Dev repos' }).click(); cy.get('.repository-row').first().click(); cy.findByRole('switch', { name: 'Enabled for new work' }).uncheck(); cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
-    cy.visit('/orchestration'); cy.findByRole('region', { name: 'Goals Kanban' }).should('contain.text', 'Plan a disposable change'); cy.findByRole('button', { name: /^Project / }).click();
+    cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('link', { name: 'Manage projects and providers' }).click(); cy.findByRole('button', { name: 'Dev repos' }).click(); cy.get('.repository-row').first().click(); cy.findByRole('switch', { name: 'Enabled for new work' }).uncheck(); cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
+    cy.visit('/orchestration'); cy.findByRole('region', { name: 'Goals Kanban' }).should('contain.text', 'Plan a disposable change'); cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('button', { name: /^Project / }).click();
     cy.findByRole('button', { name: 'My project karven' }).click(); cy.findByRole('button', { name: 'Start goal' }).should('be.disabled');
     cy.findByRole('link', { name: 'Configure repository' }).should('be.visible');
     cy.viewport(390, 844); cy.task('settingsAddRepository'); cy.visit('/orchestration');
-    cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click();
+    cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click();
     cy.get('.project-choice').should('have.length', 3); cy.contains('excluded-worktree').should('not.exist');
     cy.findByRole('button', { name: 'new-repository karven' }).click();
     cy.findByRole('link', { name: 'Choose checks' }).should('not.exist');
@@ -70,7 +70,7 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
     }));
     cy.visit('/orchestration');
     cy.task<string>('settingsPairing', null, { log: false }).then(token => { cy.findByLabelText('Pairing code').type(token, { log: false }); cy.findByRole('button', { name: 'Pair this device' }).click(); });
-    cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click();
+    cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click();
     cy.get('.project-choice').should('have.length', 83);
     for (const width of [360, 390, 1440]) {
       cy.viewport(width, 900);

@@ -7,6 +7,7 @@ import type { goalView } from '../../server/orchestration/domain/state-view.mjs'
 import type { Contract } from '../../server/orchestration/types';
 import { AppNavigation } from '../navigation';
 import { ProjectPicker } from './project-picker';
+import { GoalPanel } from './goal-panel';
 import { GoalDetail } from './goal-detail';
 import { GoalKanban } from './kanban';
 
@@ -21,11 +22,17 @@ export function GoalBoard() {
   const [selected, setSelected] = useState<string | null>(() => typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('goal')), [detail, setDetail] = useState<(Goal & { contracts: { revision: number; contract: Contract }[] }) | null>(null);
   const [auth, setAuth] = useState<'loading' | 'paired' | 'unpaired' | 'unavailable'>('loading');
   const [token, setToken] = useState(''), [title, setTitle] = useState(''), [repository, setRepository] = useState('');
+  const [creating, setCreating] = useState(false), [createdGoal, setCreatedGoal] = useState<string | null>(null);
+  const createButton = useRef<HTMLButtonElement>(null), createHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { if (creating) createHeading.current?.focus(); }, [creating]);
+  const restoreCreateFocus = useRef(false);
+  const closeCreation = () => { restoreCreateFocus.current = true; setCreating(false); };
   const [baseBranch, setBaseBranch] = useState('main');
   const [discoveryNotice, setDiscoveryNotice] = useState('');
   const [connectionError, setConnectionError] = useState('');
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false), [connected, setConnected] = useState(false);
   const [pending, setPending] = useState<Command | null>(null);
+  useEffect(() => { if (!creating && !busy && restoreCreateFocus.current) { createButton.current?.focus(); restoreCreateFocus.current = false; } }, [creating, busy]);
   const submitting = useRef(false);
   const sequence = useRef(0), mounted = useRef(false), selection = useRef(selected);
   useEffect(() => { selection.current = selected; }, [selected]);
@@ -80,7 +87,7 @@ export function GoalBoard() {
     try {
       await request(`${prefix}/commands`, { method: 'POST', body: JSON.stringify(command) });
       setPending(null); setNotice('Saved. Showing the service’s current state.');
-      if (command.type === 'create_goal') { setSelected(null); setTitle(''); setNotice('Goal saved. Its planning agent will start automatically.'); }
+      if (command.type === 'create_goal') { setSelected(null); setCreatedGoal(command.goalId); setTitle(''); closeCreation(); setNotice('Goal saved. Its planning agent will start automatically.'); }
       await refresh();
       return true;
     } catch (cause) {
@@ -99,30 +106,32 @@ export function GoalBoard() {
   };
   const readOnly = Boolean(snapshot?.readOnly || configuration?.readOnly), disabled = busy || readOnly || Boolean(pending);
   const chosenRepo = configuration?.repositories.find(entry => entry.id === repository);
+  const pendingRecovery = pending && <div className="orch-banner">The request outcome is uncertain. Retry the same request to reconcile its receipt. <button disabled={busy || readOnly} onClick={() => void submit(pending)}>Retry pending request</button></div>;
   return <main className="orchestration"><AppNavigation active="goals" />
     <header className="orch-header"><a href="/">cmux companion</a><span role="status">{auth === 'paired' ? connected ? 'Live updates' : 'Reconnecting · polling' : 'Connect your Mac'}</span></header>
     {discoveryNotice && <p role="status">{discoveryNotice} <a href="/settings#dev-repos">Review Dev repos</a></p>}
     <div className="orch-heading"><div><p className="orch-eyebrow">GOAL WORKSPACE</p><h1>Goals</h1><p>What would you like to accomplish?</p><a href="/?view=sessions">Browse sessions</a></div></div>
     {connectionError && <div role="alert" className="orch-error"><p>{connectionError}</p><button onClick={() => void refresh()}>Try again</button></div>}
-    {error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}
+    {!selected && <>{error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}</>}
     {auth === 'unpaired' ? <form className="orch-card" onSubmit={async event => {
       event.preventDefault(); setBusy(true); setError('');
       try { await request(`${prefix}/pair`, { method: 'POST', body: JSON.stringify({ token: token.trim() }) }); setToken(''); await refresh(); }
       catch (cause) { setError(cause instanceof Error ? cause.message : 'Pairing failed'); } finally { setBusy(false); }
     }}><h2>Pair this device</h2><label>Pairing code<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></label><button disabled={busy}>Pair this device</button></form> : auth === 'unavailable' ? <section className="orch-card"><h2>Goals are unavailable</h2><p>Check your connection to the Mac and try again. If this is a new installation, complete <a href="/onboarding">goal setup</a>.</p></section> : auth === 'loading' ? <p>Connecting to your Mac…</p> : <>
       {readOnly && <p className="orch-banner">{configuration?.suspensionReason || 'Read-only mode · controls are disabled.'}</p>}
-      {pending && <div className="orch-banner">The request outcome is uncertain. Retry the same request to reconcile its receipt. <button disabled={busy || readOnly} onClick={() => void submit(pending)}>Retry pending request</button></div>}
+      {!selected && pendingRecovery}
       <details className="orch-capacity"><summary>Execution capacity</summary>{configuration?.limits.global} background · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</details>
       {Boolean(configuration?.repositories.length) && !configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Your planning agent is not ready. <a href="/settings#agents">Choose an agent</a> to start a goal.</p>}
-      {configuration?.repositories.length ? <form className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo || disabled) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { title, description: title, repositoryId: chosenRepo.id, baseBranch: baseBranch.trim() || 'main' } }); }}>
-        <h2>Start a goal</h2><p>The agent will inspect the project and propose a plan with suitable verification checks.</p><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<ProjectPicker repositories={configuration.repositories} selected={repository} onSelect={setRepository} disabled={disabled} />
+      <button ref={createButton} className="primary-button" aria-expanded={creating} aria-controls="goal-create" disabled={disabled} onClick={() => setCreating(true)}>Start a goal</button>
+      {creating && (configuration?.repositories.length ? <form id="goal-create" className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo || disabled) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { title, description: title, repositoryId: chosenRepo.id, baseBranch: baseBranch.trim() || 'main' } }); }}>
+        <h2 ref={createHeading} tabIndex={-1}>Start a goal</h2><p>The agent will inspect the project and propose a plan with suitable verification checks.</p><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<ProjectPicker repositories={configuration.repositories} selected={repository} onSelect={setRepository} disabled={disabled} />
         <p className="project-context">Starts from freshly fetched {baseBranch.trim() || 'main'} in an isolated worktree.</p><details><summary>Advanced</summary><label>Base branch<input value={baseBranch} onChange={event => setBaseBranch(event.target.value)} disabled={disabled} placeholder="main" /></label></details>
         {chosenRepo?.error && <p role="alert">{chosenRepo.error} <a href={`/settings?repository=${encodeURIComponent(chosenRepo.id)}#dev-repos`}>Configure repository</a></p>}
         <label>What should we accomplish?<textarea value={title} maxLength={12000} onChange={event => setTitle(event.target.value)} disabled={disabled} required rows={3} /></label>
-        <button className="primary-button" disabled={disabled || !chosenRepo || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start goal</button>
-      </form> : <section className="orch-card"><h2>Start with your first goal</h2><p>Choose your repositories and an agent, then describe what you want done.</p><a className="primary-button" href="/onboarding">Set up goals</a></section>}
-      <GoalKanban goals={snapshot?.goals ?? []} selected={selected} select={id => { setSelected(id); setDetail(null); }} projectName={id => configuration?.repositories.find(repo => repo.id === id)?.name || id} />
-      {selected && <section className="orch-selected"><button onClick={() => { setSelected(null); setDetail(null); }}>Close goal details</button>{detail ? <GoalDetail key={detail.id} goal={detail} disabled={disabled} terminal={Boolean(configuration?.terminal)} act={act} control={control} /> : <p>Loading goal…</p>}</section>}
+        <button className="primary-button" disabled={disabled || !chosenRepo || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start goal</button> <button type="button" disabled={busy || Boolean(pending)} onClick={closeCreation}>Cancel</button>
+      </form> : <section id="goal-create" className="orch-card"><h2 ref={createHeading} tabIndex={-1}>Start with your first goal</h2><p>Choose your repositories and an agent, then describe what you want done.</p><a className="primary-button" href="/onboarding">Set up goals</a> <button onClick={closeCreation}>Cancel</button></section>)}
+      <GoalKanban key={createdGoal} goals={snapshot?.goals ?? []} selected={selected || createdGoal} select={id => { setSelected(id); setDetail(null); }} projectName={id => configuration?.repositories.find(repo => repo.id === id)?.name || id} />
+      {selected && <GoalPanel close={() => { setSelected(null); setDetail(null); }}>{pendingRecovery}{error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}{detail ? <GoalDetail key={detail.id} goal={detail} disabled={disabled} terminal={Boolean(configuration?.terminal)} act={act} control={control} /> : <p>Loading goal…</p>}</GoalPanel>}
 
     </>}
   </main>;
