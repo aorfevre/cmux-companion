@@ -18,6 +18,7 @@ updatesSuite('User-approved bundled updates with a real disposable service', () 
     cy.findByRole('button', { name: 'Cancel queued update' }).should('be.visible').click();
     cy.findByRole('switch', { name: 'Automatic installation' }).check();
     cy.contains('Queued by automatic installation.', { timeout: 12000 }).should('be.visible');
+    cy.contains('Waiting for Companion-managed work to finish').should('be.visible');
     cy.reload();
     cy.findByRole('switch', { name: 'Automatic installation' }).should('be.checked');
     cy.findByRole('checkbox', { name: 'Allow update changes on this device' }).check();
