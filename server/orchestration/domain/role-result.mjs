@@ -14,6 +14,15 @@ function evidence(value) {
   });
 }
 
+/** Shared planner payload validation before MCP intake and at result acceptance.
+ * @param {unknown} value
+ * @returns {{question:string}|{contract:import('../types.d.ts').Contract}} */
+export function parsePlannerOutput(value) {
+  const output = object(value);
+  if (Object.hasOwn(output, 'question')) { fields(output, ['question']); return { question: text(output.question, 4000) }; }
+  fields(output, ['contract']); return { contract: parseContract(output.contract) };
+}
+
 /** Parse an exact role/attempt result, never terminal prose or a PASS marker.
  * This validates submitted identity and shape, not Git truth or current authority.
  * Those checks remain at the service/repository boundary.
@@ -31,8 +40,7 @@ export function parseRoleResult(value, { goalId, attempt }) {
   const output = object(input.output);
   switch (attempt.role) {
     case 'planner':
-      if (Object.hasOwn(output, 'question')) { fields(output, ['question']); return { ...common, role: 'planner', output: { question: text(output.question, 4000) } }; }
-      fields(output, ['contract']); return { ...common, role: 'planner', output: { contract: parseContract(output.contract) } };
+      return { ...common, role: 'planner', output: parsePlannerOutput(output) };
     case 'reviewer':
       fields(output, ['schemaVersion', 'target', 'disposition', 'findings']);
       return { ...common, role: 'reviewer', output: parseReview(output, attempt.target) };

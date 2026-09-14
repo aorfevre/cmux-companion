@@ -63,8 +63,8 @@ test('MCP tools bind output identity and cannot expose approval or other roles t
   assert.equal((await call('approve')).result.isError, true);
   assert.equal((await call('commit_candidate')).result.isError, true);
   assert.equal((await call('submit_result', { id: 'result', output: { contract: {} }, goalId: 'other' })).result.isError, true);
-  await call('submit_result', { id: 'result', output: { contract: {} } });
-  assert.deepEqual(JSON.parse(submitted[0].raw), { schemaVersion: 1, ...context.binding, output: { contract: {} } });
+  await call('submit_result', { id: 'result', output: { question: 'Which audience?' } });
+  assert.deepEqual(JSON.parse(submitted[0].raw), { schemaVersion: 1, ...context.binding, output: { question: 'Which audience?' } });
   const reviewer = await agentMcpRequest({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, { ...context, binding: { ...context.binding, role: 'reviewer' } });
   assert.deepEqual(reviewer.result.tools, []);
 });
@@ -173,4 +173,13 @@ test('MCP output bounds individual responses and stops on a client that does not
   const exited = once(child, 'exit');
   child.stdin.end((JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n').repeat(10000));
   assert.equal((await exited)[0], 2); assert.equal(stderr, '');
+});
+
+test('MCP transport failures remain code-only and do not claim the result was never queued', async () => {
+  const binding = { goalId: 'goal', operationId: 'op', attemptId: 'planner', generation: 1, revision: 0, role: 'planner', target: 'contract:1:0' };
+  const response = await agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'submit_result', arguments: { id: 'same-result', output: { question: 'Which audience?' } } } }, {
+    binding, bridge: { submitResult: async () => { throw Object.assign(new Error('private endpoint and credential'), { code: 'TRANSPORT_UNCERTAIN' }); } },
+  });
+  assert.equal(response.result.isError, true);
+  assert.deepEqual(JSON.parse(response.result.content[0].text), { code: 'TRANSPORT_UNCERTAIN' });
 });

@@ -66,3 +66,56 @@ test('accepted planner question receipt survives lost response but cannot revive
   service.execute({ id: 'answer', goalId: 'goal', expectedVersion: version, type: 'answer_clarification', payload: { answer: 'Beginners' } }, { kind: 'user' });
   assert.equal((await app.inject({ method: 'POST', url, headers, payload })).statusCode, 403);
 });
+
+test('MCP malformed planner payload is correctable with the same id before durable intake', async t => {
+  const { agentMcpRequest } = await import('../server/orchestration/agent-mcp.mjs');
+  const { contract } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const { app, planner, store, results } = await apiFixture(t, { resultIntake: true });
+  const credential = planner(), goal = store.get('goal'), attempt = goal.attempts[0];
+  const binding = { goalId: goal.id, attemptId: attempt.id, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: 'planner', target: attempt.target };
+  let submissions = 0;
+  const bridge = { submitResult: async payload => {
+    submissions++;
+    const response = await app.inject({ method: 'POST', url: '/api/orchestration/agent/results', headers: { authorization: `Bearer ${credential}` }, payload });
+    assert.equal(response.statusCode, 202, response.body); return response.json();
+  } };
+  const call = output => agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'submit_result', arguments: { id: 'same-result', output } } }, { binding, bridge });
+  const nested = { schemaVersion: 1, ...binding, output: { question: 'private question must not appear in errors' } };
+  for (const output of [nested, { output: { question: 'Nested' } }, { question: '' }, { question: 'Which audience?', contract: contract() }, { contract: {} }, { question: 'Question', goalId: 'other' }]) {
+    const response = await call(output); assert.equal(response.result.isError, true);
+    const error = JSON.parse(response.result.content[0].text); assert.equal(error.code, 'INVALID_PLANNER_OUTPUT');
+    assert.match(error.message, /Nothing was queued/); assert.doesNotMatch(error.message, /private question/);
+    assert.equal(submissions, 0); assert.deepEqual(store.get('goal'), goal, 'malformed input consumes neither journal version nor result id');
+  }
+  const listed = await agentMcpRequest({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, { binding, bridge });
+  const schema = listed.result.tools.find(tool => tool.name === 'submit_result').inputSchema.properties.output;
+  assert.deepEqual(schema.oneOf.map(branch => branch.required), [['question'], ['contract']]);
+  assert.ok(schema.oneOf.every(branch => branch.additionalProperties === false));
+  assert.deepEqual(schema.oneOf[1].properties.contract.required, ['schemaVersion', 'outcome', 'scope', 'exclusions', 'criteria', 'verification', 'tasks']);
+  const corrected = await call({ question: 'Which audience?' }); assert.equal(corrected.result.isError, undefined); assert.equal(submissions, 1);
+  await results.drain();
+  const settled = store.get('goal'); assert.equal(settled.results[0].id, 'same-result'); assert.equal(settled.results[0].status, 'accepted'); assert.equal(settled.clarification.question, 'Which audience?');
+  assert.notEqual(settled.attempts[0].status, 'failed');
+  const view = await app.inject({ url: '/api/orchestration/goals/goal', headers: HEADERS });
+  assert.equal(view.statusCode, 200); assert.ok(view.json().actions.some(action => action.type === 'answer_clarification'));
+});
+
+test('MCP validates contract graph before submission and preserves server acceptance without granting approval', async t => {
+  const { agentMcpRequest } = await import('../server/orchestration/agent-mcp.mjs');
+  const { contract } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const { app, planner, store, results } = await apiFixture(t, { resultIntake: true });
+  const credential = planner(), attempt = store.get('goal').attempts[0], plan = contract();
+  const binding = { goalId: 'goal', attemptId: attempt.id, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: 'planner', target: attempt.target };
+  let submissions = 0;
+  const bridge = { submitResult: async payload => {
+    submissions++;
+    const response = await app.inject({ method: 'POST', url: '/api/orchestration/agent/results', headers: { authorization: `Bearer ${credential}` }, payload });
+    assert.equal(response.statusCode, 202, response.body); return response.json();
+  } };
+  const call = value => agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'submit_result', arguments: { id: 'plan', output: { contract: value } } } }, { binding, bridge });
+  const invalid = structuredClone(plan); invalid.criteria[0].verification = 'missing-check';
+  assert.equal((await call(invalid)).result.isError, true); assert.equal(submissions, 0); assert.equal(store.get('goal').results, undefined);
+  assert.equal((await call(plan)).result.isError, undefined); assert.equal(submissions, 1);
+  await results.drain();
+  assert.equal(store.get('goal').results[0].status, 'accepted'); assert.equal(store.get('goal').revision, 1); assert.equal(store.get('goal').approvedRevision, null);
+});
