@@ -11,6 +11,7 @@ import { buildApp } from "./app.mjs";
 import { ModelSettings, DEFAULT_MODEL_SETTINGS_PATH } from "./model-settings.mjs";
 import { SettingsModels } from "./settings-models.mjs";
 import { LocalSettings, DEFAULT_DATA_DIRECTORY } from "./local-settings.mjs";
+import { resolveProviderCommand } from './provider-command.mjs';
 import { createSettingsRuntime } from "./settings-runtime.mjs";
 import { createConfiguredAgents, probeProvider } from "./provider-runtime.mjs";
 import { CmuxClient } from "./cmux-client.mjs";
@@ -66,7 +67,7 @@ export async function startServer({
     if (config) runtime = await createProductionRuntime({ config, token,
       sessions: async () => (await cmux.workspaceListDetailed()).workspaces.map(workspace => workspace.id), monitor });
     else {
-      runtime = await createSettingsRuntime({ settings: localSettings, directory, token, createAgents: createConfiguredAgents, probeProvider });
+      runtime = await createSettingsRuntime({ settings: localSettings, directory, token, createAgents: createConfiguredAgents, probeProvider, resolveProviderCommand });
       await runtime.app.register(monitor);
     }
   } catch (error) { localSettings?.close(); throw error; }

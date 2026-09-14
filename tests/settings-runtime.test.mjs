@@ -165,3 +165,25 @@ test('new goal persists once before provider checks and exposes a retryable star
   assert.match(reopened.store.get('new-goal').startup.error, /Sign into/);
   assert.deepEqual(f.launched, []);
 });
+
+test('terminal provider resolution is frozen before goal creation and reused after alias changes and restart', async t => {
+  const f = await fixture(t), value = defaultSettings();
+  value.projects.push({ id: 'project', name: 'Project', path: f.path, enabled: true, github: 'example/project', remote: 'git@github.com:example/project.git', checks: [] });
+  value.provider = 'codex'; value.providers.codex = { executable: 'xcodex', args: [], model: 'default' };
+  await f.settings.update(0, value); await f.runtime.close();
+  const resolution = { version: 1, provider: 'codex', kind: 'ccsxp', executable: '/pinned/ccsxp-runtime.js', args: [], model: 'default' };
+  let resolutions = 0;
+  const configured = await createSettingsRuntime({ ...f.options, resolveProviderCommand: async () => { resolutions++; return resolution; } });
+  f.extraRuntimes.push(configured);
+  const command = { id: 'alias-create', goalId: 'alias-goal', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'project', title: 'A saved goal', description: 'A saved goal' } };
+  for (let retry = 0; retry < 2; retry++) assert.equal((await configured.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: command })).statusCode, 200);
+  assert.equal(resolutions, 1); assert.deepEqual(f.settings.goalConfiguration('alias-goal').providerResolution, resolution);
+  await configured.close();
+  const seen = [];
+  const restarted = await createSettingsRuntime({ ...f.options, resolveProviderCommand: async () => { throw new Error('Saved alias must not be looked up again'); },
+    probeProvider: async (provider, command, tools, frozen) => { seen.push(frozen); return { ready: false, reason: 'Fixture stops before external Git' }; },
+  });
+  f.extraRuntimes.push(restarted);
+  await restarted.listen({ port: 0 }); await Promise.all(restarted.scheduler.startupJobs.values());
+  assert.deepEqual(seen, [resolution]); assert.equal(restarted.store.get('alias-goal').startup.status, 'failed');
+});

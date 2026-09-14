@@ -14,7 +14,7 @@ import { resolveGoalCheck } from './goal-verification.mjs';
 
 // Every provider instance and publication adapter is bound to a durable goal
 // configuration, never to the mutable current Settings form.
-export async function createSettingsRuntime({ settings, directory, token, createAgents, probeProvider, probeGit = probeGitCapabilities, own = acquireRepositoryOwnership, publisherFactory, prepareGoal }) {
+export async function createSettingsRuntime({ settings, directory, token, createAgents, probeProvider, probeGit = probeGitCapabilities, own = acquireRepositoryOwnership, publisherFactory, prepareGoal, resolveProviderCommand }) {
   const storage = { database: join(directory, 'core.sqlite'), artifacts: join(directory, 'artifacts'), resources: join(directory, 'resources') };
   const repositories = new Map(settings.read().settings.projects.map(project => [project.id, project.path]));
   const agents = new Map(), publications = new Map(), owners = new Map();
@@ -85,7 +85,8 @@ export async function createSettingsRuntime({ settings, directory, token, create
       prepareGoal: async goal => {
         const config = configured(goal.id), project = config.project;
         if (prepareGoal) return prepareGoal({ goal, config, repositories: runtime.repositories });
-        const readiness = await probeProvider(config.provider, config.command, config.tools);
+        requireValue(!config.providerResolution?.error, config.providerResolution?.error || 'Saved provider command could not be resolved', 'NOT_READY');
+        const readiness = await probeProvider(config.provider, config.command, config.tools, config.providerResolution);
         requireValue(readiness.ready, `${readiness.reason || 'The saved planning provider is unavailable'}. Restore this goal's saved provider and retry; create a new goal to use changed provider settings.`, 'NOT_READY');
         await probeGit(); await ownership(project);
         requireValue(project.remote, 'Configure the GitHub destination and retry startup', 'NOT_READY');
@@ -109,7 +110,13 @@ export async function createSettingsRuntime({ settings, directory, token, create
         if (command.payload.description !== undefined) command.payload.projectCode = projectCode(project.name);
         transition(null, command, { kind: 'user' });
         requireValue(settings.read().revision === before.revision, 'Settings changed; review the current configuration and retry', 'VERSION_CONFLICT');
-        const snapshot = settings.snapshotGoal(command.goalId, project.id);
+        let providerResolution;
+        if (resolveProviderCommand) {
+          try { providerResolution = await resolveProviderCommand(before.settings.provider, before.settings.providers[before.settings.provider]); }
+          catch (error) { providerResolution = { error: `${error.message}. Create a new goal after fixing this terminal command.` }; }
+          requireValue(settings.read().revision === before.revision, 'Settings changed; retry goal creation', 'VERSION_CONFLICT');
+        }
+        const snapshot = settings.snapshotGoal(command.goalId, project.id, providerResolution);
         requireValue(snapshot.project.id === project.id, 'Goal identity was reused with another project', 'IDEMPOTENCY_CONFLICT');
       },
       projectStatus: id => {

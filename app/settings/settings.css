@@ -85,3 +85,4 @@
 .folder-picker footer { display: grid; grid-template-columns: auto minmax(0, 1fr); background: var(--panel); padding-top: .75rem; margin-bottom: 0; border-top: 1px solid var(--line); }
 .local-settings-page .folder-picker button { margin: 0; }
 .local-settings-page .folder-picker .primary-button { background: var(--accent); color: var(--on-accent); }
+.settings-save .settings-save-error { flex:0 0 100%; margin:0; padding:10px; border-left:3px solid var(--accent); overflow-wrap:anywhere; }

@@ -6,12 +6,37 @@ import { join, resolve } from 'node:path';
 import { DomainError, identifier, requireValue, sha } from '../domain/contracts.mjs';
 import { ownedArea } from '../domain/graph.mjs';
 
+/** Git's worktree registry is not atomically published: concurrent add/remove
+ * can expose a directory before its commondir exists. Coordinate this owner's
+ * registry commands across adapter instances and linked/symlinked checkouts.
+ * Runtime ownership and Git process scopes remain the cross-process/crash fence.
+ * @type {Map<string, Promise<void>>} */
+const worktreeQueues = new Map();
+
 /** Local Git operations use fixed argv and no inherited credential/config hooks.
  * No fetch/push or checkout of submodules is performed by this adapter.
  * @param {string} cwd @param {string[]} argv @param {string | Buffer} [input] @param {boolean} [allowConflict]
  * @returns {Promise<Buffer>} 
  */
 export async function gitBytes(cwd, argv, input, allowConflict = false) {
+  if (argv[0] !== 'worktree') return runGitBytes(cwd, argv, input, allowConflict);
+  const common = realpathSync((await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
+  const previous = worktreeQueues.get(common);
+  /** @type {() => void} */ let release = () => {};
+  /** @type {Promise<void>} */ const current = new Promise(resolveQueue => { release = resolveQueue; });
+  worktreeQueues.set(common, current);
+  try {
+    await previous;
+    return await runGitBytes(cwd, argv, input, allowConflict);
+  } finally {
+    release();
+    if (worktreeQueues.get(common) === current) worktreeQueues.delete(common);
+  }
+}
+
+/** @param {string} cwd @param {string[]} argv @param {string | Buffer | undefined} input
+ * @param {boolean} allowConflict @returns {Promise<Buffer>} */
+async function runGitBytes(cwd, argv, input, allowConflict) {
   const tracked = trackGitCommand();
   const args = ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'submodule.recurse=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'protocol.allow=never', ...argv];
   const env = { PATH: process.env.PATH, LANG: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1' };

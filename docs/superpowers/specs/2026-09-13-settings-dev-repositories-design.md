@@ -80,7 +80,7 @@ full-width detail screen on mobile. Direct links identify the selected category;
 | --- | --- |
 | General | Connected Mac, this-device terminal input protection, install-to-home-screen action. |
 | Dev repos | Named directories, discovery, repository enablement and repository details. Shared on this Mac. |
-| Agents | Claude/Codex readiness, default provider and model, connection method: direct CLI or CCS profile; usage link. Shared on this Mac. |
+| Agents | Claude/Codex readiness, default provider and model, connection method: terminal command/simple alias, direct CLI or CCS profile; usage link. Shared on this Mac. |
 | Notifications | Permission, subscriptions, alert types, quiet hours and discreet content. Label the existing subscription/device scope accurately. |
 | Updates | Version, last check, changes, manual update and automatic installation toggle, initially off. Retention/recovery details under Advanced. |
 | Advanced | Tool paths, concurrency, time limits in human units, preview port range, diagnostics and local apps link. Shared on this Mac. |

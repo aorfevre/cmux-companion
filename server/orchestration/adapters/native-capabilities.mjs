@@ -8,7 +8,7 @@ const execute = promisify(execFile);
 // Initial native contract versions. Extending this set requires the offline
 // argv/hook/result suite and explicit live-evidence gaps, not a model-name guess.
 const CLAUDE_VERSIONS = new Set(['2.1.268']);
-const CCS_VERSIONS = new Set(['8.9.0']);
+const CCS_VERSIONS = new Set(['8.9.0', '8.10.0']);
 const FLAGS = ['--restricted', '--permission-mode', '--permission-prompts', '--setting-sources', '--strict-mcp-config', '--mcp-config', '--settings', '--tools', '--allowed-tools', '--disable-slash-commands', '--session-id', '--resume', '--print', '--output-format', '--verbose', '--no-session-persistence', '--model', '--effort'];
 
 /** Stable local installation evidence. Paths and stderr stay private.
@@ -29,16 +29,17 @@ function executable(path) {
  * Help/version run directly against the pinned native executable with fixed argv
  * and no inherited credentials. This establishes CLI compatibility, not proof of
  * actual model quality, native permission enforcement or cmux continuity.
- * @param {{ ccsBin: string; claudeBin: string; direct?: boolean; provider?: 'claude'|'codex' }} options */
-export async function probeNativeCapabilities({ ccsBin, claudeBin, direct = false, provider = 'claude' }) {
+ * @param {{ ccsBin: string; claudeBin: string; direct?: boolean; provider?: 'claude'|'codex'; ccsxp?: boolean }} options */
+export async function probeNativeCapabilities({ ccsBin, claudeBin, direct = false, provider = 'claude', ccsxp = false }) {
   try {
     const bin = executable(ccsBin), nativeBin = executable(claudeBin);
-    const packagePath = direct ? nativeBin : resolve(dirname(bin), '..', 'package.json');
+    const packagePath = direct ? nativeBin : resolve(dirname(bin), ccsxp ? '../..' : '..', 'package.json');
     requireValue(direct || lstatSync(packagePath).size <= 1024 * 1024, 'Invalid CCS installation metadata', 'UNSUPPORTED_CAPABILITY');
     const packageStamp = fingerprint(packagePath);
     const metadata = direct ? { name: '@kaitranntt/ccs', version: 'direct', bin: {} } : JSON.parse(readFileSync(packagePath, 'utf8'));
     requireValue(direct && bin === nativeBin || metadata.name === '@kaitranntt/ccs' && CCS_VERSIONS.has(metadata.version)
-      && typeof metadata.bin?.ccs === 'string' && realpathSync(resolve(dirname(packagePath), metadata.bin.ccs)) === bin,
+      && (!ccsxp || provider === 'codex' && metadata.version === '8.10.0')
+      && typeof metadata.bin?.[ccsxp ? 'ccsxp' : 'ccs'] === 'string' && realpathSync(resolve(dirname(packagePath), metadata.bin[ccsxp ? 'ccsxp' : 'ccs'])) === bin,
     'Unsupported CCS installation contract', 'UNSUPPORTED_CAPABILITY');
     const nativeStamp = fingerprint(nativeBin), wrapperStamp = fingerprint(bin);
     const metadataOptions = { cwd: dirname(nativeBin), env: { PATH: '/usr/bin:/bin', LANG: 'C', NO_COLOR: '1' }, timeout: 5000, maxBuffer: 256 * 1024, encoding: /** @type {const} */ ('utf8') };
@@ -59,7 +60,7 @@ export async function probeNativeCapabilities({ ccsBin, claudeBin, direct = fals
     const assertCurrent = () => assertNativeInstallation(identity);
     assertCurrent();
     return Object.freeze({
-      bin, nativeBin, identity, assertCurrent,
+      bin, nativeBin, identity, assertCurrent, ccsxp,
       evidence: Object.freeze({ ...(provider === 'codex' ? { codexVersion: version } : { claudeVersion: version }), ccsVersion: String(metadata.version), permissionEnforcement: 'unverified' }),
       // CCS 8.9.0 resolves this explicit path before searching PATH. Canonicalizing
       // the versioned executable prevents an updater symlink selecting another CLI.
