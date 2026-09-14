@@ -68,9 +68,9 @@ export class PushService {
     return { subscribed: false };
   }
 
-  async send({ title, body, kind = "attention", workspaceId = null, surfaceId = null, actionId = null, repoId = null, file = null, previewId = null, planId = null, tab = null, tag = null, bypassQuiet = false, bypassPreferences = false, targetEndpoint = null }) {
+  async send({ title, body, kind = "attention", workspaceId = null, surfaceId = null, actionId = null, repoId = null, file = null, previewId = null, planId = null, goalId = null, tab = null, tag = null, bypassQuiet = false, bypassPreferences = false, targetEndpoint = null }) {
     if (!EVENT_KINDS.has(kind)) throw new TypeError("Unsupported notification kind");
-    const url = contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, planId, tab, kind });
+    const url = contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, planId, goalId, tab, kind });
     const stale = [];
     const subscriptions = this.state.subscriptions;
     const targets = subscriptions
@@ -87,7 +87,7 @@ export class PushService {
         const payload = JSON.stringify({
           title: record.settings.hideContent ? "cmux companion" : title,
           body: record.settings.hideContent ? discreetBody(kind) : body,
-          kind, workspaceId, surfaceId, actionId, repoId, file, previewId, planId,
+          kind, workspaceId, surfaceId, actionId, repoId, file, previewId, planId, goalId,
           tag: tag || `cmux-${kind}-${actionId || previewId || planId || workspaceId || "general"}`, url,
         });
         try {
@@ -111,6 +111,17 @@ export class PushService {
       skipped: subscriptions.length - targets.length,
       error: failures.length ? publicPushError(failures[0].reason) : null,
     };
+  }
+
+  // Claim before external delivery: replay after an acknowledgement loss cannot
+  // notify twice. Push remains best effort; the goal card is durable even when
+  // a crash or provider failure prevents delivery after this claim.
+  async goalAttention({ journalId, goalId, attentionId, title, body }) {
+    const key = `${journalId}:${goalId}`;
+    if (this.state.goalAttention[key] === attentionId) return { duplicate: true };
+    this.state.goalAttention[key] = attentionId;
+    this.save();
+    return this.send({ title, body, goalId, kind: "attention", tag: `cmux-goal-${goalId}` });
   }
 
   test(endpoint = null) {
@@ -285,7 +296,7 @@ export class PushService {
 
   load() {
     const value = readPrivateJson(this.path, { vapid: null, subscriptions: [], delivered: [] }, value => value !== null && typeof value === "object" && Array.isArray(value.subscriptions));
-    return { vapid: value.vapid || null, subscriptions: Array.isArray(value.subscriptions) ? value.subscriptions.map((item) => ({ ...item, settings: normalizeSettings(item.settings) })) : [], delivered: Array.isArray(value.delivered) ? value.delivered.filter((item) => typeof item === "string").slice(-500) : [] };
+    return { goalAttention: value.goalAttention && typeof value.goalAttention === "object" && !Array.isArray(value.goalAttention) ? value.goalAttention : {}, vapid: value.vapid || null, subscriptions: Array.isArray(value.subscriptions) ? value.subscriptions.map((item) => ({ ...item, settings: normalizeSettings(item.settings) })) : [], delivered: Array.isArray(value.delivered) ? value.delivered.filter((item) => typeof item === "string").slice(-500) : [] };
   }
 
   save() { writePrivateJson(this.path, this.state); }
@@ -310,8 +321,9 @@ export function extractMarkdownPaths(text) {
   return values.slice(0, 12);
 }
 
-export function contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, planId, tab, kind } = {}) {
+export function contextUrl({ workspaceId, surfaceId, actionId, repoId, file, previewId, planId, goalId, tab, kind } = {}) {
   const query = new URLSearchParams();
+  if (goalId) { query.set("goal", goalId); return `/orchestration?${query}`; }
   if (actionId) { query.set("view", "inbox"); query.set("action", actionId); }
   else if (previewId) { query.set("view", "apps"); query.set("preview", previewId); }
   // A goal lives on the worktree dashboard, which is a mode of the sessions

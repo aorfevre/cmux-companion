@@ -67,7 +67,7 @@ export class NativeTerminal {
       const command = await this.inputs.prepare(request, directory);
       requireValue(command.activation && !this.stopping, 'Terminal activation is unavailable', 'NOT_READY');
       writeFileSync(join(directory, 'create-sent.json'), JSON.stringify({ identity }), { flag: 'wx', mode: 0o600 }); sent = true;
-      const created = await this.terminal.create(request.attempt.worktree ?? '');
+      const created = await this.terminal.create(request.attempt.worktree ?? '', command.plannerName);
       this.save(join(directory, 'workspace.json'), { identity, workspaceId: created.workspaceId });
       const configPath = join(directory, 'worker.json');
       this.save(configPath, { identity, workspaceId: created.workspaceId, activation: command.activation, installation: this.inputs.installation?.identity,

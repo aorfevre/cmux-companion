@@ -31,12 +31,13 @@ import { requireValue } from './domain/contracts.mjs';
  * onError?: (error: unknown) => void;
  * logLevel?: string;
  * suspension?: () => string | null;
+ * prepareGoal?: (goal: import('./types.d.ts').Goal) => Promise<string>;
  * beforeCommand?: (command: import('./types.d.ts').Command) => Promise<void>;
  * projectStatus?: (id: string) => { name?: string; error?: string | null; enabled?: boolean };
  * goalLimits?: (goalId: string) => { global: number; perGoal: number; planners: number };
  * }} options
  */
-export async function createRuntime({ storage, repositories: configured, token, readOnly = false, createAgents, resolveCheck, createPublisher, consumers = [], limits, logLevel, suspension = () => null, beforeCommand, projectStatus, goalLimits, onError = () => {} }) {
+export async function createRuntime({ storage, repositories: configured, token, readOnly = false, createAgents, resolveCheck, createPublisher, consumers = [], limits, logLevel, suspension = () => null, prepareGoal, beforeCommand, projectStatus, goalLimits, onError = () => {} }) {
   requireValue(typeof token === 'string' && token.length >= 32, 'Explicit private pairing token required');
   requireValue(typeof readOnly === 'boolean' && new Set(consumers.map((consumer) => consumer.id)).size === consumers.length, 'Invalid runtime configuration');
   for (const path of Object.values(storage)) requireValue(typeof path === 'string' && path.length > 0, 'Explicit storage paths required');
@@ -60,14 +61,21 @@ export async function createRuntime({ storage, repositories: configured, token, 
     const stream = new EventStream({ store, onError: report });
     const subscribers = consumers.map((options) => new JournalConsumer({ ...options, store, onError: report }));
     store.onCommit = () => { stream.wake(); for (const subscriber of subscribers) subscriber.wake(); };
-    const scheduler = new Scheduler({ service, repositories, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck }), publisher: createPublisher({ repositories }), results, onError: report });
+    const scheduler = new Scheduler({ service, repositories, prepareGoal, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck }), publisher: createPublisher({ repositories }), results, onError: report });
     const app = Fastify({ logger: logLevel ? { level: logLevel, redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]'] } : false, bodyLimit: 2 * 1024 * 1024, ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
     const cleanup = new ResourceCleanup({ service, repositories, assertOwned: () => scheduler.ownership.assertOwned() });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
     registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly, suspension, cleanup, beforeCommand, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {
       try {
         const { repository } = await repositories.repository(id);
-        const baseBranch = (await git(repository, ['symbolic-ref', '--short', 'HEAD'])).trim();
+        let baseBranch;
+        try { baseBranch = (await git(repository, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).trim(); }
+        catch (error) {
+          // Detached HEAD is a valid source checkout: new goals fetch their own
+          // base and never depend on moving this checkout onto a local branch.
+          if (!prepareGoal || /** @type {{ exitCode?: unknown }} */ (error).exitCode !== 1) throw error;
+          baseBranch = 'main';
+        }
         const baseSha = await repositories.ref(repository, `refs/heads/${baseBranch}`);
         return { id, baseBranch, baseSha, error: null, ...projectStatus?.(id) };
       } catch { return { id, ...projectStatus?.(id), baseBranch: null, baseSha: null, error: 'Repository branch is unavailable' }; }
@@ -84,7 +92,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
       const prompt = rolePrompt(goal, attempt);
       const credential = bridgeAuth.issueForDispatch(goal.id, attempt.id, request.operationId);
       const activation = { endpoint: `http://127.0.0.1:${address.port}`, credential };
-      return { prompt, activation, ...(attempt.role === 'reviewer' ? {} : { bridge: activation }) };
+      return { prompt, plannerName: goal.plannerName, activation, ...(attempt.role === 'reviewer' ? {} : { bridge: activation }) };
     };
     const ownedAgents = agents;
     let started = false, closed = false, shutdownRequested = false;

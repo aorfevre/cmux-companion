@@ -68,3 +68,16 @@ test('in-flight launches and coordinator effects cannot race the idle fence', as
   f.runtime.store.operations = () => []; f.promptQueue.inFlight.add('prompt'); assert.equal((await f.maintenance.acquire('manual-003')).ready, false);
   assert.equal(managedWorkBusy(null), true);
 });
+
+test('aborted goal with an owned base fetch still blocks update activation until the job settles', async t => {
+  const f = await fixture(t);
+  f.control.request({ id: 'manual-004', sha, whenIdle: true });
+  f.runtime.store.list = () => [{ status: 'aborted', attempts: [] }];
+  f.runtime.scheduler.startupJobs = new Map([['aborted-goal', Promise.resolve()]]);
+  assert.equal(managedWorkBusy(f.runtime), true);
+  assert.equal((await f.maintenance.acquire('manual-004')).ready, false);
+  assert.equal(f.control.status().maintenance, false);
+  f.runtime.scheduler.startupJobs.clear();
+  assert.equal(managedWorkBusy(f.runtime), false);
+  assert.equal((await f.maintenance.acquire('manual-004')).ready, true);
+});

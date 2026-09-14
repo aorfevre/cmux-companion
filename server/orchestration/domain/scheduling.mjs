@@ -7,6 +7,7 @@ import { currentReviews } from './review.mjs';
  * @param {import('../types.d.ts').Goal} goal @returns {ReadyWork[]}
  */
 export function readyWork(goal) {
+  if (goal.startup && goal.startup.status !== 'ready') return [];
   if (['aborted', 'merged', 'delivered', 'ready_to_publish'].includes(goal.status)) return [];
   /** @type {ReadyWork[]} */
   const result = [];
@@ -15,10 +16,10 @@ export function readyWork(goal) {
     if (role === 'integrator' && hasPendingRepairResult(goal)) return;
     const history = goal.attempts.filter((attempt) => attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.role === role && attempt.taskId === taskId && attempt.target === target);
     if ((role === 'planner' || role === 'reviewer') && history.length && !history.at(-1)?.retryRequested) return;
-    if (goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || (attempt.taskId === taskId && (role === 'implementer' || attempt.target === target))))) return;
+    if (goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || (attempt.taskId === taskId && (role === 'implementer' || role === 'planner' || attempt.target === target))))) return;
     result.push({ key: role === 'implementer' ? `${role}:${taskId}` : `${role}:${taskId ?? ''}:${target}`, role, taskId, target });
   };
-  if (goal.status === 'discovering') add('planner', null, planTarget(goal));
+  if (goal.status === 'discovering' && (!goal.clarification || goal.clarification.answer !== undefined)) add('planner', null, planTarget(goal));
   if (goal.status === 'awaiting_approval') add('reviewer', null, planTarget(goal));
   if (goal.status !== 'building' || goal.approvedRevision !== goal.revision) return result;
   for (const task of goal.tasks) if (task.status === 'in_review' && task.candidateSha) add('reviewer', task.id, task.candidateSha);

@@ -3,6 +3,7 @@ import { updateError } from '../updater/src/control.mjs';
 
 export function managedWorkBusy(runtime) {
   if (!runtime?.scheduler || !runtime.store) return true;
+  if (runtime.scheduler.startupJobs?.size) return true;
   if (runtime.scheduler.verifications?.active.size || runtime.scheduler.publications?.active.size) return true;
   if (runtime.store.operations().some(op => op.status !== 'completed')) return true;
   return runtime.store.list().some(goal => goal.attempts.some(attempt => attempt.workerState !== 'stopped')

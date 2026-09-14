@@ -10,7 +10,7 @@ const mcp = fileURLToPath(new URL('../agent-mcp.mjs', import.meta.url));
  * No goal/agent text is interpolated into that command. @param {string} value */
 const quote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
 
-/** @typedef {{ prompt: string; bridge?: { endpoint: string; credential: string }; activation?: import('./native-activation.mjs').NativeActivation }} NativeDescription */
+/** @typedef {{ prompt: string; plannerName?: string; bridge?: { endpoint: string; credential: string }; activation?: import('./native-activation.mjs').NativeActivation }} NativeDescription */
 
 /** Private inputs are outside native file-tool working directories. Their
  * lifecycle belongs to the process adapter; preparation never starts a worker.
@@ -47,7 +47,7 @@ export class NativeInputs {
       }
     };
     const nativeInstructions = attempt.role === 'planner'
-      ? 'Publish your contract with companion.submit_result using a stable result id and output:{contract}. This receipt is not user approval. Native permission prompts remain interactive.'
+      ? 'Publish your contract with companion.submit_result using a stable result id and output:{contract}, or ask a focused clarification with output:{question} and stop. This receipt is not user approval. Native permission prompts remain interactive.'
       : attempt.role === 'reviewer' ? 'You have no mutating tools or command execution. Return only the required role envelope in your final answer.'
         : 'Edit only the assigned scope with native file tools. To commit, call companion.commit_candidate with a stable id, expectedHead (initially the recorded baseSha), and a commit message. The tool returns headSha. It cannot publish or accept your work. Repository checks run independently after integration; report checks you could not run. Return the required role envelope in your final answer.';
     save(contextPath, `${description.prompt}\n\n${nativeInstructions}\n`);
@@ -64,6 +64,6 @@ export class NativeInputs {
     this.installation?.assertCurrent();
     const argv = ccsCommand({ request, engine: this.engine, capabilities: this.capabilities, env: this.env, contextPath, settingsPath, mcpPath });
     argv[0] = this.profile;
-    return { argv: this.direct ? argv.slice(3) : argv, env: { ...this.env }, ...(description.activation ? { activation: description.activation } : {}) };
+    return { plannerName: description.plannerName, argv: this.direct ? argv.slice(3) : argv, env: { ...this.env }, ...(description.activation ? { activation: description.activation } : {}) };
   }
 }

@@ -16,14 +16,16 @@ suite('Mobile orchestration with real service and disposable Git', () => {
   const readonly = Cypress.expose('orchestrationReadOnly') ? it : it.skip;
   readonly('protects the real service in read-only mode', () => {
     cy.contains('Read-only mode · controls are disabled.').should('be.visible');
-    cy.findByRole('button', { name: 'New goal' }).should('be.disabled');
+    cy.findByRole('button', { name: 'Start goal' }).should('be.disabled');
     cy.request({ method: 'POST', url: '/api/orchestration/commands', body: { id: 'readonly', goalId: 'readonly', expectedVersion: 0, type: 'create_goal', payload: {} }, failOnStatusCode: false }).its('status').should('equal', 403);
     cy.task<Evidence>('orchestrationEvidence').its('goals').should('have.length', 0);
   });
   writable('reviews a plan, overlaps implementers, repairs review and verification, then publishes one exact-head PR', () => {
     cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click(); cy.get('.project-choice').first().click();
     cy.findByLabelText('What should we accomplish?').type('Build the parallel fixture');
-    cy.findByRole('button', { name: 'New goal' }).click();
+    cy.findByRole('button', { name: 'Start goal' }).click();
+    cy.findByRole('button', { name: /Needs approval \(/ }).click();
+    cy.get('.orch-kanban-column[data-active=true] .orch-goal-card', { timeout: 20000 }).first().click();
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).should('be.enabled').click();
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.get('[data-task="B"]').should('contain.text', 'running');
@@ -33,11 +35,11 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       expect(evidence.overlaps).to.include(goal.id);
       expect(evidence.launches.filter((entry) => entry.goalId === goal.id && entry.attempt.taskId === 'C')).to.have.length(0);
     });
-    cy.reload(); cy.contains('button', 'Build the parallel fixture').click();
+    cy.reload(); cy.findByRole('button', { name: /In progress \(/ }).click(); cy.contains('button', 'Build the parallel fixture').click();
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.task('orchestrationRelease', 'siblings');
     cy.contains('Blocking: Composition does not add its inputs', { timeout: 30000 }).should('be.visible');
-    cy.findByRole('region', { name: 'Combined verification' }).contains('p', 'injected_dependencies', { timeout: 30000 }).should('contain.text', 'Failed');
+    cy.findByRole('region', { name: 'Combined verification', timeout: 30000 }).contains('p', 'injected_dependencies', { timeout: 30000 }).should('contain.text', 'Failed');
     cy.findByRole('link', { name: /Open pull request/ }).should('not.exist');
     cy.task<Evidence>('orchestrationEvidence').then(evidence => { expect(evidence.prCreates).to.have.length(0); });
     cy.task<string>('orchestrationAdvanceTarget').as('movedTarget');
@@ -51,7 +53,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       cy.wrap(goal.reviews.length).as('reviewCount');
       expect(evidence.prCreates).to.have.length(0);
     });
-    cy.reload(); cy.contains('button', 'Build the parallel fixture').click();
+    cy.reload(); cy.findByRole('button', { name: /Review \(/ }).first().click(); cy.contains('button', 'Build the parallel fixture').click();
     cy.findByRole('button', { name: 'Publish reviewed head against moved target' }).should('be.enabled').click();
     cy.findByRole('link', { name: 'Open pull request #1', timeout: 30000 }).should('be.visible');
     cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', status: 'delivered' }).then(evidence => {
@@ -71,12 +73,14 @@ suite('Mobile orchestration with real service and disposable Git', () => {
   writable('aborts waiting siblings and reconciles without running their dependent task', () => {
     cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click(); cy.get('.project-choice').first().click();
     cy.findByLabelText('What should we accomplish?').type('Abort this fixture');
-    cy.findByRole('button', { name: 'New goal' }).click();
+    cy.findByRole('button', { name: 'Start goal' }).click();
+    cy.findByRole('button', { name: /Needs approval \(/ }).click();
+    cy.get('.orch-kanban-column[data-active=true] .orch-goal-card', { timeout: 20000 }).first().click();
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).click();
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.findByRole('button', { name: 'Abort goal' }).click();
     cy.findByRole('article', { name: 'Goal detail' }).should('contain.text', 'aborted');
-    cy.findByRole('button', { name: 'Reconcile workers' }).click();
+    cy.contains('summary', 'Source and technical details').click(); cy.findByRole('button', { name: 'Reconcile workers' }).click();
     cy.task<Evidence>('orchestrationEvidence', { title: 'Abort this fixture', status: 'aborted' }).then(evidence => {
       const goal = evidence.goals.find((entry) => entry.title === 'Abort this fixture')!;
       expect(goal.status).to.equal('aborted');

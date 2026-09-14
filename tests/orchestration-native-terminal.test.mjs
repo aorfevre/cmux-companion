@@ -42,10 +42,10 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
   const bridge = { endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-activation-credential-at-least-32-characters' };
   const installation = codex ? await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }) : undefined;
   const Inputs = codex ? CodexInputs : NativeInputs;
-  const inputs = new Inputs({ installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', activation: bridge, bridge }) });
+  const inputs = new Inputs({ installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', plannerName: 'DICTEE Planning Onboarding', activation: bridge, bridge }) });
   let child, creates = 0, starts = 0, opens = 0;
   const terminal = {
-    async create() { creates++; return { workspaceId }; },
+    async create(cwd, title) { assert.equal(cwd, worktree); assert.equal(title, 'DICTEE Planning Onboarding'); creates++; return { workspaceId }; },
     async start(id, path) {
       assert.equal(id, workspaceId); starts++;
       const runner = fileURLToPath(new URL('../server/orchestration/adapters/native-terminal-worker.mjs', import.meta.url));
@@ -132,9 +132,10 @@ if (process.env.FIXTURE_FAIL) { process.stderr.write('private-credential'); proc
 process.stdout.write(JSON.stringify({ workspace_id: ${JSON.stringify(workspaceId)}, window_id: ${JSON.stringify(workspaceId)} }));
 `, { mode: 0o700 });
   const terminal = new CmuxTerminal({ bin, env: { FIXTURE_CALLS: calls } });
-  await terminal.create(root); await terminal.start(workspaceId, join(root, "private ' input.json")); await terminal.open(workspaceId);
+  await terminal.create(root, 'DICTEE Planning Onboarding'); await terminal.start(workspaceId, join(root, "private ' input.json")); await terminal.open(workspaceId);
   const recorded = (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.deepEqual(recorded.map(args => args.slice(0, 3)), ['workspace.create', 'surface.send_text', 'workspace.select', 'window.focus'].map(method => ['--json', 'rpc', method]));
+  assert.equal(JSON.parse(recorded[0][3]).title, 'DICTEE Planning Onboarding');
   const sent = JSON.parse(recorded[1][3]); assert.equal(sent.workspace_id, workspaceId);
   assert.ok(sent.text.startsWith('exec ')); assert.ok(sent.text.includes('native-terminal-worker.mjs'));
   assert.ok(sent.text.includes("'\\''"));

@@ -39,7 +39,7 @@ test('pairs through the service and disables all creation controls in read-only 
   fireEvent.change(await screen.findByLabelText('Pairing code'), { target: { value: 'disposable' } });
   fireEvent.click(screen.getByRole('button', { name: 'Pair this device' }));
   await screen.findByText('Read-only mode · controls are disabled.');
-  expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', true);
   expect(screen.getByRole('button', { name: 'Project Choose a project' })).toHaveProperty('disabled', true);
   expect(api).toHaveBeenCalledWith('/api/orchestration/pair', expect.objectContaining({ body: JSON.stringify({ token: 'disposable' }) }));
 });
@@ -51,10 +51,10 @@ test('uncertain command retries exactly the original id, payload and expected ve
     if (url.endsWith('/commands')) { commands.push(String(options?.body)); throw new Error('Network disconnected'); }
     return original(url, options);
   });
-  fireEvent.click(screen.getByRole('button', { name: 'New goal' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
   const retry = await screen.findByRole('button', { name: 'Retry pending request' });
   await waitFor(() => expect(retry).toHaveProperty('disabled', false));
-  expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', true);
   fireEvent.click(retry);
   await waitFor(() => expect(commands).toHaveLength(2));
   expect(commands[1]).toBe(commands[0]);
@@ -63,15 +63,15 @@ test('uncertain command retries exactly the original id, payload and expected ve
 test('a definitive stale conflict refreshes and allows a new deliberate command', async () => {
   await start(); const original = api.getMockImplementation()!;
   api.mockImplementation(async (url, options) => { if (url.endsWith('/commands')) throw new ApiError('Stale', 409, 'VERSION_CONFLICT'); return original(url, options); });
-  fireEvent.click(screen.getByRole('button', { name: 'New goal' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
   await screen.findByText(/The goal changed/);
-  await waitFor(() => expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', false));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', false));
   expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull();
 });
 test('provider readiness errors retain actionable settings guidance', async () => {
   await start(); const original = api.getMockImplementation()!;
   api.mockImplementation(async (url, options) => { if (url.endsWith('/commands')) throw new ApiError('Configure a supported provider in Settings', 409, 'NOT_READY'); return original(url, options); });
-  fireEvent.click(screen.getByRole('button', { name: 'New goal' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
   await screen.findByText('Configure a supported provider in Settings');
   expect(screen.queryByText(/The goal changed/)).toBeNull();
 });
@@ -149,6 +149,98 @@ test('automatic discovery keeps disabled repositories visible and reports partia
   });
   await start(); await screen.findByText(/Scan limit reached/);
   expect(screen.getByRole('button', { name: 'Project Example karven' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', true);
+  expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', true);
   expect(screen.getByRole('link', { name: 'Configure repository' }).getAttribute('href')).toBe('/settings?repository=repo#dev-repos');
+});
+
+test('Kanban groups authoritative states, shows named agents and offers mobile columns', async () => {
+  const { GoalKanban } = await import('../app/orchestration/kanban');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const base = goalView(fixture().goal);
+  const goals = (['discovering', 'awaiting_approval', 'building', 'ready_to_publish', 'merged', 'aborted'] as const).map((status, i) => ({ ...base, id: String(i), status, title: `Goal ${i}`, plannerName: `REPO Planning Goal ${i}` }));
+  const select = vi.fn();
+  render(<GoalKanban goals={goals} selected={null} select={select} projectName={() => 'Example'} />);
+  expect(screen.getByRole('button', { name: 'Done (2)' })).toBeTruthy();
+  expect(screen.getByText('REPO Planning Goal 0')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Review (1)' }));
+  expect(screen.getByRole('region', { name: 'Review' }).getAttribute('data-active')).toBe('true');
+  fireEvent.click(screen.getByRole('button', { name: /Example Goal 3/ }));
+  expect(select).toHaveBeenCalledWith('3');
+  expect(screen.getByText(/Needs attention/)).toBeTruthy();
+});
+
+test('goal details preserve the request, edit only the title, and hide empty evidence', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const goal = { ...goalView(fixture().goal), title: 'Short title', description: 'Complete request\nhttps://example.com/design', contracts: [], actions: [{ type: 'rename_goal', label: 'Rename goal', payload: { title: 'Short title' } }] };
+  const act = vi.fn().mockResolvedValue(true);
+  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  expect(screen.getByText(/Complete request/).textContent).toContain('https://example.com/design');
+  expect(screen.queryByText('Independent reviews')).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Combined verification' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Task board' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit title' }));
+  fireEvent.change(screen.getByLabelText('Goal title'), { target: { value: 'Better title' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save title' }));
+  expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'rename_goal', payload: { title: 'Better title' } }));
+});
+
+test('task board exposes dependencies, failures and optional graph', async () => {
+  const { TaskKanban } = await import('../app/orchestration/kanban');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const base = goalView(fixture().goal);
+  const goal = { ...base, tasks: (['integrated', 'running', 'in_review', 'failed'] as const).map((status, i) => ({ id: String(i), title: `Task ${i}`, status, dependsOn: i ? ['0'] : [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
+  render(<TaskKanban goal={goal} />);
+  expect(screen.getByRole('button', { name: 'Done (1)' })).toBeTruthy();
+  expect(screen.getAllByText('Depends on 0')).toHaveLength(3);
+  expect(screen.getByText('Needs attention · failed')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Running (1)' }));
+  expect(screen.getByRole('region', { name: 'Tasks Running' }).getAttribute('data-active')).toBe('true');
+  expect(screen.getByText('Dependency graph').closest('details')).toHaveProperty('open', false);
+});
+
+test('creation submits a full request from main without the current checkout SHA and stays on the board', async () => {
+  const original = api.getMockImplementation()!;
+  api.mockImplementation(async (url, options) => {
+    if (url.endsWith('/configuration')) return { ...config, repositories: [{ ...config.repositories[0], baseSha: null, baseBranch: 'feature/local' }] };
+    return original(url, options);
+  });
+  await start();
+  expect(screen.getByText('Starts from freshly fetched main in an isolated worktree.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
+  await screen.findByText('Goal saved. Its planning agent will start automatically.');
+  const body = JSON.parse(String(api.mock.calls.find(([url]) => url.endsWith('/commands'))?.[1]?.body));
+  expect(body.payload).toEqual({ title: 'A useful goal', description: 'A useful goal', repositoryId: 'repo', baseBranch: 'main' });
+  expect(screen.getByLabelText('What should we accomplish?')).toHaveProperty('value', '');
+  expect(screen.queryByText('Loading goal…')).toBeNull();
+});
+
+test('clarification answers preserve feedback on failure and use the projected action', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const base = goalView(fixture().goal);
+  const goal = { ...base, contracts: [], clarification: { question: 'Which audience?' }, actions: [{ type: 'answer_clarification', label: 'Answer', payload: {} }] };
+  const act = vi.fn().mockResolvedValue(false);
+  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText('Your answer'), { target: { value: 'New learners' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send answer' }));
+  await waitFor(() => expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'answer_clarification', payload: { answer: 'New learners' } })));
+  expect(screen.getByLabelText('Your answer')).toHaveProperty('value', 'New learners');
+});
+
+
+test('terminal goals retain their result without stale attention from unanswered questions', async () => {
+  const { attention, GoalKanban } = await import('../app/orchestration/kanban');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const base = goalView(fixture().goal);
+  const goals = (['merged', 'aborted'] as const).map(status => ({ ...base, id: status, status, clarification: { question: 'Historical question' } }));
+  for (const goal of goals) expect(attention(goal)).toBeNull();
+  render(<GoalKanban goals={goals} selected={null} select={vi.fn()} projectName={() => 'Example'} />);
+  expect(screen.getByText('Aborted')).toBeTruthy();
+  expect(screen.queryByText(/Needs attention/)).toBeNull();
 });

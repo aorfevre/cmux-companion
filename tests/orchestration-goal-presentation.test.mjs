@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { fixture, BASE } from './helpers/orchestration/domain-fixture.mjs';
+import { transition } from '../server/orchestration/domain/transitions.mjs';
+import { projectCode, shortGoalTitle } from '../server/orchestration/domain/goal-presentation.mjs';
+import { goalView } from '../server/orchestration/domain/state-view.mjs';
+import { readyWork } from '../server/orchestration/domain/scheduling.mjs';
+import { roleContext } from '../server/orchestration/adapters/role-prompts.mjs';
+import { parseRoleResult } from '../server/orchestration/domain/role-result.mjs';
+import { NATIVE_TOOLS } from '../server/orchestration/adapters/ccs.mjs';
+
+test('full request and links persist separately from short title and project-coded planner name', () => {
+  const description = 'Do you see that ? https://example.invalid/design\n\nImprove dictation onboarding.\nPreserve all visitor choices.';
+  const goal = transition(null, { id: 'create', goalId: 'goal', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', projectCode: 'dictée', title: description, description, baseSha: BASE } }, { kind: 'user' }).goal;
+  assert.equal(goal.title, 'Improve dictation onboarding.'); assert.equal(goal.description, description);
+  assert.equal(goal.plannerName, 'DICTEE Planning Improve dictation onboarding.');
+  const renamed = transition(goal, { id: 'rename', goalId: 'goal', expectedVersion: goal.version, type: 'rename_goal', payload: { title: 'Visitor onboarding' } }, { kind: 'user' }).goal;
+  assert.equal(renamed.description, description); assert.equal(renamed.title, 'Visitor onboarding'); assert.equal(renamed.plannerName, goal.plannerName);
+  assert.equal(projectCode('東京'), 'PROJECT'); assert.equal(projectCode('my project'), 'MY-PROJECT');
+  assert.equal(shortGoalTitle('https://example.invalid'), 'New goal');
+  assert.ok(shortGoalTitle('word '.repeat(80)).length <= 96); assert.ok(shortGoalTitle('x'.repeat(200)).length <= 96);
+});
+test('legacy description survives title edits and historical base remains unchanged', () => {
+  const f = fixture(), original = f.goal.title;
+  f.command('rename_goal', { title: 'Short label' }, f.user);
+  assert.equal(goalView(f.goal).description, original); assert.equal(f.goal.baseSha, BASE);
+  assert.throws(() => f.command('rename_goal', { title: '' }, f.user));
+  assert.throws(() => f.command('rename_goal', { title: 'Not authorized' }, f.system), { code: 'FORBIDDEN' });
+});
+test('planner questions pause admission and answers preserve context before exactly one fresh planner', () => {
+  const f = fixture(); f.request('planner', 'planner'); f.dispatch('planner');
+  const a = f.goal.attempts[0], authority = { kind: 'agent', goalId: f.goal.id, attemptId: a.id, role: 'planner', generation: a.generation, revision: a.revision };
+  const envelope = { schemaVersion: 1, goalId: f.goal.id, attemptId: a.id, operationId: a.operationId, generation: a.generation, revision: a.revision, role: 'planner', target: a.target, output: { question: 'Which visitors should see the form?' } };
+  assert.equal(parseRoleResult(envelope, { goalId: f.goal.id, attempt: a }).output.question, envelope.output.question);
+  assert.throws(() => parseRoleResult({ ...envelope, output: { question: 'Which?', contract: {} } }, { goalId: f.goal.id, attempt: a }));
+  const result = f.command('request_clarification', envelope.output, authority);
+  assert.equal(result.intents[0].kind, 'terminate'); assert.equal(readyWork(f.goal).length, 0);
+  assert.ok(goalView(f.goal).actions.some(action => action.type === 'answer_clarification'));
+  assert.throws(() => f.command('request_revision', { message: 'Bypass question' }, f.user), { code: 'NOT_READY' });
+  assert.throws(() => f.request('bypass', 'planner'), { code: 'NOT_READY' });
+  f.command('answer_clarification', { answer: 'First-time visitors only.' }, f.user);
+  assert.equal(readyWork(f.goal).length, 0, 'the prior physical worker still owns capacity');
+  f.command('record_stopped', { attemptId: a.id });
+  assert.equal(readyWork(f.goal).length, 1); f.request('next', 'planner');
+  const context = roleContext(f.goal, f.goal.attempts.at(-1));
+  assert.match(context.planningRequest.message, /First-time visitors only/);
+  assert.equal(readyWork(f.goal).length, 0);
+  assert.throws(() => f.command('answer_clarification', { answer: 'duplicate' }, f.user), { code: 'NOT_READY' });
+  assert.ok(!NATIVE_TOOLS.planner.includes('AskUserQuestion'), 'questions use the goal protocol instead of terminal prompts');
+});

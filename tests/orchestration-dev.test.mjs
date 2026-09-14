@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFile, stat, access } from 'node:fs/promises';
+import { readFile, stat, access, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { startOrchestrationDemo } from '../scripts/run-orchestration-dev.mjs';
@@ -18,10 +18,18 @@ test('disposable development composition delivers through paired HTTP and real G
     const response = await fetch(`${manifest.address}/api/orchestration/commands`, { method: 'POST', headers, body: JSON.stringify(body) });
     const result = await response.json(); assert.equal(response.status, 200, JSON.stringify(result)); return result;
   };
-  await command({ id: 'create', goalId: 'g', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: manifest.repositoryId, title: 'Disposable browser fixture', baseSha: manifest.baseSha } });
+  await fixtureGit(manifest.repository, ['checkout', '--detach']);
+  await writeFile(`${manifest.repository}/untracked-user.txt`, 'Preserve detached user work');
+  const configuration = await (await fetch(`${manifest.address}/api/orchestration/configuration`, { headers })).json();
+  assert.equal(configuration.repositories[0].error, null);
+  assert.equal(configuration.repositories[0].baseBranch, 'main');
+  await command({ id: 'create', goalId: 'g', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: manifest.repositoryId, title: 'Disposable browser fixture', description: 'Disposable browser fixture' } });
+  await runtime.scheduler.tick();
+  await Promise.all(runtime.scheduler.startupJobs.values());
   const agents = runtime.service.agents;
   for (let i = 0; i < 10 && !runtime.store.get('g').reviews.length; i++) { await runtime.scheduler.tick(); await agents.drain(); }
   let goal = runtime.store.get('g'); assert.equal(goal.reviews[0].disposition, 'accept');
+  assert.equal(goal.startup.status, 'ready'); assert.equal(goal.baseSha, manifest.baseSha);
   await command({ id: 'approve', goalId: 'g', expectedVersion: goal.version, type: 'approve', payload: { revision: goal.revision } });
   for (let i = 0; i < 35 && runtime.store.get('g').status !== 'delivered'; i++) {
     await runtime.scheduler.tick(); await agents.drain();
@@ -29,6 +37,9 @@ test('disposable development composition delivers through paired HTTP and real G
     await Promise.all([...runtime.scheduler.publications.active.values()].map((run) => run.job));
   }
   goal = runtime.store.get('g'); assert.deepEqual(agents.errors, []);
+  assert.equal(await fixtureGit(manifest.repository, ['rev-parse', '--abbrev-ref', 'HEAD']), 'HEAD');
+  assert.equal(await fixtureGit(manifest.repository, ['rev-parse', 'HEAD']), manifest.baseSha);
+  assert.equal(await readFile(`${manifest.repository}/untracked-user.txt`, 'utf8'), 'Preserve detached user work');
   assert.equal(goal.status, 'delivered', JSON.stringify(goal));
   assert.equal(goal.tasks.find((task) => task.id === 'C').repairCount, 1);
   assert.equal(goal.finalRepairCount, 1);

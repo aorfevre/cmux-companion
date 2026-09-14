@@ -37,6 +37,8 @@ export interface Verification {
   headSha: string; checks: { id: string; passed: boolean; artifactId: string }[];
 }
 export interface Goal {
+  description?: string; projectCode?: string; plannerName?: string; clarification?: {question:string;answer?:string};
+  startup?: { status: 'pending' | 'failed' | 'ready'; error: string | null };
   id: string; version: number; generation: number; repositoryId: string; title: string; baseSha: string; baseBranch: string;
   status: GoalStatus; revision: number; approvedRevision: number | null;
   contracts: { revision: number; contract: Contract }[]; tasks: Task[];
@@ -52,7 +54,7 @@ export interface Goal {
 }
 export interface EvidenceReference { path: string; line: number; description: string }
 export type RoleOutput =
-  | { role: 'planner'; output: { contract: Contract } }
+  | { role: 'planner'; output: { contract: Contract } | { question: string } }
   | { role: 'reviewer'; output: ReviewResult }
   | { role: 'implementer'; output: { headSha: string; summary: string; evidence: EvidenceReference[] } }
   | { role: 'integrator'; output: { headSha: string; operationId: string | null; summary: string; evidence: EvidenceReference[] } };

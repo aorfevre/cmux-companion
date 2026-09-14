@@ -75,7 +75,7 @@ export class CodexInputs extends NativeInputs {
     if (this.engine.model !== 'default') argv.push('--model', this.engine.model);
     if (request.attempt.mode === 'background') argv.push('exec', '--json');
     argv.push('Follow the pinned role context. Read project files using the files MCP server. Use only the scoped role tools. Return the required JSON role envelope as your final answer.');
-    return { argv, env: { ...prepared.env, CODEX_HOME: home }, ...(prepared.activation ? { activation: prepared.activation } : {}) };
+    return { plannerName: prepared.plannerName, argv, env: { ...prepared.env, CODEX_HOME: home }, ...(prepared.activation ? { activation: prepared.activation } : {}) };
   }
 }
 

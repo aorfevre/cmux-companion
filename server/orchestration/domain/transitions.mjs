@@ -1,4 +1,5 @@
 import { DomainError, identifier, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
+import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
 import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
@@ -58,9 +59,11 @@ export function transition(before, command, authority) {
     requireAuthority(authority, 'user');
     requireValue(!before && command.expectedVersion === 0, 'Goal already exists', 'VERSION_CONFLICT');
     const goal = /** @type {Goal} */ ({ id: command.goalId, version: 1, generation: 1,
-      repositoryId: identifier(input.repositoryId), title: text(input.title, 500), baseSha: sha(input.baseSha), baseBranch: branchName(input.baseBranch ?? 'main'),
+      repositoryId: identifier(input.repositoryId), title: input.description === undefined ? text(input.title, 500) : shortGoalTitle(text(input.description, 12000)),
+      ...(input.description === undefined ? {} : { description: text(input.description, 12000), projectCode: projectCode(input.projectCode ?? input.repositoryId),
+        plannerName: planningName(projectCode(input.projectCode ?? input.repositoryId), shortGoalTitle(text(input.description, 12000))) }), baseSha: input.baseSha === undefined ? '' : sha(input.baseSha), ...(input.baseSha === undefined ? { startup: { status: 'pending', error: null } } : {}), baseBranch: branchName(input.baseBranch ?? 'main'),
       status: 'discovering', revision: 0, approvedRevision: null, contracts: [], tasks: [],
-      attempts: [], reviews: [], integrationHead: sha(input.baseSha), verification: null,
+      attempts: [], reviews: [], integrationHead: input.baseSha === undefined ? '' : sha(input.baseSha), verification: null,
       finalRepairCount: 0, finalRepairLimit: 2, pr: null, integration: null, publication: null,
     });
     return { goal, events: [{ kind: 'goal_created', payload: { repositoryId: goal.repositoryId } }], intents: [] };
@@ -69,6 +72,7 @@ export function transition(before, command, authority) {
   validateAuthority(before, authority);
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
   requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_publication_observation', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'cancel_integration', 'settle_repair_result', 'cancel_repair_result', 'record_verification_result', 'cancel_verification', 'verification_uncertain', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
+  requireValue(!before.startup || before.startup.status === 'ready' || ['record_startup', 'fail_startup', 'retry_startup', 'rename_goal', 'abort'].includes(command.type), 'Fetch the goal base before planning', 'NOT_READY');
   const goal = structuredClone(before);
   /** @type {Transition} */
   const result = { goal, events: [], intents: [] };
@@ -77,6 +81,47 @@ export function transition(before, command, authority) {
   /** @param {import('../types.d.ts').Intent['kind']} kind @param {string} id @param {string | null} attemptId @param {import('../types.d.ts').Json} payload */
   const intent = (kind, id, attemptId, payload) => result.intents.push({ id, kind, goalId: goal.id, generation: goal.generation, revision: goal.revision, attemptId, payload });
   switch (command.type) {
+    case 'rename_goal': {
+      requireAuthority(authority, 'user');
+      goal.description ??= goal.title;
+      goal.title = text(input.title, 120); emit('goal_renamed'); break;
+    }
+    case 'request_clarification': {
+      requireValue(authority.kind === 'agent' && authority.role === 'planner' && goal.status === 'discovering', 'Only the active planner can ask a question', 'FORBIDDEN');
+      requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'A question is already waiting for an answer', 'NOT_READY');
+      goal.clarification = { question: text(input.question, 4000) };
+      for (const attempt of goal.attempts.filter(ownsWorker)) {
+        if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
+        if (attempt.workerState === 'pending') attempt.workerState = 'unknown';
+      }
+      goal.generation++; emit('clarification_requested'); break;
+    }
+    case 'answer_clarification': {
+      requireAuthority(authority, 'user');
+      requireValue(goal.status === 'discovering' && goal.clarification && goal.clarification.answer === undefined, 'No question is waiting for an answer', 'NOT_READY');
+      goal.clarification.answer = text(input.answer, 8000);
+      const previous = goal.planningRequest?.message;
+      goal.planningRequest = { message: [previous, `Question: ${goal.clarification.question}\nAnswer: ${goal.clarification.answer}`].filter(Boolean).join('\n\n').slice(-24000), basedOnRevision: goal.revision };
+      emit('clarification_answered'); break;
+    }
+    case 'record_startup': {
+      requireAuthority(authority, 'system');
+      requireValue(goal.startup?.status === 'pending' && goal.attempts.length === 0, 'Goal base is already pinned', 'NOT_READY');
+      goal.baseSha = sha(input.baseSha); goal.integrationHead = goal.baseSha;
+      goal.startup = { status: 'ready', error: null };
+      emit('goal_base_pinned', { baseSha: goal.baseSha, baseBranch: goal.baseBranch }); break;
+    }
+    case 'fail_startup': {
+      requireAuthority(authority, 'system');
+      requireValue(goal.startup?.status === 'pending', 'Goal startup is not pending', 'NOT_READY');
+      goal.startup = { status: 'failed', error: text(input.error, 500) };
+      emit('goal_startup_failed', { error: goal.startup.error }); break;
+    }
+    case 'retry_startup': {
+      requireAuthority(authority, 'user');
+      requireValue(goal.startup?.status === 'failed' && goal.attempts.length === 0, 'Goal startup is not awaiting retry', 'NOT_READY');
+      goal.startup = { status: 'pending', error: null }; emit('goal_startup_retried'); break;
+    }
     case 'receive_role_result': {
       requireAuthority(authority, 'system');
       const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
@@ -97,7 +142,7 @@ export function transition(before, command, authority) {
       const attempt = attemptById(goal, submission.attemptId);
       const parsed = parseRoleResult(input.result, { goalId: goal.id, attempt });
       let type, payload;
-      if (parsed.role === 'planner') { type = 'publish_contract'; payload = parsed.output; }
+      if (parsed.role === 'planner') { type = 'question' in parsed.output ? 'request_clarification' : 'publish_contract'; payload = parsed.output; }
       else if (parsed.role === 'reviewer') { type = 'record_review'; payload = { attemptId: attempt.id, reviewId: command.id, review: parsed.output }; }
       else throw new DomainError('UNSUPPORTED_CAPABILITY', 'Repository evidence verification is unavailable');
       const accepted = transition(before, { ...command, type, payload }, authority);
@@ -186,6 +231,7 @@ export function transition(before, command, authority) {
     }
     case 'request_revision': {
       requireAuthority(authority, 'user');
+      requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       requireValue(goal.status !== 'delivered', 'Delivered goals require a new goal', 'INVALID_STATE');
       requireValue(!goal.integration && !goal.publication, 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
       const message = text(input.message, 8000);
@@ -202,6 +248,7 @@ export function transition(before, command, authority) {
       requireValue(authority.kind === 'user' || (authority.kind === 'agent' && authority.role === 'planner'), 'Planner or user authority required', 'FORBIDDEN');
       requireValue(goal.status !== 'delivered', 'Delivered goals require a new goal', 'INVALID_STATE');
       requireValue(!goal.integration && !goal.publication, 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
+      requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       const contract = parseContract(input.contract);
       for (const attempt of goal.attempts.filter(ownsWorker)) {
         if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
@@ -223,11 +270,13 @@ export function transition(before, command, authority) {
       goal.approvedRevision = goal.revision; goal.status = 'building'; emit('goal_approved', { revision: goal.revision }); break;
     }
     case 'request_attempt': {
+      requireValue(!goal.startup || goal.startup.status === 'ready', 'Fetch the goal base before planning', 'NOT_READY');
       requireAuthority(authority, 'system');
       const id = identifier(input.attemptId), operationId = identifier(input.operationId);
       requireValue(!goal.attempts.some((entry) => entry.id === id || entry.operationId === operationId), 'Duplicate attempt');
       requireValue(['planner', 'implementer', 'reviewer', 'integrator'].includes(String(input.role)), 'Unknown role');
       const role = /** @type {Attempt['role']} */ (input.role);
+      requireValue(role !== 'planner' || !goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       const mode = role === 'planner' ? 'interactive' : 'background';
       let target = planTarget(goal), taskId = null;
       if (role === 'planner') requireValue(goal.status === 'discovering' || goal.status === 'awaiting_approval', 'Planning is not available');
@@ -265,7 +314,7 @@ export function transition(before, command, authority) {
           target = goal.integrationHead;
         } else requireValue(goal.status === 'awaiting_approval', 'No reviewable contract', 'NOT_READY');
       }
-      requireValue(!goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || (attempt.taskId === taskId && (role === 'implementer' || attempt.target === target)))), 'Attempt already active', 'ALREADY_RUNNING');
+      requireValue(!goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || (attempt.taskId === taskId && (role === 'implementer' || role === 'planner' || attempt.target === target)))), 'Attempt already active', 'ALREADY_RUNNING');
       if (role === 'planner' || role === 'reviewer') {
         const previous = goal.attempts.filter((attempt) => attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.role === role && attempt.taskId === taskId && attempt.target === target).at(-1);
         requireValue(!previous || previous.retryRequested, 'Explicit retry is required for this attempt', 'RETRY_REQUIRED');

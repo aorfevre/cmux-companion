@@ -10,9 +10,12 @@ export function actionView(goal) {
     try { transition(goal, { id: 'projection', goalId: goal.id, expectedVersion: goal.version, type, payload }, { kind: 'user' }); actions.push({ type, label, payload }); return null; }
     catch (error) { return error instanceof Error ? error.message : 'Action unavailable'; }
   };
+  offer('rename_goal', 'Edit title', { title: goal.title.slice(0, 120) });
+  offer('answer_clarification', 'Send answer', { answer: 'Your answer' });
   const approvalBlocked = offer('approve', `Approve revision ${goal.revision}`, { revision: goal.revision });
   offer('request_revision', 'Request revision', { message: 'Revision feedback' });
   offer('abort', 'Abort goal', {});
+  offer('retry_startup', 'Retry startup', {});
   if (goal.integration) offer('retry_integration', 'Retry integration', { operationId: goal.integration.operationId });
   offer('retry_verification', 'Retry verification', {});
   if (goal.publication?.observation?.baseHeadSha) offer('accept_moved_target', 'Publish reviewed head against moved target', { operationId: goal.publication.operationId, baseHeadSha: goal.publication.observation.baseHeadSha });
