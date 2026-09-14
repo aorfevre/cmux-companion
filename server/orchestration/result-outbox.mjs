@@ -28,6 +28,7 @@ export class ResultOutbox {
   /** @param {{id:string;raw:string}} input */
   enqueue({ id, raw }) {
     identifier(id); requireValue(typeof raw === 'string' && Buffer.byteLength(raw) <= 2 * 1024 * 1024, 'Result exceeds outbox limit');
+    requireValue(Buffer.byteLength(JSON.stringify({ id, raw })) <= 2 * 1024 * 1024, 'Result exceeds transport limit');
     const parsed = JSON.parse(raw);
     requireValue(Object.entries(this.binding).every(([key, value]) => parsed[key] === value), 'Outbox result binding changed', 'FORBIDDEN');
     const path = join(this.directory, `${createHash('sha256').update(id).digest('hex')}.json`);

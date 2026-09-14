@@ -1,4 +1,4 @@
-import { lstat, readdir, readFile } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 
 async function record(path) {
@@ -20,6 +20,8 @@ export async function plannerReleasePinned(releaseRoot, release) {
       const pin = await record(join(directory, name));
       if (pin.version !== 1 || typeof pin.release !== 'string' || typeof pin.directory !== 'string' || !isAbsolute(pin.directory)) return true;
       if (pin.release !== release) continue;
+      const owner = await lstat(pin.directory);
+      if (!owner.isDirectory() || owner.isSymbolicLink() || await realpath(pin.directory) !== pin.directory) return true;
       const outcome = await record(join(pin.directory, 'outcome.json'));
       if (outcome.identity !== pin.identity || outcome.workerState !== 'stopped') return true;
       const outbox = join(pin.directory, 'outbox'), outboxInfo = await lstat(outbox);

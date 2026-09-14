@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, realpathSync, renameSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ResultOutbox } from '../server/orchestration/result-outbox.mjs';
@@ -44,6 +44,9 @@ test('outbox rejects excessive or malformed storage and result inputs', t => {
   for (let n = 0; n < 8; n++) outbox.enqueue({ ...input, id: `r${n}` });
   assert.throws(() => outbox.enqueue({ ...input, id: 'ninth' }), /capacity/);
   assert.throws(() => outbox.enqueue({ ...input, raw: 'x'.repeat(2 * 1024 * 1024 + 1) }), /limit/);
+  const escaped = JSON.stringify({ schemaVersion: 1, ...binding, output: { question: '"'.repeat(700000) } });
+  assert.ok(Buffer.byteLength(escaped) < 2 * 1024 * 1024);
+  assert.throws(() => outbox.enqueue({ id: 'escaped', raw: escaped }), /transport limit/);
   writeFileSync(outbox.entries()[0].path, 'not json');
   assert.throws(() => outbox.entries());
 });
@@ -143,4 +146,16 @@ test('stopped worker with unconfirmed outbox retains submission authority until 
   pendingOutbox = false; await reconciler.observe('goal', attempt.id);
   assert.equal(f.store.get('goal').attempts[0].workerState, 'stopped');
   assert.equal(f.store.events().filter(event => event.kind === 'clarification_requested').length, 1);
+});
+
+
+test('release retention refuses redirected planner receipt directories', async t => {
+  const { directory } = fixture(t), root = join(directory, 'deployment'), release = join(root, 'releases', 'b'.repeat(40));
+  const owner = join(directory, 'owner'); mkdirSync(owner); mkdirSync(join(owner, 'outbox'));
+  mkdirSync(release, { recursive: true });
+  pinNativeRelease({ directory: owner, identity: 'terminal:operation:owner', operationId: 'operation' }, release);
+  writeFileSync(join(owner, 'outcome.json'), JSON.stringify({ identity: 'terminal:operation:owner', workerState: 'stopped' }));
+  assert.equal(await plannerReleasePinned(root, release), false);
+  renameSync(owner, `${owner}-moved`); symlinkSync(`${owner}-moved`, owner);
+  assert.equal(await plannerReleasePinned(root, release), true);
 });
