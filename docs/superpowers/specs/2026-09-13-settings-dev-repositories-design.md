@@ -1,8 +1,8 @@
 # Unified settings, named Dev repos, and interface consistency
 
 Date: 2026-09-13
-Status: Goals-first navigation and folder-picker amendment approved by the user
-(“go”) after spec commit 2645a3a.
+Status: Automatic repository tracking amendment awaiting human review.
+Goals-first navigation and folder picker were approved after spec commit 2645a3a.
 The original implementation was approved after spec commit 89b1073 and shipped in PR #119.
 Owner: The implementing agent owns integration and verification across all layers.
 
@@ -10,7 +10,9 @@ Owner: The implementing agent owns integration and verification across all layer
 
 A user registers named **Dev repos** such as `karven` and `rekord`: directories
 on the connected Mac containing Git repositories. Companion discovers their
-repositories for selection without requiring users to configure each path by hand.
+repositories and tracks every eligible child automatically, without per-repository
+checkboxes or path entry. All tracked repositories appear in the Goals selector,
+even when they still need configuration before execution.
 Goals is the default destination; Sessions is an optional secondary destination
 within Goals. Adding a Dev repo requires no path or name typing in the normal
 flow: browse folders on the connected Mac and use its folder name by default.
@@ -121,14 +123,21 @@ Pending, loading, unavailable and failed states must be distinct.
    setup never requires it. Persist a stable ID; allow 1..n entries (empty is
    valid before setup). Never preconfigure personal paths.
 3. Save the directory, then scan its immediate child directories for Git roots.
-   Show progress and a result list with repository name, safe GitHub destination
-   if present, and Added / Available / Needs attention status. Offer Refresh.
+   Automatically persist every eligible primary repository and show progress
+   plus repository name, safe GitHub destination if present, and Tracked /
+   Configure for goals / Disabled / Unavailable status. Offer Refresh.
+   Explain before Add: “All repositories directly inside this folder will be
+   tracked automatically. Worktrees are excluded.” Ordinary non-Git directories
+   are skipped; tracking does not recursively search their contents.
    A Dev repo must be a collection directory, not itself a Git root; explain the
    distinction and offer the separate Add individual repository action.
-4. Select repositories to add, including a Select all available action. Discovery
-   alone does not approve execution or verification commands. Persist selections
-   with stable existing repository IDs and group them under the Dev repo in
-   Settings and repository pickers. Search matches group, repository and owner.
+4. No selection or “Add selected repositories” step is required. Automatically
+   save new repositories with stable IDs, enabled for new work but with no
+   approved verification commands. Existing IDs, checks, names and disabled
+   choices remain unchanged. Group all tracked repositories under the Dev repo
+   in Settings and Goals; search matches group, repository and owner. Discovery
+   alone never starts a goal or approves verification commands. A disabled or
+   unconfigured repository stays visible, with its reason and a settings link.
 5. Open a repository detail editor. Detect origin and safe GitHub destination;
    let the user confirm or edit them. Suggest npm scripts only when present in
    package.json and display exactly what would run. The user selects approved
@@ -136,7 +145,7 @@ Pending, loading, unavailable and failed states must be distinct.
    editing in Advanced and preserve existing non-npm checks.
 6. Show monitoring availability separately from readiness for goals. A missing
    destination, check or provider has a precise fix link, not a generic error.
-   Onboarding uses these same editors: add directory, select a repository,
+   Onboarding uses these same editors: add directory, choose a tracked repository,
    configure a provider, review readiness. Progress persists; Goals remains the main destination and sessions remain
    optionally accessible before setup completion.
 7. Add rekord using the same flow. Repository selectors display, for example,
@@ -189,23 +198,35 @@ Settings              Dev repos                     [Add Dev repo]
   Immediate children only, no symlink traversal or hidden directories, `.git`,
   node_modules or generated worktree internals. Deduplicate canonical paths;
   reject identical or overlapping Dev repo roots with an actionable explanation.
-  Linked worktrees and nested repositories are not offered as new primary repos.
+  Linked worktrees are silently skipped, never shown as “Needs attention”.
+  Nested repositories are not offered as new primary repos.
   Preserve manually added repositories outside these roots.
 - Bound scans with a 1,000-entry budget, four concurrent Git inspections, a
   five-second timeout per Git inspection and a 30-second overall deadline.
   Return explicit partial/limit status, never “complete” when truncated. A failed
   or interrupted scan does not remove saved repositories. Refresh and opening
-  a group initiate scans; no permanent recursive filesystem watcher is required.
+  Dev repos or Goals initiates bounded reconciliation for saved roots; explicit
+  Refresh does the same. Adding a root scans immediately. Coalesce overlapping
+  scans and keep current results usable while scanning. No timer or permanent
+  recursive filesystem watcher is required. Existing saved roots adopt automatic
+  tracking on their next successful reconciliation, without being re-added.
+  Persist eligible discoveries even for partial scans, label incompleteness and
+  offer Retry; never delete or disable saved entries because they were absent.
+  Failed roots do not prevent other roots from refreshing. Revalidate root
+  identity and revision before committing; concurrent removal must not resurrect
+  a root and concurrent edits must not be overwritten. Background reconciliation
+  must not replace an unsaved settings draft.
 - Treat filesystem content, Git remotes and package scripts as untrusted data.
   Use argv-based Git inspection; never execute scripts to detect readiness or
   expose credential-bearing remote values. Revalidate canonical paths and group
-  containment on selection/save and at applicable execution boundaries.
+  containment on reconciliation/save and at applicable execution boundaries.
 - UI/API: stable group IDs and selected repository IDs cross boundaries, with
   schema validation, payload limits, revision checks and field-specific errors.
   Directory inspection reads the connected Mac only. Folder selection must not
   imply that a phone's file picker can choose a server directory.
-- Runtime/background: only explicitly added, enabled repositories enter existing
-  monitoring/goal allow-lists. Existing ownership fencing and admitted-goal
+- Runtime/background: adding a Dev repo authorizes tracking its eligible immediate
+  children in the existing monitoring/goal catalog. Enabled state and existing
+  repository/provider/check readiness gates still control goal admission. Existing ownership fencing and admitted-goal
   snapshots remain authoritative. Renames, scans, group removal and new settings
   cannot retarget ongoing effects. Unavailable roots show a recoverable status.
 - External: configuration never clones, fetches, pushes, installs tools, starts
@@ -242,12 +263,14 @@ Each row has one designated verification scenario.
 
 | Observable acceptance | Verification |
 | --- | --- |
-| Add karven and rekord using only folder navigation and prefilled names, discover children, choose repositories and see grouped searchable pickers after restart. | Real-service disposable Cypress no-typing directory-to-goal-selection journey. |
+| Add karven and rekord using only folder navigation and prefilled names, automatically track children and see every tracked repository in grouped searchable Goals pickers after restart. | Real-service disposable Cypress no-typing directory-to-goal-selection journey. |
 | Plain home, pairing completion and PWA launch open Goals; Sessions is secondary, standalone sessions and explicit old deep links still work. | Cypress Goals-first navigation, launch and Back scenario. |
 | Picker cancellation, permission errors, empty/partial results, duplicate names, repeated taps and late responses preserve the user's selection or draft with a clear next action. | UI folder-picker interaction scenario. |
 | Folder browsing rejects unpaired/cross-origin requests, traversal and symlink escapes, and returns bounded directory-only data without executing scripts. | Backend folder-browser security and limit fixture suite. |
 | Duplicate names/roots, overlap, symlink escapes, nested/worktree candidates, unavailable paths and scan limits give safe actionable results. | Discovery boundary fixture suite. |
-| Discovery cannot run package scripts, expose remote credentials or admit unselected repositories. | Malicious repository inspection/selection integration scenario. |
+| Discovery cannot run package scripts, expose remote credentials or start work without existing readiness and explicit goal-action gates. | Malicious repository reconciliation/admission integration scenario. |
+| Add, opening Goals/Dev repos and Refresh automatically reconcile saved roots; concurrent edits, failures and partial results retain saved repositories and drafts. | Real-service reconciliation concurrency/partial-result scenario. |
+| Linked worktrees are absent; unconfigured and disabled primary repositories remain visible with accurate readiness and blocked execution. | Disposable Cypress mixed-repository Goals selector scenario. |
 | Migration and root rename/removal preserve project identities, checks, disabled state and historical/running goals. | SQLite migration and scheduler recovery scenario. |
 | Pairing, same-origin enforcement, path revalidation and stale-write rejection remain enforced. | Settings API security/concurrency scenario. |
 | One Settings destination and real Goals destination work from all current entry points, including old URLs and Back. | Cypress navigation/deep-link scenario. |
@@ -260,7 +283,8 @@ Each row has one designated verification scenario.
 ## Success measure
 
 In a disposable usability walkthrough, a person unfamiliar with internal config
-can add two named directories, select a discovered repository and reach a ready
+can add two named directories, see all eligible repositories automatically,
+choose a tracked repository and reach a ready
 goal form in under three minutes when provider tools are already available,
 without typing a folder path or name, editing JSON/argv, or visiting Sessions. Record observed
 results; automated completion alone is not evidence of human usability.
@@ -268,8 +292,10 @@ results; automated completion alone is not evidence of human usability.
 ## Delivery and review boundary
 
 Commit this amended spec, obtain a person's review of this revision, then commit
-its implementation plan. This amendment changes navigation and folder browsing
-only; it does not reopen the completed PR #119 implementation scope.
+its implementation plan. This amendment changes automatic repository tracking
+and Goals visibility only; earlier approved navigation and folder browsing remain
+in force. One-time personal worktree cleanup is a separate operational task and
+does not add any product deletion capability.
 Review implementation through a PR targeting main. Require `npm run verify`,
 backend/UI line coverage at least 90%, `npm run test:e2e:local` and the recorded
 visual/accessibility matrix. Report passed, failed and unverified paths separately.
