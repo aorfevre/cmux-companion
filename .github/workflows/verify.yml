@@ -16,5 +16,8 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      # Match the installed updater environment; UI scripts must select test mode.
       - run: npm run verify
+        env:
+          NODE_ENV: production
       # Cypress is intentionally local-only; see AGENTS.md.
