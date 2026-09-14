@@ -23,6 +23,7 @@ export default defineConfig({
           settingsAddRepository: () => {
             const path = join(settingsManifest.devRepos.karven, 'new-repository');
             cpSync(settingsManifest.repository, path, { recursive: true });
+            execFileSync('git', ['-C', path, 'remote', 'set-url', 'origin', 'git@github.com:example/new-repository.git']);
             execFileSync('git', ['-C', path, 'worktree', 'add', '--detach', join(settingsManifest.devRepos.karven, 'excluded-worktree')]);
             return null;
           },

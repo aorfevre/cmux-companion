@@ -100,3 +100,17 @@ test('a missing recorded project keeps history accessible without starting effec
   assert.equal((await reopened.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: { ...command, id: 'another', goalId: 'another' } })).statusCode, 403);
   assert.equal(reopened.scheduler.stopped, true); assert.deepEqual(launched, []);
 });
+
+test('repository readiness asks only for missing setup and preserves admission checks', async t => {
+  const { runtime, settings, path } = await fixture(t);
+  const value = defaultSettings(); value.projects = [{ id: 'project', name: 'Example', path, enabled: true, github: 'example/repo', remote: 'git@github.com:example/repo.git', checks: [] }];
+  await settings.update(0, value); await runtime.settingsChanged();
+  const config = async () => (await runtime.app.inject({ url: '/api/orchestration/configuration', headers })).json().repositories[0];
+  const project = await config(); assert.equal(project.setupLabel, 'Choose checks'); assert.match(project.error, /already configured/);
+  const denied = await runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: { id: 'missing-check', goalId: 'missing-check', expectedVersion: 0, type: 'create_goal', payload: { title: 'Needs checks', repositoryId: 'project', baseSha: project.baseSha, baseBranch: 'main' } } });
+  assert.equal(denied.statusCode, 409); assert.match(denied.body, /Choose at least one verification check/);
+  value.projects[0].checks = [{ id: 'test', executable: 'npm', args: ['test'] }];
+  await settings.update(1, value); assert.equal((await config()).setupLabel, 'Repository ready'); assert.equal((await config()).error, null);
+  value.projects[0].github = null; await settings.update(2, value);
+  assert.equal((await config()).setupLabel, 'Check GitHub remote');
+});

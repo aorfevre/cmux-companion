@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { repositoryReadiness } from '../../server/repository-readiness.mjs';
 import { FolderPicker } from './folder-picker';
 import { request } from '../api-request';
 import type { Check, DevRepo, Project, Settings, Snapshot } from './settings-panel';
@@ -8,7 +9,7 @@ type Scan = { repositories: Inspected[]; partial: boolean; reason: string | null
 export function DevRepositories({ draft, onChange, save, busy, onError, onNotice, onSync }: { draft: Settings; onSync: (value: Snapshot) => void; onChange: (value: Settings) => void; save: (value: Settings) => Promise<boolean>; busy: boolean; onError: (message: string) => void; onNotice: (message: string) => void }) {
   const [adding, setAdding] = useState(false), [name, setName] = useState(''), [path, setPath] = useState(''), [validated, setValidated] = useState<string | null>(null);
   const [working, setWorking] = useState(false), [scans, setScans] = useState<Record<string, Scan>>({});
-  const [openGroup, setOpenGroup] = useState<string | null>(null), [editing, setEditing] = useState<string | null>(null), [search, setSearch] = useState('');
+  const [openGroup, setOpenGroup] = useState<string | null>(null), [editing, setEditing] = useState<string | null>(() => typeof window === 'undefined' ? null : new URLSearchParams(location.search).get('repository')), [search, setSearch] = useState('');
   const [suggestions, setSuggestions] = useState<Record<string, Check[]>>({}), [individual, setIndividual] = useState(false), [individualPath, setIndividualPath] = useState('');
   const [picker, setPicker] = useState<'dev' | 'individual' | null>(null), [lastFolder, setLastFolder] = useState<string>(), [gitFolder, setGitFolder] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(true);
@@ -37,11 +38,18 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
     } finally { savingRoot.current = false; }
   }
   const updateProject = (id: string, change: Partial<Project>) => onChange({ ...draft, projects: draft.projects.map(project => project.id === id ? { ...project, ...change } : project) });
-  async function openProject(project: Project) {
-    setEditing(project.id); onError('');
-    try { const result = await request<Inspected>('/api/settings/projects/inspect', { method: 'POST', body: JSON.stringify({ path: project.path }) }); setSuggestions(current => ({ ...current, [project.id]: result.suggestedChecks ?? [] })); }
-    catch (cause) { failure(cause); }
-  }
+  const editorRef = useRef<HTMLElement>(null);
+  const editingPath = draft.projects.find(entry => entry.id === editing)?.path;
+  useEffect(() => {
+    if (!editing || !editingPath) return;
+    let active = true;
+    onError(''); editorRef.current?.scrollIntoView?.({ block: 'start' }); editorRef.current?.focus({ preventScroll: true });
+    void request<Inspected>('/api/settings/projects/inspect', { method: 'POST', body: JSON.stringify({ path: editingPath }) }).then(result => {
+      if (active) setSuggestions(current => ({ ...current, [editing]: result.suggestedChecks ?? [] }));
+    }).catch(cause => { if (active) onError(cause instanceof Error ? cause.message : 'Could not inspect this directory'); });
+    return () => { active = false; };
+  }, [editing, editingPath, onError]);
+  function openProject(project: Project) { setEditing(project.id); }
   async function addIndividual() {
     setWorking(true); onError('');
     try {
@@ -94,12 +102,14 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
       {individual && <div className="settings-editor"><button disabled={disabled} onClick={() => setPicker('individual')}>Choose repository folder</button>{individualPath && <p className="settings-path">{individualPath}</p>}<details><summary>Enter a repository path (advanced)</summary><label>Project directory<input value={individualPath} placeholder="~/Developers/my-repository" onChange={event => setIndividualPath(event.target.value)} autoCapitalize="none" spellCheck={false} /></label></details><button disabled={disabled || !individualPath.trim()} onClick={() => void addIndividual()}>Validate and add project</button><button disabled={disabled} onClick={() => setIndividual(false)}>Cancel</button></div>}
       {draft.projects.filter(entry => !entry.devRepoId && matching(entry)).map(entry => <RepositoryRow key={entry.id} project={entry} open={() => void openProject(entry)} />)}
     </article>
-    {project && <article className="settings-editor" aria-label="Repository details"><h3>{project.name}</h3><p className="settings-path">{project.path}</p><fieldset disabled={disabled}><legend className="sr-only">Repository preferences</legend>
+    {project && <article ref={editorRef} tabIndex={-1} className="settings-editor" aria-label="Repository details"><h3>{project.name}</h3><p className="settings-path">{project.path}</p><fieldset disabled={disabled}><legend className="sr-only">Repository preferences</legend>
       <label>Repository name<input value={project.name} onChange={event => updateProject(project.id, { name: event.target.value })} /></label>
       <label className="preference-row"><span>Enabled for new work</span><input type="checkbox" role="switch" checked={project.enabled} onChange={event => updateProject(project.id, { enabled: event.target.checked })} /></label>
+      <p><strong>GitHub repository</strong><br />{project.github && project.remote ? <><span>{project.github}</span><span className="setting-description">Used for goals and pull requests. No additional destination is needed.</span></> : <span className="setting-description">We could not determine the GitHub repository. Check its remote below.</span>}</p>
+      <details><summary>{project.github && project.remote ? 'Advanced Git settings' : 'Check GitHub remote'}</summary><p>GitHub details are filled from the repository’s origin when it is added. Edit them only to correct detection or an intentional override.</p>
       <label>GitHub destination<input placeholder="owner/repository" value={project.github ?? ''} onChange={event => updateProject(project.id, { github: event.target.value || null })} /></label>
-      <label>Git remote<input value={project.remote ?? ''} onChange={event => updateProject(project.id, { remote: event.target.value || null })} placeholder="git@github.com:owner/repository.git" /></label>
-      <h4>Approved checks</h4><p>Choose commands agents may run. Suggestions read package.json; nothing runs until you start work.</p>
+      <label>Git remote<input value={project.remote ?? ''} onChange={event => updateProject(project.id, { remote: event.target.value || null })} placeholder="git@github.com:owner/repository.git" /></label></details>
+      <h4>{project.checks.length ? 'Verification checks' : 'Choose checks'}</h4><p>Checks test or build the project so Companion can verify its changes. Select at least one command below, then save. Nothing runs during setup.</p>
       {(suggestions[project.id] ?? []).map(check => { const exists = project.checks.some(entry => entry.executable === check.executable && JSON.stringify(entry.args) === JSON.stringify(check.args)); return <label className="discovery-row" key={check.id} htmlFor={`check-${check.id}`}><input id={`check-${check.id}`} type="checkbox" checked={exists} onChange={event => updateProject(project.id, { checks: event.target.checked ? [...project.checks, { id: `check-${crypto.randomUUID()}`, executable: check.executable, args: check.args }] : project.checks.filter(entry => !(entry.executable === check.executable && JSON.stringify(entry.args) === JSON.stringify(check.args))) })} /><span>{[check.executable, ...check.args].join(' ')}<code className="setting-description">{check.script}</code></span></label>; })}
       {!(suggestions[project.id] ?? []).length && <p>No npm scripts suggested. Add a check in Advanced verification.</p>}
       {project.checks.length > 0 && <ul>{project.checks.map(check => <li key={check.id}><code>{[check.executable, ...check.args].join(' ')}</code></li>)}</ul>}
@@ -107,4 +117,4 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
     </fieldset></article>}
   </section>;
 }
-function RepositoryRow({ project, open }: { project: Project; open: () => void }) { return <button className="repository-row" onClick={open}><span><strong>{project.name}</strong><span className="setting-description">{project.github ?? 'No GitHub destination'}</span></span><span className="status-badge">{!project.enabled ? 'Disabled' : project.github && project.remote && project.checks.length ? 'Repository configured' : 'Configure for goals'} ›</span></button>; }
+function RepositoryRow({ project, open }: { project: Project; open: () => void }) { return <button className="repository-row" onClick={open}><span><strong>{project.name}</strong><span className="setting-description">{project.github ?? 'GitHub remote needs attention'}</span></span><span className="status-badge">{repositoryReadiness(project).label} ›</span></button>; }

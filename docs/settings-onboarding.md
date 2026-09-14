@@ -50,6 +50,13 @@ own clearly labeled protection control on the single Updates screen.
    verification. Repository configuration and provider readiness are both required
    before creating a goal. Monitoring does not require delivery checks.
 
+Repository rows show the next step: **Choose checks** when GitHub is already
+configured, **Check GitHub remote** when detection is incomplete, **Disabled**
+when new work is turned off, or **Repository ready** when its setup is complete.
+Agent readiness is checked separately. Goals links open the selected repository's
+editor directly. Configured GitHub details appear as a summary; corrections remain
+under Advanced Git settings.
+
 Scanning examines immediate child directories only, with bounded entry count,
 concurrency and time. Partial results are identified. Hidden folders, symlinks,
 linked worktrees, generated worktree folders and nested repositories are excluded.

@@ -146,5 +146,5 @@ test('automatic discovery keeps disabled repositories visible and reports partia
   await start(); await screen.findByText(/Scan limit reached/);
   expect(screen.getByRole('option', { name: 'karven / Example · disabled' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'New goal' })).toHaveProperty('disabled', true);
-  expect(screen.getByRole('link', { name: 'Configure repository' }).getAttribute('href')).toBe('/settings#dev-repos');
+  expect(screen.getByRole('link', { name: 'Configure repository' }).getAttribute('href')).toBe('/settings?repository=repo#dev-repos');
 });
