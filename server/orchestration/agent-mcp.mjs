@@ -1,13 +1,34 @@
+import { parsePlannerOutput } from './domain/role-result.mjs';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { ResultOutbox } from './result-outbox.mjs';
 import { createBridge } from './bridge.mjs';
-import { requireValue, object, identifier, integer, sha, text } from './domain/contracts.mjs';
+import { DomainError, requireValue, object, identifier, integer, sha, text } from './domain/contracts.mjs';
+
+const plannerOutputCorrection = 'Submit exactly {"id":"stable-result-id","output":{"question":"One focused question?"}} or {"id":"stable-result-id","output":{"contract":<valid schemaVersion:1 contract>}}. Do not nest a role envelope or identity fields inside output. Nothing was queued; correct the payload and retry.';
+const stringSchema = { type: 'string', minLength: 1 };
+const stringArraySchema = { type: 'array', items: stringSchema };
+const contractSchema = {
+  type: 'object', required: ['schemaVersion', 'outcome', 'scope', 'exclusions', 'criteria', 'verification', 'tasks'], additionalProperties: false,
+  properties: {
+    schemaVersion: { const: 1 }, outcome: stringSchema, scope: stringArraySchema, exclusions: stringArraySchema,
+    criteria: { type: 'array', minItems: 1, items: { type: 'object', required: ['id', 'text', 'verification'], additionalProperties: false, properties: { id: stringSchema, text: stringSchema, verification: stringSchema } } },
+    verification: { type: 'array', minItems: 1, maxItems: 30, items: { type: 'object', required: ['id', 'argv'], additionalProperties: false, properties: { id: stringSchema, argv: { ...stringArraySchema, minItems: 1, maxItems: 100 } } } },
+    tasks: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['id', 'title', 'prompt', 'dependsOn', 'ownedAreas', 'criterionIds'], additionalProperties: false, properties: { id: stringSchema, title: stringSchema, prompt: stringSchema, dependsOn: stringArraySchema, ownedAreas: stringArraySchema, criterionIds: { ...stringArraySchema, minItems: 1 }, integrationPolicy: { enum: ['serialize', null] } } } },
+  },
+};
+const plannerOutputSchema = {
+  description: 'Exactly one planner payload. Identity and the outer result envelope are supplied by Companion.',
+  oneOf: [
+    { type: 'object', properties: { question: { ...stringSchema, maxLength: 4000 } }, required: ['question'], additionalProperties: false },
+    { type: 'object', properties: { contract: contractSchema }, required: ['contract'], additionalProperties: false },
+  ],
+};
 
 /** @typedef {{ goalId: string; operationId: string; attemptId: string; generation: number; revision: number; role: import('./types.d.ts').Role; target: string }} Binding */
 const definitions = {
   get_status: { name: 'get_status', description: 'Read authoritative goal state and contracts for this attempt.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
-  submit_result: { name: 'submit_result', description: 'Queue this planner attempt\'s structured result durably. A queued receipt is not server acceptance or approval.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, output: { type: 'object' } }, required: ['id', 'output'], additionalProperties: false } },
+  submit_result: { name: 'submit_result', description: 'Queue this planner attempt\'s structured result durably. A queued receipt is not server acceptance or approval.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, output: plannerOutputSchema }, required: ['id', 'output'], additionalProperties: false } },
   commit_candidate: { name: 'commit_candidate', description: 'Commit changes in this attempt\'s recorded checkout and approved scope. Does not accept, integrate or publish.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, expectedHead: { type: 'string' }, message: { type: 'string' } }, required: ['id', 'expectedHead', 'message'], additionalProperties: false } },
 };
 /** @param {Binding['role']} role */
@@ -27,16 +48,23 @@ export async function agentMcpRequest(value, { binding, bridge }) {
   if (request.method === 'tools/list') return reply({ tools: roleTools(binding.role).map((name) => definitions[/** @type {keyof typeof definitions} */ (name)]) });
   if (request.method !== 'tools/call') return { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Unsupported MCP method' } };
   try {
-    const params = object(request.params), name = text(params.name, 80), args = object(params.arguments ?? {});
+    const params = object(request.params), name = text(params.name, 80), rawArgs = params.arguments ?? {};
     requireValue(roleTools(binding.role).includes(name), 'Tool is outside this role', 'FORBIDDEN');
     let result;
-    if (name === 'get_status') { requireValue(Object.keys(args).length === 0, 'Status takes no arguments'); result = await bridge.status(); }
+    if (name === 'get_status') { const args = object(rawArgs); requireValue(Object.keys(args).length === 0, 'Status takes no arguments'); result = await bridge.status(); }
     else if (name === 'commit_candidate') {
+      const args = object(rawArgs);
       requireValue(Object.keys(args).length === 3 && ['id', 'expectedHead', 'message'].every((key) => Object.hasOwn(args, key)), 'Expected commit id, head and message');
       result = await bridge.commit({ id: identifier(args.id), expectedHead: sha(args.expectedHead), message: text(args.message, 1000) });
     } else {
-      requireValue(Object.keys(args).length === 2 && Object.hasOwn(args, 'id') && Object.hasOwn(args, 'output'), 'Expected result id and output');
-      result = await bridge.submitResult({ id: identifier(args.id), raw: JSON.stringify({ schemaVersion: 1, ...binding, output: object(args.output) }) });
+      let id, output;
+      try {
+        const args = object(rawArgs);
+        requireValue(Object.keys(args).length === 2 && Object.hasOwn(args, 'id') && Object.hasOwn(args, 'output'), 'Expected result id and output');
+        id = identifier(args.id); parsePlannerOutput(args.output); output = args.output;
+      }
+      catch (error) { return reply({ isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'INVALID_PLANNER_OUTPUT', reason: error instanceof DomainError ? error.message : 'Invalid planner payload', message: plannerOutputCorrection }) }] }); }
+      result = await bridge.submitResult({ id, raw: JSON.stringify({ schemaVersion: 1, ...binding, output }) });
     }
     return reply({ content: [{ type: 'text', text: JSON.stringify(result) }] });
   } catch (error) {

@@ -102,3 +102,17 @@ test('revised scope cannot reuse a historical final verdict even at the identica
     assert.throws(() => f.command('request_publication', { operationId: 'publish' }), { code: 'NOT_READY' });
   }
 });
+
+
+test('planner context instructs MCP payload submission without the background result-envelope directive', () => {
+  const f = fixture(); f.request('planner', 'planner');
+  const prompt = rolePrompt(f.goal, f.goal.attempts[0]);
+  assert.match(prompt, /companion.submit_result with exactly \{id,output\}/);
+  assert.match(prompt, /"id":"question-1","output":\{"question"/);
+  assert.match(prompt, /Do not nest a role envelope inside output/);
+  assert.doesNotMatch(prompt, /Return one JSON object with exactly schemaVersion/);
+  assert.match(prompt, /INVALID_PLANNER_OUTPUT/);
+  assert.match(prompt, /same id and exact payload because delivery may be uncertain/);
+  const background = { ...f.goal.attempts[0], mode: 'background' };
+  assert.match(rolePrompt({ ...f.goal, attempts: [background] }, background), /Return one JSON object with exactly schemaVersion/);
+});

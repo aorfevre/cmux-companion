@@ -39,6 +39,8 @@ test('Codex inputs isolate config, deny shell/hosted tools and generate native a
     if (ccsxp) { assert.equal(result.env.CCSXP_CODEX_HOME, result.env.CODEX_HOME); assert.equal(result.argv[0], '--strict-config'); }
     assert.equal(result.argv.includes('exec'), role !== 'planner');
     assert.equal(result.argv.includes('--json'), role !== 'planner');
+    if (role === 'planner') { assert.match(result.argv.at(-1), /companion.submit_result with \{id,output/); assert.doesNotMatch(result.argv.at(-1), /Return the required JSON role envelope/); }
+    else assert.match(result.argv.at(-1), /Return the required JSON role envelope/);
     assert.equal(result.argv.includes('--session-id'), false);
     assert.equal(result.argv.includes('--dangerously-bypass-approvals-and-sandbox'), false);
     assert.equal(result.env.CODEX_HOME, join(directory, 'codex-home'));
