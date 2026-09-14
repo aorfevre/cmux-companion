@@ -101,3 +101,22 @@ test('identity write failure waits for the spawned Git group to stop before reje
   assert.deepEqual(JSON.parse(readFileSync(join(command, 'stopped.json'), 'utf8')), { stopped: true });
   await withGitProcessScope(path, () => gitBytes(repo.repository, ['status']));
 });
+
+for (const lingerMs of [150, 2000]) test(`successful tracked Git waits for actual group disappearance; descendant=${lingerMs}ms`, async t => {
+  const repo = await createRepositoryFixture(); t.after(() => repo.close());
+  const root = realpathSync(repo.directory), bin = join(root, 'bin'), scope = join(root, 'scope'), pidPath = join(root, 'owned-group'); mkdirSync(bin);
+  writeFileSync(join(bin, 'git'), `#!${process.execPath}
+const {spawn}=require('node:child_process'); require('node:fs').writeFileSync(${JSON.stringify(pidPath)},String(process.pid));
+const child=spawn(process.execPath,['-e','setTimeout(()=>{},${lingerMs})'],{stdio:'ignore'}); child.unref(); process.stdout.write('complete');
+`, { mode: 0o700 });
+  const original = process.env.PATH; process.env.PATH = bin;
+  t.after(() => { process.env.PATH = original; if (existsSync(pidPath)) { try { process.kill(-Number(readFileSync(pidPath, 'utf8')), 'SIGKILL'); } catch { /* The fixture group is already gone. */ } } });
+  const run = () => withGitProcessScope(scope, () => gitBytes(repo.repository, ['fixture']));
+  if (lingerMs < 250) {
+    assert.equal((await run()).toString(), 'complete');
+    assert.equal(gitScopeStopped(scope), true);
+  } else {
+    await assert.rejects(run(), { code: 'OWNERSHIP_UNCERTAIN' });
+    assert.equal(gitScopeStopped(scope), false, 'elapsed time must not become stopped proof');
+  }
+});

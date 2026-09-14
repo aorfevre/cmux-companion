@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { trackGitCommand } from './git-process-scope.mjs';
 import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, realpathSync, lstatSync } from 'node:fs';
@@ -39,9 +40,18 @@ function trackedGitBytes(cwd, argv, env, input, allowConflict, tracked) {
     /** @type {ReturnType<typeof setTimeout>|undefined} */ let escalation;
     /** @type {unknown} */ let identityError;
     const failure = (/** @type {unknown} */ code) => Object.assign(new DomainError('GIT_OPERATION_FAILED', 'Local Git operation failed; reconcile recorded repository evidence'), { exitCode: code });
-    const finish = (/** @type {unknown} */ error, neverSpawned = false) => {
+    const finish = async (/** @type {unknown} */ error, neverSpawned = false) => {
       if (settled) return; settled = true; clearTimeout(timer); clearTimeout(escalation);
-      try { if (!tracked.complete(child.pid, neverSpawned) && !error) error = new DomainError('OWNERSHIP_UNCERTAIN', 'Git process group has not stopped'); } catch (evidenceError) { error = evidenceError; }
+      try {
+        let stopped = tracked.complete(child.pid, neverSpawned);
+        // A successful leader close can precede short-lived group cleanup. Wait
+        // briefly for actual ESRCH evidence; elapsed time never proves stopped.
+        const deadline = Date.now() + 250;
+        while (!stopped && !error && Date.now() < deadline) {
+          await delay(10); stopped = tracked.complete(child.pid, neverSpawned);
+        }
+        if (!stopped && !error) error = new DomainError('OWNERSHIP_UNCERTAIN', 'Git process group has not stopped');
+      } catch (evidenceError) { error = evidenceError; }
       child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
       if (error) reject(error); else resolveResult(Buffer.concat(output));
     };
