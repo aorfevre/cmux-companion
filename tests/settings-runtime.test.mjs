@@ -11,7 +11,7 @@ import { contract } from './helpers/orchestration/domain-fixture.mjs';
 import { planTarget } from '../server/orchestration/domain/transitions.mjs';
 import { FakeAgents } from './helpers/orchestration/fake-agents.mjs';
 const token = 'x'.repeat(48), headers = { host: 'localhost', origin: 'http://localhost', authorization: `Bearer ${token}` };
-async function fixture(t) {
+async function fixture(t, overrides = {}) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'settings-runtime-')));
   const settings = new LocalSettings({ path: join(directory, 'settings.sqlite') });
   const path = join(directory, 'repo'); mkdirSync(path);
@@ -23,6 +23,7 @@ async function fixture(t) {
     probeProvider: async () => ({ ready: true }),
     createAgents: ({ config }) => { const agent = new FakeAgents(); launched.push(config); return Object.assign(agent, { close: async () => {} }); },
   };
+  Object.assign(options, overrides);
   const runtime = await createSettingsRuntime(options), extraRuntimes = [];
   await runtime.app.register(app => buildApp({ app, token, localSettings: settings, probeProvider: async () => ({ ready: true }), onSettingsChange: runtime.settingsChanged }));
   t.after(async () => { for (const extra of extraRuntimes) await extra.close(); await runtime.close(); settings.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -186,4 +187,37 @@ test('terminal provider resolution is frozen before goal creation and reused aft
   f.extraRuntimes.push(restarted);
   await restarted.listen({ port: 0 }); await Promise.all(restarted.scheduler.startupJobs.values());
   assert.deepEqual(seen, [resolution]); assert.equal(restarted.store.get('alias-goal').startup.status, 'failed');
+});
+
+for (const stage of ['preparation', 'launch']) test(`provider ${stage} failure retains correct worker evidence across restart`, async t => {
+  let constructions = 0, launches = 0;
+  const f = await fixture(t, { createAgents: () => {
+    constructions++;
+    if (stage === 'preparation') throw new Error('private installation detail');
+    const agent = new FakeAgents();
+    return Object.assign(agent, { close: async () => {}, observe: async () => ({ status: 'unknown', identity: null }), launch: async () => { launches++; throw new Error('response lost after delegation'); } });
+  } });
+  const value = defaultSettings();
+  value.projects = [{ id: 'project', name: 'Project', path: f.path, enabled: true, github: 'example/project', remote: 'git@github.com:example/project.git', checks: [] }];
+  await f.settings.update(0, value); await f.runtime.settingsChanged();
+  const project = (await f.runtime.app.inject({ url: '/api/orchestration/configuration', headers })).json().repositories[0];
+  const created = await f.runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: { id: 'create', goalId: 'failure', expectedVersion: 0, type: 'create_goal', payload: { title: 'Failure', repositoryId: 'project', baseBranch: 'main', baseSha: project.baseSha } } });
+  assert.equal(created.statusCode, 200, created.body);
+  await f.runtime.listen({ port: 0 }); await f.runtime.scheduler.tick();
+  const attempt = f.runtime.store.get('failure').attempts[0];
+  assert.equal(attempt.workerState, stage === 'preparation' ? 'stopped' : 'unknown');
+  assert.equal(attempt.status, stage === 'preparation' ? 'failed' : 'uncertain');
+  assert.equal(launches, stage === 'preparation' ? 0 : 1);
+  if (stage === 'preparation') {
+    assert.match(attempt.error, /saved provider could not be prepared/);
+    assert.doesNotMatch(attempt.error, /private installation detail/);
+    assert.equal(f.runtime.store.operations().some(operation => operation.id === attempt.operationId), false, 'completed intent is no longer pending');
+  }
+  await f.runtime.close();
+  const beforeRestart = constructions;
+  const restarted = await createSettingsRuntime(f.options); f.extraRuntimes.push(restarted);
+  await restarted.listen({ port: 0 }); await restarted.scheduler.tick();
+  assert.equal(restarted.store.get('failure').attempts[0].workerState, attempt.workerState);
+  if (stage === 'preparation') assert.equal(constructions, beforeRestart, 'durable stopped evidence does not require a provider reprobe');
+  assert.equal(launches, stage === 'preparation' ? 0 : 1, 'restart never repeats delegated work');
 });
