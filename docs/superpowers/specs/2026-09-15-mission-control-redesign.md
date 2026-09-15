@@ -466,3 +466,20 @@ Acceptance criteria and verification:
 Success measure: ordinary review rejections reach a fresh review without manual
 feedback copying within existing budgets, and no implementer starts without the
 user approving the exact final plan.
+
+## Fleet browsing amendment — 2026-09-15
+
+Outcome: aborted goals remain available as history without cluttering the normal
+fleet. The user requested a dedicated Aborted filter and whole-row navigation.
+
+User journey: the default All view and ordinary filters omit aborted goals; the
+Aborted filter shows them with the same search and detail view. The Goals summary
+excludes aborted history. Clicking anywhere in a goal row opens its existing
+full detail view. The row is one keyboard-focusable button supporting Enter/Space,
+with a visible focus indicator and no nested interactive controls.
+
+Non-goals: deleting history, altering aborted goal authority, or a second detail
+panel implementation. Verification: UI tests cover default/Aborted filtering,
+search, whole-row selection and accessible button semantics; browser checks cover
+row navigation and return to the filtered fleet. Success: no aborted goal appears
+in default fleet results and every visible row opens exactly one goal detail.
