@@ -97,7 +97,9 @@ test('MCP malformed planner payload is correctable with the same id before durab
   const schema = listed.result.tools.find(tool => tool.name === 'submit_result').inputSchema.properties.output;
   assert.deepEqual(schema.oneOf.map(branch => branch.required), [['question'], ['contract']]);
   assert.ok(schema.oneOf.every(branch => branch.additionalProperties === false));
-  assert.deepEqual(schema.oneOf[1].properties.contract.required, ['schemaVersion', 'outcome', 'scope', 'exclusions', 'criteria', 'verification', 'tasks']);
+  assert.deepEqual(schema.oneOf[1].properties.contract.required, ['schemaVersion', 'outcome', 'scope', 'exclusions', 'criteria', 'verification', 'tasks', 'waves']);
+  assert.equal(schema.oneOf[1].properties.contract.properties.schemaVersion.const, 2);
+  assert.ok(schema.oneOf[1].properties.contract.properties.tasks.items.required.includes('resources'));
   const corrected = await call({ question: 'Which audience?' }); assert.equal(corrected.result.isError, undefined); assert.equal(submissions, 1);
   await results.drain();
   const settled = store.get('goal'); assert.equal(settled.results[0].id, 'same-result'); assert.equal(settled.results[0].status, 'accepted'); assert.equal(settled.clarification.question, 'Which audience?');
@@ -119,6 +121,9 @@ test('MCP validates contract graph before submission and preserves server accept
     assert.equal(response.statusCode, 202, response.body); return response.json();
   } };
   const call = value => agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'submit_result', arguments: { id: 'plan', output: { contract: value } } } }, { binding, bridge });
+  const old = await call(plan); assert.equal(old.result.isError, true); assert.equal(submissions, 0);
+  plan.schemaVersion = 2; plan.tasks = plan.tasks.map(task => ({ ...task, resources: [] }));
+  plan.waves = [{ id: 'modules', title: 'Modules', taskIds: ['A', 'B'], checkIds: ['unit'] }, { id: 'compose', title: 'Compose', taskIds: ['C'], checkIds: ['unit'] }];
   const invalid = structuredClone(plan); invalid.criteria[0].verification = 'missing-check';
   const invalidResponse = await call(invalid); assert.equal(invalidResponse.result.isError, true);
   assert.match(JSON.parse(invalidResponse.result.content[0].text).reason, /unknown check/); assert.equal(submissions, 0); assert.equal(store.get('goal').results, undefined);

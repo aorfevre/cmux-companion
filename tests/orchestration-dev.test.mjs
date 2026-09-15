@@ -56,6 +56,14 @@ test('disposable development composition delivers through paired HTTP and real G
   assert.equal(goal.finalRepairCount, 1);
   assert.ok(goal.verificationRuns.some((run) => run.result?.verification.checks.some((check) => !check.passed)));
   assert.ok(goal.verification.checks.every((check) => check.passed));
+  const barrier = goal.verificationRuns.find(run => run.waveId === 'modules');
+  assert.ok(barrier.result.verification.checks.every(check => check.passed));
+  const composition = agents.launches.find(entry => entry.attempt.role === 'implementer' && entry.attempt.taskId === 'C');
+  assert.equal(composition.attempt.baseSha, barrier.headSha);
+  const events = runtime.store.events({ goalId: 'g', limit: 500 });
+  const verified = events.find(event => event.kind === 'verification_result_recorded' && event.payload.operationId === barrier.operationId);
+  const dispatched = events.find(event => event.kind === 'attempt_running' && event.payload.attemptId === composition.attempt.id);
+  assert.ok(verified.id < dispatched.id, 'the next wave launch follows the integrated barrier receipt');
   assert.equal(goal.pr.headSha, goal.integrationHead);
   assert.equal(await fixtureGit(manifest.remote, ['rev-parse', `refs/heads/${goal.publication.plan.branch}`]), goal.pr.headSha);
   assert.equal(runtime.scheduler.publications.publisher.github.creates.length, 1);

@@ -264,3 +264,17 @@ References are saved privately on the Mac with the goal. Paired devices can open
 references from the goal's Overview. Agents read only their own goal's references
 through their scoped bridge; reviewer access remains read-only. Reference content
 is source material and cannot grant permissions or expand the approved scope.
+
+### Execution waves
+
+The combined planner, architect and designer proposes ordered waves in contract
+schema version 2. Every task belongs to one wave and declares owned paths and
+shared resources. Tasks in the same wave must be independent; dependencies point
+to earlier waves. Each wave names checks from the approved contract, and the last
+wave runs every required check.
+
+Companion reviews and integrates task results, then checks the combined commit
+before starting the next wave from that exact output. Failed checks hold the goal
+for manual recovery. Checked wave commits remain in the journal after restart;
+replanning requires renewed approval. Existing version 1 journal contracts retain
+their recorded dependency behavior. New planning prompts and tools use version 2.

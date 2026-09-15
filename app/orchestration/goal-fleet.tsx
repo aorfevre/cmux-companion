@@ -1,7 +1,7 @@
 "use client";
 import { useState } from 'react';
 import type { Goal } from './goal-board';
-import { attention } from './kanban';
+import { attention } from './attention';
 
 export function goalStage(goal: Goal) {
   if (goal.status === 'merged') return 'Complete';
@@ -35,7 +35,7 @@ export function GoalFleet({ goals, select, projectName, needsOnly = false }: {
       <div className="mission-fleet-labels" aria-hidden="true"><span>Goal / project</span><span>Lifecycle</span><span>Sessions</span><span>Next step</span></div>
       {visible.map(goal => <article className="mission-fleet-row" key={goal.id}>
         <div><button className="mission-goal-link" onClick={() => select(goal.id)}>{goal.title}</button><small>{projectName(goal.repositoryId)}</small></div>
-        <div><span className={`mission-badge ${attention(goal) ? 'attention' : goal.status === 'merged' ? 'complete' : ''}`}>{goalStage(goal)}</span></div>
+        <div><span className={`mission-badge ${attention(goal) ? 'attention' : goal.status === 'merged' ? 'complete' : ''}`}>{goalStage(goal)}</span>{goal.waves?.find(wave => wave.current) && <small>Wave {goal.waves.find(wave => wave.current)?.number} of {goal.waves.length}</small>}</div>
         <div className="mission-workers"><strong>{activeWorkers(goal)}</strong><span className="mission-mobile-label"> active sessions</span></div>
         <div className="mission-next">{attention(goal) || (goal.status === 'delivered' ? 'Waiting for GitHub merge' : goal.status === 'merged' ? 'Merged on GitHub' : goal.status === 'aborted' ? 'Execution stopped' : 'Execution continues automatically')}</div>
       </article>)}

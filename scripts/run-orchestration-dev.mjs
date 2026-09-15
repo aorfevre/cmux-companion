@@ -16,6 +16,10 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
   const demo = await createDevelopmentServer({ port, configure: async (directory) => {
     const repo = await createRepositoryFixture();
     repo.contract.verification.push({ id: 'injected_dependencies', argv: ['node', '--input-type=module', '-e', "import { composition } from './src/composition.mjs'; if (composition(() => 7, () => 11) !== 18) process.exit(1);"] });
+    repo.contract.schemaVersion = 2;
+    repo.contract.tasks = repo.contract.tasks.map(task => ({ ...task, resources: [] }));
+    repo.contract.verification.unshift({ id: 'modules', argv: ['node', '--input-type=module', '-e', "import { a } from './src/a.mjs'; import { b } from './src/b.mjs'; if (a() !== 2 || b() !== 3) process.exit(1);"] });
+    repo.contract.waves = [{ id: 'modules', title: 'Independent modules', taskIds: ['A', 'B'], checkIds: ['modules'] }, { id: 'composition', title: 'Compose verified outputs', taskIds: ['C'], checkIds: repo.contract.verification.map(check => check.id) }];
     const siblings = new Map(), shared = new Map();
     return {
       dispose: () => repo.close(),

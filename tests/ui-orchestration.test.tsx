@@ -173,19 +173,17 @@ test('goal details preserve the request, edit only the title, and hide empty evi
   expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'rename_goal', payload: { title: 'Better title' } }));
 });
 
-test('task board exposes dependencies, failures and optional graph', async () => {
-  const { TaskKanban } = await import('../app/orchestration/kanban');
+test('wave board exposes dependencies, failures and checked barriers', async () => {
+  const { WaveBoard } = await import('../app/orchestration/wave-board');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const base = goalView(fixture().goal);
   const goal = { ...base, tasks: (['integrated', 'running', 'in_review', 'failed'] as const).map((status, i) => ({ id: String(i), title: `Task ${i}`, status, dependsOn: i ? ['0'] : [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
-  render(<TaskKanban goal={goal} />);
-  expect(screen.getByRole('button', { name: 'Done (1)' })).toBeTruthy();
+  render(<WaveBoard goal={goal} />);
+  expect(screen.getByRole('heading', { name: 'Tasks' })).toBeTruthy();
   expect(screen.getAllByText('Depends on 0')).toHaveLength(3);
   expect(screen.getByText('Needs attention · failed')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Running (1)' }));
-  expect(screen.getByRole('region', { name: 'Tasks Running' }).getAttribute('data-active')).toBe('true');
-  expect(screen.getByText('Dependency graph').closest('details')).toHaveProperty('open', false);
+  expect(screen.getByText(/Tasks · dependency order/)).toBeTruthy();
 });
 
 test('creation submits a full request from main without the current checkout SHA and stays on the board', async () => {
@@ -222,7 +220,7 @@ test('clarification answers preserve feedback on failure and use the projected a
 
 
 test('terminal goals retain their result without stale attention from unanswered questions', async () => {
-  const { attention } = await import('../app/orchestration/kanban');
+  const { attention } = await import('../app/orchestration/attention');
   const { GoalFleet } = await import('../app/orchestration/goal-fleet');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
@@ -340,4 +338,22 @@ test('reference selection rejects size/count limits and supports removal', async
   fireEvent.change(screen.getByLabelText('Reference files'), { target: { files: [new File(['hi'], 'brief.txt')] } });
   fireEvent.click(await screen.findByRole('button', { name: 'Remove brief.txt' }));
   expect(screen.queryByRole('button', { name: 'Remove brief.txt' })).toBeNull();
+});
+
+test('wave view shows the active barrier, waiting tasks and retained checked output', async () => {
+  const { WaveBoard } = await import('../app/orchestration/wave-board');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const base = goalView(fixture().goal);
+  const goal = { ...base, waves: [
+    { id: 'first', title: 'Foundation', taskIds: ['A'], checkIds: ['foundation'], number: 1, current: false, checkedHead: 'a'.repeat(40) },
+    { id: 'second', title: 'Delivery', taskIds: ['B'], checkIds: ['all'], number: 2, current: true, checkedHead: null },
+    { id: 'third', title: 'Follow-up', taskIds: ['C'], checkIds: ['all'], number: 3, current: false, checkedHead: null },
+  ], tasks: ['A', 'B', 'C'].map((id, index) => ({ id, title: id, status: 'pending' as const, dependsOn: index ? ['A'] : [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
+  render(<WaveBoard goal={goal} />);
+  expect(screen.getByText('Wave 1 of 3 · Verified')).toBeTruthy();
+  expect(screen.getByText('Wave 2 of 3 · Current')).toBeTruthy();
+  expect(screen.getByText(/Barrier checks: all · Next wave waits/)).toBeTruthy();
+  expect(screen.getByText('Waiting for the prior wave barrier')).toBeTruthy();
+  expect(screen.getByText('aaaaaaaaaaaa')).toBeTruthy();
 });

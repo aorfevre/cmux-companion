@@ -122,11 +122,11 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 
 | Requirement | Current status |
 | --- | --- |
-| Fleet stages, active wave and last activity | Fleet implemented; wave/activity projection still needed. |
+| Fleet stages, active wave and last activity | Fleet and current-wave projection implemented; last-activity projection still needed. |
 | Setup redesign and account usage | Existing implementation retained; redesign incomplete. |
 | Brief/files/images and authorized agent context | Implemented with private durable references, scoped agent reads and real-service Cypress. Full verification passed. |
 | Combined planner/design with approved suggested team | Existing planner retained; role/routing contract changes pending. |
-| Explicit wave barriers with verification | Not implemented; current scheduler still uses task dependencies. |
+| Explicit wave barriers with verification | Implemented and verified for new version 2 plans; domain/restart, real-Git launch ordering, responsive Cypress and full verification passed. |
 | All judgment agents visible in cmux | Production adapters launch all judgment roles through cmux; bounded noninteractive policy is retained internally. Adapter/UI/API checks passed; native live validation unverified. |
 | Goal-scoped holds and manual recovery | Implemented with persistence, sibling/provisioning-race tests and real-service manual-recovery Cypress; final full verification passed for this slice. |
 | Assignment proposals, reasons and snapshots | Not implemented. |
@@ -173,3 +173,48 @@ the goal's saved publication adapter. A runtime regression changes workspace
 settings after goal creation, confirms the original GitHub destination is read,
 marks the waiting card merged, and proves already-merged cards are not queried.
 All 15 saved-settings/merge-sync tests passed. No GitHub writes or live calls ran.
+
+## Explicit waves delivery
+
+- New planner/design contracts use schema version 2 with ordered waves, task
+  membership, shared resource ownership and per-wave checks. Validation rejects
+  overlapping paths/resources within a wave, missing tasks/checks and dependencies
+  in the same or later waves. The final barrier runs all approved checks.
+- The scheduler and domain both enforce the barrier. Verification receipts pin
+  wave identity and check sets as well as the integrated commit. Same-head waves
+  cannot reuse each other's receipts. Checked output survives later integration,
+  restart and manual recovery; a revised plan cannot reuse earlier approval.
+- Intermediate verification failures use the existing durable goal hold and
+  bounded integrated repair path. Exact-target review and Git integration remain
+  required. Existing version 1 journals retain their already-approved semantics;
+  new goal creation enforces version 2, and the native MCP tool rejects an older
+  plan before durable intake so the agent can correct it without a human gate.
+- Replaced task Kanban and retired its CSS. Goal workspaces show ordered wave
+  cards, active/waiting barriers and checked commits; fleet rows show current wave.
+- Domain/scheduler/MCP bounded suite: 113 passed. Expanded wave restart suite: five
+  passed. Full UI: 167 passed before adding one dedicated wave-view test.
+- Chrome real-service Cypress: two writable journeys passed with wave barriers,
+  attachments, explicit recovery and publication. Phone rendering inspected;
+  desktop capture width corrected to fit Chrome's screenshot surface.
+- The real-Git backend delivery reached the expected result, but its new event
+  ordering assertion requested an unsupported 1000-event page. Corrected to the
+  supported 500-event bound; the full verification run includes that rerun.
+- Typecheck and lint passed. Full verification and the final visual capture are
+  in progress; this slice does not complete the redesign.
+
+- Initial full wave verification: 871 backend passed, one failed, one intentional
+  skip. The failure was an obsolete exact MCP schema-field list; updated it to
+  require waves, schema version 2 and task resources. All seven result/MCP tests
+  passed afterward. The new-goal boundary/settings/API suite passed all 26 tests.
+- Final Chrome real-service rerun: two writable journeys passed; both actual
+  implementers are asserted running before capturing phone (390px) and desktop
+  (1200px) wave views. Both captures were inspected; no clipping or page overflow.
+  Read-only-only browser coverage remains separately unverified.
+- Dedicated wave UI suite now passes 21 tests. Full verification rerun passed: 873 backend tests passed, one intentional skip,
+  168 UI tests passed, lint/typecheck/build passed.
+
+The final wave slice is committed only after the corrected full verification
+passed. Native cmux/provider and installed updater live validation remain
+unverified; the full routine suite includes their deterministic regressions.
+Remaining work is team allocation/approval, Setup and Sessions, activity/evidence
+polish, retired-feature cleanup, coverage audit and the final PR.

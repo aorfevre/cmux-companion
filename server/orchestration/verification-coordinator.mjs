@@ -1,3 +1,4 @@
+import { integratedWaveReady, verificationWaveId } from './domain/waves.mjs';
 import { randomUUID } from 'node:crypto';
 import { DomainError, object, requireValue } from './domain/contracts.mjs';
 
@@ -35,8 +36,8 @@ export class VerificationCoordinator {
     for (const snapshot of this.store.list()) {
       const goal = this.store.get(snapshot.id);
       if (!goal || goal.hold || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
-      const prior = goal.verificationRuns?.some((run) => run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && !run.retryRequested);
-      if (prior || goal.integration || !goal.tasks.every((task) => task.status === 'integrated')) continue;
+      const prior = goal.verificationRuns?.some((run) => run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && run.waveId === verificationWaveId(goal) && !run.retryRequested);
+      if (prior || !integratedWaveReady(goal)) continue;
       try { this.record(goal.id, 'request_verification', { operationId: this.id() }); }
       catch (error) { if (!(error instanceof DomainError) || !['NOT_READY', 'RETRY_REQUIRED', 'FORBIDDEN'].includes(error.code)) throw error; }
     }

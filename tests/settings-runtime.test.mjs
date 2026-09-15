@@ -128,7 +128,7 @@ test('checks discovered after creation resolve from the approved journal after r
   assert.equal(response.statusCode, 200, response.body);
   let n = 0;
   const apply = (type, payload, kind = 'system') => runtime.store.apply({ id: `proof-${++n}`, goalId: 'discovered', expectedVersion: runtime.store.get('discovered').version, type, payload }, { kind });
-  const plan = contract();
+  const plan = contract(); plan.schemaVersion = 2; plan.tasks = plan.tasks.map(task => ({ ...task, resources: [] })); plan.waves = [{ id: 'modules', title: 'Modules', taskIds: ['A', 'B'], checkIds: ['unit'] }, { id: 'composition', title: 'Composition', taskIds: ['C'], checkIds: ['unit'] }];
   apply('publish_contract', { contract: plan }, 'user');
   const resolver = runtime.scheduler.verifications.verifier.resolveCheck;
   assert.throws(() => resolver('project', plan.verification[0], 'discovered'), { code: 'NOT_READY' });

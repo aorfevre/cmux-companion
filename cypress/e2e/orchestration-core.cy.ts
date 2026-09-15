@@ -40,7 +40,14 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.findByRole('tab', { name: 'Waves & sessions' }).click();
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.get('[data-task="B"]').should('contain.text', 'running');
-    cy.get('[data-task="C"]').should('contain.text', 'pending');
+    cy.get('[data-task="C"]').should('contain.text', 'pending').and('contain.text', 'Waiting for the prior wave barrier');
+    cy.findByRole('region', { name: 'Independent modules' }).should('contain.text', 'Barrier checks: modules');
+    cy.get('[data-task="A"]').should('contain.text', 'implementer: running');
+    cy.get('[data-task="B"]').should('contain.text', 'implementer: running');
+    cy.screenshot('execution-waves-phone');
+    cy.viewport(1200, 1000); cy.screenshot('execution-waves-desktop');
+    cy.document().then(doc => { expect(doc.documentElement.scrollWidth).to.be.at.most(1200); });
+    cy.viewport(390, 844);
     cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', overlap: true }).then(evidence => {
       const goal = evidence.goals.find((entry) => entry.title === 'Build the parallel fixture')!;
       expect(evidence.overlaps).to.include(goal.id);
@@ -73,12 +80,16 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.findByRole('link', { name: 'Open pull request #1', timeout: 30000 }).should('be.visible');
     cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', status: 'delivered' }).then(evidence => {
       const goal = evidence.goals.find((entry) => entry.title === 'Build the parallel fixture')!;
+      expect(goal.waveResults!.map(result => result.waveId)).to.include.members(['modules', 'composition']);
+      expect(goal.verificationRuns!.find(run => run.waveId === 'modules')!.result!.verification.checks.every(check => check.passed)).to.equal(true);
       expect(goal.status).to.equal('delivered'); expect(goal.pr!.headSha).to.equal(goal.integrationHead); expect(goal.verification!.headSha).to.equal(goal.pr!.headSha);
       expect(evidence.prCreates).to.have.length(1);
       cy.get('@reviewedHead').should('equal', goal.pr!.headSha);
       cy.get('@reviewCount').should('equal', goal.reviews.length);
       cy.get('@movedTarget').should('equal', goal.publication!.plan.acceptedTargets!.at(-1)!.baseHeadSha);
+      const moduleBarrier = goal.waveResults!.find(result => result.waveId === 'modules')!;
       const composition = evidence.launches.find((entry) => entry.goalId === goal.id && entry.attempt.taskId === 'C' && entry.attempt.role === 'implementer')!;
+      expect(composition.attempt.baseSha).to.equal(moduleBarrier.headSha);
       cy.task<string>('orchestrationGit', { branch: composition.attempt.branch, file: 'src/a.mjs' }).should('include', 'return 2');
       cy.task<string>('orchestrationGit', { branch: composition.attempt.branch, file: 'src/b.mjs' }).should('include', 'return 3');
       cy.task<string>('orchestrationGit', { branch: evidence.pulls[0].branch, file: 'src/composition.mjs' }).should('include', 'aSource() + bSource()');

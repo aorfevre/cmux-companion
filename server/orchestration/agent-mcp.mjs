@@ -5,16 +5,17 @@ import { ResultOutbox } from './result-outbox.mjs';
 import { createBridge } from './bridge.mjs';
 import { DomainError, requireValue, object, identifier, integer, sha, text } from './domain/contracts.mjs';
 
-const plannerOutputCorrection = 'Submit exactly {"id":"stable-result-id","output":{"question":"One focused question?"}} or {"id":"stable-result-id","output":{"contract":<valid schemaVersion:1 contract>}}. Do not nest a role envelope or identity fields inside output. Nothing was queued; correct the payload and retry.';
+const plannerOutputCorrection = 'Submit exactly {"id":"stable-result-id","output":{"question":"One focused question?"}} or {"id":"stable-result-id","output":{"contract":<valid schemaVersion:2 contract>}}. Do not nest a role envelope or identity fields inside output. Nothing was queued; correct the payload and retry.';
 const stringSchema = { type: 'string', minLength: 1 };
 const stringArraySchema = { type: 'array', items: stringSchema };
 const contractSchema = {
-  type: 'object', required: ['schemaVersion', 'outcome', 'scope', 'exclusions', 'criteria', 'verification', 'tasks'], additionalProperties: false,
+  type: 'object', required: ['schemaVersion', 'outcome', 'scope', 'exclusions', 'criteria', 'verification', 'tasks', 'waves'], additionalProperties: false,
   properties: {
-    schemaVersion: { const: 1 }, outcome: stringSchema, scope: stringArraySchema, exclusions: stringArraySchema,
+    schemaVersion: { const: 2 }, outcome: stringSchema, scope: stringArraySchema, exclusions: stringArraySchema,
     criteria: { type: 'array', minItems: 1, items: { type: 'object', required: ['id', 'text', 'verification'], additionalProperties: false, properties: { id: stringSchema, text: stringSchema, verification: stringSchema } } },
     verification: { type: 'array', minItems: 1, maxItems: 30, items: { type: 'object', required: ['id', 'argv'], additionalProperties: false, properties: { id: stringSchema, argv: { ...stringArraySchema, minItems: 1, maxItems: 100 } } } },
-    tasks: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['id', 'title', 'prompt', 'dependsOn', 'ownedAreas', 'criterionIds'], additionalProperties: false, properties: { id: stringSchema, title: stringSchema, prompt: stringSchema, dependsOn: stringArraySchema, ownedAreas: stringArraySchema, criterionIds: { ...stringArraySchema, minItems: 1 }, integrationPolicy: { enum: ['serialize', null] } } } },
+    waves: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['id', 'title', 'taskIds', 'checkIds'], additionalProperties: false, properties: { id: stringSchema, title: stringSchema, taskIds: { ...stringArraySchema, minItems: 1 }, checkIds: { ...stringArraySchema, minItems: 1 } } } },
+    tasks: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['id', 'title', 'prompt', 'dependsOn', 'ownedAreas', 'criterionIds', 'resources'], additionalProperties: false, properties: { id: stringSchema, title: stringSchema, prompt: stringSchema, dependsOn: stringArraySchema, ownedAreas: stringArraySchema, criterionIds: { ...stringArraySchema, minItems: 1 }, resources: stringArraySchema, integrationPolicy: { enum: ['serialize', null] } } } },
   },
 };
 const plannerOutputSchema = {
@@ -68,7 +69,8 @@ export async function agentMcpRequest(value, { binding, bridge }) {
       try {
         const args = object(rawArgs);
         requireValue(Object.keys(args).length === 2 && Object.hasOwn(args, 'id') && Object.hasOwn(args, 'output'), 'Expected result id and output');
-        id = identifier(args.id); parsePlannerOutput(args.output); output = args.output;
+        id = identifier(args.id); const parsed = parsePlannerOutput(args.output);
+        requireValue(!('contract' in parsed) || parsed.contract.schemaVersion === 2, 'New plans require version 2 with explicit waves'); output = args.output;
       }
       catch (error) { return reply({ isError: true, content: [{ type: 'text', text: JSON.stringify({ code: 'INVALID_PLANNER_OUTPUT', reason: error instanceof DomainError ? error.message : 'Invalid planner payload', message: plannerOutputCorrection }) }] }); }
       result = await bridge.submitResult({ id, raw: JSON.stringify({ schemaVersion: 1, ...binding, output }) });
