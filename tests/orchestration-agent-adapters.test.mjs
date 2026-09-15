@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ccsCommand, nativeResult, requireNativeCapabilities, NATIVE_TOOLS, BRIDGE_TOOLS } from '../server/orchestration/adapters/ccs.mjs';
+import { parseRoleResult } from '../server/orchestration/domain/role-result.mjs';
 import { roleToolHook } from '../server/orchestration/adapters/agent-tool-hook.mjs';
 const conversationId = 'e7be1651-cb20-41e0-b658-c2d42c1d2c9f';
 const capabilities = { restricted: true, manualPermissions: true, hooks: true, strictMcp: true, streamJson: true, permissionPromptsNone: true, terminal: true };
@@ -66,4 +67,37 @@ test('native output requires one successful structured result for the exact conv
   for (const changed of [{ ...record, session_id: 'other' }, { ...record, is_error: true }, { ...record, subtype: 'error' }, { ...record, result: 'prose' }, { ...record, result: '[]' }]) assert.throws(() => nativeResult(JSON.stringify(changed), conversationId));
   assert.throws(() => nativeResult(`${JSON.stringify(record)}\n${JSON.stringify(record)}`, conversationId));
   assert.throws(() => nativeResult('x'.repeat(2 * 1024 * 1024 + 1), conversationId), { code: 'INVALID_RESULT' });
+});
+
+test('CCS startup banner and one fenced reviewer result retain the exact review and identity', () => {
+  const attempt = { id: 'attempt', operationId: 'operation', role: 'reviewer', generation: 2, revision: 1, target: 'contract:2:1' };
+  const output = { schemaVersion: 1, target: attempt.target, disposition: 'request_changes', findings: [{ id: 'duplicate-image', severity: 'high', blocking: true, title: 'Duplicate image intake', evidence: 'Both clipboard collections contain the same image.', suggestion: 'Use one collection.' }] };
+  const envelope = { schemaVersion: 1, goalId: 'goal', attemptId: attempt.id, operationId: attempt.operationId, generation: 2, revision: 1, role: 'reviewer', target: attempt.target, output };
+  const raw = JSON.stringify(envelope);
+  const record = { type: 'result', subtype: 'success', is_error: false, session_id: conversationId, result: ['Review complete.', '', '```json', raw, '```'].join('\n') };
+  const stream = '[i] Joined existing CLIProxy on port 8317 (http)\n' + JSON.stringify({ type: 'system', subtype: 'init' }) + '\n' + JSON.stringify(record);
+  const result = nativeResult(stream, conversationId);
+  assert.equal(nativeResult(stream.replaceAll('\n', '\r\n'), conversationId), result);
+  assert.equal(nativeResult(JSON.stringify({ ...record, result: ['```json', raw, '```', 'Review complete.'].join('\n') }), conversationId), result);
+  assert.deepEqual(parseRoleResult(JSON.parse(result), { goalId: 'goal', attempt }).output, output);
+  assert.throws(() => parseRoleResult(JSON.parse(result), { goalId: 'goal', attempt: { ...attempt, id: 'other' } }), { code: 'FORBIDDEN' });
+  assert.throws(() => parseRoleResult(JSON.parse(result), { goalId: 'goal', attempt: { ...attempt, revision: 2 } }), { code: 'STALE_TARGET' });
+  assert.throws(() => parseRoleResult({ ...envelope, output: { ...output, disposition: 'accept' } }, { goalId: 'goal', attempt }));
+  assert.throws(() => parseRoleResult({ ...envelope, output: { ...output, findings: [{ ...output.findings[0], severity: 'info' }] } }, { goalId: 'goal', attempt }));
+});
+
+test('CCS normalization rejects ambiguous, malformed and unsuccessful output', () => {
+  const raw = '{"schemaVersion":1,"output":{}}';
+  const fence = ['```json', raw, '```'].join('\n');
+  const record = { type: 'result', subtype: 'success', is_error: false, session_id: conversationId, result: fence };
+  for (const result of [fence + '\n' + fence, raw + '\n' + fence, fence + '\n{}', 'Earlier {}\n' + fence, 'Inline ' + fence, '```json\n{broken}\n```', '```json\n[]\n```', '```json\nnull\n```', '```text\n' + raw + '\n```', '```json\n' + raw, 'PASS']) {
+    assert.throws(() => nativeResult(JSON.stringify({ ...record, result }), conversationId));
+  }
+  for (const prefix of ['unexpected diagnostic\n', '[i] anything else\n', '{malformed}\n', '[i] Joined existing CLIProxy on port 8317 (http)\n'.repeat(2)]) {
+    assert.throws(() => nativeResult(prefix + JSON.stringify(record), conversationId));
+  }
+  assert.throws(() => nativeResult(JSON.stringify({ type: 'system' }) + '\n[i] Joined existing CLIProxy on port 8317 (http)\n' + JSON.stringify(record), conversationId));
+  assert.throws(() => nativeResult(JSON.stringify({ type: 'assistant', result: raw }), conversationId));
+  for (const change of [{ session_id: 'other' }, { is_error: true }, { subtype: 'error' }]) assert.throws(() => nativeResult(JSON.stringify({ ...record, ...change }), conversationId));
+  assert.throws(() => nativeResult(JSON.stringify(record) + '\n' + JSON.stringify(record), conversationId));
 });

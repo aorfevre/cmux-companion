@@ -48,7 +48,7 @@ export class NativeInputs {
     };
     const nativeInstructions = attempt.role === 'planner'
       ? 'Call companion.submit_result with exactly {id,output:{contract}} to submit a plan, or {id,output:{question}} to ask a focused clarification and stop. The tool supplies the outer identity envelope; never put that envelope inside output. This receipt is not user approval. Native permission prompts remain interactive.'
-      : attempt.role === 'reviewer' ? 'You have no mutating tools or command execution. Return only the required role envelope in your final answer.'
+      : attempt.role === 'reviewer' ? 'You have no mutating tools or command execution. Return only the required role envelope as raw JSON in your final answer, with no Markdown fences or surrounding commentary. Finding severity must be high, medium, low or note (never info).'
         : 'Edit only the assigned scope with native file tools. To commit, call companion.commit_candidate with a stable id, expectedHead (initially the recorded baseSha), and a commit message. The tool returns headSha. It cannot publish or accept your work. Repository checks run independently after integration; report checks you could not run. Return the required role envelope in your final answer.';
     save(contextPath, `${description.prompt}\n\n${nativeInstructions}\n`);
     save(hookConfig, JSON.stringify({ role: attempt.role }));
