@@ -7,6 +7,7 @@ import { ModelSettingsPanel } from '../model-settings';
 import { LastUpdateStamp } from '../last-update';
 import { MissionShell } from '../mission-shell';
 import { AccountUsageView } from '../account-usage';
+import { NotificationSettings } from './notifications';
 import { DeviceSettings } from './device-settings';
 import { ReleaseRetentionPanel } from '../release-retention';
 import { DeploymentHealth } from '../deployment-health';
@@ -27,7 +28,7 @@ export type Settings = {
   onboarding: { completed: boolean };
 };
 export type Snapshot = { revision: number; settings: Settings; imported: boolean };
-const categories = { 'dev-repos': 'Projects', agents: 'Agents & models', usage: 'Account usage', updates: 'Updates', general: 'This device', advanced: 'Execution & tools' };
+const categories = { 'dev-repos': 'Projects', agents: 'Agents & models', usage: 'Account usage', updates: 'Updates', notifications: 'Notifications', general: 'This device', advanced: 'Execution & tools' };
 type Category = keyof typeof categories;
 const editable: Partial<Record<Category, (keyof Settings)[]>> = { 'dev-repos': ['devRepos', 'projects'], agents: ['provider', 'providers', 'launchProfiles', 'teamDefaults'], advanced: ['tools', 'execution'] };
 function categoryFromLocation(): Category | null { const hash = typeof window === 'undefined' ? '' : location.hash.slice(1); return hash in categories ? hash as Category : null; }
@@ -118,6 +119,7 @@ export function LocalSettingsPanel({ onboarding = false }: { onboarding?: boolea
           <article><strong>Companion updater</strong><p>Review installed release, update state and safe recovery controls.</p><button onClick={() => navigate('updates')}>Review updates</button></article>
         </div></section> : <>
           {category === 'general' && <DeviceSettings />}
+          {category === 'notifications' && <NotificationSettings />}
           {category === 'usage' && <AccountUsageView embedded onBack={() => navigate(null)} />}
           {category === 'updates' && <><UpdateSettings /><details><summary>Advanced update options</summary><ReleaseRetentionPanel /></details></>}
           {legacy && category === 'advanced' && <section><h2>Execution & tools</h2><DeploymentHealth /></section>}

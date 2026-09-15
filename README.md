@@ -322,3 +322,10 @@ before starting the next wave from that exact output. Failed checks hold the goa
 for manual recovery. Checked wave commits remain in the journal after restart;
 replanning requires renewed approval. Existing version 1 journal contracts retain
 their recorded dependency behavior. New planning prompts and tools use version 2.
+
+### Notification settings
+
+Settings → Notifications controls in-app update notices and opt-in background
+Web Push for each browser/PWA. See [device setup, privacy, recovery and delivery
+limits](docs/notifications.md). The Mac must stay awake and online; iPhone push
+requires a supported Home Screen installation.
