@@ -13,6 +13,13 @@ export class GitHubPublication {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.directory = realpathSync(directory); this.remote = remote; this.github = github; this.failpoint = failpoint;
   }
+  /** @param {import('../types.d.ts').PublicationInput} input @param {NonNullable<import('../types.d.ts').Goal['pr']>} pr */
+  async observeMerge(input, pr) {
+    requireValue(this.github.readPull, 'GitHub merge observation is unavailable', 'UNSUPPORTED_CAPABILITY');
+    const observed = await this.github.readPull(input.repositoryId, pr.number);
+    requireValue(observed.number === pr.number && observed.url === pr.url, 'Saved PR identity changed', 'STALE_TARGET');
+    return observed;
+  }
   /** @param {string} path @param {unknown} value */
   save(path, value) {
     const temporary = `${path}.${randomUUID()}.tmp`;

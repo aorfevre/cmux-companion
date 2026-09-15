@@ -1,4 +1,3 @@
-import { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { GoalBoard } from '../app/orchestration/goal-board';
@@ -27,7 +26,7 @@ beforeEach(() => {
     throw new Error(`Unexpected ${url}`);
   });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); history.replaceState(null, '', '/'); });
 async function start() {
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: 'Start a goal' }));
@@ -135,6 +134,7 @@ test('finishing a command for A does not invalidate the selected B detail reques
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: /Goal A/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
+  fireEvent.click(screen.getByRole('button', { name: /Back to Mission Control/ }));
   fireEvent.click(screen.getByRole('button', { name: /Goal B/ }));
   await waitFor(() => expect(finishB).toBeTypeOf('function'));
   finishCommand({});
@@ -154,23 +154,6 @@ test('automatic discovery keeps disabled repositories visible and reports partia
   expect(screen.getByRole('button', { name: 'Project Example karven' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', true);
   expect(screen.getByRole('link', { name: 'Configure repository' }).getAttribute('href')).toBe('/settings?repository=repo#dev-repos');
-});
-
-test('Kanban groups authoritative states, shows named agents and offers mobile columns', async () => {
-  const { GoalKanban } = await import('../app/orchestration/kanban');
-  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
-  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
-  const base = goalView(fixture().goal);
-  const goals = (['discovering', 'awaiting_approval', 'building', 'ready_to_publish', 'merged', 'aborted'] as const).map((status, i) => ({ ...base, id: String(i), status, title: `Goal ${i}`, plannerName: `REPO Planning Goal ${i}` }));
-  const select = vi.fn();
-  render(<GoalKanban goals={goals} selected={null} select={select} projectName={() => 'Example'} />);
-  expect(screen.getByRole('button', { name: 'Done (2)' })).toBeTruthy();
-  expect(screen.getByText('REPO Planning Goal 0')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Review (1)' }));
-  expect(screen.getByRole('region', { name: 'Review' }).getAttribute('data-active')).toBe('true');
-  fireEvent.click(screen.getByRole('button', { name: /Example Goal 3/ }));
-  expect(select).toHaveBeenCalledWith('3');
-  expect(screen.getByText(/Needs attention/)).toBeTruthy();
 });
 
 test('goal details preserve the request, edit only the title, and hide empty evidence', async () => {
@@ -239,22 +222,23 @@ test('clarification answers preserve feedback on failure and use the projected a
 
 
 test('terminal goals retain their result without stale attention from unanswered questions', async () => {
-  const { attention, GoalKanban } = await import('../app/orchestration/kanban');
+  const { attention } = await import('../app/orchestration/kanban');
+  const { GoalFleet } = await import('../app/orchestration/goal-fleet');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const base = goalView(fixture().goal);
   const goals = (['merged', 'aborted'] as const).map(status => ({ ...base, id: status, status, clarification: { question: 'Historical question' } }));
   for (const goal of goals) expect(attention(goal)).toBeNull();
-  render(<GoalKanban goals={goals} selected={null} select={vi.fn()} projectName={() => 'Example'} />);
+  render(<GoalFleet goals={goals} select={vi.fn()} projectName={() => 'Example'} />);
   expect(screen.getByText('Aborted')).toBeTruthy();
   expect(screen.queryByText(/Needs attention/)).toBeNull();
 });
 
 
-test('Kanban opens first and cancelling creation restores focus and retains the draft', async () => {
+test('Mission Control opens first and cancelling creation restores focus and retains the draft', async () => {
   render(<GoalBoard />);
   const startButton = await screen.findByRole('button', { name: 'Start a goal' });
-  expect(screen.getByRole('region', { name: 'Goals Kanban' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Goal fleet' })).toBeTruthy();
   expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();
   fireEvent.click(startButton);
   expect(screen.getByRole('heading', { name: 'Start a goal' })).toBe(document.activeElement);
@@ -266,20 +250,7 @@ test('Kanban opens first and cancelling creation restores focus and retains the 
   expect(screen.getByLabelText('What should we accomplish?')).toHaveProperty('value', 'Keep my draft');
 });
 
-test('goal panel closes with Escape and restores the card focus', async () => {
-  const { GoalPanel } = await import('../app/orchestration/goal-panel');
-  const card = document.createElement('button'); card.textContent = 'Goal card'; document.body.append(card); card.focus();
-  const close = vi.fn();
-  const view = render(<GoalPanel close={close}><p>Goal content</p></GoalPanel>);
-  fireEvent.keyDown(screen.getByRole('dialog', { name: 'Goal details' }), { key: 'Escape' });
-  expect(close).toHaveBeenCalledOnce();
-  fireEvent.click(screen.getByRole('dialog', { name: 'Goal details' }), { clientX: -1 });
-  expect(close).toHaveBeenCalledTimes(2);
-  view.unmount(); expect(document.activeElement).toBe(card); card.remove();
-});
-
-
-test('a lost response remains retryable inside the modal with the exact original command', async () => {
+test('a lost response remains retryable inside the goal workspace with the exact original command', async () => {
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const goal = { ...goalView(fixture().goal), id: 'modal-goal', title: 'Modal goal', contracts: [] };
@@ -295,25 +266,10 @@ test('a lost response remains retryable inside the modal with the exact original
   fireEvent.click(await screen.findByRole('button', { name: /Modal goal/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
   const retry = await screen.findByRole('button', { name: 'Retry pending request' });
-  expect(retry.closest('dialog')).toBe(screen.getByRole('dialog', { name: 'Goal details' }));
+  expect(retry.closest('.mission-goal-workspace')).not.toBeNull();
   await waitFor(() => expect(retry).toHaveProperty('disabled', false));
   fireEvent.click(retry);
   await waitFor(() => expect(commands).toHaveLength(2));
   expect(commands[1]).toBe(commands[0]);
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull());
-});
-
-test('StrictMode closes the native modal before restoring outside focus', async () => {
-  const { GoalPanel } = await import('../app/orchestration/goal-panel');
-  const card = document.createElement('button'); document.body.append(card); card.focus();
-  const closed = vi.spyOn(HTMLDialogElement.prototype, 'close');
-  const focused = vi.spyOn(card, 'focus');
-  const view = render(<StrictMode><GoalPanel close={vi.fn()}><p>Content</p></GoalPanel></StrictMode>);
-  expect(screen.getByRole('dialog', { name: 'Goal details' })).toHaveProperty('open', true);
-  expect(closed).toHaveBeenCalledOnce();
-  view.unmount();
-  expect(closed).toHaveBeenCalledTimes(2);
-  expect(closed.mock.invocationCallOrder[1]).toBeLessThan(focused.mock.invocationCallOrder.at(-1)!);
-  expect(document.activeElement).toBe(card);
-  closed.mockRestore(); focused.mockRestore(); card.remove();
 });

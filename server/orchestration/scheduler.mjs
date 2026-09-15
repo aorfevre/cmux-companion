@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { DomainError, integer, requireValue } from './domain/contracts.mjs';
 import { requireCapability } from './ports.mjs';
 import { SchedulerOwnership } from './storage/ownership.mjs';
+import { MergeCoordinator } from './merge-coordinator.mjs';
 import { PublicationCoordinator } from './publication-coordinator.mjs';
 import { VerificationCoordinator } from './verification-coordinator.mjs';
 import { IntegrationRepairs } from './integration-repairs.mjs';
@@ -23,6 +24,7 @@ export class Scheduler {
     /** @type {ReturnType<typeof setInterval> | null} */ this.timer = null;
     this.verifications = verifier ? new VerificationCoordinator({ service, verifier, ownership, id, onError }) : null;
     this.publications = publisher ? new PublicationCoordinator({ service, publisher, ownership, id, onError }) : null;
+    this.merges = publisher ? new MergeCoordinator({ service, publisher, ownership, id, onError }) : null;
     this.previousNotify = this.store.onCommit;
     /** @param {number} cursor */
     this.notify = (cursor) => { try { this.previousNotify(cursor); } finally { this.verifications?.cancelRevoked(); this.publications?.cancelRevoked(); void this.tick().catch(this.onError); } };
@@ -30,7 +32,7 @@ export class Scheduler {
   /** @param {{ releaseOwnershipOnFailure?: boolean }} [options] */
   async start({ releaseOwnershipOnFailure = true } = {}) {
     requireValue(this.stopped, 'Scheduler is already started'); this.ownership.acquire();
-    this.service.ownership = this.ownership; this.stopped = false; if (this.verifications) this.verifications.stopped = false; if (this.publications) this.publications.stopped = false; this.store.onCommit = this.notify;
+    this.service.ownership = this.ownership; this.stopped = false; if (this.merges) this.merges.stopped = false; if (this.verifications) this.verifications.stopped = false; if (this.publications) this.publications.stopped = false; this.store.onCommit = this.notify;
     this.timer = setInterval(() => { void this.tick().catch(this.onError); }, this.intervalMs); this.timer.unref();
     try {
       this.store.rebuildReady(() => this.ownership.assertOwned());
@@ -42,7 +44,7 @@ export class Scheduler {
     this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null;
     if (this.store.onCommit === this.notify) this.store.onCommit = this.previousNotify;
     try {
-      const settled = await Promise.allSettled([this.sweep, ...this.startupJobs.values(), this.verifications?.stop(), this.publications?.stop()]);
+      const settled = await Promise.allSettled([this.sweep, ...this.startupJobs.values(), this.verifications?.stop(), this.publications?.stop(), this.merges?.stop()]);
       const failures = settled.filter((entry) => entry.status === 'rejected');
       if (failures.length) throw new AggregateError(failures.map((entry) => entry.reason), 'Scheduler shutdown failed');
     } finally { if (releaseOwnership) this.ownership.release(); }
@@ -62,6 +64,7 @@ export class Scheduler {
     await this.integrate();
     await this.verifications?.run();
     await this.publications?.run();
+    this.merges?.run();
     if (this.stopped) return;
     for (const work of this.store.ready()) {
       if (this.stopped) return;

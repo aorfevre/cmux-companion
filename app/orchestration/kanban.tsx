@@ -1,16 +1,9 @@
 "use client";
 import { useState } from 'react';
 import type { Goal } from './goal-board';
-export const goalColumns = ['Planning', 'Needs approval', 'In progress', 'Review', 'Done'] as const;
-export function goalColumn(goal: Goal) {
-  if (goal.status === 'discovering') return 'Planning';
-  if (goal.status === 'awaiting_approval') return 'Needs approval';
-  if (goal.status === 'ready_to_publish' || goal.status === 'delivered') return 'Review';
-  if (goal.status === 'merged' || goal.status === 'aborted') return 'Done';
-  return 'In progress';
-}
 export function attention(goal: Goal) {
   if (goal.status === 'aborted' || goal.status === 'merged') return null;
+  if (goal.status === 'delivered' && goal.mergeSync?.state === 'closed') return 'The PR was closed without merging. Review it on GitHub.';
   if (goal.startup?.status === 'failed') return goal.startup.error || 'Could not prepare the base branch. Retry startup.';
   if (goal.clarification && !goal.clarification.answer) return goal.clarification.question;
   const latest = new Map(goal.attempts.filter(attempt => attempt.current).map(attempt => [JSON.stringify([attempt.role, attempt.taskId, attempt.target]), attempt]));
@@ -20,16 +13,6 @@ export function attention(goal: Goal) {
   if (goal.status === 'awaiting_approval') return goal.approvalBlocked || 'Your plan is ready to approve.';
   if (goal.verification?.checks.some(check => !check.passed)) return 'Verification needs attention.';
   return null;
-}
-export function GoalKanban({ goals, selected, select, projectName }: { goals: Goal[]; selected: string | null; select(id: string): void; projectName(id: string): string }) {
-  const [column, setColumn] = useState<string>('Planning');
-  return <section className="orch-kanban" aria-label="Goals Kanban"><h2>Your goals</h2>
-    <nav className="orch-column-picker" aria-label="Goal columns">{goalColumns.map(name => <button key={name} aria-pressed={column === name} onClick={() => setColumn(name)}>{name} ({goals.filter(goal => goalColumn(goal) === name).length})</button>)}</nav>
-    <div className="orch-kanban-columns">{goalColumns.map(name => <section key={name} className="orch-kanban-column" data-active={column === name} aria-label={name}><h3>{name} <small>{goals.filter(goal => goalColumn(goal) === name).length}</small></h3>
-      {goals.filter(goal => goalColumn(goal) === name).map(goal => <button key={goal.id} className="orch-goal-card" aria-current={selected === goal.id ? 'true' : undefined} onClick={() => select(goal.id)}><small>{projectName(goal.repositoryId)}</small>{' '}<strong>{goal.title}</strong>{' '}<span>{goal.plannerName}</span>{' '}<small>{goal.status === 'aborted' ? 'Aborted' : goal.attempts.some(attempt => attempt.current && attempt.workerState === 'running') ? 'Agent working' : goal.status.replaceAll('_', ' ')}</small>{attention(goal) && <span className="orch-attention">Needs attention · {attention(goal)}</span>}</button>)}
-      {!goals.some(goal => goalColumn(goal) === name) && <p className="orch-empty">No goals</p>}
-    </section>)}</div>
-  </section>;
 }
 const taskColumns = ['To do', 'Running', 'Review', 'Done'] as const;
 export function taskColumn(status: Goal['tasks'][number]['status']) { return status === 'integrated' ? 'Done' : status === 'in_review' || status === 'accepted' ? 'Review' : status === 'running' ? 'Running' : 'To do'; }

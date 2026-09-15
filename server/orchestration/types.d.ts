@@ -45,6 +45,7 @@ export interface Goal {
   attempts: Attempt[]; reviews: Review[]; integrationHead: string;
   verification: Verification | null; finalRepairCount: number; finalRepairLimit: number;
   pr: { number: number; url: string; headSha: string } | null;
+  mergeSync?: { checkedAt: number; state: 'open' | 'closed' | 'merged' | 'unknown'; error: string | null };
   integration: { operationId: string; taskId: string | null; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' | 'cancelled'; failedFrom?: 'applying' | 'repairing'; code?: string; retryRequested?: boolean } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; observation?: PublicationResult } | null;
   planningRequest?: { message: string; basedOnRevision: number } | null;
@@ -134,11 +135,13 @@ export interface RemotePort {
   push(input: { repositoryId: string; branch: string; headSha: string; expectedHead: string | null }, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface GitHubPort {
+  readPull?(repositoryId: string, number: number): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
   identity(repositoryId: string): string;
   find(repositoryId: string, branch: string): Promise<{ number: number; url: string; branch: string; baseBranch: string; headSha: string; marker: string | null; state: 'open' | 'closed' | 'merged' }[]>;
   create(input: PublicationInput, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface PublicationPort {
+  observeMerge?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
   publish(input: PublicationInput, options?: { signal?: AbortSignal }): Promise<PublicationResult>;
   observe(input: PublicationInput): Promise<PublicationResult>;
 }

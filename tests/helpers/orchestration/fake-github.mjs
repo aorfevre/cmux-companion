@@ -6,6 +6,11 @@ export class FakeGitHub {
     const headSha = await this.remote.head(repositoryId, branch);
     return this.pulls.filter((pr) => pr.repositoryId === repositoryId && pr.branch === branch).map((pr) => ({ ...pr, headSha: headSha ?? pr.headSha }));
   }
+  async readPull(repositoryId, number) {
+    const pr = this.pulls.find(pr => pr.repositoryId === repositoryId && pr.number === number);
+    if (!pr) throw new Error('PR not found');
+    return { number: pr.number, url: pr.url, state: pr.state };
+  }
   async create(input, { beforeSend } = {}) {
     if (beforeSend && !beforeSend()) return;
     this.creates.push(structuredClone(input)); await this.beforeCreate(input);

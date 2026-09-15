@@ -602,6 +602,17 @@ export function transition(before, command, authority) {
       goal.pr = { number: integer(input.number, 1), url, headSha: goal.integrationHead };
       if (goal.status !== 'aborted') goal.status = 'delivered'; emit('pr_observed', { number: goal.pr.number, headSha: goal.integrationHead }); break;
     }
+    case 'record_merge_sync': {
+      requireAuthority(authority, 'system');
+      requireValue(goal.status === 'delivered' && goal.pr && input.number === goal.pr.number && input.url === goal.pr.url, 'Waiting PR identity changed', 'STALE_TARGET');
+      const checkedAt = integer(input.checkedAt);
+      requireValue(!goal.mergeSync || checkedAt >= goal.mergeSync.checkedAt, 'Stale merge observation', 'STALE_TARGET');
+      requireValue(['open', 'closed', 'merged', 'unknown'].includes(String(input.state)), 'Invalid merge observation');
+      const state = /** @type {NonNullable<import('../types.d.ts').Goal['mergeSync']>['state']} */ (input.state);
+      goal.mergeSync = { checkedAt, state, error: state === 'unknown' ? 'GitHub sync unavailable. Will retry on the next scheduled check.' : null };
+      if (state === 'merged') { goal.status = 'merged'; emit('pr_merged', { number: goal.pr.number }); }
+      emit('merge_sync_observed', { number: goal.pr.number, checkedAt, state }); break;
+    }
     case 'record_merged': {
       requireAuthority(authority, 'system'); requireValue(goal.status === 'delivered' && goal.pr, 'No delivered PR');
       goal.status = 'merged'; emit('pr_merged', { number: goal.pr.number }); break;
