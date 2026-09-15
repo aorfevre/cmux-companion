@@ -34,7 +34,8 @@ jobs:
           cache: npm
       - name: Check verified merge tree
         id: proof
-        if: github.event_name == 'push'
+        # Codecov needs a fresh main baseline, not a reused verification receipt.
+        if: github.event_name == 'push' && vars.CODECOV_ENABLED != 'true'
         run: node scripts/ci-verified-tree.mjs reuse
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -59,4 +60,58 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      - name: Save coverage reports
+        if: vars.CODECOV_ENABLED == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            coverage/backend.lcov
+            coverage/ui/lcov.info
+          if-no-files-found: error
+          retention-days: 7
       # Cypress is intentionally local-only; see AGENTS.md.
+  codecov:
+    name: Upload coverage to Codecov
+    needs: verify
+    # Fork/Dependabot tokenless uploads require a public repository and Codecov
+    # tokenless uploads enabled. Private untrusted PRs retain local coverage gates.
+    if: >-
+      vars.CODECOV_ENABLED == 'true' &&
+      (!github.event.repository.private ||
+       (github.actor != 'dependabot[bot]' &&
+        (github.event_name != 'pull_request' ||
+         (github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login != 'dependabot[bot]'))))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - name: Check out report source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Download this run's coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: coverage
+      - name: Require both reports
+        run: |
+          test -s coverage/backend.lcov
+          test -s coverage/ui/lcov.info
+      - name: Upload backend and UI coverage
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
+        with:
+          files: coverage/backend.lcov,coverage/ui/lcov.info
+          disable_search: true
+          plugins: noop
+          fail_ci_if_error: true
+          use_oidc: >-
+            ${{ github.actor != 'dependabot[bot]' &&
+                (github.event_name != 'pull_request' ||
+                 (github.event.pull_request.head.repo.full_name == github.repository &&
+                  github.event.pull_request.user.login != 'dependabot[bot]')) }}
