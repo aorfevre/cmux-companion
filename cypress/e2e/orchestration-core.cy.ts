@@ -21,6 +21,31 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.request({ method: 'POST', url: '/api/orchestration/commands', body: { id: 'readonly', goalId: 'readonly', expectedVersion: 0, type: 'create_goal', payload: {} }, failOnStatusCode: false }).its('status').should('equal', 403);
     cy.task<Evidence>('orchestrationEvidence').its('goals').should('have.length', 0);
   });
+  writable('automatically revises a rejected plan, waits for approval, and filters aborted history', () => {
+    cy.task('orchestrationRelease', 'reject-plan');
+    cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click(); cy.get('.project-choice').first().click();
+    cy.findByLabelText('Title (optional)').type('Automatic plan revision');
+    cy.findByLabelText('What should we accomplish?').type('Revise the rejected fixture plan before asking me to approve.');
+    cy.findByRole('button', { name: 'Start goal' }).click();
+    cy.findByRole('button', { name: 'Automatic plan revision', timeout: 20000 }).find('.mission-workers').click();
+    cy.findByRole('button', { name: 'Approve revision 2', timeout: 30000 }).should('be.enabled');
+    cy.contains('Automatic plan revisions: 1 of 2.').should('be.visible');
+    cy.task<Evidence>('orchestrationEvidence').then(evidence => {
+      const goal = evidence.goals.find(entry => entry.title === 'Automatic plan revision')!;
+      expect(goal.planRevisionCount).to.equal(1);
+      expect(evidence.launches.filter(entry => entry.goalId === goal.id && entry.attempt.role === 'implementer')).to.have.length(0);
+    });
+    cy.findByRole('button', { name: 'Abort goal' }).click();
+    cy.findByRole('button', { name: /Back to Mission Control/ }).click();
+    cy.findByRole('button', { name: 'Automatic plan revision' }).should('not.exist');
+    cy.findByRole('button', { name: /^Aborted$/ }).click();
+    cy.findByRole('button', { name: 'Automatic plan revision' }).find('.mission-workers').click();
+    cy.findByRole('heading', { name: 'Automatic plan revision' }).should('be.visible');
+    cy.findByRole('button', { name: /Back to Mission Control/ }).click();
+    cy.findByRole('button', { name: /^Aborted$/ }).should('have.attr', 'aria-pressed', 'true');
+    cy.screenshot('aborted-fleet-phone');
+    cy.viewport(1200, 1000); cy.screenshot('aborted-fleet-desktop');
+  });
   writable('reviews a plan, overlaps implementers, repairs review and verification, then publishes one exact-head PR', () => {
     cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click(); cy.get('.project-choice').first().click();
     cy.findByLabelText('Title (optional)').type('Build the parallel fixture');
@@ -70,7 +95,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.task('orchestrationRelease', 'siblings');
     cy.findByRole('tab', { name: 'Run report' }).click();
     cy.contains('Blocking: Composition does not add its inputs', { timeout: 30000 }).should('be.visible');
-    cy.findByRole('button', { name: 'Recover goal', timeout: 30000 }).should('be.enabled').click();
+    // Task review findings repair automatically; verification failures still require recovery.
     cy.findByRole('region', { name: 'Combined verification', timeout: 30000 }).contains('p', 'injected_dependencies', { timeout: 30000 }).should('contain.text', 'Failed');
     cy.findByRole('link', { name: /Open pull request/ }).should('not.exist');
     cy.task<Evidence>('orchestrationEvidence').then(evidence => { expect(evidence.prCreates).to.have.length(0); });

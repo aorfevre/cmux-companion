@@ -191,10 +191,24 @@ test('retirement hides inert schema-2 fields and preserves rollback data, favori
       const expected = structuredClone(old.settings); delete expected.previews; delete expected.tools.chrome;
       assert.deepEqual(migrated.read(), { revision: 1, settings: expected, imported: true });
       assert.deepEqual(migrated.goalConfiguration('historical'), { revision: 1, ...historical });
-      const raw = { ...old.settings }; delete raw.launchProfiles; delete raw.teamDefaults;
+      const raw = { ...old.settings }; delete raw.launchProfiles; delete raw.teamDefaults; delete raw.automation;
       assert.deepEqual(JSON.parse(migrated.db.prepare('SELECT value FROM local_settings').get().value), raw);
       assert.equal(migrated.db.prepare('SELECT favorite FROM project_favorites WHERE project_id=?').get(project.id).favorite, 1);
       assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 2);
     } finally { migrated.close(); }
   }
+});
+
+test('plan review setting defaults on, persists separately for rollback, and rejects invalid toggles', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'plan-review-settings-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'settings.sqlite'), settings = new LocalSettings({ path });
+  assert.equal(settings.read().settings.automation.planReviews, true);
+  await settings.update(0, { ...settings.read().settings, automation: { planReviews: false } });
+  assert.equal(JSON.parse(settings.db.prepare('SELECT value FROM local_settings').get().value).automation, undefined);
+  await assert.rejects(settings.update(1, { ...settings.read().settings, automation: { planReviews: 'false' } }), /enabled or disabled/);
+  settings.close();
+  const reopened = new LocalSettings({ path });
+  try { assert.equal(reopened.read().settings.automation.planReviews, false); }
+  finally { reopened.close(); }
 });

@@ -199,3 +199,15 @@ test('saved ccsxp commands reopen as terminal commands without an empty CCS prof
   assert.equal(screen.queryByLabelText('codex profile'), null);
   assert.equal((screen.getByLabelText('claude connection') as HTMLSelectElement).value, 'ccs');
 });
+
+test('plan review toggle saves independently and can be re-enabled', async () => {
+  const state = fixture(); render(<LocalSettingsPanel />);
+  const toggle = await screen.findByRole('checkbox', { name: 'Review plans before approval' }) as HTMLInputElement;
+  assert.equal(toggle.checked, true);
+  fireEvent.click(toggle); click('Save changes'); await saved();
+  assert.deepEqual(state.saved.settings.automation, { planReviews: false });
+  const write = state.calls.filter(call => call.method === 'PATCH').at(-1)!;
+  assert.deepEqual(write.body.changes, { automation: { planReviews: false } });
+  fireEvent.click(toggle); click('Save changes'); await saved();
+  assert.equal(state.saved.settings.automation?.planReviews, true);
+});

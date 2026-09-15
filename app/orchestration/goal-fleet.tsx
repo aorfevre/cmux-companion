@@ -17,31 +17,36 @@ export function goalStage(goal: Goal) {
   return 'In progress';
 }
 export function activeWorkers(goal: Goal) { return goal.attempts.filter(attempt => attempt.current && attempt.workerState === 'running').length; }
-const filters = ['All', 'Running', 'Needs you', 'Waiting for merge', 'Complete'] as const;
-export function GoalFleet({ goals, select, projectName, needsOnly = false }: {
-  goals: Goal[]; select(id: string): void; projectName(id: string): string; needsOnly?: boolean;
+const filters = ['All', 'Running', 'Needs you', 'Waiting for merge', 'Complete', 'Aborted'] as const;
+export type GoalFilter = typeof filters[number];
+export function GoalFleet({ goals, select, projectName, needsOnly = false, selectedFilter, onFilterChange }: {
+  goals: Goal[]; select(id: string): void; projectName(id: string): string; needsOnly?: boolean; selectedFilter?: GoalFilter; onFilterChange?(filter: GoalFilter): void;
 }) {
-  const [filter, setFilter] = useState<typeof filters[number]>('All');
+  const [localFilter, setLocalFilter] = useState<GoalFilter>('All');
+  const filter = selectedFilter ?? localFilter;
+  const setFilter = (value: GoalFilter) => { setLocalFilter(value); onFilterChange?.(value); };
   const [search, setSearch] = useState('');
-  const decisions = goals.filter(goal => attention(goal));
+  const current = goals.filter(goal => goal.status !== 'aborted');
+  const decisions = current.filter(goal => attention(goal));
   const visible = goals.filter(goal => {
+    if (filter === 'Aborted' ? goal.status !== 'aborted' : goal.status === 'aborted') return false;
     if (needsOnly && !attention(goal)) return false;
     if (!`${goal.title} ${projectName(goal.repositoryId)}`.toLowerCase().includes(search.toLowerCase())) return false;
-    return filter === 'All' || (filter === 'Needs you' ? Boolean(attention(goal)) : filter === 'Complete' ? goal.status === 'merged' : filter === 'Waiting for merge' ? goal.status === 'delivered' : !attention(goal) && ['discovering', 'building'].includes(goal.status));
+    return filter === 'All' || filter === 'Aborted' || (filter === 'Needs you' ? Boolean(attention(goal)) : filter === 'Complete' ? goal.status === 'merged' : filter === 'Waiting for merge' ? goal.status === 'delivered' : !attention(goal) && ['discovering', 'building'].includes(goal.status));
   });
   return <section aria-label={needsOnly ? 'Decision queue' : 'Goal fleet'}>
     {!needsOnly && <div className="mission-stats">
-      {[['Goals', goals.length, `${goals.filter(goal => goal.status === 'merged').length} complete`], ['Active sessions', goals.reduce((sum, goal) => sum + activeWorkers(goal), 0), 'Across all goals'], ['Needs you', decisions.length, 'Questions and decisions'], ['Waiting for merge', goals.filter(goal => goal.status === 'delivered').length, 'Merge on GitHub']].map(([label, value, note]) => <div className="mission-stat" key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></div>)}
+      {[['Goals', current.length, `${goals.filter(goal => goal.status === 'merged').length} complete`], ['Active sessions', goals.reduce((sum, goal) => sum + activeWorkers(goal), 0), 'Across all goals'], ['Needs you', decisions.length, 'Questions and decisions'], ['Waiting for merge', goals.filter(goal => goal.status === 'delivered').length, 'Merge on GitHub']].map(([label, value, note]) => <div className="mission-stat" key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></div>)}
     </div>}
     <div className="mission-fleet-tools"><div className="mission-filters" aria-label="Filter goals">{!needsOnly && filters.map(value => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>{value}</button>)}</div><label className="mission-search"><span className="sr-only">Search goals and projects</span><input type="search" placeholder="Search goals or projects" value={search} onChange={event => setSearch(event.target.value)} /></label></div>
     <div className="mission-fleet"><div className="mission-fleet-heading"><h2>{needsOnly ? 'What needs your attention' : 'Goal fleet'}</h2><small>{visible.length} {visible.length === 1 ? 'goal' : 'goals'}</small></div>
       <div className="mission-fleet-labels" aria-hidden="true"><span>Goal / project</span><span>Lifecycle</span><span>Sessions</span><span>Next step</span></div>
-      {visible.map(goal => <article className="mission-fleet-row" key={goal.id}>
-        <div><button className="mission-goal-link" onClick={() => select(goal.id)}>{goal.title}</button><small>{projectName(goal.repositoryId)}</small>{goal.lastActivity && <small className="mission-last-activity">{activityLabel(goal.lastActivity.kind)} · <time dateTime={goal.lastActivity.createdAt}>{new Date(goal.lastActivity.createdAt).toLocaleString()}</time></small>}</div>
-        <div><span className={`mission-badge ${attention(goal) ? 'attention' : goal.status === 'merged' ? 'complete' : ''}`}>{goalStage(goal)}</span>{goal.waves?.find(wave => wave.current) && <small>Wave {goal.waves.find(wave => wave.current)?.number} of {goal.waves.length}</small>}</div>
-        <div className="mission-workers"><strong>{activeWorkers(goal)}</strong><span className="mission-mobile-label"> active sessions</span></div>
-        <div className="mission-next">{attention(goal) || (goal.status === 'delivered' ? 'Waiting for GitHub merge' : goal.status === 'merged' ? 'Merged on GitHub' : goal.status === 'aborted' ? 'Execution stopped' : 'Execution continues automatically')}</div>
-      </article>)}
+      {visible.map(goal => <button type="button" className="mission-fleet-row" key={goal.id} aria-label={goal.title} onClick={() => select(goal.id)}>
+        <span><span className="mission-goal-link">{goal.title}</span><small>{projectName(goal.repositoryId)}</small>{goal.lastActivity && <small className="mission-last-activity">{activityLabel(goal.lastActivity.kind)} · <time dateTime={goal.lastActivity.createdAt}>{new Date(goal.lastActivity.createdAt).toLocaleString()}</time></small>}</span>
+        <span><span className={`mission-badge ${attention(goal) ? 'attention' : goal.status === 'merged' ? 'complete' : ''}`}>{goalStage(goal)}</span>{goal.waves?.find(wave => wave.current) && <small>Wave {goal.waves.find(wave => wave.current)?.number} of {goal.waves.length}</small>}</span>
+        <span className="mission-workers"><strong>{activeWorkers(goal)}</strong><span className="mission-mobile-label"> active sessions</span></span>
+        <span className="mission-next">{attention(goal) || (goal.status === 'delivered' ? 'Waiting for GitHub merge' : goal.status === 'merged' ? 'Merged on GitHub' : goal.status === 'aborted' ? 'Execution stopped' : 'Execution continues automatically')}</span>
+      </button>)}
       {!visible.length && <div className="mission-empty"><h3>{needsOnly ? 'No decisions pending' : search || filter !== 'All' ? 'No matching goals' : 'Your first goal starts here'}</h3><p>{needsOnly ? 'Questions, approvals and recovery decisions will appear here.' : search || filter !== 'All' ? 'Try another search or filter.' : 'Choose a project and describe the outcome you want.'}</p></div>}
     </div>
   </section>;

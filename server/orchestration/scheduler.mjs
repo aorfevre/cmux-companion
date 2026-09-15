@@ -7,15 +7,16 @@ import { MergeCoordinator } from './merge-coordinator.mjs';
 import { PublicationCoordinator } from './publication-coordinator.mjs';
 import { VerificationCoordinator } from './verification-coordinator.mjs';
 import { IntegrationRepairs } from './integration-repairs.mjs';
+import { revisablePlan, repairableReviews } from './domain/review-repairs.mjs';
 import { Reconciler } from './reconciler.mjs';
 
 export class Scheduler {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration' | 'acceptRepair' | 'observeRepair'>>; verifier?: import('./types.d.ts').VerificationPort; publisher?: import('./types.d.ts').PublicationPort; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; prepareGoal?: (goal: import('./types.d.ts').Goal) => Promise<string>; onError?: (error: unknown) => void }} options */
-  constructor({ service, repositories, integrations, verifier, publisher, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, prepareGoal, onError = () => {} }) {
+  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration' | 'acceptRepair' | 'observeRepair'>>; verifier?: import('./types.d.ts').VerificationPort; publisher?: import('./types.d.ts').PublicationPort; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; planReviewEnabled?: () => boolean; prepareGoal?: (goal: import('./types.d.ts').Goal) => Promise<string>; onError?: (error: unknown) => void }} options */
+  constructor({ service, repositories, integrations, verifier, publisher, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, planReviewEnabled = () => true, prepareGoal, onError = () => {} }) {
     this.service = service; this.store = service.store; this.agents = service.agents; this.repositories = repositories;
     this.ownership = ownership; this.id = id; this.intervalMs = integer(intervalMs, 1); this.onError = onError;
     this.reconciler = new Reconciler({ service, ownership, results, id });
-    this.prepareGoal = prepareGoal;
+    this.prepareGoal = prepareGoal; this.planReviewEnabled = planReviewEnabled;
     /** @type {Map<string, Promise<void>>} */ this.startupJobs = new Map();
     this.results = results; this.integrations = integrations;
     this.stopped = true; this.again = false;
@@ -60,6 +61,7 @@ export class Scheduler {
   async pass() {
     this.ownership.assertOwned(); await this.results?.drain(); await this.reconciler.run();
     if (this.stopped) return;
+    this.revisePlans();
     this.prepareGoals();
     await this.integrate();
     await this.verifications?.run();
@@ -80,6 +82,25 @@ export class Scheduler {
     const dispatched = await Promise.allSettled(this.store.operations().filter((operation) => operation.kind === 'launch' && operation.status === 'pending').map((operation) => this.dispatch(operation)));
     const failures = dispatched.filter((result) => result.status === 'rejected');
     if (failures.length) throw new AggregateError(failures.map((result) => result.reason), 'Agent dispatch failed');
+  }
+  revisePlans() {
+    for (const snapshot of this.store.list()) {
+      if (this.stopped || this.paused()) return;
+      if (!this.service.repositoryIds.has(snapshot.repositoryId)) continue;
+      let goal = snapshot;
+      const enabled = this.planReviewEnabled();
+      this.ownership.assertOwned();
+      if ((!goal.startup || goal.startup.status === 'ready') && ['discovering', 'awaiting_approval'].includes(goal.status) && (goal.planReviewEnabled ?? true) !== enabled) {
+        this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
+          type: 'set_plan_review_policy', payload: { enabled } }, { kind: 'system' });
+        const latest = this.store.get(goal.id); requireValue(latest, 'Goal disappeared', 'NOT_FOUND'); goal = latest;
+      }
+      const review = revisablePlan(goal);
+      if (review) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
+        type: 'revise_rejected_plan', payload: { reviewId: review.id } }, { kind: 'system' });
+      else if (repairableReviews(goal)) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
+        type: 'repair_review_findings', payload: { holdId: goal.hold?.id ?? '' } }, { kind: 'system' });
+    }
   }
   prepareGoals() {
     // One bounded fetch job at a time; network latency must not stall agent
@@ -158,7 +179,7 @@ export class Scheduler {
         const task = goal.tasks.find((entry) => entry.status === 'accepted');
         if (!task) continue;
         this.reconciler.record(goal.id, 'request_integration', { taskId: task.id, operationId: this.id() });
-        goal = this.store.get(goal.id);
+        const latest = this.store.get(goal.id); requireValue(latest, 'Goal disappeared', 'NOT_FOUND'); goal = latest;
       }
       const operation = goal?.integration;
       if (!goal || !operation || operation.state !== 'applying') continue;

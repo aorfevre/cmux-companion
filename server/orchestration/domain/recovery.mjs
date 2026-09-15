@@ -1,3 +1,4 @@
+import { PLAN_REVISION_LIMIT } from './review-repairs.mjs';
 import { requireValue } from './contracts.mjs';
 
 /** @typedef {import('../types.d.ts').Goal} Goal */
@@ -16,7 +17,7 @@ export function captureFailureHold(before, change, commandId) {
     }
   }
   for (const review of goal.reviews) if (review.disposition === 'request_changes' && !before.reviews.some(entry => entry.id === review.id)) {
-    reasons.push({ kind: 'review', target: review.id, message: `${review.kind === 'plan' ? 'Plan' : review.taskId ? `Task ${review.taskId}` : 'Integrated outcome'} review requires changes.` });
+    reasons.push({ kind: 'review', target: review.id, message: review.kind === 'plan' && (goal.planRevisionCount ?? 0) >= PLAN_REVISION_LIMIT ? 'Automatic plan revision limit reached. Review the findings and request a revision with guidance.' : `${review.kind === 'plan' ? 'Plan' : review.taskId ? `Task ${review.taskId}` : 'Integrated outcome'} review requires changes.` });
   }
   if (goal.integration && ['conflict', 'failed'].includes(goal.integration.state) && (goal.integration.state !== before.integration?.state || goal.integration.code !== before.integration.code || (before.integration.retryRequested && !goal.integration.retryRequested))) {
     reasons.push({ kind: 'integration', target: goal.integration.operationId, message: goal.integration.state === 'conflict' ? 'Integration has a conflict.' : 'Integration failed or its outcome is uncertain.' });

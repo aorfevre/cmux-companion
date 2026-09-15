@@ -8,7 +8,7 @@ import type { Contract } from '../../server/orchestration/types';
 import { MissionShell } from '../mission-shell';
 import { ProjectPicker } from './project-picker';
 import { GoalDetail } from './goal-detail';
-import { GoalFleet } from './goal-fleet';
+import { GoalFleet, type GoalFilter } from './goal-fleet';
 
 export type Goal = ReturnType<typeof goalView> & { lastActivity?: { kind: string; createdAt: string } | null };
 export type Action = Goal['actions'][number];
@@ -20,6 +20,7 @@ const subscribeLocation = (changed: () => void) => { window.addEventListener('po
 export function GoalBoard() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [configuration, setConfiguration] = useState<Configuration | null>(null);
   const search = useSyncExternalStore(subscribeLocation, () => window.location.search, () => '');
+  const [fleetFilter, setFleetFilter] = useState<GoalFilter>('All');
   const [selectionOverride, setSelected] = useState<string | null | undefined>();
   const selected = selectionOverride === undefined ? new URLSearchParams(search).get('goal') : selectionOverride;
   const [detail, setDetail] = useState<(Goal & { contracts: { revision: number; contract: Contract }[] }) | null>(null);
@@ -154,7 +155,7 @@ export function GoalBoard() {
         {attachments.length > 0 && <ul aria-label="Selected references">{attachments.map((file, index) => <li key={`${index}:${file.name}`}>{file.name} <button type="button" disabled={disabled} onClick={() => setAttachments(current => current.filter((_, position) => position !== index))}>Remove {file.name}</button></li>)}</ul>}
         <button className="primary-button" disabled={disabled || !chosenRepo || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start goal</button> <button type="button" disabled={busy || Boolean(pending)} onClick={closeCreation}>Cancel</button>
       </form> : <section id="goal-create" className="orch-card"><h2 ref={createHeading} tabIndex={-1}>Start with your first goal</h2><p>Choose your repositories and an agent, then describe what you want done.</p><a className="primary-button" href="/onboarding">Set up goals</a> <button onClick={closeCreation}>Cancel</button></section>)}
-      {!selected && <GoalFleet goals={snapshot?.goals ?? []} needsOnly={needsOnly} select={id => { setSelected(id); setDetail(null); const url = new URL(location.href); url.searchParams.set('goal', id); history.replaceState(null, '', url); }} projectName={id => configuration?.repositories.find(repo => repo.id === id)?.name || id} />}
+      {!selected && <GoalFleet selectedFilter={fleetFilter} onFilterChange={setFleetFilter} goals={snapshot?.goals ?? []} needsOnly={needsOnly} select={id => { setSelected(id); setDetail(null); const url = new URL(location.href); url.searchParams.set('goal', id); history.replaceState(null, '', url); }} projectName={id => configuration?.repositories.find(repo => repo.id === id)?.name || id} />}
       {selected && <section className="mission-goal-workspace"><button onClick={() => { setSelected(null); setDetail(null); const url = new URL(location.href); url.searchParams.delete('goal'); history.replaceState(null, '', url); }}>← Back to {needsOnly ? 'Needs You' : 'Mission Control'}</button>{pendingRecovery}{error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}{detail ? <GoalDetail key={detail.id} goal={detail} disabled={disabled} terminal={Boolean(configuration?.terminal)} act={act} control={control} /> : <p>Loading goal…</p>}</section>}
 
     </>}

@@ -23,6 +23,17 @@ external observation proves its outcome. Recovery never treats a timed-out call
 as permission to launch again. The live adapter permission and process-tree limits
 remain as documented in `orchestration-native-adapters.md`.
 
+## Automatic review repair
+
+Review repair policy, budgets, approval gates and the Settings toggle are defined
+in the [automatic review repair contract](superpowers/specs/2026-09-15-mission-control-redesign.md#automatic-review-repair-and-optional-plan-review--2026-09-15).
+
+When repair stops for clarification, answer the question shown in the goal. When
+the revision budget is exhausted, choose **Request revision** and provide guidance
+for the remaining findings. For other holds, inspect the displayed recovery reason
+and worker evidence before choosing the offered recovery action. Activity retains
+the review findings and revision events for diagnosis across restarts.
+
 ## Moved publication target
 
 If the configured remote target differs from the goal's recorded local base,

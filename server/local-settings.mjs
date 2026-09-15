@@ -20,6 +20,7 @@ export const defaultSettings = () => ({
   provider: 'claude', launchProfiles: [], teamDefaults: {},
   tools: { cmux: '/Applications/cmux.app/Contents/Resources/bin/cmux', tailscale: '/Applications/Tailscale.app/Contents/MacOS/Tailscale' },
   execution: { global: 4, perGoal: 4, planners: 2, ceilingMs: 1800000, idleMs: 240000, maxOutputBytes: 1048576, killGraceMs: 5000 },
+  automation: { planReviews: true },
   onboarding: { completed: false },
 });
 
@@ -54,7 +55,11 @@ export function providerCommand(value, provider) {
   return structuredClone(value);
 }
 function validateSettings(value) {
-  keys(value, ['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'onboarding', 'launchProfiles', 'teamDefaults'], 'settings');
+  keys(value, ['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'onboarding', 'launchProfiles', 'teamDefaults', 'automation'], 'settings');
+  if (value.automation !== undefined) {
+    keys(value.automation, ['planReviews'], 'automation');
+    if (typeof value.automation.planReviews !== 'boolean') invalid('Plan reviews must be enabled or disabled');
+  }
   keys(value.providers, ['claude', 'codex'], 'providers');
   for (const provider of ['claude', 'codex']) providerCommand(value.providers[provider], provider);
   if (!['claude', 'codex'].includes(value.provider)) invalid('Choose Claude or Codex');
@@ -152,6 +157,7 @@ export class LocalSettings {
       if (version > 2) invalid('Settings database is newer than this version of Companion');
       this.db.exec(`BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS local_settings (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS automation_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS team_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS project_favorites (project_id TEXT PRIMARY KEY, favorite INTEGER NOT NULL CHECK(favorite IN (0,1)));
         CREATE TABLE IF NOT EXISTS goal_configuration (goal_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
@@ -177,6 +183,8 @@ export class LocalSettings {
     const settings = JSON.parse(String(row.value));
     const team = this.db.prepare('SELECT value FROM team_settings WHERE id=1').get();
     Object.assign(settings, team ? JSON.parse(String(team.value)) : { launchProfiles: settings.launchProfiles ?? [], teamDefaults: settings.teamDefaults ?? {} });
+    const automation = this.db.prepare('SELECT value FROM automation_settings WHERE id=1').get();
+    settings.automation = automation ? JSON.parse(String(automation.value)) : defaultSettings().automation;
     delete settings.previews; delete settings.tools.chrome;
     return { revision: Number(row.revision), settings, imported: Boolean(row.imported) };
   }
@@ -185,7 +193,7 @@ export class LocalSettings {
   compatibleSettings(settings) {
     const row = this.db.prepare('SELECT value FROM local_settings WHERE id=1').get();
     const prior = row ? JSON.parse(String(row.value)) : {};
-    const legacy = { ...settings }; delete legacy.launchProfiles; delete legacy.teamDefaults;
+    const legacy = { ...settings }; delete legacy.launchProfiles; delete legacy.teamDefaults; delete legacy.automation;
     return { ...legacy, previews: prior.previews ?? { portStart: 8500, portEnd: 8599 },
       tools: { ...settings.tools, chrome: prior.tools?.chrome ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' } };
   }
@@ -195,6 +203,7 @@ export class LocalSettings {
   }
   async update(expectedRevision, settings, { inspect = inspectProject } = {}) {
     settings = structuredClone(settings);
+    settings.automation ??= this.read().settings.automation;
     if (Array.isArray(settings.devRepos) && Array.isArray(settings.projects)) {
       const saved = this.read().settings;
       for (const project of settings.projects) if (project.devRepoId && !settings.devRepos.some(root => root.id === project.devRepoId) && saved.devRepos.some(root => root.id === project.devRepoId)) delete project.devRepoId;
@@ -237,6 +246,8 @@ export class LocalSettings {
     try {
       this.assertRevision(expected, this.read().revision);
       this.saveTeamSettings(settings);
+      this.db.prepare('INSERT INTO automation_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value')
+        .run(JSON.stringify(settings.automation ?? this.read().settings.automation));
       this.db.prepare('UPDATE local_settings SET revision=revision+1,value=?,imported=MAX(imported,?) WHERE id=1').run(JSON.stringify(this.compatibleSettings(settings)), Number(imported));
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }

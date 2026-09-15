@@ -130,7 +130,8 @@ wave membership or changing approved scope requires a new approved revision.
 
 Failures include failed execution, blocking review findings, verification failures
 and integration conflicts. They place the goal on a durable dispatch hold; no
-automatic repair/retry begins in this first delivery. Existing active attempts
+automatic execution repair/retry begins in this first delivery. Plan-review
+revisions follow the bounded exception specified below. Existing active attempts
 may finish, but cannot release the hold. Manual recovery identifies the failed
 target and creates a new bounded attempt or explicitly resumes eligible work.
 Unknown worker ownership must be reconciled before replacement. Abort revokes
@@ -417,3 +418,68 @@ The user reviewed the committed draft and authorized implementation. Choose the
 representative run and success target with the user when the implementation is
 ready for evaluation; their deferral does not block implementation or replace
 the acceptance criteria above.
+
+
+## Automatic review repair and optional plan review — 2026-09-15
+
+Outcome: blocking review findings return automatically to the responsible planner
+or repair agent. The user approved this behavior and clarified that Settings must
+allow skipping plan review for simple goals, not disabling repair of reviews.
+
+User journey: Settings → Agents has “Review plans before approval”, enabled by
+default. Off skips new initial plan reviews; the user still explicitly approves
+the exact plan and verification commands before implementation. The setting is
+live for unapproved plans and never cancels an already-running review. Existing
+blocking plan findings must still be repaired and re-reviewed even if the setting
+is subsequently disabled. Task and final integration review remain mandatory.
+
+Every completed rejecting review automatically initiates bounded repair after
+workers and pending results settle. Plan rejection requests a fresh planner
+revision with the prior contract and recorded findings, then a fresh independent
+review. At most two automatic plan revisions run per manual planning cycle.
+Task/final review rejection uses existing repair counters, limits and independent
+re-review. Automation never increases any repair budget. Manual Request revision
+resets the plan repair budget. An accepted plan waits for user approval.
+
+Execution/check failures, unknown ownership, unrelated holds and exhausted budgets
+remain on hold for human intervention. If the planner needs a scope or requirements
+decision it uses the existing clarification flow and pauses. Goal abort, repository
+allow-lists and service suspension remain authoritative. Existing eligible review
+holds can progress under the same bounds after deployment; tests use disposable
+state only, never installed goals.
+
+Non-goals: automatic user approval, execution/check failure retry, changing scope,
+publication, merge/deploy, or skipping task/final review.
+
+Acceptance criteria and verification:
+- Only current rejected reviews with solely matching review holds and settled
+  workers/results auto-repair. Verify domain/scheduler rejection and stale tests.
+- Two plan revisions maximum; existing task/final limits are never increased.
+  Budgets survive restart and duplicate ticks. Verify persisted lifecycle tests.
+- Prior plans/findings reach the repair worker; clarification pauses dispatch.
+  Verify prompt-context and clarification tests.
+- The plan-review toggle persists and applies live; disabling cannot bypass an
+  active review's findings, task review or final review. Verify settings/API tests.
+- Users see repair progress/exhaustion, and still approve the final plan. Verify
+  UI tests and a disposable-service Cypress review/approval journey.
+
+Success measure: ordinary review rejections reach a fresh review without manual
+feedback copying within existing budgets, and no implementer starts without the
+user approving the exact final plan.
+
+## Fleet browsing amendment — 2026-09-15
+
+Outcome: aborted goals remain available as history without cluttering the normal
+fleet. The user requested a dedicated Aborted filter and whole-row navigation.
+
+User journey: the default All view and ordinary filters omit aborted goals; the
+Aborted filter shows them with the same search and detail view. The Goals summary
+excludes aborted history. Clicking anywhere in a goal row opens its existing
+full detail view. The row is one keyboard-focusable button supporting Enter/Space,
+with a visible focus indicator and no nested interactive controls.
+
+Non-goals: deleting history, altering aborted goal authority, or a second detail
+panel implementation. Verification: UI tests cover default/Aborted filtering,
+search, whole-row selection and accessible button semantics; browser checks cover
+row navigation and return to the filtered fleet. Success: no aborted goal appears
+in default fleet results and every visible row opens exactly one goal detail.

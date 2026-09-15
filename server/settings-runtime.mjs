@@ -91,7 +91,7 @@ export async function createSettingsRuntime({ settings, directory, token, create
     },
   };
   try {
-    runtime = await createRuntime({ suspension: () => suspensionReason, storage, repositories, token, logLevel: process.env.CMUX_COMPANION_LOG_LEVEL, limits: settings.read().settings.execution,
+    runtime = await createRuntime({ planReviewEnabled: () => settings.read().settings.automation.planReviews, suspension: () => suspensionReason, storage, repositories, token, logLevel: process.env.CMUX_COMPANION_LOG_LEVEL, limits: settings.read().settings.execution,
       createAgents: context => { agentContext = { ...context, describe: request => {
         const description = context.describe(request), checks = configured(request.goalId).project.checks;
         return { ...description, prompt: `${description.prompt}\nOptional repository verification defaults (discover and adapt checks for this goal): ${JSON.stringify(checks.map(check => ({ id: check.id, argv: [check.executable, ...check.args] })))}` };

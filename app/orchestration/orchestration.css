@@ -68,8 +68,9 @@
 .mission-control .mission-fleet-heading h2 { margin:0; font-size:18px; }
 .mission-fleet-labels,.mission-fleet-row { display:grid; grid-template-columns:minmax(0,2fr) minmax(140px,1fr) 80px minmax(0,1.5fr); align-items:center; gap:20px; padding:18px 23px; }
 .mission-fleet-labels { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; background:#fafbf8; }
-.mission-fleet-row { border-top:1px solid var(--line); font-size:14px; }
-.mission-fleet-row:hover { background:#f4f6f1; }
+.mission-control .mission-fleet-row { width:100%; border:0; border-top:1px solid var(--line); border-radius:0; background:transparent; color:inherit; font:inherit; font-size:14px; text-align:left; cursor:pointer; }
+.mission-control .mission-fleet-row:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; }
+.mission-control .mission-fleet-row:hover { background:#f4f6f1; }
 .mission-control .mission-goal-link { display:block; min-height:0; padding:0; border:0; background:none; font-weight:650; font-size:16px; text-align:left; overflow-wrap:anywhere; }
 .mission-fleet-row small { display:block; margin-top:5px; }
 .mission-badge { display:inline-block; background:#edf1ec; color:#536357; border-radius:5px; padding:4px 8px; font-size:12px; font-weight:600; }
