@@ -5,12 +5,13 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
+import { parseRoleResult } from '../server/orchestration/domain/role-result.mjs';
 import { NativeInputs } from '../server/orchestration/adapters/native-inputs.mjs';
 import { NativeBackground } from '../server/orchestration/adapters/native-background.mjs';
 const capabilities = { restricted: true, manualPermissions: true, hooks: true, strictMcp: true, streamJson: true, permissionPromptsNone: true, terminal: true };
 const policy = { ceilingMs: 10000, idleMs: 8000, maxOutputBytes: 2 * 1024 * 1024, killGraceMs: 100 };
 const conversationId = 'e7be1651-cb20-41e0-b658-c2d42c1d2c9f';
-async function fixture(t, { role = 'reviewer' } = {}) {
+async function fixture(t, { role = 'reviewer', wrapped = false } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'orchestration-native-')));
   const worktree = join(directory, 'worktree'); await mkdir(worktree);
   const bin = join(directory, 'fake-native'), release = join(directory, 'release'), ready = join(directory, 'ready'), launches = join(directory, 'launches');
@@ -27,12 +28,17 @@ const timer = setInterval(() => {
   if (!existsSync(process.env.FAKE_RELEASE)) return;
   clearInterval(timer);
   if (process.env.FAKE_CONTROL_BYTES) { process.stdout.write(Buffer.alloc(Number(process.env.FAKE_CONTROL_BYTES))); return; }
-  process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: arg('--session-id'), result: JSON.stringify(envelope) }) + '\\n');
+  let result = JSON.stringify(envelope);
+  if (process.env.FAKE_WRAPPED) {
+    process.stdout.write('[i] Joined existing CLIProxy on port 8317 (http)\\n');
+    result = ['Review complete.', '', '\`\`\`json', result, '\`\`\`'].join('\\n');
+  }
+  process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: arg('--session-id'), result }) + '\\n');
 }, 10);
 `, { mode: 0o700 });
   const request = { goalId: 'goal', operationId: 'operation', attempt: { id: 'attempt', operationId: 'operation', role, mode: 'background', generation: 1, revision: 1, conversationId, target: 'a'.repeat(40), baseSha: 'a'.repeat(40), branch: 'companion/goal/attempt', worktree } };
   const envelope = { schemaVersion: 1, goalId: request.goalId, operationId: request.operationId, attemptId: request.attempt.id, role, generation: 1, revision: 1, target: request.attempt.target, output: { schemaVersion: 1, target: request.attempt.target, disposition: 'accept', findings: [] } };
-  const inputs = new NativeInputs({ engine: { provider: 'default', model: 'fixture' }, capabilities, env: { PATH: process.env.PATH, FAKE_RELEASE: release, FAKE_READY: ready, FAKE_LAUNCHES: launches }, describe: () => ({ prompt: JSON.stringify(envelope), bridge: { endpoint: 'http://127.0.0.1:1', credential: 'private-scoped-credential-at-least-32-characters' } }) });
+  const inputs = new NativeInputs({ engine: { provider: 'default', model: 'fixture' }, capabilities, env: { PATH: process.env.PATH, FAKE_RELEASE: release, FAKE_READY: ready, FAKE_LAUNCHES: launches, ...(wrapped ? { FAKE_WRAPPED: '1' } : {}) }, describe: () => ({ prompt: JSON.stringify(envelope), bridge: { endpoint: 'http://127.0.0.1:1', credential: 'private-scoped-credential-at-least-32-characters' } }) });
   const delivered = [], errors = [];
   const options = { directory: join(directory, 'native'), bin, inputs, policy, onResult: async (request, raw) => { delivered.push({ request, raw }); }, onError: (code) => errors.push(code) };
   const driver = new NativeBackground(options);
@@ -69,6 +75,20 @@ test('native background launches once, pins running process identity and durably
   assert.equal((await readFile(f.launches, 'utf8')).trim(), 'launch'); assert.equal(f.delivered.length, 1);
   assert.equal(JSON.parse(f.delivered[0].raw).attemptId, 'attempt'); assert.deepEqual(f.errors, []);
   await reopened.close();
+});
+
+test('wrapped CCS review crosses durable delivery and strict role validation once', async (t) => {
+  const f = await fixture(t, { wrapped: true });
+  await f.driver.launch(f.request); await f.waitReady(); await f.release();
+  await Promise.all([...f.driver.active.values()].map((active) => active.job));
+  assert.equal(f.delivered.length, 1);
+  const result = parseRoleResult(JSON.parse(f.delivered[0].raw), { goalId: f.request.goalId, attempt: f.request.attempt });
+  assert.equal(result.output.disposition, 'accept');
+  const reopened = new NativeBackground(f.options);
+  assert.equal((await reopened.observe('operation')).status, 'stopped');
+  assert.equal(f.delivered.length, 1);
+  assert.equal((await readFile(f.launches, 'utf8')).trim(), 'launch');
+  assert.deepEqual(f.errors, []); await reopened.close();
 });
 
 test('native result delivery replays after callback loss without relaunching the process', async (t) => {

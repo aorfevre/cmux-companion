@@ -72,7 +72,12 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
         },
         resolveCheck: (repositoryId, check) => {
           if (repositoryId !== 'repo' || !repo.contract.verification.some((approved) => JSON.stringify(approved) === JSON.stringify(check))) throw new Error('Unknown fixture verification command');
-          return { bin: process.execPath, argv: check.argv.slice(1), env: { PATH: process.env.PATH }, environmentId: 'disposable-fixture-node', policy: { ceilingMs: 10000, idleMs: 2000, maxOutputBytes: 8192, killGraceMs: 100 } };
+          // Keep fast fixture checks alive until the watchdog records their PID.
+          return {
+            bin: process.execPath, argv: check.argv.slice(1),
+            env: { PATH: process.env.PATH, NODE_OPTIONS: `--import=${new URL('../tests/helpers/orchestration/await-verification-identity.mjs', import.meta.url).href}`, CMUX_COMPANION_FIXTURE_CHECK: check.id },
+            environmentId: 'disposable-fixture-node', policy: { ceilingMs: 10000, idleMs: 2000, maxOutputBytes: 8192, killGraceMs: 100 },
+          };
         },
         createPublisher: ({ repositories }) => {
           const remote = new GitRemote({ repositories, directory: join(directory, 'remote-stage'), destinations: new Map([['repo', { url: realpathSync(repo.remote), protocol: 'file', env: { PATH: process.env.PATH } }]]) });

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFile, stat, access, writeFile } from 'node:fs/promises';
+import { readFile, stat, access, writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { waitForVerificationIdentity } from './helpers/orchestration/await-verification-identity.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { startOrchestrationDemo } from '../scripts/run-orchestration-dev.mjs';
@@ -47,7 +50,15 @@ test('disposable development composition delivers through paired HTTP and real G
       await command({ id: 'approve-publication', goalId: 'g', expectedVersion: proposal.version, type: 'approve_publication', payload: { operationId: proposal.publication.operationId, headSha: proposal.integrationHead } });
     }
   }
-  goal = runtime.store.get('g'); assert.deepEqual(agents.errors, []);
+  goal = runtime.store.get('g');
+  if (goal.status !== 'delivered') {
+    const failures = goal.verificationRuns.flatMap(run => run.result?.verification.checks ?? []).filter(check => !check.passed).map(check => {
+      const evidence = JSON.parse(runtime.artifacts.get(check.artifactId).toString('utf8'));
+      return { checkId: check.id, code: evidence.code, cause: evidence.outcome?.cause, workerState: evidence.outcome?.workerState };
+    });
+    t.diagnostic(JSON.stringify({ verificationFailures: failures }));
+  }
+  assert.deepEqual(agents.errors, []);
   assert.equal(await fixtureGit(manifest.repository, ['rev-parse', '--abbrev-ref', 'HEAD']), 'HEAD');
   assert.equal(await fixtureGit(manifest.repository, ['rev-parse', 'HEAD']), manifest.baseSha);
   assert.equal(await readFile(`${manifest.repository}/untracked-user.txt`, 'utf8'), 'Preserve detached user work');
@@ -85,4 +96,16 @@ test('CLI prints private file paths without token and cleans only its disposable
   assert.equal(snapshot.readOnly, true);
   const exited = once(child, 'exit'); child.kill('SIGTERM'); assert.equal((await exited)[0], 0, errors);
   await assert.rejects(access(info.manifestFile), { code: 'ENOENT' });
+});
+
+
+test('fixture verification requires its own persisted PID and refuses missing identity', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'fixture-verification-identity-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, 'provider.json');
+  await assert.rejects(waitForVerificationIdentity(path, { timeoutMs: 10 }), /identity was not recorded/);
+  await writeFile(path, JSON.stringify({ pid: process.pid + 1 }));
+  await assert.rejects(waitForVerificationIdentity(path, { timeoutMs: 10 }), /identity was not recorded/);
+  await writeFile(path, JSON.stringify({ pid: process.pid }));
+  await waitForVerificationIdentity(path);
 });
