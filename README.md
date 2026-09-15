@@ -294,7 +294,10 @@ and recovery are documented in [recovery](docs/orchestration-recovery.md).
 
 ## License
 
-MIT
+[MIT](LICENSE), with the imported updater's [separate MIT notice](updater/LICENSE).
+Third-party dependencies and assets retain their own terms; see the
+[distribution licensing inventory and requirements](docs/distribution-licensing.md)
+before shipping bundled binaries.
 
 ### Goal briefs and reference files
 

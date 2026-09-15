@@ -1,0 +1,131 @@
+{
+  "source_commit": "ec816593cf4c49a4328303490378595513839350",
+  "assets": [
+    {
+      "path": "docs/goals-first-evidence/folder-picker-1440.png",
+      "sha256": "71655a40230bcb552870c5a98933e016abb4a49661e495044048e2182e6db8f3",
+      "width": 608,
+      "height": 601,
+      "first_add_commit": "b157b12a18e687c9513701dccbdfc6e4bd769398",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/goals-first-evidence/folder-picker-360.png",
+      "sha256": "5b02167c3a7800d2914fb868c673b174b82f437c8fcc35aa4bc611604aa8c365",
+      "width": 324,
+      "height": 601,
+      "first_add_commit": "b157b12a18e687c9513701dccbdfc6e4bd769398",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/goals-first-evidence/folder-picker-390.png",
+      "sha256": "1fc86fae89a79eb918e3a5e4055ca791f7ec7d75f6f19912ece3b6f1c125f780",
+      "width": 354,
+      "height": 601,
+      "first_add_commit": "b157b12a18e687c9513701dccbdfc6e4bd769398",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/goals-first-evidence/goals-empty-1440.png",
+      "sha256": "ed7e97c01e9bdc73c8b6587e1e821eaaecbe50b74a89485f11f94ed95a778bc6",
+      "width": 1280,
+      "height": 633,
+      "first_add_commit": "b157b12a18e687c9513701dccbdfc6e4bd769398",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/goals-first-evidence/goals-empty-390.png",
+      "sha256": "044b0e964e4172abd98c5d0b157ea55c9456840ac84191069539d45dfd7ef0ee",
+      "width": 390,
+      "height": 633,
+      "first_add_commit": "b157b12a18e687c9513701dccbdfc6e4bd769398",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/images/automatic-dev-repos/settings-390.png",
+      "sha256": "17931c43e588e0885d230b57b93328291aea4ffdfc02c67d399842852e8fa318",
+      "width": 390,
+      "height": 633,
+      "first_add_commit": "d490b839d55794b6304475a45002fe716f004ae1",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/images/project-favorites/favorites-mobile.png",
+      "sha256": "b47ae1b4b3b58907efef4c958599cf2af0976308269c0f553cc0920e76792d93",
+      "width": 326,
+      "height": 438,
+      "first_add_commit": "4f452d1af7509afb08740308977b9e06dfc8ed1b",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/images/repository-readiness/choose-checks.png",
+      "sha256": "33dc98bbd5261af356aa9c91664b32af721e4de49c2a7cc6455ada90ec40f713",
+      "width": 390,
+      "height": 633,
+      "first_add_commit": "61cdb7df66cfceeb8ca6f3b0f3ff4a7d1e9005e7",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/settings-redesign-evidence/agents-mobile.png",
+      "sha256": "d4595b400fbe506e463e6361fe7e45fb6d0b95f1acf5c737ea13aa26fc59b42b",
+      "width": 390,
+      "height": 633,
+      "first_add_commit": "9ccab2af044bf6117359a7c52e782e480feba855",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/settings-redesign-evidence/dev-repos-desktop.png",
+      "sha256": "85cd8bf15a891560744ab3cb294949fa6187ba21648879cc9d717fc769ef9e86",
+      "width": 1280,
+      "height": 633,
+      "first_add_commit": "9ccab2af044bf6117359a7c52e782e480feba855",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/settings-redesign-evidence/dev-repos-mobile.png",
+      "sha256": "8dee9ca7584e70e87b53408d6c3c8e7a2607ac8e846fcc43cc80a402a4ea67b6",
+      "width": 390,
+      "height": 633,
+      "first_add_commit": "9ccab2af044bf6117359a7c52e782e480feba855",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "docs/settings-redesign-evidence/goals-desktop.png",
+      "sha256": "ad71b85658b1f836a544585006d10a2eae3a9d4473ff143fdb2ff8688cf2d6cf",
+      "width": 1280,
+      "height": 633,
+      "first_add_commit": "9ccab2af044bf6117359a7c52e782e480feba855",
+      "kind": "Companion UI screenshot",
+      "rights_evidence": "Capture appears in repository documentation history; demo UI reviewed. No independent third-party asset/font rights clearance."
+    },
+    {
+      "path": "public/icon-192.png",
+      "sha256": "372d93bd0a3c080f42c5e6a8265db2979984fd92cfc325e1793663c21e53a21f",
+      "width": 192,
+      "height": 192,
+      "first_add_commit": "8828037f96ab4c21e03d1a49be142f31da19561d",
+      "kind": "application icon",
+      "rights_evidence": "Maintainer source/license confirmation pending; no generator or embedded license found."
+    },
+    {
+      "path": "public/icon-512.png",
+      "sha256": "f35f0fe73c96f6adca695e4dfbea6fcc8879e3835729574c5cdb79af7937465e",
+      "width": 512,
+      "height": 512,
+      "first_add_commit": "8828037f96ab4c21e03d1a49be142f31da19561d",
+      "kind": "application icon",
+      "rights_evidence": "Maintainer source/license confirmation pending; no generator or embedded license found."
+    }
+  ]
+}
