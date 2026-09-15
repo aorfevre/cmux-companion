@@ -22,11 +22,15 @@ export function GoalDetail({ goal, disabled, terminal, act, control }: {
   const contract = goal.contracts.find(entry => entry.revision === goal.revision)?.contract;
   const revision = goal.actions.find(action => action.type === 'request_revision');
   const safeLink = goal.pr?.url && /^https:\/\//.test(goal.pr.url) ? goal.pr.url : null;
+  let planReviewMessage = 'Plan review is off. Review the plan yourself before approving implementation.';
+  if (goal.planReviewRequired) planReviewMessage = goal.planReviewPending
+    ? 'Initial plan review is off; the required review must finish before approval.'
+    : 'Plan review accepted. Your approval is still required before implementation.';
   return <article className="orch-detail" aria-label="Goal detail">
     <section className="orch-card"><div className="orch-eyebrow">{goalStage(goal)} · PLAN {goal.revision}</div><h1>{goal.title}</h1>{rename && (editingTitle ? <form onSubmit={event => { event.preventDefault(); void act(goal, { ...rename, payload: { title } }).then(saved => { if (saved) setEditingTitle(false); }); }}><label>Goal title<input value={title} maxLength={100} onChange={event => setTitle(event.target.value)} disabled={disabled} required /></label><button disabled={disabled || !title.trim()}>Save title</button><button type="button" onClick={() => setEditingTitle(false)}>Cancel</button></form> : <button disabled={disabled} onClick={() => { setTitle(goal.title); setEditingTitle(true); }}>Edit title</button>)}
       <p className="orch-description">{goal.description || goal.title}</p><p>{goal.plannerName}</p>{attention(goal) && <p className="orch-banner">{attention(goal)}</p>}
       {Boolean(goal.planRevisionCount) && <p role="status">Automatic plan revisions: {goal.planRevisionCount} of 2.{goal.status === 'discovering' ? ' Addressing review findings.' : ''}</p>}
-      {goal.planReviewEnabled === false && ['discovering', 'awaiting_approval'].includes(goal.status) && <p>{goal.planReviewRequired ? 'Initial plan review is off; existing findings still require a fresh review.' : 'Plan review is off. Review the plan yourself before approving implementation.'}</p>}
+      {goal.planReviewEnabled === false && ['discovering', 'awaiting_approval'].includes(goal.status) && <p>{planReviewMessage}</p>}
       {goal.hold && goal.recoveryBlocked && <p role="status">{goal.recoveryBlocked}</p>}
       <details><summary>Source and technical details</summary><p>Base branch: {goal.baseBranch}</p><p>Integrated head <code>{goal.integrationHead.slice(0, 12) || 'Preparing fresh base…'}</code></p><button disabled={disabled} onClick={() => void control(goal, 'reconcile')}>Reconcile workers</button></details>
       {safeLink && <a className="orch-pr" href={safeLink} target="_blank" rel="noreferrer">Open pull request #{goal.pr?.number}</a>}

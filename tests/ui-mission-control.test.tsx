@@ -80,9 +80,12 @@ test('goal detail explains optional review and bounded automatic revisions', () 
   const props = { disabled: false, terminal: false, act: vi.fn(async () => true), control: vi.fn(async () => {}) };
   const view = render(<GoalDetail {...props} goal={goal} />);
   expect(screen.getByText('Plan review is off. Review the plan yourself before approving implementation.')).toBeTruthy();
-  view.rerender(<GoalDetail {...props} goal={{ ...goal, planReviewRequired: true, planRevisionCount: 1 }} />);
-  expect(screen.getByText('Initial plan review is off; existing findings still require a fresh review.')).toBeTruthy();
+  view.rerender(<GoalDetail {...props} goal={{ ...goal, planReviewRequired: true, planReviewPending: true, planRevisionCount: 1 }} />);
+  expect(screen.getByText('Initial plan review is off; the required review must finish before approval.')).toBeTruthy();
   expect(screen.getByText('Automatic plan revisions: 1 of 2. Addressing review findings.')).toBeTruthy();
+  view.rerender(<GoalDetail {...props} goal={{ ...goal, status: 'awaiting_approval', planReviewRequired: true, planReviewPending: false }} />);
+  expect(screen.getByText('Plan review accepted. Your approval is still required before implementation.')).toBeTruthy();
+  expect(screen.queryByText('Initial plan review is off; the required review must finish before approval.')).toBeNull();
 });
 
 test('aborted history has its own searchable filter and the entire row opens once', () => {

@@ -25,23 +25,14 @@ remain as documented in `orchestration-native-adapters.md`.
 
 ## Automatic review repair
 
-A settled rejection of the current plan starts a fresh planner with the recorded
-findings, followed by independent review. Two automatic revisions are allowed per
-manual revision cycle; restart preserves that count. A clarification pauses for
-your answer, and an exhausted budget requires **Request revision** with guidance.
-Implementation still requires your approval of the resulting exact revision.
+Review repair policy, budgets, approval gates and the Settings toggle are defined
+in the [automatic review repair contract](superpowers/specs/2026-09-15-mission-control-redesign.md#automatic-review-repair-and-optional-plan-review--2026-09-15).
 
-Task and final integration rejections automatically release only their matching
-review hold into the existing bounded repair flow. Mixed execution/check failures,
-stale findings, uncertain workers, pending results, disabled repositories and
-paused automation never authorize automatic recovery. Existing eligible review
-holds may therefore progress after upgrading; other holds remain manual.
-
-Settings → Agents & models → **Review plans before approval** is enabled by default
-and applies to unapproved goals without a restart. Disabling skips initial review
-only: started reviews finish and repaired findings require fresh review. Task and
-final integration reviews remain mandatory. The setting is stored separately so
-older settings readers remain compatible during rollback.
+When repair stops for clarification, answer the question shown in the goal. When
+the revision budget is exhausted, choose **Request revision** and provide guidance
+for the remaining findings. For other holds, inspect the displayed recovery reason
+and worker evidence before choosing the offered recovery action. Activity retains
+the review findings and revision events for diagnosis across restarts.
 
 ## Moved publication target
 

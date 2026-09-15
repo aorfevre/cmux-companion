@@ -3,6 +3,7 @@ import test from 'node:test';
 import { fixture, contract, BASE, HEAD_A } from './helpers/orchestration/domain-fixture.mjs';
 import { revisablePlan, repairableReviews } from '../server/orchestration/domain/review-repairs.mjs';
 import { planTarget, transition } from '../server/orchestration/domain/transitions.mjs';
+import { goalView } from '../server/orchestration/domain/state-view.mjs';
 import { readyWork } from '../server/orchestration/domain/scheduling.mjs';
 
 function rejected(kind) {
@@ -61,4 +62,13 @@ test('plan revision rejects replaced review ids and leaves the held journal unch
   assert.throws(() => transition(f.goal, { id: 'auto', goalId: f.goal.id, expectedVersion: f.goal.version,
     type: 'revise_rejected_plan', payload: { reviewId: 'stale' } }, f.system), { code: 'NOT_READY' });
   assert.deepEqual(f.goal, before);
+});
+
+
+test('projection distinguishes a satisfied plan review from its continuing approval obligation', () => {
+  const f = fixture(); f.approve(); f.goal.planReviewEnabled = false;
+  assert.equal(goalView(f.goal).planReviewRequired, true);
+  assert.equal(goalView(f.goal).planReviewPending, false);
+  f.goal.reviews.at(-1).target = 'stale';
+  assert.equal(goalView(f.goal).planReviewPending, true);
 });
