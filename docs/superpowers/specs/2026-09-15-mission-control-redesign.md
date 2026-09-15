@@ -130,7 +130,8 @@ wave membership or changing approved scope requires a new approved revision.
 
 Failures include failed execution, blocking review findings, verification failures
 and integration conflicts. They place the goal on a durable dispatch hold; no
-automatic repair/retry begins in this first delivery. Existing active attempts
+automatic execution repair/retry begins in this first delivery. Plan-review
+revisions follow the bounded exception specified below. Existing active attempts
 may finish, but cannot release the hold. Manual recovery identifies the failed
 target and creates a new bounded attempt or explicitly resumes eligible work.
 Unknown worker ownership must be reconciled before replacement. Abort revokes
@@ -417,3 +418,47 @@ The user reviewed the committed draft and authorized implementation. Choose the
 representative run and success target with the user when the implementation is
 ready for evaluation; their deferral does not block implementation or replace
 the acceptance criteria above.
+
+
+## Automatic plan revision amendment — 2026-09-15
+
+Outcome: ordinary blocking plan-review findings are handled by the planner and
+reviewer without asking the user to copy review feedback. The user approved this
+loop in conversation; final approval before implementation remains mandatory.
+
+User journey: after a plan review requests changes, Companion waits for all
+workers and result submissions to settle, then requests a fresh planner revision
+with the prior contract and recorded findings. The new plan receives a fresh
+independent review. At most two automatic revisions run per manual planning cycle.
+An accepted plan waits for explicit user approval; it never starts implementation.
+If the planner needs a scope/requirements decision, its existing clarification
+flow asks the user and pauses. Exhausted revision budget, execution failures,
+unknown ownership and unrelated holds stay visible for human intervention.
+
+Settings → Agents includes “Automatically revise plans after review”, enabled by
+default. Switching it off prevents new automatic revisions on existing and future
+goals; it does not terminate active work, bypass independent review, or approve
+anything. Manual Request revision stays available and starts a new bounded cycle.
+Changing the setting takes effect without restarting the service. Initial plan
+review remains automatic and required. This toggle does not disable plan review.
+
+Non-goals: automatic implementation approval, execution/task repair, publication,
+merge/deploy, review bypass, or recovery of unrelated failures. No installed state
+is mutated by the implementation/testing task.
+
+Acceptance criteria and verification:
+- Only a current rejected plan, with a solely matching review hold and stopped
+  workers/results, can auto-revise. Verify with domain/scheduler rejection tests.
+- Two revisions maximum, durable across restart; manual revision resets the
+  budget and accepted plans still need user approval. Verify with persisted
+  planning lifecycle tests including duplicate ticks and stale review targets.
+- Context retains the prior plan/findings; clarification pauses the loop. Verify
+  with role-context and clarification tests.
+- Settings persists and applies live; disabling prevents another revision while
+  retaining manual review/approval safeguards. Verify settings API and UI tests.
+- Users can see automatic revision progress and exhaustion. Verify the goal
+  projection/UI and a disposable-service Cypress journey.
+
+Success measure: a rejected plan can reach user approval through at most two
+revision/review cycles without manual feedback copying and without an implementer
+starting before that approval.
