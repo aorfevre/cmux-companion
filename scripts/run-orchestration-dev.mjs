@@ -58,6 +58,10 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
                 await fixtureGit(attempt.worktree, ['add', 'src']); await fixtureGit(attempt.worktree, ['commit', '-m', 'Repair injectable composition']);
                 return { headSha: await fixtureGit(attempt.worktree, ['rev-parse', 'HEAD']), operationId: null, summary: 'Repair final check failure', evidence: [] };
               }
+              if (browserHarness && attempt.target.startsWith('contract:') && existsSync(join(directory, 'release-reject-plan'))
+                && agents.launches.filter(entry => entry.goalId === goalId && entry.attempt.role === 'reviewer' && entry.attempt.target.startsWith('contract:')).length === 1) {
+                return { schemaVersion: 1, target: attempt.target, disposition: 'request_changes', findings: [{ id: 'plan_scope', severity: 'high', blocking: true, title: 'Clarify the fixture plan', evidence: 'First plan needs a review round', suggestion: 'Republish the bounded fixture contract' }] };
+              }
               const failing = attempt.taskId === 'C' && !(await repo.verify(attempt.worktree)).passed;
               return { schemaVersion: 1, target: attempt.target, disposition: failing ? 'request_changes' : 'accept', findings: failing ? [{ id: 'composition_defect', severity: 'high', blocking: true, title: 'Composition does not add its inputs', evidence: 'Fixture acceptance test fails on review checkout', suggestion: 'Add the module results' }] : [] };
             },

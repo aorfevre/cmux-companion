@@ -40,18 +40,27 @@ planner/session name remains stable for that attempt's identity.
 Follow Planning → Needs approval → In progress → Review → Verification → Ready
 to publish → Waiting for merge → Complete. Open a fleet row for Overview,
 Waves & sessions, Team & models, Run report and Activity. Needs You collects
-questions, approvals and manual recovery actions.
+questions, approvals and manual recovery actions. Aborted goals are hidden from the
+default fleet; select **Aborted** to browse them. Click anywhere on a goal row to open it.
 
 The planner publishes a versioned contract with task ownership, dependencies and
 verification. Essential questions appear inside the goal; answering resumes
 planning automatically after the prior worker is confirmed stopped. The agent discovers suitable verification from the project and goal; repository checks are optional defaults, never required setup. If validation is missing, the plan must address that gap. An independent review checks the contract before the user approves that revision and its exact verification commands.
+In Settings → Agents & models, **Review plans before approval** controls initial
+plan review (enabled by default). Turning it off still requires user approval;
+already-started reviews finish and blocking findings cannot be bypassed.
+Rejected plans are revised and reviewed automatically, up to two revisions per
+manual revision cycle. A required clarification or exhausted budget needs your input.
 Requesting changes invalidates the proposal's approval authority.
 
 Eligible independent tasks run concurrently from day one. Each attempt owns an
 isolated worktree. Later waves start only after the previous wave is accepted,
 integrated and verified; their attempts use that checked output.
 An independent reviewer checks the exact submitted task commit. Blocking findings
-hold new dispatch for manual recovery, bounded repair and a fresh review. Integration serializes changes and
+hold new dispatch until workers and pending results settle, then automatically
+start bounded repair and a fresh review. Task and final integration reviews remain
+required regardless of the plan-review setting. Execution and verification failures
+still require manual recovery. Integration serializes changes and
 preserves conflicts for scoped repair. Final review and approved goal checks must
 agree on the exact goal-branch commit before publication approval can open one PR.
 

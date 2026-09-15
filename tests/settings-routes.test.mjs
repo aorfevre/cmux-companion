@@ -49,3 +49,13 @@ test('favorite routes authenticate scoped writes and reject invalid and stale up
   assert.equal(settings.read().settings.projects[0].enabled, false);
   assert.deepEqual(changes, []); // Preference writes do not recompose the runtime.
 });
+
+test('plan-review preference is a paired revision-checked live settings change', async t => {
+  const { app, settings, changes } = await fixture(t);
+  const payload = { expectedRevision: 0, changes: { automation: { planReviews: false } } };
+  assert.equal((await app.inject({ method: 'PATCH', url: '/api/settings/local', payload })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'PATCH', url: '/api/settings/local', headers, payload })).statusCode, 200);
+  assert.equal(settings.read().settings.automation.planReviews, false);
+  assert.deepEqual(changes, [1]);
+  assert.equal((await app.inject({ method: 'PATCH', url: '/api/settings/local', headers, payload })).statusCode, 409);
+});

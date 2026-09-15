@@ -3,6 +3,7 @@ import { projectCode, shortGoalTitle, planningName } from './goal-presentation.m
 import { parseTeamConfiguration, proposeTeam, assignmentFor, overrideAssignment } from './teams.mjs';
 import { currentWave, verificationWaveId, integratedWaveReady, waveChecks, acceptWaveVerification } from './waves.mjs';
 import { parseGoalReferences } from './goal-references.mjs';
+import { revisablePlan, requiresPlanReview, repairableReviews } from './review-repairs.mjs';
 import { captureFailureHold, recoverGoal } from './recovery.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
@@ -91,6 +92,19 @@ export function transition(before, command, authority) {
   /** @param {import('../types.d.ts').Intent['kind']} kind @param {string} id @param {string | null} attemptId @param {import('../types.d.ts').Json} payload */
   const intent = (kind, id, attemptId, payload) => result.intents.push({ id, kind, goalId: goal.id, generation: goal.generation, revision: goal.revision, attemptId, payload });
   switch (command.type) {
+    case 'set_plan_review_policy': {
+      requireAuthority(authority, 'system');
+      requireValue(['discovering', 'awaiting_approval'].includes(goal.status) && typeof input.enabled === 'boolean', 'Plan review policy cannot change here', 'NOT_READY');
+      goal.planReviewEnabled = input.enabled;
+      emit('plan_review_policy_changed', { enabled: input.enabled }); break;
+    }
+    case 'repair_review_findings': {
+      requireAuthority(authority, 'system');
+      requireValue(goal.hold && repairableReviews(goal) && goal.hold.id === input.holdId, 'Review findings are not eligible for automatic repair', 'NOT_READY');
+      (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold });
+      goal.hold = null;
+      emit('review_repair_requested', { holdId: String(input.holdId) }); break;
+    }
     case 'recover_goal': {
       requireAuthority(authority, 'user');
       recoverGoal(goal, input.holdId, command.id, input.mode);
@@ -244,12 +258,22 @@ export function transition(before, command, authority) {
       }
       emit('agent_result_rejected', { resultId: submission.id, attemptId: submission.attemptId, artifactId: submission.artifactId, code: submission.code }); break;
     }
+    case 'revise_rejected_plan':
     case 'request_revision': {
-      requireAuthority(authority, 'user');
+      const automatic = command.type === 'revise_rejected_plan';
+      requireAuthority(authority, automatic ? 'system' : 'user');
+      const rejected = automatic ? revisablePlan(goal) : null;
+      if (automatic) requireValue(rejected && rejected.id === input.reviewId, 'Plan review is not eligible for automatic revision', 'NOT_READY');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       requireValue(goal.status !== 'delivered', 'Delivered goals require a new goal', 'INVALID_STATE');
       requireValue(!goal.integration && (!goal.publication || !goal.publication.approval), 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
-      const message = text(input.message, 8000);
+      const message = automatic
+        ? `Address the blocking findings in plan review ${rejected?.id}. Preserve the user's outcome and scope. If resolving a finding requires a user decision, ask a focused clarification and stop. Publish the revised contract for independent review; do not approve or implement it.`
+        : text(input.message, 8000);
+      goal.planRevisionCount = automatic ? (goal.planRevisionCount ?? 0) + 1 : 0;
+      if (automatic && goal.hold) {
+        (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold }); goal.hold = null;
+      }
       for (const attempt of goal.attempts.filter(ownsWorker)) {
         if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
         if (attempt.workerState === 'pending') attempt.workerState = 'unknown';
@@ -258,7 +282,7 @@ export function transition(before, command, authority) {
       goal.planningRequest = { message, basedOnRevision: goal.revision };
       proposeTeam(goal);
       goal.verification = null; goal.integration = null; goal.publication = null;
-      emit('revision_requested', { basedOnRevision: goal.revision }); break;
+      emit('revision_requested', { basedOnRevision: goal.revision, automatic, count: goal.planRevisionCount }); break;
     }
     case 'publish_contract': {
       requireValue(authority.kind === 'user' || (authority.kind === 'agent' && authority.role === 'planner'), 'Planner or user authority required', 'FORBIDDEN');
@@ -283,7 +307,7 @@ export function transition(before, command, authority) {
     case 'approve': {
       requireAuthority(authority, 'user');
       requireValue(goal.status === 'awaiting_approval' && integer(input.revision, 1) === goal.revision, 'Approval target changed', 'STALE_TARGET');
-      requireValue(acceptedReview(goal, planTarget(goal), 'plan'), 'Independent plan review must accept this revision', 'REVIEW_REQUIRED');
+      requireValue(!requiresPlanReview(goal) || acceptedReview(goal, planTarget(goal), 'plan'), 'Independent plan review must accept this revision', 'REVIEW_REQUIRED');
       requireValue(!goal.attempts.some((attempt) => attempt.generation !== goal.generation && ownsWorker(attempt)), 'Replaced workers need reconciliation', 'OWNERSHIP_UNCERTAIN');
       if (goal.team) { requireValue(goal.team.revision === goal.revision && goal.team.assignments.every(assignment => assignment.profileId), 'Choose the proposed team before approval', 'NOT_READY'); goal.team.approved = true; }
       goal.approvedRevision = goal.revision; goal.status = 'building'; emit('goal_approved', { revision: goal.revision }); break;

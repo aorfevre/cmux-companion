@@ -34,13 +34,17 @@ for (const width of [390, 1200]) describe(`Setup at ${width}px`, () => {
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
     cy.screenshot(`setup-overview-${width}`, { capture: 'viewport' });
   });
-  it('validates and persists a named role profile without leaving Setup', () => {
+  it('persists a named role profile and the plan-review setting without leaving Setup', () => {
     cy.visit('/settings#agents'); cy.findByRole('button', { name: 'Add launch profile' }).click();
+    cy.findByLabelText('Review plans before approval').should('be.checked').uncheck();
     cy.findByLabelText('Profile name').clear().type('Design team');
     cy.findByRole('checkbox', { name: 'Planner & designer' }).check();
     cy.findByLabelText('Preferred Planner & designer').select('Design team');
     cy.findByRole('button', { name: 'Save changes' }).click(); cy.wait('@validate'); cy.wait('@save');
     cy.reload(); cy.findByLabelText('Profile name').should('have.value', 'Design team');
+    cy.findByLabelText('Review plans before approval').should('not.be.checked').check();
+    cy.findByRole('button', { name: 'Save changes' }).click(); cy.wait('@save');
+    cy.reload(); cy.findByLabelText('Review plans before approval').should('be.checked');
     cy.findByLabelText('Preferred Planner & designer').find('option:selected').should('have.text', 'Design team');
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
     cy.screenshot(`setup-profiles-${width}`, { capture: 'viewport' });

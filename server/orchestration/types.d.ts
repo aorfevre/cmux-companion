@@ -62,6 +62,7 @@ export interface Goal {
   mergeSync?: { checkedAt: number; state: 'open' | 'closed' | 'merged' | 'unknown'; error: string | null };
   integration: { operationId: string; taskId: string | null; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' | 'cancelled'; failedFrom?: 'applying' | 'repairing'; code?: string; retryRequested?: boolean } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; approval?: { commandId: string; headSha: string }; observation?: PublicationResult } | null;
+  planRevisionCount?: number; planReviewEnabled?: boolean;
   planningRequest?: { message: string; basedOnRevision: number } | null;
   verificationRuns?: { waveId?: string; checkIds?: string[]; operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
   integrationResults?: { operationId: string; taskId: string | null; headSha: string }[];

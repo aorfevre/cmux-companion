@@ -23,6 +23,26 @@ external observation proves its outcome. Recovery never treats a timed-out call
 as permission to launch again. The live adapter permission and process-tree limits
 remain as documented in `orchestration-native-adapters.md`.
 
+## Automatic review repair
+
+A settled rejection of the current plan starts a fresh planner with the recorded
+findings, followed by independent review. Two automatic revisions are allowed per
+manual revision cycle; restart preserves that count. A clarification pauses for
+your answer, and an exhausted budget requires **Request revision** with guidance.
+Implementation still requires your approval of the resulting exact revision.
+
+Task and final integration rejections automatically release only their matching
+review hold into the existing bounded repair flow. Mixed execution/check failures,
+stale findings, uncertain workers, pending results, disabled repositories and
+paused automation never authorize automatic recovery. Existing eligible review
+holds may therefore progress after upgrading; other holds remain manual.
+
+Settings → Agents & models → **Review plans before approval** is enabled by default
+and applies to unapproved goals without a restart. Disabling skips initial review
+only: started reviews finish and repaired findings require fresh review. Task and
+final integration reviews remain mandatory. The setting is stored separately so
+older settings readers remain compatible during rollback.
+
 ## Moved publication target
 
 If the configured remote target differs from the goal's recorded local base,

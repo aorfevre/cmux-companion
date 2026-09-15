@@ -1,6 +1,7 @@
 import { integratedWaveReady } from './waves.mjs';
 import { readyTasks } from './graph.mjs';
 import { ownsWorker, planTarget, hasPendingRepairResult } from './transitions.mjs';
+import { requiresPlanReview } from './review-repairs.mjs';
 import { currentReviews } from './review.mjs';
 /** @typedef {{ key: string; role: import('../types.d.ts').Role; taskId: string | null; target: string }} ReadyWork */
 /** Readiness is derived from accepted evidence; durable ordering is assigned by
@@ -22,7 +23,7 @@ export function readyWork(goal) {
     result.push({ key: role === 'implementer' ? `${role}:${taskId}` : `${role}:${taskId ?? ''}:${target}`, role, taskId, target });
   };
   if (goal.status === 'discovering' && (!goal.clarification || goal.clarification.answer !== undefined)) add('planner', null, planTarget(goal));
-  if (goal.status === 'awaiting_approval') add('reviewer', null, planTarget(goal));
+  if (goal.status === 'awaiting_approval' && requiresPlanReview(goal)) add('reviewer', null, planTarget(goal));
   if (goal.status !== 'building' || goal.approvedRevision !== goal.revision) return result;
   for (const task of goal.tasks) if (task.status === 'in_review' && task.candidateSha) add('reviewer', task.id, task.candidateSha);
   for (const task of readyTasks(goal)) add('implementer', task.id, goal.integrationHead);

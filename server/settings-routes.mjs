@@ -40,7 +40,7 @@ export function registerSettingsRoutes(app, { settings, onChange = async () => {
     if (!body || Object.keys(body).some(key => !['expectedRevision', 'changes'].includes(key)) || !body.changes || typeof body.changes !== 'object' || Array.isArray(body.changes)) throw new TypeError('Expected edited fields and revision');
     const before = settings.read();
     settings.assertRevision(body.expectedRevision, before.revision);
-    if (Object.keys(body.changes).some(key => !['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'launchProfiles', 'teamDefaults'].includes(key))) throw new TypeError('Unknown editable settings field');
+    if (Object.keys(body.changes).some(key => !['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'launchProfiles', 'teamDefaults', 'automation'].includes(key))) throw new TypeError('Unknown editable settings field');
     const result = await settings.update(body.expectedRevision, { ...before.settings, ...body.changes }, { inspect });
     return finishSave(result, before);
   });

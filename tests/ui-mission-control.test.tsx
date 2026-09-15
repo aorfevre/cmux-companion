@@ -74,3 +74,29 @@ test('wave inspection exposes task ownership, acceptance and integrated evidence
   expect(screen.getAllByText('Acceptance: works')).toHaveLength(3);
   expect(screen.getByText('cccccccccccc')).toBeTruthy();
 });
+
+test('goal detail explains optional review and bounded automatic revisions', () => {
+  const goal = { ...goals()[0], contracts: [], planReviewEnabled: false, planReviewRequired: false, planRevisionCount: 0 };
+  const props = { disabled: false, terminal: false, act: vi.fn(async () => true), control: vi.fn(async () => {}) };
+  const view = render(<GoalDetail {...props} goal={goal} />);
+  expect(screen.getByText('Plan review is off. Review the plan yourself before approving implementation.')).toBeTruthy();
+  view.rerender(<GoalDetail {...props} goal={{ ...goal, planReviewRequired: true, planRevisionCount: 1 }} />);
+  expect(screen.getByText('Initial plan review is off; existing findings still require a fresh review.')).toBeTruthy();
+  expect(screen.getByText('Automatic plan revisions: 1 of 2. Addressing review findings.')).toBeTruthy();
+});
+
+test('aborted history has its own searchable filter and the entire row opens once', () => {
+  const select = vi.fn(); render(<GoalFleet goals={goals()} select={select} projectName={() => 'Example'} />);
+  expect(screen.queryByRole('button', { name: 'Stopped project' })).toBeNull();
+  const row = screen.getByRole('button', { name: 'Design ingestion' });
+  expect(row.classList.contains('mission-fleet-row')).toBe(true);
+  expect(row.querySelector('button')).toBeNull();
+  fireEvent.click(row.querySelector('.mission-workers')!);
+  expect(select).toHaveBeenCalledTimes(1);
+  expect(select).toHaveBeenCalledWith('planning');
+  fireEvent.click(screen.getByRole('button', { name: 'Aborted' }));
+  expect(screen.getByRole('button', { name: 'Stopped project' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Design ingestion' })).toBeNull();
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } });
+  expect(screen.getByText('No matching goals')).toBeTruthy();
+});
