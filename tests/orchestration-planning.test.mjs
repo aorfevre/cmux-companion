@@ -169,3 +169,17 @@ test('automatic planner revision pauses for clarification and resumes only after
   assert.equal(f.store.get('g').status, 'awaiting_approval');
   assert.equal(f.latest('implementer'), undefined);
 });
+
+test('manual replanning resets the budget but cannot discard unresolved review findings when review is disabled', async t => {
+  const f = fixture(t); await f.scheduler.start(); f.publish(); await f.scheduler.tick();
+  f.review(true);
+  f.scheduler.planReviewEnabled = () => false;
+  f.command('request_revision', { message: 'Address the findings with this more specific scope.' });
+  await f.scheduler.tick();
+  assert.equal(f.store.get('g').planRevisionCount, 0);
+  f.publish(); await f.scheduler.tick();
+  assert.equal(f.latest('reviewer').revision, 2);
+  assert.throws(() => f.command('approve', { revision: 2 }), { code: 'REVIEW_REQUIRED' });
+  f.review(); await f.scheduler.tick(); f.command('approve', { revision: 2 });
+  assert.equal(f.store.get('g').approvedRevision, 2);
+});

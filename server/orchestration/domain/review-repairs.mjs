@@ -26,7 +26,7 @@ export function requiresPlanReview(goal) {
   return goal.planReviewEnabled !== false || (goal.planRevisionCount ?? 0) > 0
     || goal.attempts.some(attempt => attempt.role === 'reviewer' && attempt.generation === goal.generation
       && attempt.revision === goal.revision && attempt.target === `contract:${goal.generation}:${goal.revision}`)
-    || currentReviews(goal).some(review => review.kind === 'plan' && review.disposition === 'request_changes');
+    || goal.reviews.filter(review => review.kind === 'plan').at(-1)?.disposition === 'request_changes';
 }
 /** All held findings must belong to current review targets with remaining repair
  * budget. Mixed execution/check failures are never silently recovered.
