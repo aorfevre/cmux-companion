@@ -48,6 +48,7 @@ test('Codex inputs isolate config, deny shell/hosted tools and generate native a
     assert.match(config, /sandbox_mode = "read-only"/); assert.match(config, /features.shell_tool = false/);
     assert.match(config, /trust_level = "untrusted"/); assert.match(config, /web_search = "disabled"/);
     assert.equal(config.includes('[mcp_servers.companion]'), true);
+    assert.equal((config.match(/default_tools_approval_mode = "approve"/g) || []).length, 2);
     assert.equal(config.includes('c'.repeat(48)), false);
     assert.deepEqual(await inputs.prepare(request, directory), result);
   }

@@ -197,3 +197,10 @@ Retired preview ports and Chrome capture paths are hidden from current settings
 and have no runtime consumers. Their original schema-2 JSON fields remain inert
 on disk for compatible updater rollback; writes preserve them. Previous goal
 configuration snapshots remain immutable. No installed-state reset is required.
+
+Named launch profiles and team defaults live in an additive private table, while
+the schema-2 settings JSON remains readable by the previous release. Older readers
+may edit their known settings without deleting the saved team configuration.
+Updates and backup restoration preserve both tables and admitted goal snapshots.
+GitHub HTTPS fetch/publication uses a fixed host-restricted askpass helper backed
+by the Mac's authenticated `gh`; repository credential helpers remain disabled.
