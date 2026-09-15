@@ -152,16 +152,19 @@ export class LocalSettings {
       if (version > 2) invalid('Settings database is newer than this version of Companion');
       this.db.exec(`BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS local_settings (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS team_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS project_favorites (project_id TEXT PRIMARY KEY, favorite INTEGER NOT NULL CHECK(favorite IN (0,1)));
         CREATE TABLE IF NOT EXISTS goal_configuration (goal_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
         COMMIT;`);
       this.db.prepare('INSERT OR IGNORE INTO local_settings(id,revision,value) VALUES(1,0,?)').run(JSON.stringify(this.compatibleSettings(defaultSettings())));
-      if (version < 2) {
+      const raw = JSON.parse(String(this.db.prepare('SELECT value FROM local_settings WHERE id=1').get().value));
+      if (version < 2 || raw.launchProfiles !== undefined || raw.teamDefaults !== undefined) {
         this.db.exec('BEGIN IMMEDIATE');
         try {
           const current = this.read().settings;
           current.devRepos ??= [];
           validateSettings(current);
+          this.saveTeamSettings(current);
           this.db.prepare('UPDATE local_settings SET value=? WHERE id=1').run(JSON.stringify(this.compatibleSettings(current)));
           this.db.exec('PRAGMA user_version=2; COMMIT;');
         } catch (error) { this.db.exec('ROLLBACK'); throw error; }
@@ -172,6 +175,8 @@ export class LocalSettings {
   read() {
     const row = this.db.prepare('SELECT revision,value,imported FROM local_settings WHERE id=1').get();
     const settings = JSON.parse(String(row.value));
+    const team = this.db.prepare('SELECT value FROM team_settings WHERE id=1').get();
+    Object.assign(settings, team ? JSON.parse(String(team.value)) : { launchProfiles: settings.launchProfiles ?? [], teamDefaults: settings.teamDefaults ?? {} });
     delete settings.previews; delete settings.tools.chrome;
     return { revision: Number(row.revision), settings, imported: Boolean(row.imported) };
   }
@@ -180,8 +185,13 @@ export class LocalSettings {
   compatibleSettings(settings) {
     const row = this.db.prepare('SELECT value FROM local_settings WHERE id=1').get();
     const prior = row ? JSON.parse(String(row.value)) : {};
-    return { ...settings, previews: prior.previews ?? { portStart: 8500, portEnd: 8599 },
+    const legacy = { ...settings }; delete legacy.launchProfiles; delete legacy.teamDefaults;
+    return { ...legacy, previews: prior.previews ?? { portStart: 8500, portEnd: 8599 },
       tools: { ...settings.tools, chrome: prior.tools?.chrome ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' } };
+  }
+  saveTeamSettings(settings) {
+    this.db.prepare('INSERT INTO team_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value')
+      .run(JSON.stringify({ launchProfiles: settings.launchProfiles ?? [], teamDefaults: settings.teamDefaults ?? {} }));
   }
   async update(expectedRevision, settings, { inspect = inspectProject } = {}) {
     settings = structuredClone(settings);
@@ -226,6 +236,7 @@ export class LocalSettings {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.assertRevision(expected, this.read().revision);
+      this.saveTeamSettings(settings);
       this.db.prepare('UPDATE local_settings SET revision=revision+1,value=?,imported=MAX(imported,?) WHERE id=1').run(JSON.stringify(this.compatibleSettings(settings)), Number(imported));
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }

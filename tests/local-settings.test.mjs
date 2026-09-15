@@ -191,7 +191,8 @@ test('retirement hides inert schema-2 fields and preserves rollback data, favori
       const expected = structuredClone(old.settings); delete expected.previews; delete expected.tools.chrome;
       assert.deepEqual(migrated.read(), { revision: 1, settings: expected, imported: true });
       assert.deepEqual(migrated.goalConfiguration('historical'), { revision: 1, ...historical });
-      assert.deepEqual(JSON.parse(migrated.db.prepare('SELECT value FROM local_settings').get().value), old.settings);
+      const raw = { ...old.settings }; delete raw.launchProfiles; delete raw.teamDefaults;
+      assert.deepEqual(JSON.parse(migrated.db.prepare('SELECT value FROM local_settings').get().value), raw);
       assert.equal(migrated.db.prepare('SELECT favorite FROM project_favorites WHERE project_id=?').get(project.id).favorite, 1);
       assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 2);
     } finally { migrated.close(); }
