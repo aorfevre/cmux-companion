@@ -46,6 +46,12 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 - Updater routes 9/9 passed, including approval/waiting-merge idle state versus
   pending/active publication and uncertain worker update fences.
 
+- Full backend run: 850 passed, 1 failed, 1 intentionally skipped. The failure
+  was the disposable HTTP demo test still expecting automatic publication; its
+  HTTP approval and pre-approval no-PR assertions were updated and both demo
+  tests passed on the bounded rerun.
+- Full UI suite: 163/163 passed after publication approval integration.
+
 ## Interventions
 
 - Real-service Cypress initially passed publication but failed abort because the

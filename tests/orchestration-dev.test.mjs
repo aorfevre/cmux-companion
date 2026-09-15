@@ -35,6 +35,12 @@ test('disposable development composition delivers through paired HTTP and real G
     await runtime.scheduler.tick(); await agents.drain();
     await Promise.all([...runtime.scheduler.verifications.active.values()].map((run) => run.job));
     await Promise.all([...runtime.scheduler.publications.active.values()].map((run) => run.job));
+    const proposal = runtime.store.get('g');
+    if (proposal.status === 'ready_to_publish' && !proposal.publication.approval) {
+      assert.equal(runtime.scheduler.publications.publisher.github.creates.length, 0);
+      assert.ok(!runtime.store.operations().some(operation => operation.kind === 'publish'));
+      await command({ id: 'approve-publication', goalId: 'g', expectedVersion: proposal.version, type: 'approve_publication', payload: { operationId: proposal.publication.operationId, headSha: proposal.integrationHead } });
+    }
   }
   goal = runtime.store.get('g'); assert.deepEqual(agents.errors, []);
   assert.equal(await fixtureGit(manifest.repository, ['rev-parse', '--abbrev-ref', 'HEAD']), 'HEAD');
