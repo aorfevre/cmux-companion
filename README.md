@@ -271,6 +271,10 @@ Do not run installer, updater, live tests, merge or deployment as part of local
 verification. Settings → Deployments reports installed release health; source
 changes do not update that installation.
 
+[CodeQL security scanning](docs/codeql.md) adds scheduled and PR analysis for
+JavaScript/TypeScript; activation requires public visibility or licensed private
+code scanning. A skipped workflow is not a completed scan.
+
 ## Configuration
 
 New installations need no environment configuration: pair and open `/onboarding`

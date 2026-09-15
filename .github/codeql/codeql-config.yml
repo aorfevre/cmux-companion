@@ -1,0 +1,14 @@
+name: Companion security analysis
+queries:
+  - uses: security-extended
+# Keep all application, server, worker, installer, script and test source in scope.
+paths-ignore:
+  - '**/node_modules/**'
+  - '**/dist/**'
+  - '**/.next/**'
+  - '**/.wrangler/**'
+  - '**/coverage/**'
+  - 'outputs/**'
+  - 'cypress/screenshots/**'
+  - 'cypress/videos/**'
+  - 'cypress/results/**'
