@@ -1,5 +1,6 @@
 import { DomainError, identifier, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
+import { captureFailureHold, recoverGoal } from './recovery.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
 import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
@@ -73,6 +74,8 @@ export function transition(before, command, authority) {
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
   requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_publication_observation', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'cancel_integration', 'settle_repair_result', 'cancel_repair_result', 'record_verification_result', 'cancel_verification', 'verification_uncertain', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
   requireValue(!before.startup || before.startup.status === 'ready' || ['record_startup', 'fail_startup', 'retry_startup', 'rename_goal', 'abort'].includes(command.type), 'Fetch the goal base before planning', 'NOT_READY');
+  requireValue(!before.hold || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_publication', 'approve_publication', 'approve', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair'].includes(command.type), 'Goal is on hold; use manual recovery', 'NOT_READY');
+  requireValue(!before.hold || command.type !== 'publish_contract' || authority.kind === 'user', 'Request a revision before replacing the held plan', 'NOT_READY');
   const goal = structuredClone(before);
   /** @type {Transition} */
   const result = { goal, events: [], intents: [] };
@@ -81,6 +84,11 @@ export function transition(before, command, authority) {
   /** @param {import('../types.d.ts').Intent['kind']} kind @param {string} id @param {string | null} attemptId @param {import('../types.d.ts').Json} payload */
   const intent = (kind, id, attemptId, payload) => result.intents.push({ id, kind, goalId: goal.id, generation: goal.generation, revision: goal.revision, attemptId, payload });
   switch (command.type) {
+    case 'recover_goal': {
+      requireAuthority(authority, 'user');
+      recoverGoal(goal, input.holdId, command.id, input.mode);
+      emit('goal_recovery_authorized', { holdId: identifier(input.holdId) }); break;
+    }
     case 'rename_goal': {
       requireAuthority(authority, 'user');
       goal.description ??= goal.title;
@@ -642,6 +650,10 @@ export function transition(before, command, authority) {
     }
     default: throw new DomainError('UNKNOWN_COMMAND', 'Unknown orchestration command');
   }
+  if (goal.generation !== before.generation && authority.kind === 'user' && goal.hold) {
+    (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold }); goal.hold = null;
+  }
+  captureFailureHold(before, result, command.id);
   goal.version++;
   return result;
 }

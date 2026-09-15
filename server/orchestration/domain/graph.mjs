@@ -80,7 +80,7 @@ export function validateGraph(tasks, criterionIds) {
 }
 /** @param {import('../types.d.ts').Goal} goal */
 export function readyTasks(goal) {
-  if (goal.status !== 'building' || goal.approvedRevision !== goal.revision) return [];
+  if (goal.hold || goal.status !== 'building' || goal.approvedRevision !== goal.revision) return [];
   const integrated = new Set(goal.tasks.filter((task) => task.status === 'integrated').map((task) => task.id));
   return goal.tasks.filter((task) => (task.status === 'pending' || (task.status === 'repair_required' && task.repairCount < task.repairLimit)) && task.dependsOn.every((id) => integrated.has(id)));
 }

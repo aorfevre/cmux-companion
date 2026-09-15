@@ -273,3 +273,21 @@ test('a lost response remains retryable inside the goal workspace with the exact
   expect(commands[1]).toBe(commands[0]);
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull());
 });
+
+test('held goal shows failure and reconciliation guidance, then submits the exact recovery action', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.request('planner', 'planner'); f.dispatch('planner');
+  f.command('record_failure', { attemptId: 'planner', uncertain: true, error: 'Lost connection' });
+  const act = vi.fn().mockResolvedValue(true);
+  const view = render(<GoalDetail goal={{ ...goalView(f.goal), contracts: [] }} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  expect(screen.getByText(/On hold/)).toBeTruthy();
+  expect(screen.getByText(/Let active workers finish and reconcile/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Recover goal' })).toBeNull();
+  f.command('record_stopped', { attemptId: 'planner' });
+  const goal = { ...goalView(f.goal), contracts: [] };
+  view.rerender(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Recover goal' }));
+  expect(act).toHaveBeenCalledWith(goal, goal.actions.find(action => action.type === 'recover_goal'));
+});

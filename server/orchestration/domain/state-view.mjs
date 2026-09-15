@@ -6,7 +6,7 @@ import { actionView } from './action-view.mjs';
 export function goalView(goal) {
   return { ...actionView(goal), repositoryId: goal.repositoryId, id: goal.id, version: goal.version, generation: goal.generation, title: goal.description === undefined ? shortGoalTitle(goal.title) : goal.title, description: goal.description ?? goal.title, projectCode: goal.projectCode, plannerName: goal.plannerName, clarification: goal.clarification ?? null,
     baseBranch: goal.baseBranch, baseSha: goal.baseSha, startup: goal.startup ?? null,
-    status: goal.status, revision: goal.revision, approvedRevision: goal.approvedRevision,
+    status: goal.status, hold: goal.hold ?? null, recoveries: goal.recoveries ?? [], revision: goal.revision, approvedRevision: goal.approvedRevision,
     integrationHead: goal.integrationHead, pr: goal.pr, mergeSync: goal.mergeSync ?? null, verification: goal.verification,
     publication: goal.publication ? { branch: goal.publication.plan.branch, baseBranch: goal.publication.plan.baseBranch, baseSha: goal.publication.plan.baseSha, approved: Boolean(goal.publication.approval), observation: goal.publication.observation ?? null } : null,
     tasks: goal.tasks.map((task) => ({ id: task.id, title: task.title, dependsOn: task.dependsOn,

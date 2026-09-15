@@ -35,6 +35,11 @@ test('disposable development composition delivers through paired HTTP and real G
     await runtime.scheduler.tick(); await agents.drain();
     await Promise.all([...runtime.scheduler.verifications.active.values()].map((run) => run.job));
     await Promise.all([...runtime.scheduler.publications.active.values()].map((run) => run.job));
+    const held = runtime.store.get('g');
+    if (held.hold && held.attempts.every(attempt => attempt.workerState === 'stopped') && !held.verificationRuns?.some(run => run.workerState !== 'stopped') && !held.results?.some(result => result.status === 'pending' && !result.repair)) {
+      assert.ok(!runtime.store.ready().some(work => work.goalId === 'g'));
+      await command({ id: `recover-${held.version}`, goalId: 'g', expectedVersion: held.version, type: 'recover_goal', payload: { holdId: held.hold.id } });
+    }
     const proposal = runtime.store.get('g');
     if (proposal.status === 'ready_to_publish' && !proposal.publication.approval) {
       assert.equal(runtime.scheduler.publications.publisher.github.creates.length, 0);

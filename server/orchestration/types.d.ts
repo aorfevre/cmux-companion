@@ -37,6 +37,8 @@ export interface Verification {
   headSha: string; checks: { id: string; passed: boolean; artifactId: string }[];
 }
 export interface Goal {
+  hold?: { id: string; reasons: { kind: 'attempt' | 'review' | 'integration' | 'verification' | 'publication'; target: string; message: string }[] } | null;
+  recoveries?: { commandId: string; hold: NonNullable<Goal['hold']> }[];
   description?: string; projectCode?: string; plannerName?: string; clarification?: {question:string;answer?:string};
   startup?: { status: 'pending' | 'failed' | 'ready'; error: string | null };
   id: string; version: number; generation: number; repositoryId: string; title: string; baseSha: string; baseBranch: string;

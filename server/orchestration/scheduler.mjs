@@ -134,7 +134,7 @@ export class Scheduler {
           } else if (observed.status === 'pending' && ['aborted', 'merged'].includes(goal.status)) {
             this.reconciler.record(goal.id, 'cancel_integration', { operationId: operation.id });
             this.store.advanceOperation(operation.id, operation.status, 'completed');
-          } else if (goal.integration.state === 'failed' && goal.integration.retryRequested && goal.status === 'building' && this.service.repositoryIds.has(goal.repositoryId)) {
+          } else if (goal.integration.state === 'failed' && goal.integration.retryRequested && !goal.hold && goal.status === 'building' && this.service.repositoryIds.has(goal.repositoryId)) {
             this.reconciler.record(goal.id, observed.status === 'pending' ? 'resume_integration' : 'record_integration_failure', { operationId: operation.id, code: 'OWNERSHIP_UNCERTAIN' });
           } else if (observed.status === 'unknown' && goal.integration.state === 'applying') {
             this.reconciler.record(goal.id, 'record_integration_failure', { operationId: operation.id, code: 'OWNERSHIP_UNCERTAIN' });
@@ -152,7 +152,7 @@ export class Scheduler {
       if (this.stopped) return;
       this.ownership.assertOwned();
       let goal = this.store.get(snapshot.id);
-      if (!goal || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
+      if (!goal || goal.hold || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
       if (!goal.integration) {
         if (goal.attempts.some((attempt) => attempt.role === 'integrator' && attempt.workerState !== 'stopped')) continue;
         const task = goal.tasks.find((entry) => entry.status === 'accepted');
@@ -184,11 +184,13 @@ export class Scheduler {
     this.ownership.assertOwned();
     let goal = this.store.get(operation.goalId), attempt = goal?.attempts.find((entry) => entry.id === operation.attemptId);
     if (!goal || !attempt) return;
+    if (attempt.workerState === 'stopped') { this.store.advanceOperation(operation.id, 'pending', 'completed'); return; }
     const permitted = () => goal !== null && !this.stopped && this.service.repositoryIds.has(goal.repositoryId) && operation.generation === goal.generation && operation.revision === goal.revision && !['aborted', 'merged'].includes(goal.status);
     if (!permitted()) {
-      if (attempt.workerState !== 'stopped') this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
+      this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
       this.store.advanceOperation(operation.id, 'pending', 'completed'); return;
     }
+    if (goal.hold) return;
     let launchStarted = false;
     try {
       requireCapability(this.agents, attempt.role, attempt.mode);
@@ -200,9 +202,15 @@ export class Scheduler {
       goal = this.store.get(operation.goalId); attempt = goal?.attempts.find((entry) => entry.id === operation.attemptId);
       if (!goal || !attempt) return;
       if (!attempt.worktree) this.reconciler.record(goal.id, 'record_provision', { attemptId: attempt.id, ...resources });
-      if (!permitted()) { this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id }); this.store.advanceOperation(operation.id, 'pending', 'completed'); return; }
-      attempt = this.store.get(goal.id)?.attempts.find((entry) => entry.id === operation.attemptId);
+      goal = this.store.get(goal.id);
+      if (!goal) return;
+      attempt = goal.attempts.find((entry) => entry.id === operation.attemptId);
       requireValue(attempt, 'Provisioned attempt disappeared');
+      if (!permitted() || attempt.workerState === 'stopped') {
+        if (attempt.workerState !== 'stopped') this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
+        this.store.advanceOperation(operation.id, 'pending', 'completed'); return;
+      }
+      if (goal.hold) return;
       if (!this.store.advanceOperation(operation.id, 'pending', 'dispatching')) return;
       // All durable intent/resource checks precede the first possible agent launch.
       launchStarted = true;

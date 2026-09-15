@@ -41,7 +41,7 @@ export class PublicationCoordinator {
     if (this.stopped) return;
     this.cancelRevoked(); this.ownership.assertOwned();
     for (const goal of this.store.list()) {
-      if (goal.status !== 'building') continue;
+      if (goal.hold || goal.status !== 'building') continue;
       try { this.record(goal.id, 'request_publication', { operationId: this.id() }); }
       catch (error) { if (!(error instanceof DomainError) || !['NOT_READY', 'FORBIDDEN'].includes(error.code)) throw error; }
     }
@@ -58,12 +58,13 @@ export class PublicationCoordinator {
       if (operation.status === 'pending' && !permitted) {
         this.settle(goal.id, operation.id, { status: 'cancelled', baseHeadSha: null, pr: null }); continue;
       }
+      if (goal.hold && operation.status === 'pending') continue;
       if (operation.status === 'pending') this.store.advanceOperation(operation.id, 'pending', 'dispatching');
       const controller = new AbortController(); if (!permitted) controller.abort();
       const job = Promise.resolve().then(async () => {
         let observation;
         try {
-          observation = controller.signal.aborted ? await this.publisher.observe(publication.plan) : await this.publisher.publish(publication.plan, { signal: controller.signal });
+          observation = controller.signal.aborted || goal.hold ? await this.publisher.observe(publication.plan) : await this.publisher.publish(publication.plan, { signal: controller.signal });
           if (controller.signal.aborted && ['pending', 'target_moved'].includes(observation.status)) observation = { ...observation, status: /** @type {const} */ ('cancelled') };
         } catch { observation = { status: /** @type {const} */ ('unknown'), baseHeadSha: null, pr: null }; }
         this.settle(goal.id, operation.id, observation);

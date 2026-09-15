@@ -7,6 +7,7 @@ import { currentReviews } from './review.mjs';
  * @param {import('../types.d.ts').Goal} goal @returns {ReadyWork[]}
  */
 export function readyWork(goal) {
+  if (goal.hold) return [];
   if (goal.startup && goal.startup.status !== 'ready') return [];
   if (['aborted', 'merged', 'delivered', 'ready_to_publish'].includes(goal.status)) return [];
   /** @type {ReadyWork[]} */

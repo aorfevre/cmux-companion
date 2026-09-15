@@ -41,11 +41,13 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.task('orchestrationRelease', 'siblings');
     cy.findByRole('tab', { name: 'Run report' }).click();
     cy.contains('Blocking: Composition does not add its inputs', { timeout: 30000 }).should('be.visible');
+    cy.findByRole('button', { name: 'Recover goal', timeout: 30000 }).should('be.enabled').click();
     cy.findByRole('region', { name: 'Combined verification', timeout: 30000 }).contains('p', 'injected_dependencies', { timeout: 30000 }).should('contain.text', 'Failed');
     cy.findByRole('link', { name: /Open pull request/ }).should('not.exist');
     cy.task<Evidence>('orchestrationEvidence').then(evidence => { expect(evidence.prCreates).to.have.length(0); });
     cy.task<string>('orchestrationAdvanceTarget').as('movedTarget');
     cy.task('orchestrationRelease', 'final');
+    cy.findByRole('button', { name: 'Recover goal', timeout: 30000 }).should('be.enabled').click();
     cy.findByRole('button', { name: 'Approve & publish PR', timeout: 30000 }).should('be.enabled').click();
     cy.contains('The target branch moved to', { timeout: 30000 }).should('be.visible');
     cy.findByRole('link', { name: /Open pull request/ }).should('not.exist');

@@ -44,7 +44,8 @@ test('scheduled planning and independent plan review require user approval befor
 test('user revision request preserves immutable history and schedules a fresh planner with review findings', async (t) => {
   const f = fixture(t); await f.scheduler.start(); f.publish(); await f.scheduler.tick(); f.review(true); await f.scheduler.tick();
   const before = f.store.get('g');
-  assert.throws(() => f.command('approve', { revision: 1 }), { code: 'REVIEW_REQUIRED' });
+  assert.ok(before.hold);
+  assert.throws(() => f.command('approve', { revision: 1 }), { code: 'NOT_READY' });
   f.command('request_revision', { message: 'Resolve F1 and preserve the parallel task graph' }); await f.scheduler.tick();
   const planner = f.latest('planner'), context = roleContext(f.store.get('g'), planner);
   assert.equal(f.store.get('g').approvedRevision, null);

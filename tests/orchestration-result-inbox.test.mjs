@@ -82,7 +82,7 @@ test('malformed and stale reviews preserve private evidence without approval or 
   assert.equal(goal.results[0].code, 'MALFORMED_RESULT'); assert.equal(goal.attempts[0].status, 'failed');
   assert.equal(goal.attempts[0].workerState, 'running'); assert.equal(goal.reviews.length, 0);
   assert.ok(!JSON.stringify(f.store.events()).includes('private provider details'));
-  assert.throws(() => f.command('approve', { revision: 1 }, 'user'), { code: 'REVIEW_REQUIRED' });
+  assert.throws(() => f.command('approve', { revision: 1 }, 'user'), { code: 'NOT_READY' });
   const old = f.authority, raw = f.raw(); f.command('abort', {}, 'user');
   f.results.receive(old, 'late', raw); await f.results.drain();
   assert.equal(f.store.get('g').results[1].code, 'STALE_ATTEMPT'); assert.equal(f.store.get('g').status, 'aborted');
@@ -129,7 +129,7 @@ test('rejection of a historical implementer result cannot fail its running repla
   };
   launch('old'); const old = f.store.get('g').attempts.at(-1);
   f.command('record_failure', { attemptId: 'old', confirmedStopped: true, error: 'Failed task' });
-  f.command('retry_task', { taskId: 'A' }, 'user'); launch('new');
+  f.command('recover_goal', { holdId: f.store.get('g').hold.id }, 'user'); launch('new');
   f.results.receive(authority(old), 'late_candidate', envelope(old, { headSha: 'b'.repeat(40), summary: 'Late output', evidence: [] }));
   await f.results.drain();
   assert.equal(f.store.get('g').results.at(-1).code, 'STALE_ATTEMPT');

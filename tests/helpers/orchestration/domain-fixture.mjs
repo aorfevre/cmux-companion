@@ -26,5 +26,6 @@ export function fixture() {
     request('plan_review', 'reviewer'); dispatch('plan_review'); review('plan_review', planTarget(goal));
     command('approve', { revision: goal.revision }, user);
   };
-  return { get goal() { return goal; }, command, request, dispatch, review, approve, user, system };
+  const recover = () => command('recover_goal', { holdId: goal.hold.id }, user);
+  return { recover, get goal() { return goal; }, command, request, dispatch, review, approve, user, system };
 }

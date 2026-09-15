@@ -29,7 +29,7 @@ export class IntegrationRepairs {
           this.store.advanceOperation(effect.id, effect.status, 'completed'); continue;
         }
         if (observed.status === 'unknown') {
-          if (goal.integration?.state === 'failed' && goal.integration.retryRequested) this.record(goal.id, 'record_integration_failure', { operationId: input.integrationOperationId, code: 'OWNERSHIP_UNCERTAIN' });
+          if (goal.integration?.state !== 'failed' || goal.integration.retryRequested) this.record(goal.id, 'record_integration_failure', { operationId: input.integrationOperationId, code: 'OWNERSHIP_UNCERTAIN' });
           continue;
         }
         provenPending = observed.status === 'pending';
@@ -44,6 +44,7 @@ export class IntegrationRepairs {
         }
         continue;
       }
+      if (goal.hold) continue;
       if (goal.integration?.state === 'failed' && goal.integration.retryRequested && provenPending) {
         this.record(goal.id, 'resume_integration', { operationId: input.integrationOperationId });
         goal = this.store.get(goal.id); requireValue(goal, 'Repair goal disappeared');

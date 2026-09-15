@@ -76,7 +76,7 @@ test('revision and direct publication preserve unresolved integration and PR ope
 test('a failed-check-only repair receives exact verification evidence without fabricated review findings', () => {
   const f = acceptedTask(); f.command('record_integration', { operationId: 'integrate', headSha: HEAD_A });
   f.command('record_verification', { headSha: HEAD_A, checks: [{ id: 'unit', passed: false, artifactId: 'failed_check_log' }] });
-  f.request('repair', 'integrator');
+  f.recover(); f.request('repair', 'integrator');
   const context = roleContext(f.goal, f.goal.attempts.at(-1));
   assert.deepEqual(context.verification, { headSha: HEAD_A, checks: [{ id: 'unit', passed: false, artifactId: 'failed_check_log' }] });
   assert.ok(!context.reviews.some((entry) => entry.kind === 'integration'));

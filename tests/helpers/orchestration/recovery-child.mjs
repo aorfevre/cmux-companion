@@ -55,6 +55,7 @@ if (role !== 'planner' && store.get('g').revision === 0) {
     command('confirm_candidate', { attemptId: 'seed_implementation', headSha: HEAD_A }); command('record_stopped', { attemptId: 'seed_implementation' });
     request('seed_task_review', 'reviewer', 'A'); dispatch('seed_task_review'); review('seed_task_review', HEAD_A);
     command('request_integration', { taskId: 'A', operationId: 'seed_integration' }); command('record_integration_conflict', { operationId: 'seed_integration' });
+      command('recover_goal', { holdId: store.get('g').hold.id }, 'user');
   }
   for (const operation of store.operations()) store.advanceOperation(operation.id, operation.status, 'completed');
 }

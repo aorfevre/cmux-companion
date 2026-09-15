@@ -86,16 +86,17 @@ test('parallel siblings are ready but a dependent waits for integration, not wor
   assert.equal(f.goal.attempts.at(-1).baseSha, HEAD_B);
 });
 
-test('two task repair attempts require a human to authorize additional work and preserve lineage', () => {
+test('each task repair requires human recovery and preserves bounded repair lineage', () => {
   const f = fixture(); f.approve();
   for (let index = 0; index < 3; index++) {
+    if (index) f.recover();
     const id = `a${index}`; f.request(id, 'implementer', 'A'); f.dispatch(id);
     f.command('confirm_candidate', { attemptId: id, headSha: [BASE, HEAD_A, HEAD_B][index] });
     f.command('record_stopped', { attemptId: id }); f.request(`r${index}`, 'reviewer', 'A'); f.dispatch(`r${index}`); f.review(`r${index}`, [BASE, HEAD_A, HEAD_B][index], true);
   }
   fails(() => f.request('extra', 'implementer', 'A'), 'NOT_READY');
-  fails(() => f.command('authorize_repair', { taskId: 'A' }), 'FORBIDDEN');
-  f.command('authorize_repair', { taskId: 'A' }, f.user);
+  fails(() => f.command('recover_goal', { holdId: f.goal.hold.id }), 'FORBIDDEN');
+  f.recover();
   f.request('extra', 'implementer', 'A'); assert.equal(f.goal.tasks[0].repairCount, 3);
 });
 
@@ -137,7 +138,7 @@ test('failed tasks require stopped proof and explicit retry while uncertain work
   f.command('record_failure', { attemptId: 'a', error: 'lost', uncertain: true });
   fails(() => f.command('retry_task', { taskId: 'A' }, f.user));
   f.command('record_failure', { attemptId: 'a', error: 'stopped', confirmedStopped: true });
-  f.command('retry_task', { taskId: 'A' }, f.user);
+  f.recover();
   assert.equal(f.goal.tasks[0].status, 'pending');
 });
 
@@ -154,6 +155,7 @@ test('final review and all verification checks gate publication at the current i
   f.command('record_verification', { headSha: HEAD_B, checks: [{ id: 'unit', passed: false, artifactId: 'log' }] });
   fails(() => f.command('request_publication', { operationId: 'publish' }), 'NOT_READY');
   f.command('record_verification', { headSha: HEAD_B, checks: [{ id: 'unit', passed: true, artifactId: 'log2' }] });
+  assert.ok(f.goal.hold); f.recover();
   const pending = f.command('request_publication', { operationId: 'publish' }); assert.equal(pending.intents.length, 0);
   fails(() => f.command('approve_publication', { operationId: 'publish', headSha: HEAD_B }), 'FORBIDDEN');
   fails(() => f.command('approve_publication', { operationId: 'publish', headSha: HEAD_A }, f.user), 'STALE_TARGET');
@@ -211,7 +213,7 @@ test('confirmed termination of an incomplete current task enables an explicit re
   const f = fixture(); f.approve(); f.request('a', 'implementer', 'A'); f.dispatch('a');
   f.command('record_stopped', { attemptId: 'a' });
   assert.equal(f.goal.tasks[0].status, 'failed');
-  f.command('retry_task', { taskId: 'A' }, f.user); f.request('a2', 'implementer', 'A');
+  f.recover(); f.request('a2', 'implementer', 'A');
 });
 
 test('aborted goals cannot acquire a PR without a saved publication operation', () => {
@@ -225,15 +227,15 @@ test('conflict resolution and failed-check repair both produce new integration h
   f.request('ar', 'reviewer', 'A'); f.dispatch('ar'); f.review('ar', HEAD_A);
   f.command('request_integration', { taskId: 'A', operationId: 'integrate' });
   f.command('record_integration_conflict', { operationId: 'integrate' });
-  f.request('conflict', 'integrator'); f.dispatch('conflict');
+  f.recover(); f.request('conflict', 'integrator'); f.dispatch('conflict');
   f.command('confirm_integration_repair', { attemptId: 'conflict', operationId: 'integrate', headSha: HEAD_B });
   f.command('record_stopped', { attemptId: 'conflict' });
   assert.equal(f.goal.tasks[0].status, 'integrated');
   f.request('final', 'reviewer'); f.dispatch('final'); f.review('final', HEAD_B);
   f.command('record_verification', { headSha: HEAD_B, checks: [{ id: 'unit', passed: false, artifactId: 'failure' }] });
-  f.request('repair', 'integrator'); f.dispatch('repair');
+  f.recover(); f.request('repair', 'integrator'); f.dispatch('repair');
   f.command('record_failure', { attemptId: 'repair', error: 'process failed', confirmedStopped: true });
-  f.request('repair2', 'integrator'); f.dispatch('repair2');
+  f.recover(); f.request('repair2', 'integrator'); f.dispatch('repair2');
   const repaired = 'd'.repeat(40);
   f.command('confirm_integration_repair', { attemptId: 'repair2', headSha: repaired });
   f.command('record_stopped', { attemptId: 'repair2' });
@@ -248,23 +250,24 @@ test('conflict resolution and failed-check repair both produce new integration h
   assert.equal(f.goal.status, 'aborted'); assert.equal(f.goal.pr.number, 1);
 });
 
-test('task ownership survives head advancement, and late liveness failure preserves candidate evidence', () => {
+test('task ownership survives head advancement, and late worker settlement preserves candidate evidence', () => {
   const f = fixture(); f.approve();
   f.request('a', 'implementer', 'A'); f.dispatch('a');
   f.command('confirm_candidate', { attemptId: 'a', headSha: HEAD_A });
-  f.request('ar', 'reviewer', 'A'); f.dispatch('ar'); f.review('ar', HEAD_A, true);
   f.request('b', 'implementer', 'B'); f.dispatch('b');
   f.command('confirm_candidate', { attemptId: 'b', headSha: HEAD_B });
   f.request('br', 'reviewer', 'B'); f.dispatch('br'); f.review('br', HEAD_B);
   f.command('request_integration', { operationId: 'integrate_b', taskId: 'B' });
   f.command('record_integration', { operationId: 'integrate_b', headSha: HEAD_B });
-  fails(() => f.request('a2', 'implementer', 'A'), 'ALREADY_RUNNING');
+  f.request('ar', 'reviewer', 'A'); f.dispatch('ar'); f.review('ar', HEAD_A, true);
+  fails(() => f.request('a2', 'implementer', 'A'), 'NOT_READY');
+  fails(() => f.recover(), 'OWNERSHIP_UNCERTAIN');
   f.command('record_failure', { attemptId: 'a', confirmedStopped: true, error: 'worker exited after result' });
   assert.equal(f.goal.tasks[0].status, 'repair_required');
   assert.equal(f.goal.attempts.find((attempt) => attempt.id === 'a').status, 'succeeded');
-  f.request('a2', 'implementer', 'A');
   f.command('record_failure', { attemptId: 'b', confirmedStopped: true, error: 'worker exited after result' });
   assert.equal(f.goal.tasks[1].status, 'integrated');
+  f.recover(); f.request('a2', 'implementer', 'A');
 });
 
 test('reconciliation can adopt an uncertain launch identity and restore result authority', () => {
@@ -283,7 +286,7 @@ test('a completed conflict result does not release the integration checkout whil
   }
   f.command('request_integration', { taskId: 'A', operationId: 'ia' });
   f.command('record_integration_conflict', { operationId: 'ia' });
-  f.request('conflict', 'integrator'); f.dispatch('conflict');
+  f.recover(); f.request('conflict', 'integrator'); f.dispatch('conflict');
   f.command('confirm_integration_repair', { attemptId: 'conflict', operationId: 'ia', headSha: HEAD_A });
   fails(() => f.command('request_integration', { taskId: 'B', operationId: 'ib' }), 'NOT_READY');
   f.command('record_stopped', { attemptId: 'conflict' });
@@ -300,7 +303,7 @@ for (const final of [false, true]) test(`stopped repair results block duplicate 
     f.command('record_integration', { operationId: 'integrate', headSha: HEAD_A });
     f.command('record_verification', { headSha: HEAD_A, checks: [{ id: 'unit', passed: false, artifactId: 'failure' }] });
   } else f.command('record_integration_conflict', { operationId: 'integrate' });
-  f.request('repair', 'integrator'); f.dispatch('repair');
+  f.recover(); f.request('repair', 'integrator'); f.dispatch('repair');
   f.command('receive_role_result', { resultId: 'result', attemptId: 'repair', artifactId: 'a'.repeat(64) });
   f.command('record_stopped', { attemptId: 'repair' });
   const before = structuredClone(f.goal);
@@ -308,6 +311,20 @@ for (const final of [false, true]) test(`stopped repair results block duplicate 
   fails(() => f.request('duplicate', 'integrator'), 'NOT_READY');
   assert.deepEqual(f.goal, before, 'Refused admission must not consume repair budget or create an attempt');
   f.command('reject_role_result', { resultId: 'result', code: 'MALFORMED_RESULT' });
+  assert.equal(readyWork(f.goal).some(work => work.role === 'integrator'), false);
+  f.recover();
   assert.equal(readyWork(f.goal).some(work => work.role === 'integrator'), true);
   f.request('replacement', 'integrator');
+});
+
+test('blocking plan review requires revision and renewed approval, never generic recovery', () => {
+  const f = fixture(); f.command('publish_contract', { contract: contract() }, f.user);
+  f.request('plan-review', 'reviewer'); f.dispatch('plan-review'); f.review('plan-review', planTarget(f.goal), true);
+  assert.ok(f.goal.hold);
+  fails(() => f.recover(), 'NOT_READY');
+  fails(() => f.command('approve', { revision: 1 }, f.user), 'NOT_READY');
+  f.command('request_revision', { message: 'Address the blocking design finding' }, f.user);
+  assert.equal(f.goal.hold, null); assert.equal(f.goal.approvedRevision, null);
+  assert.equal(f.goal.recoveries.length, 1); assert.equal(f.goal.reviews.length, 1);
+  f.request('revised-planner', 'planner');
 });

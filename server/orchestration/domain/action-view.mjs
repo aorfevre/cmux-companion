@@ -15,6 +15,8 @@ export function actionView(goal) {
   const approvalBlocked = offer('approve', `Approve revision ${goal.revision}`, { revision: goal.revision });
   offer('request_revision', 'Request revision', { message: 'Revision feedback' });
   offer('abort', 'Abort goal', {});
+  const recoveryBlocked = goal.hold ? offer('recover_goal', 'Recover goal', { holdId: goal.hold.id }) : null;
+  if (goal.hold) offer('recover_goal', 'Retry verification & resume', { holdId: goal.hold.id, mode: 'retry_verification' });
   offer('retry_startup', 'Retry startup', {});
   if (goal.publication) offer('approve_publication', 'Approve & publish PR', { operationId: goal.publication.operationId, headSha: goal.publication.headSha });
   if (goal.integration) offer('retry_integration', 'Retry integration', { operationId: goal.integration.operationId });
@@ -35,5 +37,5 @@ export function actionView(goal) {
     if (['planner', 'reviewer'].includes(attempt.role) && !attempt.retryRequested && ['failed', 'cancelled'].includes(attempt.status)) offer('retry_attempt', `Retry ${attempt.role}${attempt.taskId ? ` for ${attempt.taskId}` : ''}`, { attemptId: attempt.id });
     if (attempt.role === 'planner' && attempt.status === 'running') offer('resume_planner', 'Resume planning', { attemptId: attempt.id });
   }
-  return { actions, approvalBlocked };
+  return { actions, approvalBlocked, recoveryBlocked };
 }

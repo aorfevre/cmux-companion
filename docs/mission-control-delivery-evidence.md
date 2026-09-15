@@ -13,6 +13,12 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 - Service-owned merge observation, persisted through the orchestration journal,
   with 15-minute cadence for delivered PRs only. Direct GitHub PR lookup validates
   saved identity; closed-unmerged and unavailable results cannot complete a goal.
+- Durable goal failure holds stop new agent, integration, verification and
+  publication dispatch. Active siblings/checks settle without releasing the hold;
+  unrelated goals remain eligible. Queued identities survive provisioning races.
+- Explicit recovery preserves failed evidence, reconciles unknown workers before
+  replacement and authorizes a bounded repair pass (or a stopped-check retry).
+  Blocking plan findings require a revision and renewed approval.
 - Exact-head human PR publication approval creates the external intent only after
   approval; pending proposals can be revised, invalidating the old approval.
 - Production scheduler owns polling; pending remote reads do not block admission
@@ -52,8 +58,33 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
   tests passed on the bounded rerun.
 - Full UI suite: 163/163 passed after publication approval integration.
 
+- Failure-hold domain/role/scheduler/restart bounded suite: 107/107 passed.
+- Updated planning/result/crash-recovery and real service-worker browser checks:
+  38/38 passed. Existing SIGKILL coverage was retained.
+- Full UI suite including held-goal recovery controls: 164/164 passed.
+- Chrome real-service `orchestration-core.cy.ts`: both writable journeys passed,
+  now with explicit recovery after blocking task review and failed final checks.
+  The read-only case remains separately unverified.
+- Typecheck and lint passed; production build passed independently.
+- UI line coverage: 96.06% (required minimum 90%).
+- Full `npm run verify` stopped in backend tests: 856 passed, one failed, one
+  intentionally skipped. The only remaining failure was the offline service-worker
+  browser test's second navigation timing out. It also failed without concurrent
+  Cypress, so concurrent Cypress alone does not explain it. Instrumented diagnostics
+  and a focused concurrent Git-delivery/browser run are in progress; this is not a
+  passing full verification claim.
+- Final graph admission and uncertain integration-repair refinements passed their
+  bounded domain/scheduler rerun.
+
 ## Interventions
 
+- The first broader failure-hold run reported 846 passes, 10 failures and one
+  intentional skip. Nine failures were old automatic-repair/retry fixtures or
+  expected error codes; updated them to exercise explicit recovery. The tenth
+  was a service-worker browser navigation timeout while Cypress was also running.
+  All affected checks passed in a bounded rerun without concurrent Cypress.
+- Electron Cypress failed to connect to its browser before any journey ran.
+  Switched to Chrome as prescribed by AGENTS.md; both journeys passed.
 - Real-service Cypress initially passed publication but failed abort because the
   test selected the last fleet row (the prior goal). Select the requested goal by
   title; both journeys passed on rerun. No product exception was suppressed.
@@ -77,15 +108,15 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | Combined planner/design with approved suggested team | Existing planner retained; role/routing contract changes pending. |
 | Explicit wave barriers with verification | Not implemented; current scheduler still uses task dependencies. |
 | All judgment agents visible in cmux | Not implemented; non-planner adapters still use background mode. |
-| Goal-scoped holds and manual recovery | Not implemented; existing automatic repair remains to be replaced. |
+| Goal-scoped holds and manual recovery | Implemented with persistence, sibling/provisioning-race tests and real-service manual-recovery Cypress; final full verification pending. |
 | Assignment proposals, reasons and snapshots | Not implemented. |
 | Human publication approval | Implemented; exact-head authority/restart/receipt tests and real-service Cypress passed. |
 | Passive merge sync | Implemented and bounded tests passed; broader acceptance integration remains. |
 | Standalone sessions and retired feature cleanup | Sessions navigation retained; Inbox/queue/preview/notification removal pending. |
 | Updater regression and redesigned controls | Approval/waiting-merge idle regression passed; redesigned controls and final regression pending. |
-| Complete restart behavior | Existing core and new merge sync tested; new attachments/holds/teams pending. |
+| Complete restart behavior | Existing core, merge sync and holds tested; attachments/teams pending. |
 
-Full `npm run verify`, final backend/UI coverage, real-service redesigned Cypress
+Full `npm run verify`, final backend/UI coverage, remaining redesigned Cypress
 journeys, completion audit and PR review remain outstanding. Native cmux/provider
 and installed updater validation have not run and require separate live authority.
 No merge, deployment, installed data reset or external account change performed.
