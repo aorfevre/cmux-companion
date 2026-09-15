@@ -4,7 +4,7 @@ Project: https://sonarcloud.io/summary/overall?id=aorfevre_cmux-companion&branch
 
 SonarQube uses a separate Verify job after the existing tests pass. It analyzes
 application, server, worker, updater and script source, classifies test directories
-separately, and imports the same backend/UI LCOV artifact as Codecov. The scanner
+separately, and imports the backend/UI LCOV artifact from that test run. The scanner
 job installs no npm dependencies and runs no project scripts. Pinned Actions check
 out full Git history and download only the current run's coverage artifact. The
 Sonar token is supplied only to configuration validation and the official scanner.
@@ -23,7 +23,7 @@ are available. The project URL identifies its key and EU host, not its organizat
 3. Create a token with analysis permission for this project and save it as the
    repository Actions secret `SONAR_TOKEN`. Never put it in source, logs or chat.
 4. Set `SONAR_ENABLED=true` after the project and token are configured. A subsequent
-   main push runs analysis. With either SonarQube or Codecov enabled, main runs full
+   main push runs analysis. With SonarQube enabled, main runs full
    verification to generate genuine current-commit coverage instead of reusing a
    previous PR's verification receipt.
 5. Confirm the main scan imports both reports, establishes a baseline, and passes
