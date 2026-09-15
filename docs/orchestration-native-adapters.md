@@ -9,7 +9,7 @@ credentials nor start workers. Installed source cutover is a separate T14 gate.
 
 ## Compatibility and authority
 
-The initial reviewed CLI contracts are Claude Code **2.1.268** and CCS **8.9.0**.
+The initial reviewed CLI contracts are Claude Code **2.1.268** and CCS **8.9.0 or 8.10.0**.
 The probe reads CCS package ownership/version metadata without invoking CCS
 startup, and runs only native `--help` and `--version` with bounded output/time and
 no inherited credentials. Required flags and the known hook/settings schema must

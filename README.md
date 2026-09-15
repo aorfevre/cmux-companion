@@ -108,6 +108,21 @@ The explicit `configure-cmux-automation.mjs` setup step enables cmux’s support
 - macOS with cmux installed in `/Applications/cmux.app`
 - Node.js 22.23.1 (the supported Node 22 runtime is pinned in `.nvmrc`)
 - Tailscale connected on both the Mac and phone
++- For goals: a configured and authenticated supported Claude Code or Codex CLI
++- For GitHub publication and update discovery: authenticated `gh` with access to
++  the selected repository and its Actions runs
++
++| Capability | Supported contract |
++| --- | --- |
++| Direct Claude planning/execution | Claude Code 2.1.268 |
++| Direct Codex planning/execution | Codex CLI 0.154.0 |
++| CCS provider profiles | CCS 8.9.0 or 8.10.0, with the matching native CLI above |
++| `ccsxp` Codex wrapper | CCS 8.10.0 |
++| Monitoring/disposable development | Native provider accounts are not required |
++
++Other native versions fail readiness checks until their contracts are reviewed.
++Offline checks do not certify account-backed permission enforcement. See the
++[native adapter guide](docs/orchestration-native-adapters.md).
 
 ## Install
 
@@ -179,6 +194,26 @@ not routine verification. Native adapter live prerequisites and opt-ins are in
 
 Treat a paired phone as privileged: unlocking terminal input gives it control of interactive processes running in cmux.
 
+## Data handling
+
+“Private” describes access over your tailnet, not exclusively local computation.
+Configured model providers receive the goal context and project content supplied
+to their agents. GitHub receives approved pushes/PRs; update discovery queries
+GitHub Actions. Account-usage reads contact the configured provider's quota service.
+Provider and GitHub retention policies apply to data sent to those services.
+
+Pairing state, settings, goal journals, and private execution artifacts are stored
+locally. API responses are not cached by the service worker. A paired device is
+privileged: terminal input protection is a local browser preference, not a separate
+server permission. Logout clears that browser's cookie; it does not invalidate a
+copied cookie. Sessions share the installation's pairing credential and last up to
+one year. To revoke all devices, stop the owned service, replace its token with a
+new generated credential, restart, and pair devices again; there is no per-device
+revocation interface. Never include these files or credentials in public reports.
+
+Report vulnerabilities through [SECURITY.md](SECURITY.md). See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the contributor entry point.
+
 ## Development
 
 Use Node 22.23.1 from `.nvmrc` (`nvm install && nvm use`), then `npm ci`.
@@ -203,7 +238,8 @@ npm run test:ui:coverage
 ```
 
 `verify` runs backend tests, UI tests, lint, TypeScript checks and build. Both
-backend and UI line coverage must remain at least 90%. Run Cypress separately
+backend and UI line coverage must remain at least 90%; `npm run verify` enforces
+both thresholds. CI also requires `npm run test:mac` on a macOS runner. Run Cypress separately
 as above. These checks require no cmux, CCS accounts, Tailscale or GitHub login.
 Do not run installer, updater, live tests, merge or deployment as part of local
 verification. Settings → Deployments reports installed release health; source

@@ -1,0 +1,19 @@
+name: Dependency audit
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 7 * * 1'
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # Audit the entire lockfile, including the installed frontend toolchain.
+      # Keep network-dependent advisory freshness separate from reusable tests.
+      - run: npm audit --package-lock-only --audit-level=high

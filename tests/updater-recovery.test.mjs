@@ -93,14 +93,26 @@ test('configuration rejects unsafe paths, hosts, repositories and legacy automat
 test('build watchdog reuses durable success rather than launching a duplicate process', async t => {
   const root = await directory(t);
   const { supervisedBuildRunner } = await import('../updater/src/build-process.mjs');
-  const execute = supervisedBuildRunner(join(root, 'build'));
+  const build = join(root, 'build'), execute = supervisedBuildRunner(build);
   const marker = join(root, 'executions');
-  const argv = ['-e', 'require("node:fs").appendFileSync(process.argv[1], "x"); process.stdout.write("verified")', marker];
+  // This case proves durable replay and recorded failure, not early exit before
+  // asynchronous identity persistence. Wait for our receipt instead of a delay.
+  const afterIdentity = body => `
+    const fs = require('node:fs'), path = require('node:path');
+    const timer = setInterval(() => {
+      const recorded = fs.readdirSync(process.argv[1]).some(name => {
+        try { return JSON.parse(fs.readFileSync(path.join(process.argv[1], name, 'provider.json'), 'utf8')).pid === process.pid; }
+        catch { return false; }
+      });
+      if (recorded) { clearInterval(timer); ${body} }
+    }, 5);
+  `;
+  const argv = ['-e', afterIdentity('fs.appendFileSync(process.argv[2], "x"); process.stdout.write("verified");'), build, marker];
   assert.equal((await execute(process.execPath, argv, { cwd: root, timeoutMs: 5000 })).stdout, 'verified');
   assert.equal((await execute(process.execPath, argv, { cwd: root, timeoutMs: 5000 })).stdout, 'verified');
   assert.equal(await readFile(marker, 'utf8'), 'x');
   await assert.rejects(execute('missing-updater-build-binary', []), /unavailable/);
-  await assert.rejects(execute(process.execPath, ['-e', 'process.exit(1)'], { cwd: root, timeoutMs: 5000 }), /verification failed/);
+  await assert.rejects(execute(process.execPath, ['-e', afterIdentity('process.exit(1);'), build], { cwd: root, timeoutMs: 5000 }), /verification failed/);
 });
 
 test('preparation recovery requires every watchdog to prove stopped before releasing maintenance', async t => {

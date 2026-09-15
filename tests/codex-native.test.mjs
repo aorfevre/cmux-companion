@@ -147,3 +147,31 @@ test('scoped MCP stdio negotiates tools and refuses out-of-worktree requests', t
   assert.equal(JSON.parse(rows[3].result.content[0].text).content, 'scoped');
   assert.equal(rows[4].result.isError, true);
 });
+
+
+test('protected metadata aliases stay inaccessible in a real linked worktree', t => {
+  const { root, worktree } = fixture(t);
+  const repository = join(root, 'repository'); mkdirSync(repository);
+  const git = args => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    cwd: repository, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }, stdio: 'pipe',
+  });
+  git(['init']); git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-m', 'fixture']);
+  git(['worktree', 'add', '--detach', worktree]);
+  const metadata = readFileSync(join(worktree, '.git'), 'utf8');
+  mkdirSync(join(worktree, '.codex')); writeFileSync(join(worktree, '.codex', 'config.toml'), 'private');
+  mkdirSync(join(worktree, '.companion')); writeFileSync(join(worktree, '.companion', 'state'), 'private');
+  for (const role of ['planner', 'reviewer', 'implementer', 'integrator']) {
+    const config = { root: worktree, role };
+    for (const path of ['.git', '.GIT', '.GiT', '.g\u200cit', '.ＣＯＤＥＸ/config.toml', '.CoDeX/config.toml', '.COMPANION/state']) {
+      assert.throws(() => scopedFile(config, 'read_file', { path }), /permitted project files/);
+      assert.throws(() => scopedFile(config, 'write_file', { path, content: 'corrupted', expectedSha256: null }), /permitted project files/);
+      assert.throws(() => scopedFile(config, 'list_files', { path }), /permitted project files/);
+    }
+    assert.deepEqual(scopedFile(config, 'list_files', { path: '.' }).entries, []);
+  }
+  assert.equal(readFileSync(join(worktree, '.git'), 'utf8'), metadata);
+  const config = { root: worktree, role: 'implementer' };
+  scopedFile(config, 'write_file', { path: 'normal.txt', content: 'allowed', expectedSha256: null });
+  assert.equal(scopedFile(config, 'read_file', { path: 'normal.txt' }).content, 'allowed');
+  assert.equal(git(['-C', worktree, 'rev-parse', '--is-inside-work-tree']).toString().trim(), 'true');
+});

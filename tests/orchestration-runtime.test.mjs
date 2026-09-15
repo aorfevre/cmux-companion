@@ -53,6 +53,16 @@ test('unsettled identity persistence cannot strand launch after the process dead
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }); assert.equal(clock.pending.size, 0);
 });
 
+test('a process that exits before identity persistence fails closed even with a successful exit code', async () => {
+  for (const code of [0, 1]) {
+    let pid;
+    await assert.rejects(startBackgroundProcess(command(`process.exit(${code})`), {
+      policy, onIdentity: value => { pid = value.pid; return new Promise(() => {}); },
+    }), { code: 'IDENTITY_FAILED' });
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  }
+});
+
 test('silent background process fails on idle and disposes every timer', async (t) => {
   const clock = new FakeClock();
   const handle = await start(t, 'setInterval(() => {}, 1000)', { clock });

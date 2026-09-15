@@ -79,7 +79,7 @@ managed by the adapters; shell expressions and arbitrary wrappers are rejected.
 Validation checks native installation compatibility without starting a paid task.
 Authentication stays in existing CLI credential sources; it is never stored in
 settings. Native compatibility is currently pinned to Claude Code 2.1.268,
-Codex CLI 0.154.0 and CCS 8.9.0. Other versions report unready until their contracts
+Codex CLI 0.154.0 and CCS 8.9.0 or 8.10.0 (ccsxp requires 8.10.0). Other versions report unready until their contracts
 are verified. Offline fixture tests do not prove account-backed native behavior.
 
 Codex uses a private configuration directory per attempt, no inherited project

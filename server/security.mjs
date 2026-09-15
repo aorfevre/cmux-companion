@@ -56,9 +56,13 @@ export function safeEqual(left, right) {
 export function isAuthorized(request, token) {
   if (isSessionAuthorized(request, token)) return true;
 
-  const authorization = String(request.headers.authorization || "");
-  if (authorization.startsWith("Bearer ") && safeEqual(authorization.slice(7), token)) return true;
-  return false;
+  return isBearerAuthorized(request, token);
+}
+
+/** @param {{headers: Record<string, string | string[] | undefined>}} request @param {string} token */
+export function isBearerAuthorized(request, token) {
+  const authorization = request.headers.authorization;
+  return typeof authorization === "string" && authorization.startsWith("Bearer ") && safeEqual(authorization.slice(7), token);
 }
 
 /** @param {{headers: Record<string, string | string[] | undefined>; protocol?: string}} request @param {string} token */
@@ -76,24 +80,42 @@ export function tailscaleIdentity(request) {
   };
 }
 
-/** @param {{headers: Record<string, string | string[] | undefined>}} request */
-export function isSafeOrigin(request) {
-  const origin = request.headers.origin;
-  if (!origin) return true;
-  try {
-    const originUrl = new URL(String(origin));
-    const forwardedHost = header(request, "x-forwarded-host");
-    const host = forwardedHost || request.headers.host;
-    return Boolean(host) && originUrl.host === host;
-  } catch {
-    return false;
-  }
+/** @typedef {{headers: Record<string, string | string[] | undefined>; protocol?: string; raw?: {socket: {remoteAddress?: string; encrypted?: boolean}}}} OriginRequest */
+
+/** Only the loopback transport proxy may supply the public host/protocol.
+ * Never use forwarded values based on a caller-controlled header alone.
+ * @param {OriginRequest} request */
+function requestOrigin(request) {
+  const socket = request.raw?.socket;
+  const trustedProxy = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(socket?.remoteAddress || '');
+  const forwardedHost = trustedProxy ? request.headers['x-forwarded-host'] : undefined;
+  const forwardedProto = trustedProxy ? request.headers['x-forwarded-proto'] : undefined;
+  const host = forwardedHost ?? request.headers.host;
+  const protocol = forwardedProto ?? (socket ? socket.encrypted ? 'https' : 'http' : request.protocol || 'http');
+  if (typeof host !== 'string' || typeof protocol !== 'string' || !['http', 'https'].includes(protocol)) throw new Error('Invalid request origin');
+  if (/[\s/@?#\\]/.test(host)) throw new Error('Invalid request host');
+  const url = new URL(`${protocol}://${host}`);
+  if (!url.hostname) throw new Error('Invalid request host');
+  return url;
 }
 
-/** @param {{headers: Record<string, string | string[] | undefined>; protocol?: string}} request @param {string} token */
+/** Origin-less non-browser HTTP clients remain supported. WebSocket cookie
+ * clients additionally require an Origin at their upgrade boundary.
+ * @param {OriginRequest} request */
+export function isSafeOrigin(request) {
+  const origin = request.headers.origin;
+  if (origin === undefined) return true;
+  try {
+    if (typeof origin !== 'string') return false;
+    const supplied = new URL(origin);
+    return supplied.origin === origin && supplied.origin === requestOrigin(request).origin;
+  } catch { return false; }
+}
+
+/** @param {OriginRequest} request @param {string} token */
 export function sessionCookie(request, token) {
-  const forwardedProto = header(request, "x-forwarded-proto");
-  const secure = forwardedProto === "https" || request.protocol === "https";
+  let secure = false;
+  try { secure = requestOrigin(request).protocol === 'https:'; } catch { /* Invalid origins cannot pair. */ }
   return [
     `cmux_session=${encodeURIComponent(sessionValue(token))}`,
     "Path=/",

@@ -55,10 +55,11 @@ JSON startup remains a migration path. Do not use installed state for routine ch
 Run `npm test`, `npm run test:ui`, `npm run lint` and `npm run typecheck`.
 For a bounded backend edit, first run `node --test tests/<name>.test.mjs`.
 `npm run test:coverage` and `npm run test:ui:coverage` write line coverage reports
-under `coverage/`; keep backend and UI line coverage at or above 90%.
+under `coverage/`; both commands enforce backend/UI line coverage at or above 90%.
 
 ## Full verification
-Run `npm run verify` (backend, UI, lint, types and build); CI uses the same command.
+Run `npm run verify` (backend/UI coverage, lint, types and build); CI uses the same
+command after `npm run test:mac` succeeds on a macOS runner.
 For new features or user-visible behavior, add/update relevant Cypress coverage
 and run `npm run test:e2e:local`. If Cypress cannot exercise the change, explain
 why and run the closest local validation. See [local end-to-end checks](README.md#local-end-to-end-checks).

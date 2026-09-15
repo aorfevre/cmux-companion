@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible non-security problem
+body:
+  - type: markdown
+    attributes:
+      value: "For vulnerabilities, follow SECURITY.md instead. Never include tokens, private terminal transcripts, or databases."
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction using disposable data
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Commit, macOS, Node, and relevant tool versions
+    validations:
+      required: true
