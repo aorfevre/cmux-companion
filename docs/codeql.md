@@ -11,7 +11,11 @@ scripts or start Companion. Actions are pinned to upstream commits and maintaine
 by the existing GitHub Actions Dependabot configuration. The job grants only
 contents/actions read and security-events write, uses the normal `pull_request`
 event, and does not use personal credentials or a privileged PR-target workflow.
-GitHub supports CodeQL result uploads from fork PRs through that event.
+GitHub documents a code-scanning upload exception for `pull_request` runs,
+including those with read-only tokens; this is not a general grant of write
+permissions. See [GitHub’s upload guidance](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/resource-not-accessible).
+Confirm a real fork/Dependabot PR upload succeeds before relying on merge
+protection; do not enable write tokens for untrusted PRs to bypass a failure.
 
 ## Activation
 
@@ -29,7 +33,9 @@ separate privacy cleanup; adding this workflow does not change visibility.
 Use **Advanced setup** with this checked-in workflow, not a simultaneous Default
 setup. After merging and enabling eligibility, run **Actions → CodeQL → Run
 workflow**, then confirm analysis and SARIF upload succeeded in **Security → Code
-scanning**. Weekly and manual runs use the default-branch workflow.
+scanning**. Weekly runs use the default branch. Manual dispatch requires the
+workflow file on the default branch, but maintainers can select another branch
+in the UI or pass `gh workflow run codeql.yml --ref <branch>` to analyze that ref.
 
 A skipped analysis is not evidence that the repository is secure. Once a real
 scan succeeds, configure a code-scanning merge protection rule for CodeQL alerts
