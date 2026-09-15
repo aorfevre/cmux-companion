@@ -101,6 +101,10 @@ Inspect the touched flow and checks, then make one bounded change with one owner
 accountable for its observable outcome, integration and cleanup. Delegate only
 independent bounded work, without recursive delegation. Trace applicable UI,
 API, storage, background and external boundaries; explain inapplicable layers.
+Create goal PRs as drafts; mark them ready only when implementation and required
+verification are complete, retaining the service's human publication approval gate.
+CodeRabbit approval and protected auto-merge follow `docs/code-review-workflow.md`;
+a green skipped-review status is not approval.
 Review changes through a PR targeting `main`, with detailed evidence in the PR
 or completion report. Separate passed, failed and unverified paths, record
 interventions and remaining gaps, and investigate failures without dropping coverage

@@ -152,7 +152,8 @@ export interface RemotePort {
 export interface GitHubPort {
   readPull?(repositoryId: string, number: number): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
   identity(repositoryId: string): string;
-  find(repositoryId: string, branch: string): Promise<{ number: number; url: string; branch: string; baseBranch: string; headSha: string; marker: string | null; state: 'open' | 'closed' | 'merged' }[]>;
+  find(repositoryId: string, branch: string): Promise<{ number: number; url: string; branch: string; baseBranch: string; headSha: string; marker: string | null; draft: boolean; state: 'open' | 'closed' | 'merged' }[]>;
+  ready?(input: PublicationInput, options?: { beforeSend?: () => boolean }): Promise<void | 'unknown' | 'cancelled'>;
   create(input: PublicationInput, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface PublicationPort {
