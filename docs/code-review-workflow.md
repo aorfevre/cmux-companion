@@ -26,8 +26,9 @@ authority. Ready means completed for external review, not permission to skip CI.
 
 ## Auto-merge activation
 
-The trusted default-branch `Review and auto-merge` workflow runs after Verify and
-every 15 minutes. It never checks out PR code or downloads PR artifacts. For bot
+The trusted default-branch `Review and auto-merge` workflow runs every 15 minutes and on manual dispatch from `main`. It never checks out PR code or downloads PR artifacts. It does not use
+`workflow_run` or other privileged PR-completion triggers. GitHub CLI runs from
+a fixed OS installation path with a restricted subprocess PATH. For bot
 authors such as Dependabot it requests one CodeRabbit review per head: CodeRabbit
 can report a successful status for a skipped bot review, which is not approval.
 

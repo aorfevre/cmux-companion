@@ -38,8 +38,10 @@ function main() {
   const dryRun = process.argv.includes('--dry-run');
   const slug = process.env.GITHUB_REPOSITORY;
   if (!/^[\w-]+\/[\w.-]+$/.test(slug ?? '')) throw new Error('Expected a GitHub repository');
-  const gh = (args, input, token = process.env.GH_TOKEN) => execFileSync('gh', args, { input, encoding: 'utf8', timeout: 30000,
-    env: { ...process.env, GH_TOKEN: token, GH_PROMPT_DISABLED: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  // Fixed OS installation paths prevent workspace/PATH executables from receiving tokens.
+  const ghPath = process.platform === 'darwin' ? (process.arch === 'arm64' ? '/opt/homebrew/bin/gh' : '/usr/local/bin/gh') : '/usr/bin/gh';
+  const gh = (args, input, token = process.env.GH_TOKEN) => execFileSync(ghPath, args, { input, encoding: 'utf8', timeout: 30000,
+    env: { ...process.env, PATH: '/usr/bin:/bin', GH_TOKEN: token, GH_PROMPT_DISABLED: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
   const api = (route, input) => JSON.parse(gh(['api', route, ...(input ? ['--method', 'POST', '--input', '-'] : [])], input && JSON.stringify(input)));
   const [owner, name] = slug.split('/');
   const data = api('graphql', { query, variables: { owner, name } });
