@@ -52,7 +52,8 @@ for (const boundary of ['before', 'push_returned', 'during_pr']) test(`abort at 
   if (boundary === 'during_pr') f.github.beforeCreate = async () => controller.abort();
   const adapter = new GitHubPublication({ ...f.options, failpoint: (point) => { if (point === boundary) controller.abort(); } });
   const result = await adapter.publish(f.input, { signal: controller.signal });
-  assert.equal(result.status, boundary === 'during_pr' ? 'published' : 'cancelled');
+  assert.equal(result.status, 'cancelled');
+  if (boundary === 'during_pr') { assert.equal(f.github.pulls[0].draft, true); assert.equal(f.github.promotions.length, 0); }
   assert.equal(f.github.creates.length, boundary === 'during_pr' ? 1 : 0);
   assert.equal(await f.remote.head('repo', f.input.branch), boundary === 'before' ? null : f.input.headSha);
 });
@@ -117,12 +118,13 @@ test('target acceptance after an owned push preserves the push and records every
   assert.deepEqual(JSON.parse(readFileSync(join(f.options.directory, f.input.operationId, 'targets.accepted.json'), 'utf8')), accepted.acceptedTargets);
 });
 
-test('a target movement during an already sent PR is reported with the observed PR', async (t) => {
+test('a target movement during draft creation prevents ready promotion', async (t) => {
   const f = await fixture(t);
   f.github.beforeCreate = async () => fixtureGit(f.repo.repository, ['push', 'origin', `${f.input.headSha}:refs/heads/main`]);
   const result = await f.publisher.publish(f.input);
-  assert.equal(result.status, 'published'); assert.equal(result.baseHeadSha, f.input.headSha);
-  assert.equal(result.pr.headSha, f.input.headSha); assert.equal(f.github.creates.length, 1);
+  assert.equal(result.status, 'target_moved'); assert.equal(result.baseHeadSha, f.input.headSha);
+  assert.equal(result.pr, null); assert.equal(f.github.creates.length, 1);
+  assert.equal(f.github.pulls[0].draft, true); assert.equal(f.github.promotions.length, 0);
 });
 
 test('pre-existing remote branches and unrelated or ambiguous PR identities are refused', async (t) => {
@@ -191,7 +193,7 @@ test('publication stages histories larger than the metadata output budget on dis
 test('GitHub CLI contracts use explicit API identities, bounded inventory and JSON stdin', async (t) => {
   const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
   const f = await fixture(t), calls = [];
-  const pr = { number: 3, html_url: 'https://github.com/Owner/Repo/pull/3', state: 'open', body: f.input.marker, head: { ref: f.input.branch, sha: f.input.headSha, repo: { full_name: 'Owner/Repo' } }, base: { ref: 'main', repo: { full_name: 'Owner/Repo' } } };
+  const pr = { number: 3, html_url: 'https://github.com/Owner/Repo/pull/3', state: 'open', draft: true, body: f.input.marker, head: { ref: f.input.branch, sha: f.input.headSha, repo: { full_name: 'Owner/Repo' } }, base: { ref: 'main', sha: f.input.baseSha, repo: { full_name: 'Owner/Repo' } } };
   const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: {}, execute: async (argv, input) => { calls.push({ argv, input }); return JSON.stringify(argv.includes('POST') ? {} : [pr]); } });
   const matches = await cli.find('repo', f.input.branch);
   assert.equal(matches[0].number, 3); assert.equal(matches[0].marker, f.input.marker);
@@ -199,7 +201,7 @@ test('GitHub CLI contracts use explicit API identities, bounded inventory and JS
   await cli.create(f.input);
   assert.deepEqual(calls[1].argv, ['api', '--hostname', 'github.com', '--method', 'POST', 'repos/owner/repo/pulls', '--input', '-']);
   const body = JSON.parse(calls[1].input);
-  assert.equal(body.head, f.input.branch); assert.equal(body.base, 'main'); assert.ok(body.body.includes(f.input.marker));
+  assert.equal(body.draft, true); assert.equal(body.head, f.input.branch); assert.equal(body.base, 'main'); assert.ok(body.body.includes(f.input.marker));
   assert.ok(!calls[1].argv.includes(body.body));
   pr.head.repo.full_name = 'unrelated/repo';
   await assert.rejects(cli.find('repo', f.input.branch), { code: 'OWNERSHIP_UNCERTAIN' });
@@ -282,4 +284,120 @@ test('goal base fetch imports latest main without changing a dirty feature check
   assert.equal(await fixtureGit(worktree.worktree, ['rev-parse', 'HEAD']), fetched);
   await assert.rejects(f.remote.fetchBase('repo', 'missing-branch'), { code: 'BASE_FETCH_FAILED' });
   await assert.rejects(f.remote.fetchBase('repo', '--upload-pack=evil'), /branch/i);
+});
+
+for (const lost of [false, true]) test(`draft PR promotion reconciles once after lost response=${lost}`, async t => {
+  const f = await fixture(t); f.github.loseReadyResponse = lost;
+  f.publisher.failpoint = point => { if (point === 'pr_returned') throw new Error('crash after draft'); };
+  await assert.rejects(f.publisher.publish(f.input), /crash after draft/);
+  assert.equal(f.github.pulls[0].draft, true);
+  assert.equal((await f.publisher.observe(f.input)).status, 'pending');
+  assert.equal(f.github.promotions.length, 0);
+  const restarted = new GitHubPublication(f.options);
+  if (lost) await assert.rejects(restarted.publish(f.input), /Lost successful promotion/);
+  assert.equal((await restarted.publish(f.input)).status, 'published');
+  assert.equal(f.github.pulls[0].draft, false);
+  assert.equal(f.github.creates.length, 1); assert.equal(f.github.promotions.length, 1);
+});
+
+test('revoked publication leaves its created PR in draft', async t => {
+  const f = await fixture(t), controller = new AbortController();
+  f.publisher.failpoint = point => { if (point === 'pr_returned') controller.abort(); };
+  assert.equal((await f.publisher.publish(f.input, { signal: controller.signal })).status, 'cancelled');
+  assert.equal(f.github.pulls[0].draft, true); assert.equal(f.github.promotions.length, 0);
+});
+
+for (const accepted of [false, true]) test(`GitHub promotion checks exact draft identity and accepted target=${accepted}`, async t => {
+  const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
+  const f = await fixture(t), calls = [];
+  const pr = { node_id: 'PR_node', number: 3, html_url: 'https://github.com/owner/repo/pull/3', state: 'open', draft: true, body: f.input.marker, head: { ref: f.input.branch, sha: f.input.headSha, repo: { full_name: 'owner/repo' } }, base: { ref: 'main', sha: f.input.baseSha, repo: { full_name: 'owner/repo' } } };
+  const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: {}, execute: async (argv, input) => {
+    calls.push({ argv, input });
+    return JSON.stringify(argv.includes('graphql') ? { data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } } : argv.at(-1).includes('?') ? [pr] : pr);
+  } });
+  const input = accepted ? { ...f.input, acceptedTargets: [{ id: 'accept', previousBaseSha: f.input.baseSha, baseHeadSha: f.input.headSha }] } : f.input;
+  if (accepted) pr.base.sha = f.input.headSha;
+  assert.equal(await cli.ready(input, { beforeSend: () => false }), 'cancelled'); assert.equal(calls.length, 2);
+  await cli.ready(input); assert.deepEqual(JSON.parse(calls.find(call => call.argv.includes('graphql')).input).variables, { id: 'PR_node' });
+  pr.head.sha = f.repo.baseSha;
+  await assert.rejects(cli.ready(f.input), { code: 'STALE_TARGET' });
+});
+
+for (const mode of ['restored', 'lost-conversion-response', 'conversion-failed', 'confirmation-failed', 'identity-changed']) test(`promotion target race: ${mode}`, async t => {
+  const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
+  const f = await fixture(t);
+  const pr = { node_id: 'PR_node', number: 3, html_url: 'https://github.com/owner/repo/pull/3', state: 'open', draft: true, body: f.input.marker, head: { ref: f.input.branch, sha: f.input.headSha, repo: { full_name: 'owner/repo' } }, base: { ref: 'main', sha: f.input.baseSha, repo: { full_name: 'owner/repo' } } };
+  let conversions = 0;
+  const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: {}, execute: async (argv, payload) => {
+    if (argv.includes('graphql')) {
+      const { query } = JSON.parse(payload);
+      if (query.includes('markPullRequestReadyForReview')) {
+        pr.draft = false; pr.base.sha = f.input.headSha;
+        await fixtureGit(f.repo.remote, ['update-ref', 'refs/heads/main', f.input.headSha]);
+        if (mode === 'identity-changed') pr.body = '<!-- companion-goal:another -->';
+        return JSON.stringify({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } });
+      }
+      conversions++;
+      if (mode === 'conversion-failed') throw new Error('conversion refused');
+      pr.draft = true;
+      if (mode === 'lost-conversion-response') throw new Error('lost response');
+      return JSON.stringify({ data: { convertPullRequestToDraft: { pullRequest: { isDraft: true } } } });
+    }
+    if (conversions && mode === 'confirmation-failed') throw new Error('read unavailable');
+    return JSON.stringify(argv.at(-1).includes('?') ? [pr] : pr);
+  } });
+  f.publisher.failpoint = point => { if (point === 'pr_returned') throw new Error('pause'); };
+  await assert.rejects(f.publisher.publish(f.input), /pause/);
+  // Keep real Git/publication receipts, but exercise the production GitHub adapter.
+  const publisher = new GitHubPublication({ ...f.options, github: { identity: id => f.github.identity(id), find: (...args) => cli.find(...args), ready: (...args) => cli.ready(...args) } });
+  const result = await publisher.publish(f.input);
+  assert.equal(result.status, ['restored', 'lost-conversion-response'].includes(mode) ? 'target_moved' : 'unknown');
+  assert.equal(result.pr, null);
+  assert.equal(conversions, mode === 'identity-changed' ? 0 : 1);
+  assert.equal(f.github.creates.length, 1);
+});
+
+test('observation refuses missing draft metadata and moved targets on open ready PRs', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.publisher.publish(f.input)).status, 'published');
+  delete f.github.pulls[0].draft;
+  assert.equal((await f.publisher.observe(f.input)).status, 'unknown');
+  f.github.pulls[0].draft = false;
+  await fixtureGit(f.repo.remote, ['update-ref', 'refs/heads/main', f.input.headSha]);
+  assert.equal((await f.publisher.observe(f.input)).status, 'unknown');
+  // Historical merged evidence survives normal target advancement.
+  f.github.pulls[0].state = 'merged';
+  assert.equal((await f.publisher.observe(f.input)).status, 'published');
+});
+
+test('observation rejects target advancement during GitHub inventory', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.publisher.publish(f.input)).status, 'published');
+  const find = f.github.find.bind(f.github);
+  f.github.find = async (...args) => {
+    await fixtureGit(f.repo.remote, ['update-ref', 'refs/heads/main', f.input.headSha]);
+    return find(...args);
+  };
+  const result = await f.publisher.observe(f.input);
+  assert.equal(result.status, 'unknown'); assert.equal(result.pr, null);
+  assert.equal(result.baseHeadSha, f.input.headSha);
+});
+
+test('closed drafts never prove delivery, while closed ready PRs retain historical evidence', async t => {
+  const f = await fixture(t);
+  f.publisher.failpoint = point => { if (point === 'pr_returned') throw new Error('pause before promotion'); };
+  await assert.rejects(f.publisher.publish(f.input), /pause before promotion/);
+  f.github.pulls[0].state = 'closed';
+  assert.equal((await f.publisher.observe(f.input)).status, 'unknown');
+  f.github.pulls[0].draft = false;
+  assert.equal((await f.publisher.observe(f.input)).status, 'published');
+});
+
+test('abort at the promotion send boundary returns cancellation and leaves the PR draft', async t => {
+  const f = await fixture(t), controller = new AbortController();
+  f.publisher.failpoint = point => { if (point === 'pr_ready') controller.abort(); };
+  const result = await f.publisher.publish(f.input, { signal: controller.signal });
+  assert.equal(result.status, 'cancelled'); assert.equal(result.pr, null);
+  assert.equal(f.github.pulls[0].draft, true); assert.equal(f.github.promotions.length, 0);
+  assert.equal((await f.publisher.publish(f.input, { signal: controller.signal })).status, 'cancelled');
 });

@@ -1,0 +1,74 @@
+# yaml-language-server: $schema=https://www.coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  high_level_summary_in_walkthrough: false
+  review_status: true
+  commit_status: true
+  fail_commit_status: true
+  poem: false
+  in_progress_fortune: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    drafts: false
+  path_filters:
+    - '!node_modules/**'
+    - '!dist/**'
+    - '!.next/**'
+    - '!.wrangler/**'
+    - '!coverage/**'
+    - '!outputs/**'
+    - '!cypress/screenshots/**'
+    - '!cypress/videos/**'
+    - '!cypress/results/**'
+  path_instructions:
+    - path: 'server/**'
+      instructions: >-
+        Prioritize concrete correctness, pairing and same-origin checks, loopback
+        binding, allow-lists, argv-only execution, exact-head evidence, ownership
+        fencing, idempotency and recovery. Never suggest weakening uncertainty
+        handling or granting agents publication/approval authority. Report an
+        actionable trigger and impact; keep cosmetic preferences non-blocking.
+    - path: 'app/**'
+      instructions: >-
+        Check accessible desktop/mobile behavior, pairing, stale requests and
+        mutation invalidation. Workflow actions must follow service-projected
+        authority. Require meaningful UI coverage for behavior changes, without
+        exposing implementation details in product flows.
+    - path: 'updater/**'
+      instructions: >-
+        Check exact-commit eligibility, stopped-worker evidence, preserved private
+        state, owned LaunchAgents, rollback and installer cleanup. Merge is not
+        deployment authorization. Never overwrite unrelated processes or services.
+    - path: '{tests,cypress}/**'
+      instructions: >-
+        Tests must demonstrate observable behavior and recovery, preserve coverage
+        gates and isolate native/live services. Cypress remains local-only. Flag
+        swallowed errors, weakened assertions and unchanged retries that hide failures.
+    - path: '.github/**'
+      instructions: >-
+        Never execute PR-controlled code with privileged tokens. Auto-merge must
+        require protected main, fresh CI and review evidence, resolved discussions
+        and a non-draft PR. Preserve minimal permissions and exact-head checks.
+    - path: '{package.json,package-lock.json}'
+      instructions: >-
+        Review manifests and lockfile together. Check Node 22.23.1 compatibility,
+        React runtime/type/server-component alignment, peer dependencies, upstream
+        advisories, provenance and distribution licenses. Do not use force or
+        legacy-peer-deps to bypass conflicts.
+    - path: 'docs/**'
+      instructions: >-
+        Keep specs as the product decision source and plans consistent with them.
+        Distinguish implemented behavior from proposals and passed checks from
+        unverified live paths. Do not publish private account data or credentials.
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - AGENTS.md
+  learnings:
+    scope: local
