@@ -190,8 +190,8 @@ describe("sessions and launch", () => {
     await userEvent.click(screen.getByRole("button", { name: "Launch a workspace" }));
     assert.ok(await screen.findByRole("heading", { name: "Start work" }));
     assert.equal(location.search, "?view=launch");
-    assert.equal(screen.getByRole("link", { name: "Goals" }).getAttribute("href"), "/orchestration");
-    assert.equal(screen.getByRole("link", { name: "Settings" }).getAttribute("href"), "/settings");
+    assert.equal(screen.getByRole("link", { name: "Mission Control" }).getAttribute("href"), "/orchestration");
+    assert.equal(screen.getByRole("link", { name: "Setup" }).getAttribute("href"), "/settings");
     act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
     assert.equal(location.search, "?view=sessions");
     act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });

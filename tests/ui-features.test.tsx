@@ -18,10 +18,10 @@ describe("contextual mobile features", () => {
     const navigate = vi.fn();
     render(<BottomNav view="inbox" onView={navigate} />);
     assert.equal(screen.queryByRole("link", { name: "Inbox" }), null);
-    assert.equal(screen.getByRole("link", { name: "Goals" }).getAttribute("href"), "/orchestration");
-    assert.equal(screen.getByRole("link", { name: "Settings" }).getAttribute("href"), "/settings");
+    assert.equal(screen.getByRole("link", { name: "Mission Control" }).getAttribute("href"), "/orchestration");
+    assert.equal(screen.getByRole("link", { name: "Setup" }).getAttribute("href"), "/settings");
     assert.equal(screen.queryByRole("link", { name: "Licence Usage" }), null);
-    assert.equal(screen.queryByRole("link", { name: "Sessions" }), null);
+    assert.equal(screen.getByRole("link", { name: "Sessions" }).getAttribute("href"), "/?view=sessions");
     assert.equal(navigate.mock.calls.length, 0);
   });
 

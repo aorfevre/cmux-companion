@@ -19,10 +19,13 @@ const prefix = '/api/orchestration';
 const subscribeLocation = (changed: () => void) => { window.addEventListener('popstate', changed); return () => window.removeEventListener('popstate', changed); };
 export function GoalBoard() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [configuration, setConfiguration] = useState<Configuration | null>(null);
-  const [selected, setSelected] = useState<string | null>(() => typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('goal')), [detail, setDetail] = useState<(Goal & { contracts: { revision: number; contract: Contract }[] }) | null>(null);
+  const search = useSyncExternalStore(subscribeLocation, () => window.location.search, () => '');
+  const [selectionOverride, setSelected] = useState<string | null | undefined>();
+  const selected = selectionOverride === undefined ? new URLSearchParams(search).get('goal') : selectionOverride;
+  const [detail, setDetail] = useState<(Goal & { contracts: { revision: number; contract: Contract }[] }) | null>(null);
   const [auth, setAuth] = useState<'loading' | 'paired' | 'unpaired' | 'unavailable'>('loading');
   const [token, setToken] = useState(''), [title, setTitle] = useState(''), [repository, setRepository] = useState('');
-  const needsOnly = useSyncExternalStore(subscribeLocation, () => new URLSearchParams(window.location.search).get('view') === 'needs', () => false);
+  const needsOnly = new URLSearchParams(search).get('view') === 'needs';
   const [creating, setCreating] = useState(false);
   const createButton = useRef<HTMLButtonElement>(null), createHeading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (creating) createHeading.current?.focus(); }, [creating]);
