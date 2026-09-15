@@ -70,11 +70,16 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 - Full `npm run verify` stopped in backend tests: 856 passed, one failed, one
   intentionally skipped. The only remaining failure was the offline service-worker
   browser test's second navigation timing out. It also failed without concurrent
-  Cypress, so concurrent Cypress alone does not explain it. Instrumented diagnostics
-  and a focused concurrent Git-delivery/browser run are in progress; this is not a
-  passing full verification claim.
+  Cypress, so concurrent Cypress alone does not explain it. Instrumented diagnostics and a focused concurrent
+  Git-delivery/browser run passed all six cases. Limiting backend file concurrency
+  to four then allowed the complete verification run below to pass.
 - Final graph admission and uncertain integration-repair refinements passed their
   bounded domain/scheduler rerun.
+
+- Latest complete `npm run verify`: **passed**, with 857 backend tests passed,
+  one intentional skip, 164 UI tests passed, lint/typecheck/build passed.
+  Backend file concurrency is now four in both ordinary and coverage commands;
+  no tests or assertions were removed to obtain this result.
 
 ## Interventions
 
@@ -108,7 +113,7 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | Combined planner/design with approved suggested team | Existing planner retained; role/routing contract changes pending. |
 | Explicit wave barriers with verification | Not implemented; current scheduler still uses task dependencies. |
 | All judgment agents visible in cmux | Not implemented; non-planner adapters still use background mode. |
-| Goal-scoped holds and manual recovery | Implemented with persistence, sibling/provisioning-race tests and real-service manual-recovery Cypress; final full verification pending. |
+| Goal-scoped holds and manual recovery | Implemented with persistence, sibling/provisioning-race tests and real-service manual-recovery Cypress; final full verification passed for this slice. |
 | Assignment proposals, reasons and snapshots | Not implemented. |
 | Human publication approval | Implemented; exact-head authority/restart/receipt tests and real-service Cypress passed. |
 | Passive merge sync | Implemented and bounded tests passed; broader acceptance integration remains. |
@@ -116,7 +121,7 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | Updater regression and redesigned controls | Approval/waiting-merge idle regression passed; redesigned controls and final regression pending. |
 | Complete restart behavior | Existing core, merge sync and holds tested; attachments/teams pending. |
 
-Full `npm run verify`, final backend/UI coverage, remaining redesigned Cypress
+Final backend coverage, remaining redesigned Cypress
 journeys, completion audit and PR review remain outstanding. Native cmux/provider
 and installed updater validation have not run and require separate live authority.
 No merge, deployment, installed data reset or external account change performed.

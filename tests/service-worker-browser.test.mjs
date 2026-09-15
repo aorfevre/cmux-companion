@@ -47,6 +47,14 @@ test("a real browser installs, updates and reopens the private shell offline", {
   });
   await context.setOffline(true);
   const reopened = await context.newPage();
-  await reopened.goto(`${url}/?offline=two`);
+  const pending = new Set();
+  reopened.on('request', request => pending.add(request.url()));
+  reopened.on('requestfinished', request => pending.delete(request.url()));
+  reopened.on('requestfailed', request => pending.delete(request.url()));
+  try { await reopened.goto(`${url}/?offline=two`); }
+  catch (error) {
+    t.diagnostic(JSON.stringify({ pending: [...pending], page: await reopened.content(), workers: await page.evaluate(async () => ({ controller: navigator.serviceWorker.controller?.state, caches: await caches.keys() })) }));
+    throw error;
+  }
   assert.equal(await reopened.locator("h1").textContent(), "Shell two");
 });
