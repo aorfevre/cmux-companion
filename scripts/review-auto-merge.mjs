@@ -16,7 +16,7 @@ export function mergeEligible(pr, protection, repository, verified) {
     || pr.reviews.pageInfo.hasPreviousPage || pr.reviewThreads.pageInfo.hasNextPage
     || pr.reviewThreads.nodes.some(thread => !thread.isResolved)) return false;
   const latest = new Map(pr.reviews.nodes.filter(review => review.author).map(review => [review.author.login, review]));
-  const rabbit = latest.get('coderabbitai[bot]');
+  const rabbit = latest.get('coderabbitai');
   if (!rabbit || rabbit.author.__typename !== 'Bot' || rabbit.state !== 'APPROVED' || rabbit.commit?.oid !== pr.headRefOid
     || [...latest.values()].some(review => review.state === 'CHANGES_REQUESTED')) return false;
   const contexts = pr.commits.nodes.at(-1)?.commit.statusCheckRollup?.contexts;
@@ -53,7 +53,7 @@ function main() {
   for (const pr of pulls.nodes) {
     if (pr.isDraft) continue;
     // CodeRabbit normally skips bot authors. Request one review per exact head.
-    if (pr.author?.__typename === 'Bot' && !pr.reviews.nodes.some(review => review.author?.login === 'coderabbitai[bot]' && review.commit?.oid === pr.headRefOid)) {
+    if (pr.author?.__typename === 'Bot' && !pr.reviews.nodes.some(review => review.author?.login === 'coderabbitai' && review.author.__typename === 'Bot' && review.commit?.oid === pr.headRefOid)) {
       const marker = `<!-- companion-review-request:${pr.headRefOid} -->`;
       const comments = api(`repos/${slug}/issues/${pr.number}/comments?per_page=100`);
       if (comments.length < 100 && !comments.some(comment => comment.body?.includes(marker))) {
