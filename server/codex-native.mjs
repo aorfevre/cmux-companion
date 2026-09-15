@@ -48,6 +48,8 @@ export class CodexInputs extends NativeInputs {
     if (existsSync(auth) && !existsSync(join(home, 'auth.json'))) symlinkSync(auth, join(home, 'auth.json'));
     const mcp = JSON.parse(readFileSync(join(directory, 'mcp.json'), 'utf8')).mcpServers.companion;
     const command = [process.execPath, hook, hookConfig].map(quote).join(' ');
+    // Only our fixed, role-scoped MCP servers are preapproved. File/command
+    // authority remains enforced by their implementations and the role hook.
     const config = [
       `approval_policy = ${toml(request.attempt.mode === 'interactive' ? 'on-request' : 'never')}`,
       'sandbox_mode = "read-only"', // All file writes go through the scoped MCP.
@@ -64,9 +66,9 @@ export class CodexInputs extends NativeInputs {
       `projects.${toml(request.attempt.worktree)}.trust_level = "untrusted"`,
       '[[hooks.PreToolUse]]', 'matcher = ".*"', '[[hooks.PreToolUse.hooks]]', 'type = "command"', `command = ${toml(command)}`, 'timeout = 10',
       '[[hooks.SessionStart]]', '[[hooks.SessionStart.hooks]]', 'type = "command"', `command = ${toml(command)}`, 'timeout = 10',
-      '[mcp_servers.files]', `command = ${toml(process.execPath)}`, `args = ${toml([files, fileConfig])}`, 'required = true',
+      '[mcp_servers.files]', `command = ${toml(process.execPath)}`, `args = ${toml([files, fileConfig])}`, 'required = true', 'default_tools_approval_mode = "approve"',
     ];
-    if (mcp) config.push('[mcp_servers.companion]', `command = ${toml(mcp.command)}`, `args = ${toml(mcp.args)}`, 'required = true');
+    if (mcp) config.push('[mcp_servers.companion]', `command = ${toml(mcp.command)}`, `args = ${toml(mcp.args)}`, 'required = true', 'default_tools_approval_mode = "approve"');
     save(join(home, 'config.toml'), config.join('\n') + '\n');
     // The pinned CCS adapter passes CODEX_HOME through and uses CCS_CODEX_PATH;
     // --target prevents a profile named codex from selecting the Claude target.
@@ -83,8 +85,9 @@ export class CodexInputs extends NativeInputs {
 
 export function createCodexAgents({ directory, installation, direct, ccsxp, profile, engine, env, cmux, policy }, context) {
   const inputs = new CodexInputs({ installation, direct, ccsxp, profile, engine, env, capabilities: installation.capabilities, describe: context.describe });
-  const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal: new CmuxTerminal(cmux), killGraceMs: policy.killGraceMs });
-  const background = new NativeBackground({ directory: join(directory, 'background'), bin: installation.bin, inputs, policy, onResult: context.onResult, parseResult: codexResult });
+  const terminal = new CmuxTerminal(cmux);
+  const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal, killGraceMs: policy.killGraceMs });
+  const background = new NativeBackground({ terminal, directory: join(directory, 'background'), bin: installation.bin, inputs, policy, onResult: context.onResult, parseResult: codexResult });
   const runtime = new AgentRuntime({ interactive, background, locate: context.locate });
   return Object.assign(runtime, {
     /** @param {{preserve?: import('./orchestration/types.d.ts').LaunchRequest[]}} [options] */

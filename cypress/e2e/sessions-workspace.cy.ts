@@ -16,15 +16,10 @@ const grid = {
   },
 };
 
-type QueueItem = { id: string; workspaceId: string; surfaceId: string; text: string; createdAt: string; updatedAt: string; attempts: number; lastError: null };
-
 function fixtures() {
-  const queue: QueueItem[] = [];
-  let sequence = 0;
   cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing deterministic Cypress API fixture" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "Sessions Mac", workspace_count: 2 }, workspaces: [billing, docs], error: null, refreshedAt: now }).as("bootstrap");
-  cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
   cy.intercept("GET", "**/api/repos", { repos: [] });
   cy.intercept("GET", "**/api/health", { version: { builtAt: now } });
   cy.intercept("GET", "**/api/updater/status", { available: false });
@@ -33,39 +28,8 @@ function fixtures() {
   cy.intercept("GET", "**/api/terminals/terminal-beta/replay*", grid).as("betaReplay");
   cy.intercept("GET", "**/api/terminals/terminal-alpha/replay*", { mode: "text", surface_id: alpha.id, text: "alpha$ git status\nnothing to commit" }).as("alphaReplay");
   cy.intercept("GET", "**/api/terminals/terminal-gamma/replay*", { mode: "text", surface_id: gamma.id, text: "tail -f server.log" }).as("gammaReplay");
-  cy.intercept("GET", "**/api/prompt-queue?*", (request) => {
-    request.reply({ items: queue.filter((item) => item.workspaceId === request.query.workspaceId && item.surfaceId === request.query.surfaceId) });
-  }).as("queueList");
-  cy.intercept("POST", "**/api/prompt-queue", (request) => {
-    sequence += 1;
-    const item = { id: `queue-${sequence}`, workspaceId: String(request.body.workspaceId), surfaceId: String(request.body.surfaceId), text: String(request.body.text), createdAt: now, updatedAt: now, attempts: 0, lastError: null };
-    queue.push(item);
-    request.reply({ statusCode: 201, body: item });
-  }).as("enqueue");
-  cy.intercept("PATCH", "**/api/prompt-queue/*", (request) => {
-    const item = queue.find((entry) => request.url.endsWith(`/${entry.id}`));
-    if (item) item.text = String(request.body.text);
-    request.reply(item || { statusCode: 404, body: { error: "Unknown queue item" } });
-  }).as("update");
-  cy.intercept("POST", "**/api/prompt-queue/*/move", (request) => {
-    const index = queue.findIndex((entry) => request.url.includes(`/${entry.id}/`));
-    const target = index + Number(request.body.direction);
-    if (index >= 0 && target >= 0 && target < queue.length) [queue[index], queue[target]] = [queue[target], queue[index]];
-    request.reply(queue[target]);
-  }).as("move");
-  cy.intercept("POST", "**/api/prompt-queue/*/send", (request) => {
-    const index = queue.findIndex((entry) => request.url.includes(`/${entry.id}/`));
-    const [sent] = index >= 0 ? queue.splice(index, 1) : [null];
-    request.reply({ sent: true, item: sent });
-  }).as("send");
-  cy.intercept("DELETE", "**/api/prompt-queue/*", (request) => {
-    const index = queue.findIndex((entry) => request.url.endsWith(`/${entry.id}`));
-    if (index >= 0) queue.splice(index, 1);
-    request.reply({ removed: true });
-  }).as("remove");
   cy.intercept("POST", "**/api/terminals/*/input", { ok: true }).as("input");
   cy.intercept("POST", "**/api/terminals/*/key", { ok: true }).as("key");
-  return queue;
 }
 
 function visitSessions(readOnly = false) {
@@ -79,19 +43,27 @@ function openBilling() {
   cy.wait("@betaReplay");
 }
 
-for (const [width, height] of [[390, 844], [1440, 900]]) {
+for (const [width, height] of [[390, 844], [1200, 900]]) {
   describe(`Sessions and workspace detail at ${width}px`, () => {
     beforeEach(() => cy.viewport(width, height));
 
     it("lists sessions with their state, opens the focused terminal and renders the replay grid", () => {
       fixtures();
       visitSessions();
-      cy.findByRole("heading", { name: "Sessions", level: 2 }).should("be.visible");
-      cy.contains(".hero h1", "1 session need you.").should("be.visible");
+      cy.findByRole("heading", { name: "Sessions", level: 1 }).should("be.visible");
+      cy.contains(".hero h1", "Sessions").should("be.visible");
       cy.get(".summary-row").should("contain.text", "2sessions").and("contain.text", "1needs you").and("contain.text", "1working");
       cy.findByRole("button", { name: /Billing rewrite/ }).should("contain.text", "~/karven/billing").and("contain.text", "Needs you").and("contain.text", "3 terminals").and("contain.text", "Waiting for your answer");
       cy.findByRole("button", { name: /Docs sweep/ }).should("contain.text", "Working").and("contain.text", "1 terminal");
+      cy.findByLabelText('Search sessions').type('Billing');
+      cy.findByRole('button', { name: /Docs sweep/ }).should('not.exist');
+      cy.findByLabelText('Search sessions').clear();
+      cy.screenshot(`sessions-fleet-${width}`, { capture: 'viewport' });
       openBilling();
+      cy.findByLabelText('Active terminal').should('have.value', beta.id);
+      cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
+      cy.findByLabelText('Terminal input').then($input => { const bounds = $input[0].getBoundingClientRect(); expect(bounds.bottom).to.be.at.most(height); });
+      cy.screenshot(`session-detail-${width}`, { capture: 'viewport' });
       cy.get("@alphaReplay.all").should("have.length", 0);
       cy.findByRole("log", { name: "Terminal output" }).should("be.visible").within(() => {
         cy.get(".terminal-grid-row").should("have.length", 4);
@@ -122,7 +94,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       cy.get(".terminal-fallback").should("contain.text", "tail -f server.log");
       cy.findByRole("button", { name: /Back/ }).click();
       cy.location("search").should("eq", "?view=sessions");
-      cy.findByRole("heading", { name: "Sessions", level: 2 }).should("be.visible");
+      cy.findByRole("heading", { name: "Sessions", level: 1 }).should("be.visible");
       cy.findByRole("button", { name: /Billing rewrite/ }).should("be.visible");
     });
   });
@@ -143,7 +115,6 @@ describe("Workspace input", () => {
       expect(request.body).to.deep.equal({ text: "Run the billing tests", enter: true });
     });
     cy.findByRole("textbox", { name: "Terminal input" }).should("have.value", "");
-    cy.get("@enqueue.all").should("have.length", 0);
   });
 
   it("keeps the draft and reports the error when the terminal rejects input", () => {
@@ -178,9 +149,9 @@ describe("Workspace input", () => {
     fixtures();
     visitSessions(true);
     openBilling();
-    cy.findByRole("textbox", { name: "Terminal input" }).should("be.disabled").and("have.attr", "placeholder", "Use ••• to enable input");
+    cy.findByRole("textbox", { name: "Terminal input" }).should("be.disabled").and("have.attr", "placeholder", "Allow input to write a message");
     cy.findByRole("button", { name: "Send now" }).should("be.disabled");
-    cy.findByRole("button", { name: "Queue message" }).should("be.disabled");
+    cy.findByRole("button", { name: "Queue message" }).should("not.exist");
     cy.findByRole("button", { name: "Attach an image" }).should("be.disabled");
     cy.findByRole("button", { name: "Open large writing area" }).should("be.disabled");
     cy.findByRole("button", { name: "Session menu" }).click();
@@ -197,80 +168,6 @@ describe("Workspace input", () => {
     cy.findByRole("textbox", { name: "Terminal input" }).should("be.enabled").and("have.attr", "placeholder", "Message…");
     cy.get("@input.all").should("have.length", 0);
     cy.get("@key.all").should("have.length", 0);
-  });
-});
-
-describe("Prompt queue", () => {
-  beforeEach(() => cy.viewport(390, 844));
-
-  it("queues a draft for the selected terminal and shows the waiting count", () => {
-    fixtures();
-    visitSessions();
-    openBilling();
-    cy.findByRole("textbox", { name: "Terminal input" }).type("Add invoice totals");
-    cy.findByRole("button", { name: "Queue message" }).click();
-    cy.wait("@enqueue").its("request.body").should("deep.equal", { workspaceId: "workspace-billing", surfaceId: "terminal-beta", text: "Add invoice totals" });
-    cy.findByRole("status").should("contain.text", "Prompt queued for the next agent stop");
-    cy.findByRole("textbox", { name: "Terminal input" }).should("have.value", "");
-    cy.findByRole("button", { name: "Prompt queue, 1 waiting" }).should("contain.text", "1");
-    cy.get("@input.all").should("have.length", 0);
-  });
-
-  it("edits, reorders, sends and removes queued prompts from the sheet", () => {
-    const queue = fixtures();
-    visitSessions();
-    openBilling();
-    cy.findByRole("textbox", { name: "Terminal input" }).type("First prompt");
-    cy.findByRole("button", { name: "Queue message" }).click();
-    cy.wait("@enqueue");
-    cy.findByRole("textbox", { name: "Terminal input" }).type("Second prompt");
-    cy.findByRole("button", { name: "Prompt queue, 1 waiting" }).click();
-    cy.wait("@enqueue");
-    cy.findByRole("button", { name: "Prompt queue, 2 waiting" }).click();
-    cy.findByRole("dialog", { name: "Prompt queue" }).as("sheet").should("contain.text", "2 waiting · one sent after each agent stop");
-    cy.findByRole("textbox", { name: "Queued prompt 1" }).should("have.value", "First prompt");
-    cy.findByRole("textbox", { name: "Queued prompt 2" }).should("have.value", "Second prompt");
-    cy.findAllByRole("button", { name: "Move prompt earlier" }).first().should("be.disabled");
-    cy.findAllByRole("button", { name: "Move prompt later" }).last().should("be.disabled");
-    cy.findAllByRole("button", { name: "Move prompt later" }).first().click();
-    cy.wait("@move").then(({ request }) => {
-      expect(request.url).to.match(/\/api\/prompt-queue\/queue-1\/move$/);
-      expect(request.body).to.deep.equal({ direction: 1 });
-    });
-    cy.findByRole("textbox", { name: "Queued prompt 1" }).should("have.value", "Second prompt");
-    cy.findByRole("textbox", { name: "Queued prompt 2" }).should("have.value", "First prompt");
-    cy.findByRole("textbox", { name: "Queued prompt 1" }).clear().type("Second prompt, refined").blur();
-    cy.wait("@update").then(({ request }) => {
-      expect(request.url).to.match(/\/api\/prompt-queue\/queue-2$/);
-      expect(request.body).to.deep.equal({ text: "Second prompt, refined" });
-    });
-    cy.get("@sheet").findAllByRole("button", { name: "Send now" }).first().click();
-    cy.wait("@send").its("request.url").should("match", /\/api\/prompt-queue\/queue-2\/send$/);
-    cy.findByRole("status").should("contain.text", "Queued prompt sent");
-    cy.get("@sheet").should("contain.text", "1 waiting");
-    cy.findByRole("textbox", { name: "Queued prompt 1" }).should("have.value", "First prompt");
-    cy.findByRole("textbox", { name: "Queued prompt 2" }).should("not.exist");
-    cy.get("@sheet").findByRole("button", { name: "Remove" }).click();
-    cy.wait("@remove").its("request.url").should("match", /\/api\/prompt-queue\/queue-1$/);
-    cy.get("@sheet").should("contain.text", "Nothing queued");
-    cy.then(() => expect(queue).to.deep.equal([]));
-    cy.findByRole("button", { name: "Close prompt queue" }).click();
-    cy.findByRole("dialog", { name: "Prompt queue" }).should("not.exist");
-    cy.findByRole("button", { name: "Queue message" }).should("be.visible");
-    cy.get("@input.all").should("have.length", 0);
-  });
-
-  it("keeps the draft when queueing fails", () => {
-    fixtures();
-    cy.intercept("POST", "**/api/prompt-queue", { statusCode: 503, body: { error: "Prompt queue is unavailable" } }).as("failedQueue");
-    visitSessions();
-    openBilling();
-    cy.findByRole("textbox", { name: "Terminal input" }).type("Keep this draft");
-    cy.findByRole("button", { name: "Queue message" }).click();
-    cy.wait("@failedQueue");
-    cy.findByRole("status").should("contain.text", "Prompt queue is unavailable");
-    cy.findByRole("textbox", { name: "Terminal input" }).should("have.value", "Keep this draft");
-    cy.findByRole("button", { name: "Queue message" }).should("be.visible");
   });
 });
 

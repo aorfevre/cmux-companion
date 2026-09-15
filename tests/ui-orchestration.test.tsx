@@ -1,4 +1,3 @@
-import { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { GoalBoard } from '../app/orchestration/goal-board';
@@ -27,7 +26,7 @@ beforeEach(() => {
     throw new Error(`Unexpected ${url}`);
   });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); history.replaceState(null, '', '/'); });
 async function start() {
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: 'Start a goal' }));
@@ -61,7 +60,7 @@ test('uncertain command retries exactly the original id, payload and expected ve
   fireEvent.click(retry);
   await waitFor(() => expect(commands).toHaveLength(2));
   expect(commands[1]).toBe(commands[0]);
-  expect(JSON.parse(commands[0])).toMatchObject({ expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'A useful goal' } });
+  expect(JSON.parse(commands[0])).toMatchObject({ expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', description: 'A useful goal' } });
 });
 test('a definitive stale conflict refreshes and allows a new deliberate command', async () => {
   await start(); const original = api.getMockImplementation()!;
@@ -109,7 +108,7 @@ test('moved publication target shows the observed commit and submits the service
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const goal = { ...goalView(fixture().goal), contracts: [], actions: [{ type: 'accept_moved_target', label: 'Publish reviewed head against moved target', payload: { operationId: 'publish', baseHeadSha: 'b'.repeat(40) } }],
-    publication: { branch: 'companion-goals/goal', baseBranch: 'main', baseSha: 'a'.repeat(40), observation: { status: 'target_moved' as const, baseHeadSha: 'b'.repeat(40), pr: null } } };
+    publication: { approved: true, branch: 'companion-goals/goal', baseBranch: 'main', baseSha: 'a'.repeat(40), observation: { status: 'target_moved' as const, baseHeadSha: 'b'.repeat(40), pr: null } } };
   const act = vi.fn().mockResolvedValue(true);
   render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
   expect(screen.getByText('bbbbbbbbbbbb')).toBeTruthy();
@@ -135,6 +134,7 @@ test('finishing a command for A does not invalidate the selected B detail reques
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: /Goal A/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
+  fireEvent.click(screen.getByRole('button', { name: /Back to Mission Control/ }));
   fireEvent.click(screen.getByRole('button', { name: /Goal B/ }));
   await waitFor(() => expect(finishB).toBeTypeOf('function'));
   finishCommand({});
@@ -156,23 +156,6 @@ test('automatic discovery keeps disabled repositories visible and reports partia
   expect(screen.getByRole('link', { name: 'Configure repository' }).getAttribute('href')).toBe('/settings?repository=repo#dev-repos');
 });
 
-test('Kanban groups authoritative states, shows named agents and offers mobile columns', async () => {
-  const { GoalKanban } = await import('../app/orchestration/kanban');
-  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
-  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
-  const base = goalView(fixture().goal);
-  const goals = (['discovering', 'awaiting_approval', 'building', 'ready_to_publish', 'merged', 'aborted'] as const).map((status, i) => ({ ...base, id: String(i), status, title: `Goal ${i}`, plannerName: `REPO Planning Goal ${i}` }));
-  const select = vi.fn();
-  render(<GoalKanban goals={goals} selected={null} select={select} projectName={() => 'Example'} />);
-  expect(screen.getByRole('button', { name: 'Done (2)' })).toBeTruthy();
-  expect(screen.getByText('REPO Planning Goal 0')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Review (1)' }));
-  expect(screen.getByRole('region', { name: 'Review' }).getAttribute('data-active')).toBe('true');
-  fireEvent.click(screen.getByRole('button', { name: /Example Goal 3/ }));
-  expect(select).toHaveBeenCalledWith('3');
-  expect(screen.getByText(/Needs attention/)).toBeTruthy();
-});
-
 test('goal details preserve the request, edit only the title, and hide empty evidence', async () => {
   const { GoalDetail } = await import('../app/orchestration/goal-detail');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
@@ -190,19 +173,17 @@ test('goal details preserve the request, edit only the title, and hide empty evi
   expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'rename_goal', payload: { title: 'Better title' } }));
 });
 
-test('task board exposes dependencies, failures and optional graph', async () => {
-  const { TaskKanban } = await import('../app/orchestration/kanban');
+test('wave board exposes dependencies, failures and checked barriers', async () => {
+  const { WaveBoard } = await import('../app/orchestration/wave-board');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const base = goalView(fixture().goal);
-  const goal = { ...base, tasks: (['integrated', 'running', 'in_review', 'failed'] as const).map((status, i) => ({ id: String(i), title: `Task ${i}`, status, dependsOn: i ? ['0'] : [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
-  render(<TaskKanban goal={goal} />);
-  expect(screen.getByRole('button', { name: 'Done (1)' })).toBeTruthy();
+  const goal = { ...base, tasks: (['integrated', 'running', 'in_review', 'failed'] as const).map((status, i) => ({ id: String(i), title: `Task ${i}`, status, dependsOn: i ? ['0'] : [], ownedAreas: [], criterionIds: [], resources: [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
+  render(<WaveBoard goal={goal} />);
+  expect(screen.getByRole('heading', { name: 'Tasks' })).toBeTruthy();
   expect(screen.getAllByText('Depends on 0')).toHaveLength(3);
   expect(screen.getByText('Needs attention · failed')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Running (1)' }));
-  expect(screen.getByRole('region', { name: 'Tasks Running' }).getAttribute('data-active')).toBe('true');
-  expect(screen.getByText('Dependency graph').closest('details')).toHaveProperty('open', false);
+  expect(screen.getByText(/Tasks · dependency order/)).toBeTruthy();
 });
 
 test('creation submits a full request from main without the current checkout SHA and stays on the board', async () => {
@@ -216,7 +197,7 @@ test('creation submits a full request from main without the current checkout SHA
   fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
   await screen.findByText('Goal saved. Its planning agent will start automatically.');
   const body = JSON.parse(String(api.mock.calls.find(([url]) => url.endsWith('/commands'))?.[1]?.body));
-  expect(body.payload).toEqual({ title: 'A useful goal', description: 'A useful goal', repositoryId: 'repo', baseBranch: 'main' });
+  expect(body.payload).toEqual({ description: 'A useful goal', repositoryId: 'repo', baseBranch: 'main' });
   expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Start a goal' }));
   expect(screen.getByLabelText('What should we accomplish?')).toHaveProperty('value', '');
@@ -239,22 +220,23 @@ test('clarification answers preserve feedback on failure and use the projected a
 
 
 test('terminal goals retain their result without stale attention from unanswered questions', async () => {
-  const { attention, GoalKanban } = await import('../app/orchestration/kanban');
+  const { attention } = await import('../app/orchestration/attention');
+  const { GoalFleet } = await import('../app/orchestration/goal-fleet');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const base = goalView(fixture().goal);
   const goals = (['merged', 'aborted'] as const).map(status => ({ ...base, id: status, status, clarification: { question: 'Historical question' } }));
   for (const goal of goals) expect(attention(goal)).toBeNull();
-  render(<GoalKanban goals={goals} selected={null} select={vi.fn()} projectName={() => 'Example'} />);
+  render(<GoalFleet goals={goals} select={vi.fn()} projectName={() => 'Example'} />);
   expect(screen.getByText('Aborted')).toBeTruthy();
   expect(screen.queryByText(/Needs attention/)).toBeNull();
 });
 
 
-test('Kanban opens first and cancelling creation restores focus and retains the draft', async () => {
+test('Mission Control opens first and cancelling creation restores focus and retains the draft', async () => {
   render(<GoalBoard />);
   const startButton = await screen.findByRole('button', { name: 'Start a goal' });
-  expect(screen.getByRole('region', { name: 'Goals Kanban' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Goal fleet' })).toBeTruthy();
   expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();
   fireEvent.click(startButton);
   expect(screen.getByRole('heading', { name: 'Start a goal' })).toBe(document.activeElement);
@@ -266,20 +248,7 @@ test('Kanban opens first and cancelling creation restores focus and retains the 
   expect(screen.getByLabelText('What should we accomplish?')).toHaveProperty('value', 'Keep my draft');
 });
 
-test('goal panel closes with Escape and restores the card focus', async () => {
-  const { GoalPanel } = await import('../app/orchestration/goal-panel');
-  const card = document.createElement('button'); card.textContent = 'Goal card'; document.body.append(card); card.focus();
-  const close = vi.fn();
-  const view = render(<GoalPanel close={close}><p>Goal content</p></GoalPanel>);
-  fireEvent.keyDown(screen.getByRole('dialog', { name: 'Goal details' }), { key: 'Escape' });
-  expect(close).toHaveBeenCalledOnce();
-  fireEvent.click(screen.getByRole('dialog', { name: 'Goal details' }), { clientX: -1 });
-  expect(close).toHaveBeenCalledTimes(2);
-  view.unmount(); expect(document.activeElement).toBe(card); card.remove();
-});
-
-
-test('a lost response remains retryable inside the modal with the exact original command', async () => {
+test('a lost response remains retryable inside the goal workspace with the exact original command', async () => {
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const goal = { ...goalView(fixture().goal), id: 'modal-goal', title: 'Modal goal', contracts: [] };
@@ -295,7 +264,7 @@ test('a lost response remains retryable inside the modal with the exact original
   fireEvent.click(await screen.findByRole('button', { name: /Modal goal/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
   const retry = await screen.findByRole('button', { name: 'Retry pending request' });
-  expect(retry.closest('dialog')).toBe(screen.getByRole('dialog', { name: 'Goal details' }));
+  expect(retry.closest('.mission-goal-workspace')).not.toBeNull();
   await waitFor(() => expect(retry).toHaveProperty('disabled', false));
   fireEvent.click(retry);
   await waitFor(() => expect(commands).toHaveLength(2));
@@ -303,17 +272,88 @@ test('a lost response remains retryable inside the modal with the exact original
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull());
 });
 
-test('StrictMode closes the native modal before restoring outside focus', async () => {
-  const { GoalPanel } = await import('../app/orchestration/goal-panel');
-  const card = document.createElement('button'); document.body.append(card); card.focus();
-  const closed = vi.spyOn(HTMLDialogElement.prototype, 'close');
-  const focused = vi.spyOn(card, 'focus');
-  const view = render(<StrictMode><GoalPanel close={vi.fn()}><p>Content</p></GoalPanel></StrictMode>);
-  expect(screen.getByRole('dialog', { name: 'Goal details' })).toHaveProperty('open', true);
-  expect(closed).toHaveBeenCalledOnce();
-  view.unmount();
-  expect(closed).toHaveBeenCalledTimes(2);
-  expect(closed.mock.invocationCallOrder[1]).toBeLessThan(focused.mock.invocationCallOrder.at(-1)!);
-  expect(document.activeElement).toBe(card);
-  closed.mockRestore(); focused.mockRestore(); card.remove();
+test('held goal shows failure and reconciliation guidance, then submits the exact recovery action', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.request('planner', 'planner'); f.dispatch('planner');
+  f.command('record_failure', { attemptId: 'planner', uncertain: true, error: 'Lost connection' });
+  const act = vi.fn().mockResolvedValue(true);
+  const view = render(<GoalDetail goal={{ ...goalView(f.goal), contracts: [] }} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  expect(screen.getByText(/On hold/)).toBeTruthy();
+  expect(screen.getByText(/Let active workers finish and reconcile/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Recover goal' })).toBeNull();
+  f.command('record_stopped', { attemptId: 'planner' });
+  const goal = { ...goalView(f.goal), contracts: [] };
+  view.rerender(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Recover goal' }));
+  expect(act).toHaveBeenCalledWith(goal, goal.actions.find(action => action.type === 'recover_goal'));
+});
+
+test('execution agents expose their service-owned terminal control inside Waves & sessions', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.approve(); f.request('implementation', 'implementer', 'A'); f.dispatch('implementation');
+  const goal = { ...goalView(f.goal), contracts: f.goal.contracts }, control = vi.fn().mockResolvedValue(undefined);
+  render(<GoalDetail goal={goal} disabled={false} terminal={true} act={vi.fn()} control={control} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Waves & sessions' }));
+  fireEvent.click(screen.getByText('Agent session'));
+  fireEvent.click(screen.getByRole('button', { name: 'Open implementer terminal' }));
+  expect(control).toHaveBeenCalledWith(goal, 'terminal', 'implementation');
+});
+
+test('explicit title, brief and files retain their draft and exact uncertain receipt', async () => {
+  await start();
+  fireEvent.change(screen.getByLabelText('Title (optional)'), { target: { value: 'Design refresh' } });
+  const reference = new File(['<svg>reference only</svg>'], 'design.svg', { type: 'image/svg+xml' });
+  fireEvent.change(screen.getByLabelText('Reference files'), { target: { files: [reference] } });
+  await screen.findByRole('button', { name: 'Remove design.svg' });
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Start a goal' }));
+  expect(screen.getByLabelText('Title (optional)')).toHaveProperty('value', 'Design refresh');
+  const original = api.getMockImplementation()!, commands: string[] = [];
+  api.mockImplementation(async (url, options) => {
+    if (url.endsWith('/commands')) { commands.push(String(options?.body)); if (commands.length === 1) throw new Error('Disconnected'); return {}; }
+    return original(url, options);
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
+  const retry = await screen.findByRole('button', { name: 'Retry pending request' });
+  await waitFor(() => expect(retry).toHaveProperty('disabled', false));
+  expect(screen.getByRole('button', { name: 'Remove design.svg' })).toHaveProperty('disabled', true);
+  fireEvent.click(retry);
+  await waitFor(() => expect(screen.queryByLabelText('What should we accomplish?')).toBeNull());
+  expect(commands[0]).toBe(commands[1]);
+  expect(JSON.parse(commands[0]).payload).toMatchObject({ title: 'Design refresh', description: 'A useful goal', attachments: [{ name: 'design.svg', data: btoa('<svg>reference only</svg>') }] });
+  fireEvent.click(screen.getByRole('button', { name: 'Start a goal' }));
+  expect(screen.getByLabelText('Title (optional)')).toHaveProperty('value', '');
+  expect(screen.queryByRole('button', { name: 'Remove design.svg' })).toBeNull();
+});
+
+test('reference selection rejects size/count limits and supports removal', async () => {
+  await start();
+  fireEvent.change(screen.getByLabelText('Reference files'), { target: { files: [new File(['a'.repeat(1024 * 1024 + 1)], 'big.txt')] } });
+  await screen.findByText('Attach up to 8 nonempty files, at most 1 MiB each.');
+  expect(screen.queryByRole('button', { name: 'Remove big.txt' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Reference files'), { target: { files: [new File(['hi'], 'brief.txt')] } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Remove brief.txt' }));
+  expect(screen.queryByRole('button', { name: 'Remove brief.txt' })).toBeNull();
+});
+
+test('wave view shows the active barrier, waiting tasks and retained checked output', async () => {
+  const { WaveBoard } = await import('../app/orchestration/wave-board');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const base = goalView(fixture().goal);
+  const goal = { ...base, waves: [
+    { id: 'first', title: 'Foundation', taskIds: ['A'], checkIds: ['foundation'], number: 1, current: false, checkedHead: 'a'.repeat(40) },
+    { id: 'second', title: 'Delivery', taskIds: ['B'], checkIds: ['all'], number: 2, current: true, checkedHead: null },
+    { id: 'third', title: 'Follow-up', taskIds: ['C'], checkIds: ['all'], number: 3, current: false, checkedHead: null },
+  ], tasks: ['A', 'B', 'C'].map((id, index) => ({ id, title: id, status: 'pending' as const, dependsOn: index ? ['A'] : [], ownedAreas: [], criterionIds: [], resources: [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
+  render(<WaveBoard goal={goal} />);
+  expect(screen.getByText('Wave 1 of 3 · Verified')).toBeTruthy();
+  expect(screen.getByText('Wave 2 of 3 · Current')).toBeTruthy();
+  expect(screen.getByText(/Barrier checks: all · Next wave waits/)).toBeTruthy();
+  expect(screen.getByText('Waiting for the prior wave barrier')).toBeTruthy();
+  expect(screen.getByText('aaaaaaaaaaaa')).toBeTruthy();
 });

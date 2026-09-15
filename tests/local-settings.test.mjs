@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -119,7 +120,7 @@ test('invalid settings writes preserve the previous database value', async t => 
   const mutations = [
     s => { s.secret = 'no'; }, s => { s.provider = 'other'; }, s => { s.tools.cmux = ''; },
     s => { s.execution.global = 0; }, s => { s.execution.maxOutputBytes = 3000000; },
-    s => { s.previews.portEnd = 8000; }, s => { s.previews.portStart = 80; },
+    s => { s.previews = { portStart: 8500, portEnd: 8599 }; }, s => { s.tools.chrome = 'chrome'; },
     s => { s.onboarding.completed = 'yes'; }, s => { s.projects = {}; },
     s => { s.projects.push({ ...project, id: undefined }); },
     s => { s.projects.push({ ...project, checks: [{ executable: 'npm', args: ['test'] }] }); },
@@ -169,4 +170,31 @@ test('favorites survive restart and preserve settings and admitted goal snapshot
   assert.throws(() => store.setFavorite(2, 'unknown', true), /saved project/);
   assert.throws(() => store.setFavorite(2, project.id, 'true'), /boolean/);
   assert.deepEqual(store.setFavorite(2, project.id, false), { revision: 3, ids: [] });
+});
+
+
+test('retirement hides inert schema-2 fields and preserves rollback data, favorites and attempt configuration across restart', async t => {
+  const { store, path, project } = fixture(t);
+  await store.update(0, { ...defaultSettings(), projects: [project], provider: 'codex' });
+  const old = store.read();
+  old.settings.previews = { portStart: 8700, portEnd: 8799 };
+  old.settings.tools.chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  const historical = { project, tools: old.settings.tools, provider: 'claude' };
+  const db = new DatabaseSync(path);
+  db.prepare('UPDATE local_settings SET value=?, imported=1 WHERE id=1').run(JSON.stringify(old.settings));
+  db.prepare('INSERT INTO project_favorites VALUES(?,1)').run(project.id);
+  db.prepare('INSERT INTO goal_configuration VALUES(?,?,?)').run('historical', 1, JSON.stringify(historical));
+  db.exec('PRAGMA user_version=2'); db.close();
+  for (let restart = 0; restart < 2; restart++) {
+    const migrated = new LocalSettings({ path });
+    try {
+      const expected = structuredClone(old.settings); delete expected.previews; delete expected.tools.chrome;
+      assert.deepEqual(migrated.read(), { revision: 1, settings: expected, imported: true });
+      assert.deepEqual(migrated.goalConfiguration('historical'), { revision: 1, ...historical });
+      const raw = { ...old.settings }; delete raw.launchProfiles; delete raw.teamDefaults;
+      assert.deepEqual(JSON.parse(migrated.db.prepare('SELECT value FROM local_settings').get().value), raw);
+      assert.equal(migrated.db.prepare('SELECT favorite FROM project_favorites WHERE project_id=?').get(project.id).favorite, 1);
+      assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 2);
+    } finally { migrated.close(); }
+  }
 });

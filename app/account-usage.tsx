@@ -14,7 +14,7 @@ const CORE_WINDOWS: Array<{ cadence: Exclude<Cadence, "other">; label: string }>
   { cadence: "weekly", label: "Weekly" },
 ];
 
-export function AccountUsageView({ onBack }: { onBack: () => void }) {
+export function AccountUsageView({ onBack, embedded = false }: { onBack: () => void; embedded?: boolean }) {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -27,6 +27,7 @@ export function AccountUsageView({ onBack }: { onBack: () => void }) {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || "Could not read CCS usage");
       setUsage(body as UsageResponse);
+      setNow(Date.now());
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not read CCS usage");
@@ -41,31 +42,36 @@ export function AccountUsageView({ onBack }: { onBack: () => void }) {
   const reconnectSuccess = useCallback(() => load(true), [load]);
 
   return <section className="account-usage-page">
-    <header className="usage-page-head"><button onClick={onBack}>‹ Settings</button><div><p className="eyebrow">CCS · LIVE QUOTA</p><h1>Licence usage</h1></div><button className="usage-refresh" disabled={loading} onClick={() => load(true)} aria-label="Refresh account usage">↻</button></header>
+    <header className="usage-page-head">{!embedded && <button onClick={onBack}>‹ Settings</button>}<div><p className="eyebrow">CCS · LIVE QUOTA</p>{embedded ? <h2>Account usage</h2> : <h1>Licence usage</h1>}</div><button className="usage-refresh" disabled={loading} onClick={() => load(true)} aria-label="Refresh account usage">↻</button></header>
     <p className="usage-intro">Remaining coding capacity for every account connected to CCS. Missing windows are never treated as zero.</p>
-    {usage && <div className="usage-summary"><span><strong>{total}</strong> accounts</span><span className={attention ? "attention" : "ready"}><strong>{attention}</strong> need attention</span><small>{relativeUpdated(usage.generatedAt)}</small></div>}
+    {usage && <div className="usage-summary"><span><strong>{total}</strong> accounts</span><span className={attention ? "attention" : "ready"}><strong>{attention}</strong> need attention</span><small>{relativeUpdated(usage.generatedAt)} · {freshReading(usage.generatedAt, now) ? 'Fresh snapshot' : 'Stale or unavailable snapshot'}</small></div>}
     {loading && !usage && <div className="usage-loading"><i /><i /><i /></div>}
     {error && <div className="usage-error"><strong>Usage unavailable</strong><span>{error}</span><button onClick={() => load(true)}>Try again</button></div>}
     {usage && !usage.available && !error && <div className="usage-error"><strong>CCS usage is unavailable</strong><span>Check that CCS is installed on this Mac, then refresh.</span></div>}
-    <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection provider={provider} now={now} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
+    <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} provider={provider} now={now} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
     {usage?.available && <p className="usage-privacy">Quota comes directly from CCS. OAuth credentials never leave your Mac or appear in this view.</p>}
     {reconnecting && <ReconnectSheet key={reconnecting.account.id} provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
   </section>;
 }
 
-function ProviderSection({ provider, now, onReconnect }: { provider: UsageProvider; now: number; onReconnect: (account: UsageAccount) => void }) {
+function freshReading(value: string | null, now: number) { const stamp = Date.parse(value ?? ''); return Number.isFinite(stamp) && stamp <= now && now - stamp <= 15 * 60_000; }
+
+function ProviderSection({ provider, now, onReconnect, snapshotFresh }: { provider: UsageProvider; now: number; snapshotFresh: boolean; onReconnect: (account: UsageAccount) => void }) {
   return <section className="usage-provider"><header><div className={`provider-mark ${provider.id}`}>{provider.id === "claude" ? "C" : "O"}</div><div><h2>{provider.label}</h2><span>{provider.accounts.length} connected account{provider.accounts.length === 1 ? "" : "s"}</span></div></header>
     {!provider.available && <p className="provider-warning">This provider did not return usage.</p>}
     {provider.available && provider.accounts.length === 0 && <p className="provider-empty">No CCS account connected.</p>}
-    <div className="usage-account-list">{provider.accounts.map((account) => <AccountCard account={account} now={now} onReconnect={() => onReconnect(account)} key={account.id} />)}</div>
+    <div className="usage-account-list">{provider.accounts.map((account) => <AccountCard snapshotFresh={snapshotFresh && provider.available} account={account} now={now} onReconnect={() => onReconnect(account)} key={account.id} />)}</div>
   </section>;
 }
 
-function AccountCard({ account, now, onReconnect }: { account: UsageAccount; now: number; onReconnect: () => void }) {
-  const extras = account.windows.filter((window) => window.category !== "usage" || window.cadence === "other");
-  return <article className={`usage-account ${account.status}`}><header><div><strong>{account.email || account.label}</strong><span>{[account.plan, account.isDefault ? "default" : null, account.paused ? "paused" : null].filter(Boolean).join(" · ") || "CCS account"}</span></div><span className={`usage-status ${account.status}`}>{statusLabel(account.status, account.windows.length)}</span></header>
+function AccountCard({ account, now, onReconnect, snapshotFresh }: { account: UsageAccount; now: number; snapshotFresh: boolean; onReconnect: () => void }) {
+  const capacityKnown = snapshotFresh && freshReading(account.updatedAt, now) && ['ready', 'low', 'exhausted'].includes(account.status);
+  const windows = capacityKnown ? account.windows.filter(window => Number.isFinite(window.remainingPercent) && window.remainingPercent >= 0 && window.remainingPercent <= 100) : [];
+  const extras = windows.filter((window) => window.category !== "usage" || window.cadence === "other");
+  return <article className={`usage-account ${account.status}`}><header><div><strong>{account.email || account.label}</strong><span>{[account.plan, account.isDefault ? "default" : null, account.paused ? "paused" : null].filter(Boolean).join(" · ") || "CCS account"}</span></div><span className={`usage-status ${account.status}`}>{!capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span></header>
+    {!capacityKnown && <p className="account-message">Capacity unknown: the reading is unavailable, failed or older than 15 minutes.</p>}
     {account.message && <p className={`account-message ${account.status}`}>{account.message}</p>}
-    <div className="core-window-grid">{CORE_WINDOWS.map(({ cadence, label }) => <CoreWindow label={label} window={account.windows.find((item) => item.category === "usage" && item.cadence === cadence)} now={now} key={cadence} />)}</div>
+    <div className="core-window-grid">{CORE_WINDOWS.map(({ cadence, label }) => <CoreWindow label={label} window={windows.find((item) => item.category === "usage" && item.cadence === cadence)} now={now} key={cadence} />)}</div>
     {extras.length > 0 && <div className="extra-windows"><p>Additional limits</p>{extras.map((window) => <ExtraWindow window={window} now={now} key={window.id} />)}</div>}
     {account.status === "reconnect" && <button className="account-reconnect" onClick={onReconnect}>Reconnect account</button>}
   </article>;

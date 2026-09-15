@@ -1,3 +1,4 @@
+import { object } from '../server/orchestration/domain/contracts.mjs';
 import { existsSync, renameSync, realpathSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { writeFile } from 'node:fs/promises';
@@ -16,12 +17,23 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
   const demo = await createDevelopmentServer({ port, configure: async (directory) => {
     const repo = await createRepositoryFixture();
     repo.contract.verification.push({ id: 'injected_dependencies', argv: ['node', '--input-type=module', '-e', "import { composition } from './src/composition.mjs'; if (composition(() => 7, () => 11) !== 18) process.exit(1);"] });
+    repo.contract.schemaVersion = 2;
+    repo.contract.tasks = repo.contract.tasks.map(task => ({ ...task, resources: [] }));
+    repo.contract.verification.unshift({ id: 'modules', argv: ['node', '--input-type=module', '-e', "import { a } from './src/a.mjs'; import { b } from './src/b.mjs'; if (a() !== 2 || b() !== 3) process.exit(1);"] });
+    repo.contract.waves = [{ id: 'modules', title: 'Independent modules', taskIds: ['A', 'B'], checkIds: ['modules'] }, { id: 'composition', title: 'Compose verified outputs', taskIds: ['C'], checkIds: repo.contract.verification.map(check => check.id) }];
     const siblings = new Map(), shared = new Map();
     return {
       dispose: () => repo.close(),
       metadata: { repositoryId: 'repo', baseSha: repo.baseSha, repository: repo.repository, remote: repo.remote, browserHarness },
       options: {
         repositories: new Map([['repo', repo.repository]]), readOnly, limits: { global: 2, perGoal: 2 },
+        beforeCommand: async command => {
+          if (command.type !== 'create_goal') return;
+          object(command.payload).teamConfiguration = {
+            capturedAt: '2026-09-15T10:00:00.000Z', defaults: { planner: 'claude', implementer: 'claude', reviewer: 'claude', integrator: 'claude' },
+            profiles: ['claude', 'codex'].map(provider => ({ id: provider, label: `${provider} fixture`, provider, model: 'fixture', roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: 'Disposable fake adapter', capacity: { remainingPercent: null, source: 'Fixture', checkedAt: null, reason: 'No live quota lookup in the disposable fixture.' } })),
+          };
+        },
         prepareGoal: goal => fixtureRemote.fetchBase(goal.repositoryId, goal.baseBranch),
         createAgents: ({ onResult }) => {
           const agents = new ScriptedAgents({

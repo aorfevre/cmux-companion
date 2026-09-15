@@ -35,13 +35,10 @@ function scenario() {
   cy.intercept("GET", "**/api/settings/local", { statusCode: 404, body: { error: "Legacy settings" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "E2E Mac" }, workspaces: [], error: null, refreshedAt: iso(0) });
-  cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
   cy.intercept("GET", "**/api/repos", { repos: [] });
   cy.intercept("GET", "**/api/health", { version: { builtAt: iso(-60) } });
   cy.intercept("GET", "**/api/updater/status", { available: false });
-  cy.intercept("GET", "**/api/prompt-queue*", { items: [] });
   cy.intercept("GET", "**/api/settings/models", { roles: DEFAULT_MODEL_ROLES, defaults: DEFAULT_MODEL_ROLES, warning: null });
-  cy.intercept("GET", "**/api/push/status*", { supported: false, subscribed: false });
 }
 
 function visitUsage() {
@@ -59,7 +56,7 @@ describe("licence usage", () => {
       cy.intercept("GET", "**/api/account-usage", usageFixture()).as("usage");
       visitUsage();
       cy.wait("@usage");
-      cy.findByRole("heading", { name: "Licence usage" }).should("be.visible");
+      cy.findByRole("heading", { name: "Account usage" }).should("be.visible");
       cy.get(".usage-summary").should("contain.text", "4").and("contain.text", "accounts").and("contain.text", "3").and("contain.text", "need attention").and("contain.text", "Updated 1m ago");
       cy.contains(".usage-provider", "Claude Code").should("contain.text", "2 connected accounts");
       cy.contains(".usage-provider", "OpenAI Codex").should("contain.text", "2 connected accounts");
@@ -115,13 +112,13 @@ describe("licence usage", () => {
     cy.wait("@usage").its("request.url").should("include", "refresh=1");
     account("work@example.test").contains(".core-window", "5 hours").should("contain.text", "61%");
     cy.get(".usage-summary").should("contain.text", "Updated now");
-    cy.findByRole("button", { name: "‹ Settings" }).click();
-    cy.findByRole("heading", { name: /^Settings$/ }).should("be.visible");
+    cy.findByRole("button", { name: "This device" }).click();
+    cy.findByRole("heading", { name: /^Setup$/ }).should("be.visible");
     cy.location("pathname").should("eq", "/settings");
     cy.visit("/settings#agents");
-    cy.findByRole("link", { name: "View account usage" }).click();
-    cy.findByRole("heading", { name: "Licence usage" }).should("be.visible");
-    cy.location("search").should("eq", "?view=usage");
+    cy.findByRole("button", { name: "View account usage" }).click();
+    cy.findByRole("heading", { name: "Account usage" }).should("be.visible");
+    cy.location("hash").should("eq", "#usage");
   });
 
   it("reports a failed read without inventing quota and recovers with Try again", () => {
@@ -169,7 +166,7 @@ describe("licence usage", () => {
     cy.intercept("GET", "**/api/account-usage*", (request) => {
       reads += 1;
       const usage = usageFixture();
-      if (reads > 1) { Object.assign(usage.providers[1].accounts[0], { status: "ready", message: null, windows: [{ id: "c-5h", cadence: "5h", label: "Session limit", category: "usage", remainingPercent: 100, resetAt: iso(300), reported: true }] }); usage.summary.reconnect = 0; usage.summary.ready = 2; }
+      if (reads > 1) { Object.assign(usage.providers[1].accounts[0], { status: "ready", message: null, updatedAt: iso(0), windows: [{ id: "c-5h", cadence: "5h", label: "Session limit", category: "usage", remainingPercent: 100, resetAt: iso(300), reported: true }] }); usage.summary.reconnect = 0; usage.summary.ready = 2; }
       request.reply(usage);
     }).as("usage");
     cy.intercept("POST", "**/api/account-usage/0123456789abcdefabcd/reconnect", { statusCode: 201, body: session }).as("start");

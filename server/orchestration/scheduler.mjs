@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { DomainError, integer, requireValue } from './domain/contracts.mjs';
 import { requireCapability } from './ports.mjs';
 import { SchedulerOwnership } from './storage/ownership.mjs';
+import { MergeCoordinator } from './merge-coordinator.mjs';
 import { PublicationCoordinator } from './publication-coordinator.mjs';
 import { VerificationCoordinator } from './verification-coordinator.mjs';
 import { IntegrationRepairs } from './integration-repairs.mjs';
@@ -23,6 +24,7 @@ export class Scheduler {
     /** @type {ReturnType<typeof setInterval> | null} */ this.timer = null;
     this.verifications = verifier ? new VerificationCoordinator({ service, verifier, ownership, id, onError }) : null;
     this.publications = publisher ? new PublicationCoordinator({ service, publisher, ownership, id, onError }) : null;
+    this.merges = publisher ? new MergeCoordinator({ service, publisher, ownership, id, onError }) : null;
     this.previousNotify = this.store.onCommit;
     /** @param {number} cursor */
     this.notify = (cursor) => { try { this.previousNotify(cursor); } finally { this.verifications?.cancelRevoked(); this.publications?.cancelRevoked(); void this.tick().catch(this.onError); } };
@@ -30,7 +32,7 @@ export class Scheduler {
   /** @param {{ releaseOwnershipOnFailure?: boolean }} [options] */
   async start({ releaseOwnershipOnFailure = true } = {}) {
     requireValue(this.stopped, 'Scheduler is already started'); this.ownership.acquire();
-    this.service.ownership = this.ownership; this.stopped = false; if (this.verifications) this.verifications.stopped = false; if (this.publications) this.publications.stopped = false; this.store.onCommit = this.notify;
+    this.service.ownership = this.ownership; this.stopped = false; if (this.merges) this.merges.stopped = false; if (this.verifications) this.verifications.stopped = false; if (this.publications) this.publications.stopped = false; this.store.onCommit = this.notify;
     this.timer = setInterval(() => { void this.tick().catch(this.onError); }, this.intervalMs); this.timer.unref();
     try {
       this.store.rebuildReady(() => this.ownership.assertOwned());
@@ -42,7 +44,7 @@ export class Scheduler {
     this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null;
     if (this.store.onCommit === this.notify) this.store.onCommit = this.previousNotify;
     try {
-      const settled = await Promise.allSettled([this.sweep, ...this.startupJobs.values(), this.verifications?.stop(), this.publications?.stop()]);
+      const settled = await Promise.allSettled([this.sweep, ...this.startupJobs.values(), this.verifications?.stop(), this.publications?.stop(), this.merges?.stop()]);
       const failures = settled.filter((entry) => entry.status === 'rejected');
       if (failures.length) throw new AggregateError(failures.map((entry) => entry.reason), 'Scheduler shutdown failed');
     } finally { if (releaseOwnership) this.ownership.release(); }
@@ -62,6 +64,7 @@ export class Scheduler {
     await this.integrate();
     await this.verifications?.run();
     await this.publications?.run();
+    this.merges?.run();
     if (this.stopped) return;
     for (const work of this.store.ready()) {
       if (this.stopped) return;
@@ -131,7 +134,7 @@ export class Scheduler {
           } else if (observed.status === 'pending' && ['aborted', 'merged'].includes(goal.status)) {
             this.reconciler.record(goal.id, 'cancel_integration', { operationId: operation.id });
             this.store.advanceOperation(operation.id, operation.status, 'completed');
-          } else if (goal.integration.state === 'failed' && goal.integration.retryRequested && goal.status === 'building' && this.service.repositoryIds.has(goal.repositoryId)) {
+          } else if (goal.integration.state === 'failed' && goal.integration.retryRequested && !goal.hold && goal.status === 'building' && this.service.repositoryIds.has(goal.repositoryId)) {
             this.reconciler.record(goal.id, observed.status === 'pending' ? 'resume_integration' : 'record_integration_failure', { operationId: operation.id, code: 'OWNERSHIP_UNCERTAIN' });
           } else if (observed.status === 'unknown' && goal.integration.state === 'applying') {
             this.reconciler.record(goal.id, 'record_integration_failure', { operationId: operation.id, code: 'OWNERSHIP_UNCERTAIN' });
@@ -149,7 +152,7 @@ export class Scheduler {
       if (this.stopped) return;
       this.ownership.assertOwned();
       let goal = this.store.get(snapshot.id);
-      if (!goal || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
+      if (!goal || goal.hold || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
       if (!goal.integration) {
         if (goal.attempts.some((attempt) => attempt.role === 'integrator' && attempt.workerState !== 'stopped')) continue;
         const task = goal.tasks.find((entry) => entry.status === 'accepted');
@@ -181,11 +184,13 @@ export class Scheduler {
     this.ownership.assertOwned();
     let goal = this.store.get(operation.goalId), attempt = goal?.attempts.find((entry) => entry.id === operation.attemptId);
     if (!goal || !attempt) return;
+    if (attempt.workerState === 'stopped') { this.store.advanceOperation(operation.id, 'pending', 'completed'); return; }
     const permitted = () => goal !== null && !this.stopped && this.service.repositoryIds.has(goal.repositoryId) && operation.generation === goal.generation && operation.revision === goal.revision && !['aborted', 'merged'].includes(goal.status);
     if (!permitted()) {
-      if (attempt.workerState !== 'stopped') this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
+      this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
       this.store.advanceOperation(operation.id, 'pending', 'completed'); return;
     }
+    if (goal.hold) return;
     let launchStarted = false;
     try {
       requireCapability(this.agents, attempt.role, attempt.mode);
@@ -197,9 +202,15 @@ export class Scheduler {
       goal = this.store.get(operation.goalId); attempt = goal?.attempts.find((entry) => entry.id === operation.attemptId);
       if (!goal || !attempt) return;
       if (!attempt.worktree) this.reconciler.record(goal.id, 'record_provision', { attemptId: attempt.id, ...resources });
-      if (!permitted()) { this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id }); this.store.advanceOperation(operation.id, 'pending', 'completed'); return; }
-      attempt = this.store.get(goal.id)?.attempts.find((entry) => entry.id === operation.attemptId);
+      goal = this.store.get(goal.id);
+      if (!goal) return;
+      attempt = goal.attempts.find((entry) => entry.id === operation.attemptId);
       requireValue(attempt, 'Provisioned attempt disappeared');
+      if (!permitted() || attempt.workerState === 'stopped') {
+        if (attempt.workerState !== 'stopped') this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
+        this.store.advanceOperation(operation.id, 'pending', 'completed'); return;
+      }
+      if (goal.hold) return;
       if (!this.store.advanceOperation(operation.id, 'pending', 'dispatching')) return;
       // All durable intent/resource checks precede the first possible agent launch.
       launchStarted = true;

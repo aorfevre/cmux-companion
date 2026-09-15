@@ -25,6 +25,7 @@ if (!store.get('g')) {
       request('implementation', 'implementer', 'A'); dispatch('implementation'); command('confirm_candidate', { attemptId: 'implementation', headSha: HEAD_A }); command('record_stopped', { attemptId: 'implementation' });
       request('task_review', 'reviewer', 'A'); dispatch('task_review'); review('task_review', HEAD_A);
       command('request_integration', { taskId: 'A', operationId: 'integration' }); command('record_integration_conflict', { operationId: 'integration' });
+      command('recover_goal', { holdId: store.get('g').hold.id }, 'user');
     }
   }
   command('request_attempt', { role, taskId: role === 'implementer' ? 'A' : null, attemptId: 'a', operationId: 'op', conversationId: 'conversation' });

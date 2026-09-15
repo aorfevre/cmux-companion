@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import { afterEach, describe, test, vi } from "vitest";
-import { localUrlPort, resolveAssetPath, resolveMarkdownPath, splitContextLinks, terminalContext } from "../app/context-links.mjs";
+import { resolveAssetPath, resolveMarkdownPath, splitContextLinks } from "../app/context-links.mjs";
 import { isNearBottom, nextFollowState } from "../app/terminal-follow.mjs";
 import { nativeComposerStartRow, normalizeRenderGrid, safeTerminalColor, terminalViewSignature, withoutNativeComposer } from "../app/terminal-grid.mjs";
 import { relativeTime } from "../app/relative-time";
@@ -25,35 +25,6 @@ describe("context links", () => {
     assert.deepEqual(splitContextLinks(""), [{ type: "text", text: "" }]);
     assert.deepEqual(splitContextLinks(null), [{ type: "text", text: "" }]);
     assert.deepEqual(splitContextLinks("nothing here"), [{ type: "text", text: "nothing here" }]);
-  });
-
-  test("terminal context de-duplicates references and caps their number", () => {
-    const text = Array.from({ length: 25 }, (_, index) => `doc-${index}.md`).join(" ") + " " + Array.from({ length: 15 }, (_, index) => `http://localhost:${4000 + index}`).join(" ") + " README.md README.md";
-    const context = terminalContext({ mode: "text", text });
-    assert.equal(context.markdown.length, 20);
-    assert.equal(context.urls.length, 12);
-    assert.deepEqual(terminalContext({ mode: "text", text: "README.md README.md" }), { markdown: ["README.md"], urls: [] });
-    assert.deepEqual(terminalContext(null), { markdown: [], urls: [] });
-    assert.deepEqual(terminalContext({ mode: "text" }), { markdown: [], urls: [] });
-    assert.deepEqual(terminalContext({ mode: "grid" }), { markdown: [], urls: [] });
-  });
-
-  test("terminal context reads render grids in row and column order across scrollback", () => {
-    const view = { mode: "grid", render_grid: { rows: 2, scrollback_rows: 1,
-      scrollback_spans: [{ row: 0, column: 0, text: "old CHANGELOG.md" }, { row: 7, column: 0, text: "dropped" }],
-      row_spans: [{ row: 0, column: 6, text: "3000" }, { row: 0, column: 0, text: "http://localhost:" }, { row: 1, column: 0, text: "docs/a.md" }, { row: 9, column: 0, text: "lost.md" }],
-    } };
-    assert.deepEqual(terminalContext(view), { markdown: ["CHANGELOG.md", "docs/a.md"], urls: ["http://localhost:3000"] });
-    assert.deepEqual(terminalContext({ mode: "grid", render_grid: {} }), { markdown: [], urls: [] });
-  });
-
-  test("local URL ports come only from loopback hosts", () => {
-    assert.equal(localUrlPort("http://localhost:3000/path"), 3000);
-    assert.equal(localUrlPort("http://127.0.0.1"), 80);
-    assert.equal(localUrlPort("https://localhost"), 443);
-    assert.equal(localUrlPort("http://[::1]:5173"), 5173);
-    assert.equal(localUrlPort("https://example.com:4443"), null);
-    assert.equal(localUrlPort("not a url"), null);
   });
 
   test("Markdown paths resolve relative to the current file and never escape the repository", () => {

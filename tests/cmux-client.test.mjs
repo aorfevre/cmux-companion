@@ -228,16 +228,6 @@ test("uses structured RPC for safe workspace launch and shell-quotes prompts", a
   );
 });
 
-test("validates structured inbox replies", async () => {
-  const calls = [];
-  const client = new CmuxClient({ execute: async (_bin, args) => { calls.push(args); return { stdout: "{}", stderr: "" }; } });
-  await client.feedReply(ID, "permissionRequest", { mode: "once" });
-  assert.equal(calls[0][2], "feed.permission.reply");
-  assert.deepEqual(JSON.parse(calls[0][3]), { request_id: ID, mode: "once" });
-  assert.throws(() => client.feedReply(ID, "permissionRequest", { mode: "yes" }), /Invalid permission/);
-  assert.throws(() => client.feedReply(ID, "question", { selections: [] }), /Select at least one/);
-});
-
 test("parses the compact workspace health metrics row", () => {
   const metrics = parseWorkspaceMetrics("1.2\t1024\t3\tsurface\tsurface:1\tworkspace:1\tshell\n5.5\t2048\t8\tworkspace\tworkspace:1\twindow:1\tProject");
   assert.deepEqual(metrics, { cpuPercent: 5.5, memoryBytes: 2048, processCount: 8, ref: "workspace:1", parent: "window:1", title: "Project" });
@@ -287,58 +277,6 @@ test("discovers all workspace listeners with one cmux process scan", async () =>
   }, socketPassword: "secret" });
   const ports = await client.workspaceListeningPortsAll(mobile, local);
   assert.deepEqual(ports.get(ID), [3000, 5173]);
-});
-
-test("sends a workspace notification through the rpc surface", async () => {
-  const calls = [];
-  const client = new CmuxClient({
-    bin: "/bin/true",
-    execute: async (bin, args) => { calls.push(args); return { stdout: "{}", stderr: "" }; },
-  });
-  await client.notify(ID, { title: "Goal ready", body: "3 of 3 branches ready" });
-  assert.equal(calls[0][1], "rpc");
-  assert.equal(calls[0][2], "notification.create");
-  assert.deepEqual(JSON.parse(calls[0][3]), {
-    workspace_id: ID,
-    title: "Goal ready",
-    body: "3 of 3 branches ready",
-  });
-});
-
-test("refuses a notification for an invalid workspace target", async () => {
-  const client = new CmuxClient({
-    bin: "/bin/true",
-    execute: async () => ({ stdout: "{}", stderr: "" }),
-  });
-  await assert.rejects(() => client.notify("workspace-one", { title: "Goal ready" }), /Invalid cmux target/);
-});
-
-test("clamps an oversized notification title and body before sending", async () => {
-  const calls = [];
-  const client = new CmuxClient({
-    bin: "/bin/true",
-    execute: async (bin, args) => { calls.push(args); return { stdout: "{}", stderr: "" }; },
-  });
-  await client.notify(ID, { title: "x".repeat(150), body: "y".repeat(600) });
-  assert.deepEqual(JSON.parse(calls[0][3]), {
-    workspace_id: ID,
-    title: "x".repeat(100),
-    body: "y".repeat(500),
-  });
-});
-
-test("falls back to a default title instead of failing on a blank one", async () => {
-  const calls = [];
-  const client = new CmuxClient({
-    bin: "/bin/true",
-    execute: async (bin, args) => { calls.push(args); return { stdout: "{}", stderr: "" }; },
-  });
-  await client.notify(ID, { title: "   ", body: "still delivered" });
-  assert.deepEqual(JSON.parse(calls[0][3]), {
-    workspace_id: ID,
-    title: "cmux companion",
-    body: "still delivered",
-  });
 });
 
 test("passes a custom model to the agent command and refuses shell syntax before creating a workspace", async (t) => {
@@ -398,26 +336,19 @@ test("passes the process environment without a credential when no socket passwor
   assert.equal(new CmuxClient({ socketPassword: null, maxConcurrent: "nope" }).maxConcurrent, 2);
 });
 
-test("exposes host status, workspace list, feeds and notifications as fixed argv commands", async () => {
+test("exposes host status and workspace list as fixed argv commands", async () => {
   const { client, calls } = recordingClient(() => ({ stdout: JSON.stringify({ ok: true }) }));
   assert.deepEqual(await client.hostStatus(), { ok: true });
   await client.workspaceList();
-  await client.pendingFeed();
-  await client.notifications();
-  await client.markNotificationRead(ID);
   await client.todoList(ID);
   await client.todoAction(ID, SURFACE, "check");
   assert.deepEqual(calls.map((call) => call.args), [
     ["--json", "rpc", "mobile.host.status", "{}"],
     ["--json", "rpc", "mobile.workspace.list", "{}"],
-    ["--json", "rpc", "feed.list", JSON.stringify({ pending_only: true })],
-    ["--json", "rpc", "notification.list", "{}"],
-    ["--json", "rpc", "notification.mark_read", JSON.stringify({ id: ID })],
     ["--json", "todo", "list", "--workspace", ID],
     ["--json", "todo", "check", SURFACE, "--workspace", ID],
   ]);
   assert.ok(calls.every((call) => call.bin === "/fake/cmux"));
-  await assert.rejects(() => client.markNotificationRead("notification-1"), /Invalid cmux target/);
   assert.throws(() => client.todoList("todo"), /Invalid cmux target/);
   await assert.rejects(() => client.todoAction(ID, "todo-1", "check"), /Invalid cmux target/);
   await assert.rejects(() => client.todoAction(ID, SURFACE, "delete"), /Unsupported todo action/);
@@ -429,28 +360,6 @@ test("refuses RPC method names outside the verified surface before spawning anyt
     assert.throws(() => client.rpc(method), /Invalid cmux method/);
   }
   assert.equal(calls.length, 0);
-});
-
-test("answers questions and plan reviews through structured feed replies with bounded feedback", async () => {
-  const { client, calls } = recordingClient();
-  await client.feedReply(ID, "question", { selections: ["Option A", "Option B"] });
-  await client.feedReply(ID, "exitPlan", { mode: "manual" });
-  await client.feedReply(ID, "exitPlan", { mode: "deny", feedback: "  too broad  " });
-  assert.deepEqual(calls.map((call) => [call.args[2], JSON.parse(call.args[3])]), [
-    ["feed.question.reply", { request_id: ID, selections: ["Option A", "Option B"] }],
-    ["feed.exit_plan.reply", { request_id: ID, mode: "manual" }],
-    ["feed.exit_plan.reply", { request_id: ID, mode: "deny", feedback: "too broad" }],
-  ]);
-  assert.throws(() => client.feedReply(ID, "question", { selections: ["  "] }), /Select at least one/);
-  assert.throws(() => client.feedReply(ID, "question", { selections: [42] }), /Select at least one/);
-  assert.throws(() => client.feedReply(ID, "question", { selections: ["x".repeat(501)] }), /Select at least one/);
-  assert.throws(() => client.feedReply(ID, "question", { selections: Array.from({ length: 21 }, () => "a") }), /Select at least one/);
-  assert.throws(() => client.feedReply(ID, "question", {}), /Select at least one/);
-  assert.throws(() => client.feedReply(ID, "exitPlan", { mode: "yolo" }), /Invalid plan response/);
-  assert.throws(() => client.feedReply(ID, "exitPlan", { mode: "deny", feedback: "x".repeat(4_001) }), /Feedback is too long/);
-  assert.throws(() => client.feedReply(ID, "todo", {}), /Unsupported inbox item/);
-  assert.throws(() => client.feedReply("req-1", "question", { selections: ["a"] }), /Invalid cmux target/);
-  assert.equal(calls.length, 3);
 });
 
 test("launches a shell workspace with a package script, a printed prompt, or nothing at all", async (t) => {

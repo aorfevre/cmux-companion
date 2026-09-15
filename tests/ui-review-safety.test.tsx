@@ -6,7 +6,6 @@ import Home from "../app/page";
 import { AccountUsageView } from "../app/account-usage";
 
 const workspace = { id: "workspace-1", title: "Safety session", current_directory: "/repo", terminals: [{ id: "terminal-1", title: "shell", is_focused: true }] };
-const queued = { id: "queue-1", workspaceId: workspace.id, surfaceId: "terminal-1", text: "Old instruction", createdAt: "2026-09-06", updatedAt: "2026-09-06", attempts: 0 };
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 function installHome(handler: (url: string, init?: RequestInit) => Promise<Response> | Response | undefined = () => undefined) {
@@ -23,7 +22,6 @@ function installHome(handler: (url: string, init?: RequestInit) => Promise<Respo
     if (url.startsWith("/api/goal-sessions/workspace/")) return response({ plan: null });
     if (url === "/api/inbox") return response({ items: [], actionableCount: 0, unreadCount: 0 });
     if (url === "/api/repos") return response({ repos: [] });
-    if (url.startsWith("/api/prompt-queue?")) return response({ items: [queued] });
     if (url.includes("/replay?")) return response({ mode: "text", text: "Terminal ready" });
     if (url.includes("/viewport")) return response({});
     if (url === "/api/health") return response({ version: { builtAt: null } });
@@ -35,36 +33,6 @@ function installHome(handler: (url: string, init?: RequestInit) => Promise<Respo
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-test("failed queue save preserves edits, displays detail feedback and sends nothing until a successful retry", async () => {
-  let fail = true;
-  let savedText = queued.text;
-  const sent: string[] = [];
-  const fetch = installHome((url, init) => {
-    if (url === "/api/prompt-queue/queue-1" && init?.method === "PATCH") {
-      if (fail) return response({ error: "Save unavailable" }, 503);
-      savedText = JSON.parse(String(init.body)).text;
-      return response({});
-    }
-    if (url === "/api/prompt-queue/queue-1/send") { sent.push(savedText); return response({}); }
-    if (url.startsWith("/api/prompt-queue?")) return response({ items: [{ ...queued, text: savedText }] });
-  });
-  render(<Home />);
-  await userEvent.click(await screen.findByRole("button", { name: "Prompt queue, 1 waiting" }, { timeout: 5000 }));
-  const input = screen.getByRole("textbox", { name: "Queued prompt 1" });
-  await userEvent.clear(input);
-  await userEvent.type(input, "The reviewed instruction");
-  await userEvent.click(within(screen.getByRole("dialog", { name: "Prompt queue" })).getByRole("button", { name: "Send now" }));
-  await screen.findByRole("alert");
-  assert.match(screen.getByRole("status").textContent || "", /Save unavailable/);
-  assert.equal((input as HTMLTextAreaElement).value, "The reviewed instruction");
-  assert.deepEqual(sent, []);
-  assert.equal(fetch.mock.calls.filter(([url, init]) => url === "/api/prompt-queue/queue-1" && init?.method === "PATCH").length, 1);
-  fail = false;
-  await userEvent.click(within(screen.getByRole("dialog", { name: "Prompt queue" })).getByRole("button", { name: "Send now" }));
-  await waitFor(() => assert.deepEqual(sent, ["The reviewed instruction"]));
-  assert.equal(screen.queryByRole("alert"), null);
-});
-
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (cause: Error) => void;
@@ -73,40 +41,30 @@ function deferred<T>() {
 }
 
 for (const oldResult of ["success", "failure"]) {
-  test(`A-to-B-to-A selection rejects obsolete replay ${oldResult} and queue data`, async () => {
+  test(`A-to-B-to-A selection rejects obsolete replay ${oldResult}`, async () => {
     const replay = deferred<Response>();
-    const queue = deferred<Response>();
     let aReads = 0;
-    let aQueues = 0;
     installHome((url) => {
       if (url === "/api/bootstrap") return response({ connected: true, host: {}, workspaces: [{ ...workspace, terminals: [...workspace.terminals, { id: "terminal-2", title: "other" }] }], refreshedAt: "2026-09-06" });
       if (url.includes("/terminal-1/replay")) return ++aReads === 1 ? replay.promise : response({ mode: "text", text: "Current A" });
       if (url.includes("/terminal-2/replay")) return response({ mode: "text", text: "Current B" });
-      if (url.startsWith("/api/prompt-queue?")) {
-        if (url.includes("terminal-1")) return ++aQueues === 1 ? queue.promise : response({ items: [{ ...queued, text: "Current queue A" }] });
-        return response({ items: [] });
-      }
     });
     render(<Home />);
-    await waitFor(() => { assert.equal(aReads, 1); assert.equal(aQueues, 1); });
+    await waitFor(() => { assert.equal(aReads, 1); });
     await userEvent.click(screen.getByRole("button", { name: "Session menu" }));
     await userEvent.click(screen.getByRole("button", { name: "2. other" }));
     await screen.findByText("Current B");
     await userEvent.click(screen.getByRole("button", { name: "Session menu" }));
     await userEvent.click(screen.getByRole("button", { name: "1. shell" }));
     await screen.findByText("Current A");
-    await userEvent.click(await screen.findByRole("button", { name: "Prompt queue, 1 waiting" }, { timeout: 5000 }));
-    assert.equal((screen.getByRole("textbox", { name: "Queued prompt 1" }) as HTMLTextAreaElement).value, "Current queue A");
     // The fake transport deliberately ignores AbortSignal, proving that the
     // ownership guard also works when a response cannot be cancelled.
     await act(async () => {
       if (oldResult === "failure") replay.reject(new Error("Obsolete terminal error"));
       else replay.resolve(response({ mode: "text", text: "Obsolete terminal A" }));
-      queue.resolve(response({ items: [{ ...queued, id: "obsolete-queue", text: "Obsolete queue A" }] }));
     });
     assert.ok(screen.getByText("Current A"));
     assert.equal(screen.queryByText(/Obsolete terminal/), null);
-    assert.equal((screen.getByRole("textbox", { name: "Queued prompt 1" }) as HTMLTextAreaElement).value, "Current queue A");
   });
 }
 

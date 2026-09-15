@@ -1,4 +1,4 @@
-import { attachGoalAttention } from './orchestration/goal-attention.mjs';
+import { AccountUsage } from './account-usage.mjs';
 import { UpdateControl } from '../updater/src/control.mjs';
 import { registerUpdateRoutes } from './update-routes.mjs';
 import { installUpdateMaintenance } from './update-maintenance.mjs';
@@ -15,9 +15,6 @@ import { resolveProviderCommand } from './provider-command.mjs';
 import { createSettingsRuntime } from "./settings-runtime.mjs";
 import { createConfiguredAgents, probeProvider } from "./provider-runtime.mjs";
 import { CmuxClient } from "./cmux-client.mjs";
-import { PushService } from "./push-service.mjs";
-import { PreviewManager } from "./preview-manager.mjs";
-import { PromptQueue } from "./prompt-queue.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import { openRepoIdentityStore } from "./repo-identity-store.mjs";
 import { ensureToken } from "./security.mjs";
@@ -41,33 +38,29 @@ export async function startServer({
   const tokenPath = process.env.CMUX_COMPANION_TOKEN_FILE || (localSettings ? join(directory, "token") : DEFAULT_TOKEN_PATH);
   const token = ensureToken(tokenPath);
   const cmux = cmuxClient || new CmuxClient({ ...(preferences ? { bin: preferences.tools.cmux, providerSettings: () => localSettings.read().settings.providers } : {}) });
-  const pushService = new PushService(localSettings ? { path: join(directory, "push.json") } : {});
-  const previewManager = new PreviewManager(preferences ? { path: join(directory, "previews.json"), tailscaleBin: preferences.tools.tailscale, portStart: preferences.previews.portStart, portEnd: preferences.previews.portEnd } : {});
-  const promptQueue = new PromptQueue(localSettings ? { path: join(directory, "prompt-queue.json") } : {});
   // Only the running companion opts into the identity cache. buildApp defaults
   // its catalog to a live one, so no test that builds an app ever touches the
   // real database file.
   const repoCatalog = new RepoCatalog({ identityStore: openRepoIdentityStore(localSettings ? { path: join(directory, "repo-identity.db") } : {}), ...(localSettings ? { roots: [], projects: () => { const current = localSettings.read().settings; return current.projects.map(project => ({ ...project, devRepoName: current.devRepos?.find(root => root.id === project.devRepoId)?.name, devRepoPath: current.devRepos?.find(root => root.id === project.devRepoId)?.path })); } } : {}) });
+  const accountUsage = new AccountUsage();
   let runtime;
   let updateControl = null;
-  const monitor = async app => { await buildApp({ app, cmux,
+  const monitor = async app => { await buildApp({ app, cmux, accountUsage,
     localSettings, probeProvider,
     onSettingsChange: async () => {
       const current = localSettings.read().settings;
       repoCatalog.invalidate(); cmux.bin = current.tools.cmux;
-      previewManager.tailscaleBin = current.tools.tailscale;
-      previewManager.portStart = current.previews.portStart; previewManager.portEnd = current.previews.portEnd;
       await runtime.settingsChanged();
     },
     modelSettings: localSettings ? new SettingsModels(localSettings) : new ModelSettings({ path: process.env.CMUX_COMPANION_MODEL_SETTINGS_FILE || DEFAULT_MODEL_SETTINGS_PATH }),
-    token, repoCatalog, pushService, previewManager, promptQueue, frontendUpstream,
+    token, repoCatalog, frontendUpstream,
     logger: process.env.NODE_ENV !== "test",
   }); };
   try {
     if (config) runtime = await createProductionRuntime({ config, token,
       sessions: async () => (await cmux.workspaceListDetailed()).workspaces.map(workspace => workspace.id), monitor });
     else {
-      runtime = await createSettingsRuntime({ settings: localSettings, directory, token, createAgents: createConfiguredAgents, probeProvider, resolveProviderCommand });
+      runtime = await createSettingsRuntime({ settings: localSettings, directory, token, createAgents: createConfiguredAgents, probeProvider, resolveProviderCommand, usageSnapshot: () => accountUsage.snapshot() });
       await runtime.app.register(monitor);
     }
   } catch (error) { localSettings?.close(); throw error; }
@@ -75,11 +68,10 @@ export async function startServer({
     if (process.env.CMUX_COMPANION_UPDATER_CONTROL) {
       updateControl = new UpdateControl(process.env.CMUX_COMPANION_UPDATER_CONTROL);
       runtime.handoffEndpoint = `http://127.0.0.1:${port}`;
-      const maintenance = installUpdateMaintenance({ runtime, control: updateControl, promptQueue });
+      const maintenance = installUpdateMaintenance({ runtime, control: updateControl });
       await maintenance.adopt();
       await runtime.app.register(async app => registerUpdateRoutes(app, { control: updateControl, token, maintenance }));
     }
-    attachGoalAttention(runtime, pushService);
     await runtime.listen({ port });
   } catch (error) {
     try { await runtime.close(); } finally { updateControl?.close(); localSettings?.close(); }

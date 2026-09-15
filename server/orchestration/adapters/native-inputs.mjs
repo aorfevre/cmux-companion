@@ -53,8 +53,7 @@ export class NativeInputs {
     save(contextPath, `${description.prompt}\n\n${nativeInstructions}\n`);
     save(hookConfig, JSON.stringify({ role: attempt.role }));
     save(settingsPath, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: [process.execPath, hook, hookConfig].map(quote).join(' '), timeout: 10 }] }] } }));
-    if (attempt.role === 'reviewer') save(mcpPath, JSON.stringify({ mcpServers: {} }));
-    else {
+    {
       requireValue(description.bridge && description.bridge.credential.length >= 32, 'Scoped native bridge configuration is required');
       const endpoint = new URL(description.bridge.endpoint);
       requireValue(endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1' && !endpoint.username && !endpoint.password, 'Native bridge must use loopback');

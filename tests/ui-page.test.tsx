@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { DeviceSettings } from "../app/settings/device-settings";
-import { PushSettings } from "../app/settings/notifications";
-import { useState } from "react";
-import Home, { InboxView, LastUpdateStamp, updatedAgo } from "../app/page";
+import Home, { LastUpdateStamp, updatedAgo } from "../app/page";
 
 // One cmux workspace with two terminals inside a catalogued repository, so the
 // session detail can reach the terminal, health and change panels.
@@ -52,9 +50,7 @@ function installHome(search: string, handler: Handler = () => undefined, { readO
     if (url === "/api/auth/status") return response({ paired });
     if (url === "/api/bootstrap") return paired ? response(bootstrap) : response({ error: "Pair this device first" }, 401);
     if (url.startsWith("/api/goal-sessions/workspace/")) return response({ plan: null });
-    if (url === "/api/inbox") return response({ items: [], actionableCount: 0, unreadCount: 0 });
     if (url === "/api/repos") return response({ repos: [repo] });
-    if (url.startsWith("/api/prompt-queue?")) return response({ items: [] });
     if (url.startsWith("/api/terminals/") && url.includes("/replay?")) return response({ mode: "text", text: "Terminal ready" });
     if (url === "/api/health") return response({ version: { builtAt: null } });
     if (url === "/api/updater/status") return response({ available: false });
@@ -63,7 +59,6 @@ function installHome(search: string, handler: Handler = () => undefined, { readO
     if (url === `/api/repos/${repo.id}/changes`) return response(changes);
     if (url.startsWith(`/api/repos/${repo.id}/diff?`)) return response({ patch: "@@ -1 +1 @@\n-old\n+new" });
     if (url.startsWith(`/api/repos/${repo.id}/markdown?`)) return response(markdownFile);
-    if (url === "/api/previews") return response({ previews: [] });
     if (url === "/api/settings/models") return response({ error: "Model settings unavailable" }, 503);
     if (url === "/api/worktree-cleanup/preview") return response({ previewId: "preview-1", generatedAt: "2026-09-08", roots: [], repositoryCount: 0, entries: [], errors: [], summary: { candidates: 0, protected: 0, estimatedBytes: 0 } });
     if (url === "/api/account-usage") return response({ error: "CCS is offline" }, 503);
@@ -74,10 +69,7 @@ function installHome(search: string, handler: Handler = () => undefined, { readO
   return { fetchMock, calls };
 }
 
-function NotificationsFixture() { const [notice, setNotice] = useState(""); return <><PushSettings onNotice={setNotice} />{notice && <p className="toast">{notice}</p>}</>; }
 
-const toast = () => document.querySelector(".toast") as HTMLElement | null;
-const findToast = () => waitFor(() => { const element = toast(); if (!element) throw new Error("No toast"); return element; });
 const posted = (calls: { url: string; init?: RequestInit }[], url: string, method = "POST") => calls.filter((call) => call.url === url && (call.init?.method || "GET").toUpperCase() === method);
 
 async function openSessionMenu() {
@@ -112,7 +104,7 @@ describe("pairing and connectivity", () => {
       return undefined;
     });
     const view = render(<Home />);
-    assert.ok(await screen.findByText("Pair this phone."));
+    assert.ok(await screen.findByText("Pair this device."));
     const code = screen.getByPlaceholderText("Pairing code");
     assert.equal((screen.getByRole("button", { name: "Pair securely" }) as HTMLButtonElement).disabled, true);
     await userEvent.type(code, "wrong");
@@ -121,7 +113,7 @@ describe("pairing and connectivity", () => {
     await userEvent.clear(code);
     await userEvent.type(code, " secret-code ");
     await userEvent.click(screen.getByRole("button", { name: "Pair securely" }));
-    assert.ok(await screen.findByText("Your agents are moving."));
+    assert.ok(await screen.findByRole("heading", { name: "Sessions" }));
     assert.equal(JSON.parse(String(posted(calls, "/api/auth/pair").at(-1)?.init?.body)).token, "secret-code");
     assert.ok((await screen.findAllByText("Studio Mac")).length >= 1);
     view.unmount(); render(<DeviceSettings />);
@@ -133,10 +125,10 @@ describe("pairing and connectivity", () => {
   test("a bootstrap that asks for pairing drops back to the pair screen", async () => {
     installHome("/?mode=sessions", (url) => url === "/api/bootstrap" ? response({ error: "Pair this device first" }, 401) : undefined);
     render(<Home />);
-    assert.ok(await screen.findByText("Pair this phone."));
+    assert.ok(await screen.findByText("Pair this device."));
   });
 
-  test("live events refresh the queue, throttle cmux refreshes and reconnect after a close", async () => {
+  test("live events throttle cmux refreshes and reconnect after a close", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { calls } = installHome("/?mode=sessions");
     render(<Home />);
@@ -146,7 +138,6 @@ describe("pairing and connectivity", () => {
     assert.equal(socket.url, "ws://localhost:3000/api/events");
     await act(async () => { socket.onopen?.(); });
     assert.ok(screen.getByText("LIVE"));
-    await act(async () => { socket.onmessage?.({ data: JSON.stringify({ type: "queue:changed" }) }); await vi.advanceTimersByTimeAsync(5); });
     const bootstrapReads = () => calls.filter((call) => call.url === "/api/bootstrap").length;
     const bootstrapBefore = bootstrapReads();
     await act(async () => {
@@ -171,13 +162,13 @@ describe("sessions and launch", () => {
   test("lists sessions, opens one from its card and returns to the list", async () => {
     installHome("/?mode=sessions");
     render(<Home />);
-    assert.ok(await screen.findByText("Your agents are moving."));
-    assert.ok(screen.getByText("~/karven/companion"));
+    assert.ok(await screen.findByRole("heading", { name: "Sessions" }));
+    assert.ok(await screen.findByText("~/karven/companion"));
     await userEvent.click(screen.getByRole("button", { name: /Companion session/ }));
     assert.ok(await screen.findByRole("button", { name: "Session menu" }));
     assert.equal(new URLSearchParams(location.search).get("workspace"), "ws-1");
     await userEvent.click(screen.getByRole("button", { name: /Back/ }));
-    assert.ok(await screen.findByText("Your agents are moving."));
+    assert.ok(await screen.findByRole("heading", { name: "Sessions" }));
     assert.equal(location.search, "?view=sessions");
     await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
   });
@@ -190,15 +181,15 @@ describe("sessions and launch", () => {
     await userEvent.click(screen.getByRole("button", { name: "Launch a workspace" }));
     assert.ok(await screen.findByRole("heading", { name: "Start work" }));
     assert.equal(location.search, "?view=launch");
-    assert.equal(screen.getByRole("link", { name: "Goals" }).getAttribute("href"), "/orchestration");
-    assert.equal(screen.getByRole("link", { name: "Settings" }).getAttribute("href"), "/settings");
+    assert.equal(screen.getByRole("link", { name: "Mission Control" }).getAttribute("href"), "/orchestration");
+    assert.equal(screen.getByRole("link", { name: "Setup" }).getAttribute("href"), "/settings");
     act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
     assert.equal(location.search, "?view=sessions");
     act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
     assert.ok(await screen.findByText("No sessions yet"));
     assert.equal(location.search, "?view=sessions");
-    await userEvent.click(screen.getByRole("button", { name: "Local apps" }));
-    assert.equal(location.search, "?view=apps");
+    assert.equal(screen.queryByRole("button", { name: "Local apps" }), null);
+    assert.equal(screen.queryByRole("button", { name: "Inbox" }), null);
   });
 
   test("launches a repository workspace, filters the list and reports a refused launch", async () => {
@@ -247,13 +238,8 @@ describe("sessions and launch", () => {
 });
 
 describe("session detail", () => {
-  test("sends input, queues a prompt, uses shortcuts and the large writer", async () => {
-    const queue: { id: string; text: string }[] = [];
-    const { calls } = installHome("/?mode=sessions&workspace=ws-1&surface=t-1", (url, init) => {
-      if (url === "/api/prompt-queue" && init?.method === "POST") { queue.push({ id: `q-${queue.length + 1}`, text: JSON.parse(String(init.body)).text }); return response({}); }
-      if (url.startsWith("/api/prompt-queue?")) return response({ items: queue.map((item) => ({ ...item, workspaceId: "ws-1", surfaceId: "t-1", createdAt: "", updatedAt: "", attempts: 0 })) });
-      return undefined;
-    });
+  test("sends deliberate input, uses shortcuts and the large writer", async () => {
+    const { calls } = installHome("/?mode=sessions&workspace=ws-1&surface=t-1");
     render(<Home />);
     const input = await screen.findByRole("textbox", { name: "Terminal input" });
     await userEvent.type(input, "/rev");
@@ -268,32 +254,18 @@ describe("session detail", () => {
     await waitFor(() => assert.equal(posted(calls, "/api/terminals/t-1/input").length, 1));
     assert.deepEqual(JSON.parse(String(posted(calls, "/api/terminals/t-1/input")[0].init?.body)), { text: "/help", enter: true });
     assert.equal((input as HTMLTextAreaElement).value, "");
-    await userEvent.type(input, "Later please");
-    await userEvent.click(screen.getByRole("button", { name: "Queue message" }));
-    assert.match((await screen.findByRole("status")).textContent || "", /Prompt queued/);
-    assert.ok(await screen.findByRole("button", { name: "Prompt queue, 1 waiting" }));
-    await userEvent.click(screen.getByRole("button", { name: "Prompt queue, 1 waiting" }));
-    const sheet = screen.getByRole("dialog", { name: "Prompt queue" });
-    assert.ok(within(sheet).getByText("1 waiting · one sent after each agent stop"));
-    await userEvent.click(screen.getByRole("button", { name: "Close prompt queue" }));
     await userEvent.click(screen.getByRole("button", { name: "Open large writing area" }));
     const writer = screen.getByRole("textbox", { name: "Expanded terminal input" });
     await userEvent.type(writer, "Long message");
     assert.ok(screen.getByText("12 characters"));
-    await userEvent.click(screen.getByRole("button", { name: "⌛ Queue" }));
-    await waitFor(() => assert.equal(queue.length, 2));
-    assert.equal(queue[1].text, "Long message");
-    await userEvent.click(screen.getByRole("button", { name: "Open large writing area" }));
-    await userEvent.type(screen.getByRole("textbox", { name: "Expanded terminal input" }), "Sent from the writer");
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => assert.equal(posted(calls, "/api/terminals/t-1/input").length, 2));
     assert.equal(screen.queryByRole("textbox", { name: "Expanded terminal input" }), null);
   });
 
-  test("a rejected send and a rejected queue are shown as notices", async () => {
+  test("a rejected send is shown as a notice and retains its draft", async () => {
     installHome("/?mode=sessions&workspace=ws-1&surface=t-1", (url, init) => {
       if (url === "/api/terminals/t-1/input" && init?.method === "POST") return response({ error: "Terminal is busy" }, 409);
-      if (url === "/api/prompt-queue" && init?.method === "POST") return response({ error: "Queue is full" }, 409);
       return undefined;
     });
     render(<Home />);
@@ -302,8 +274,7 @@ describe("session detail", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send now" }));
     assert.match((await screen.findByRole("status")).textContent || "", /Terminal is busy/);
     await userEvent.click(screen.getByRole("button", { name: "Dismiss notification" }));
-    await userEvent.click(screen.getByRole("button", { name: "Queue message" }));
-    assert.match((await screen.findByRole("status")).textContent || "", /Queue is full/);
+    assert.equal((input as HTMLTextAreaElement).value, "hello");
   });
 
   test("the session menu switches terminals, tunes the display, sends special keys and toggles input", async () => {
@@ -342,8 +313,7 @@ describe("session detail", () => {
     await userEvent.click(screen.getByRole("button", { name: "Close session menu" }));
     assert.equal(screen.queryByRole("dialog", { name: "Session menu" }), null);
     menu = await openSessionMenu();
-    await userEvent.click(within(menu).getByRole("button", { name: /Local apps/ }));
-    assert.equal(location.search, "?view=apps");
+    assert.equal(within(menu).queryByRole("button", { name: /Local apps/ }), null);
   });
 
   test("the health panel reads the overview, toggles tasks, restarts and closes the workspace", async () => {
@@ -425,40 +395,15 @@ describe("session detail", () => {
     assert.match((await screen.findByRole("status")).textContent || "", /outside a catalogued repository/);
   });
 
-  test("detected local apps register a preview, open the apps view and markdown links open the document", async () => {
-    let created = true;
-    const { calls } = installHome("/?mode=sessions&workspace=ws-1&surface=t-1&context=failure&file=docs/guide.md", (url, init) => {
-      if (url.includes("/replay?")) return response({ mode: "text", text: "Dev server at http://localhost:3000/ and notes in docs/guide.md" });
-      if (url === "/api/previews/discover" && init?.method === "POST") { const result = response({ preview: { id: "preview-1" }, created }); created = false; return result; }
-      return undefined;
-    });
+  test("terminal markdown stays inspectable without automatically registering local previews", async () => {
+    const { calls } = installHome("/?mode=sessions&workspace=ws-1&surface=t-1", url => url.includes('/replay?') ? response({ mode: 'text', text: 'Dev server at http://localhost:3000/ and notes in docs/guide.md' }) : undefined);
     render(<Home />);
-    assert.ok(await screen.findByText("A command or test failed"));
-    assert.match((await screen.findByRole("status")).textContent || "", /Local app detected on port 3000/);
-    assert.deepEqual(JSON.parse(String(posted(calls, "/api/previews/discover")[0].init?.body)), { workspaceId: "ws-1", repoId: "repo-1", port: 3000, url: "http://localhost:3000/" });
-    await userEvent.click(screen.getByRole("button", { name: "Open guide.md" }));
-    assert.ok(await screen.findByText("Hello from the guide."));
-    await userEvent.click(screen.getByRole("button", { name: "Ask agent" }));
-    const input = await screen.findByRole("textbox", { name: "Terminal input" });
-    assert.equal((input as HTMLTextAreaElement).value, "Please review docs/guide.md and help me with it.");
-    assert.equal(screen.queryByText("A command or test failed"), null);
-    await userEvent.click(await screen.findByRole("button", { name: "http://localhost:3000/" }, { timeout: 4000 }));
-    await waitFor(() => assert.equal(location.search, "?view=apps&preview=preview-1"));
-    assert.equal(posted(calls, "/api/previews/discover").length, 2);
-  });
-
-  test("a refused local app registration is only reported when the user asked for it", async () => {
-    installHome("/?mode=sessions&workspace=ws-1&surface=t-1&context=pullRequest", (url, init) => {
-      if (url.includes("/replay?")) return response({ mode: "text", text: "Listening on http://127.0.0.1:8080" });
-      if (url === "/api/previews/discover" && init?.method === "POST") return response({ error: "Port is not allowed" }, 400);
-      return undefined;
-    });
-    render(<Home />);
-    assert.ok(await screen.findByText("Pull request updated"));
-    await userEvent.click(screen.getByRole("button", { name: "Dismiss notification context" }));
-    assert.equal(screen.queryByText("Pull request updated"), null);
-    await userEvent.click(await screen.findByRole("button", { name: "http://127.0.0.1:8080" }));
-    assert.match((await screen.findByRole("status")).textContent || "", /Port is not allowed/);
+    await userEvent.click(await screen.findByRole('button', { name: 'docs/guide.md' }));
+    assert.ok(await screen.findByText('Hello from the guide.'));
+    await userEvent.click(screen.getByRole('button', { name: 'Ask agent' }));
+    const input = await screen.findByRole('textbox', { name: 'Terminal input' });
+    assert.equal((input as HTMLTextAreaElement).value, 'Please review docs/guide.md and help me with it.');
+    assert.equal(calls.some(call => call.url.startsWith('/api/previews')), false);
   });
 
   test("the markdown viewer opens a session for its repository and reports a missing one", async () => {
@@ -477,167 +422,20 @@ describe("session detail", () => {
     await userEvent.click(within(await openSessionMenu()).getByRole("button", { name: "Terminal" }));
     await userEvent.click(screen.getByRole("button", { name: /Back/ }));
     act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => assert.ok(screen.getByText("No sessions yet")));
   });
 });
 
-describe("inbox", () => {
-  const items = [
-    { id: "req-1", requestId: "req-1", type: "request" as const, kind: "question", workspaceId: "ws-1", title: "Which database?", body: "The plan in docs/guide.md needs a choice" },
-    { id: "req-2", requestId: "req-2", type: "request" as const, kind: "exitPlan", workspaceId: "ws-1", title: "Approve the plan", toolName: "ExitPlan", toolInput: { steps: 2 } },
-    { id: "note-1", type: "notification" as const, kind: "completion", workspaceId: "ws-missing", title: "Work finished", subtitle: "All green", toolName: "Bash", toolInput: "npm test" },
-  ];
-
-  test("replies through the written answer, the denial feedback and marks a notification read", async () => {
-    const prompt = vi.fn().mockReturnValueOnce("  Use SQLite  ").mockReturnValueOnce("  Too risky ");
-    vi.stubGlobal("prompt", prompt);
-    const calls: { url: string; init?: RequestInit }[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => { calls.push({ url: String(input), init }); return String(input).endsWith("/note-1/read") ? response({ error: "Already read" }, 409) : response({}); }));
-    const reload = vi.fn(async () => {}); const closeFocus = vi.fn(); const open = vi.fn(); const notice = vi.fn(); const document = vi.fn();
-    render(<InboxView inbox={{ items, actionableCount: 2, unreadCount: 1 }} workspaces={[workspace]} repos={[repo]} focusedId={null} onCloseFocus={closeFocus} onDocument={document} onReload={reload} onOpen={open} onNotice={notice} />);
-    assert.ok(screen.getByText("Question"));
-    assert.ok(screen.getByText("Plan"));
-    assert.ok(screen.getByText("Update"));
-    assert.ok(screen.getByText(/"steps": 2/));
-    assert.ok(screen.getByText("npm test"));
-    await userEvent.click(screen.getByRole("button", { name: "◇ guide.md" }));
-    assert.deepEqual(document.mock.calls[0], ["repo-1", "docs/guide.md"]);
-    await userEvent.click(screen.getAllByRole("button", { name: "Companion session ›" })[0]);
-    assert.deepEqual(open.mock.calls[0], ["ws-1"]);
-    await userEvent.click(screen.getByRole("button", { name: "Write reply…" }));
-    await waitFor(() => assert.equal(reload.mock.calls.length, 1));
-    assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { kind: "question", selections: ["Use SQLite"] });
-    assert.equal(closeFocus.mock.calls.length, 0);
-    await userEvent.click(screen.getByRole("button", { name: "Deny" }));
-    await waitFor(() => assert.equal(reload.mock.calls.length, 2));
-    assert.deepEqual(JSON.parse(String(calls[1].init?.body)), { kind: "exitPlan", mode: "deny", feedback: "Too risky" });
-    await userEvent.click(screen.getByRole("button", { name: "Auto accept" }));
-    await waitFor(() => assert.equal(reload.mock.calls.length, 3));
-    assert.deepEqual(JSON.parse(String(calls[2].init?.body)), { kind: "exitPlan", mode: "autoAccept" });
-    prompt.mockReturnValueOnce("");
-    await userEvent.click(screen.getByRole("button", { name: "Write reply…" }));
-    assert.equal(calls.length, 3);
-    await userEvent.click(screen.getByRole("button", { name: "Mark read" }));
-    await waitFor(() => assert.equal(notice.mock.calls[0][0], "Already read"));
-    assert.equal(calls.at(-1)?.url, "/api/notifications/note-1/read");
-  });
-
-  test("a focused notification closes its focus once it is read", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => response({})));
-    const closeFocus = vi.fn(); const reload = vi.fn(async () => {});
-    render(<InboxView inbox={{ items, actionableCount: 2, unreadCount: 1 }} workspaces={[]} repos={[]} focusedId="note-1" onCloseFocus={closeFocus} onDocument={() => {}} onReload={reload} onOpen={() => {}} onNotice={() => {}} />);
-    assert.equal(screen.queryByText("Which database?"), null);
-    await userEvent.click(screen.getByRole("button", { name: "Mark read" }));
-    await waitFor(() => assert.equal(closeFocus.mock.calls.length, 1));
-    await userEvent.click(screen.getByRole("button", { name: "All actions" }));
-    assert.equal(closeFocus.mock.calls.length, 2);
-  });
-
-  test("the home shell routes an action link to the inbox and counts pending items on other views", async () => {
-    installHome("/?view=inbox&action=req-1", (url) => url === "/api/inbox" ? response({ items, actionableCount: 2, unreadCount: 1 }) : undefined);
-    render(<Home />);
-    assert.ok(await screen.findByRole("heading", { name: "Session action" }));
-    assert.ok(await screen.findByText("Which database?"));
-    await userEvent.click(screen.getByRole("button", { name: "◇ guide.md" }));
-    assert.ok(await screen.findByText("Hello from the guide."));
-    await userEvent.click(screen.getByRole("button", { name: "‹ Back" }));
-    assert.equal(location.search, "?view=sessions");
-    act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
-    await userEvent.click(screen.getByRole("button", { name: "Local apps" }));
-    await userEvent.click(await screen.findByRole("button", { name: "2 items need your attention" }));
-    assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
-    assert.ok(screen.getByText("Approve the plan"));
-    await userEvent.click(screen.getAllByRole("button", { name: "Companion session ›" })[0]);
-    assert.ok(await screen.findByRole("textbox", { name: "Terminal input" }));
-    await userEvent.click(screen.getByRole("button", { name: /Back/ }));
-    assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
-    act(() => { history.pushState(null, "", "/?view=sessions"); window.dispatchEvent(new PopStateEvent("popstate")); });
-    await userEvent.click(await screen.findByRole("button", { name: "Inbox · 2" }));
-    assert.ok(await screen.findByRole("heading", { name: "Inbox" }));
-  });
-});
-
 describe("settings", () => {
-  test("device settings retain read-only protection and explain unsupported notifications", async () => {
+  test("device settings retain read-only protection", async () => {
     installHome("/settings#general");
-    render(<><DeviceSettings /><NotificationsFixture /></>);
+    render(<DeviceSettings />);
     assert.ok(await screen.findByText("Studio Mac"));
-    assert.ok(screen.getByText(/add this web app to your Home Screen first/));
-    assert.equal((screen.getByRole("button", { name: "Enable" }) as HTMLButtonElement).disabled, true);
     const readOnly = screen.getByRole("switch", { name: /Protect terminal input/ }) as HTMLInputElement;
     assert.equal(readOnly.checked, false);
     await userEvent.click(readOnly);
     assert.equal(localStorage.getItem("cmux-companion-read-only"), "true");
-  });
-
-  test("push alerts can be enabled, tuned, tested and disabled when the browser supports them", async () => {
-    const subscription = { endpoint: "https://push.test/sub-1", toJSON: () => ({ endpoint: "https://push.test/sub-1" }), unsubscribe: vi.fn(async () => true) };
-    let current: typeof subscription | null = null;
-    const registration = { pushManager: { getSubscription: vi.fn(async () => current), subscribe: vi.fn(async () => { current = subscription; return subscription; }) } };
-    const serviceWorker = { register: vi.fn(async () => registration), ready: Promise.resolve(registration) };
-    Object.defineProperty(navigator, "serviceWorker", { value: serviceWorker, configurable: true });
-    Object.defineProperty(window, "PushManager", { value: class {}, configurable: true });
-    Object.defineProperty(window, "Notification", { value: { requestPermission: vi.fn(async () => "granted") }, configurable: true });
-    Object.defineProperty(window, "matchMedia", { value: () => ({ matches: false }), configurable: true });
-    Object.defineProperty(navigator, "userAgent", { value: "iPhone Safari", configurable: true });
-    let settings = { attention: true, completion: true, failure: false, pullRequest: true, preview: true, hideContent: false, quietEnabled: false, quietStart: "22:00", quietEnd: "07:00" };
-    let testSent = 0;
-    const { calls } = installHome("/?view=settings", (url, init) => {
-      if (url === "/api/push/status") return response({ supported: true, publicKey: "AQID", subscribed: false });
-      if (url.startsWith("/api/push/status?endpoint=")) return response({ supported: true, publicKey: "AQID", subscribed: true, settings });
-      if (url === "/api/push/settings" && init?.method === "POST") { settings = JSON.parse(String(init.body)).settings; return settings.quietEnabled && settings.quietStart === "23:30" ? response({ error: "Quiet hours rejected" }, 400) : response({}); }
-      if (url === "/api/push/test" && init?.method === "POST") { testSent += 1; return testSent === 1 ? response({ sent: 1 }) : response({ sent: 0, error: { message: "Subscription expired" } }); }
-      return undefined;
-    });
-    try {
-      render(<NotificationsFixture />);
-      assert.ok(await screen.findByText(/Install to your Home Screen/));
-      await userEvent.click(await screen.findByRole("button", { name: "Enable" }));
-      assert.match((await findToast()).textContent || "", /Background alerts enabled/);
-      assert.equal(registration.pushManager.subscribe.mock.calls.length, 1);
-      assert.deepEqual(JSON.parse(String(posted(calls, "/api/push/subscribe")[0].init?.body)), { subscription: { endpoint: "https://push.test/sub-1" } });
-      const failures = await screen.findByRole("checkbox", { name: /Failures/ });
-      await userEvent.click(failures);
-      await waitFor(() => assert.equal(settings.failure, true));
-      assert.deepEqual(JSON.parse(String(posted(calls, "/api/push/settings")[0].init?.body)).endpoint, "https://push.test/sub-1");
-      await userEvent.click(screen.getByRole("checkbox", { name: /Quiet hours/ }));
-      const from = await screen.findByLabelText("From");
-      fireEvent.change(from, { target: { value: "23:30" } });
-      await waitFor(() => assert.ok(toast()?.textContent?.includes("Quiet hours rejected")));
-      await userEvent.click(screen.getByRole("button", { name: "Send test alert" }));
-      await waitFor(() => assert.ok(toast()?.textContent?.includes("Test alert delivered")));
-      await userEvent.click(screen.getByRole("button", { name: "Send test alert" }));
-      await waitFor(() => assert.ok(toast()?.textContent?.includes("Subscription expired")));
-      await userEvent.click(screen.getByRole("button", { name: "Disable" }));
-      await waitFor(() => assert.equal(subscription.unsubscribe.mock.calls.length, 1));
-      assert.deepEqual(JSON.parse(String(posted(calls, "/api/push/unsubscribe")[0].init?.body)), { endpoint: "https://push.test/sub-1" });
-    } finally {
-      delete (navigator as unknown as Record<string, unknown>).serviceWorker;
-      delete (window as unknown as Record<string, unknown>).PushManager;
-      delete (window as unknown as Record<string, unknown>).Notification;
-      delete (window as unknown as Record<string, unknown>).matchMedia;
-      delete (navigator as unknown as Record<string, unknown>).userAgent;
-    }
-  });
-
-  test("a denied notification permission is reported without subscribing", async () => {
-    const registration = { pushManager: { getSubscription: vi.fn(async () => null), subscribe: vi.fn() } };
-    Object.defineProperty(navigator, "serviceWorker", { value: { register: vi.fn(async () => registration), ready: Promise.resolve(registration) }, configurable: true });
-    Object.defineProperty(window, "PushManager", { value: class {}, configurable: true });
-    Object.defineProperty(window, "Notification", { value: { requestPermission: vi.fn(async () => "denied") }, configurable: true });
-    Object.defineProperty(window, "matchMedia", { value: () => ({ matches: true }), configurable: true });
-    installHome("/?view=settings", (url) => url === "/api/push/status" ? response({ supported: true, publicKey: "AQID", subscribed: false }) : undefined);
-    try {
-      render(<NotificationsFixture />);
-      await userEvent.click(await screen.findByRole("button", { name: "Enable" }));
-      assert.match((await findToast()).textContent || "", /Notification permission was not granted/);
-      assert.equal(registration.pushManager.subscribe.mock.calls.length, 0);
-    } finally {
-      delete (navigator as unknown as Record<string, unknown>).serviceWorker;
-      delete (window as unknown as Record<string, unknown>).PushManager;
-      delete (window as unknown as Record<string, unknown>).Notification;
-      delete (window as unknown as Record<string, unknown>).matchMedia;
-    }
   });
 });
 

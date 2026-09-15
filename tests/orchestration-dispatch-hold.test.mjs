@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { OrchestrationStore } from '../server/orchestration/storage/store.mjs';
+import { actionView } from '../server/orchestration/domain/action-view.mjs';
+import { BASE } from './helpers/orchestration/domain-fixture.mjs';
+
+test('failure hold and worker ownership persist across restart; reconciliation alone does not resume dispatch', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'companion-held-goal-'));
+  const path = join(directory, 'journal.sqlite'); let store = new OrchestrationStore({ path });
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  let sequence = 0;
+  const command = (type, payload, kind = 'system') => store.apply({ id: `command-${++sequence}`, goalId: 'g', expectedVersion: store.get('g')?.version ?? 0, type, payload }, { kind });
+  command('create_goal', { repositoryId: 'repo', title: 'Persistent failure', baseSha: BASE }, 'user');
+  command('request_attempt', { attemptId: 'planner', operationId: 'launch', role: 'planner', conversationId: 'conversation' });
+  command('record_dispatch', { attemptId: 'planner', identity: 'worker', worktree: '/tmp/owned-planner', branch: 'planner' });
+  command('record_failure', { attemptId: 'planner', uncertain: true, error: 'Connection lost' });
+  const saved = store.get('g'); store.close(); store = new OrchestrationStore({ path });
+  assert.deepEqual(store.get('g').hold, saved.hold); assert.deepEqual(store.ready(), []);
+  assert.match(actionView(store.get('g')).recoveryBlocked, /reconcile/);
+  assert.throws(() => command('recover_goal', { holdId: saved.hold.id }, 'user'), { code: 'OWNERSHIP_UNCERTAIN' });
+  command('record_stopped', { attemptId: 'planner' });
+  assert.deepEqual(store.ready(), []); assert.ok(store.get('g').hold);
+  assert.throws(() => command('recover_goal', { holdId: 'old-hold' }, 'user'), { code: 'STALE_TARGET' });
+  command('recover_goal', { holdId: saved.hold.id }, 'user');
+  assert.equal(store.ready()[0].role, 'planner'); assert.equal(store.get('g').attempts.length, 1);
+  store.close(); store = new OrchestrationStore({ path });
+  assert.equal(store.get('g').hold, null); assert.equal(store.get('g').recoveries[0].hold.id, saved.hold.id);
+  assert.equal(store.get('g').attempts[0].identity, 'worker');
+  assert.ok(store.events().some(event => event.kind === 'goal_recovery_authorized'));
+});

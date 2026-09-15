@@ -66,7 +66,7 @@ test('MCP tools bind output identity and cannot expose approval or other roles t
   await call('submit_result', { id: 'result', output: { question: 'Which audience?' } });
   assert.deepEqual(JSON.parse(submitted[0].raw), { schemaVersion: 1, ...context.binding, output: { question: 'Which audience?' } });
   const reviewer = await agentMcpRequest({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, { ...context, binding: { ...context.binding, role: 'reviewer' } });
-  assert.deepEqual(reviewer.result.tools, []);
+  assert.deepEqual(reviewer.result.tools.map(tool => tool.name), ['read_reference', 'get_status']);
 });
 
 test('real agent HTTP commit binds to approved attempt and refuses reviewer, abort and owner loss', async (t) => {

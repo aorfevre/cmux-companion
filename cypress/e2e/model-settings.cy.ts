@@ -8,9 +8,7 @@ function scenario() {
   cy.intercept("GET", "**/api/settings/local", { statusCode: 404, body: { error: "Legacy settings" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "E2E Mac" }, workspaces: [], refreshedAt: now });
-  cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
   cy.intercept("GET", "**/api/repos", { repos: [] });
-  cy.intercept("GET", "**/api/prompt-queue*", { items: [] });
   cy.intercept("GET", "**/api/updater/status", { available: false });
   cy.intercept("GET", "**/api/health", { version: { builtAt: now } });
   cy.intercept("GET", "**/api/settings/models", (request) => {

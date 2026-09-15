@@ -92,3 +92,98 @@ test('cleanup preview is authenticated; cleanup execution preserves same-origin 
   assert.equal((await readonly.app.inject({ method: 'POST', url: path, headers: HEADERS, payload: { expectedVersion: 2, attemptId: 'a' } })).statusCode, 403);
   assert.equal(writes, 1);
 });
+
+test('paired users can open each current execution role without opening historical or unowned sessions', async t => {
+  const { contract, BASE, HEAD_A } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const { planTarget } = await import('../server/orchestration/domain/transitions.mjs');
+  const { app, service, store } = await apiFixture(t); let id = 0; const opened = [];
+  service.agents.capabilities.push({ role: 'implementer', mode: 'background' }, { role: 'integrator', mode: 'background' });
+  service.agents.open = async operationId => { opened.push(operationId); };
+  service.ownership = { assertOwned() {} };
+  const command = (type, payload, kind = 'system') => service.execute({ id: `terminal-${++id}`, goalId: 'goal', expectedVersion: store.get('goal')?.version ?? 0, type, payload }, { kind });
+  const request = role => { command('request_attempt', { role, taskId: role === 'implementer' ? 'A' : null, attemptId: role, operationId: role, conversationId: role }); command('record_dispatch', { attemptId: role, identity: role, worktree: `/tmp/${role}`, branch: role }); };
+  const endpoint = '/api/orchestration/goals/goal/terminal';
+  const open = (attemptId, headers = HEADERS) => app.inject({ method: 'POST', url: endpoint, headers, payload: { expectedVersion: store.get('goal').version, attemptId } });
+  command('create_goal', { repositoryId: 'repo', title: 'Visible roles', baseSha: BASE }, 'user');
+  const plan = contract(); plan.tasks = [plan.tasks[0]]; command('publish_contract', { contract: plan }, 'user');
+  request('reviewer');
+  assert.equal((await open('reviewer', {})).statusCode, 401);
+  assert.equal((await open('reviewer', { ...HEADERS, origin: 'https://invalid.example' })).statusCode, 403);
+  assert.equal((await open('reviewer')).statusCode, 200);
+  command('record_review', { attemptId: 'reviewer', reviewId: 'plan-review', review: { schemaVersion: 1, target: planTarget(store.get('goal')), disposition: 'accept', findings: [] } });
+  assert.equal((await open('reviewer')).statusCode, 200, 'A submitted result does not hide a still-running terminal');
+  command('record_stopped', { attemptId: 'reviewer' }); command('approve', { revision: 1 }, 'user');
+  request('implementer'); assert.equal((await open('implementer')).statusCode, 200);
+  assert.equal((await open('reviewer')).statusCode, 409);
+  command('confirm_candidate', { attemptId: 'implementer', headSha: HEAD_A }); command('record_stopped', { attemptId: 'implementer' });
+  command('request_attempt', { role: 'reviewer', taskId: 'A', attemptId: 'task-review', operationId: 'task-review', conversationId: 'task-review' });
+  command('record_dispatch', { attemptId: 'task-review', identity: 'task-review', worktree: '/tmp/task-review', branch: 'task-review' });
+  command('record_review', { attemptId: 'task-review', reviewId: 'task-review', review: { schemaVersion: 1, target: HEAD_A, disposition: 'accept', findings: [] } });
+  command('record_stopped', { attemptId: 'task-review' }); command('request_integration', { taskId: 'A', operationId: 'integrate' });
+  command('record_integration_conflict', { operationId: 'integrate' }); command('recover_goal', { holdId: store.get('goal').hold.id }, 'user');
+  request('integrator'); assert.equal((await open('integrator')).statusCode, 200);
+  service.repositoryIds.clear(); assert.equal((await open('integrator')).statusCode, 404);
+  assert.deepEqual(opened, ['reviewer', 'reviewer', 'implementer', 'integrator']);
+});
+
+
+test('team configuration cannot be forged and only paired writable users can override assignments', async t => {
+  const { app, store, planner } = await apiFixture(t);
+  const forged = { ...create, payload: { ...create.payload, teamConfiguration: { profiles: [] } } };
+  assert.equal((await app.inject({ method: 'POST', url, headers: HEADERS, payload: forged })).statusCode, 403);
+  assert.equal(store.get('goal'), null);
+  const secret = planner();
+  const override = { id: 'override', goalId: 'goal', expectedVersion: 3, type: 'override_assignment', payload: { key: 'planner:*', profileId: 'codex' } };
+  assert.equal((await app.inject({ method: 'POST', url: '/api/orchestration/agent/commands', headers: { authorization: `Bearer ${secret}` }, payload: override })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'POST', url, payload: override })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url, headers: { ...HEADERS, origin: 'https://attacker.test' }, payload: override })).statusCode, 403);
+  assert.equal(store.get('goal').version, 3);
+  const readonly = await apiFixture(t, { readOnly: true }); readonly.planner();
+  assert.equal((await readonly.app.inject({ method: 'POST', url, headers: HEADERS, payload: override })).statusCode, 403);
+  assert.equal(readonly.store.get('goal').version, 3);
+});
+
+test('activity is paired, goal-scoped, paginated metadata and passive merge polling does not replace meaningful activity', async t => {
+  const { app, service, store } = await apiFixture(t);
+  service.execute(create, { kind: 'user' });
+  service.execute({ ...create, id: 'other', goalId: 'other' }, { kind: 'user' });
+  for (let index = 0; index < 55; index++) service.execute({ id: `rename_${index}`, goalId: 'goal', expectedVersion: store.get('goal').version, type: 'rename_goal', payload: { title: `Title ${index}` } }, { kind: 'user' });
+  store.db.prepare('INSERT INTO events(goal_id,version,generation,revision,command_id,kind,payload,created_at) VALUES (?,?,?,?,?,?,?,?)').run('goal', 56, 1, 0, 'sync', 'merge_sync_observed', '{"private":"hidden"}', '2099-01-01T00:00:00Z');
+  const path = '/api/orchestration/goals/goal/activity';
+  assert.equal((await app.inject({ url: path })).statusCode, 401);
+  const first = (await app.inject({ url: path, headers: HEADERS })).json();
+  assert.equal(first.events.length, 50); assert.equal(first.events[0].kind, 'merge_sync_observed');
+  assert.ok(first.events.every(event => event.goalId === 'goal' && !('payload' in event) && !('commandId' in event)));
+  const second = (await app.inject({ url: `${path}?before=${first.nextBefore}`, headers: HEADERS })).json();
+  assert.equal(second.events.length, 7); assert.equal(second.events.at(-1).kind, 'goal_created'); assert.equal(second.nextBefore, null);
+  assert.ok(second.events.every(event => event.id < first.nextBefore));
+  for (const before of ['0', '-1', 'NaN', '1.5']) assert.equal((await app.inject({ url: `${path}?before=${before}`, headers: HEADERS })).statusCode, 400);
+  assert.equal((await app.inject({ url: '/api/orchestration/goals/missing/activity', headers: HEADERS })).statusCode, 404);
+  const snapshot = (await app.inject({ url: '/api/orchestration/snapshot', headers: HEADERS })).json();
+  assert.equal(snapshot.goals.find(goal => goal.id === 'goal').lastActivity.kind, 'goal_renamed');
+  assert.equal(snapshot.goals.find(goal => goal.id === 'other').lastActivity.kind, 'goal_created');
+});
+
+test('check output is bound to the selected goal and exact head, bounded and excludes environment and agent envelopes', async t => {
+  const { app, service, store, artifacts } = await apiFixture(t, { resultIntake: true });
+  service.execute(create, { kind: 'user' });
+  service.execute({ ...create, id: 'other', goalId: 'other' }, { kind: 'user' });
+  const headSha = 'a'.repeat(40);
+  const evidence = { checkId: 'unit', headSha, environment: { secret: 'private-environment' }, activation: 'private-bridge', code: '', outcome: { stdout: '<script>unsafe()</script>', stderr: 'x'.repeat(262145) } };
+  const artifact = artifacts.put(JSON.stringify(evidence));
+  const goal = store.get('goal'); goal.verification = { headSha, checks: [{ id: 'unit', passed: true, artifactId: artifact.id }] };
+  store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(goal), goal.id);
+  const path = `/api/orchestration/goals/goal/checks/${artifact.id}`;
+  assert.equal((await app.inject({ url: path })).statusCode, 401);
+  assert.equal((await app.inject({ url: path.replace('/goal/', '/other/'), headers: HEADERS })).statusCode, 404);
+  const response = await app.inject({ url: path, headers: HEADERS }); assert.equal(response.statusCode, 200);
+  const body = response.json(); assert.equal(body.stdout, evidence.outcome.stdout); assert.equal(body.stderr.length, 262144); assert.equal(body.truncated, true);
+  assert.ok(!response.body.includes('private-environment')); assert.ok(!response.body.includes('private-bridge'));
+  goal.verification = null; goal.verificationRuns = [{ operationId: 'historical', result: { verification: { headSha, checks: [{ id: 'unit', passed: true, artifactId: artifact.id }] } } }];
+  store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(goal), goal.id);
+  assert.equal((await app.inject({ url: path, headers: HEADERS })).statusCode, 200);
+  goal.verificationRuns[0].result.verification.headSha = 'b'.repeat(40);
+  store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(goal), goal.id);
+  assert.equal((await app.inject({ url: path, headers: HEADERS })).statusCode, 409);
+  assert.equal((await app.inject({ url: `/api/orchestration/goals/goal/checks/${'f'.repeat(64)}`, headers: HEADERS })).statusCode, 404);
+});

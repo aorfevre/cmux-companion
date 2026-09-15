@@ -1,3 +1,4 @@
+import { parseWaves, currentWave } from './waves.mjs';
 import { array, identifier, identifiers, object, requireValue, text } from './contracts.mjs';
 
 /** Owned areas are literal repository-relative files/directories, never shell globs. @param {unknown} value */
@@ -13,7 +14,7 @@ const overlaps = (left, right) => left === right || left.startsWith(`${right}/`)
 /** @param {unknown} value @returns {import('../types.d.ts').Contract} */
 export function parseContract(value) {
   const input = object(value);
-  requireValue(input.schemaVersion === 1, 'Unsupported contract schema');
+  requireValue(input.schemaVersion === 1 || input.schemaVersion === 2, 'Unsupported contract schema');
   const criteria = array(input.criteria).map((entry) => {
     const item = object(entry);
     return { id: identifier(item.id), text: text(item.text), verification: identifier(item.verification) };
@@ -34,12 +35,12 @@ export function parseContract(value) {
     return {
       id: identifier(task.id), title: text(task.title, 200), prompt: text(task.prompt, 16000),
       dependsOn: identifiers(task.dependsOn), ownedAreas: array(task.ownedAreas).map(ownedArea),
-      criterionIds: identifiers(task.criterionIds),
+      criterionIds: identifiers(task.criterionIds), ...(input.schemaVersion === 2 ? { resources: identifiers(task.resources) } : {}),
       integrationPolicy: /** @type {'serialize' | null} */ (task.integrationPolicy ?? null),
     };
   });
   validateGraph(tasks, criteria.map((criterion) => criterion.id));
-  return { schemaVersion: 1, outcome: text(input.outcome), scope: array(input.scope).map((item) => text(item)), exclusions: array(input.exclusions).map((item) => text(item)), criteria, verification, tasks };
+  return { schemaVersion: input.schemaVersion, ...(input.schemaVersion === 2 ? { waves: parseWaves(input.waves, tasks, verification) } : {}), outcome: text(input.outcome), scope: array(input.scope).map((item) => text(item)), exclusions: array(input.exclusions).map((item) => text(item)), criteria, verification, tasks };
 }
 
 /** @param {import('../types.d.ts').TaskContract[]} tasks @param {string[]} criterionIds */
@@ -80,7 +81,8 @@ export function validateGraph(tasks, criterionIds) {
 }
 /** @param {import('../types.d.ts').Goal} goal */
 export function readyTasks(goal) {
-  if (goal.status !== 'building' || goal.approvedRevision !== goal.revision) return [];
+  if (goal.hold || goal.status !== 'building' || goal.approvedRevision !== goal.revision) return [];
   const integrated = new Set(goal.tasks.filter((task) => task.status === 'integrated').map((task) => task.id));
-  return goal.tasks.filter((task) => (task.status === 'pending' || (task.status === 'repair_required' && task.repairCount < task.repairLimit)) && task.dependsOn.every((id) => integrated.has(id)));
+  const wave = currentWave(goal);
+  return goal.tasks.filter((task) => (!wave || wave.taskIds.includes(task.id)) && (task.status === 'pending' || (task.status === 'repair_required' && task.repairCount < task.repairLimit)) && task.dependsOn.every((id) => integrated.has(id)));
 }

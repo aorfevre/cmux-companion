@@ -5,11 +5,12 @@ import { ApiError, request } from '../api-request';
 import { UpdateSettings } from '../updates';
 import { ModelSettingsPanel } from '../model-settings';
 import { LastUpdateStamp } from '../last-update';
-import { AppNavigation } from '../navigation';
+import { MissionShell } from '../mission-shell';
+import { AccountUsageView } from '../account-usage';
 import { DeviceSettings } from './device-settings';
-import { PushSettings } from './notifications';
 import { ReleaseRetentionPanel } from '../release-retention';
 import { DeploymentHealth } from '../deployment-health';
+import { LaunchProfiles } from './launch-profiles';
 import { ProviderCommand } from './provider-command';
 import { DevRepositories } from './dev-repositories';
 export type Provider = 'claude' | 'codex';
@@ -17,16 +18,18 @@ export type Command = { executable: string; args: string[]; model: string };
 export type Check = { id: string; executable: string; args: string[]; script?: string };
 export type Project = { id: string; name: string; path: string; enabled: boolean; github: string | null; remote: string | null; checks: Check[]; devRepoId?: string };
 export type DevRepo = { id: string; name: string; path: string };
+export type LaunchProfile = { id: string; label: string; provider: Provider; command: Command; roles: ('planner' | 'implementer' | 'reviewer' | 'integrator')[]; enabled: boolean };
 export type Settings = {
+  launchProfiles?: LaunchProfile[]; teamDefaults?: Partial<Record<'planner' | 'implementer' | 'reviewer' | 'integrator', string>>;
   devRepos?: DevRepo[]; projects: Project[]; providers: Record<Provider, Command>; provider: Provider;
-  tools: { cmux: string; tailscale: string; chrome: string };
+  tools: { cmux: string; tailscale: string };
   execution: { global: number; perGoal: number; planners: number; ceilingMs: number; idleMs: number; maxOutputBytes: number; killGraceMs: number };
-  previews: { portStart: number; portEnd: number }; onboarding: { completed: boolean };
+  onboarding: { completed: boolean };
 };
 export type Snapshot = { revision: number; settings: Settings; imported: boolean };
-const categories = { general: 'General', 'dev-repos': 'Dev repos', agents: 'Agents', notifications: 'Notifications', updates: 'Updates', advanced: 'Advanced' };
+const categories = { 'dev-repos': 'Projects', agents: 'Agents & models', usage: 'Account usage', updates: 'Updates', general: 'This device', advanced: 'Execution & tools' };
 type Category = keyof typeof categories;
-const editable: Partial<Record<Category, (keyof Settings)[]>> = { 'dev-repos': ['devRepos', 'projects'], agents: ['provider', 'providers'], advanced: ['tools', 'execution', 'previews'] };
+const editable: Partial<Record<Category, (keyof Settings)[]>> = { 'dev-repos': ['devRepos', 'projects'], agents: ['provider', 'providers', 'launchProfiles', 'teamDefaults'], advanced: ['tools', 'execution'] };
 function categoryFromLocation(): Category | null { const hash = typeof window === 'undefined' ? '' : location.hash.slice(1); return hash in categories ? hash as Category : null; }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -78,6 +81,11 @@ export function LocalSettingsPanel({ onboarding = false }: { onboarding?: boolea
         const result = await checkProvider(provider, value.providers[provider]);
         if (!result.ready) { setError(`${provider === 'claude' ? 'Claude' : 'Codex'}: ${result.reason || 'Provider is not ready'}`); return false; }
       }
+      for (const profile of value.launchProfiles ?? []) {
+        if (!profile.enabled || equal(profile.command, snapshot.settings.launchProfiles?.find(entry => entry.id === profile.id)?.command)) continue;
+        const result = await request<{ ready: boolean; reason?: string }>('/api/settings/providers/validate', { method: 'POST', body: JSON.stringify({ provider: profile.provider, command: profile.command }) });
+        if (!result.ready) { setError(`${profile.label}: ${result.reason || 'Provider is not ready'}`); return false; }
+      }
       const changes = Object.fromEntries(keys.filter(key => key !== 'onboarding').map(key => [key, value[key]]));
       const result = complete
         ? await request<Snapshot>('/api/settings/local', { method: 'PUT', body: JSON.stringify({ expectedRevision: latest.revision, settings: { ...latest.settings, ...changes, onboarding: { completed: true } } }) })
@@ -97,31 +105,36 @@ export function LocalSettingsPanel({ onboarding = false }: { onboarding?: boolea
   }
   const changeProvider = (provider: Provider, change: Partial<Command>) => { if (draft) setDraft({ ...draft, providers: { ...draft.providers, [provider]: { ...draft.providers[provider], ...change } } }); setValidation(current => ({ ...current, [provider]: '' })); };
   const setup = onboarding || draft && !draft.onboarding.completed;
-  return <main className="local-settings-page"><AppNavigation active="settings" /><header className="settings-header"><p className="eyebrow">COMPANION</p><h1>{setup ? 'Set up Companion' : 'Settings'}</h1><LastUpdateStamp /></header>
-    {setup && draft && <aside className="setup-progress"><strong>Get ready for your first goal</strong><p>1. Add repositories → 2. Choose an agent → 3. Review readiness</p><button type="button" onClick={() => navigate('dev-repos')}>Repositories</button> <button type="button" onClick={() => navigate('agents')}>Choose an agent</button> <button type="button" disabled={busy || dirty} onClick={() => void save(draft, true)}>Complete setup</button><a href="/orchestration">Go to Goals</a><a href="/?view=sessions">Browse sessions</a></aside>}
+  return <MissionShell active="settings"><div className="local-settings-page"><header className="settings-header"><p className="eyebrow">COMPANION</p><h1>{setup ? 'Set up Companion' : 'Setup'}</h1><p>Manage your projects, agent team and this Mac.</p><LastUpdateStamp /></header>
+    {setup && draft && <aside className="setup-progress"><strong>Get ready for your first goal</strong><p>1. Add projects → 2. Configure profiles → 3. Review readiness</p><button type="button" onClick={() => navigate('dev-repos')}>Repositories</button> <button type="button" onClick={() => navigate('agents')}>Choose an agent</button> <button type="button" disabled={busy || dirty} onClick={() => void save(draft, true)}>Complete setup</button><a href="/orchestration">Go to Goals</a><a href="/?view=sessions">Browse sessions</a></aside>}
     {error && !(category && editable[category] && dirty) && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
     {unpaired ? <form onSubmit={async event => { event.preventDefault(); setBusy(true); setError(''); try { await request('/api/auth/pair', { method: 'POST', body: JSON.stringify({ token }) }); setToken(''); accept(await request<Snapshot>('/api/settings/local')); } catch (cause) { fail(cause); } finally { setBusy(false); } }}><h2>Pair this device</h2><label>Pairing code<input type="password" value={token} onChange={event => setToken(event.target.value)} autoComplete="off" required /></label><button disabled={busy}>Pair this device</button></form> : <div className={`settings-layout ${category ? 'has-category' : ''}`}>
       <nav className="settings-categories" aria-label="Settings categories">{(Object.keys(categories) as Category[]).map(key => <button key={key} disabled={!ready} aria-current={category === key ? 'page' : undefined} onClick={() => navigate(key)}>{categories[key]}<span aria-hidden="true">›</span></button>)}</nav>
-      <div className="settings-content"><button className="settings-back" onClick={() => navigate(null)}>← All settings</button>
-        {!category ? <div className="settings-welcome"><h2>Make Companion yours</h2><p>Choose a category to get started.</p></div> : <>
+      <div className="settings-content">{category && <button className="settings-back" onClick={() => navigate(null)}>← Setup overview</button>}
+        {!category ? <section className="settings-welcome"><h2>Workspace readiness</h2><p>Configure the Mac once; new goals use these saved defaults.</p><div className="setup-overview">
+          <article><strong>{draft ? draft.projects.filter(project => project.enabled).length : '—'} enabled projects</strong><p>Development folders and favorite repositories.</p><button onClick={() => navigate('dev-repos')}>Manage projects</button></article>
+          <article><strong>{draft ? 2 + (draft.launchProfiles ?? []).filter(profile => profile.enabled).length : '—'} launch profiles</strong><p>Validate commands and set preferred roles before starting work.</p><button onClick={() => navigate('agents')}>Configure agents</button></article>
+          <article><strong>Capacity from CCS</strong><p>Read source and freshness; unavailable allowances stay unknown.</p><button onClick={() => navigate('usage')}>Inspect capacity</button></article>
+          <article><strong>Companion updater</strong><p>Review installed release, update state and safe recovery controls.</p><button onClick={() => navigate('updates')}>Review updates</button></article>
+        </div></section> : <>
           {category === 'general' && <DeviceSettings />}
-          {category === 'notifications' && <section><h2>Notifications</h2><p>Alerts for this browser’s subscription.</p><PushSettings onNotice={setNotice} /></section>}
+          {category === 'usage' && <AccountUsageView embedded onBack={() => navigate(null)} />}
           {category === 'updates' && <><UpdateSettings /><details><summary>Advanced update options</summary><ReleaseRetentionPanel /></details></>}
-          {legacy && category === 'advanced' && <section><h2>Advanced</h2><a href="/?view=apps">Local apps and preview links</a><DeploymentHealth /></section>}
-          {legacy && category === 'agents' && <><a href="/?view=usage">View account usage</a><ModelSettingsPanel /></>}
+          {legacy && category === 'advanced' && <section><h2>Execution & tools</h2><DeploymentHealth /></section>}
+          {legacy && category === 'agents' && <><button onClick={() => navigate('usage')}>View account usage</button><ModelSettingsPanel /></>}
           {!draft && editable[category] && !legacy && <p role="status">{error ? 'Settings could not be loaded.' : 'Loading settings…'}</p>}
           {draft && <>
             {category === 'dev-repos' && <DevRepositories draft={draft} onChange={value => { dirtyRef.current = true; setDraft(value); }} onSync={syncDiscovery} save={save} busy={busy} onError={setError} onNotice={setNotice} />}
-            {category === 'agents' && <section><h2>Agents</h2><p>Shared on this Mac. Changes apply to new goals and sessions.</p><a href="/?view=usage">View account usage</a><fieldset disabled={busy}><legend className="sr-only">Agent preferences</legend><label>Default provider<select value={draft.provider} onChange={event => setDraft({ ...draft, provider: event.target.value as Provider })}><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
-              {(['claude', 'codex'] as const).map(provider => <ProviderCommand key={`${provider}:${snapshot?.revision}:${providerEditorRevision}`} provider={provider} command={draft.providers[provider]} change={value => changeProvider(provider, value)} validate={() => void validate(provider)} validation={validation[provider]} />)}</fieldset></section>}
-            {category === 'advanced' && <section><h2>Advanced</h2><p>Shared on this Mac. Defaults are suitable for most workspaces.</p><a href="/?view=apps">Local apps and preview links</a><fieldset disabled={busy}><legend>Agent capacity</legend>{(['global', 'perGoal', 'planners'] as const).map((key, index) => <label key={key}>{['Background agents', 'Agents per goal', 'Concurrent planners'][index]}<input type="number" min="1" value={draft.execution[key]} onChange={event => setDraft({ ...draft, execution: { ...draft.execution, [key]: Number(event.target.value) } })} /></label>)}</fieldset>
+            {category === 'agents' && <section><h2>Agents & models</h2><p>Shared on this Mac. Changes apply to new goals and sessions.</p><p>Provider validation checks the command capabilities. Model availability is confirmed when an agent launches.</p><button onClick={() => navigate('usage')}>View account usage</button><fieldset disabled={busy}><legend className="sr-only">Agent preferences</legend><label>Default provider<select value={draft.provider} onChange={event => setDraft({ ...draft, provider: event.target.value as Provider })}><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+              {(['claude', 'codex'] as const).map(provider => <ProviderCommand key={`${provider}:${snapshot?.revision}:${providerEditorRevision}`} provider={provider} command={draft.providers[provider]} change={value => changeProvider(provider, value)} validate={() => void validate(provider)} validation={validation[provider]} />)}</fieldset><LaunchProfiles key={`${snapshot?.revision}:${providerEditorRevision}`} draft={draft} change={setDraft} busy={busy} /></section>}
+            {category === 'advanced' && <section><h2>Execution & tools</h2><p>Shared on this Mac. Defaults are suitable for most workspaces.</p><fieldset disabled={busy}><legend>Agent capacity</legend>{(['global', 'perGoal', 'planners'] as const).map((key, index) => <label key={key}>{['Concurrent execution agents', 'Agents per goal', 'Concurrent planners'][index]}<input type="number" min="1" value={draft.execution[key]} onChange={event => setDraft({ ...draft, execution: { ...draft.execution, [key]: Number(event.target.value) } })} /></label>)}</fieldset>
               <details><summary>Time limits and output</summary>{(['ceilingMs', 'idleMs', 'killGraceMs', 'maxOutputBytes'] as const).map((key, index) => <label key={key}>{['Execution timeout (minutes)', 'Idle timeout (seconds)', 'Stop grace period (seconds)', 'Output limit (KiB)'][index]}<input type="number" min="1" value={draft.execution[key] / [60000, 1000, 1000, 1024][index]} onChange={event => setDraft({ ...draft, execution: { ...draft.execution, [key]: Number(event.target.value) * [60000, 1000, 1000, 1024][index] } })} /></label>)}</details>
-              <details><summary>Tools and preview ports</summary>{(Object.keys(draft.tools) as (keyof Settings['tools'])[]).map(tool => <label key={tool}>{tool} executable<input value={draft.tools[tool]} onChange={event => setDraft({ ...draft, tools: { ...draft.tools, [tool]: event.target.value } })} /></label>)}{(['portStart', 'portEnd'] as const).map(key => <label key={key}>{key === 'portStart' ? 'First preview port' : 'Last preview port'}<input type="number" min="1024" max="65535" value={draft.previews[key]} onChange={event => setDraft({ ...draft, previews: { ...draft.previews, [key]: Number(event.target.value) } })} /></label>)}</details><DeploymentHealth /></section>}
+              <details><summary>Tool paths</summary>{(Object.keys(draft.tools) as (keyof Settings['tools'])[]).map(tool => <label key={tool}>{tool} executable<input value={draft.tools[tool]} onChange={event => setDraft({ ...draft, tools: { ...draft.tools, [tool]: event.target.value } })} /></label>)}</details><DeploymentHealth /></section>}
             {conflict && <section className="settings-conflict"><h3>Review changes</h3>{(editable[category] ?? []).filter(key => !equal(draft[key], conflict.settings[key])).map(key => <details key={key}><summary>{key}: saved and your draft</summary><strong>Saved on this Mac</strong><pre>{JSON.stringify(conflict.settings[key], null, 2)}</pre><strong>Your draft</strong><pre>{JSON.stringify(draft[key], null, 2)}</pre></details>)}<button disabled={busy} onClick={() => { setSnapshot(conflict); setConflict(null); setError(''); }}>Keep draft for another review</button><button disabled={busy} onClick={() => accept(conflict)}>Use saved settings</button></section>}
             {editable[category] && dirty && <footer className="settings-save">{error && <p role="alert" className="settings-save-error"><strong>{error}</strong> Your changes have not been saved.</p>}<span role="status">{busy ? 'Saving…' : dirty ? 'Unsaved changes' : 'All changes saved'}</span><button type="button" disabled={busy || !dirty || Boolean(conflict)} onClick={() => void save()}>Save changes</button><button type="button" disabled={busy || !dirty} onClick={() => { setDraft(structuredClone(snapshot!.settings)); setProviderEditorRevision(value => value + 1); setValidation({}); setConflict(null); setError(''); }}>Discard changes</button></footer>}
           </>}
         </>}
       </div>
     </div>}
-  </main>;
+  </div></MissionShell>;
 }

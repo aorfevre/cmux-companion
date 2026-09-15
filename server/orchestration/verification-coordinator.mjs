@@ -1,3 +1,4 @@
+import { integratedWaveReady, verificationWaveId } from './domain/waves.mjs';
 import { randomUUID } from 'node:crypto';
 import { DomainError, object, requireValue } from './domain/contracts.mjs';
 
@@ -34,9 +35,9 @@ export class VerificationCoordinator {
     this.cancelRevoked(); this.ownership.assertOwned();
     for (const snapshot of this.store.list()) {
       const goal = this.store.get(snapshot.id);
-      if (!goal || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
-      const prior = goal.verificationRuns?.some((run) => run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && !run.retryRequested);
-      if (prior || goal.integration || !goal.tasks.every((task) => task.status === 'integrated')) continue;
+      if (!goal || goal.hold || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
+      const prior = goal.verificationRuns?.some((run) => run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && run.waveId === verificationWaveId(goal) && !run.retryRequested);
+      if (prior || !integratedWaveReady(goal)) continue;
       try { this.record(goal.id, 'request_verification', { operationId: this.id() }); }
       catch (error) { if (!(error instanceof DomainError) || !['NOT_READY', 'RETRY_REQUIRED', 'FORBIDDEN'].includes(error.code)) throw error; }
     }
@@ -59,6 +60,7 @@ export class VerificationCoordinator {
       if (!permitted) {
         this.record(goal.id, 'cancel_verification', { operationId: operation.id }); this.store.advanceOperation(operation.id, 'pending', 'completed'); continue;
       }
+      if (goal.hold) continue;
       // One verification process at a time; implementation/review admission keeps
       // running in the ordinary scheduler while this job awaits its child.
       if (this.active.size

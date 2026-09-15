@@ -1,14 +1,14 @@
 # Working on cmux companion
 
 ## Purpose
-A private, mobile-first PWA for monitoring and controlling cmux on a Mac over
+A private, desktop-first responsive PWA for monitoring and controlling cmux on a Mac over
 Tailscale, turning goals into saved plans, isolated agent worktrees and PRs.
 This is the single shared coding-agent guide; Claude and Codex follow it.
 See [product behavior](README.md#what-it-does) and [architecture](README.md#architecture).
 
 ## Important code
 - `app/page.tsx`: React 19/vinext sessions UI and pairing.
-- `app/orchestration/`: mobile goal board and service-projected workflow actions.
+- `app/orchestration/`: Mission Control fleet and service-projected workflow actions.
 - `app/api-request.ts`: deduplicated reads and mutation invalidation.
 - `server/index.mjs`: explicit production configuration and loopback startup.
 - `server/app.mjs`: encapsulated monitoring API and authentication.
@@ -81,7 +81,7 @@ Do not touch unrelated sessions, worktrees, credentials or user changes.
 Do not routinely run `npm run install:mac`, `npm run uninstall:mac`,
 `npm run update:check`, `npm run update:retry`, `npm run update:disable`,
 `npm run update:enable`, `npm run status -- --show-token`, `npm run test:live`,
-`npm run test:preview-live`, the opt-in native adapter live suites: these expose credentials or exercise installed,
+the opt-in native adapter live suites: these expose credentials or exercise installed,
 live or release services and require explicit task authorization.
 Agents must not merge, deploy, expose secrets or alter external accounts/services
 without explicit task authorization. Worker/build scaffolding is not permission to publish.

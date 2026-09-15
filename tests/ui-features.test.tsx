@@ -4,9 +4,9 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
-import { AppsView } from "../app/apps-view";
 import { MarkdownViewer } from "../app/markdown-viewer";
-import { BottomNav, InboxView, LastUpdateStamp, PullRequestBanner, TerminalPanel } from "../app/page";
+import { LastUpdateStamp, PullRequestBanner, TerminalPanel } from "../app/page";
+import { AppNavigation } from "../app/navigation";
 import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { DeploymentHealth } from "../app/deployment-health";
 
@@ -16,12 +16,12 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe("contextual mobile features", () => {
   test("keeps permanent navigation focused on frequent mobile destinations", async () => {
     const navigate = vi.fn();
-    render(<BottomNav view="inbox" onView={navigate} />);
+    render(<AppNavigation active="sessions" />);
     assert.equal(screen.queryByRole("link", { name: "Inbox" }), null);
-    assert.equal(screen.getByRole("link", { name: "Goals" }).getAttribute("href"), "/orchestration");
-    assert.equal(screen.getByRole("link", { name: "Settings" }).getAttribute("href"), "/settings");
+    assert.equal(screen.getByRole("link", { name: "Mission Control" }).getAttribute("href"), "/orchestration");
+    assert.equal(screen.getByRole("link", { name: "Setup" }).getAttribute("href"), "/settings");
     assert.equal(screen.queryByRole("link", { name: "Licence Usage" }), null);
-    assert.equal(screen.queryByRole("link", { name: "Sessions" }), null);
+    assert.equal(screen.getByRole("link", { name: "Sessions" }).getAttribute("href"), "/?view=sessions");
     assert.equal(navigate.mock.calls.length, 0);
   });
 
@@ -101,13 +101,11 @@ describe("contextual mobile features", () => {
     assert.equal(fetchMock.mock.calls.some(([url]) => String(url).endsWith("?refresh=1")), true);
   });
 
-  test("terminal Markdown and localhost references are interactive", async () => {
-    const markdown = vi.fn(); const local = vi.fn();
-    render(<TerminalGrid view={{ mode: "text", text: "Read docs/plan.md then http://localhost:3000" }} onMarkdownLink={markdown} onLocalUrl={local} />);
+  test("terminal Markdown remains interactive while local URLs stay inert", async () => {
+    const markdown = vi.fn();
+    render(<TerminalGrid view={{ mode: "text", text: "Read docs/plan.md then http://localhost:3000" }} onMarkdownLink={markdown} />);
     await userEvent.click(screen.getByRole("button", { name: "docs/plan.md" }));
-    await userEvent.click(screen.getByRole("button", { name: "http://localhost:3000" }));
     assert.deepEqual(markdown.mock.calls, [["docs/plan.md"]]);
-    assert.deepEqual(local.mock.calls, [["http://localhost:3000"]]);
   });
 
   test("mobile terminal keeps one composer, hides the native prompt, expands writing, and accepts pasted images", async () => {
@@ -117,10 +115,9 @@ describe("contextual mobile features", () => {
       workspace={{ id: "workspace-1", title: "Sample", terminals: [{ id: "terminal-1", title: "shell" }] }}
       terminal={{ id: "terminal-1", title: "shell" }}
       terminalView={{ mode: "text", text: "result\n\n› Ask Codex to do anything\n\n  gpt-5.6-sol high · ~/repo" }}
-      screenError="" draft="/" attachments={[]} queueItems={[]} sending={false} readOnly={false} fontSize={14} fitToPhone shortcutsOpen={false}
+      screenError="" draft="/" attachments={[]} sending={false} readOnly={false} fontSize={14} fitToPhone shortcutsOpen={false}
       onTerminal={() => {}} onDraft={() => {}} onImage={onImage} onRemoveImage={() => {}} onSubmit={() => {}} onKey={() => {}}
-      onQueue={() => {}} onQueueUpdate={async () => {}} onQueueMove={async () => {}} onQueueSend={async () => {}} onQueueRemove={async () => {}}
-      onReadOnly={() => {}} onRefresh={() => {}} onShortcuts={() => {}} onMarkdown={() => {}} onLocalUrl={() => {}}
+      onReadOnly={() => {}} onRefresh={() => {}} onShortcuts={() => {}} onMarkdown={() => {}}
     />);
     assert.equal(screen.getAllByRole("textbox").length, 1);
     assert.equal(screen.queryByText(/Ask Codex to do anything/), null);
@@ -130,22 +127,6 @@ describe("contextual mobile features", () => {
     assert.equal(onImage.mock.calls[0][0], image);
     await userEvent.click(screen.getByRole("button", { name: "Open large writing area" }));
     assert.equal((screen.getByRole("textbox", { name: "Expanded terminal input" }) as HTMLTextAreaElement).value, "/");
-  });
-
-  test("queued prompts stay behind a compact composer control and remain editable", async () => {
-    const update = vi.fn(async () => {}); const send = vi.fn(async () => {});
-    render(<TerminalPanel
-      workspace={{ id: "workspace-1", title: "Sample", terminals: [{ id: "terminal-1", title: "shell" }] }}
-      terminal={{ id: "terminal-1", title: "shell" }} terminalView={{ mode: "text", text: "working" }} screenError="" draft="" attachments={[]}
-      queueItems={[{ id: "11111111-2222-4333-8444-555555555555", workspaceId: "workspace-1", surfaceId: "terminal-1", text: "Run the tests next", createdAt: "2026-01-01", updatedAt: "2026-01-01", attempts: 0 }]}
-      sending={false} readOnly={false} fontSize={14} fitToPhone shortcutsOpen={false} onTerminal={() => {}} onDraft={() => {}} onImage={() => {}} onRemoveImage={() => {}} onSubmit={() => {}} onQueue={() => {}} onQueueUpdate={update} onQueueMove={async () => {}} onQueueSend={send} onQueueRemove={async () => {}} onKey={() => {}} onReadOnly={() => {}} onRefresh={() => {}} onShortcuts={() => {}} onMarkdown={() => {}} onLocalUrl={() => {}}
-    />);
-    await userEvent.click(screen.getByRole("button", { name: "Prompt queue, 1 waiting" }));
-    const queued = screen.getByRole("textbox", { name: "Queued prompt 1" });
-    await userEvent.clear(queued); await userEvent.type(queued, "Run every test next"); fireEvent.blur(queued);
-    assert.deepEqual(update.mock.calls[0], ["11111111-2222-4333-8444-555555555555", "Run every test next"]);
-    await userEvent.click(screen.getAllByRole("button", { name: "Send now" }).at(-1)!);
-    assert.deepEqual(send.mock.calls[0], ["11111111-2222-4333-8444-555555555555"]);
   });
 
   test("an open pull request appears as a direct project link", async () => {
@@ -175,50 +156,6 @@ describe("contextual mobile features", () => {
     assert.equal(requests.some((url) => url.includes("docs%2Fguide.md")), true);
     await userEvent.click(screen.getByRole("button", { name: "Ask agent" }));
     assert.equal(ask.mock.calls[0][0].path, "docs/guide.md");
-  });
-
-  test("Apps screen explicitly enables and opens a detected private preview", async () => {
-    let active = false;
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(_input).endsWith("/capture")) return new Response(JSON.stringify({ dataUrl: "data:image/png;base64,iVBORw0KGgo=", viewport: { width: 390, height: 844 }, sourceUrl: "http://localhost:3000/" }), { status: 201 });
-      if (init?.method === "POST") { active = true; return new Response(JSON.stringify({ preview: {} }), { status: 200 }); }
-      return new Response(JSON.stringify({ tailnetOnly: true, previews: [{ id: "preview-1", workspaceId: "workspace-1", name: "Web", targetPort: 3000, sourceUrl: "http://localhost:3000", status: active ? "active" : "detected", url: active ? "https://mac.tail.test:8500" : null, updatedAt: "2026-01-01" }, { id: "preview-old", workspaceId: "workspace-old", name: "Old app", targetPort: 4000, sourceUrl: "http://localhost:4000", status: "stopped", url: null, updatedAt: "2025-01-01" }] }), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<AppsView focusedId="preview-1" onOpenWorkspace={() => {}} onNotice={() => {}} onFix={async () => {}} />);
-    assert.equal(screen.queryByText("Old app"), null);
-    assert.ok(await screen.findByText("Running · setup needed"));
-    await userEvent.click(await screen.findByRole("button", { name: "Create private link" }));
-    assert.ok(await screen.findByRole("link", { name: /Open app/ }));
-    assert.equal(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/api/previews/preview-1/enable") && init?.method === "POST"), true);
-    await userEvent.click(screen.getByRole("button", { name: "◎ Fix this" }));
-    assert.ok(await screen.findByRole("dialog", { name: "Annotate preview" }));
-    assert.ok(screen.getByRole("img", { name: "Web mobile preview" }));
-    await userEvent.click(screen.getByRole("tab", { name: /History/ }));
-    const oldCard = (await screen.findByText("Old app")).closest("article");
-    assert.ok(oldCard);
-    assert.ok(within(oldCard).getByText("Offline"));
-    assert.equal(within(oldCard).queryByRole("button", { name: "Create private link" }), null);
-    assert.equal(within(oldCard).queryByRole("button", { name: "◎ Fix this" }), null);
-  });
-
-  test("notification deep link presents only the exact pending decision", async () => {
-    const close = vi.fn(); const reload = vi.fn(async () => {});
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      void input;
-      void init;
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<InboxView inbox={{ actionableCount: 2, unreadCount: 0, items: [
-      { id: "req-1", requestId: "req-1", type: "request", kind: "permissionRequest", title: "Run tests", workspaceId: "workspace-1", toolName: "exec", toolInput: { command: "npm test" } },
-      { id: "req-2", requestId: "req-2", type: "request", kind: "question", title: "Hidden question" },
-    ] }} workspaces={[{ id: "workspace-1", title: "Sample", current_directory: "/repo", terminals: [] }]} repos={[{ id: "repo-12345678", name: "sample", root: "root", path: "/repo", branch: "main", ahead: 0, behind: 0, changedFiles: 0, dirty: false, lastActivity: 0, scripts: [] }]} focusedId="req-1" onCloseFocus={close} onDocument={() => {}} onReload={reload} onOpen={() => {}} onNotice={() => {}} />);
-    assert.ok(screen.getByRole("heading", { name: "Run tests" }));
-    assert.equal(screen.queryByText("Hidden question"), null);
-    await userEvent.click(screen.getByRole("button", { name: "Approve once" }));
-    await waitFor(() => assert.equal(close.mock.calls.length, 1));
-    assert.equal(fetchMock.mock.calls[0][0], "/api/inbox/req-1/reply");
   });
 });
 
@@ -311,4 +248,26 @@ describe("deployment health", () => {
     assert.ok(await screen.findByText("Automatic updates paused"));
     assert.ok(screen.getByText("Paused"));
   });
+});
+
+test('embedded capacity expires old readings and hides cached percentages after refresh failure', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date('2026-09-15T10:00:00Z'));
+  const usage = { generatedAt: new Date().toISOString(), source: 'CCS', available: true, summary: {}, providers: [{ id: 'claude', label: 'Claude', available: true, accounts: [{ id: 'one', label: 'Team account', status: 'ready', updatedAt: new Date().toISOString(), windows: [{ id: 'weekly', cadence: 'weekly', category: 'usage', remainingPercent: 82, resetAt: null }] }] }] };
+  let failed = false;
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(failed ? { error: 'Provider unavailable' } : usage), { status: failed ? 503 : 200 })));
+  render(<AccountUsageView embedded onBack={() => {}} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  assert.ok(await screen.findByText('82%'));
+  assert.equal(screen.queryByRole('button', { name: '‹ Settings' }), null);
+  await act(async () => { await vi.advanceTimersByTimeAsync(16 * 60_000); });
+  assert.equal(screen.queryByText('82%'), null);
+  assert.ok(screen.getByText(/Capacity unknown:/));
+  usage.generatedAt = new Date().toISOString(); usage.providers[0].accounts[0].updatedAt = usage.generatedAt;
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh account usage' })); });
+  assert.ok(await screen.findByText('82%'));
+  failed = true;
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh account usage' })); });
+  assert.ok(await screen.findByText('Provider unavailable'));
+  assert.equal(screen.queryByText('82%'), null);
 });

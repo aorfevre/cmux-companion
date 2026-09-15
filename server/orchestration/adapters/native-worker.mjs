@@ -27,6 +27,8 @@ export async function runNativeWorker(configPath) {
     const path = join(directory, name), temporary = `${path}.${randomUUID()}.tmp`;
     writeFileSync(temporary, JSON.stringify(value), { mode: 0o600, flag: 'wx' }); renameSync(temporary, path);
   };
+  // A closed terminal display must not crash the independent watchdog.
+  if (config.terminalOutput) { process.stdout.on('error', () => {}); process.stderr.on('error', () => {}); }
   const controller = new AbortController(), stop = () => controller.abort();
   process.on('SIGTERM', stop); process.on('SIGINT', stop);
   let sent = false;
@@ -44,6 +46,7 @@ export async function runNativeWorker(configPath) {
     writeFileSync(join(directory, 'provider-sent.json'), JSON.stringify({ identity: config.identity }), { mode: 0o600, flag: 'wx' }); sent = true;
     const handle = await startBackgroundProcess(command, {
       policy: config.policy, signal: controller.signal, identity: () => config.identity,
+      ...(config.terminalOutput ? { onOutput: (stream, chunk) => { process[stream].write(chunk); } } : {}),
       onIdentity: async ({ pid }) => { save('provider.json', { identity: config.identity, pid, stamp: await nativeProcessStamp(pid, directory) }); },
     });
     save('outcome.json', { identity: config.identity, outcome: await handle.result });

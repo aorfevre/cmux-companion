@@ -111,8 +111,7 @@ Do not run the old and bundled updater simultaneously.
 
 Before staging, the service proves agents/effects are idle and installs a durable
 admission fence. Unknown Companion-owned worker state and in-flight Companion
-commands block activation. HTTP mutations, orchestration scheduling and queued
-prompts respect the fence. Unrelated cmux sessions do not block an update and
+commands block activation. HTTP mutations and orchestration scheduling respect the fence. Unrelated cmux sessions do not block an update and
 remain open; Companion-managed work must finish before activation.
 
 The updater stages an isolated release and validates it locally. Build commands

@@ -8,11 +8,9 @@ function fixtures() {
   cy.intercept("**/api/**", { statusCode: 501, body: { error: "Missing deterministic Cypress API fixture" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", (request) => request.reply({ connected: true, host: { mac_display_name: "Launch Mac" }, workspaces, error: null, refreshedAt: now })).as("bootstrap");
-  cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
   cy.intercept("GET", "**/api/repos*", { repos: [billingRepo, docsRepo] }).as("repos");
   cy.intercept("GET", "**/api/health", { version: { builtAt: now } });
   cy.intercept("GET", "**/api/updater/status", { available: false });
-  cy.intercept("GET", "**/api/prompt-queue?*", { items: [] });
   cy.intercept("GET", "**/api/goal-sessions/workspace/*", { plan: null });
   cy.intercept("GET", "**/api/terminals/terminal-launched/replay*", { mode: "text", text: "Codex is starting in billing-service" }).as("replay");
   cy.intercept("GET", "**/api/goals/capacity*", { providers: [], next: null, available: false });
@@ -104,7 +102,7 @@ describe("Launch options and outcomes", () => {
     cy.wait("@launch");
     cy.wait("@bootstrap");
     cy.get(".toast").should("be.visible").and("contain.text", "Workspace launched. It will appear in a moment.");
-    cy.findByRole("link", { name: "← Back to Goals" }).should("have.attr", "href", "/orchestration");
+    cy.findByRole("link", { name: "Mission Control" }).should("have.attr", "href", "/orchestration");
     cy.location("search").should("not.contain", "workspace=");
     cy.get("@replay.all").should("have.length", 0);
   });

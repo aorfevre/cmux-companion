@@ -19,25 +19,6 @@ export function splitContextLinks(text) {
   return parts.length ? parts : [{ type: "text", text: source }];
 }
 
-export function terminalContext(view) {
-  const text = terminalText(view);
-  const markdown = []; const urls = [];
-  for (const part of splitContextLinks(text)) {
-    if (part.type === "markdown" && !markdown.includes(part.text)) markdown.push(part.text);
-    if (part.type === "local" && !urls.includes(part.text)) urls.push(part.text);
-  }
-  return { markdown: markdown.slice(0, 20), urls: urls.slice(0, 12) };
-}
-
-export function localUrlPort(value) {
-  try {
-    const url = new URL(value);
-    if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return null;
-    const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-    return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : null;
-  } catch { return null; }
-}
-
 export function resolveMarkdownPath(currentFile, href) {
   const clean = decodeURIComponent(String(href || "").split("#")[0]).replaceAll("\\", "/");
   if (!/\.(?:md|markdown)$/i.test(clean)) return null;
@@ -57,15 +38,3 @@ export function resolveAssetPath(currentFile, src) {
   const synthetic = resolveMarkdownPath(currentFile, clean.replace(/\.(png|jpe?g|gif|webp)$/i, ".md"));
   return synthetic?.replace(/\.md$/i, clean.match(/\.(png|jpe?g|gif|webp)$/i)[0]) || null;
 }
-
-function terminalText(view) {
-  if (!view) return "";
-  if (view.mode === "text") return view.text || "";
-  const grid = view.render_grid;
-  if (!grid) return "";
-  const rows = Array.from({ length: Number(grid.scrollback_rows || 0) + Number(grid.rows || 0) }, () => []);
-  for (const span of grid.scrollback_spans || []) rows[span.row]?.push(span);
-  for (const span of grid.row_spans || []) rows[Number(grid.scrollback_rows || 0) + span.row]?.push(span);
-  return rows.map((spans) => spans.sort((a, b) => a.column - b.column).map((span) => span.text).join("")).join("\n");
-}
-

@@ -35,6 +35,17 @@ test('disposable development composition delivers through paired HTTP and real G
     await runtime.scheduler.tick(); await agents.drain();
     await Promise.all([...runtime.scheduler.verifications.active.values()].map((run) => run.job));
     await Promise.all([...runtime.scheduler.publications.active.values()].map((run) => run.job));
+    const held = runtime.store.get('g');
+    if (held.hold && held.attempts.every(attempt => attempt.workerState === 'stopped') && !held.verificationRuns?.some(run => run.workerState !== 'stopped') && !held.results?.some(result => result.status === 'pending' && !result.repair)) {
+      assert.ok(!runtime.store.ready().some(work => work.goalId === 'g'));
+      await command({ id: `recover-${held.version}`, goalId: 'g', expectedVersion: held.version, type: 'recover_goal', payload: { holdId: held.hold.id } });
+    }
+    const proposal = runtime.store.get('g');
+    if (proposal.status === 'ready_to_publish' && !proposal.publication.approval) {
+      assert.equal(runtime.scheduler.publications.publisher.github.creates.length, 0);
+      assert.ok(!runtime.store.operations().some(operation => operation.kind === 'publish'));
+      await command({ id: 'approve-publication', goalId: 'g', expectedVersion: proposal.version, type: 'approve_publication', payload: { operationId: proposal.publication.operationId, headSha: proposal.integrationHead } });
+    }
   }
   goal = runtime.store.get('g'); assert.deepEqual(agents.errors, []);
   assert.equal(await fixtureGit(manifest.repository, ['rev-parse', '--abbrev-ref', 'HEAD']), 'HEAD');
@@ -45,6 +56,14 @@ test('disposable development composition delivers through paired HTTP and real G
   assert.equal(goal.finalRepairCount, 1);
   assert.ok(goal.verificationRuns.some((run) => run.result?.verification.checks.some((check) => !check.passed)));
   assert.ok(goal.verification.checks.every((check) => check.passed));
+  const barrier = goal.verificationRuns.find(run => run.waveId === 'modules');
+  assert.ok(barrier.result.verification.checks.every(check => check.passed));
+  const composition = agents.launches.find(entry => entry.attempt.role === 'implementer' && entry.attempt.taskId === 'C');
+  assert.equal(composition.attempt.baseSha, barrier.headSha);
+  const events = runtime.store.events({ goalId: 'g', limit: 500 });
+  const verified = events.find(event => event.kind === 'verification_result_recorded' && event.payload.operationId === barrier.operationId);
+  const dispatched = events.find(event => event.kind === 'attempt_running' && event.payload.attemptId === composition.attempt.id);
+  assert.ok(verified.id < dispatched.id, 'the next wave launch follows the integrated barrier receipt');
   assert.equal(goal.pr.headSha, goal.integrationHead);
   assert.equal(await fixtureGit(manifest.remote, ['rev-parse', `refs/heads/${goal.publication.plan.branch}`]), goal.pr.headSha);
   assert.equal(runtime.scheduler.publications.publisher.github.creates.length, 1);

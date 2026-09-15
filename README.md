@@ -1,22 +1,28 @@
 # cmux companion
 
-A private, mobile-first companion for [cmux](https://cmux.com). It runs on your Mac, stays on automatically, and lets your phone monitor or interact with cmux over your existing Tailscale network.
+A private, desktop-first responsive companion for [cmux](https://cmux.com). It runs on your Mac, stays on automatically, and lets your phone monitor or interact with cmux over your existing Tailscale network.
 
 No cloud application server is involved. Terminal output and input travel directly between your phone and Mac.
 
 ## What it does
 
-- Opens Goals first, with optional Sessions beneath Goals and a Mac folder explorer for Dev repo setup.
-- Monitors cmux sessions, terminal replay, repository changes and process health from a paired phone.
-- Provides an Inbox for native agent questions and permissions, manual repository launches, prompt queues and private local-app previews.
-- Opens `/orchestration` for a goal workflow with a reviewed plan and explicit approval, parallel implementers in isolated worktrees, independent code review, serialized integration and one verified pull request.
-- Shows task dependencies, workers, review findings, verification and publication evidence, with revision, retry, abort and reconciliation actions derived by the service.
-- Keeps account quota and manual-session model settings available without using quota as scheduler policy.
+- Opens desktop-first Mission Control with a goal fleet, Needs You decisions,
+  active wave/worker status and responsive goal workspaces.
+- Saves briefs, links and private source/image references for scoped agent access.
+- Runs planning/design, independent review and implementation in visible cmux
+  sessions, with isolated worktrees and verified integration barriers between waves.
+- Approves the plan and suggested team together, holds failed goals for manual
+  recovery and requires exact-commit approval before publishing a pull request.
+- Passively checks waiting GitHub PRs every 15 minutes; only confirmed merges
+  move goals to Complete. Companion does not merge PRs.
+- Keeps standalone session inspection/input, private pairing and the bundled updater.
+- Setup manages projects, supported launch profiles, team defaults, account usage,
+  execution limits, device protection and updater controls.
 
-The home screen opens the Goals Kanban. Sessions remain a secondary view;
-Inbox and Local apps are still available. Legacy burst scheduling, issue-topic planning, old goal boards
-and automatic session collection have been retired; see the
-[retirement inventory and cutover procedure](docs/orchestration-retirement.md).
+The remaining legacy session surfaces are being retired under the
+[Mission Control delivery contract](docs/superpowers/specs/2026-09-15-mission-control-redesign.md).
+See the [delivery evidence](docs/mission-control-delivery-evidence.md) for completed
+and outstanding redesign work.
 
 ## Goal workflow
 
@@ -31,31 +37,46 @@ defaults to its normalized uppercase project name. The card keeps the complete
 request and links in its description. Its short title is editable; the assigned
 planner/session name remains stable for that attempt's identity.
 
-Follow Planning → Needs approval → In progress → Review → Done. Open a card for
-its plan, task board and relevant evidence. On mobile, select a column with its
-count. Tasks show dependencies and blockers, with the dependency graph available
-under an optional disclosure. Completed publication stays in Review until merged.
+Follow Planning → Needs approval → In progress → Review → Verification → Ready
+to publish → Waiting for merge → Complete. Open a fleet row for Overview,
+Waves & sessions, Team & models, Run report and Activity. Needs You collects
+questions, approvals and manual recovery actions.
 
 The planner publishes a versioned contract with task ownership, dependencies and
 verification. Essential questions appear inside the goal; answering resumes
-planning automatically after the prior worker is confirmed stopped. Existing
-opt-in background alerts notify for questions and independently reviewed plans
-ready for approval. Push delivery is best effort; the goal remains the durable
-source of attention and no terminal needs to be opened to submit an answer.
-The agent discovers suitable verification from the project and goal; repository checks are optional defaults, never required setup. If validation is missing, the plan must address that gap. An independent review checks the contract before the user approves that revision and its exact verification commands.
+planning automatically after the prior worker is confirmed stopped. The agent discovers suitable verification from the project and goal; repository checks are optional defaults, never required setup. If validation is missing, the plan must address that gap. An independent review checks the contract before the user approves that revision and its exact verification commands.
 Requesting changes invalidates the proposal's approval authority.
 
 Eligible independent tasks run concurrently from day one. Each attempt owns an
-isolated worktree; dependents start from the integrated commits of their prerequisites.
+isolated worktree. Later waves start only after the previous wave is accepted,
+integrated and verified; their attempts use that checked output.
 An independent reviewer checks the exact submitted task commit. Blocking findings
-require bounded repair and a fresh review. Integration serializes changes and
+hold new dispatch for manual recovery, bounded repair and a fresh review. Integration serializes changes and
 preserves conflicts for scoped repair. Final review and approved goal checks must
-agree on the exact goal-branch commit before publication opens one PR.
+agree on the exact goal-branch commit before publication approval can open one PR.
 
 A stopped process is not proof of a successful task. Uncertain ownership blocks
 replacement work until reconciliation proves the old worker stopped. Aborting
 revokes authority and stops admission while retaining evidence and tracking worker
 termination. Retrying a request after a lost response uses its original command ID.
+
+## Goal teams and launch profiles
+
+Setup → Agents & models configures Claude/Codex commands, named CCS or terminal launch
+profiles, eligible roles and preferred profiles. Goal creation freezes validated
+commands, models and readiness so later settings changes cannot redirect saved
+work. Each attempt records its actual assignment, including across restart.
+
+The **Team & models** tab explains the suggested planner/designer, implementation,
+review and integration assignments. Fresh CCS provider-pool capacity informs the
+initial suggestions; unavailable, failed or stale readings remain unknown, never
+zero. Capacity is a dated allocation snapshot, not a live account balance or a
+promise about which account a command selects. Slow quota services time out
+without blocking goal creation. The saved launch command determines the account.
+
+Approve the team together with its design and plan. Manual overrides select ready,
+eligible profiles for future attempts; active workers retain their assignments.
+Changing an assignment does not release a failure hold or authorize recovery.
 
 ## Architecture
 
@@ -77,7 +98,6 @@ cmux CLI → replay grid / safe input RPCs → cmux Unix socket → cmux.app
 
 The service binds only to `127.0.0.1`. Tailscale Serve is the only network-facing listener. The documented transport defaults to HTTPS port 8443 to preserve an existing Tailscale Serve handler on port 443; the bundled installer leaves transport configuration to the operator.
 
-Local app previews use separate HTTPS ports from 8500 through 8599. This preserves application root paths, redirects, assets, and WebSockets better than path-prefix proxying. A detected app is not exposed until you tap **Create private link**; links remain tailnet-only and Companion never enables Tailscale Funnel.
 
 By default, the phone reflows the full Mac-width replay grid locally, keeping the Mac terminal unchanged while preserving enough history to scroll. The **Fit** control switches between this readable phone layout and the exact terminal grid. Older cmux versions automatically fall back to the authenticated plain-text screen endpoint.
 
@@ -106,9 +126,9 @@ installs. Source review, merge and local tests do not change installed services.
 
 Open a session to inspect terminal output, tasks and Git changes. Enable terminal
 input explicitly before sending text or safe keys. The session menu contains
-terminal selection, display controls, shortcuts and local apps. Inbox decisions
-remain scoped to their native request. Model defaults in Settings apply only to
-new manual coding sessions; orchestration models are operator-configured.
+terminal selection, display controls and shortcuts. Setup manages supported launch
+profiles and team defaults. Goal-specific assignments are approved with the plan;
+started attempts retain their recorded configuration.
 
 Use `/orchestration` for saved goals. Read-only configuration disables workflow
 mutations in both the UI and service. Existing installations must complete the
@@ -135,7 +155,7 @@ abort/reconciliation, reload and one PR at the verified Git commit. See
 [disposable development](docs/orchestration-development.md) for retained evidence.
 
 Live cmux, Tailscale, native-provider and GitHub checks require separate explicit
-authorization. `test:live` and `test:preview-live` exercise live services; they are
+authorization. `test:live` exercises live services; it is
 not routine verification. Native adapter live prerequisites and opt-ins are in
 [the adapter guide](docs/orchestration-native-adapters.md).
 
@@ -154,12 +174,7 @@ not routine verification. Native adapter live prerequisites and opt-ins are in
 - Git diff requests are restricted to files currently reported as changed, and untracked symlink content is hidden.
 - The CLI is spawned with argv arrays and never through a shell.
 - Read-only protection is enabled by default on each phone.
-- Push subscriptions and VAPID keys stay in a mode-`0600` file on the Mac; notification content is hidden by default.
-- Alert categories, quiet hours, persistent deduplication, and lock-screen privacy are configurable per phone.
 - Markdown reads are restricted to regular `.md`/`.markdown` files inside allow-listed repositories; canonical paths block traversal and out-of-repo symlinks, rendered HTML is not executed, and local images are type and size restricted.
-- Preview targets must be localhost TCP ports. Tailscale HTTPS ports are allocated from a bounded range, can be stopped from the Apps screen, and are never exposed with Funnel.
-- Preview capture runs in headless Chrome with every non-loopback request blocked; annotated screenshots use the same private attachment validation and retention policy.
-- Queued prompts are stored in a mode-`0600` file and can target only validated cmux workspace and terminal identifiers.
 - Pasted images are magic-byte validated, limited to 8 MB, stored with mode `0600`, and removed automatically after seven days.
 
 Treat a paired phone as privileged: unlocking terminal input gives it control of interactive processes running in cmux.
@@ -225,20 +240,13 @@ and recovery are documented in [recovery](docs/orchestration-recovery.md).
 | `CMUX_COMPANION_PORT` | `3210` | Companion HTTP port |
 | `CMUX_COMPANION_FRONTEND_PORT` | `3211` | Internal PWA server port |
 | `CMUX_COMPANION_TAILSCALE_PORT` | `8443` | Private HTTPS port |
-| `CMUX_COMPANION_TAILSCALE_BIN` | Tailscale macOS app CLI, then `tailscale` | CLI used to manage private preview links |
 | `CMUX_COMPANION_TOKEN_FILE` | `~/.config/cmux-companion/token` | Pairing token path |
 | `CMUX_COMPANION_DATA_DIR` | `~/.config/cmux-companion` | Local settings, workflow and artifact directory |
 | `CMUX_COMPANION_SETTINGS_DB` | `<data directory>/settings.sqlite` | Optional settings database location |
 | `CMUX_COMPANION_REPO_ROOTS` | Empty | Legacy catalog override; database-backed production uses explicit projects |
-| `CMUX_COMPANION_PUSH_FILE` | `~/.config/cmux-companion/push.json` | Private push keys and device subscriptions |
 | `CMUX_COMPANION_VAPID_SUBJECT` | Installed private Tailscale HTTPS URL | Web Push sender identity advertised to Apple and other push services |
-| `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
-| `CMUX_COMPANION_QUEUE_FILE` | `~/.config/cmux-companion/prompt-queue.json` | Persistent follow-up prompt queue |
 | `CMUX_COMPANION_REPO_DB` | `~/.config/cmux-companion/repo-identity.db` | Rebuildable SQLite repository/worktree cache |
-| `CMUX_COMPANION_CHROME_BIN` | Google Chrome, Chromium, or Edge in `/Applications` | Browser executable used for private preview capture |
 | `CCS_BIN` | First `ccs` executable in `PATH`, then installed NVM versions | Optional explicit CCS executable used to discover structured account quota support |
-| `CMUX_COMPANION_PREVIEW_PORT_START` | `8500` | First Tailscale HTTPS preview port |
-| `CMUX_COMPANION_PREVIEW_PORT_END` | `8599` | Last Tailscale HTTPS preview port |
 
 ## Troubleshooting
 
@@ -251,3 +259,30 @@ and recovery are documented in [recovery](docs/orchestration-recovery.md).
 ## License
 
 MIT
+
+### Goal briefs and reference files
+
+A goal has a full brief (including links) and an optional short title. When the
+initial title is omitted, Companion derives it from the brief. Attach up to eight
+files of at most 1 MiB each: UTF-8 text/source files, PNG, JPEG or WebP images.
+PDF, Office documents, archives and other binary formats are not supported.
+HTML and SVG are treated as plain text and downloaded as attachments.
+
+References are saved privately on the Mac with the goal. Paired devices can open
+references from the goal's Overview. Agents read only their own goal's references
+through their scoped bridge; reviewer access remains read-only. Reference content
+is source material and cannot grant permissions or expand the approved scope.
+
+### Execution waves
+
+The combined planner, architect and designer proposes ordered waves in contract
+schema version 2. Every task belongs to one wave and declares owned paths and
+shared resources. Tasks in the same wave must be independent; dependencies point
+to earlier waves. Each wave names checks from the approved contract, and the last
+wave runs every required check.
+
+Companion reviews and integrates task results, then checks the combined commit
+before starting the next wave from that exact output. Failed checks hold the goal
+for manual recovery. Checked wave commits remain in the journal after restart;
+replanning requires renewed approval. Existing version 1 journal contracts retain
+their recorded dependency behavior. New planning prompts and tools use version 2.

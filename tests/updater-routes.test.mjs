@@ -14,15 +14,14 @@ async function fixture(t) {
   const app = Fastify({ ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
   const runtime = { app, scheduler: { sweep: null, verifications: { active: new Map() }, publications: { active: new Map() } }, store: { operations: () => [], list: () => [] } };
   const cmux = { workspaceList: async () => ({ workspaces: [] }), workspaceStatus: async () => ({ signals: { any_agent_running: false, any_agent_needs_input: false } }) };
-  const promptQueue = { inFlight: new Set() };
-  const maintenance = installUpdateMaintenance({ runtime, control, cmux, promptQueue, serviceId: 'service' });
+  const maintenance = installUpdateMaintenance({ runtime, control, cmux, serviceId: 'service' });
   app.post('/api/launch', async () => ({ launched: true }));
   await app.register(async scope => registerUpdateRoutes(scope, { control, token, maintenance }));
   const headers = { host: 'localhost', authorization: `Bearer ${token}`, origin: 'http://localhost' };
   const send = (url, payload, method = 'POST', supplied = headers) => app.inject({ method, url, payload, headers: supplied });
   t.after(async () => { await app.close(); control.close(); rmSync(root, { recursive: true, force: true }); });
   control.checked({ candidate: { sha }, observedSha: sha, deployedSha: 'b'.repeat(40) });
-  return { control, app, runtime, cmux, promptQueue, maintenance, send };
+  return { control, app, runtime, cmux, maintenance, send };
 }
 test('update routes require pairing, origin and strict payloads; private transaction evidence is not returned', async t => {
   const f = await fixture(t);
@@ -39,10 +38,10 @@ test('update routes require pairing, origin and strict payloads; private transac
   assert.equal((await f.send('/api/updater/maintenance', { id: 'manual-001', action: 'acquire' }, 'POST', cookie)).statusCode, 403);
   assert.equal((await f.send('/api/updater/cancel', { id: 'manual-001' })).json().request.status, 'cancelled');
 });
-test('durable maintenance fences HTTP launches and prompt draining, requires same service and fails closed on uncertain work', async t => {
+test('durable maintenance fences HTTP launches and scheduler admission, requires same service and fails closed on uncertain work', async t => {
   const f = await fixture(t); f.control.request({ id: 'manual-002', sha, whenIdle: true });
   const acquire = await f.send('/api/updater/maintenance', { id: 'manual-002', action: 'acquire' });
-  assert.equal(acquire.json().ready, true); assert.equal(f.runtime.scheduler.paused(), true); assert.equal(f.promptQueue.paused(), true);
+  assert.equal(acquire.json().ready, true); assert.equal(f.runtime.scheduler.paused(), true);
   assert.equal((await f.send('/api/launch', {})).statusCode, 503);
   assert.equal((await f.send('/api/updater/maintenance', { id: 'manual-002', action: 'verify', serviceId: 'old-service' })).statusCode, 409);
   assert.equal((await f.send('/api/updater/maintenance', { id: 'manual-002', action: 'verify', serviceId: 'service' })).json().ready, true);
@@ -65,7 +64,7 @@ test('in-flight launches and coordinator effects cannot race the idle fence', as
   assert.equal((await f.maintenance.acquire('manual-003')).ready, false); release(); await launch;
   f.runtime.scheduler.verifications.active.set('check', {}); assert.equal(managedWorkBusy(f.runtime), true); f.runtime.scheduler.verifications.active.clear();
   f.runtime.store.operations = () => [{ status: 'dispatching' }]; assert.equal(managedWorkBusy(f.runtime), true);
-  f.runtime.store.operations = () => []; f.promptQueue.inFlight.add('prompt'); assert.equal((await f.maintenance.acquire('manual-003')).ready, false);
+  f.runtime.store.operations = () => [];
   assert.equal(managedWorkBusy(null), true);
 });
 
@@ -172,4 +171,26 @@ test('verified supported planners hand off across maintenance while old clients 
   f.control.unfence('handoff-001');
   attempt.workerState = 'unknown'; assert.equal((await f.maintenance.acquire('handoff-001')).ready, false);
   attempt.workerState = 'running'; attempt.mode = 'background'; assert.equal((await f.maintenance.acquire('handoff-001')).ready, false);
+});
+
+
+test('publication approval and waiting for GitHub merge are idle, but publication effects still fence updates', async t => {
+  const f = await fixture(t);
+  f.control.request({ id: 'publication-idle', sha, whenIdle: true });
+  const goal = { status: 'ready_to_publish', attempts: [], publication: { headSha: sha }, pr: null };
+  f.runtime.store.list = () => [goal];
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, true);
+  f.control.unfence('publication-idle');
+  goal.publication.approval = { commandId: 'approved', headSha: sha };
+  f.runtime.store.operations = () => [{ kind: 'publish', status: 'pending' }];
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, false);
+  f.runtime.store.operations = () => [];
+  f.runtime.scheduler.publications.active.set('publish', {});
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, false);
+  f.runtime.scheduler.publications.active.clear();
+  goal.status = 'delivered'; goal.pr = { number: 1, headSha: sha };
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, true);
+  f.control.unfence('publication-idle');
+  goal.attempts.push({ workerState: 'unknown' });
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, false);
 });

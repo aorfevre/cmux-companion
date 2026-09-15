@@ -1,3 +1,4 @@
+import { launchProfiles, teamDefaults } from './launch-profiles.mjs';
 import { createDevRepoTracking } from './dev-repo-tracking.mjs';
 import { browseFolders } from './folder-browser.mjs';
 import { inspectDevRepo } from './dev-repositories.mjs';
@@ -24,9 +25,10 @@ export function registerSettingsRoutes(app, { settings, onChange = async () => {
     if (!body || Object.keys(body).some(key => !['expectedRevision', 'settings'].includes(key))) throw new TypeError('Expected settings and revision');
     if (body.settings?.onboarding?.completed && !settings.read().settings.onboarding.completed) {
       if (!body.settings.projects?.some(project => project.enabled && project.github && project.remote)) throw new TypeError('Add an enabled project with a GitHub destination and remote before completing setup');
-      const provider = body.settings.provider;
-      providerCommand(body.settings.providers?.[provider], provider);
-      const readiness = await probeProvider(provider, body.settings.providers[provider], body.settings.tools);
+      const profiles = launchProfiles(body.settings), preferred = teamDefaults(body.settings, profiles).planner;
+      const selected = profiles.find(profile => profile.id === preferred);
+      providerCommand(selected.command, selected.provider);
+      const readiness = await probeProvider(selected.provider, selected.command, body.settings.tools);
       if (!readiness.ready) throw new TypeError(readiness.reason || 'Configure a supported provider before completing setup');
     }
     const previous = settings.read();
@@ -38,7 +40,7 @@ export function registerSettingsRoutes(app, { settings, onChange = async () => {
     if (!body || Object.keys(body).some(key => !['expectedRevision', 'changes'].includes(key)) || !body.changes || typeof body.changes !== 'object' || Array.isArray(body.changes)) throw new TypeError('Expected edited fields and revision');
     const before = settings.read();
     settings.assertRevision(body.expectedRevision, before.revision);
-    if (Object.keys(body.changes).some(key => !['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'previews'].includes(key))) throw new TypeError('Unknown editable settings field');
+    if (Object.keys(body.changes).some(key => !['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'launchProfiles', 'teamDefaults'].includes(key))) throw new TypeError('Unknown editable settings field');
     const result = await settings.update(body.expectedRevision, { ...before.settings, ...body.changes }, { inspect });
     return finishSave(result, before);
   });

@@ -21,7 +21,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     // `npm run test:coverage` substitutes this list into its own node --test call.
     process.stdout.write(files.join(" ") + "\n");
   } else {
-    const child = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" });
+    // Real Git/process/browser fixtures share host resources. Bound file-level
+    // concurrency so large Macs do not launch dozens of fixture processes at once.
+    const child = spawnSync(process.execPath, ["--test", "--test-concurrency=4", ...files], { stdio: "inherit" });
     if (child.error) throw child.error;
     process.exitCode = child.status ?? 1;
   }

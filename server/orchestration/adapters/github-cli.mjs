@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { realpathSync } from 'node:fs';
-import { DomainError, branchName, identifier, requireValue, sha } from '../domain/contracts.mjs';
+import { DomainError, branchName, identifier, integer, requireValue, sha } from '../domain/contracts.mjs';
 
 /** Explicitly configured GitHub CLI boundary. Fake compositions never construct
  * this adapter or load native credentials. API payloads use stdin, not shell text.
@@ -23,6 +23,19 @@ export class GitHubCli {
   }
   /** @param {string} repositoryId */
   identity(repositoryId) { return `github.com:${this.repository(repositoryId).toLowerCase()}`; }
+  /** Read a saved PR directly; branch deletion and later head updates do not erase merge evidence.
+   * @param {string} repositoryId @param {number} number
+   * @returns {Promise<{ number:number; url:string; state:'open'|'closed'|'merged' }>}
+   */
+  async readPull(repositoryId, number) {
+    const slug = this.repository(repositoryId); integer(number, 1);
+    const pr = JSON.parse(await this.execute(['api', '--hostname', 'github.com', '--method', 'GET', `repos/${slug}/pulls/${number}`]));
+    requireValue(pr.number === number && pr.base?.repo?.full_name?.toLowerCase() === slug.toLowerCase()
+      && typeof pr.html_url === 'string' && pr.html_url.toLowerCase() === `https://github.com/${slug.toLowerCase()}/pull/${number}`
+      && ['open', 'closed'].includes(pr.state) && typeof pr.merged === 'boolean'
+      && (!pr.merged || pr.state === 'closed'), 'GitHub PR identity or merge state changed', 'OWNERSHIP_UNCERTAIN');
+    return { number, url: pr.html_url, state: pr.merged ? 'merged' : pr.state === 'open' ? 'open' : 'closed' };
+  }
   /** @param {string} repositoryId @param {string} branch
    * @returns {ReturnType<import('../types.d.ts').GitHubPort['find']>}
    */

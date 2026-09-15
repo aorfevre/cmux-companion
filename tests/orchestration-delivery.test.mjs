@@ -69,7 +69,8 @@ exit "$code"
       }
       if (attempt.role === 'integrator' && attempt.taskId === null) {
         finalRepairs++;
-        const current = store.get('g');
+        recoverIfSettled();
+    const current = store.get('g');
         assert.throws(() => service.execute({ id: 'premature_publication', goalId: 'g', expectedVersion: current.version, type: 'request_publication', payload: { operationId: 'premature' } }, { kind: 'system' }), { code: 'NOT_READY' });
         if (finalFailure === 'check') assert.ok(current.verification.checks.some((check) => !check.passed));
         writeFileSync(join(attempt.worktree, 'src/composition.mjs'), "import { a } from './a.mjs';\nimport { b } from './b.mjs';\nexport function composition(aSource = a, bSource = b) { return aSource() + bSource(); }\n");
@@ -100,7 +101,8 @@ exit "$code"
       const proof = await candidate(input);
       if (input.attempt.role === 'integrator' && !stoppedDuringProof) {
         stoppedDuringProof = true;
-        const current = store.get('g');
+        recoverIfSettled();
+    const current = store.get('g');
         service.execute({ id: 'stop_during_repair_proof', goalId: 'g', expectedVersion: current.version, type: 'record_stopped', payload: { attemptId: input.attempt.id } }, { kind: 'system' });
       }
       return proof;
@@ -110,7 +112,7 @@ exit "$code"
   t.after(async () => { release.release(); await agents.drain(); await scheduler.stop(); store.close(); await repo.close(); });
   service.execute({ id: 'create', goalId: 'g', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'Deliver fixture', baseSha: repo.baseSha } }, { kind: 'user' });
   await scheduler.start();
-  for (let i = 0; i < 8 && !store.get('g').reviews.length; i++) { await agents.drain(); await scheduler.tick(); }
+  for (let i = 0; i < 8 && !store.get('g').reviews.length; i++) { await agents.drain(); await scheduler.tick(); recoverIfSettled(); }
   assert.equal(store.get('g').reviews[0].disposition, 'accept');
   service.execute({ id: 'approve', goalId: 'g', expectedVersion: store.get('g').version, type: 'approve', payload: { revision: 1 } }, { kind: 'user' });
   await scheduler.tick(); await Promise.all([...started.values()].map((entry) => entry.promise));
@@ -118,8 +120,15 @@ exit "$code"
   assert.equal(siblings.length, 2); assert.equal(new Set(siblings.map((attempt) => attempt.worktree)).size, 2);
   assert.ok(siblings.every((attempt) => attempt.baseSha === repo.baseSha));
   assert.equal(store.get('g').tasks[2].status, 'pending');
+  const recoverIfSettled = () => {
+    const held = store.get('g');
+    if (!held.hold) return;
+    assert.ok(!store.ready().some(work => work.goalId === 'g'));
+    if (held.attempts.some(attempt => attempt.workerState !== 'stopped') || held.verificationRuns?.some(run => run.workerState !== 'stopped') || held.results?.some(result => result.status === 'pending' && !result.repair)) return;
+    service.execute({ id: `recover_${held.version}`, goalId: 'g', expectedVersion: held.version, type: 'recover_goal', payload: { holdId: held.hold.id } }, { kind: 'user' });
+  };
   release.release();
-  for (let i = 0; i < 20 && !store.get('g').tasks.every((task) => task.status === 'integrated'); i++) { await agents.drain(); await scheduler.tick(); }
+  for (let i = 0; i < 20 && !store.get('g').tasks.every((task) => task.status === 'integrated'); i++) { await agents.drain(); await scheduler.tick(); recoverIfSettled(); }
   await scheduler.tick();
   await Promise.all([...scheduler.verifications.active.values()].map((run) => run.job));
   await agents.drain(); await scheduler.tick();
@@ -127,6 +136,7 @@ exit "$code"
     await agents.drain(); await scheduler.tick();
     await Promise.all([...scheduler.verifications.active.values()].map((run) => run.job));
     await agents.drain(); await scheduler.tick();
+    recoverIfSettled();
     const latest = store.get('g');
     if (finalRepairs && latest.verification?.headSha === latest.integrationHead && latest.verification.checks.every((check) => check.passed) && latest.reviews.some((review) => review.kind === 'integration' && review.target === latest.integrationHead && review.disposition === 'accept')) break;
   }
@@ -134,7 +144,12 @@ exit "$code"
     await agents.drain(); await scheduler.tick();
     await Promise.all([...scheduler.verifications.active.values()].map((run) => run.job));
     await Promise.all([...scheduler.publications.active.values()].map((run) => run.job));
+    recoverIfSettled();
     const current = store.get('g');
+    if (current.status === 'ready_to_publish' && !current.publication.approval) {
+      assert.equal(github.creates.length, 0);
+      service.execute({ id: 'approve_publication', goalId: 'g', expectedVersion: current.version, type: 'approve_publication', payload: { operationId: current.publication.operationId, headSha: current.integrationHead } }, { kind: 'user' });
+    }
     if (movedTarget && current.publication?.observation?.status === 'target_moved') {
       const before = { head: current.integrationHead, reviews: current.reviews, verification: current.verification };
       service.execute({ id: 'accept_remote_target', goalId: 'g', expectedVersion: current.version, type: 'accept_moved_target', payload: { operationId: current.publication.operationId, baseHeadSha: current.publication.observation.baseHeadSha } }, { kind: 'user' });

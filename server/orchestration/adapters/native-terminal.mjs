@@ -149,6 +149,9 @@ export class NativeTerminal {
     if (existsSync(join(directory, `run-${id}.json`))) return { identity: saved.identity };
     requireValue((await this.observe(request.operationId)).status === 'running', 'Terminal runner is not available', 'OWNERSHIP_UNCERTAIN');
     requireValue(!this.stopping, 'Terminal runtime is stopping', 'NOT_READY');
+    // The supervisor can consume this resume while process observation awaits.
+    // Recheck its receipt before rejecting the now-running conversation.
+    if (existsSync(join(directory, `run-${id}.json`))) return { identity: saved.identity };
     requireValue(this.read(join(directory, 'session.json')).phase === 'paused', 'Native conversation is already running', 'ALREADY_RUNNING');
     const pointer = join(directory, 'resume.json');
     if (existsSync(pointer)) {

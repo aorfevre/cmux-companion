@@ -1,3 +1,4 @@
+import { launchProfiles, teamDefaults } from './launch-profiles.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { accessSync, chmodSync, constants, lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -16,10 +17,9 @@ export const defaultSettings = () => ({
     claude: { executable: 'ccs', args: ['claude'], model: 'default' },
     codex: { executable: 'ccs', args: ['codex'], model: 'default' },
   },
-  provider: 'claude',
-  tools: { cmux: '/Applications/cmux.app/Contents/Resources/bin/cmux', tailscale: '/Applications/Tailscale.app/Contents/MacOS/Tailscale', chrome: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
+  provider: 'claude', launchProfiles: [], teamDefaults: {},
+  tools: { cmux: '/Applications/cmux.app/Contents/Resources/bin/cmux', tailscale: '/Applications/Tailscale.app/Contents/MacOS/Tailscale' },
   execution: { global: 4, perGoal: 4, planners: 2, ceilingMs: 1800000, idleMs: 240000, maxOutputBytes: 1048576, killGraceMs: 5000 },
-  previews: { portStart: 8500, portEnd: 8599 },
   onboarding: { completed: false },
 });
 
@@ -54,18 +54,16 @@ export function providerCommand(value, provider) {
   return structuredClone(value);
 }
 function validateSettings(value) {
-  keys(value, ['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'previews', 'onboarding'], 'settings');
+  keys(value, ['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'onboarding', 'launchProfiles', 'teamDefaults'], 'settings');
   keys(value.providers, ['claude', 'codex'], 'providers');
   for (const provider of ['claude', 'codex']) providerCommand(value.providers[provider], provider);
   if (!['claude', 'codex'].includes(value.provider)) invalid('Choose Claude or Codex');
-  keys(value.tools, ['cmux', 'tailscale', 'chrome'], 'tools');
-  for (const name of ['cmux', 'tailscale', 'chrome']) validateExecutable(value.tools[name]);
+  teamDefaults(value, launchProfiles(value));
+  keys(value.tools, ['cmux', 'tailscale'], 'tools');
+  for (const name of ['cmux', 'tailscale']) validateExecutable(value.tools[name]);
   keys(value.execution, Object.keys(defaultSettings().execution), 'execution');
   for (const name of Object.keys(defaultSettings().execution)) integer(value.execution[name], name);
   if (value.execution.maxOutputBytes > 2097152 || value.execution.killGraceMs > 30000) invalid('Native output or termination limit is too large');
-  keys(value.previews, ['portStart', 'portEnd'], 'preview');
-  for (const name of ['portStart', 'portEnd']) integer(value.previews[name], name, 65535);
-  if (value.previews.portStart < 1024 || value.previews.portEnd < value.previews.portStart) invalid('Choose an ordered preview port range above 1023');
   keys(value.onboarding, ['completed'], 'onboarding');
   if (typeof value.onboarding.completed !== 'boolean') invalid('Invalid onboarding progress');
   if (!Array.isArray(value.projects) || value.projects.length > 500) invalid('Invalid projects');
@@ -154,17 +152,20 @@ export class LocalSettings {
       if (version > 2) invalid('Settings database is newer than this version of Companion');
       this.db.exec(`BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS local_settings (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, value TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS team_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS project_favorites (project_id TEXT PRIMARY KEY, favorite INTEGER NOT NULL CHECK(favorite IN (0,1)));
         CREATE TABLE IF NOT EXISTS goal_configuration (goal_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
         COMMIT;`);
-      this.db.prepare('INSERT OR IGNORE INTO local_settings(id,revision,value) VALUES(1,0,?)').run(JSON.stringify(defaultSettings()));
-      if (version < 2) {
+      this.db.prepare('INSERT OR IGNORE INTO local_settings(id,revision,value) VALUES(1,0,?)').run(JSON.stringify(this.compatibleSettings(defaultSettings())));
+      const raw = JSON.parse(String(this.db.prepare('SELECT value FROM local_settings WHERE id=1').get().value));
+      if (version < 2 || raw.launchProfiles !== undefined || raw.teamDefaults !== undefined) {
         this.db.exec('BEGIN IMMEDIATE');
         try {
           const current = this.read().settings;
           current.devRepos ??= [];
           validateSettings(current);
-          this.db.prepare('UPDATE local_settings SET value=? WHERE id=1').run(JSON.stringify(current));
+          this.saveTeamSettings(current);
+          this.db.prepare('UPDATE local_settings SET value=? WHERE id=1').run(JSON.stringify(this.compatibleSettings(current)));
           this.db.exec('PRAGMA user_version=2; COMMIT;');
         } catch (error) { this.db.exec('ROLLBACK'); throw error; }
       }
@@ -173,7 +174,24 @@ export class LocalSettings {
   }
   read() {
     const row = this.db.prepare('SELECT revision,value,imported FROM local_settings WHERE id=1').get();
-    return { revision: Number(row.revision), settings: JSON.parse(String(row.value)), imported: Boolean(row.imported) };
+    const settings = JSON.parse(String(row.value));
+    const team = this.db.prepare('SELECT value FROM team_settings WHERE id=1').get();
+    Object.assign(settings, team ? JSON.parse(String(team.value)) : { launchProfiles: settings.launchProfiles ?? [], teamDefaults: settings.teamDefaults ?? {} });
+    delete settings.previews; delete settings.tools.chrome;
+    return { revision: Number(row.revision), settings, imported: Boolean(row.imported) };
+  }
+  // Keep inert schema-2 fields exclusively on disk so the bundled updater can
+  // return to the previous reader. They are neither exposed nor consumed here.
+  compatibleSettings(settings) {
+    const row = this.db.prepare('SELECT value FROM local_settings WHERE id=1').get();
+    const prior = row ? JSON.parse(String(row.value)) : {};
+    const legacy = { ...settings }; delete legacy.launchProfiles; delete legacy.teamDefaults;
+    return { ...legacy, previews: prior.previews ?? { portStart: 8500, portEnd: 8599 },
+      tools: { ...settings.tools, chrome: prior.tools?.chrome ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' } };
+  }
+  saveTeamSettings(settings) {
+    this.db.prepare('INSERT INTO team_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value')
+      .run(JSON.stringify({ launchProfiles: settings.launchProfiles ?? [], teamDefaults: settings.teamDefaults ?? {} }));
   }
   async update(expectedRevision, settings, { inspect = inspectProject } = {}) {
     settings = structuredClone(settings);
@@ -218,7 +236,8 @@ export class LocalSettings {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.assertRevision(expected, this.read().revision);
-      this.db.prepare('UPDATE local_settings SET revision=revision+1,value=?,imported=MAX(imported,?) WHERE id=1').run(JSON.stringify(settings), Number(imported));
+      this.saveTeamSettings(settings);
+      this.db.prepare('UPDATE local_settings SET revision=revision+1,value=?,imported=MAX(imported,?) WHERE id=1').run(JSON.stringify(this.compatibleSettings(settings)), Number(imported));
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return this.read();
@@ -264,13 +283,14 @@ export class LocalSettings {
     validateSettings(next);
     return this.write(expected, next, true);
   }
-  snapshotGoal(goalId, repositoryId, providerResolution) {
+  snapshotGoal(goalId, repositoryId, providerResolution, teamSnapshot) {
     const saved = this.goalConfiguration(goalId);
     if (saved) return saved;
     const { revision, settings } = this.read();
     const project = settings.projects.find(entry => entry.id === repositoryId && entry.enabled);
     if (!project) invalid('Choose an enabled project');
-    const value = { project, provider: settings.provider, command: settings.providers[settings.provider], ...(providerResolution ? { providerResolution } : {}), tools: settings.tools, execution: settings.execution };
+    const primary = teamSnapshot?.planner;
+    const value = { ...(teamSnapshot ? { profiles: teamSnapshot.profiles, teamConfiguration: teamSnapshot.configuration } : {}), project, provider: primary?.provider ?? settings.provider, command: primary?.command ?? settings.providers[settings.provider], ...((primary?.providerResolution ?? providerResolution) ? { providerResolution: primary?.providerResolution ?? providerResolution } : {}), tools: settings.tools, execution: settings.execution };
     this.db.prepare('INSERT INTO goal_configuration VALUES(?,?,?)').run(goalId, revision, JSON.stringify(value));
     return { revision, ...value };
   }

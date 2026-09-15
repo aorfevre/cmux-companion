@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { mkdirSync, realpathSync, lstatSync, renameSync, copyFileSync, rmSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
@@ -59,7 +60,8 @@ export class GitRemote {
     if (beforeSend && !beforeSend()) return '';
     return new Promise((resolve, reject) => {
       const child = execFile('git', ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'protocol.allow=never', '-c', `protocol.${policy.protocol}.allow=always`, ...argv], {
-        cwd, env: { PATH: policy.env.PATH, HOME: policy.env.HOME, SSH_AUTH_SOCK: policy.env.SSH_AUTH_SOCK, LANG: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' },
+        cwd, env: { PATH: policy.env.PATH, HOME: policy.env.HOME, SSH_AUTH_SOCK: policy.env.SSH_AUTH_SOCK, LANG: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1',
+          ...(policy.protocol === 'https' && /^https:\/\/github\.com\//.test(policy.url) ? { GIT_ASKPASS: fileURLToPath(new URL('./github-askpass.mjs', import.meta.url)) } : {}) },
         timeout: 30000, maxBuffer: 1024 * 1024,
       }, (error, stdout) => error ? reject(new DomainError(child.pid === undefined ? 'EXTERNAL_NOT_SENT' : 'REMOTE_OPERATION_UNCERTAIN', 'Remote operation did not return confirmed success')) : resolve(stdout));
     });

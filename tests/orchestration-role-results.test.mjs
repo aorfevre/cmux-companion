@@ -66,7 +66,8 @@ test('revision and direct publication preserve unresolved integration and PR ope
   revisions(); f.command('record_integration', { operationId: 'integrate', headSha: HEAD_A });
   f.request('final', 'reviewer'); f.dispatch('final'); f.review('final', HEAD_A);
   f.command('record_verification', { headSha: HEAD_A, checks: [{ id: 'unit', passed: true, artifactId: 'checked' }] });
-  f.command('request_publication', { operationId: 'publish' }); revisions();
+  f.command('request_publication', { operationId: 'publish' });
+  f.command('approve_publication', { operationId: 'publish', headSha: HEAD_A }, f.user); revisions();
   f.command('abort', {}, f.user);
   f.command('record_pr', { operationId: 'publish', headSha: HEAD_A, number: 1, url: 'https://example.test/pr/1' });
   assert.equal(f.goal.status, 'aborted'); assert.equal(f.goal.pr.number, 1);
@@ -75,7 +76,7 @@ test('revision and direct publication preserve unresolved integration and PR ope
 test('a failed-check-only repair receives exact verification evidence without fabricated review findings', () => {
   const f = acceptedTask(); f.command('record_integration', { operationId: 'integrate', headSha: HEAD_A });
   f.command('record_verification', { headSha: HEAD_A, checks: [{ id: 'unit', passed: false, artifactId: 'failed_check_log' }] });
-  f.request('repair', 'integrator');
+  f.recover(); f.request('repair', 'integrator');
   const context = roleContext(f.goal, f.goal.attempts.at(-1));
   assert.deepEqual(context.verification, { headSha: HEAD_A, checks: [{ id: 'unit', passed: false, artifactId: 'failed_check_log' }] });
   assert.ok(!context.reviews.some((entry) => entry.kind === 'integration'));

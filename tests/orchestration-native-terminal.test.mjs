@@ -128,6 +128,23 @@ test('resume repairs its durable pointer after a response-loss boundary without 
 });
 
 
+test('resume replay accepts a supervisor receipt created during process observation', { timeout: 15000 }, async t => {
+  const f = await fixture(t); const launched = await f.driver.launch(f.request); f.request.attempt.identity = launched.identity;
+  await waitFor(f.records, records => records?.length === 1);
+  const directory = join(f.root, 'native/operation');
+  const observe = f.driver.observe.bind(f.driver);
+  f.driver.observe = async id => {
+    const result = await observe(id);
+    // Model the worker consuming an already-sent resume while observation yields.
+    await writeFile(join(directory, 'run-racing.json'), JSON.stringify({ identity: launched.identity, id: 'racing' }));
+    return result;
+  };
+  assert.deepEqual(await f.driver.resume({ ...f.request, resumeId: 'racing' }), { identity: launched.identity });
+  await assert.rejects(access(join(directory, 'resume.json')), { code: 'ENOENT' });
+  assert.equal((await f.records()).length, 1);
+  f.driver.observe = observe;
+});
+
 test('close during resume observation fences the later resume pointer write', { timeout: 15000 }, async (t) => {
   const f = await fixture(t); const launched = await f.driver.launch(f.request); f.request.attempt.identity = launched.identity;
   await waitFor(f.records, records => records?.length === 1); f.input('exit\n'); await waitFor(f.session, session => session?.phase === 'paused');
@@ -161,6 +178,12 @@ process.stdout.write(JSON.stringify({ workspace_id: ${JSON.stringify(workspaceId
   assert.ok(sent.text.startsWith('exec ')); assert.ok(sent.text.includes('native-terminal-worker.mjs'));
   assert.ok(sent.text.includes("'\\''"));
   await assert.rejects(terminal.start('other-target', '/private/config'));
+  await terminal.startManaged(workspaceId, join(root, "private ' managed.json"));
+  const managed = JSON.parse((await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse).at(-1)[3]);
+  assert.ok(managed.text.includes('native-managed-terminal.mjs'));
+  assert.ok(managed.text.includes("'\\''"));
+  await assert.rejects(terminal.startManaged('other-target', '/private/config'));
+  await assert.rejects(terminal.startManaged(workspaceId, 'relative.json'));
   terminal.env.FIXTURE_FAIL = '1';
   await assert.rejects(terminal.open(workspaceId), error => error.code === 'CMUX_UNAVAILABLE' && !error.message.includes('private-credential'));
 });

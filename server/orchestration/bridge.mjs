@@ -21,6 +21,14 @@ export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
       if (!response.ok) throw Object.assign(new Error('Agent status rejected'), { code: body.code || 'REQUEST_FAILED' });
       return body;
     },
+    /** @param {string} id @param {number} [offset] */
+    async reference(id, offset = 0) {
+      if (!/^[a-f0-9]{64}$/.test(id) || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid reference request');
+      const response = await fetch(new URL(`/api/orchestration/agent/references/${id}?offset=${offset}`, url), { redirect: 'error', headers: { authorization: `Bearer ${credential}` }, signal: AbortSignal.timeout(timeoutMs) });
+      const body = await response.json();
+      if (!response.ok) throw Object.assign(new Error('Agent reference rejected'), { code: body.code || 'REQUEST_FAILED' });
+      return body;
+    },
     /** @param {{id: string; expectedHead: string; message: string}} input */
     commit: (input) => send('/api/orchestration/agent/commit', input),
     /** @param {unknown} command */

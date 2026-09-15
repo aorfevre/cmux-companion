@@ -5,13 +5,11 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import websocket from "@fastify/websocket";
 import httpProxy from "@fastify/http-proxy";
-import { resolveExecutable } from "./local-settings.mjs";
 import { registerSettingsRoutes } from "./settings-routes.mjs";
 import { ModelSettings } from "./model-settings.mjs";
 import { CmuxClient, CmuxCommandError } from "./cmux-client.mjs";
 import { CmuxEventHub } from "./event-hub.mjs";
 import { ImageAttachments, MAX_IMAGE_BYTES } from "./image-attachments.mjs";
-import { capturePreview } from "./preview-capture.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import { isWorktreeReason } from "./worktree-errors.mjs";
 import { AccountUsage } from "./account-usage.mjs";
@@ -41,10 +39,6 @@ export async function buildApp({
   logger = false,
   eventHub = null,
   repoCatalog = new RepoCatalog(),
-  pushService = null,
-  previewManager = null,
-  promptQueue = null,
-  previewCapture = capturePreview,
   imageAttachments = new ImageAttachments(),
   accountUsage = new AccountUsage(),
   ccsReconnect = null,
@@ -76,10 +70,6 @@ export async function buildApp({
   const viewportLeases = new Map();
   let bootstrapSnapshot = null;
   let bootstrapPending = null;
-  let inboxSnapshot = null;
-  let inboxPending = null;
-  const detachPush = pushService?.attach({ hub, cmux, repoCatalog, previewManager }) || null;
-  const detachQueue = promptQueue?.attach({ hub, cmux }) || null;
   await app.register(websocket, {
     options: {
       maxPayload: 16 * 1024,
@@ -199,17 +189,6 @@ export async function buildApp({
         cmux.capabilities(),
       ]);
       const connected = workspacePayload.status === "fulfilled";
-      // Preview syncing is a side effect of bootstrap, not part of its answer.
-      // It scans every repository, so a saturated machine must not let it hold
-      // the reply that the whole page waits on.
-      if (connected && previewManager) {
-        await withDeadline((async () => {
-          const repos = await repoCatalog.list().catch(() => []);
-          await previewManager.syncWorkspaces(workspacePayload.value.workspaces || [], repos).catch(() => {});
-        })(), bootstrapTimeoutMs, "Preview sync timed out").catch((cause) => {
-          app.log.warn({ err: cause }, "preview sync skipped");
-        });
-      }
       const value = {
         connected,
         ...(localSettings ? { setupRequired: !localSettings.read().settings.onboarding.completed } : {}),
@@ -339,114 +318,6 @@ export async function buildApp({
     return reply.header("Cache-Control", "private, max-age=60").type(asset.mime).send(asset.content);
   });
 
-  app.get("/api/previews", async () => {
-    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
-    return previewManager.list();
-  });
-
-  app.post("/api/previews/discover", async (request, reply) => {
-    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
-    const payload = await cmux.workspaceListDetailed?.() || await cmux.workspaceList();
-    const workspace = (payload.workspaces || []).find((item) => item.id === request.body?.workspaceId);
-    if (!workspace) throw new TypeError("Unknown workspace");
-    let repo = null;
-    if (request.body?.repoId) repo = await repoCatalog.get(request.body.repoId);
-    const result = previewManager.discover({
-      workspaceId: workspace.id, repoId: repo?.id || null,
-      name: repo?.name || workspace.title || "Local app",
-      targetPort: request.body?.port, sourceUrl: request.body?.url,
-    });
-    return reply.code(result.created ? 201 : 200).send(result);
-  });
-
-  app.post("/api/previews/:id/enable", async (request) => {
-    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
-    return previewManager.enable(request.params.id);
-  });
-
-  app.post("/api/previews/:id/stop", async (request) => {
-    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
-    return previewManager.stop(request.params.id);
-  });
-
-  app.post("/api/previews/:id/restart", async (request) => {
-    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
-    return previewManager.restart(request.params.id);
-  });
-
-  app.delete("/api/previews/:id", async (request) => {
-    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
-    return previewManager.remove(request.params.id);
-  });
-
-  app.post("/api/previews/:id/capture", async (request, reply) => {
-    if (!previewManager) throw serviceUnavailable("Private previews are unavailable");
-    const preview = previewManager.require(request.params.id);
-    const captured = await previewCapture({
-      sourceUrl: preview.sourceUrl,
-      targetPort: preview.targetPort,
-      width: request.body?.width,
-      height: request.body?.height,
-      ...(localSettings ? { executablePath: resolveExecutable(localSettings.read().settings.tools.chrome) || localSettings.read().settings.tools.chrome } : {}),
-    });
-    if (captured.buffer.length > MAX_IMAGE_BYTES) throw new TypeError("The captured preview is too large to annotate");
-    const dataUrl = `data:image/png;base64,${captured.buffer.toString("base64")}`;
-    return reply.code(201).send({ dataUrl, viewport: captured.viewport, sourceUrl: captured.sourceUrl });
-  });
-
-  const loadInbox = async () => {
-    if (inboxSnapshot && Date.now() - inboxSnapshot.at < 1_500) return inboxSnapshot.value;
-    if (inboxPending) return inboxPending;
-    inboxPending = (async () => {
-      const [feed, notifications] = await Promise.all([
-        cmux.pendingFeed(),
-        cmux.notifications().catch(() => ({ notifications: [] })),
-      ]);
-      const value = normalizeInbox(feed, notifications);
-      inboxSnapshot = { at: Date.now(), value };
-      return value;
-    })();
-    try {
-      return await inboxPending;
-    } finally {
-      inboxPending = null;
-    }
-  };
-
-  app.get("/api/inbox", async () => loadInbox());
-  app.post("/api/inbox/:requestId/reply", async (request) => {
-    const result = await cmux.feedReply(request.params.requestId, request.body?.kind, request.body || {});
-    inboxSnapshot = null;
-    return { ok: true, result };
-  });
-
-  app.post("/api/notifications/:id/read", async (request) => cmux.markNotificationRead(request.params.id));
-
-  app.get("/api/push/status", async (request) => {
-    if (!pushService) return { supported: false, subscribed: false };
-    return pushService.status(typeof request.query?.endpoint === "string" ? request.query.endpoint : null);
-  });
-
-  app.post("/api/push/subscribe", async (request) => {
-    if (!pushService) throw serviceUnavailable("Push alerts are unavailable");
-    return pushService.subscribe(request.body?.subscription, request.body?.settings);
-  });
-
-  app.post("/api/push/settings", async (request) => {
-    if (!pushService) throw serviceUnavailable("Push alerts are unavailable");
-    return pushService.updateSettings(request.body?.endpoint, request.body?.settings);
-  });
-
-  app.post("/api/push/unsubscribe", async (request) => {
-    if (!pushService) throw serviceUnavailable("Push alerts are unavailable");
-    return pushService.unsubscribe(request.body?.endpoint);
-  });
-
-  app.post("/api/push/test", async (request) => {
-    if (!pushService) throw serviceUnavailable("Push alerts are unavailable");
-    return pushService.test(typeof request.body?.endpoint === "string" ? request.body.endpoint : null);
-  });
-
   app.get("/api/terminals/:id/screen", async (request) => {
     return cmux.readScreen(request.params.id, request.query?.lines);
   });
@@ -500,43 +371,6 @@ export async function buildApp({
     return { ok: true };
   });
 
-  app.get("/api/prompt-queue", async (request) => {
-    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
-    return promptQueue.list({
-      workspaceId: typeof request.query?.workspaceId === "string" ? request.query.workspaceId : null,
-      surfaceId: typeof request.query?.surfaceId === "string" ? request.query.surfaceId : null,
-    });
-  });
-
-  app.post("/api/prompt-queue", { schema: WRITE_SCHEMAS.queue }, async (request, reply) => {
-    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
-    const payload = await cmux.workspaceListDetailed?.() || await cmux.workspaceList();
-    const workspace = (payload.workspaces || []).find((item) => item.id === request.body?.workspaceId);
-    const terminal = workspace?.terminals?.find((item) => item.id === request.body?.surfaceId);
-    if (!workspace || !terminal) throw new TypeError("Unknown cmux terminal");
-    return reply.code(201).send(promptQueue.enqueue({ workspaceId: workspace.id, surfaceId: terminal.id, text: request.body?.text }));
-  });
-
-  app.patch("/api/prompt-queue/:id", { schema: WRITE_SCHEMAS.queueUpdate }, async (request) => {
-    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
-    return promptQueue.update(request.params.id, request.body);
-  });
-
-  app.post("/api/prompt-queue/:id/move", { schema: WRITE_SCHEMAS.queueMove }, async (request) => {
-    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
-    return promptQueue.move(request.params.id, request.body?.direction);
-  });
-
-  app.post("/api/prompt-queue/:id/send", async (request) => {
-    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
-    return promptQueue.sendNow(request.params.id, cmux);
-  });
-
-  app.delete("/api/prompt-queue/:id", async (request) => {
-    if (!promptQueue) throw serviceUnavailable("Prompt queue is unavailable");
-    return promptQueue.remove(request.params.id);
-  });
-
   app.post("/api/terminals/:id/key", { schema: WRITE_SCHEMAS.key }, async (request) => {
     await cmux.sendKey(request.params.id, request.body?.key);
     return { ok: true };
@@ -553,10 +387,8 @@ export async function buildApp({
     };
     const onEvent = (payload) => send("cmux:event", payload);
     const onState = (payload) => send("cmux:state", payload);
-    const onQueue = (payload) => send("queue:changed", payload);
     hub.on("event", onEvent);
     hub.on("state", onState);
-    promptQueue?.on("changed", onQueue);
     hub.addConsumer();
     send("companion:ready", { at: new Date().toISOString() });
 
@@ -566,7 +398,6 @@ export async function buildApp({
       clearInterval(heartbeat);
       hub.off("event", onEvent);
       hub.off("state", onState);
-      promptQueue?.off("changed", onQueue);
       hub.removeConsumer();
     });
   });
@@ -578,8 +409,6 @@ export async function buildApp({
       clearTimeout(lease.timer);
       return cmux.terminalViewport(lease.surfaceId, { clientId: lease.clientId, generation: lease.generation, clear: true });
     }));
-    detachPush?.();
-    detachQueue?.();
     hub.stop();
   });
 
@@ -597,49 +426,6 @@ export async function buildApp({
   }
 
   return app;
-}
-
-export function normalizeInbox(feed = {}, notificationPayload = {}) {
-  const actionable = (feed.items || [])
-    .filter((item) => item.request_id && ["permissionRequest", "question", "exitPlan"].includes(item.kind))
-    .map((item) => ({
-      id: item.request_id,
-      requestId: item.request_id,
-      type: "request",
-      kind: item.kind,
-      workspaceId: item.workspace_id || null,
-      surfaceId: item.surface_id || null,
-      source: item.source || null,
-      title: item.title || inboxTitle(item.kind),
-      subtitle: item.subtitle || null,
-      body: item.question_prompt || item.plan_summary || item.body || "",
-      toolName: item.tool_name || null,
-      toolInput: item.tool_input || null,
-      questionOptions: item.question_options || item.questions?.[0]?.options || [],
-      questions: item.questions || [],
-      defaultMode: item.default_mode || null,
-      createdAt: item.created_at || null,
-    }));
-  const notifications = (notificationPayload.notifications || [])
-    .filter((item) => !item.is_read)
-    .map((item) => ({
-      id: item.id,
-      type: "notification",
-      kind: "notification",
-      workspaceId: item.workspace_id || null,
-      surfaceId: item.surface_id || null,
-      title: item.title || "cmux",
-      subtitle: item.subtitle || null,
-      body: item.body || "",
-      createdAt: item.created_at || null,
-    }));
-  return { items: [...actionable, ...notifications], actionableCount: actionable.length, unreadCount: notifications.length };
-}
-
-function inboxTitle(kind) {
-  if (kind === "permissionRequest") return "Permission requested";
-  if (kind === "question") return "Agent question";
-  return "Plan ready for review";
 }
 
 function allowPairAttempt(store, ip) {

@@ -138,7 +138,7 @@ test('independent native watchdog survives actual service SIGKILL and enforces i
 import { NativeInputs } from ${JSON.stringify(inputsUrl)};
 import { NativeBackground } from ${JSON.stringify(driverUrl)};
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-const inputs = new NativeInputs({ engine: { provider: 'default', model: 'fixture' }, capabilities: config.capabilities, env: config.env, describe: () => ({ prompt: config.prompt }) });
+const inputs = new NativeInputs({ engine: { provider: 'default', model: 'fixture' }, capabilities: config.capabilities, env: config.env, describe: () => ({ prompt: config.prompt, bridge: { endpoint: 'http://127.0.0.1:1', credential: 'c'.repeat(48) } }) });
 const driver = new NativeBackground({ ...config, inputs, onResult: () => {} });
 await driver.launch(config.request); process.stdout.write('ready\\n');
 `, { mode: 0o600 });
@@ -239,4 +239,39 @@ test('reboot recovery delivers a durable successful native result before releasi
   assert.equal(f.delivered.length, 1);
   assert.equal((await reopened.observe('operation')).status, 'stopped');
   assert.equal(f.delivered.length, 1); await reopened.close();
+});
+
+for (const { role, closeTerminal = false } of [{ role: 'implementer' }, { role: 'reviewer' }, { role: 'integrator' }, { role: 'implementer', closeTerminal: true }]) test(`${role} runs its bounded supervisor in an owned visible cmux workspace; close=${closeTerminal}`, async t => {
+  const f = await fixture(t, { role });
+  const workspaceId = 'c456d73c-9fce-4501-b141-41076b111fea';
+  let creates = 0, starts = 0, opens = 0, output = '', ended, child;
+  const terminal = {
+    create: async (cwd, title) => { creates++; assert.equal(cwd, f.worktree); assert.match(title, new RegExp(role)); return { workspaceId }; },
+    startManaged: async (id, configPath) => {
+      starts++; assert.equal(id, workspaceId);
+      const runner = new URL('../server/orchestration/adapters/native-managed-terminal.mjs', import.meta.url);
+      child = spawn(process.execPath, [runner.pathname, configPath], { stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH } });
+      ended = once(child, 'exit');
+      child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
+      await once(child, 'spawn');
+    },
+    open: async id => { opens++; assert.equal(id, workspaceId); },
+  };
+  f.driver.terminal = terminal;
+  const first = await f.driver.launch(f.request); await f.waitReady();
+  const reopened = new NativeBackground({ ...f.options, terminal });
+  await reopened.open('operation');
+  assert.deepEqual(await reopened.launch(f.request), first);
+  assert.equal((await reopened.observe('operation')).status, 'running');
+  assert.deepEqual([creates, starts, opens], [1, 1, 1]);
+  const command = JSON.parse(await readFile(join(f.directory, 'native/operation/worker.json'), 'utf8'));
+  assert.equal(command.terminalOutput, true); assert.ok(command.command.argv.includes('--print'));
+  assert.ok(command.command.argv.includes('--restricted')); assert.ok(command.command.argv.includes('--permission-prompts'));
+  if (closeTerminal) child.kill('SIGHUP'); else await f.release();
+  await Promise.all([...f.driver.active.values()].map(active => active.job));
+  assert.equal((await ended)[0], 0);
+  if (!closeTerminal) assert.match(output, /"type":"result"/); assert.ok(!output.includes('private-scoped-credential'));
+  assert.equal(f.delivered.length, closeTerminal ? 0 : 1); assert.equal((await reopened.observe('operation')).status, 'stopped');
+  assert.equal((await readFile(f.launches, 'utf8')).trim(), 'launch');
+  await reopened.close();
 });

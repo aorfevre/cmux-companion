@@ -9,18 +9,17 @@ Missing native tools do not prevent pairing or configuring projects.
 
 ## Find your preferences
 
-Settings has one destination, with categories on desktop and a category list on
-phones. Existing `/?view=settings` links redirect to `/settings`; update links
-open `/settings#updates`. Main navigation opens Goals, Inbox and Settings.
-Home and the installed app open Goals. **Browse sessions** under Goals opens
-optional standalone sessions; existing session and notification links still work.
+Setup shares Mission Control's desktop navigation and responsive phone layout.
+Existing `/?view=settings` links redirect to `/settings`; update links open
+`/settings#updates`. Main navigation opens Mission Control, Needs You, Sessions
+and Setup. Home and the installed app open Mission Control.
 
-- **General**: connected Mac, this-browser terminal input protection and pairing.
-- **Dev repos**: named development folders and individually added repositories.
-- **Agents**: default provider/model, direct CLI or CCS profile, readiness and usage.
-- **Notifications**: permission and preferences for this browser's subscription.
-- **Updates**: manual installation and the automatic installation opt-in, off by default.
-- **Advanced**: capacity, time limits in human units, tool paths, previews and diagnostics.
+- **Projects**: named development folders and individually added repositories.
+- **Agents & models**: supported launch profiles, team defaults and readiness.
+- **Account usage**: CCS capacity, source/freshness and account reconnect.
+- **Updates**: manual installation and automatic installation opt-in, off by default.
+- **This device**: connected Mac, browser terminal input protection and pairing.
+- **Execution & tools**: capacity, time limits, tool paths and diagnostics.
 
 Multi-field edits show Save and Discard. Leaving an edited category asks whether
 to discard; failed saves retain the draft. Concurrent changes to the same edited
@@ -67,7 +66,7 @@ to **Individual repositories** and does not remove files or goal history.
 
 Settings are private local SQLite data in `~/.config/cmux-companion/settings.sqlite`.
 The registry is authoritative for Dev repo names and paths, project identities, provider commands/models,
-tool paths, execution limits and preview ports. `repo-identity.db` remains a
+tool paths and execution limits. `repo-identity.db` remains a
 rebuildable cache; deleting it cannot remove configured projects. Back up the
 settings database along with the workflow database and artifacts while stopped.
 The service does not automatically read an `.env` file.
@@ -193,3 +192,15 @@ this compatibility repair themselves. A one-time backed-up reinstall of a
 verified main release upgrades that engine while preserving paired identity and
 automatic-installation preferences. Do not edit installed release files or bypass
 the release checks to work around this limitation.
+
+Retired preview ports and Chrome capture paths are hidden from current settings
+and have no runtime consumers. Their original schema-2 JSON fields remain inert
+on disk for compatible updater rollback; writes preserve them. Previous goal
+configuration snapshots remain immutable. No installed-state reset is required.
+
+Named launch profiles and team defaults live in an additive private table, while
+the schema-2 settings JSON remains readable by the previous release. Older readers
+may edit their known settings without deleting the saved team configuration.
+Updates and backup restoration preserve both tables and admitted goal snapshots.
+GitHub HTTPS fetch/publication uses a fixed host-restricted askpass helper backed
+by the Mac's authenticated `gh`; repository credential helpers remain disabled.

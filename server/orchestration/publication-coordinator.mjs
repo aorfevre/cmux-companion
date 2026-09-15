@@ -41,7 +41,7 @@ export class PublicationCoordinator {
     if (this.stopped) return;
     this.cancelRevoked(); this.ownership.assertOwned();
     for (const goal of this.store.list()) {
-      if (goal.status !== 'building') continue;
+      if (goal.hold || goal.status !== 'building') continue;
       try { this.record(goal.id, 'request_publication', { operationId: this.id() }); }
       catch (error) { if (!(error instanceof DomainError) || !['NOT_READY', 'FORBIDDEN'].includes(error.code)) throw error; }
     }
@@ -51,19 +51,20 @@ export class PublicationCoordinator {
       const goal = this.store.get(operation.goalId), publication = goal?.publication;
       requireValue(goal && publication?.operationId === operation.id, 'Publication operation has no owner');
       if (goal.pr) { this.store.advanceOperation(operation.id, operation.status, 'completed'); continue; }
-      const permitted = goal.status === 'ready_to_publish' && goal.generation === operation.generation && goal.revision === operation.revision && this.service.repositoryIds.has(goal.repositoryId);
+      const permitted = goal.status === 'ready_to_publish' && publication.approval?.headSha === publication.headSha && goal.generation === operation.generation && goal.revision === operation.revision && this.service.repositoryIds.has(goal.repositoryId);
       // A moved target needs an explicit user decision, not another remote read
       // every scheduler tick. Revoked goals must still settle their effects.
       if (permitted && publication.observation?.status === 'target_moved' && publication.observation.baseHeadSha !== null) continue;
       if (operation.status === 'pending' && !permitted) {
         this.settle(goal.id, operation.id, { status: 'cancelled', baseHeadSha: null, pr: null }); continue;
       }
+      if (goal.hold && operation.status === 'pending') continue;
       if (operation.status === 'pending') this.store.advanceOperation(operation.id, 'pending', 'dispatching');
       const controller = new AbortController(); if (!permitted) controller.abort();
       const job = Promise.resolve().then(async () => {
         let observation;
         try {
-          observation = controller.signal.aborted ? await this.publisher.observe(publication.plan) : await this.publisher.publish(publication.plan, { signal: controller.signal });
+          observation = controller.signal.aborted || goal.hold ? await this.publisher.observe(publication.plan) : await this.publisher.publish(publication.plan, { signal: controller.signal });
           if (controller.signal.aborted && ['pending', 'target_moved'].includes(observation.status)) observation = { ...observation, status: /** @type {const} */ ('cancelled') };
         } catch { observation = { status: /** @type {const} */ ('unknown'), baseHeadSha: null, pr: null }; }
         this.settle(goal.id, operation.id, observation);

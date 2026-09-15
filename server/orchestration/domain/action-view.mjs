@@ -1,3 +1,4 @@
+import { validateAssignmentOverride } from './teams.mjs';
 import { transition, planTarget } from './transitions.mjs';
 
 /** The browser renders decisions from the same pure command authority. It does
@@ -15,7 +16,10 @@ export function actionView(goal) {
   const approvalBlocked = offer('approve', `Approve revision ${goal.revision}`, { revision: goal.revision });
   offer('request_revision', 'Request revision', { message: 'Revision feedback' });
   offer('abort', 'Abort goal', {});
+  const recoveryBlocked = goal.hold ? offer('recover_goal', 'Recover goal', { holdId: goal.hold.id }) : null;
+  if (goal.hold) offer('recover_goal', 'Retry verification & resume', { holdId: goal.hold.id, mode: 'retry_verification' });
   offer('retry_startup', 'Retry startup', {});
+  if (goal.publication) offer('approve_publication', 'Approve & publish PR', { operationId: goal.publication.operationId, headSha: goal.publication.headSha });
   if (goal.integration) offer('retry_integration', 'Retry integration', { operationId: goal.integration.operationId });
   offer('retry_verification', 'Retry verification', {});
   if (goal.publication?.observation?.baseHeadSha) offer('accept_moved_target', 'Publish reviewed head against moved target', { operationId: goal.publication.operationId, baseHeadSha: goal.publication.observation.baseHeadSha });
@@ -34,5 +38,11 @@ export function actionView(goal) {
     if (['planner', 'reviewer'].includes(attempt.role) && !attempt.retryRequested && ['failed', 'cancelled'].includes(attempt.status)) offer('retry_attempt', `Retry ${attempt.role}${attempt.taskId ? ` for ${attempt.taskId}` : ''}`, { attemptId: attempt.id });
     if (attempt.role === 'planner' && attempt.status === 'running') offer('resume_planner', 'Resume planning', { attemptId: attempt.id });
   }
-  return { actions, approvalBlocked };
+  const teamOptions = (goal.team?.assignments ?? []).map(assignment => ({ key: assignment.key, choices: (goal.teamConfiguration?.profiles ?? []).filter(profile => profile.roles.includes(assignment.role)).map(profile => {
+    let blocked = null;
+    try { validateAssignmentOverride(goal, assignment.key, profile.id); }
+    catch (error) { blocked = error instanceof Error ? error.message : 'Assignment unavailable'; }
+    return { profileId: profile.id, blocked };
+  }) }));
+  return { actions, approvalBlocked, recoveryBlocked, teamOptions };
 }

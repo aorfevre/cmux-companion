@@ -42,32 +42,3 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(response);
   event.waitUntil(response.then(() => {}, () => {}));
 });
-
-self.addEventListener("push", (event) => {
-  let payload = {};
-  try { payload = event.data?.json() || {}; } catch { payload = { body: event.data?.text() || "A cmux session needs your attention." }; }
-  event.waitUntil(self.registration.showNotification(payload.title || "cmux companion", {
-    body: payload.body || "A session needs your attention.",
-    icon: "/icon-192.png",
-    badge: "/icon-192.png",
-    tag: payload.tag || "cmux-companion",
-    renotify: true,
-    requireInteraction: payload.kind === "attention" || payload.kind === "failure",
-    actions: [{ action: "open", title: payload.kind === "preview" ? "View app" : payload.kind === "attention" ? "Review" : "Open" }],
-    data: { url: payload.url || "/?view=inbox", kind: payload.kind || "attention" },
-  }));
-});
-
-self.addEventListener("notificationclick", (event) => {
-  event.notification.close();
-  const target = new URL(event.notification.data?.url || "/?view=inbox", self.location.origin).href;
-  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
-    for (const client of clients) {
-      if (new URL(client.url).origin === self.location.origin) {
-        await client.navigate(target);
-        return client.focus();
-      }
-    }
-    return self.clients.openWindow(target);
-  }));
-});

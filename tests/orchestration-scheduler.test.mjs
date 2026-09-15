@@ -30,7 +30,8 @@ function fixture(t, limits = {}) {
     command(id, 'record_review', { attemptId, reviewId: `review${sequence}`, review: { schemaVersion: 1, target: planTarget(store.get(id)), disposition: 'accept', findings: [] } });
     command(id, 'record_stopped', { attemptId }); command(id, 'approve', { revision: 1 }, 'user');
   };
-  return { store, agents, service, command, create, request, dispatch, approve };
+  const recover = (id = 'g') => command(id, 'recover_goal', { holdId: store.get(id).hold.id }, 'user');
+  return { recover, store, agents, service, command, create, request, dispatch, approve };
 }
 
 test('global background admission counts implementers and reviewers while planners have separate capacity', (t) => {
@@ -108,15 +109,15 @@ test('failed planner and reviewer work requires explicit user retry after proven
   f.command('g', 'record_failure', { attemptId: planner, error: 'launch outcome unknown', uncertain: true });
   assert.throws(() => f.command('g', 'retry_attempt', { attemptId: planner }, 'user'), { code: 'NOT_READY' });
   f.command('g', 'record_stopped', { attemptId: planner }); assert.deepEqual(f.store.ready(), []);
-  assert.throws(() => f.request('g', 'planner'), { code: 'RETRY_REQUIRED' });
-  assert.throws(() => f.command('g', 'retry_attempt', { attemptId: planner }), { code: 'FORBIDDEN' });
-  f.command('g', 'retry_attempt', { attemptId: planner }, 'user'); assert.equal(f.store.ready()[0].role, 'planner');
+  assert.throws(() => f.request('g', 'planner'), { code: 'NOT_READY' });
+  assert.throws(() => f.command('g', 'recover_goal', { holdId: f.store.get('g').hold.id }), { code: 'FORBIDDEN' });
+  f.recover(); assert.equal(f.store.ready()[0].role, 'planner');
   const replacement = f.request('g', 'planner'); f.command('g', 'record_stopped', { attemptId: replacement });
   f.command('g', 'publish_contract', { contract: contract() }, 'user');
   const reviewer = f.request('g', 'reviewer'); f.dispatch('g', reviewer);
   f.command('g', 'record_failure', { attemptId: reviewer, error: 'review failed', confirmedStopped: true });
   assert.deepEqual(f.store.ready(), []);
-  f.command('g', 'retry_attempt', { attemptId: reviewer }, 'user');
+  f.recover();
   assert.equal(f.store.ready()[0].role, 'reviewer'); f.request('g', 'reviewer');
 });
 
@@ -253,6 +254,7 @@ function preparedRepair(f, duplicate = false) {
   acceptedTask(f);
   f.command('g', 'request_integration', { taskId: 'A', operationId: 'conflict_a' });
   f.command('g', 'record_integration_conflict', { operationId: 'conflict_a' });
+  f.recover();
   const attemptId = f.request('g', 'integrator', 'A'); f.dispatch('g', attemptId);
   const attempt = f.store.get('g').attempts.find((entry) => entry.id === attemptId);
   const result = { schemaVersion: 1, goalId: 'g', attemptId, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: 'integrator', target: attempt.target,
@@ -291,6 +293,7 @@ for (const final of [false, true]) for (const scenario of ['pending_abort', 'wit
   await new IntegrationRepairs(options).run();
   const goal = f.store.get('g'), result = goal.results[0], attempt = goal.attempts.find((entry) => entry.id === attemptId);
   if (scenario === 'unknown') {
+    assert.ok(goal.hold); assert.equal(goal.integration.state, 'failed');
     assert.equal(result.status, 'pending'); assert.equal(attempt.status, 'running');
     assert.equal(attempt.workerState, 'stopped'); assert.equal(calls, 0); assert.equal(observations, 2);
     assert.ok(f.store.operations().some((entry) => entry.id === 'repair_effect' && entry.status === 'dispatching'));
@@ -375,7 +378,7 @@ test('failed stopped verification can be explicitly retried without reusing its 
   } });
   await coordinator.run(); await [...coordinator.active.values()][0].job;
   await coordinator.run(); assert.equal(launches, 1);
-  f.command('g', 'retry_verification', {}, 'user');
+  f.command('g', 'recover_goal', { holdId: f.store.get('g').hold.id, mode: 'retry_verification' }, 'user');
   await coordinator.run(); await [...coordinator.active.values()][0].job;
   assert.equal(launches, 2); assert.equal(f.store.get('g').verificationRuns.length, 2);
   assert.equal(f.store.get('g').verification.checks[0].passed, true);
@@ -427,6 +430,7 @@ for (const restart of [false, true]) test(`unknown verification globally retains
 function preparedFinalRepair(f) {
   integratedGoal(f);
   f.command('g', 'record_verification', { headSha: f.store.get('g').integrationHead, checks: [{ id: 'unit', passed: false, artifactId: 'failed_check' }] });
+  f.recover();
   const attemptId = f.request('g', 'integrator'); f.dispatch('g', attemptId);
   const attempt = f.store.get('g').attempts.find((entry) => entry.id === attemptId);
   const result = { schemaVersion: 1, goalId: 'g', attemptId, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: 'integrator', target: attempt.target,
@@ -440,17 +444,40 @@ function preparedFinalRepair(f) {
   return attemptId;
 }
 
-function publishableGoal(f) {
+function approvedPublicationGoal(f, approve = true) {
   integratedGoal(f);
   f.command('g', 'record_verification', { headSha: f.store.get('g').integrationHead, checks: [{ id: 'unit', passed: true, artifactId: 'verified' }] });
   const reviewer = f.request('g', 'reviewer'); f.dispatch('g', reviewer);
   f.command('g', 'record_review', { attemptId: reviewer, reviewId: 'final_review', review: { schemaVersion: 1, target: f.store.get('g').integrationHead, disposition: 'accept', findings: [] } });
   f.command('g', 'record_stopped', { attemptId: reviewer });
+  f.command('g', 'request_publication', { operationId: 'publish' });
+  if (approve) f.command('g', 'approve_publication', { operationId: 'publish', headSha: f.store.get('g').integrationHead }, 'user');
 }
 const publishedResult = (input) => ({ status: 'published', baseHeadSha: input.baseSha, pr: { number: 1, url: 'https://github.invalid/pull/1', headSha: input.headSha } });
 
+test('publication stays idle across coordinator restarts until exact-head user approval', async t => {
+  const f = fixture(t); approvedPublicationGoal(f, false); let calls = 0;
+  const options = { service: f.service, ownership: { assertOwned() {} }, publisher: { publish: async input => { calls++; return publishedResult(input); }, observe: async () => { throw new Error('No external effect before approval'); } } };
+  for (let i = 0; i < 3; i++) { const coordinator = new PublicationCoordinator(options); await coordinator.run(); assert.equal(coordinator.active.size, 0); }
+  assert.equal(calls, 0); assert.equal(f.store.operations().filter(operation => operation.kind === 'publish').length, 0);
+  const before = f.store.get('g');
+  const command = { id: 'approve_publish', goalId: 'g', expectedVersion: before.version, type: 'approve_publication', payload: { operationId: 'publish', headSha: before.integrationHead } };
+  f.service.execute(command, { kind: 'user' }); f.service.execute(command, { kind: 'user' });
+  assert.equal(f.store.operations().filter(operation => operation.kind === 'publish').length, 1);
+  const coordinator = new PublicationCoordinator(options); await coordinator.run(); await Promise.all([...coordinator.active.values()].map(run => run.job));
+  assert.equal(calls, 1); assert.equal(f.store.get('g').status, 'delivered');
+});
+
+test('an unpublished proposal can be revised and an old publication approval cannot follow it', t => {
+  const f = fixture(t); approvedPublicationGoal(f, false); const before = f.store.get('g');
+  f.command('g', 'request_revision', { message: 'Change acceptance criteria' }, 'user');
+  assert.equal(f.store.get('g').publication, null);
+  assert.throws(() => f.command('g', 'approve_publication', { operationId: 'publish', headSha: before.integrationHead }, 'user'), { code: 'STALE_OPERATION' });
+  assert.equal(f.store.operations().filter(operation => operation.kind === 'publish').length, 0);
+});
+
 test('moved target pauses remote polling until exact user acceptance and retains final evidence', async t => {
-  const f = fixture(t); publishableGoal(f); let calls = 0;
+  const f = fixture(t); approvedPublicationGoal(f); let calls = 0;
   const moved = 'e'.repeat(40);
   const publisher = { publish: async input => {
     calls++;
@@ -476,7 +503,7 @@ test('moved target pauses remote polling until exact user acceptance and retains
 });
 
 test('abort revokes moved-target acceptance and settles the paused publication without sending', async t => {
-  const f = fixture(t); publishableGoal(f); f.command('g', 'request_publication', { operationId: 'publish' });
+  const f = fixture(t); approvedPublicationGoal(f);
   f.store.advanceOperation('publish', 'pending', 'dispatching');
   const observation = { status: 'target_moved', baseHeadSha: 'e'.repeat(40), pr: null };
   f.command('g', 'record_publication_observation', { operationId: 'publish', observation });
@@ -489,7 +516,7 @@ test('abort revokes moved-target acceptance and settles the paused publication w
 });
 
 test('a missing target branch remains observable so restoring it can recover publication', async t => {
-  const f = fixture(t); publishableGoal(f); let calls = 0;
+  const f = fixture(t); approvedPublicationGoal(f); let calls = 0;
   const coordinator = new PublicationCoordinator({ service: f.service, ownership: { assertOwned() {} }, publisher: {
     publish: async input => ++calls === 1 ? { status: 'target_moved', baseHeadSha: null, pr: null } : publishedResult(input),
     observe: async () => { throw new Error('Active publication uses publish'); },
@@ -501,7 +528,7 @@ test('a missing target branch remains observable so restoring it can recover pub
 });
 
 for (const scenario of ['normal', 'receipt_loss', 'pending_abort', 'sent_abort', 'unknown']) test(`publication coordinator retains exact operation ownership across ${scenario}`, async (t) => {
-  const f = fixture(t); publishableGoal(f); let calls = 0, receipt = null;
+  const f = fixture(t); approvedPublicationGoal(f); let calls = 0, receipt = null;
   const publisher = {
     publish: async (input) => {
       calls++;
@@ -514,7 +541,7 @@ for (const scenario of ['normal', 'receipt_loss', 'pending_abort', 'sent_abort',
     observe: async () => receipt,
   };
   const options = { service: f.service, publisher, ownership: { assertOwned() {} } };
-  if (scenario === 'pending_abort') { f.command('g', 'request_publication', { operationId: 'publish' }); f.command('g', 'abort', {}, 'user'); }
+  if (scenario === 'pending_abort') f.command('g', 'abort', {}, 'user');
   const coordinator = new PublicationCoordinator(options); await coordinator.run();
   const jobs = [...coordinator.active.values()].map((run) => run.job);
   if (scenario === 'receipt_loss') await assert.rejects(Promise.all(jobs), /Lost database acknowledgement/); else await Promise.all(jobs);
@@ -536,7 +563,7 @@ for (const scenario of ['normal', 'receipt_loss', 'pending_abort', 'sent_abort',
 });
 
 test('scheduler continues agent admission and joins publication before releasing ownership', async (t) => {
-  const f = fixture({ after() {} }); publishableGoal(f); f.service.agents = new FakeAgents();
+  const f = fixture({ after() {} }); approvedPublicationGoal(f); f.service.agents = new FakeAgents();
   const started = barrier(), cancelled = barrier(), release = barrier();
   const scheduler = new Scheduler({ service: f.service, repositories: { provision: async ({ operationId, branch, baseSha }) => ({ worktree: `/tmp/${operationId}`, branch, baseSha }) }, publisher: {
     publish: async (input, { signal }) => { started.release(); signal.addEventListener('abort', () => cancelled.release(), { once: true }); await release.promise; return { status: 'cancelled', baseHeadSha: input.baseSha, pr: null }; },
@@ -587,7 +614,7 @@ for (const observation of ['pending', 'integrated', 'unknown']) test(`explicit i
   scheduler.stopped = false; await scheduler.integrate();
   const operationId = f.store.get('g').integration.operationId;
   if (observation !== 'integrated') { await scheduler.integrate(); assert.equal(calls, 1); }
-  f.command('g', 'retry_integration', { operationId }, 'user');
+  f.recover();
   assert.throws(() => f.command('g', 'retry_integration', { operationId }, 'user'), { code: 'NOT_READY' });
   await scheduler.integrate();
   assert.equal(calls, observation === 'pending' ? 2 : 1);
@@ -620,8 +647,8 @@ for (const final of [false, true]) for (const observation of ['pending', 'integr
     acceptRepair: async () => { calls++; if (calls === 1) throw new DomainError('GIT_OPERATION_FAILED', 'Timed out'); return { status: 'integrated', headSha: 'd'.repeat(40) }; },
     observeRepair: async () => ({ status: observation, headSha: observation === 'integrated' ? 'd'.repeat(40) : null }),
   } });
-  await coordinator.run(); const operationId = f.store.get('g').integration.operationId;
-  f.command('g', 'retry_integration', { operationId }, 'user'); await coordinator.run();
+  await coordinator.run();
+  f.recover(); await coordinator.run();
   assert.equal(calls, observation === 'pending' ? 2 : 1);
   if (observation === 'unknown') { assert.equal(f.store.get('g').integration.state, 'failed'); assert.equal(f.store.get('g').integration.retryRequested, false); }
   else { assert.equal(f.store.get('g').integration, null); assert.equal(f.store.get('g').results[0].status, 'accepted'); }
@@ -732,4 +759,64 @@ test('stalled base fetch is bounded and does not block other goals or reconcilia
     assert.equal(scheduler.startupJobs.size, 0);
     assert.equal(fetches, 1); assert.equal(f.store.get('fetch-one').baseSha, '');
   } finally { fetching.release(); await scheduler.stop(); }
+});
+
+test('failure holds only its goal, retains sibling output, and requires one explicit recovery', t => {
+  const f = fixture(t); f.create('g'); f.approve('g'); f.create('h'); f.approve('h');
+  const a = f.request('g', 'implementer', 'A'), b = f.request('g', 'implementer', 'B');
+  f.dispatch('g', a); f.dispatch('g', b);
+  f.command('g', 'record_failure', { attemptId: a, confirmedStopped: true, error: 'Failed command' });
+  const held = f.store.get('g').hold;
+  assert.ok(held.reasons.some(reason => reason.target === a));
+  assert.ok(!f.store.ready().some(work => work.goalId === 'g'));
+  assert.ok(f.store.ready().some(work => work.goalId === 'h'));
+  assert.throws(() => f.recover(), { code: 'OWNERSHIP_UNCERTAIN' });
+  f.command('g', 'confirm_candidate', { attemptId: b, headSha: 'b'.repeat(40) });
+  f.command('g', 'record_stopped', { attemptId: b });
+  assert.deepEqual(f.store.get('g').hold, held);
+  assert.equal(f.store.get('g').tasks.find(task => task.id === 'B').status, 'in_review');
+  const unrelated = f.request('h', 'implementer', 'A'); assert.ok(unrelated);
+  const goal = f.store.get('g'), command = { id: 'recover-once', goalId: 'g', expectedVersion: goal.version, type: 'recover_goal', payload: { holdId: held.id } };
+  assert.throws(() => f.service.execute(command, { kind: 'system' }), { code: 'FORBIDDEN' });
+  f.service.execute(command, { kind: 'user' }); f.service.execute(command, { kind: 'user' });
+  assert.equal(f.store.get('g').hold, null); assert.equal(f.store.get('g').recoveries.length, 1);
+  assert.ok(f.store.ready().some(work => work.goalId === 'g' && work.role === 'implementer' && work.taskId === 'A'));
+  assert.ok(f.store.ready().some(work => work.goalId === 'g' && work.role === 'reviewer' && work.taskId === 'B'));
+  assert.equal(f.store.get('g').attempts.find(attempt => attempt.id === a).status, 'failed');
+});
+
+test('a hold during provisioning prevents launch and resumes the same queued identity after recovery', async t => {
+  const f = fixture(t); f.create('g'); f.approve('g');
+  const a = f.request('g', 'implementer', 'A'), b = f.request('g', 'implementer', 'B');
+  const gate = barrier(); let provisions = 0, launches = 0;
+  f.agents.launch = async () => { launches++; return { identity: 'resumed-worker' }; };
+  const scheduler = new Scheduler({ service: f.service, ownership: { assertOwned() {} }, repositories: { provision: async request => {
+    provisions++; await gate.wait; return { worktree: '/tmp/held-provision', branch: request.branch, baseSha: request.baseSha };
+  } } });
+  scheduler.stopped = false;
+  const operation = f.store.operations().find(entry => entry.attemptId === b);
+  const pending = scheduler.dispatch(operation);
+  f.command('g', 'record_failure', { attemptId: a, confirmedStopped: true, error: 'Sibling failed' });
+  gate.release(); await pending;
+  assert.equal(launches, 0); assert.equal(f.store.get('g').attempts.find(attempt => attempt.id === b).workerState, 'pending');
+  await scheduler.dispatch(operation); assert.equal(provisions, 1);
+  f.recover(); await scheduler.dispatch(operation);
+  assert.equal(launches, 1); assert.equal(provisions, 1);
+  assert.equal(f.store.get('g').attempts.find(attempt => attempt.id === b).identity, 'resumed-worker');
+});
+
+test('running verification settles without cancelling or releasing a blocking review hold', async t => {
+  const f = fixture(t); integratedGoal(f); const gate = barrier(); let cancelled = false;
+  const coordinator = new VerificationCoordinator({ service: f.service, ownership: { assertOwned() {} }, verifier: {
+    run: async input => { input.signal.addEventListener('abort', () => { cancelled = true; }); await gate.wait; return verificationResult(input.headSha, true); }, observe: async () => null,
+  } });
+  await coordinator.run();
+  const reviewer = f.request('g', 'reviewer'); f.dispatch('g', reviewer);
+  f.command('g', 'record_review', { attemptId: reviewer, reviewId: 'blocking', review: { schemaVersion: 1, target: f.store.get('g').integrationHead, disposition: 'request_changes', findings: [{ id: 'bug', severity: 'high', blocking: true, title: 'Broken integration', evidence: 'test failure', suggestion: 'Fix integration' }] } });
+  f.command('g', 'record_stopped', { attemptId: reviewer });
+  coordinator.cancelRevoked(); gate.release(); await Promise.all([...coordinator.active.values()].map(run => run.job));
+  assert.equal(cancelled, false); assert.ok(f.store.get('g').hold);
+  assert.equal(f.store.get('g').verification.checks[0].passed, true);
+  assert.ok(!f.store.ready().some(work => work.role === 'integrator'));
+  f.recover(); assert.ok(f.store.ready().some(work => work.role === 'integrator'));
 });

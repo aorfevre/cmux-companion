@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { CmuxClient } from "../server/cmux-client.mjs";
-import { PromptQueue } from "../server/prompt-queue.mjs";
 
 const bin = process.env.CMUX_BIN || "/Applications/cmux.app/Contents/Resources/bin/cmux";
 const marker = `CMUX_COMPANION_E2E_${process.pid}`;
@@ -12,7 +8,6 @@ const title = `companion-e2e-${process.pid}`;
 
 test("creates, reads, controls, and closes an isolated live cmux workspace", { timeout: 30_000 }, async () => {
   const client = new CmuxClient({ bin });
-  const queueDirectory = await mkdtemp(join(tmpdir(), "cmux-live-queue-"));
   await client.ping();
   const created = await client.workspaceCreate({ cwd: process.cwd(), title, agent: "shell", prompt: marker });
   assert.ok(created.workspace_id, "cmux returned a workspace id");
@@ -74,20 +69,7 @@ test("creates, reads, controls, and closes an isolated live cmux workspace", { t
     assert.match(text, /6669727374206c696e650a7365636f6e64206c696e650d/);
     assert.doesNotMatch(text, /1b5b3230307e|1b5b3230317e/);
 
-    const queuedMarker = `${marker}_QUEUED`;
-    const queue = new PromptQueue({ path: join(queueDirectory, "queue.json") });
-    const queued = queue.enqueue({ workspaceId, surfaceId: terminal.id, text: `printf '${queuedMarker}\\n'` });
-    assert.equal((await queue.sendNow(queued.item.id, client)).sent, true);
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      text = (await client.readScreen(terminal.id, 40)).text;
-      if (text.includes(queuedMarker)) break;
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-    assert.match(text, new RegExp(queuedMarker));
-    assert.equal(queue.list().count, 0);
-    await client.sendKey(terminal.id, "ctrl+c");
   } finally {
     await client.workspaceClose(workspaceId);
-    await rm(queueDirectory, { recursive: true, force: true });
   }
 });

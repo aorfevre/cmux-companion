@@ -8,10 +8,12 @@ export interface Check { id: string; argv: string[] }
 export interface Criterion { id: string; text: string; verification: string }
 export interface TaskContract {
   id: string; title: string; prompt: string; dependsOn: string[]; ownedAreas: string[];
-  criterionIds: string[]; integrationPolicy: 'serialize' | null;
+  criterionIds: string[]; resources?: string[]; integrationPolicy: 'serialize' | null;
 }
+export interface WaveContract { id: string; title: string; taskIds: string[]; checkIds: string[] }
 export interface Contract {
-  schemaVersion: 1; outcome: string; scope: string[]; exclusions: string[];
+  waves?: WaveContract[];
+  schemaVersion: 1 | 2; outcome: string; scope: string[]; exclusions: string[];
   criteria: Criterion[]; verification: Check[]; tasks: TaskContract[];
 }
 export interface Finding {
@@ -23,6 +25,7 @@ export interface ReviewResult {
 }
 export interface Review extends ReviewResult { id: string; attemptId: string; kind: 'plan' | 'task' | 'integration'; taskId: string | null }
 export interface Attempt {
+  assignment?: TeamAssignment & { provider: string; model: string; label: string };
   id: string; operationId: string; role: Role; mode: Mode; taskId: string | null;
   target: string; generation: number; revision: number; status: AttemptStatus;
   workerState: 'pending' | 'unknown' | 'running' | 'stopped'; identity: string | null; baseSha: string; worktree: string | null; branch: string | null;
@@ -36,7 +39,18 @@ export interface Task extends TaskContract {
 export interface Verification {
   headSha: string; checks: { id: string; passed: boolean; artifactId: string }[];
 }
+export interface TeamProfile { id: string; label: string; provider: 'claude' | 'codex'; model: string; roles: Role[]; ready: boolean; reason: string; capacity: { remainingPercent: number | null; source: string; checkedAt: string | null; reason: string } }
+export interface TeamConfiguration { profiles: TeamProfile[]; defaults: Record<Role, string>; capturedAt: string }
+export interface TeamAssignment { key: string; role: Role; taskId: string | null; profileId: string | null; manual: boolean; reason: string }
+export interface TeamProposal { revision: number; approved: boolean; assignments: TeamAssignment[]; changes: { commandId: string; key: string; from: string | null; to: string }[] }
+export interface GoalReference { id: string; name: string; bytes: number; mimeType: 'text/plain' | 'image/png' | 'image/jpeg' | 'image/webp' }
 export interface Goal {
+  teamConfiguration?: TeamConfiguration; team?: TeamProposal; teamHistory?: TeamProposal[];
+  contractSchema?: 2;
+  waveResults?: { waveId: string; generation: number; revision: number; headSha: string }[];
+  references?: GoalReference[];
+  hold?: { id: string; reasons: { kind: 'attempt' | 'review' | 'integration' | 'verification' | 'publication'; target: string; message: string }[] } | null;
+  recoveries?: { commandId: string; hold: NonNullable<Goal['hold']> }[];
   description?: string; projectCode?: string; plannerName?: string; clarification?: {question:string;answer?:string};
   startup?: { status: 'pending' | 'failed' | 'ready'; error: string | null };
   id: string; version: number; generation: number; repositoryId: string; title: string; baseSha: string; baseBranch: string;
@@ -45,10 +59,11 @@ export interface Goal {
   attempts: Attempt[]; reviews: Review[]; integrationHead: string;
   verification: Verification | null; finalRepairCount: number; finalRepairLimit: number;
   pr: { number: number; url: string; headSha: string } | null;
+  mergeSync?: { checkedAt: number; state: 'open' | 'closed' | 'merged' | 'unknown'; error: string | null };
   integration: { operationId: string; taskId: string | null; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' | 'cancelled'; failedFrom?: 'applying' | 'repairing'; code?: string; retryRequested?: boolean } | null;
-  publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; observation?: PublicationResult } | null;
+  publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; approval?: { commandId: string; headSha: string }; observation?: PublicationResult } | null;
   planningRequest?: { message: string; basedOnRevision: number } | null;
-  verificationRuns?: { operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
+  verificationRuns?: { waveId?: string; checkIds?: string[]; operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
   integrationResults?: { operationId: string; taskId: string | null; headSha: string }[];
   results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; repair?: { effectId: string; integrationOperationId: string; headSha: string }; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
 }
@@ -134,11 +149,13 @@ export interface RemotePort {
   push(input: { repositoryId: string; branch: string; headSha: string; expectedHead: string | null }, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface GitHubPort {
+  readPull?(repositoryId: string, number: number): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
   identity(repositoryId: string): string;
   find(repositoryId: string, branch: string): Promise<{ number: number; url: string; branch: string; baseBranch: string; headSha: string; marker: string | null; state: 'open' | 'closed' | 'merged' }[]>;
   create(input: PublicationInput, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface PublicationPort {
+  observeMerge?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
   publish(input: PublicationInput, options?: { signal?: AbortSignal }): Promise<PublicationResult>;
   observe(input: PublicationInput): Promise<PublicationResult>;
 }

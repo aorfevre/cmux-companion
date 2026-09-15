@@ -1,3 +1,4 @@
+import { integratedWaveReady } from './waves.mjs';
 import { readyTasks } from './graph.mjs';
 import { ownsWorker, planTarget, hasPendingRepairResult } from './transitions.mjs';
 import { currentReviews } from './review.mjs';
@@ -7,6 +8,7 @@ import { currentReviews } from './review.mjs';
  * @param {import('../types.d.ts').Goal} goal @returns {ReadyWork[]}
  */
 export function readyWork(goal) {
+  if (goal.hold) return [];
   if (goal.startup && goal.startup.status !== 'ready') return [];
   if (['aborted', 'merged', 'delivered', 'ready_to_publish'].includes(goal.status)) return [];
   /** @type {ReadyWork[]} */
@@ -27,12 +29,12 @@ export function readyWork(goal) {
   if (goal.integration?.state === 'conflict') {
     const task = goal.tasks.find((task) => task.id === goal.integration?.taskId);
     if (task && task.repairCount < task.repairLimit) add('integrator', task.id, goal.integrationHead);
-  } else if (!goal.integration && goal.tasks.every((task) => task.status === 'integrated')) {
+  } else if (integratedWaveReady(goal)) {
     const review = currentReviews(goal).filter((review) => review.kind === 'integration' && review.target === goal.integrationHead).at(-1);
     const failedCheck = goal.verification?.headSha === goal.integrationHead && goal.verification.checks.some((check) => !check.passed);
     if (review?.disposition === 'request_changes' || failedCheck) {
       if (!goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && goal.finalRepairCount < goal.finalRepairLimit) add('integrator', null, goal.integrationHead);
-    } else add('reviewer', null, goal.integrationHead);
+    } else if (goal.tasks.every(task => task.status === 'integrated')) add('reviewer', null, goal.integrationHead);
   }
   return result;
 }

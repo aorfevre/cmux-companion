@@ -1,0 +1,14 @@
+body:has(.mission-control) { padding-left:0; background:#f4f6f1; }
+.mission-control .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.mission-control { color-scheme:light; --bg:#f4f6f1; --text:#172820; --muted:#66756d; --line:#dce3dc; --panel:#fff; --panel-raised:#edf2ec; --input-bg:#fafbf8; --accent:#206044; --on-accent:#fff; display:grid; grid-template-columns:220px minmax(0,1fr); max-width:none; min-height:100dvh; padding:0; margin:0; background:var(--bg); font-size:16px; }
+.mission-sidebar { position:sticky; top:0; height:100dvh; display:flex; flex-direction:column; padding:28px 18px; background:#172a23; color:#c7d4cc; }
+.mission-control .mission-brand { text-decoration:none; color:#f1f5ef; font-size:24px; font-weight:700; letter-spacing:-.6px; padding:0 10px; }
+.mission-brand span { display:block; font-size:12px; text-transform:uppercase; letter-spacing:2px; font-weight:500; color:#9cad9f; }
+.mission-sidebar .app-navigation { position:static; display:grid; grid-template-columns:minmax(0,1fr); width:auto; min-height:0; flex:none; gap:7px; padding:0; margin:38px 0; background:transparent; border:0; box-shadow:none; }
+.mission-sidebar .app-navigation a { display:flex; align-items:center; justify-content:flex-start; gap:12px; padding:12px; color:#bfd0c3; font-size:14px; border:0; border-radius:7px; text-decoration:none; }
+.mission-sidebar .app-navigation a[aria-current=page],.mission-sidebar .app-navigation a:hover { background:#30453a; color:#fff; }
+.mission-sidebar-note { margin-top:auto; border-top:1px solid #3b4e41; padding-top:18px; color:#a7baaa; font-size:12px; }
+.mission-content { width:100%; max-width:1600px; min-width:0; padding:0 34px 50px; margin:auto; }
+
+@media(max-width:1150px) { .mission-control { grid-template-columns:180px minmax(0,1fr); } .mission-content { padding:0 22px 40px; } }
+@media(max-width:760px) { .mission-control { display:block; } .mission-sidebar { position:static; height:auto; padding:16px; gap:16px; } .mission-sidebar .app-navigation { display:flex; flex-wrap:wrap; margin:0; gap:4px; } .mission-sidebar .app-navigation a { padding:9px; } .mission-sidebar .app-navigation a>span { display:none; } .mission-sidebar-note { display:none; } .mission-content { padding:0 16px 32px; } }

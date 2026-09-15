@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, test, vi } from 'vitest';
 import { LocalSettingsPanel, type Settings } from '../app/settings/settings-panel';
-const defaults = (): Settings => ({ devRepos: [], projects: [], provider: 'claude', providers: { claude: { executable: 'ccs', args: ['claude'], model: 'default' }, codex: { executable: 'ccs', args: ['codex'], model: 'default' } }, tools: { cmux: 'cmux', tailscale: 'tailscale', chrome: 'chrome' }, execution: { global: 4, perGoal: 4, planners: 2, ceilingMs: 1800000, idleMs: 240000, maxOutputBytes: 1048576, killGraceMs: 5000 }, previews: { portStart: 8500, portEnd: 8599 }, onboarding: { completed: true } });
+const defaults = (): Settings => ({ devRepos: [], projects: [], provider: 'claude', providers: { claude: { executable: 'ccs', args: ['claude'], model: 'default' }, codex: { executable: 'ccs', args: ['codex'], model: 'default' } }, tools: { cmux: 'cmux', tailscale: 'tailscale' }, execution: { global: 4, perGoal: 4, planners: 2, ceilingMs: 1800000, idleMs: 240000, maxOutputBytes: 1048576, killGraceMs: 5000 }, onboarding: { completed: true } });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); history.replaceState(null, '', '/'); });
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 function fixture(category = 'agents', settings = defaults()) {
@@ -66,7 +66,7 @@ test('pairing resumes setup; navigation guards unsaved fields and completion use
   const settings = defaults(); settings.onboarding.completed = false; const state = fixture('agents', settings); state.paired = false;
   render(<LocalSettingsPanel onboarding />); { await screen.findByLabelText('Pairing code'); change('Pairing code', 'private-code'); click('Pair this device'); }
   await screen.findByLabelText('Default provider'); change('Default provider', 'codex'); vi.mocked(window.confirm).mockReturnValueOnce(false);
-  click('Advanced'); assert.ok(screen.getByLabelText('Default provider')); click('Save changes'); await saved(); click('Complete setup'); await screen.findByText('Setup complete. You can start a goal.'); assert.equal(state.saved.settings.onboarding.completed, true);
+  click('Execution & tools'); assert.ok(screen.getByLabelText('Default provider')); click('Save changes'); await saved(); click('Complete setup'); await screen.findByText('Setup complete. You can start a goal.'); assert.equal(state.saved.settings.onboarding.completed, true);
 });
 test('Dev repo journey validates canonical path, saves a named group, automatically tracks and configures repositories', async () => {
   const state = fixture('dev-repos'); render(<LocalSettingsPanel />); await screen.findByText('Your repositories, organized');
@@ -85,12 +85,12 @@ test('individual repository editor preserves explicit check argv, disable state 
   click('Remove check'); click('Discard changes');
 });
 test('advanced preferences convert human units, save all owning fields and support category navigation', async () => {
-  const state = fixture('advanced'); render(<LocalSettingsPanel />); await screen.findByLabelText('Background agents');
-  change('Background agents', '6'); change('Agents per goal', '2'); change('Concurrent planners', '1'); change('Execution timeout (minutes)', '10'); change('Idle timeout (seconds)', '60'); change('Stop grace period (seconds)', '3'); change('Output limit (KiB)', '512'); change('cmux executable', '/bin/cmux'); change('First preview port', '8600'); change('Last preview port', '8699'); click('Save changes'); await saved();
+  const state = fixture('advanced'); render(<LocalSettingsPanel />); await screen.findByLabelText('Concurrent execution agents');
+  change('Concurrent execution agents', '6'); change('Agents per goal', '2'); change('Concurrent planners', '1'); change('Execution timeout (minutes)', '10'); change('Idle timeout (seconds)', '60'); change('Stop grace period (seconds)', '3'); change('Output limit (KiB)', '512'); change('cmux executable', '/bin/cmux'); click('Save changes'); await saved();
   assert.equal(state.saved.settings.execution.ceilingMs, 600000); assert.equal(state.saved.settings.execution.maxOutputBytes, 524288);
-  click('General'); await screen.findByText('Fixture Mac'); fireEvent.click(screen.getByRole('switch', { name: /Protect terminal input/ })); await screen.findByText('Saved on this device');
-  click('Notifications'); await screen.findByText('Background alerts'); click('Updates'); await screen.findByText('Update controls are unavailable. An installed bundled updater is required.');
-  click('← All settings'); assert.ok(screen.getByText('Make Companion yours'));
+  click('This device'); await screen.findByText('Fixture Mac'); fireEvent.click(screen.getByRole('switch', { name: /Protect terminal input/ })); await screen.findByText('Saved on this device');
+  assert.equal(screen.queryByRole('button', { name: 'Notifications' }), null); click('Updates'); await screen.findByText('Update controls are unavailable. An installed bundled updater is required.');
+  click('← Setup overview'); assert.ok(screen.getByText('Workspace readiness'));
 });
 test('failed group discovery is actionable and duplicate individual additions do not duplicate settings', async () => {
   const settings = defaults(); settings.devRepos = [{ id: 'karven', name: 'karven', path: '/projects/karven' }]; settings.projects = [{ id: 'one', name: 'One', path: '/projects/one', enabled: true, github: null, remote: null, checks: [] }];

@@ -47,7 +47,8 @@ test('Codex inputs isolate config, deny shell/hosted tools and generate native a
     const config = readFileSync(join(result.env.CODEX_HOME, 'config.toml'), 'utf8');
     assert.match(config, /sandbox_mode = "read-only"/); assert.match(config, /features.shell_tool = false/);
     assert.match(config, /trust_level = "untrusted"/); assert.match(config, /web_search = "disabled"/);
-    assert.equal(config.includes('[mcp_servers.companion]'), role !== 'reviewer');
+    assert.equal(config.includes('[mcp_servers.companion]'), true);
+    assert.equal((config.match(/default_tools_approval_mode = "approve"/g) || []).length, 2);
     assert.equal(config.includes('c'.repeat(48)), false);
     assert.deepEqual(await inputs.prepare(request, directory), result);
   }
@@ -109,7 +110,7 @@ const fs = require('node:fs'), path = require('node:path');
    for (const row of [{type:'thread.started',thread_id:'recorded-native-session'}, {type:'item.completed',item:{type:'agent_message',text:'{"review":"accepted"}'}}, {type:'turn.completed'}]) process.stdout.write(JSON.stringify(row)+'\\n');
  },10);
 })();`, { mode: 0o700 });
-  const inputs = new CodexInputs({ direct: true, capabilities: caps, engine: { provider: 'codex', model: 'default' }, env: { HOME: root, PATH: process.env.PATH }, describe: () => ({ prompt: 'Review the exact pinned work' }) });
+  const inputs = new CodexInputs({ direct: true, capabilities: caps, engine: { provider: 'codex', model: 'default' }, env: { HOME: root, PATH: process.env.PATH }, describe: () => ({ prompt: 'Review the exact pinned work', bridge: { endpoint: 'http://127.0.0.1:1', credential: 'c'.repeat(48) } }) });
   const delivered = [];
   const options = { directory: join(root, 'runtime'), bin, inputs, parseResult: codexResult, policy: { ceilingMs: 10000, idleMs: 5000, maxOutputBytes: 10000, killGraceMs: 200 }, onResult: (_request, raw) => { delivered.push(raw); } };
   const driver = new NativeBackground(options);

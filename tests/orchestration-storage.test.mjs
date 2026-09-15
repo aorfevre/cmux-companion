@@ -170,3 +170,14 @@ test('withdrawing a repository prevents new work while preserving abort and reco
   assert.equal(stopped.goal.status, 'aborted');
   assert.equal(db.operations().find((operation) => operation.id === 'abort_planner')?.kind, 'terminate');
 });
+
+test('activity metadata survives restart and reports retention without inventing missing history', t => {
+  const path = join(temp(t), 'activity.sqlite');
+  const first = new OrchestrationStore({ path, now: () => '2026-09-15T12:00:00Z' });
+  first.apply(create, USER); const expected = first.activity('goal'); first.close();
+  const reopened = store(t, { path }); assert.deepEqual(reopened.activity('goal'), expected);
+  assert.equal(expected.events[0].createdAt, '2026-09-15T12:00:00Z'); assert.equal(expected.historyPruned, false);
+  assert.throws(() => reopened.activity('goal', { limit: 101 }));
+  reopened.db.exec('DELETE FROM events; UPDATE journal_meta SET floor=1');
+  assert.deepEqual(reopened.activity('goal'), { events: [], nextBefore: null, historyPruned: true });
+});

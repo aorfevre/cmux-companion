@@ -86,3 +86,44 @@
 .local-settings-page .folder-picker button { margin: 0; }
 .local-settings-page .folder-picker .primary-button { background: var(--accent); color: var(--on-accent); }
 .settings-save .settings-save-error { flex:0 0 100%; margin:0; padding:10px; border-left:3px solid var(--accent); overflow-wrap:anywhere; }
+
+/* Setup shares the fleet shell and keeps workspace choices in a single place. */
+.mission-control .local-settings-page { max-width:1320px; padding:32px 0 64px; margin:0 auto; }
+.mission-control .settings-header { border-bottom:1px solid var(--line); padding-bottom:24px; }
+.mission-control .settings-layout { grid-template-columns:200px minmax(0,1fr); gap:28px; }
+.mission-control .settings-categories { gap:8px; }
+.mission-control .settings-categories button[aria-current] { background:#e5ece3; font-weight:650; }
+.mission-control .settings-content { padding:24px; background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+.setup-overview { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.local-settings-page .setup-overview article { border:1px solid var(--line); border-radius:9px; margin:0; padding:20px; }
+.setup-overview strong { font-size:18px; }
+.mission-control .settings-back { display:block; margin-bottom:20px; }
+.local-settings-page .account-usage-page { padding:0; max-width:none; }
+.local-settings-page .usage-page-head { flex-wrap:wrap; }
+.local-settings-page .usage-account,.local-settings-page .usage-summary,.local-settings-page .usage-provider { background:var(--panel); color:var(--text); }
+.local-settings-page .usage-account strong,.local-settings-page .core-window strong { color:var(--text); }
+.local-settings-page .quota-track { background:var(--line); }
+.local-settings-page .quota-track i { background:var(--accent); }
+.local-settings-page .setup-progress { margin-bottom:24px; }
+@media(max-width:1000px) { .setup-overview { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:760px) {
+  .mission-control .local-settings-page { padding-top:24px; }
+  .mission-control .settings-layout { display:block; }
+  .mission-control .settings-layout .settings-categories { position:static; display:flex; flex-flow:row wrap; margin-bottom:16px; gap:6px; }
+  .mission-control .settings-categories button { padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-size:13px; }
+  .mission-control .settings-categories button span { display:none; }
+  .mission-control .settings-layout .settings-content { display:block; padding:18px; }
+  .mission-control .settings-save { bottom:12px; }
+}
+.local-settings-page .usage-page-head { grid-template-columns:minmax(0,1fr) auto; }
+.local-settings-page .usage-summary { flex-wrap:wrap; overflow:visible; }
+.local-settings-page .usage-summary>span,.local-settings-page .core-window { background:var(--input-bg); color:var(--text); border-color:var(--line); }
+.local-settings-page .usage-summary>small { margin-left:0; white-space:normal; }
+.local-settings-page .usage-status { background:var(--panel-raised); color:var(--accent); }
+.local-settings-page .usage-account-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); }
+.local-settings-page .update-settings { border:0; margin:0; padding:0; border-radius:0; background:transparent; }
+.local-settings-page .update-version,.local-settings-page .update-candidate,.local-settings-page .update-request,.local-settings-page .update-confirmation { border:1px solid var(--line); background:var(--input-bg); border-radius:9px; padding:16px; margin:16px 0; }
+.local-settings-page .update-confirmation { border-color:var(--accent); }
+.local-settings-page .update-actions { display:flex; gap:10px; flex-wrap:wrap; }
+.local-settings-page .update-actions button:first-child,.local-settings-page .update-confirmation button:first-of-type { background:var(--accent); color:var(--on-accent); }
+.local-settings-page .update-settings [role=alert] { color:#a23e33; }
