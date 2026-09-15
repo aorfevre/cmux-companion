@@ -91,3 +91,16 @@ test('unsupported data migrations report a specific safe reason without exposing
   assert.equal(f.control.status().request.status, 'failed'); assert.equal(f.control.status().maintenance, false);
   assert.deepEqual(f.calls, []);
 });
+
+test('admission preserves handoff failure details and replaces stale waiting when the service is unreachable', async t => {
+  const f = fixture(t); f.control.policy(0, true);
+  const reason = 'Existing planning agent needs update-compatible recovery; let it finish or use explicit operator recovery';
+  await updateCycle({ ...f.options, maintenance: async () => ({ ready: false, reason }) });
+  assert.equal(f.control.status().request.error, reason);
+  await updateCycle({ ...f.options, maintenance: async () => { throw new Error('private transport details'); } });
+  assert.match(f.control.status().request.error, /Cannot contact Companion/);
+  assert.doesNotMatch(f.control.status().request.error, /private transport/);
+  assert.deepEqual(f.calls, []);
+  await updateCycle(f.options);
+  assert.equal(f.control.status().request.status, 'succeeded');
+});

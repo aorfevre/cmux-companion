@@ -208,7 +208,9 @@ rules is implied. Other agent types require their own reviewed continuity contra
 
 Stable-release channels, arbitrary refs, public webhooks,
 OS/tool updates, fleet management, remote shell access, automatically merging main,
-and push/OS update notifications are excluded. Initial notifications are in-app.
+and push/OS update notifications were excluded from the initial updater delivery.
+Background update notifications are now specified exclusively by the notification
+amendment in [the Mission Control spec](2026-09-15-mission-control-redesign.md#notification-settings-and-background-push--approved); they do not change update approval or installation policy.
 Do not remove legacy compatibility until its installation migration is verified.
 No live installation, migration, GitHub mutation or deployment is part of routine
 implementation validation; those remain separately authorized operator actions.
