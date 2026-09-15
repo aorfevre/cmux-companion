@@ -1,6 +1,7 @@
 # Mission Control delivery evidence
 
-Status: implementation in progress; this report does not claim full delivery.
+Status: redesign implemented and verified; real Codex evaluation published a reviewed test PR and is waiting for external GitHub merge.
+The final results below supersede intermediate counts and pending notes in the chronological delivery record.
 Contract: [redesign spec](superpowers/specs/2026-09-15-mission-control-redesign.md).
 Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-redesign.md).
 
@@ -118,28 +119,29 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
   assertion. Stopped only that owned test process after inspection; corrected the
   remaining Sessions expectation before rerunning.
 
-## Remaining contract work
+## Acceptance map
 
-| Requirement | Current status |
+| Requirement | Evidence |
 | --- | --- |
-| Fleet stages, active wave and last activity | Fleet and current-wave projection implemented; last-activity projection still needed. |
-| Setup redesign and account usage | Shared desktop/responsive shell, project/profile navigation and embedded quota/freshness implemented; five fixture browser and two real-service journeys passed. |
-| Brief/files/images and authorized agent context | Implemented with private durable references, scoped agent reads and real-service Cypress. Full verification passed. |
-| Combined planner/design with approved suggested team | Combined design/plan/team gate implemented with eligible suggestions and explicit overrides; domain/runtime/API/UI and Cypress passed. |
-| Explicit wave barriers with verification | Implemented and verified for new version 2 plans; domain/restart, real-Git launch ordering, responsive Cypress and full verification passed. |
-| All judgment agents visible in cmux | Production adapters launch all judgment roles through cmux; bounded noninteractive policy is retained internally. Adapter/UI/API checks passed; native live validation unverified. |
-| Goal-scoped holds and manual recovery | Implemented with persistence, sibling/provisioning-race tests and real-service manual-recovery Cypress; final full verification passed for this slice. |
-| Assignment proposals, reasons and snapshots | Implemented; provider-pool freshness/unknown evidence, immutable attempts and cross-provider restart routing verified. |
-| Human publication approval | Implemented; exact-head authority/restart/receipt tests and real-service Cypress passed. |
-| Passive merge sync | Implemented and bounded tests passed; broader acceptance integration remains. |
-| Standalone sessions and retired feature cleanup | Sessions navigation retained; Inbox/queue/preview/notification removal pending. |
-| Updater regression and redesigned controls | Redesigned controls and real-service update confirmation/idle/cancel/activation journey passed; final backend regression audit remains. |
-| Complete restart behavior | Core, merge sync, holds, private references and saved profile routing tested; final cross-feature audit remains. |
+| Fleet, stage/wave/workers, decisions and responsive actions | Mission Control Cypress, UI stage/ownership tests and inspected phone/desktop screenshots. |
+| Setup projects/profiles/readiness/usage | Five Setup fixture journeys; two real-service onboarding journeys; eight account-usage/reconnect journeys. |
+| Brief, links, files/images and scoped agent reads | `orchestration-goal-references` lifecycle/security tests and real-service input journey. |
+| Combined planner/design/team gate | Team/domain/native tests and real-service planning/approval Cypress; real Codex goal independently reviewed and approved. |
+| Parallel waves and verified integration barriers | `orchestration-waves` launch-order/restart tests and real-Git Cypress. Real native evaluation uses one wave. |
+| Visible judgment agents; background deterministic effects | cmux/native adapter tests; real Codex planner, implementer and reviewers ran visibly; service verification passed. Claude live execution is unverified. |
+| Durable goal holds and manual recovery | Multi-goal/recovery/provisioning-race tests, real-service Cypress and real native restart/held/recover path. |
+| Capacity reasons, overrides and immutable attempts | `orchestration-teams`, runtime routing/restart tests and team Cypress. |
+| Exact-head review/checks and publication approval | Publication authority/receipt/restart tests and real-service Cypress; native evaluation published the exact reviewed head and observed the PR still open. |
+| Passive waiting-only GitHub merge sync | Fake-clock/restart/identity/error tests; no Companion merge action. Native merged observation awaits an external merge. |
+| Sessions retained, obsolete product surfaces retired | Retained Sessions/ownership/pairing/launch Cypress; authenticated retired-route 404 tests and composition cleanup. |
+| Updater controls, busy safety and recovery | Updater suites, isolated real-service browser journey and archived settings reader with saved team round-trip/backup restore. Installed update activation not run. |
+| Restart and identity preservation | Core/SIGKILL, holds, references, routing, merge cadence and live stopped-planner recovery evidence. |
 
-Final backend coverage, remaining redesigned Cypress
-journeys, completion audit and PR review remain outstanding. Native cmux/provider
-and installed updater validation have not run and require separate live authority.
-No merge, deployment, installed data reset or external account change performed.
+Final baseline: full verification passed (838 backend, one intentional skip; 155 UI;
+lint, frontend/backend types and build). Backend/UI line coverage exceeds 90%; the
+final coverage is 97.19% backend lines and 95.09% UI lines. No product merge,
+deployment or installed-state reset has occurred. The representative repository is
+now user-selected (`cmux-e2e-cypress`); a success target remains unspecified.
 
 ## Goal inputs delivery
 
@@ -386,3 +388,71 @@ installed state and the original checkout are unchanged. The first real startup
 exposed missing GitHub authentication in the isolated HTTPS transport. A fixed,
 GitHub-only gh credential helper and explicit startup retry allowed the same saved
 goal to reach a visible Codex planner. Native evaluation remains in progress.
+
+
+## Native evaluation findings and fixes
+
+- The existing schema-2 reader rejects new top-level settings keys. Moved named
+  profiles/team defaults into an additive private table, keeping old JSON readable.
+  The archived-reader test now saves a real team, reopens/writes with the old
+  reader, then verifies the team and goal snapshots after reopening the redesign.
+  Backup restore still returns the exact previous state. 28 bounded settings/team
+  and updater compatibility tests passed.
+- Isolated GitHub HTTPS transport intentionally disables repository/global Git
+  credential helpers. Added a fixed askpass helper that obtains credentials via
+  `gh auth token` only for the exact GitHub HTTPS username/password prompts.
+  Credentials travel through private child-process pipes, never argv or settings.
+  Redirected/unrecognized hosts are refused; fake-credential helper tests passed.
+  The real saved goal's startup retry fetched main and launched its planner.
+- The real Codex 0.154.0 planner asked for manual permission on scoped MCP reads.
+  Current official [MCP settings](https://developers.openai.com/codex/mcp/) and
+  [configuration reference](https://developers.openai.com/codex/config-reference/)
+  document server-specific approval policy. Only Companion's two fixed scoped MCP
+  servers now use `default_tools_approval_mode = "approve"`; shell/computer tools
+  remain disabled, filesystem sandbox remains read-only, and role hooks/server
+  authority remain enforced. Seven Codex/files tests passed. Restarting the owned
+  evaluation service stopped the earlier planner, retained its cancelled attempt
+  and placed the goal on a hold; explicit Recover goal launched its replacement.
+
+
+## Final native evaluation and completion checks
+
+The user-authorized test repository completed one task in one wave using real
+Codex 0.154.0 agents in managed cmux workspaces, real scoped MCP access, local Git
+integration, service-run verification and GitHub publication:
+[cmux-e2e-cypress PR #4](https://github.com/aorfevre/cmux-e2e-cypress/pull/4).
+Only `src/left.mjs` and its matching assertion in `test/fixture.test.mjs` changed;
+the right label and run marker were preserved. Both task and integration reviews
+accepted without findings. The approved `npm test` passed on the published head
+`d290f84af3c86efa43a16769026fd5d81970fbbc`, independently confirmed through GitHub.
+The card remains Waiting for merge (internal `delivered`), with persisted merge
+observation `open`; it has not been marked Complete.
+
+The first plan incorrectly excluded all PR publication. A human revision requested
+that Companion may publish after approval and clarified that its service executes
+checks; the revised plan/team was approved through the same gate. Role prompts
+now explain these responsibilities. Following approval, implementation, task
+review, integration, verification and final review ran without another manual
+step until the explicit publication approval. Earlier startup retry and stopped
+planner recovery interventions are recorded above. This is a successful bounded
+native journey, not evidence of an agreed intervention/performance target.
+
+Final verification: `npm run verify` passed with 838 backend tests, one intentional
+skip, 155 UI tests, lint, frontend/backend type checks and production build.
+Final backend coverage passed all 838 tests with 97.19% lines; unchanged UI line
+coverage is 95.09%. Relevant Chrome Cypress journeys passed, including responsive
+Sessions/Setup/fleet/activity, real writable/read-only orchestration, onboarding
+and isolated updater activation. Earlier failures and their fixes remain recorded
+above; no unresolved routine check failure remains.
+
+After publication settled and all owned workers stopped, the isolated evaluation
+service was gracefully stopped. Its private temporary database, artifacts and
+clone were retained for a later merge-observation check; restart locally with
+`node /tmp/cmux-evaluation-service.mjs` while those temporary files remain.
+The original test checkout and installed Companion state were not modified.
+
+Unverified: real Claude/CCS execution, installed updater activation, native
+multi-wave concurrency and actual externally merged-PR observation. Deterministic
+coverage exercises those workflow boundaries, but does not substitute for their
+native evaluation. Neither test nor product PR was merged; no deployment ran.
+The user has not specified the representative success/intervention threshold.
