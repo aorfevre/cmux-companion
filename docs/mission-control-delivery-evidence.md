@@ -456,3 +456,16 @@ multi-wave concurrency and actual externally merged-PR observation. Deterministi
 coverage exercises those workflow boundaries, but does not substitute for their
 native evaluation. Neither test nor product PR was merged; no deployment ran.
 The user has not specified the representative success/intervention threshold.
+
+
+## PR CI resume-race correction
+
+The first Linux CI run on PR #140 failed two native-terminal resume tests
+(835 passed, two failed, two platform/intentional skips). A repeated resume checked
+its durable run receipt before asynchronous process observation; the supervisor
+could consume the request during that await, so the later phase check incorrectly
+rejected an already-applied retry as `ALREADY_RUNNING`. The adapter now rechecks
+the run receipt after observation and the shutdown fence, before checking phase.
+A deterministic regression creates that receipt during observation and asserts
+success without a new resume pointer or provider run. All 11 bounded real-PTY
+terminal tests passed. Final verification results follow once complete.
