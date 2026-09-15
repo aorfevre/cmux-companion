@@ -184,7 +184,7 @@ surface sync status; retry on the normal cadence without holding up other goals.
 Remove completed items from the waiting poll set. Never merge or deploy as an
 effect of polling. GitHub merge is exclusively an external user action.
 
-## Notification settings and background push — pending human review
+## Notification settings and background push — approved
 
 ### Outcome and user journey
 
@@ -349,10 +349,9 @@ Run `npm run verify`, `npm run test:mac` and relevant local Cypress journeys bef
 reviewing implementation. Background OS delivery cannot be established by Cypress
 mocks alone; keep the real-device success measure explicitly unverified until run.
 
-The user selected background push on 2026-09-15. This committed amendment still
-requires the human spec review before an implementation plan commit mandated by
-AGENTS.md; selection of the feature scope is not a claim that its detailed privacy,
-delivery and persistence contract has already been reviewed.
+The user selected background push and reviewed committed spec `075ed6c`, then
+approved both designs on 2026-09-15 ("aboth agreed"). Implementation may proceed
+under this contract; real-device delivery remains separately recorded evidence.
 
 ## Updater, data and cleanup boundaries
 
