@@ -9,6 +9,8 @@ on:
 permissions:
   contents: read
   actions: read
+  checks: read
+  statuses: read
   pull-requests: write
 concurrency:
   group: review-auto-merge
@@ -39,6 +41,8 @@ jobs:
           permission-pull-requests: write
           permission-administration: read
           permission-actions: read
+          permission-checks: read
+          permission-statuses: read
       - name: Request reviews and queue protected merges
         run: node scripts/review-auto-merge.mjs
         env:

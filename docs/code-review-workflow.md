@@ -36,7 +36,8 @@ Before activation, configure GitHub repository settings:
 - Require at least one approval, dismiss stale approvals, require approval of the
   most recent push, and require resolved conversations.
 - Install a dedicated merge GitHub App on this repository with contents and pull
-  requests write, administration read (to inspect protection), and actions read.
+  requests write, administration read (to inspect protection), and actions, checks and commit
+  statuses read.
   Set Actions variable `AUTO_MERGE_APP_ID` and secret `AUTO_MERGE_APP_PRIVATE_KEY`.
   The workflow creates a short-lived token scoped to this repository and revokes
   it after the run. These are the merge app's credentials, not CodeRabbit's or a
