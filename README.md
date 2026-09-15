@@ -108,21 +108,21 @@ The explicit `configure-cmux-automation.mjs` setup step enables cmux’s support
 - macOS with cmux installed in `/Applications/cmux.app`
 - Node.js 22.23.1 (the supported Node 22 runtime is pinned in `.nvmrc`)
 - Tailscale connected on both the Mac and phone
-+- For goals: a configured and authenticated supported Claude Code or Codex CLI
-+- For GitHub publication and update discovery: authenticated `gh` with access to
-+  the selected repository and its Actions runs
-+
-+| Capability | Supported contract |
-+| --- | --- |
-+| Direct Claude planning/execution | Claude Code 2.1.268 |
-+| Direct Codex planning/execution | Codex CLI 0.154.0 |
-+| CCS provider profiles | CCS 8.9.0 or 8.10.0, with the matching native CLI above |
-+| `ccsxp` Codex wrapper | CCS 8.10.0 |
-+| Monitoring/disposable development | Native provider accounts are not required |
-+
-+Other native versions fail readiness checks until their contracts are reviewed.
-+Offline checks do not certify account-backed permission enforcement. See the
-+[native adapter guide](docs/orchestration-native-adapters.md).
+- For goals: a configured and authenticated supported Claude Code or Codex CLI
+- For GitHub publication and update discovery: authenticated `gh` with access to
+  the selected repository and its Actions runs
+
+| Capability | Supported contract |
+| --- | --- |
+| Direct Claude planning/execution | Claude Code 2.1.268 |
+| Direct Codex planning/execution | Codex CLI 0.154.0 |
+| CCS provider profiles | CCS 8.9.0 or 8.10.0, with the matching native CLI above |
+| `ccsxp` Codex wrapper | CCS 8.10.0 |
+| Monitoring/disposable development | Native provider accounts are not required |
+
+Other native versions fail readiness checks until their contracts are reviewed.
+Offline checks do not certify account-backed permission enforcement. See the
+[native adapter guide](docs/orchestration-native-adapters.md).
 
 ## Install
 
@@ -322,3 +322,10 @@ before starting the next wave from that exact output. Failed checks hold the goa
 for manual recovery. Checked wave commits remain in the journal after restart;
 replanning requires renewed approval. Existing version 1 journal contracts retain
 their recorded dependency behavior. New planning prompts and tools use version 2.
+
+### Notification settings
+
+Settings → Notifications controls in-app update notices and opt-in background
+Web Push for each browser/PWA. See [device setup, privacy, recovery and delivery
+limits](docs/notifications.md). The Mac must stay awake and online; iPhone push
+requires a supported Home Screen installation.

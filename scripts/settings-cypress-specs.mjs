@@ -4,7 +4,7 @@ import { relative, resolve, sep } from 'node:path';
 // Preserve the caller's pattern order so reverse-order isolation is testable.
 // Each selected spec receives its own service, database and owned workers.
 export function settingsSpecs(patterns, { open = false, cwd = process.cwd() } = {}) {
-  const requested = patterns ?? (open ? 'cypress/e2e/settings-onboarding.cy.ts' : 'cypress/e2e/settings-onboarding.cy.ts,cypress/e2e/updates.cy.ts');
+  const requested = patterns ?? (open ? 'cypress/e2e/settings-onboarding.cy.ts' : 'cypress/e2e/settings-onboarding.cy.ts,cypress/e2e/updates.cy.ts,cypress/e2e/notifications.cy.ts');
   const specs = [];
   for (const pattern of requested.split(',')) {
     const matches = globSync(pattern.trim(), { cwd }).sort();
