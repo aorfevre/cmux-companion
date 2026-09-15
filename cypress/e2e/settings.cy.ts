@@ -29,7 +29,7 @@ for (const width of [390, 1200]) describe(`Setup at ${width}px`, () => {
     cy.contains('72%').should('be.visible'); cy.contains('33%').should('not.exist'); cy.contains('Capacity unknown:').should('be.visible');
     cy.get('.local-settings-page').screenshot(`setup-capacity-${width}`);
     cy.findByRole('button', { name: 'Updates' }).click(); cy.contains('Update controls are unavailable. An installed bundled updater is required.').should('be.visible');
-    cy.findByRole('button', { name: 'Notifications' }).should('not.exist'); cy.contains('Local apps and preview links').should('not.exist');
+    cy.findByRole('button', { name: 'Notifications' }).should('be.visible'); cy.contains('Local apps and preview links').should('not.exist');
     cy.findByRole('button', { name: '← Setup overview' }).click(); cy.contains('Workspace readiness').should('be.visible');
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
     cy.screenshot(`setup-overview-${width}`, { capture: 'viewport' });

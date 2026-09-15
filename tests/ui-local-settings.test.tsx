@@ -27,6 +27,7 @@ function fixture(category = 'agents', settings = defaults()) {
     if (url.endsWith('/validate')) return json(state.validation);
     if (url === '/api/bootstrap') return json({ connected: true, host: { mac_display_name: 'Fixture Mac' } });
     if (url === '/api/updater/updates') return json({ available: false });
+    if (url === '/api/notifications') return json({ available: false, subscribed: false, publicKey: '', preferences: { attention: true, complete: true, updates: true, discreet: true }, lastAttempt: null, result: null });
     if (init?.method === 'PATCH' || init?.method === 'PUT') {
       if (state.fail) return json({ error: 'Save failed' }, 500);
       assert.equal(body.expectedRevision, state.saved.revision);
@@ -89,7 +90,8 @@ test('advanced preferences convert human units, save all owning fields and suppo
   change('Concurrent execution agents', '6'); change('Agents per goal', '2'); change('Concurrent planners', '1'); change('Execution timeout (minutes)', '10'); change('Idle timeout (seconds)', '60'); change('Stop grace period (seconds)', '3'); change('Output limit (KiB)', '512'); change('cmux executable', '/bin/cmux'); click('Save changes'); await saved();
   assert.equal(state.saved.settings.execution.ceilingMs, 600000); assert.equal(state.saved.settings.execution.maxOutputBytes, 524288);
   click('This device'); await screen.findByText('Fixture Mac'); fireEvent.click(screen.getByRole('switch', { name: /Protect terminal input/ })); await screen.findByText('Saved on this device');
-  assert.equal(screen.queryByRole('button', { name: 'Notifications' }), null); click('Updates'); await screen.findByText('Update controls are unavailable. An installed bundled updater is required.');
+  click('Notifications'); await screen.findByRole('heading', { name: 'Notifications' });
+  assert.ok(screen.getByRole('switch', { name: /In-app update notices/ })); click('Updates'); await screen.findByText('Update controls are unavailable. An installed bundled updater is required.');
   click('← Setup overview'); assert.ok(screen.getByText('Workspace readiness'));
 });
 test('failed group discovery is actionable and duplicate individual additions do not duplicate settings', async () => {

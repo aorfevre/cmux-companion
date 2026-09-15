@@ -71,9 +71,12 @@ export async function updateCycle({ control, discover, revalidate, deployedSha, 
   const request = Object.values(control.read().requests).find(item => item.status === 'queued');
   if (!request) return;
   let fence;
-  try { fence = await maintenance(request.id); } catch { return; }
+  try { fence = await maintenance(request.id); } catch {
+    control.change(state => { const item = state.requests[request.id]; if (item.status === 'queued') item.error = 'Cannot contact Companion to establish update readiness; check the local service connection'; });
+    return;
+  }
   if (!fence.ready) {
-    control.change(state => { const item = state.requests[request.id]; if (item.status === 'queued') { item.error = 'Waiting for Companion-managed work to finish'; if (!item.whenIdle) { item.status = 'cancelled'; item.error = 'Companion-managed work is busy. Choose Update when idle to queue this update.'; } } });
+    control.change(state => { const item = state.requests[request.id]; if (item.status === 'queued') { item.error = typeof fence.reason === 'string' && fence.reason.length <= 1000 ? fence.reason : 'Waiting for Companion-managed work to finish'; if (!item.whenIdle) { item.status = 'cancelled'; item.error += '. Choose Update when ready to queue this update.'; } } });
     control.unfence(request.id); return;
   }
   try { await revalidate(deployedSha, request.sha); }
