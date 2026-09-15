@@ -1,3 +1,4 @@
+import { attachNotifications } from '../server/notifications/service.mjs';
 import { browseFolders } from '../server/folder-browser.mjs';
 import { UpdateControl } from '../updater/src/control.mjs';
 import { updateCycle } from '../updater/src/transaction.mjs';
@@ -54,6 +55,7 @@ export async function startSettingsDemo() {
     };
     await cycle();
     updateTimer = setInterval(() => { updatePending = updatePending.then(cycle); }, 100);
+    await attachNotifications({ runtime, directory, token, updateStatus: () => updateControl.status(), send: async () => ({ status: 201 }) });
     const address = await runtime.listen({ port: 0 });
     const manifest = { directory, tokenFile, address, repository: repository.repository, devRepos: { karven: join(directory, 'karven'), rekord: join(directory, 'rekord') } };
     const manifestFile = join(directory, 'connection.json');

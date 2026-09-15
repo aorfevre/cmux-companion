@@ -1,6 +1,7 @@
 'use client';
 /* Settings spans independently rendered application routes. */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useUpdateNotices } from './notification-preferences';
 import { request } from './api-request';
 
 type Candidate = { sha: string; changesUrl: string };
@@ -22,10 +23,11 @@ function useUpdates() {
   return { status, load, accept, loading, loadError };
 }
 export function UpdateNotice() {
+  const enabled = useUpdateNotices();
   const { status } = useUpdates();
   const [dismissed, setDismissed] = useState<string | null>(() => { try { return localStorage.getItem('cmux-update-dismissed'); } catch { return null; } });
   const candidate = status?.candidate;
-  if (!candidate || candidate.sha === dismissed || status?.request?.status === 'running') return null;
+  if (!enabled || !candidate || candidate.sha === dismissed || status?.request?.status === 'running') return null;
   return <aside className="update-notice" aria-label="Update notification"><span>Update available</span><a href="/settings#updates">View update</a><button onClick={() => { setDismissed(candidate.sha); try { localStorage.setItem('cmux-update-dismissed', candidate.sha); } catch { /* Dismiss for this page if storage is unavailable. */ } }}>Later</button></aside>;
 }
 const phaseLabels: Record<string, string> = { waiting: 'Waiting to update', preparing: 'Preparing update', verifying: 'Verifying update', switching: 'Activating update', restarting: 'Restarting Companion', 'health-checking': 'Checking startup', accepted: 'Finishing update', 'rolling-back': 'Recovering previous version', restoring: 'Restoring previous data', succeeded: 'Update complete', failed: 'Update failed', recovery_required: 'Recovery needs attention' };

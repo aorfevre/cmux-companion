@@ -1,3 +1,4 @@
+import { attachNotifications } from './notifications/service.mjs';
 import { AccountUsage } from './account-usage.mjs';
 import { UpdateControl } from '../updater/src/control.mjs';
 import { registerUpdateRoutes } from './update-routes.mjs';
@@ -72,6 +73,8 @@ export async function startServer({
       await maintenance.adopt();
       await runtime.app.register(async app => registerUpdateRoutes(app, { control: updateControl, token, maintenance }));
     }
+    try { await attachNotifications({ runtime, directory, token, updateStatus: () => updateControl?.status(), contact: process.env.CMUX_COMPANION_PUSH_CONTACT }); }
+    catch { runtime.app.log.warn('Background notifications unavailable; check private notification storage and CMUX_COMPANION_PUSH_CONTACT'); }
     await runtime.listen({ port });
   } catch (error) {
     try { await runtime.close(); } finally { updateControl?.close(); localSettings?.close(); }
