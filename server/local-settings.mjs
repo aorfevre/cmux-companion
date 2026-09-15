@@ -1,3 +1,4 @@
+import { launchProfiles, teamDefaults } from './launch-profiles.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { accessSync, chmodSync, constants, lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -16,7 +17,7 @@ export const defaultSettings = () => ({
     claude: { executable: 'ccs', args: ['claude'], model: 'default' },
     codex: { executable: 'ccs', args: ['codex'], model: 'default' },
   },
-  provider: 'claude',
+  provider: 'claude', launchProfiles: [], teamDefaults: {},
   tools: { cmux: '/Applications/cmux.app/Contents/Resources/bin/cmux', tailscale: '/Applications/Tailscale.app/Contents/MacOS/Tailscale', chrome: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
   execution: { global: 4, perGoal: 4, planners: 2, ceilingMs: 1800000, idleMs: 240000, maxOutputBytes: 1048576, killGraceMs: 5000 },
   previews: { portStart: 8500, portEnd: 8599 },
@@ -54,10 +55,11 @@ export function providerCommand(value, provider) {
   return structuredClone(value);
 }
 function validateSettings(value) {
-  keys(value, ['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'previews', 'onboarding'], 'settings');
+  keys(value, ['devRepos', 'projects', 'providers', 'provider', 'tools', 'execution', 'previews', 'onboarding', 'launchProfiles', 'teamDefaults'], 'settings');
   keys(value.providers, ['claude', 'codex'], 'providers');
   for (const provider of ['claude', 'codex']) providerCommand(value.providers[provider], provider);
   if (!['claude', 'codex'].includes(value.provider)) invalid('Choose Claude or Codex');
+  teamDefaults(value, launchProfiles(value));
   keys(value.tools, ['cmux', 'tailscale', 'chrome'], 'tools');
   for (const name of ['cmux', 'tailscale', 'chrome']) validateExecutable(value.tools[name]);
   keys(value.execution, Object.keys(defaultSettings().execution), 'execution');
@@ -264,13 +266,14 @@ export class LocalSettings {
     validateSettings(next);
     return this.write(expected, next, true);
   }
-  snapshotGoal(goalId, repositoryId, providerResolution) {
+  snapshotGoal(goalId, repositoryId, providerResolution, teamSnapshot) {
     const saved = this.goalConfiguration(goalId);
     if (saved) return saved;
     const { revision, settings } = this.read();
     const project = settings.projects.find(entry => entry.id === repositoryId && entry.enabled);
     if (!project) invalid('Choose an enabled project');
-    const value = { project, provider: settings.provider, command: settings.providers[settings.provider], ...(providerResolution ? { providerResolution } : {}), tools: settings.tools, execution: settings.execution };
+    const primary = teamSnapshot?.planner;
+    const value = { ...(teamSnapshot ? { profiles: teamSnapshot.profiles, teamConfiguration: teamSnapshot.configuration } : {}), project, provider: primary?.provider ?? settings.provider, command: primary?.command ?? settings.providers[settings.provider], ...((primary?.providerResolution ?? providerResolution) ? { providerResolution: primary?.providerResolution ?? providerResolution } : {}), tools: settings.tools, execution: settings.execution };
     this.db.prepare('INSERT INTO goal_configuration VALUES(?,?,?)').run(goalId, revision, JSON.stringify(value));
     return { revision, ...value };
   }

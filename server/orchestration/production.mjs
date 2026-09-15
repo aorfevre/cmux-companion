@@ -10,7 +10,7 @@ import { GitHubCli } from './adapters/github-cli.mjs';
 import { GitRemote } from './adapters/git-remote.mjs';
 import { GitHubPublication } from './adapters/github.mjs';
 import { backgroundPolicy } from './adapters/agent-runtime.mjs';
-import { identifier, requireValue } from './domain/contracts.mjs';
+import { identifier, requireValue, object } from './domain/contracts.mjs';
 
 /** @typedef {{schemaVersion:1; storage:{database:string;artifacts:string;resources:string}; native:{directory:string;ccsBin:string;claudeBin:string;engine:import('./adapters/ccs.mjs').Engine;env:NodeJS.ProcessEnv;cmux:{bin:string;env:NodeJS.ProcessEnv}}; repositories:{id:string;path:string;github:string;remote:{url:string;protocol:'ssh'|'https';env:NodeJS.ProcessEnv};checks:{id:string;argv:string[];bin:string;env:NodeJS.ProcessEnv;environmentId:string}[]}[]; policy:import('./types.d.ts').BackgroundPolicy; limits?:{global?:number;perGoal?:number;planners?:number};cutover:import('./cutover.mjs').Cutover;readOnly?:boolean}} ProductionConfig */
 /** Loading configuration never starts the installed service or imports old goals.
@@ -48,7 +48,15 @@ export async function createProductionRuntime({ config, token, sessions, monitor
     const installation = await probe(config.native);
     const configured = new Map(config.repositories.map(repo => [repo.id, repo]));
     runtime = await createRuntime({ storage: config.storage, repositories, token, readOnly: config.readOnly, limits: config.limits,
+      beforeCommand: async command => {
+        if (command.type !== 'create_goal') return;
+        object(command.payload).teamConfiguration = runtime?.store.get(command.goalId)?.teamConfiguration ?? {
+          capturedAt: new Date().toISOString(), defaults: { planner: 'configured', implementer: 'configured', reviewer: 'configured', integrator: 'configured' },
+          profiles: [{ id: 'configured', label: config.native.engine.provider, provider: 'claude', model: config.native.engine.model, roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: 'Validated production adapter', capacity: { remainingPercent: null, source: 'Production configuration', checkedAt: null, reason: 'Capacity is unknown for this fixed production profile.' } }],
+        };
+      },
       createAgents: context => agents({ ...config.native, installation, policy: config.policy }, { ...context, describe: request => {
+        requireValue(!request.attempt.assignment || (request.attempt.assignment.model === config.native.engine.model && request.attempt.assignment.label === config.native.engine.provider), 'Restore this goal’s saved production profile and model before launching another attempt', 'NOT_READY');
         const description = context.describe(request);
         const repo = configured.get(request.goalId ? runtime?.store.get(request.goalId)?.repositoryId ?? '' : '');
         return { ...description, prompt: `${description.prompt}\nOptional repository verification defaults (discover and adapt checks for this goal): ${JSON.stringify(repo?.checks.map(({ id, argv }) => ({ id, argv })) ?? [])}` };

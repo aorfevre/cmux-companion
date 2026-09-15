@@ -11,7 +11,7 @@ No cloud application server is involved. Terminal output and input travel direct
 - Provides an Inbox for native agent questions and permissions, manual repository launches, prompt queues and private local-app previews.
 - Opens `/orchestration` for a goal workflow with a reviewed plan and explicit approval, parallel implementers in isolated worktrees, independent code review, serialized integration and one verified pull request.
 - Shows task dependencies, workers, review findings, verification and publication evidence, with revision, retry, abort and reconciliation actions derived by the service.
-- Keeps account quota and manual-session model settings available without using quota as scheduler policy.
+- Suggests eligible team profiles using saved provider readiness and CCS capacity signals, with manual overrides and one plan/team approval.
 
 The home screen opens the Goals Kanban. Sessions remain a secondary view;
 Inbox and Local apps are still available. Legacy burst scheduling, issue-topic planning, old goal boards
@@ -56,6 +56,24 @@ A stopped process is not proof of a successful task. Uncertain ownership blocks
 replacement work until reconciliation proves the old worker stopped. Aborting
 revokes authority and stops admission while retaining evidence and tracking worker
 termination. Retrying a request after a lost response uses its original command ID.
+
+## Goal teams and launch profiles
+
+Setup → Agents configures Claude/Codex commands, named CCS or terminal launch
+profiles, eligible roles and preferred profiles. Goal creation freezes validated
+commands, models and readiness so later settings changes cannot redirect saved
+work. Each attempt records its actual assignment, including across restart.
+
+The **Team & models** tab explains the suggested planner/designer, implementation,
+review and integration assignments. Fresh CCS provider-pool capacity informs the
+initial suggestions; unavailable, failed or stale readings remain unknown, never
+zero. Capacity is a dated allocation snapshot, not a live account balance or a
+promise about which account a command selects. Slow quota services time out
+without blocking goal creation. The saved launch command determines the account.
+
+Approve the team together with its design and plan. Manual overrides select ready,
+eligible profiles for future attempts; active workers retain their assignments.
+Changing an assignment does not release a failure hold or authorize recovery.
 
 ## Architecture
 

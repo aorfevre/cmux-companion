@@ -1,3 +1,4 @@
+import { validateAssignmentOverride } from './teams.mjs';
 import { transition, planTarget } from './transitions.mjs';
 
 /** The browser renders decisions from the same pure command authority. It does
@@ -37,5 +38,11 @@ export function actionView(goal) {
     if (['planner', 'reviewer'].includes(attempt.role) && !attempt.retryRequested && ['failed', 'cancelled'].includes(attempt.status)) offer('retry_attempt', `Retry ${attempt.role}${attempt.taskId ? ` for ${attempt.taskId}` : ''}`, { attemptId: attempt.id });
     if (attempt.role === 'planner' && attempt.status === 'running') offer('resume_planner', 'Resume planning', { attemptId: attempt.id });
   }
-  return { actions, approvalBlocked, recoveryBlocked };
+  const teamOptions = (goal.team?.assignments ?? []).map(assignment => ({ key: assignment.key, choices: (goal.teamConfiguration?.profiles ?? []).filter(profile => profile.roles.includes(assignment.role)).map(profile => {
+    let blocked = null;
+    try { validateAssignmentOverride(goal, assignment.key, profile.id); }
+    catch (error) { blocked = error instanceof Error ? error.message : 'Assignment unavailable'; }
+    return { profileId: profile.id, blocked };
+  }) }));
+  return { actions, approvalBlocked, recoveryBlocked, teamOptions };
 }

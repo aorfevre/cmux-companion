@@ -1,3 +1,4 @@
+import { object } from '../server/orchestration/domain/contracts.mjs';
 import { existsSync, renameSync, realpathSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { writeFile } from 'node:fs/promises';
@@ -26,6 +27,13 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
       metadata: { repositoryId: 'repo', baseSha: repo.baseSha, repository: repo.repository, remote: repo.remote, browserHarness },
       options: {
         repositories: new Map([['repo', repo.repository]]), readOnly, limits: { global: 2, perGoal: 2 },
+        beforeCommand: async command => {
+          if (command.type !== 'create_goal') return;
+          object(command.payload).teamConfiguration = {
+            capturedAt: '2026-09-15T10:00:00.000Z', defaults: { planner: 'claude', implementer: 'claude', reviewer: 'claude', integrator: 'claude' },
+            profiles: ['claude', 'codex'].map(provider => ({ id: provider, label: `${provider} fixture`, provider, model: 'fixture', roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: 'Disposable fake adapter', capacity: { remainingPercent: null, source: 'Fixture', checkedAt: null, reason: 'No live quota lookup in the disposable fixture.' } })),
+          };
+        },
         prepareGoal: goal => fixtureRemote.fetchBase(goal.repositoryId, goal.baseBranch),
         createAgents: ({ onResult }) => {
           const agents = new ScriptedAgents({

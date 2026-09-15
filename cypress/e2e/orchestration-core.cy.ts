@@ -36,6 +36,18 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       cy.request(link.attr('href')!).then(response => { expect(response.headers['content-type']).to.include('text/plain'); expect(response.body).to.equal('<svg>Read as source</svg>'); });
     });
     cy.findByRole('link', { name: 'design.png' }).should('be.visible');
+    cy.findByRole('tab', { name: 'Team & models' }).click();
+    cy.findByLabelText('Profile for Implementation A').select('codex');
+    cy.contains('summary', 'Manual override · Why').should('be.visible');
+    cy.get('[role=tablist] [role=tab]').then(tabs => {
+      const rectangles = [...tabs].map(tab => tab.getBoundingClientRect());
+      rectangles.slice(1).forEach((rectangle, index) => expect(rectangle.left).to.be.at.least(rectangles[index].right));
+      [...tabs].forEach(tab => expect(tab.scrollWidth).to.be.at.most(tab.clientWidth + 1));
+    });
+    cy.screenshot('team-proposal-phone');
+    cy.viewport(1200, 1000); cy.screenshot('team-proposal-desktop');
+    cy.document().then(doc => { expect(doc.documentElement.scrollWidth).to.be.at.most(1200); });
+    cy.viewport(390, 844);
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).should('be.enabled').click();
     cy.findByRole('tab', { name: 'Waves & sessions' }).click();
     cy.get('[data-task="A"]').should('contain.text', 'running');
@@ -90,6 +102,8 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       const moduleBarrier = goal.waveResults!.find(result => result.waveId === 'modules')!;
       const composition = evidence.launches.find((entry) => entry.goalId === goal.id && entry.attempt.taskId === 'C' && entry.attempt.role === 'implementer')!;
       expect(composition.attempt.baseSha).to.equal(moduleBarrier.headSha);
+      expect(goal.team!.approved).to.equal(true);
+      expect(goal.attempts.find(attempt => attempt.taskId === 'A' && attempt.role === 'implementer')!.assignment!.profileId).to.equal('codex');
       cy.task<string>('orchestrationGit', { branch: composition.attempt.branch, file: 'src/a.mjs' }).should('include', 'return 2');
       cy.task<string>('orchestrationGit', { branch: composition.attempt.branch, file: 'src/b.mjs' }).should('include', 'return 3');
       cy.task<string>('orchestrationGit', { branch: evidence.pulls[0].branch, file: 'src/composition.mjs' }).should('include', 'aSource() + bSource()');

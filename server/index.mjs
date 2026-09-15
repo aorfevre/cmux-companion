@@ -1,3 +1,4 @@
+import { AccountUsage } from './account-usage.mjs';
 import { attachGoalAttention } from './orchestration/goal-attention.mjs';
 import { UpdateControl } from '../updater/src/control.mjs';
 import { registerUpdateRoutes } from './update-routes.mjs';
@@ -48,9 +49,10 @@ export async function startServer({
   // its catalog to a live one, so no test that builds an app ever touches the
   // real database file.
   const repoCatalog = new RepoCatalog({ identityStore: openRepoIdentityStore(localSettings ? { path: join(directory, "repo-identity.db") } : {}), ...(localSettings ? { roots: [], projects: () => { const current = localSettings.read().settings; return current.projects.map(project => ({ ...project, devRepoName: current.devRepos?.find(root => root.id === project.devRepoId)?.name, devRepoPath: current.devRepos?.find(root => root.id === project.devRepoId)?.path })); } } : {}) });
+  const accountUsage = new AccountUsage();
   let runtime;
   let updateControl = null;
-  const monitor = async app => { await buildApp({ app, cmux,
+  const monitor = async app => { await buildApp({ app, cmux, accountUsage,
     localSettings, probeProvider,
     onSettingsChange: async () => {
       const current = localSettings.read().settings;
@@ -67,7 +69,7 @@ export async function startServer({
     if (config) runtime = await createProductionRuntime({ config, token,
       sessions: async () => (await cmux.workspaceListDetailed()).workspaces.map(workspace => workspace.id), monitor });
     else {
-      runtime = await createSettingsRuntime({ settings: localSettings, directory, token, createAgents: createConfiguredAgents, probeProvider, resolveProviderCommand });
+      runtime = await createSettingsRuntime({ settings: localSettings, directory, token, createAgents: createConfiguredAgents, probeProvider, resolveProviderCommand, usageSnapshot: () => accountUsage.snapshot() });
       await runtime.app.register(monitor);
     }
   } catch (error) { localSettings?.close(); throw error; }

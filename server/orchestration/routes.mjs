@@ -107,6 +107,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     requireValue(USER_COMMANDS.has(command.type), 'Command is not available to this client', 'FORBIDDEN');
     if (command.type === 'create_goal') {
       const payload = object(command.payload);
+      requireValue(payload.teamConfiguration === undefined, 'Team configuration is supplied by the service', 'FORBIDDEN');
       command = { ...command, payload: { ...payload, contractSchema: 2 } };
       requireValue(service.repositoryIds.has(String(payload.repositoryId)), 'Repository is not allowed', 'FORBIDDEN');
       requireValue(references || (payload.attachments === undefined && payload.references === undefined), 'Reference uploads are unavailable', 'UNSUPPORTED_CAPABILITY');

@@ -25,6 +25,7 @@ export interface ReviewResult {
 }
 export interface Review extends ReviewResult { id: string; attemptId: string; kind: 'plan' | 'task' | 'integration'; taskId: string | null }
 export interface Attempt {
+  assignment?: TeamAssignment & { provider: string; model: string; label: string };
   id: string; operationId: string; role: Role; mode: Mode; taskId: string | null;
   target: string; generation: number; revision: number; status: AttemptStatus;
   workerState: 'pending' | 'unknown' | 'running' | 'stopped'; identity: string | null; baseSha: string; worktree: string | null; branch: string | null;
@@ -38,8 +39,13 @@ export interface Task extends TaskContract {
 export interface Verification {
   headSha: string; checks: { id: string; passed: boolean; artifactId: string }[];
 }
+export interface TeamProfile { id: string; label: string; provider: 'claude' | 'codex'; model: string; roles: Role[]; ready: boolean; reason: string; capacity: { remainingPercent: number | null; source: string; checkedAt: string | null; reason: string } }
+export interface TeamConfiguration { profiles: TeamProfile[]; defaults: Record<Role, string>; capturedAt: string }
+export interface TeamAssignment { key: string; role: Role; taskId: string | null; profileId: string | null; manual: boolean; reason: string }
+export interface TeamProposal { revision: number; approved: boolean; assignments: TeamAssignment[]; changes: { commandId: string; key: string; from: string | null; to: string }[] }
 export interface GoalReference { id: string; name: string; bytes: number; mimeType: 'text/plain' | 'image/png' | 'image/jpeg' | 'image/webp' }
 export interface Goal {
+  teamConfiguration?: TeamConfiguration; team?: TeamProposal; teamHistory?: TeamProposal[];
   contractSchema?: 2;
   waveResults?: { waveId: string; generation: number; revision: number; headSha: string }[];
   references?: GoalReference[];

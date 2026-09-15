@@ -178,7 +178,7 @@ test('terminal provider resolution is frozen before goal creation and reused aft
   f.extraRuntimes.push(configured);
   const command = { id: 'alias-create', goalId: 'alias-goal', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'project', title: 'A saved goal', description: 'A saved goal' } };
   for (let retry = 0; retry < 2; retry++) assert.equal((await configured.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: command })).statusCode, 200);
-  assert.equal(resolutions, 1); assert.deepEqual(f.settings.goalConfiguration('alias-goal').providerResolution, resolution);
+  assert.equal(resolutions, 2, 'both eligible provider profiles are frozen once; retry does not resolve again'); assert.deepEqual(f.settings.goalConfiguration('alias-goal').providerResolution, resolution);
   await configured.close();
   const seen = [];
   const restarted = await createSettingsRuntime({ ...f.options, resolveProviderCommand: async () => { throw new Error('Saved alias must not be looked up again'); },
@@ -246,4 +246,36 @@ test('saved-settings runtime passively observes only waiting PRs through their o
   assert.equal(runtime.store.get('waiting').status, 'merged');
   assert.equal(calls.length, 1); assert.equal(calls[0].goalId, 'waiting'); assert.equal(calls[0].destination, 'example/original');
   await runtime.scheduler.tick(); assert.equal(calls.length, 1, 'completed cards leave the polling set');
+});
+
+test('task profile overrides route real scheduler launches and remain frozen after settings changes and restart', async t => {
+  const f = await fixture(t), value = defaultSettings();
+  value.projects = [{ id: 'project', name: 'Project', path: f.path, enabled: true, github: 'example/project', remote: 'git@github.com:example/project.git', checks: [] }];
+  await f.settings.update(0, value); await f.runtime.settingsChanged();
+  const project = (await f.runtime.app.inject({ url: '/api/orchestration/configuration', headers })).json().repositories[0];
+  const created = await f.runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: { id: 'create', goalId: 'routed', expectedVersion: 0, type: 'create_goal', payload: { title: 'Route tasks', repositoryId: 'project', baseSha: project.baseSha } } });
+  assert.equal(created.statusCode, 200, created.body);
+  let id = 0;
+  const command = (type, payload, kind = 'system') => f.runtime.service.execute({ id: `route-${++id}`, goalId: 'routed', expectedVersion: f.runtime.store.get('routed').version, type, payload }, { kind });
+  const plan = contract(); plan.schemaVersion = 2; plan.tasks = plan.tasks.map(task => ({ ...task, resources: [] }));
+  plan.waves = [{ id: 'modules', title: 'Modules', taskIds: ['A', 'B'], checkIds: ['unit'] }, { id: 'compose', title: 'Compose', taskIds: ['C'], checkIds: ['unit'] }];
+  command('publish_contract', { contract: plan }, 'user');
+  command('override_assignment', { key: 'implementer:A', profileId: 'codex' }, 'user');
+  command('request_attempt', { attemptId: 'review', operationId: 'review-op', role: 'reviewer', conversationId: 'review-conversation' });
+  command('record_dispatch', { attemptId: 'review', identity: 'review-process', worktree: '/tmp/review', branch: 'review' });
+  command('record_review', { attemptId: 'review', reviewId: 'review-result', review: { schemaVersion: 1, target: planTarget(f.runtime.store.get('routed')), disposition: 'accept', findings: [] } });
+  command('record_stopped', { attemptId: 'review' }); command('approve', { revision: 1 }, 'user');
+  await f.runtime.listen({ port: 0 }); await f.runtime.scheduler.tick();
+  const assignments = f.runtime.store.get('routed').attempts.filter(attempt => attempt.role === 'implementer').map(attempt => ({ taskId: attempt.taskId, assignment: attempt.assignment }));
+  assert.equal(assignments.find(entry => entry.taskId === 'A').assignment.provider, 'codex');
+  assert.equal(assignments.find(entry => entry.taskId === 'B').assignment.provider, 'claude');
+  assert.deepEqual(f.launched.map(config => config.provider).sort(), ['claude', 'codex']);
+  assert.ok(f.launched.every(config => config.command.model === 'default'));
+  value.provider = 'codex'; value.providers.codex.model = 'gpt-5.4'; value.providers.claude.model = 'sonnet';
+  await f.settings.update(1, value); await f.runtime.close();
+  const reopened = await createSettingsRuntime(f.options); f.extraRuntimes.push(reopened);
+  await reopened.listen({ port: 0 }); await reopened.scheduler.tick();
+  assert.deepEqual(reopened.store.get('routed').attempts.filter(attempt => attempt.role === 'implementer').map(attempt => ({ taskId: attempt.taskId, assignment: attempt.assignment })), assignments);
+  assert.deepEqual(f.launched.slice(2).map(config => config.provider).sort(), ['claude', 'codex']);
+  assert.ok(f.launched.slice(2).every(config => config.command.model === 'default'));
 });

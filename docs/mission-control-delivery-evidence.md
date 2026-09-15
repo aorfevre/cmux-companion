@@ -125,16 +125,16 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | Fleet stages, active wave and last activity | Fleet and current-wave projection implemented; last-activity projection still needed. |
 | Setup redesign and account usage | Existing implementation retained; redesign incomplete. |
 | Brief/files/images and authorized agent context | Implemented with private durable references, scoped agent reads and real-service Cypress. Full verification passed. |
-| Combined planner/design with approved suggested team | Existing planner retained; role/routing contract changes pending. |
+| Combined planner/design with approved suggested team | Combined design/plan/team gate implemented with eligible suggestions and explicit overrides; domain/runtime/API/UI and Cypress passed. |
 | Explicit wave barriers with verification | Implemented and verified for new version 2 plans; domain/restart, real-Git launch ordering, responsive Cypress and full verification passed. |
 | All judgment agents visible in cmux | Production adapters launch all judgment roles through cmux; bounded noninteractive policy is retained internally. Adapter/UI/API checks passed; native live validation unverified. |
 | Goal-scoped holds and manual recovery | Implemented with persistence, sibling/provisioning-race tests and real-service manual-recovery Cypress; final full verification passed for this slice. |
-| Assignment proposals, reasons and snapshots | Not implemented. |
+| Assignment proposals, reasons and snapshots | Implemented; provider-pool freshness/unknown evidence, immutable attempts and cross-provider restart routing verified. |
 | Human publication approval | Implemented; exact-head authority/restart/receipt tests and real-service Cypress passed. |
 | Passive merge sync | Implemented and bounded tests passed; broader acceptance integration remains. |
 | Standalone sessions and retired feature cleanup | Sessions navigation retained; Inbox/queue/preview/notification removal pending. |
 | Updater regression and redesigned controls | Approval/waiting-merge idle regression passed; redesigned controls and final regression pending. |
-| Complete restart behavior | Existing core, merge sync and holds tested; attachments/teams pending. |
+| Complete restart behavior | Core, merge sync, holds, private references and saved profile routing tested; final cross-feature audit remains. |
 
 Final backend coverage, remaining redesigned Cypress
 journeys, completion audit and PR review remain outstanding. Native cmux/provider
@@ -218,3 +218,40 @@ passed. Native cmux/provider and installed updater live validation remain
 unverified; the full routine suite includes their deterministic regressions.
 Remaining work is team allocation/approval, Setup and Sessions, activity/evidence
 polish, retired-feature cleanup, coverage audit and the final PR.
+
+## Team allocation and saved launch profiles
+
+- Setup configures named supported Claude/Codex/CCS commands, eligible roles and
+  role defaults. Disabling a profile or removing its role clears affected defaults.
+  Commands use the existing restricted argv validation, never shell passthrough.
+- Goal creation freezes commands, resolutions, models, readiness and dated CCS
+  provider-pool signals. Missing, failed, stale and timed-out quota readings remain
+  unknown. Suggestions consider eligibility, available capacity and role preference;
+  they do not claim account-level selection or dollar balances.
+- The existing plan gate approves the proposed team and design together. Manual
+  role choices carry into task assignments; revisions retain prior team evidence.
+  Overrides apply only to future attempts, cannot replace an owned worker and
+  never release a failure hold. Each attempt pins its actual profile/model.
+- Saved-settings runtime routes launch, observe, resume, open, terminate and
+  updater handoff by the saved attempt profile. The restart regression launches
+  siblings through different providers and proves later workspace edits do not
+  change the original factories/models. Legacy fixed composition supplies an
+  explicit unknown-capacity profile and rejects changed model/profile launches.
+- API forbids forged allocation configuration, unpaired/cross-origin edits,
+  agent overrides and read-only overrides. The new API security suite passed all
+  ten tests; bounded domain/settings/runtime suites passed 21 tests. Compact team
+  UI initially passed three tests; final full verification includes the additional
+  default-reset assertions.
+- Real-service Chrome Cypress passed both writable journeys, including a manual
+  task override before combined approval and the recorded attempt assignment.
+  Read-only-only browser journey remains pending in this writable fixture.
+- Desktop team capture inspected successfully; phone capture revealed shrinking
+  goal tabs whose labels overlapped. The layout correction and final checks are
+  recorded below. Native providers/cmux and installed updater remain unverified.
+
+- Final full verification passed: 881 backend tests, one intentional skip, 171 UI
+  tests, lint, types and production build. The subsequent CSS-only correction
+  prevents tab shrinking on narrow screens; a browser regression asserts separate
+  tab rectangles and labels fitting their buttons. Both writable Chrome journeys
+  passed again and the corrected phone capture was inspected. Typecheck passed
+  after the browser assertion. Final coverage and remaining redesign work remain.

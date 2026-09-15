@@ -10,6 +10,7 @@ import { DeviceSettings } from './device-settings';
 import { PushSettings } from './notifications';
 import { ReleaseRetentionPanel } from '../release-retention';
 import { DeploymentHealth } from '../deployment-health';
+import { LaunchProfiles } from './launch-profiles';
 import { ProviderCommand } from './provider-command';
 import { DevRepositories } from './dev-repositories';
 export type Provider = 'claude' | 'codex';
@@ -17,7 +18,9 @@ export type Command = { executable: string; args: string[]; model: string };
 export type Check = { id: string; executable: string; args: string[]; script?: string };
 export type Project = { id: string; name: string; path: string; enabled: boolean; github: string | null; remote: string | null; checks: Check[]; devRepoId?: string };
 export type DevRepo = { id: string; name: string; path: string };
+export type LaunchProfile = { id: string; label: string; provider: Provider; command: Command; roles: ('planner' | 'implementer' | 'reviewer' | 'integrator')[]; enabled: boolean };
 export type Settings = {
+  launchProfiles?: LaunchProfile[]; teamDefaults?: Partial<Record<'planner' | 'implementer' | 'reviewer' | 'integrator', string>>;
   devRepos?: DevRepo[]; projects: Project[]; providers: Record<Provider, Command>; provider: Provider;
   tools: { cmux: string; tailscale: string; chrome: string };
   execution: { global: number; perGoal: number; planners: number; ceilingMs: number; idleMs: number; maxOutputBytes: number; killGraceMs: number };
@@ -26,7 +29,7 @@ export type Settings = {
 export type Snapshot = { revision: number; settings: Settings; imported: boolean };
 const categories = { general: 'General', 'dev-repos': 'Dev repos', agents: 'Agents', notifications: 'Notifications', updates: 'Updates', advanced: 'Advanced' };
 type Category = keyof typeof categories;
-const editable: Partial<Record<Category, (keyof Settings)[]>> = { 'dev-repos': ['devRepos', 'projects'], agents: ['provider', 'providers'], advanced: ['tools', 'execution', 'previews'] };
+const editable: Partial<Record<Category, (keyof Settings)[]>> = { 'dev-repos': ['devRepos', 'projects'], agents: ['provider', 'providers', 'launchProfiles', 'teamDefaults'], advanced: ['tools', 'execution', 'previews'] };
 function categoryFromLocation(): Category | null { const hash = typeof window === 'undefined' ? '' : location.hash.slice(1); return hash in categories ? hash as Category : null; }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -78,6 +81,11 @@ export function LocalSettingsPanel({ onboarding = false }: { onboarding?: boolea
         const result = await checkProvider(provider, value.providers[provider]);
         if (!result.ready) { setError(`${provider === 'claude' ? 'Claude' : 'Codex'}: ${result.reason || 'Provider is not ready'}`); return false; }
       }
+      for (const profile of value.launchProfiles ?? []) {
+        if (!profile.enabled || equal(profile.command, snapshot.settings.launchProfiles?.find(entry => entry.id === profile.id)?.command)) continue;
+        const result = await request<{ ready: boolean; reason?: string }>('/api/settings/providers/validate', { method: 'POST', body: JSON.stringify({ provider: profile.provider, command: profile.command }) });
+        if (!result.ready) { setError(`${profile.label}: ${result.reason || 'Provider is not ready'}`); return false; }
+      }
       const changes = Object.fromEntries(keys.filter(key => key !== 'onboarding').map(key => [key, value[key]]));
       const result = complete
         ? await request<Snapshot>('/api/settings/local', { method: 'PUT', body: JSON.stringify({ expectedRevision: latest.revision, settings: { ...latest.settings, ...changes, onboarding: { completed: true } } }) })
@@ -112,8 +120,8 @@ export function LocalSettingsPanel({ onboarding = false }: { onboarding?: boolea
           {!draft && editable[category] && !legacy && <p role="status">{error ? 'Settings could not be loaded.' : 'Loading settings…'}</p>}
           {draft && <>
             {category === 'dev-repos' && <DevRepositories draft={draft} onChange={value => { dirtyRef.current = true; setDraft(value); }} onSync={syncDiscovery} save={save} busy={busy} onError={setError} onNotice={setNotice} />}
-            {category === 'agents' && <section><h2>Agents</h2><p>Shared on this Mac. Changes apply to new goals and sessions.</p><a href="/?view=usage">View account usage</a><fieldset disabled={busy}><legend className="sr-only">Agent preferences</legend><label>Default provider<select value={draft.provider} onChange={event => setDraft({ ...draft, provider: event.target.value as Provider })}><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
-              {(['claude', 'codex'] as const).map(provider => <ProviderCommand key={`${provider}:${snapshot?.revision}:${providerEditorRevision}`} provider={provider} command={draft.providers[provider]} change={value => changeProvider(provider, value)} validate={() => void validate(provider)} validation={validation[provider]} />)}</fieldset></section>}
+            {category === 'agents' && <section><h2>Agents</h2><p>Shared on this Mac. Changes apply to new goals and sessions.</p><p>Provider validation checks the command capabilities. Model availability is confirmed when an agent launches.</p><a href="/?view=usage">View account usage</a><fieldset disabled={busy}><legend className="sr-only">Agent preferences</legend><label>Default provider<select value={draft.provider} onChange={event => setDraft({ ...draft, provider: event.target.value as Provider })}><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+              {(['claude', 'codex'] as const).map(provider => <ProviderCommand key={`${provider}:${snapshot?.revision}:${providerEditorRevision}`} provider={provider} command={draft.providers[provider]} change={value => changeProvider(provider, value)} validate={() => void validate(provider)} validation={validation[provider]} />)}</fieldset><LaunchProfiles key={`${snapshot?.revision}:${providerEditorRevision}`} draft={draft} change={setDraft} busy={busy} /></section>}
             {category === 'advanced' && <section><h2>Advanced</h2><p>Shared on this Mac. Defaults are suitable for most workspaces.</p><a href="/?view=apps">Local apps and preview links</a><fieldset disabled={busy}><legend>Agent capacity</legend>{(['global', 'perGoal', 'planners'] as const).map((key, index) => <label key={key}>{['Background agents', 'Agents per goal', 'Concurrent planners'][index]}<input type="number" min="1" value={draft.execution[key]} onChange={event => setDraft({ ...draft, execution: { ...draft.execution, [key]: Number(event.target.value) } })} /></label>)}</fieldset>
               <details><summary>Time limits and output</summary>{(['ceilingMs', 'idleMs', 'killGraceMs', 'maxOutputBytes'] as const).map((key, index) => <label key={key}>{['Execution timeout (minutes)', 'Idle timeout (seconds)', 'Stop grace period (seconds)', 'Output limit (KiB)'][index]}<input type="number" min="1" value={draft.execution[key] / [60000, 1000, 1000, 1024][index]} onChange={event => setDraft({ ...draft, execution: { ...draft.execution, [key]: Number(event.target.value) * [60000, 1000, 1000, 1024][index] } })} /></label>)}</details>
               <details><summary>Tools and preview ports</summary>{(Object.keys(draft.tools) as (keyof Settings['tools'])[]).map(tool => <label key={tool}>{tool} executable<input value={draft.tools[tool]} onChange={event => setDraft({ ...draft, tools: { ...draft.tools, [tool]: event.target.value } })} /></label>)}{(['portStart', 'portEnd'] as const).map(key => <label key={key}>{key === 'portStart' ? 'First preview port' : 'Last preview port'}<input type="number" min="1024" max="65535" value={draft.previews[key]} onChange={event => setDraft({ ...draft, previews: { ...draft.previews, [key]: Number(event.target.value) } })} /></label>)}</details><DeploymentHealth /></section>}

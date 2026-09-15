@@ -125,3 +125,20 @@ test('paired users can open each current execution role without opening historic
   service.repositoryIds.clear(); assert.equal((await open('integrator')).statusCode, 404);
   assert.deepEqual(opened, ['reviewer', 'reviewer', 'implementer', 'integrator']);
 });
+
+
+test('team configuration cannot be forged and only paired writable users can override assignments', async t => {
+  const { app, store, planner } = await apiFixture(t);
+  const forged = { ...create, payload: { ...create.payload, teamConfiguration: { profiles: [] } } };
+  assert.equal((await app.inject({ method: 'POST', url, headers: HEADERS, payload: forged })).statusCode, 403);
+  assert.equal(store.get('goal'), null);
+  const secret = planner();
+  const override = { id: 'override', goalId: 'goal', expectedVersion: 3, type: 'override_assignment', payload: { key: 'planner:*', profileId: 'codex' } };
+  assert.equal((await app.inject({ method: 'POST', url: '/api/orchestration/agent/commands', headers: { authorization: `Bearer ${secret}` }, payload: override })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'POST', url, payload: override })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url, headers: { ...HEADERS, origin: 'https://attacker.test' }, payload: override })).statusCode, 403);
+  assert.equal(store.get('goal').version, 3);
+  const readonly = await apiFixture(t, { readOnly: true }); readonly.planner();
+  assert.equal((await readonly.app.inject({ method: 'POST', url, headers: HEADERS, payload: override })).statusCode, 403);
+  assert.equal(readonly.store.get('goal').version, 3);
+});

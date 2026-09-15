@@ -17,7 +17,7 @@ export function roleContext(goal, attempt) {
     generation: attempt.generation, revision: attempt.revision, target: attempt.target,
     conversationId: attempt.conversationId, baseSha: attempt.baseSha,
     contract: goal.revision ? currentContract(goal) : null,
-    task, references: goal.references ?? [], planningRequest: goal.planningRequest ?? null,
+    task, assignment: attempt.assignment ?? null, references: goal.references ?? [], planningRequest: goal.planningRequest ?? null,
     integrationOperation: attempt.role === 'integrator' ? goal.integration : null,
     verification: attempt.role === 'integrator' && goal.verification?.headSha === attempt.target ? goal.verification : null,
     reviews: (attempt.role === 'planner' ? goal.reviews : currentReviews(goal)).filter((review) => review.taskId === attempt.taskId),

@@ -1,5 +1,6 @@
 import { DomainError, identifier, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
+import { parseTeamConfiguration, proposeTeam, assignmentFor, overrideAssignment } from './teams.mjs';
 import { currentWave, verificationWaveId, integratedWaveReady, waveChecks, acceptWaveVerification } from './waves.mjs';
 import { parseGoalReferences } from './goal-references.mjs';
 import { captureFailureHold, recoverGoal } from './recovery.mjs';
@@ -65,13 +66,14 @@ export function transition(before, command, authority) {
     const title = description === undefined ? text(input.title, 500) : input.title === undefined ? shortGoalTitle(description) : text(input.title, 120);
     requireValue(input.contractSchema === undefined || input.contractSchema === 2, 'Unsupported goal contract schema');
     const goal = /** @type {Goal} */ ({ id: command.goalId, version: 1, generation: 1, ...(input.contractSchema === 2 ? { contractSchema: 2 } : {}),
-      repositoryId: identifier(input.repositoryId), title, ...(input.references === undefined ? {} : { references: parseGoalReferences(input.references) }),
+      repositoryId: identifier(input.repositoryId), title, ...(input.teamConfiguration === undefined ? {} : { teamConfiguration: parseTeamConfiguration(input.teamConfiguration) }), ...(input.references === undefined ? {} : { references: parseGoalReferences(input.references) }),
       ...(input.description === undefined ? {} : { description: text(input.description, 12000), projectCode: projectCode(input.projectCode ?? input.repositoryId),
         plannerName: planningName(projectCode(input.projectCode ?? input.repositoryId), title) }), baseSha: input.baseSha === undefined ? '' : sha(input.baseSha), ...(input.baseSha === undefined ? { startup: { status: 'pending', error: null } } : {}), baseBranch: branchName(input.baseBranch ?? 'main'),
       status: 'discovering', revision: 0, approvedRevision: null, contracts: [], tasks: [],
       attempts: [], reviews: [], integrationHead: input.baseSha === undefined ? '' : sha(input.baseSha), verification: null,
       finalRepairCount: 0, finalRepairLimit: 2, pr: null, integration: null, publication: null,
     });
+    proposeTeam(goal);
     return { goal, events: [{ kind: 'goal_created', payload: { repositoryId: goal.repositoryId } }], intents: [] };
   }
   requireValue(before && before.id === command.goalId, 'Goal not found', 'NOT_FOUND');
@@ -254,6 +256,7 @@ export function transition(before, command, authority) {
       }
       goal.generation++; goal.approvedRevision = null; goal.status = 'discovering';
       goal.planningRequest = { message, basedOnRevision: goal.revision };
+      proposeTeam(goal);
       goal.verification = null; goal.integration = null; goal.publication = null;
       emit('revision_requested', { basedOnRevision: goal.revision }); break;
     }
@@ -272,6 +275,7 @@ export function transition(before, command, authority) {
       goal.generation++; goal.revision++; goal.approvedRevision = null;
       goal.contracts.push({ revision: goal.revision, contract });
       goal.tasks = contract.tasks.map((task) => ({ ...task, status: 'pending', candidateSha: null, candidateBase: null, integratedSha: null, repairCount: 0, repairLimit: 2 }));
+      proposeTeam(goal);
       goal.status = 'awaiting_approval'; goal.verification = null; goal.integration = null; goal.publication = null;
       goal.finalRepairCount = 0; goal.finalRepairLimit = 2;
       emit('contract_published', { revision: goal.revision }); break;
@@ -281,7 +285,11 @@ export function transition(before, command, authority) {
       requireValue(goal.status === 'awaiting_approval' && integer(input.revision, 1) === goal.revision, 'Approval target changed', 'STALE_TARGET');
       requireValue(acceptedReview(goal, planTarget(goal), 'plan'), 'Independent plan review must accept this revision', 'REVIEW_REQUIRED');
       requireValue(!goal.attempts.some((attempt) => attempt.generation !== goal.generation && ownsWorker(attempt)), 'Replaced workers need reconciliation', 'OWNERSHIP_UNCERTAIN');
+      if (goal.team) { requireValue(goal.team.revision === goal.revision && goal.team.assignments.every(assignment => assignment.profileId), 'Choose the proposed team before approval', 'NOT_READY'); goal.team.approved = true; }
       goal.approvedRevision = goal.revision; goal.status = 'building'; emit('goal_approved', { revision: goal.revision }); break;
+    }
+    case 'override_assignment': {
+      requireAuthority(authority, 'user'); overrideAssignment(goal, input.key, input.profileId, command.id); emit('team_assignment_changed', { key: text(input.key, 200), profileId: identifier(input.profileId) }); break;
     }
     case 'request_attempt': {
       requireValue(!goal.startup || goal.startup.status === 'ready', 'Fetch the goal base before planning', 'NOT_READY');
@@ -337,6 +345,7 @@ export function transition(before, command, authority) {
       requireValue(!goal.attempts.some((attempt) => attempt.conversationId === conversationId), 'Independent attempts require fresh conversation identities');
       /** @type {Attempt} */
       const attempt = { id, operationId, role, mode, taskId, target, generation: goal.generation, revision: goal.revision, status: 'queued', workerState: 'pending', identity: null, baseSha: role === 'reviewer' && !target.startsWith('contract:') ? target : goal.integrationHead, worktree: null, branch: null, conversationId, error: null };
+      const assignment = assignmentFor(goal, role, taskId); if (assignment) attempt.assignment = assignment;
       goal.attempts.push(attempt); intent('launch', operationId, id, { role, mode, target, taskId }); emit('attempt_queued', { attemptId: id, role }); break;
     }
     case 'resume_planner': {
