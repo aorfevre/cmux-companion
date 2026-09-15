@@ -420,45 +420,49 @@ ready for evaluation; their deferral does not block implementation or replace
 the acceptance criteria above.
 
 
-## Automatic plan revision amendment — 2026-09-15
+## Automatic review repair and optional plan review — 2026-09-15
 
-Outcome: ordinary blocking plan-review findings are handled by the planner and
-reviewer without asking the user to copy review feedback. The user approved this
-loop in conversation; final approval before implementation remains mandatory.
+Outcome: blocking review findings return automatically to the responsible planner
+or repair agent. The user approved this behavior and clarified that Settings must
+allow skipping plan review for simple goals, not disabling repair of reviews.
 
-User journey: after a plan review requests changes, Companion waits for all
-workers and result submissions to settle, then requests a fresh planner revision
-with the prior contract and recorded findings. The new plan receives a fresh
-independent review. At most two automatic revisions run per manual planning cycle.
-An accepted plan waits for explicit user approval; it never starts implementation.
-If the planner needs a scope/requirements decision, its existing clarification
-flow asks the user and pauses. Exhausted revision budget, execution failures,
-unknown ownership and unrelated holds stay visible for human intervention.
+User journey: Settings → Agents has “Review plans before approval”, enabled by
+default. Off skips new initial plan reviews; the user still explicitly approves
+the exact plan and verification commands before implementation. The setting is
+live for unapproved plans and never cancels an already-running review. Existing
+blocking plan findings must still be repaired and re-reviewed even if the setting
+is subsequently disabled. Task and final integration review remain mandatory.
 
-Settings → Agents includes “Automatically revise plans after review”, enabled by
-default. Switching it off prevents new automatic revisions on existing and future
-goals; it does not terminate active work, bypass independent review, or approve
-anything. Manual Request revision stays available and starts a new bounded cycle.
-Changing the setting takes effect without restarting the service. Initial plan
-review remains automatic and required. This toggle does not disable plan review.
+Every completed rejecting review automatically initiates bounded repair after
+workers and pending results settle. Plan rejection requests a fresh planner
+revision with the prior contract and recorded findings, then a fresh independent
+review. At most two automatic plan revisions run per manual planning cycle.
+Task/final review rejection uses existing repair counters, limits and independent
+re-review. Automation never increases any repair budget. Manual Request revision
+resets the plan repair budget. An accepted plan waits for user approval.
 
-Non-goals: automatic implementation approval, execution/task repair, publication,
-merge/deploy, review bypass, or recovery of unrelated failures. No installed state
-is mutated by the implementation/testing task.
+Execution/check failures, unknown ownership, unrelated holds and exhausted budgets
+remain on hold for human intervention. If the planner needs a scope or requirements
+decision it uses the existing clarification flow and pauses. Goal abort, repository
+allow-lists and service suspension remain authoritative. Existing eligible review
+holds can progress under the same bounds after deployment; tests use disposable
+state only, never installed goals.
+
+Non-goals: automatic user approval, execution/check failure retry, changing scope,
+publication, merge/deploy, or skipping task/final review.
 
 Acceptance criteria and verification:
-- Only a current rejected plan, with a solely matching review hold and stopped
-  workers/results, can auto-revise. Verify with domain/scheduler rejection tests.
-- Two revisions maximum, durable across restart; manual revision resets the
-  budget and accepted plans still need user approval. Verify with persisted
-  planning lifecycle tests including duplicate ticks and stale review targets.
-- Context retains the prior plan/findings; clarification pauses the loop. Verify
-  with role-context and clarification tests.
-- Settings persists and applies live; disabling prevents another revision while
-  retaining manual review/approval safeguards. Verify settings API and UI tests.
-- Users can see automatic revision progress and exhaustion. Verify the goal
-  projection/UI and a disposable-service Cypress journey.
+- Only current rejected reviews with solely matching review holds and settled
+  workers/results auto-repair. Verify domain/scheduler rejection and stale tests.
+- Two plan revisions maximum; existing task/final limits are never increased.
+  Budgets survive restart and duplicate ticks. Verify persisted lifecycle tests.
+- Prior plans/findings reach the repair worker; clarification pauses dispatch.
+  Verify prompt-context and clarification tests.
+- The plan-review toggle persists and applies live; disabling cannot bypass an
+  active review's findings, task review or final review. Verify settings/API tests.
+- Users see repair progress/exhaustion, and still approve the final plan. Verify
+  UI tests and a disposable-service Cypress review/approval journey.
 
-Success measure: a rejected plan can reach user approval through at most two
-revision/review cycles without manual feedback copying and without an implementer
-starting before that approval.
+Success measure: ordinary review rejections reach a fresh review without manual
+feedback copying within existing budgets, and no implementer starts without the
+user approving the exact final plan.
