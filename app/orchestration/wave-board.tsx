@@ -12,6 +12,7 @@ export function WaveBoard({ goal }: { goal: Goal }) {
       <p>{task.dependsOn.length ? `Depends on ${task.dependsOn.join(', ')}` : 'Independent task'}</p>
       <small>{goal.attempts.filter(attempt => attempt.current && attempt.taskId === task.id).map(attempt => `${attempt.role}: ${attempt.status}`).join(' · ') || 'Agent not assigned yet'}</small>
       {['failed', 'repair_required'].includes(task.status) && <p className="orch-attention">Needs attention · {task.status.replaceAll('_', ' ')}</p>}
+      <details><summary>Ownership & evidence</summary><p>Owned areas: {task.ownedAreas?.join(', ') || 'Not recorded'}</p>{Boolean(task.resources?.length) && <p>Shared resources: {task.resources.join(', ')}</p>}<p>Acceptance: {task.criterionIds?.join(', ') || 'Not recorded'}</p>{task.candidateSha && <p>Candidate <code>{task.candidateSha.slice(0, 12)}</code></p>}{task.integratedSha && <p>Integrated at <code>{task.integratedSha.slice(0, 12)}</code></p>}</details>
       {!wave.current && !wave.checkedHead && <p>Waiting for the prior wave barrier</p>}
     </article>)}</div>
   </section>)}</section>;

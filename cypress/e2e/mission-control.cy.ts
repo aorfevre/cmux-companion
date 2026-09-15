@@ -61,4 +61,30 @@ describe('Mission Control navigation', () => {
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
   });
 
+  for (const width of [390, 1440]) it(`inspects activity and exact-head check output at ${width}px`, () => {
+    const headSha = 'a'.repeat(40), artifactId = 'b'.repeat(64);
+    const goal = { ...goals[1], lastActivity: { kind: 'pr_observed', createdAt: '2026-09-15T12:00:00Z' }, verification: { headSha, checks: [{ id: 'unit', passed: true, artifactId }] } };
+    cy.intercept('GET', '/api/orchestration/snapshot', { goals: [goal], cursor: 2, journalId: 'evidence', readOnly: true });
+    cy.intercept('GET', '/api/orchestration/goals/waiting', goal);
+    cy.intercept('GET', '/api/orchestration/goals/waiting/activity*', request => request.reply(request.url.includes('before=')
+      ? { events: [{ id: 1, kind: 'goal_created', createdAt: '2026-09-15T10:00:00Z', revision: 0, version: 1 }], nextBefore: null, historyPruned: false }
+      : { events: [{ id: 5, kind: 'publication_approved', createdAt: '2026-09-15T12:00:00Z', revision: 1, version: 5 }], nextBefore: 5, historyPruned: false }));
+    cy.intercept('GET', `/api/orchestration/goals/waiting/checks/${artifactId}`, { checkId: 'unit', headSha, code: '', stdout: '<script>unsafe()</script>\nAll checks passed.', stderr: '', truncated: false }).as('checkEvidence');
+    cy.viewport(width, 900); cy.visit('/orchestration');
+    cy.contains('.mission-last-activity', 'Pull request published').should('be.visible');
+    cy.findByRole('button', { name: 'Publish dashboard' }).click();
+    cy.findByRole('tab', { name: 'Activity' }).click();
+    cy.contains('PR publication approved').should('be.visible');
+    cy.findByRole('button', { name: 'Older activity' }).click(); cy.contains('Goal created').should('be.visible');
+    cy.findByRole('button', { name: 'Newer activity' }).click(); cy.contains('PR publication approved').should('be.visible');
+    cy.screenshot(`goal-activity-${width}`, { capture: 'fullPage' });
+    cy.findByRole('tab', { name: 'Run report' }).click();
+    cy.get('@checkEvidence.all').should('have.length', 0);
+    cy.findByRole('button', { name: 'Inspect check output' }).click(); cy.wait('@checkEvidence');
+    cy.findByLabelText('Check output').should('contain.text', '<script>unsafe()</script>').and('contain.text', 'All checks passed.');
+    cy.findByLabelText('Check output').find('script').should('not.exist');
+    cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
+    cy.screenshot(`goal-report-${width}`, { capture: 'fullPage' });
+  });
+
 });

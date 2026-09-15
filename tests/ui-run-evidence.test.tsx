@@ -1,0 +1,53 @@
+import { afterEach, expect, test, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { GoalActivity } from '../app/orchestration/goal-activity';
+import { CheckEvidence } from '../app/orchestration/check-evidence';
+import { GoalFleet } from '../app/orchestration/goal-fleet';
+import { goalView } from '../server/orchestration/domain/state-view.mjs';
+import { fixture } from './helpers/orchestration/domain-fixture.mjs';
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+const reply = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
+const event = (id: number, kind: string) => ({ id, kind, createdAt: '2026-09-15T12:00:00Z', revision: 1, version: id });
+test('activity pages newer and older decisions, handles errors and identifies retained history', async () => {
+  let failed = true;
+  const fetch = vi.fn(async (input: string) => failed ? reply({ error: 'Activity unavailable' }, 503) : reply(input.includes('before=') ? { events: [event(1, 'goal_created')], nextBefore: null, historyPruned: true } : { events: [event(5, 'goal_approved')], nextBefore: 5, historyPruned: false }));
+  vi.stubGlobal('fetch', fetch);
+  render(<GoalActivity goalId="goal" version={5} />);
+  await screen.findByText('Activity unavailable'); failed = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry activity' }));
+  await screen.findByText('Plan and team approved');
+  fireEvent.click(screen.getByRole('button', { name: 'Older activity' }));
+  await screen.findByText('Goal created'); expect(screen.queryByText('Plan and team approved')).toBeNull();
+  expect(screen.getByText(/Older journal history may have expired/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Newer activity' }));
+  await screen.findByText('Plan and team approved');
+});
+test('a response for an earlier goal cannot replace the current activity page', async () => {
+  let release!: (value: Response) => void;
+  vi.stubGlobal('fetch', vi.fn((path: string) => path.includes('/first/') ? new Promise<Response>(resolve => { release = resolve; }) : Promise.resolve(reply({ events: [], nextBefore: null, historyPruned: false }))));
+  const view = render(<GoalActivity goalId="first" version={1} />);
+  await waitFor(() => expect(release).toBeTypeOf('function'));
+  view.rerender(<GoalActivity goalId="second" version={1} />);
+  await screen.findByText('No retained activity yet.');
+  release(reply({ events: [event(1, 'goal_created')], nextBefore: null, historyPruned: false }));
+  await waitFor(() => expect(screen.queryByText('Goal created')).toBeNull());
+});
+test('check evidence is fetched only on inspection and output is escaped, bounded and retryable', async () => {
+  let failed = true;
+  const fetch = vi.fn(async () => failed ? reply({ error: 'Evidence unavailable' }, 503) : reply({ checkId: 'unit', headSha: 'a'.repeat(40), code: 'EXIT_FAILED', stdout: '<script>unsafe()</script>', stderr: 'check failed', truncated: true }));
+  vi.stubGlobal('fetch', fetch);
+  const view = render(<CheckEvidence goalId="goal" artifactId="proof" />);
+  expect(fetch).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect check output' }));
+  await screen.findByText('Evidence unavailable'); failed = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry evidence' }));
+  await screen.findByText(/<script>unsafe/); expect(view.container.querySelector('script')).toBeNull();
+  expect(screen.getByText('Output shortened to 256 KiB per stream.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Hide check output' }));
+  expect(screen.queryByLabelText('Check output')).toBeNull();
+});
+test('fleet shows the last recorded meaningful action without inventing elapsed progress', () => {
+  render(<GoalFleet goals={[{ ...goalView(fixture().goal), lastActivity: { kind: 'contract_published', createdAt: '2026-09-15T12:00:00Z' } }]} select={vi.fn()} projectName={() => 'Example'} />);
+  expect(screen.getByText(/Design and plan proposed/)).toBeTruthy();
+  expect(document.querySelector('time')?.getAttribute('dateTime')).toBe('2026-09-15T12:00:00Z');
+});

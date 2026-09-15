@@ -99,3 +99,13 @@
 .mission-team-row select { min-width: 0; width: 100%; }
 .mission-team-row label { margin: 0; }
 @media (max-width: 900px) { .mission-team-row { grid-template-columns: minmax(0, 1fr); gap: 10px; } }
+
+.mission-activity { list-style:none; padding:0; margin:0; }
+.mission-activity li { display:flex; flex-wrap:wrap; align-items:start; justify-content:space-between; gap:12px; padding:16px 0; border-bottom:1px solid var(--line); }
+.mission-activity li>div { display:grid; gap:5px; }
+.mission-activity time,.mission-activity small,.mission-last-activity { color:var(--muted); font-size:12px; }
+.mission-check-evidence { margin:8px 0 20px; }
+.mission-check-evidence pre { max-height:360px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:16px; border-radius:8px; background:#101813; color:#e1e8df; }
+
+.mission-control.orchestration { max-width:none; margin:0; padding:0; }
+.orchestration .orch-detail h1 { font-size:28px; line-height:1.25; margin:8px 0 16px; }

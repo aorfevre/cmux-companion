@@ -178,7 +178,7 @@ test('wave board exposes dependencies, failures and checked barriers', async () 
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const base = goalView(fixture().goal);
-  const goal = { ...base, tasks: (['integrated', 'running', 'in_review', 'failed'] as const).map((status, i) => ({ id: String(i), title: `Task ${i}`, status, dependsOn: i ? ['0'] : [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
+  const goal = { ...base, tasks: (['integrated', 'running', 'in_review', 'failed'] as const).map((status, i) => ({ id: String(i), title: `Task ${i}`, status, dependsOn: i ? ['0'] : [], ownedAreas: [], criterionIds: [], resources: [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
   render(<WaveBoard goal={goal} />);
   expect(screen.getByRole('heading', { name: 'Tasks' })).toBeTruthy();
   expect(screen.getAllByText('Depends on 0')).toHaveLength(3);
@@ -349,7 +349,7 @@ test('wave view shows the active barrier, waiting tasks and retained checked out
     { id: 'first', title: 'Foundation', taskIds: ['A'], checkIds: ['foundation'], number: 1, current: false, checkedHead: 'a'.repeat(40) },
     { id: 'second', title: 'Delivery', taskIds: ['B'], checkIds: ['all'], number: 2, current: true, checkedHead: null },
     { id: 'third', title: 'Follow-up', taskIds: ['C'], checkIds: ['all'], number: 3, current: false, checkedHead: null },
-  ], tasks: ['A', 'B', 'C'].map((id, index) => ({ id, title: id, status: 'pending' as const, dependsOn: index ? ['A'] : [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
+  ], tasks: ['A', 'B', 'C'].map((id, index) => ({ id, title: id, status: 'pending' as const, dependsOn: index ? ['A'] : [], ownedAreas: [], criterionIds: [], resources: [], candidateSha: null, integratedSha: null, repairCount: 0, repairLimit: 2 })) };
   render(<WaveBoard goal={goal} />);
   expect(screen.getByText('Wave 1 of 3 · Verified')).toBeTruthy();
   expect(screen.getByText('Wave 2 of 3 · Current')).toBeTruthy();

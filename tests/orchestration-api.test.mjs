@@ -142,3 +142,48 @@ test('team configuration cannot be forged and only paired writable users can ove
   assert.equal((await readonly.app.inject({ method: 'POST', url, headers: HEADERS, payload: override })).statusCode, 403);
   assert.equal(readonly.store.get('goal').version, 3);
 });
+
+test('activity is paired, goal-scoped, paginated metadata and passive merge polling does not replace meaningful activity', async t => {
+  const { app, service, store } = await apiFixture(t);
+  service.execute(create, { kind: 'user' });
+  service.execute({ ...create, id: 'other', goalId: 'other' }, { kind: 'user' });
+  for (let index = 0; index < 55; index++) service.execute({ id: `rename_${index}`, goalId: 'goal', expectedVersion: store.get('goal').version, type: 'rename_goal', payload: { title: `Title ${index}` } }, { kind: 'user' });
+  store.db.prepare('INSERT INTO events(goal_id,version,generation,revision,command_id,kind,payload,created_at) VALUES (?,?,?,?,?,?,?,?)').run('goal', 56, 1, 0, 'sync', 'merge_sync_observed', '{"private":"hidden"}', '2099-01-01T00:00:00Z');
+  const path = '/api/orchestration/goals/goal/activity';
+  assert.equal((await app.inject({ url: path })).statusCode, 401);
+  const first = (await app.inject({ url: path, headers: HEADERS })).json();
+  assert.equal(first.events.length, 50); assert.equal(first.events[0].kind, 'merge_sync_observed');
+  assert.ok(first.events.every(event => event.goalId === 'goal' && !('payload' in event) && !('commandId' in event)));
+  const second = (await app.inject({ url: `${path}?before=${first.nextBefore}`, headers: HEADERS })).json();
+  assert.equal(second.events.length, 7); assert.equal(second.events.at(-1).kind, 'goal_created'); assert.equal(second.nextBefore, null);
+  assert.ok(second.events.every(event => event.id < first.nextBefore));
+  for (const before of ['0', '-1', 'NaN', '1.5']) assert.equal((await app.inject({ url: `${path}?before=${before}`, headers: HEADERS })).statusCode, 400);
+  assert.equal((await app.inject({ url: '/api/orchestration/goals/missing/activity', headers: HEADERS })).statusCode, 404);
+  const snapshot = (await app.inject({ url: '/api/orchestration/snapshot', headers: HEADERS })).json();
+  assert.equal(snapshot.goals.find(goal => goal.id === 'goal').lastActivity.kind, 'goal_renamed');
+  assert.equal(snapshot.goals.find(goal => goal.id === 'other').lastActivity.kind, 'goal_created');
+});
+
+test('check output is bound to the selected goal and exact head, bounded and excludes environment and agent envelopes', async t => {
+  const { app, service, store, artifacts } = await apiFixture(t, { resultIntake: true });
+  service.execute(create, { kind: 'user' });
+  service.execute({ ...create, id: 'other', goalId: 'other' }, { kind: 'user' });
+  const headSha = 'a'.repeat(40);
+  const evidence = { checkId: 'unit', headSha, environment: { secret: 'private-environment' }, activation: 'private-bridge', code: '', outcome: { stdout: '<script>unsafe()</script>', stderr: 'x'.repeat(262145) } };
+  const artifact = artifacts.put(JSON.stringify(evidence));
+  const goal = store.get('goal'); goal.verification = { headSha, checks: [{ id: 'unit', passed: true, artifactId: artifact.id }] };
+  store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(goal), goal.id);
+  const path = `/api/orchestration/goals/goal/checks/${artifact.id}`;
+  assert.equal((await app.inject({ url: path })).statusCode, 401);
+  assert.equal((await app.inject({ url: path.replace('/goal/', '/other/'), headers: HEADERS })).statusCode, 404);
+  const response = await app.inject({ url: path, headers: HEADERS }); assert.equal(response.statusCode, 200);
+  const body = response.json(); assert.equal(body.stdout, evidence.outcome.stdout); assert.equal(body.stderr.length, 262144); assert.equal(body.truncated, true);
+  assert.ok(!response.body.includes('private-environment')); assert.ok(!response.body.includes('private-bridge'));
+  goal.verification = null; goal.verificationRuns = [{ operationId: 'historical', result: { verification: { headSha, checks: [{ id: 'unit', passed: true, artifactId: artifact.id }] } } }];
+  store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(goal), goal.id);
+  assert.equal((await app.inject({ url: path, headers: HEADERS })).statusCode, 200);
+  goal.verificationRuns[0].result.verification.headSha = 'b'.repeat(40);
+  store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(goal), goal.id);
+  assert.equal((await app.inject({ url: path, headers: HEADERS })).statusCode, 409);
+  assert.equal((await app.inject({ url: `/api/orchestration/goals/goal/checks/${'f'.repeat(64)}`, headers: HEADERS })).statusCode, 404);
+});

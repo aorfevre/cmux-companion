@@ -148,6 +148,20 @@ export class OrchestrationStore {
       generation: Number(row.generation), revision: Number(row.revision), commandId: String(row.command_id),
       schemaVersion: Number(row.schema_version), kind: String(row.kind), payload: JSON.parse(String(row.payload)), createdAt: String(row.created_at) }));
   }
+  /** Public, goal-scoped journal metadata only; no private payloads.
+   * @param {string} goalId
+   * @param {{before?:number; limit?:number; meaningful?:boolean}} [options]
+   */
+  activity(goalId, { before = Number.MAX_SAFE_INTEGER, limit = 50, meaningful = false } = {}) {
+    identifier(goalId); integer(before, 1); integer(limit, 1);
+    requireValue(limit <= 100, 'Activity page is too large');
+    const rows = this.db.prepare(`SELECT id,goal_id,version,generation,revision,kind,created_at FROM events
+      WHERE goal_id=? AND id<? AND (?=0 OR kind!='merge_sync_observed') ORDER BY id DESC LIMIT ?`).all(goalId, before, Number(meaningful), limit + 1);
+    const events = rows.slice(0, limit).map(row => ({ id: Number(row.id), goalId: String(row.goal_id), version: Number(row.version),
+      generation: Number(row.generation), revision: Number(row.revision), kind: String(row.kind), createdAt: String(row.created_at) }));
+    return { events, nextBefore: rows.length > limit ? events.at(-1)?.id ?? null : null,
+      historyPruned: Number(this.db.prepare('SELECT floor FROM journal_meta WHERE id=1').get()?.floor ?? 0) > 0 };
+  }
   snapshot() {
     this.db.exec('BEGIN');
     try { const snapshot = { goals: this.list(), cursor: this.cursor() }; this.db.exec('COMMIT'); return snapshot; }

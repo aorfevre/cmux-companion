@@ -62,12 +62,36 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     return cleanup.execute({ goalId: /** @type {{id:string}} */ (request.params).id, expectedVersion: integer(input.expectedVersion), attemptId: identifier(input.attemptId) });
   });
   app.get(`${PREFIX}/snapshot`, async () => {
-    const snapshot = service.store.snapshot(); return { goals: snapshot.goals.map(goalView), cursor: snapshot.cursor, journalId: service.store.journalId, readOnly: Boolean(readOnly || suspension()) };
+    const snapshot = service.store.snapshot(); return { goals: snapshot.goals.map(goal => ({ ...goalView(goal), lastActivity: service.store.activity(goal.id, { limit: 1, meaningful: true }).events[0] ?? null })), cursor: snapshot.cursor, journalId: service.store.journalId, readOnly: Boolean(readOnly || suspension()) };
   });
   app.get(`${PREFIX}/goals/:id`, async (request) => {
     const id = /** @type {{id: string}} */ (request.params).id;
     const goal = service.store.get(id); requireValue(goal, 'Goal not found', 'NOT_FOUND');
     return { ...goalView(goal), contracts: goal.contracts };
+  });
+  app.get(`${PREFIX}/goals/:id/activity`, async request => {
+    const id = /** @type {{id:string}} */ (request.params).id;
+    const goal = service.store.get(id);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Goal is unavailable', 'NOT_FOUND');
+    const query = /** @type {{before?:string}} */ (request.query);
+    return service.store.activity(id, { ...(query.before === undefined ? {} : { before: Number(query.before) }) });
+  });
+  app.get(`${PREFIX}/goals/:id/checks/:artifactId`, async request => {
+    const { id, artifactId } = /** @type {{id:string;artifactId:string}} */ (request.params);
+    const goal = service.store.get(id);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Goal is unavailable', 'NOT_FOUND');
+    const verifications = [goal.verification, ...(goal.verificationRuns ?? []).map(run => run.result?.verification)].filter(Boolean);
+    const verification = verifications.find(entry => entry?.checks.some(check => check.artifactId === artifactId));
+    requireValue(verification, 'Check evidence is unavailable', 'NOT_FOUND');
+    requireValue(results, 'Check evidence is unavailable', 'NOT_READY');
+    const evidence = JSON.parse(results.artifacts.get(artifactId).toString('utf8'));
+    requireValue(evidence.headSha === verification.headSha && verification.checks.some(check => check.id === evidence.checkId && check.artifactId === artifactId), 'Check evidence target changed', 'STALE_TARGET');
+    // Explicit projection: never return the execution environment or agent result
+    // envelopes. Check output is displayed only on deliberate user inspection.
+    return { checkId: String(evidence.checkId), headSha: verification.headSha, code: typeof evidence.code === 'string' ? evidence.code : '',
+      stdout: typeof evidence.outcome?.stdout === 'string' ? evidence.outcome.stdout.slice(0, 262144) : '',
+      stderr: typeof evidence.outcome?.stderr === 'string' ? evidence.outcome.stderr.slice(0, 262144) : '',
+      truncated: [evidence.outcome?.stdout, evidence.outcome?.stderr].some(value => typeof value === 'string' && value.length > 262144) };
   });
   app.get(`${PREFIX}/goals/:id/references/:referenceId`, async (request, reply) => {
     const { id, referenceId } = /** @type {{id:string; referenceId:string}} */ (request.params);

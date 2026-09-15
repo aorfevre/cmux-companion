@@ -52,3 +52,25 @@ test('goal sections support arrow-key navigation and reveal evidence only in the
   expect(overview.getAttribute('aria-selected')).toBe('true');
   expect(screen.queryByText('No review or verification evidence yet')).toBeNull();
 });
+
+test('fleet distinguishes active verification and task review from implementation while retaining the held stage', () => {
+  const f = fixture(); f.approve();
+  const goal = goalView(f.goal);
+  expect(goalStage(goal)).toBe('In progress');
+  goal.tasks[0].status = 'in_review'; expect(goalStage(goal)).toBe('Review');
+  goal.tasks[1].status = 'running'; expect(goalStage(goal)).toBe('In progress');
+  goal.verificationRuns = [{ operationId: 'check', headSha: goal.integrationHead, revision: goal.revision, current: true, waveId: null, status: 'pending', workerState: 'pending', verification: null }];
+  expect(goalStage(goal)).toBe('Verification');
+  goal.verificationRuns = []; goal.hold = { id: 'hold', reasons: [{ kind: 'verification', target: 'check', message: 'Tests failed' }] };
+  expect(goalStage(goal)).toBe('Verification');
+});
+test('wave inspection exposes task ownership, acceptance and integrated evidence', () => {
+  const f = fixture(); f.approve();
+  const goal = { ...goalView(f.goal), contracts: f.goal.contracts };
+  goal.tasks[0].candidateSha = 'b'.repeat(40); goal.tasks[0].integratedSha = 'c'.repeat(40);
+  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Waves & sessions' }));
+  expect(screen.getByText('Owned areas: src/a.mjs')).toBeTruthy();
+  expect(screen.getAllByText('Acceptance: works')).toHaveLength(3);
+  expect(screen.getByText('cccccccccccc')).toBeTruthy();
+});

@@ -351,3 +351,38 @@ The updater browser journey passed separately. Its initial combined run correctl
 stayed busy because onboarding had created live fixture work; isolation removed
 the cross-suite state without weakening the updater fence. Installed/native live
 paths remain unrun. Final redesign coverage is still pending.
+
+
+## Activity, ownership and run evidence
+
+Fleet rows show the most recent retained meaningful journal event; routine merge
+poll observations do not replace it. Activity pages list newest-first goal-scoped
+metadata with older/newer navigation and explicit retention limits. Private event
+payloads are not exposed. Wave task inspection now includes ownership, shared
+resources, acceptance IDs and candidate/integrated commits. Verification stages
+follow actual pending checks and held failures instead of guessing from task counts.
+
+Run reports include current/historical verification status and exact-head check
+output on deliberate inspection, plus background integration status/results.
+Evidence access requires pairing, an allowed goal repository and an artifact
+referenced by that goal's checks; the artifact hash and check/head binding are
+verified. Only bounded stdout/stderr and check metadata are returned, excluding
+execution environments and agent envelopes. React escapes output; scripts remain
+text. Goal details now start directly below navigation without a redundant fleet
+heading or creation control.
+
+Checks: 31 API/storage tests passed, including pagination, retention, restart,
+private-payload exclusion, cross-goal denial, exact-head mismatch and output bounds.
+Full verify passed with 836 backend tests (one intentional skip), 155 UI, lint,
+types and build. Backend line coverage 97.18%; UI line coverage 95.09%. All 11
+Mission Control/workspace/provider/model Cypress journeys passed; final responsive
+Activity/output screenshots were inspected at 390 and 1440 pixels. Writable
+real-service orchestration passed both applicable journeys; read-only mode passed
+its dedicated journey. Opposite-mode cases are intentionally skipped in each run.
+
+The user subsequently authorized real goals in the test-only cmux-e2e-cypress
+repository. Evaluation uses an isolated clone and private temporary service state;
+installed state and the original checkout are unchanged. The first real startup
+exposed missing GitHub authentication in the isolated HTTPS transport. A fixed,
+GitHub-only gh credential helper and explicit startup retry allowed the same saved
+goal to reach a visible Codex planner. Native evaluation remains in progress.

@@ -10,7 +10,7 @@ import { ProjectPicker } from './project-picker';
 import { GoalDetail } from './goal-detail';
 import { GoalFleet } from './goal-fleet';
 
-export type Goal = ReturnType<typeof goalView>;
+export type Goal = ReturnType<typeof goalView> & { lastActivity?: { kind: string; createdAt: string } | null };
 export type Action = Goal['actions'][number];
 type Snapshot = { goals: Goal[]; cursor: number; journalId: string; readOnly: boolean };
 type Configuration = { suspensionReason?: string | null; readOnly: boolean; terminal: boolean; limits: { global: number; perGoal: number; planners: number }; capabilities: { role: string; mode: string }[]; repositories: { id: string; name?: string; devRepoName?: string; github?: string; enabled?: boolean; setupLabel?: string; baseSha: string | null; baseBranch: string | null; error: string | null }[] };
@@ -117,7 +117,7 @@ export function GoalBoard() {
   return <MissionShell className="orchestration" active={needsOnly ? 'needs' : 'goals'}>
     <header className="orch-header"><a href="/">cmux companion</a><span role="status">{auth === 'paired' ? connected ? 'Live updates' : 'Reconnecting · polling' : 'Connect your Mac'}</span></header>
     {discoveryNotice && <p role="status">{discoveryNotice} <a href="/settings#dev-repos">Review Dev repos</a></p>}
-    <div className="orch-heading"><div><p className="orch-eyebrow">{selected ? "GOAL WORKSPACE" : needsOnly ? "DECISIONS / INBOX" : "OPERATIONS / FLEET"}</p><h1>{selected ? "Goal workspace" : needsOnly ? "Needs You" : "Mission Control"}</h1><p>{selected ? "Plan, supervise and review delivery." : needsOnly ? "Questions, approvals and recovery decisions." : "Every goal, decision and active worker in one place."}</p></div></div>
+    {!selected && <div className="orch-heading"><div><p className="orch-eyebrow">{selected ? "GOAL WORKSPACE" : needsOnly ? "DECISIONS" : "OPERATIONS / FLEET"}</p><h1>{selected ? "Goal workspace" : needsOnly ? "Needs You" : "Mission Control"}</h1><p>{selected ? "Plan, supervise and review delivery." : needsOnly ? "Questions, approvals and recovery decisions." : "Every goal, decision and active worker in one place."}</p></div></div>}
     {connectionError && <div role="alert" className="orch-error"><p>{connectionError}</p><button onClick={() => void refresh()}>Try again</button></div>}
     {!selected && <>{error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}</>}
     {auth === 'unpaired' ? <form className="orch-card" onSubmit={async event => {
@@ -127,9 +127,9 @@ export function GoalBoard() {
     }}><h2>Pair this device</h2><label>Pairing code<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></label><button disabled={busy}>Pair this device</button></form> : auth === 'unavailable' ? <section className="orch-card"><h2>Goals are unavailable</h2><p>Check your connection to the Mac and try again. If this is a new installation, complete <a href="/onboarding">goal setup</a>.</p></section> : auth === 'loading' ? <p>Connecting to your Mac…</p> : <>
       {readOnly && <p className="orch-banner">{configuration?.suspensionReason || 'Read-only mode · controls are disabled.'}</p>}
       {!selected && pendingRecovery}
-      <details className="orch-capacity"><summary>Execution capacity</summary>{configuration?.limits.global} execution agents · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</details>
+      {!selected && <details className="orch-capacity"><summary>Execution capacity</summary>{configuration?.limits.global} execution agents · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</details>}
       {Boolean(configuration?.repositories.length) && !configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Your planning agent is not ready. <a href="/settings#agents">Choose an agent</a> to start a goal.</p>}
-      <button ref={createButton} className="primary-button" aria-expanded={creating} aria-controls="goal-create" disabled={disabled} onClick={() => setCreating(true)}>Start a goal</button>
+      {!selected && <button ref={createButton} className="primary-button" aria-expanded={creating} aria-controls="goal-create" disabled={disabled} onClick={() => setCreating(true)}>Start a goal</button>}
       {creating && (configuration?.repositories.length ? <form id="goal-create" className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo || disabled) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { ...(title.trim() ? { title: title.trim() } : {}), description: brief, ...(attachments.length ? { attachments } : {}), repositoryId: chosenRepo.id, baseBranch: baseBranch.trim() || 'main' } }); }}>
         <h2 ref={createHeading} tabIndex={-1}>Start a goal</h2><p>The agent will inspect the project and propose a plan with suitable verification checks.</p><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<ProjectPicker repositories={configuration.repositories} selected={repository} onSelect={setRepository} disabled={disabled} />
         <p className="project-context">Starts from freshly fetched {baseBranch.trim() || 'main'} in an isolated worktree.</p><details><summary>Advanced</summary><label>Base branch<input value={baseBranch} onChange={event => setBaseBranch(event.target.value)} disabled={disabled} placeholder="main" /></label></details>
