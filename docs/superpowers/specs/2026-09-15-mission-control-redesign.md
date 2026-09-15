@@ -87,7 +87,8 @@ Needs You collects goal questions, approvals and manual recovery decisions.
 Standalone sessions retain session listing, terminal inspection and deliberate
 terminal input. Native CLI interactions remain possible in their cmux sessions.
 The separate native-permission Inbox, prompt queues, local-app previews and
-notification product surfaces are retired. Remove their unused routes, jobs,
+legacy notification product surfaces are retired. The browser-local update-notice
+settings specified below are retained as a new bounded surface. Remove unused routes, jobs,
 storage ownership and UI code, while retaining shared functionality still needed
 by execution, session control, pairing or updates.
 
@@ -182,6 +183,57 @@ counts as completion. Authentication/network errors preserve the prior state and
 surface sync status; retry on the normal cadence without holding up other goals.
 Remove completed items from the waiting poll set. Never merge or deploy as an
 effect of polling. GitHub merge is exclusively an external user action.
+
+## Notification settings amendment — pending human review
+
+### Outcome and user journey
+
+Setup gains a Notifications category at `/settings#notifications`. A paired user
+can choose whether this browser shows update-available banners, then navigate to
+Goals or Sessions and see that choice applied. The page labels the scope as
+"This browser" and explains that notices appear while Companion is open.
+
+The "Update available notices" switch defaults to on, preserving current behavior.
+Changes save immediately on this browser, survive reload, and synchronize across
+open tabs on the same origin. A failed browser-storage write shows an error and
+keeps the previously saved choice. Malformed or missing stored preferences use
+the default. A "Show test notice" button previews the in-app presentation without
+claiming a real update exists or changing the dismissed candidate.
+
+Disabling notices hides only optional update-available banners. Update discovery,
+automatic installation, the update status page, errors, approval questions and
+recovery messages remain available. "Later" continues to dismiss just the current
+candidate on this browser. Re-enabling notices respects that dismissal; a newer
+candidate can appear. Notification preferences do not alter Mac-wide settings.
+
+### Non-goals and boundaries
+
+Background Web Push, OS notifications, permission prompts, sounds, quiet hours,
+email, notification history and new agent-event delivery are outside this initial
+slice. Do not show switches for unsupported delivery channels. The page explains
+that background notifications are not available. No new API, backend storage,
+service worker subscription, external service, credential or schema is required.
+A future background delivery feature requires its own privacy and delivery design.
+
+### Acceptance criteria
+
+| Criterion | Primary verification |
+| --- | --- |
+| Notifications is discoverable in Setup and directly linkable on desktop and phone. | Responsive Cypress settings navigation journey. |
+| The enabled default displays eligible update notices and disabling persists after reload. | Cypress preference-to-banner journey with a disposable update fixture. |
+| Changes synchronize between mounted consumers and browser tabs. | UI regression dispatching same-document and storage change events. |
+| Invalid stored data falls back safely; failed saves report failure without claiming success. | UI storage-failure and malformed-preference regression. |
+| Test notice is dismissible and cannot fabricate or approve an update. | UI test covering preview dismissal and absence of updater mutations. |
+| Candidate dismissal survives off/on; a new candidate can notify. | Update-notice UI regression covering candidate transitions. |
+| Notification preferences do not change automatic installation or hide required workflow/error feedback. | UI integration regression with updater state and error feedback. |
+
+Success measure: the responsive browser journey changes the preference, reloads,
+and confirms the expected banner visibility without any updater preference write.
+Run `npm run verify` and the relevant local Cypress journey for implementation.
+
+This amendment is proposed following the request to add notification settings;
+it requires human review after its spec commit and before an implementation plan
+commit, as required by AGENTS.md. It does not reinstate retired legacy channels.
 
 ## Updater, data and cleanup boundaries
 
