@@ -6,7 +6,7 @@ import { request } from './api-request';
 
 type Candidate = { sha: string; changesUrl: string };
 type UpdateRequest = { id: string; sha: string; source: 'manual' | 'automatic'; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'recovery_required'; phase: string; error: string | null };
-export type Updates = { available: boolean; revision: number; automatic: boolean; candidate: Candidate | null; observedSha: string | null; deployedSha: string | null; lastCheckAt: string | null; checkError: string | null; checking: boolean; maintenance: boolean; request: UpdateRequest | null };
+export type Updates = { blockers?: string[]; available: boolean; revision: number; automatic: boolean; candidate: Candidate | null; observedSha: string | null; deployedSha: string | null; lastCheckAt: string | null; checkError: string | null; checking: boolean; maintenance: boolean; request: UpdateRequest | null };
 const endpoint = '/api/updater/updates';
 function useUpdates() {
   const [status, setStatus] = useState<Updates | null>(null);
@@ -56,21 +56,22 @@ export function UpdateSettings({ readOnly }: { readOnly?: boolean }) {
       {readOnly === undefined && <label className="update-toggle"><input type="checkbox" checked={unlocked} onChange={event => setUnlocked(event.target.checked)} />Allow update changes on this device</label>}
       {readOnly === true && <p>Turn off read-only protection to change updates.</p>}
       <label className="update-toggle"><input type="checkbox" role="switch" checked={status.automatic} disabled={busy || protectedMode} onChange={event => void mutate('/api/updater/preferences', { revision: status.revision, automatic: event.target.checked }, 'PATCH')} />Automatic installation</label>
-      <p>Off by default. When enabled, install updates that pass CI once agents are idle. Companion briefly reconnects.</p>
+      <p>Off by default. When enabled, install updates that pass CI once Companion can restart safely. Existing cmux sessions and supported planning terminals remain open; Companion briefly reconnects.</p>
       {candidate ? <div className="update-candidate"><p>Update available: <code>{candidate.sha.slice(0, 7)}</code> · <a href={candidate.changesUrl} target="_blank" rel="noreferrer">View changes</a></p>
-        {!active && <div className="update-actions"><button type="button" disabled={busy || protectedMode} onClick={() => setConfirmation({ candidate, whenIdle: false, id: crypto.randomUUID() })}>{status.request?.status === 'failed' && status.request.sha === candidate.sha ? 'Retry update' : 'Update now'}</button><button type="button" disabled={busy || protectedMode} onClick={() => setConfirmation({ candidate, whenIdle: true, id: crypto.randomUUID() })}>Update when idle</button></div>}
+        {!active && <div className="update-actions"><button type="button" disabled={busy || protectedMode} onClick={() => setConfirmation({ candidate, whenIdle: false, id: crypto.randomUUID() })}>{status.request?.status === 'failed' && status.request.sha === candidate.sha ? 'Retry update' : 'Update now'}</button><button type="button" disabled={busy || protectedMode} onClick={() => setConfirmation({ candidate, whenIdle: true, id: crypto.randomUUID() })}>Update when ready</button></div>}
       </div> : !status.checkError && <p>{status.observedSha && status.observedSha !== status.deployedSha ? 'A newer main commit is awaiting successful checks.' : 'No eligible updates available.'}</p>}
       {confirmation && <div className="update-confirmation" role="group" aria-label="Confirm update">
-        <p>Install commit <code>{confirmation.candidate.sha.slice(0, 7)}</code>{confirmation.whenIdle ? ' when agents finish' : ''}? Companion will briefly reconnect. Existing cmux sessions remain open.</p>
+        <p>Install commit <code>{confirmation.candidate.sha.slice(0, 7)}</code>{confirmation.whenIdle ? ' when Companion can restart safely' : ''}? Companion will briefly reconnect. Existing cmux sessions remain open.</p>
         <button type="button" disabled={busy || protectedMode} onClick={() => void mutate(status.request?.status === 'failed' && status.request.sha === confirmation.candidate.sha ? '/api/updater/retry' : '/api/updater/requests', { id: confirmation.id, sha: confirmation.candidate.sha, whenIdle: confirmation.whenIdle })}>{busy ? 'Requesting…' : 'Confirm installation'}</button>
         <button type="button" disabled={busy} onClick={() => setConfirmation(null)}>Cancel</button>
       </div>}
-      {status.request && <div className="update-request" aria-live="polite"><p>{status.request.status === 'queued' ? 'Waiting for agents and update checks' : status.request.status === 'cancelled' ? 'Queued update cancelled' : phaseLabels[status.request.phase] || status.request.phase} · <code>{status.request.sha.slice(0, 7)}</code></p>
+      {status.request && <div className="update-request" aria-live="polite"><p>{status.request.status === 'queued' ? 'Waiting to update' : status.request.status === 'cancelled' ? 'Queued update cancelled' : phaseLabels[status.request.phase] || status.request.phase} · <code>{status.request.sha.slice(0, 7)}</code></p>
         {status.request.source === 'automatic' && status.request.status === 'queued' && <p>Queued by automatic installation.</p>}
         {status.request.status === 'queued' && <button type="button" disabled={busy || protectedMode} onClick={() => void mutate('/api/updater/cancel', { id: status.request!.id })}>Cancel queued update</button>}
         {status.request.status === 'running' && !status.automatic && <p>This transaction has started and will finish or recover safely. Future automatic installations are off.</p>}
         {status.request.error && <p role="alert">{status.request.error}</p>}
       </div>}
+      {!!status.blockers?.length && <div aria-label="Update readiness"><p>Readiness checks (supported planners are verified during installation):</p><ul>{status.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul></div>}
       {status.checkError && <p role="alert">{status.checkError}</p>}
     </>}
     {notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}

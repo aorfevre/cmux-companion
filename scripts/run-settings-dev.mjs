@@ -50,7 +50,7 @@ export async function startSettingsDemo() {
     const cycle = async () => {
       await updateCycle({ control: updateControl, deployedSha: updateControl.status().deployedSha || base,
         discover: async deployedSha => { evidence.checks++; return { candidate: deployedSha === sha ? null : { sha, changesUrl: `https://github.com/example/disposable/compare/${base}...${sha}` }, deployedSha, observedSha: sha }; },
-        revalidate: async () => {}, maintenance: async id => existsSync(join(directory, 'updates-busy')) ? { ready: false } : maintenance.acquire(id), adapter });
+        revalidate: async () => {}, maintenance: async id => existsSync(join(directory, 'updates-busy')) ? { ready: false, reason: 'A goal repository fetch is still running' } : maintenance.acquire(id), adapter });
       await writeFile(join(directory, 'updates-evidence.json'), JSON.stringify(evidence), { mode: 0o600 });
     };
     await cycle();

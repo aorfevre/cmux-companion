@@ -194,3 +194,23 @@ test('publication approval and waiting for GitHub merge are idle, but publicatio
   goal.attempts.push({ workerState: 'unknown' });
   assert.equal((await f.maintenance.acquire('publication-idle')).ready, false);
 });
+
+test('read-only readiness names in-flight effects and clears after they settle without touching cmux', async t => {
+  const f = await fixture(t);
+  f.cmux.workspaceList = async () => { throw new Error('Do not inspect or stop cmux'); };
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const waiting = new Promise(resolve => { release = resolve; });
+  f.app.post('/api/held-change', async () => { entered(); await waiting; return {}; });
+  const change = f.send('/api/held-change', {}); await started;
+  const status = () => f.send('/api/updater/updates', undefined, 'GET');
+  assert.deepEqual((await status()).json().blockers, ['A Companion change request is still in progress']);
+  assert.equal(f.control.read().fence, null);
+  release(); await change;
+  assert.deepEqual((await status()).json().blockers, []);
+  f.control.request({ id: 'diagnostic-001', sha, whenIdle: true });
+  f.runtime.scheduler.startupJobs = new Map([['goal', Promise.resolve()]]);
+  assert.equal((await f.maintenance.acquire('diagnostic-001')).reason, 'A goal repository fetch is still running');
+  f.runtime.scheduler.startupJobs.clear();
+  assert.equal((await f.maintenance.acquire('diagnostic-001')).ready, true);
+});
