@@ -221,3 +221,29 @@ for (const stage of ['preparation', 'launch']) test(`provider ${stage} failure r
   if (stage === 'preparation') assert.equal(constructions, beforeRestart, 'durable stopped evidence does not require a provider reprobe');
   assert.equal(launches, stage === 'preparation' ? 0 : 1, 'restart never repeats delegated work');
 });
+
+test('saved-settings runtime passively observes only waiting PRs through their original destination', async t => {
+  const calls = [];
+  const { runtime, settings, path } = await fixture(t, { publisherFactory: ({ config, goalId }) => ({
+    publish: async () => { throw new Error('Passive observation must never publish'); },
+    observe: async () => { throw new Error('No pending publication'); },
+    observeMerge: async (input, pr) => { calls.push({ goalId, destination: config.project.github, input, pr }); return { ...pr, state: 'merged' }; },
+  }) });
+  const value = defaultSettings(); value.projects = [{ id: 'project', name: 'Project', path, enabled: true, github: 'example/original', remote: 'git@github.com:example/original.git', checks: [] }];
+  await settings.update(0, value); await runtime.settingsChanged();
+  const project = (await runtime.app.inject({ url: '/api/orchestration/configuration', headers })).json().repositories[0];
+  for (const id of ['waiting', 'already-merged']) {
+    settings.snapshotGoal(id, 'project');
+    runtime.store.apply({ id: `create-${id}`, goalId: id, expectedVersion: 0, type: 'create_goal', payload: { title: id, repositoryId: 'project', baseSha: project.baseSha } }, { kind: 'user' });
+    const goal = runtime.store.get(id);
+    runtime.store.apply({ id: `seed-${id}`, goalId: id, expectedVersion: goal.version, type: 'seed', payload: {} }, { kind: 'system' }, () => ({
+      goal: { ...goal, version: goal.version + 1, status: id === 'waiting' ? 'delivered' : 'merged', pr: { number: 7, url: 'https://github.com/example/original/pull/7', headSha: project.baseSha }, publication: { plan: { goalId: id, repositoryId: 'project' } } }, events: [], intents: [],
+    }));
+  }
+  value.projects[0].github = 'example/new-destination'; await settings.update(1, value);
+  await runtime.listen({ port: 0 });
+  await Promise.all(runtime.scheduler.merges.active.values());
+  assert.equal(runtime.store.get('waiting').status, 'merged');
+  assert.equal(calls.length, 1); assert.equal(calls[0].goalId, 'waiting'); assert.equal(calls[0].destination, 'example/original');
+  await runtime.scheduler.tick(); assert.equal(calls.length, 1, 'completed cards leave the polling set');
+});

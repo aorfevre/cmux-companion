@@ -124,7 +124,7 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | --- | --- |
 | Fleet stages, active wave and last activity | Fleet implemented; wave/activity projection still needed. |
 | Setup redesign and account usage | Existing implementation retained; redesign incomplete. |
-| Brief/files/images and authorized agent context | Implemented with private durable references, scoped agent reads and real-service Cypress. Full verification in progress. |
+| Brief/files/images and authorized agent context | Implemented with private durable references, scoped agent reads and real-service Cypress. Full verification passed. |
 | Combined planner/design with approved suggested team | Existing planner retained; role/routing contract changes pending. |
 | Explicit wave barriers with verification | Not implemented; current scheduler still uses task dependencies. |
 | All judgment agents visible in cmux | Production adapters launch all judgment roles through cmux; bounded noninteractive policy is retained internally. Adapter/UI/API checks passed; native live validation unverified. |
@@ -160,4 +160,16 @@ No merge, deployment, installed data reset or external account change performed.
   image/source uploads, authenticated safe download, recovery and publication.
   The first invocation omitted `--orchestration` and ran zero journeys (three
   pending); corrected invocation ran the real disposable service. Read-only-only
-  journey remains separately unverified. Full verification is in progress.
+  journey remains separately unverified. Full verification passed: 865 backend
+  tests passed, one intentional skip, 167 UI tests passed, lint/types/build passed.
+  The additional journal-restart reference test separately passed after that run
+  began.
+
+## Setup-backed merge synchronization correction
+
+The saved-settings publisher wrapper omitted `observeMerge`, silently disabling
+merge polling in the primary onboarding composition. It now delegates reads to
+the goal's saved publication adapter. A runtime regression changes workspace
+settings after goal creation, confirms the original GitHub destination is read,
+marks the waiting card merged, and proves already-merged cards are not queried.
+All 15 saved-settings/merge-sync tests passed. No GitHub writes or live calls ran.

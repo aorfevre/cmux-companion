@@ -139,7 +139,7 @@ export async function createSettingsRuntime({ settings, directory, token, create
         return resolveGoalCheck({ goal: runtime.store.get(goalId), repositoryId, check,
           env: environment(), environmentId: `settings-${config.revision}`, policy: config.execution });
       },
-      createPublisher: () => ({ publish: (input, options) => publication(input.goalId).publish(input, options), observe: input => publication(input.goalId).observe(input) }),
+      createPublisher: () => ({ observeMerge: (input, pr) => publication(input.goalId).observeMerge(input, pr), publish: (input, options) => publication(input.goalId).publish(input, options), observe: input => publication(input.goalId).observe(input) }),
     });
     const close = runtime.close.bind(runtime);
     runtime.close = async () => { await close(); for (const pending of owners.values()) (await pending).close(); owners.clear(); };
