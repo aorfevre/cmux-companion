@@ -52,7 +52,7 @@ jobs:
         run: node scripts/ci-verified-tree.mjs record
       - name: Save verification evidence
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verified-tree-${{ github.run_id }}-${{ github.run_attempt }}
           path: .ci-evidence/verified-tree.json
