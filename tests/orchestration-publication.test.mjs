@@ -317,7 +317,7 @@ for (const accepted of [false, true]) test(`GitHub promotion checks exact draft 
   } });
   const input = accepted ? { ...f.input, acceptedTargets: [{ id: 'accept', previousBaseSha: f.input.baseSha, baseHeadSha: f.input.headSha }] } : f.input;
   if (accepted) pr.base.sha = f.input.headSha;
-  await cli.ready(input, { beforeSend: () => false }); assert.equal(calls.length, 2);
+  assert.equal(await cli.ready(input, { beforeSend: () => false }), 'cancelled'); assert.equal(calls.length, 2);
   await cli.ready(input); assert.deepEqual(JSON.parse(calls.find(call => call.argv.includes('graphql')).input).variables, { id: 'PR_node' });
   pr.head.sha = f.repo.baseSha;
   await assert.rejects(cli.ready(f.input), { code: 'STALE_TARGET' });
@@ -368,4 +368,36 @@ test('observation refuses missing draft metadata and moved targets on open ready
   // Historical merged evidence survives normal target advancement.
   f.github.pulls[0].state = 'merged';
   assert.equal((await f.publisher.observe(f.input)).status, 'published');
+});
+
+test('observation rejects target advancement during GitHub inventory', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.publisher.publish(f.input)).status, 'published');
+  const find = f.github.find.bind(f.github);
+  f.github.find = async (...args) => {
+    await fixtureGit(f.repo.remote, ['update-ref', 'refs/heads/main', f.input.headSha]);
+    return find(...args);
+  };
+  const result = await f.publisher.observe(f.input);
+  assert.equal(result.status, 'unknown'); assert.equal(result.pr, null);
+  assert.equal(result.baseHeadSha, f.input.headSha);
+});
+
+test('closed drafts never prove delivery, while closed ready PRs retain historical evidence', async t => {
+  const f = await fixture(t);
+  f.publisher.failpoint = point => { if (point === 'pr_returned') throw new Error('pause before promotion'); };
+  await assert.rejects(f.publisher.publish(f.input), /pause before promotion/);
+  f.github.pulls[0].state = 'closed';
+  assert.equal((await f.publisher.observe(f.input)).status, 'unknown');
+  f.github.pulls[0].draft = false;
+  assert.equal((await f.publisher.observe(f.input)).status, 'published');
+});
+
+test('abort at the promotion send boundary returns cancellation and leaves the PR draft', async t => {
+  const f = await fixture(t), controller = new AbortController();
+  f.publisher.failpoint = point => { if (point === 'pr_ready') controller.abort(); };
+  const result = await f.publisher.publish(f.input, { signal: controller.signal });
+  assert.equal(result.status, 'cancelled'); assert.equal(result.pr, null);
+  assert.equal(f.github.pulls[0].draft, true); assert.equal(f.github.promotions.length, 0);
+  assert.equal((await f.publisher.publish(f.input, { signal: controller.signal })).status, 'cancelled');
 });

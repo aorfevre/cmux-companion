@@ -70,7 +70,7 @@ export class GitHubCli {
       && raw.head?.ref === input.branch && raw.base?.ref === input.baseBranch && raw.base?.sha === (input.acceptedTargets?.at(-1)?.baseHeadSha ?? input.baseSha) && raw.head?.repo?.full_name?.toLowerCase() === slug.toLowerCase()
       && raw.base?.repo?.full_name?.toLowerCase() === slug.toLowerCase() && typeof raw.body === 'string'
       && JSON.stringify(raw.body.match(/<!-- companion-goal:[A-Za-z0-9][A-Za-z0-9_-]* -->/g)) === JSON.stringify([input.marker]) && raw.state === 'open' && raw.draft === true, 'Draft PR changed before promotion', 'STALE_TARGET');
-    if (beforeSend && !beforeSend()) return;
+    if (beforeSend && !beforeSend()) return /** @type {const} */ ('cancelled');
     const response = JSON.parse(await this.execute(['api', '--hostname', 'github.com', 'graphql', '--input', '-'], JSON.stringify({
       query: 'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}', variables: { id: raw.node_id },
     })));

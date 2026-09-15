@@ -12,7 +12,7 @@ export class FakeGitHub {
     return { number: pr.number, url: pr.url, state: pr.state };
   }
   async ready(input, { beforeSend } = {}) {
-    if (beforeSend && !beforeSend()) return;
+    if (beforeSend && !beforeSend()) return /** @type {const} */ ('cancelled');
     const pr = this.pulls.find(pr => pr.repositoryId === input.repositoryId && pr.branch === input.branch);
     if (!pr || pr.headSha !== input.headSha || pr.marker !== input.marker) throw new Error('Draft target changed');
     if (!pr.draft) return;

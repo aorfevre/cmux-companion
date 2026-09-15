@@ -83,7 +83,11 @@ export class GitHubPublication {
     if (pr) {
       if (!pathExists(join(directory, 'pr.sent.json')) || (head !== input.headSha && !(head === null && ['closed', 'merged'].includes(pr.state))) || pr.headSha !== input.headSha || !['open', 'closed', 'merged'].includes(pr.state)) return { status: 'unknown', baseHeadSha, pr: null };
       if (typeof pr.draft !== 'boolean') return { status: 'unknown', baseHeadSha, pr: null };
-      if (pr.state === 'open' && !pr.draft && baseHeadSha !== targetSha) return { status: 'unknown', baseHeadSha, pr: null };
+      if (pr.state === 'closed' && pr.draft) return { status: 'unknown', baseHeadSha, pr: null };
+      if (pr.state === 'open' && !pr.draft) {
+        const confirmedBaseHeadSha = await this.remote.head(input.repositoryId, input.baseBranch);
+        if (baseHeadSha !== targetSha || confirmedBaseHeadSha !== baseHeadSha) return { status: 'unknown', baseHeadSha: confirmedBaseHeadSha, pr: null };
+      }
       if (pr.state === 'open' && pr.draft) return { status: baseHeadSha === targetSha ? 'pending' : 'target_moved', baseHeadSha, pr: null };
       return { status: 'published', baseHeadSha, pr: { number: pr.number, url: pr.url, headSha: pr.headSha, state: pr.state } };
     }
@@ -157,6 +161,7 @@ export class GitHubPublication {
     requireValue(this.github.ready, 'Draft promotion is unavailable', 'UNSUPPORTED_CAPABILITY');
     this.failpoint('pr_ready');
     const promotion = await this.github.ready(input, { beforeSend: () => !signal?.aborted });
+    if (promotion === 'cancelled') return { ...observed, status: 'cancelled' };
     if (promotion === 'unknown') return { status: 'unknown', baseHeadSha: null, pr: null };
     this.failpoint('pr_ready_returned');
     return this.observe(input);
