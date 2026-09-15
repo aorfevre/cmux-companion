@@ -1,3 +1,4 @@
+import { attachNotifications } from '../server/notifications/service.mjs';
 import { browseFolders } from '../server/folder-browser.mjs';
 import { UpdateControl } from '../updater/src/control.mjs';
 import { updateCycle } from '../updater/src/transaction.mjs';
@@ -49,11 +50,12 @@ export async function startSettingsDemo() {
     const cycle = async () => {
       await updateCycle({ control: updateControl, deployedSha: updateControl.status().deployedSha || base,
         discover: async deployedSha => { evidence.checks++; return { candidate: deployedSha === sha ? null : { sha, changesUrl: `https://github.com/example/disposable/compare/${base}...${sha}` }, deployedSha, observedSha: sha }; },
-        revalidate: async () => {}, maintenance: async id => existsSync(join(directory, 'updates-busy')) ? { ready: false } : maintenance.acquire(id), adapter });
+        revalidate: async () => {}, maintenance: async id => existsSync(join(directory, 'updates-busy')) ? { ready: false, reason: 'A goal repository fetch is still running' } : maintenance.acquire(id), adapter });
       await writeFile(join(directory, 'updates-evidence.json'), JSON.stringify(evidence), { mode: 0o600 });
     };
     await cycle();
     updateTimer = setInterval(() => { updatePending = updatePending.then(cycle); }, 100);
+    await attachNotifications({ runtime, directory, token, updateStatus: () => updateControl.status(), send: async () => ({ status: 201 }) });
     const address = await runtime.listen({ port: 0 });
     const manifest = { directory, tokenFile, address, repository: repository.repository, devRepos: { karven: join(directory, 'karven'), rekord: join(directory, 'rekord') } };
     const manifestFile = join(directory, 'connection.json');

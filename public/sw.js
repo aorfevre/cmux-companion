@@ -42,3 +42,29 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(response);
   event.waitUntil(response.then(() => {}, () => {}));
 });
+
+function notificationDestination(value) {
+  if (typeof value === 'string' && (/^\/orchestration\?goal=[A-Za-z0-9_-]{1,100}$/.test(value) || ['/settings#updates', '/settings#notifications'].includes(value))) return value;
+  return '/orchestration';
+}
+self.addEventListener('push', event => {
+  let payload;
+  try { payload = event.data?.json(); } catch { /* Malformed pushes still show safe, fixed copy. */ }
+  const text = (value, fallback, limit) => typeof value === 'string' && value.length <= limit ? value.replace(/[\p{C}]/gu, '') : fallback;
+  const title = text(payload?.title, 'Companion notification', 160);
+  const body = text(payload?.body, 'Open Companion to see the latest status.', 200);
+  const tag = typeof payload?.tag === 'string' && /^companion-[a-f0-9]{32}$/.test(payload.tag) ? payload.tag : 'companion-notification';
+  event.waitUntil(self.registration.showNotification(title, { body, tag, icon: '/icon-192.png', badge: '/icon-192.png', data: { url: notificationDestination(payload?.url) } }));
+});
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const url = new URL(notificationDestination(event.notification.data?.url), self.location.origin).href;
+  event.waitUntil((async () => {
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of clients) {
+      if (new URL(client.url).origin !== self.location.origin) continue;
+      try { const navigated = await client.navigate(url); if (navigated) { await navigated.focus(); return; } } catch { /* Fall back to a fresh same-origin window. */ }
+    }
+    await self.clients.openWindow(url);
+  })());
+});

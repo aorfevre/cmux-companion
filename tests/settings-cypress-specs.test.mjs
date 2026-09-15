@@ -4,7 +4,7 @@ import { settingsSpecs } from '../scripts/settings-cypress-specs.mjs';
 
 test('settings specs select independent lifecycles in explicit forward and reverse order', () => {
   const onboarding = 'cypress/e2e/settings-onboarding.cy.ts', updates = 'cypress/e2e/updates.cy.ts';
-  assert.deepEqual(settingsSpecs(), [onboarding, updates]);
+  assert.deepEqual(settingsSpecs(), [onboarding, updates, 'cypress/e2e/notifications.cy.ts']);
   assert.deepEqual(settingsSpecs(`${updates},${onboarding}`), [updates, onboarding]);
   assert.deepEqual(settingsSpecs(`${updates},${updates}`), [updates]);
   assert.deepEqual(settingsSpecs('cypress/e2e/updates*.cy.ts'), [updates]);
