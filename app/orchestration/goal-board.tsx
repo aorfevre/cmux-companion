@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { ApiError, request } from '../api-request';
 import type { goalView } from '../../server/orchestration/domain/state-view.mjs';
 import type { Contract } from '../../server/orchestration/types';
-import { AppNavigation } from '../navigation';
+import { MissionShell } from '../mission-shell';
 import { ProjectPicker } from './project-picker';
 import { GoalDetail } from './goal-detail';
 import { GoalFleet } from './goal-fleet';
@@ -114,7 +114,7 @@ export function GoalBoard() {
   const readOnly = Boolean(snapshot?.readOnly || configuration?.readOnly), disabled = busy || readingFiles || readOnly || Boolean(pending);
   const chosenRepo = configuration?.repositories.find(entry => entry.id === repository);
   const pendingRecovery = pending && <div className="orch-banner">The request outcome is uncertain. Retry the same request to reconcile its receipt. <button disabled={busy || readOnly} onClick={() => void submit(pending)}>Retry pending request</button></div>;
-  return <main className="orchestration mission-control"><aside className="mission-sidebar"><a className="mission-brand" href="/orchestration">⌘ cmux<span>Companion</span></a><AppNavigation active={needsOnly ? "needs" : "goals"} /><p className="mission-sidebar-note">Your Mac · private workspace</p></aside><div className="mission-content">
+  return <MissionShell className="orchestration" active={needsOnly ? 'needs' : 'goals'}>
     <header className="orch-header"><a href="/">cmux companion</a><span role="status">{auth === 'paired' ? connected ? 'Live updates' : 'Reconnecting · polling' : 'Connect your Mac'}</span></header>
     {discoveryNotice && <p role="status">{discoveryNotice} <a href="/settings#dev-repos">Review Dev repos</a></p>}
     <div className="orch-heading"><div><p className="orch-eyebrow">{selected ? "GOAL WORKSPACE" : needsOnly ? "DECISIONS / INBOX" : "OPERATIONS / FLEET"}</p><h1>{selected ? "Goal workspace" : needsOnly ? "Needs You" : "Mission Control"}</h1><p>{selected ? "Plan, supervise and review delivery." : needsOnly ? "Questions, approvals and recovery decisions." : "Every goal, decision and active worker in one place."}</p></div></div>
@@ -158,5 +158,5 @@ export function GoalBoard() {
       {selected && <section className="mission-goal-workspace"><button onClick={() => { setSelected(null); setDetail(null); const url = new URL(location.href); url.searchParams.delete('goal'); history.replaceState(null, '', url); }}>← Back to {needsOnly ? 'Needs You' : 'Mission Control'}</button>{pendingRecovery}{error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}{detail ? <GoalDetail key={detail.id} goal={detail} disabled={disabled} terminal={Boolean(configuration?.terminal)} act={act} control={control} /> : <p>Loading goal…</p>}</section>}
 
     </>}
-  </div></main>;
+  </MissionShell>;
 }

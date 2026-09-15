@@ -49,13 +49,13 @@ export function UpdateSettings({ readOnly }: { readOnly?: boolean }) {
     <h2>Companion updates</h2>
     {loadError && <p role="alert">{loadError} <button type="button" onClick={() => void load()}>Retry update status</button></p>}
     {loading ? <p role="status">Loading update status…</p> : !status?.available ? <p>Update controls are unavailable. An installed bundled updater is required.</p> : <>
-      <p>Installed <code>{status.deployedSha?.slice(0, 7) || 'unknown'}</code>{status.lastCheckAt && <> · Last checked {new Date(status.lastCheckAt).toLocaleString()}</>}</p>
+      <p className="update-version">Installed <code>{status.deployedSha?.slice(0, 7) || 'unknown'}</code>{status.lastCheckAt && <> · Last checked {new Date(status.lastCheckAt).toLocaleString()}</>}</p>
       <button type="button" disabled={busy || status.checking || protectedMode} onClick={() => void mutate('/api/updater/check', {})}>{status.checking ? 'Checking for updates…' : 'Check for updates'}</button>
       {readOnly === undefined && <label className="update-toggle"><input type="checkbox" checked={unlocked} onChange={event => setUnlocked(event.target.checked)} />Allow update changes on this device</label>}
       {readOnly === true && <p>Turn off read-only protection to change updates.</p>}
       <label className="update-toggle"><input type="checkbox" role="switch" checked={status.automatic} disabled={busy || protectedMode} onChange={event => void mutate('/api/updater/preferences', { revision: status.revision, automatic: event.target.checked }, 'PATCH')} />Automatic installation</label>
       <p>Off by default. When enabled, install updates that pass CI once agents are idle. Companion briefly reconnects.</p>
-      {candidate ? <div><p>Update available: <code>{candidate.sha.slice(0, 7)}</code> · <a href={candidate.changesUrl} target="_blank" rel="noreferrer">View changes</a></p>
+      {candidate ? <div className="update-candidate"><p>Update available: <code>{candidate.sha.slice(0, 7)}</code> · <a href={candidate.changesUrl} target="_blank" rel="noreferrer">View changes</a></p>
         {!active && <div className="update-actions"><button type="button" disabled={busy || protectedMode} onClick={() => setConfirmation({ candidate, whenIdle: false, id: crypto.randomUUID() })}>{status.request?.status === 'failed' && status.request.sha === candidate.sha ? 'Retry update' : 'Update now'}</button><button type="button" disabled={busy || protectedMode} onClick={() => setConfirmation({ candidate, whenIdle: true, id: crypto.randomUUID() })}>Update when idle</button></div>}
       </div> : !status.checkError && <p>{status.observedSha && status.observedSha !== status.deployedSha ? 'A newer main commit is awaiting successful checks.' : 'No eligible updates available.'}</p>}
       {confirmation && <div className="update-confirmation" role="group" aria-label="Confirm update">
@@ -63,7 +63,7 @@ export function UpdateSettings({ readOnly }: { readOnly?: boolean }) {
         <button type="button" disabled={busy || protectedMode} onClick={() => void mutate(status.request?.status === 'failed' && status.request.sha === confirmation.candidate.sha ? '/api/updater/retry' : '/api/updater/requests', { id: confirmation.id, sha: confirmation.candidate.sha, whenIdle: confirmation.whenIdle })}>{busy ? 'Requesting…' : 'Confirm installation'}</button>
         <button type="button" disabled={busy} onClick={() => setConfirmation(null)}>Cancel</button>
       </div>}
-      {status.request && <div aria-live="polite"><p>{status.request.status === 'queued' ? 'Waiting for agents and update checks' : status.request.status === 'cancelled' ? 'Queued update cancelled' : phaseLabels[status.request.phase] || status.request.phase} · <code>{status.request.sha.slice(0, 7)}</code></p>
+      {status.request && <div className="update-request" aria-live="polite"><p>{status.request.status === 'queued' ? 'Waiting for agents and update checks' : status.request.status === 'cancelled' ? 'Queued update cancelled' : phaseLabels[status.request.phase] || status.request.phase} · <code>{status.request.sha.slice(0, 7)}</code></p>
         {status.request.source === 'automatic' && status.request.status === 'queued' && <p>Queued by automatic installation.</p>}
         {status.request.status === 'queued' && <button type="button" disabled={busy || protectedMode} onClick={() => void mutate('/api/updater/cancel', { id: status.request!.id })}>Cancel queued update</button>}
         {status.request.status === 'running' && !status.automatic && <p>This transaction has started and will finish or recover safely. Future automatic installations are off.</p>}

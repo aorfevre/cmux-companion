@@ -32,6 +32,8 @@ updatesSuite('User-approved bundled updates with a real disposable service', () 
     cy.task<{ activations: string[] }>('updatesEvidence').its('activations').should('deep.equal', ['a'.repeat(40)]);
     cy.findByRole('switch', { name: 'Automatic installation' }).should('not.be.checked');
     cy.screenshot('manual-update-mobile');
+    cy.viewport(1200, 900); cy.screenshot('manual-update-desktop');
+    cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(1200));
     cy.reload();
     cy.contains('Update complete', { timeout: 12000 }).should('be.visible');
   });

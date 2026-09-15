@@ -123,7 +123,7 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | Requirement | Current status |
 | --- | --- |
 | Fleet stages, active wave and last activity | Fleet and current-wave projection implemented; last-activity projection still needed. |
-| Setup redesign and account usage | Existing implementation retained; redesign incomplete. |
+| Setup redesign and account usage | Shared desktop/responsive shell, project/profile navigation and embedded quota/freshness implemented; five fixture browser and two real-service journeys passed. |
 | Brief/files/images and authorized agent context | Implemented with private durable references, scoped agent reads and real-service Cypress. Full verification passed. |
 | Combined planner/design with approved suggested team | Combined design/plan/team gate implemented with eligible suggestions and explicit overrides; domain/runtime/API/UI and Cypress passed. |
 | Explicit wave barriers with verification | Implemented and verified for new version 2 plans; domain/restart, real-Git launch ordering, responsive Cypress and full verification passed. |
@@ -133,7 +133,7 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | Human publication approval | Implemented; exact-head authority/restart/receipt tests and real-service Cypress passed. |
 | Passive merge sync | Implemented and bounded tests passed; broader acceptance integration remains. |
 | Standalone sessions and retired feature cleanup | Sessions navigation retained; Inbox/queue/preview/notification removal pending. |
-| Updater regression and redesigned controls | Approval/waiting-merge idle regression passed; redesigned controls and final regression pending. |
+| Updater regression and redesigned controls | Redesigned controls and real-service update confirmation/idle/cancel/activation journey passed; final backend regression audit remains. |
 | Complete restart behavior | Core, merge sync, holds, private references and saved profile routing tested; final cross-feature audit remains. |
 
 Final backend coverage, remaining redesigned Cypress
@@ -255,3 +255,55 @@ polish, retired-feature cleanup, coverage audit and the final PR.
   tab rectangles and labels fitting their buttons. Both writable Chrome journeys
   passed again and the corrected phone capture was inspected. Typecheck passed
   after the browser assertion. Final coverage and remaining redesign work remain.
+
+## Unified Setup delivery
+
+- Extracted the shared Mission Control shell for goal and Setup destinations.
+  Desktop uses the same sidebar; narrow screens keep primary and Setup navigation
+  visible. Overview links to projects, profiles, CCS capacity and the updater.
+- Projects/favorites and validated named launch profiles retain saved revision
+  checks, conflict review, onboarding and unsaved-draft protection. Device terminal
+  input protection and install prompts remain available. Removed notification and
+  local-preview settings links/fields; their underlying retirement remains separate.
+- Account usage now lives within Setup and displays source/freshness. Stale,
+  failed and unavailable readings cannot expose cached percentages as current.
+  Refresh updates the view clock so newly returned readings are immediately valid.
+- Updater control behavior remains unchanged, with clearer installed/candidate,
+  confirmation and request panels. Exact-commit confirmation, protected changes,
+  idle admission, automatic preferences, cancellation and recovery remain owned by
+  the updater service; no installed updater or native integration was exercised.
+- First bounded UI run had one obsolete category name (41 passed, one failed);
+  updated the navigation assertion. The freshness test exposed a clock snapshot
+  lag after refresh and now covers the correction. Final bounded UI: 36 passed.
+- First Setup Cypress run had four passed and one failed because an old mobile
+  CSS rule hid category navigation. Corrected specificity; all five browser checks
+  passed. Both real-service onboarding/project/favorite journeys passed after
+  updating obsolete Kanban/navigation selectors. Phone capacity and desktop Setup
+  screenshots inspected. Retired push/preview settings browser tests were replaced
+  with current Setup checks; retained device protection and installation tests stay.
+
+- Disposable updater Cypress passed (one journey), including no activation before
+  confirmation, busy-work waiting, cancellation, automatic opt-in/out, one eligible
+  activation and restart persistence. Desktop and phone updater captures inspected.
+- Shared-shell orchestration Cypress passed both writable journeys; read-only-only
+  journey pending in this fixture. Typecheck passed; full verification is running.
+
+### Remaining retirement boundary trace
+
+The Sessions rewrite must remove Inbox/context actions, queued prompt controls and
+preview discovery from `app/page.tsx`, while retaining deliberate text/image/key
+input, replay, terminal selection, repository changes and session ownership checks.
+`server/index.mjs` currently constructs PushService, PreviewManager and PromptQueue;
+`server/app.mjs` still registers their routes and attaches their background jobs.
+These owners and their exclusive modules/tests/storage consumers must be removed.
+`update-maintenance.mjs` has an explicit prompt-drain fence that becomes obsolete
+only when the queue owner is removed; worker, verification, publication, mutation
+and handoff fencing remain required. Release-retention preview routes are updater
+functionality and must not be removed with local-app previews. CCS reconnect,
+reference/image storage and pairing are retained shared boundaries.
+
+Final Setup verification passed: 881 backend tests, one intentional skip, 172 UI
+tests, lint, typecheck and build. The full routine suite includes deterministic
+updater regressions; installed/native live paths remain unverified. Remaining
+redesign work is Sessions and legacy feature retirement, fleet last activity and
+run-evidence polish, final coverage/audit and the PR targeting main.

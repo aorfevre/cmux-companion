@@ -312,3 +312,25 @@ describe("deployment health", () => {
     assert.ok(screen.getByText("Paused"));
   });
 });
+
+test('embedded capacity expires old readings and hides cached percentages after refresh failure', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date('2026-09-15T10:00:00Z'));
+  const usage = { generatedAt: new Date().toISOString(), source: 'CCS', available: true, summary: {}, providers: [{ id: 'claude', label: 'Claude', available: true, accounts: [{ id: 'one', label: 'Team account', status: 'ready', updatedAt: new Date().toISOString(), windows: [{ id: 'weekly', cadence: 'weekly', category: 'usage', remainingPercent: 82, resetAt: null }] }] }] };
+  let failed = false;
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(failed ? { error: 'Provider unavailable' } : usage), { status: failed ? 503 : 200 })));
+  render(<AccountUsageView embedded onBack={() => {}} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  assert.ok(await screen.findByText('82%'));
+  assert.equal(screen.queryByRole('button', { name: '‹ Settings' }), null);
+  await act(async () => { await vi.advanceTimersByTimeAsync(16 * 60_000); });
+  assert.equal(screen.queryByText('82%'), null);
+  assert.ok(screen.getByText(/Capacity unknown:/));
+  usage.generatedAt = new Date().toISOString(); usage.providers[0].accounts[0].updatedAt = usage.generatedAt;
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh account usage' })); });
+  assert.ok(await screen.findByText('82%'));
+  failed = true;
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh account usage' })); });
+  assert.ok(await screen.findByText('Provider unavailable'));
+  assert.equal(screen.queryByText('82%'), null);
+});

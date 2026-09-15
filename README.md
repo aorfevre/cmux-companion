@@ -1,22 +1,28 @@
 # cmux companion
 
-A private, mobile-first companion for [cmux](https://cmux.com). It runs on your Mac, stays on automatically, and lets your phone monitor or interact with cmux over your existing Tailscale network.
+A private, desktop-first responsive companion for [cmux](https://cmux.com). It runs on your Mac, stays on automatically, and lets your phone monitor or interact with cmux over your existing Tailscale network.
 
 No cloud application server is involved. Terminal output and input travel directly between your phone and Mac.
 
 ## What it does
 
-- Opens Goals first, with optional Sessions beneath Goals and a Mac folder explorer for Dev repo setup.
-- Monitors cmux sessions, terminal replay, repository changes and process health from a paired phone.
-- Provides an Inbox for native agent questions and permissions, manual repository launches, prompt queues and private local-app previews.
-- Opens `/orchestration` for a goal workflow with a reviewed plan and explicit approval, parallel implementers in isolated worktrees, independent code review, serialized integration and one verified pull request.
-- Shows task dependencies, workers, review findings, verification and publication evidence, with revision, retry, abort and reconciliation actions derived by the service.
-- Suggests eligible team profiles using saved provider readiness and CCS capacity signals, with manual overrides and one plan/team approval.
+- Opens desktop-first Mission Control with a goal fleet, Needs You decisions,
+  active wave/worker status and responsive goal workspaces.
+- Saves briefs, links and private source/image references for scoped agent access.
+- Runs planning/design, independent review and implementation in visible cmux
+  sessions, with isolated worktrees and verified integration barriers between waves.
+- Approves the plan and suggested team together, holds failed goals for manual
+  recovery and requires exact-commit approval before publishing a pull request.
+- Passively checks waiting GitHub PRs every 15 minutes; only confirmed merges
+  move goals to Complete. Companion does not merge PRs.
+- Keeps standalone session inspection/input, private pairing and the bundled updater.
+- Setup manages projects, supported launch profiles, team defaults, account usage,
+  execution limits, device protection and updater controls.
 
-The home screen opens the Goals Kanban. Sessions remain a secondary view;
-Inbox and Local apps are still available. Legacy burst scheduling, issue-topic planning, old goal boards
-and automatic session collection have been retired; see the
-[retirement inventory and cutover procedure](docs/orchestration-retirement.md).
+The remaining legacy session surfaces are being retired under the
+[Mission Control delivery contract](docs/superpowers/specs/2026-09-15-mission-control-redesign.md).
+See the [delivery evidence](docs/mission-control-delivery-evidence.md) for completed
+and outstanding redesign work.
 
 ## Goal workflow
 
@@ -31,26 +37,23 @@ defaults to its normalized uppercase project name. The card keeps the complete
 request and links in its description. Its short title is editable; the assigned
 planner/session name remains stable for that attempt's identity.
 
-Follow Planning → Needs approval → In progress → Review → Done. Open a card for
-its plan, task board and relevant evidence. On mobile, select a column with its
-count. Tasks show dependencies and blockers, with the dependency graph available
-under an optional disclosure. Completed publication stays in Review until merged.
+Follow Planning → Needs approval → In progress → Review → Verification → Ready
+to publish → Waiting for merge → Complete. Open a fleet row for Overview,
+Waves & sessions, Team & models, Run report and Activity. Needs You collects
+questions, approvals and manual recovery actions.
 
 The planner publishes a versioned contract with task ownership, dependencies and
 verification. Essential questions appear inside the goal; answering resumes
-planning automatically after the prior worker is confirmed stopped. Existing
-opt-in background alerts notify for questions and independently reviewed plans
-ready for approval. Push delivery is best effort; the goal remains the durable
-source of attention and no terminal needs to be opened to submit an answer.
-The agent discovers suitable verification from the project and goal; repository checks are optional defaults, never required setup. If validation is missing, the plan must address that gap. An independent review checks the contract before the user approves that revision and its exact verification commands.
+planning automatically after the prior worker is confirmed stopped. The agent discovers suitable verification from the project and goal; repository checks are optional defaults, never required setup. If validation is missing, the plan must address that gap. An independent review checks the contract before the user approves that revision and its exact verification commands.
 Requesting changes invalidates the proposal's approval authority.
 
 Eligible independent tasks run concurrently from day one. Each attempt owns an
-isolated worktree; dependents start from the integrated commits of their prerequisites.
+isolated worktree. Later waves start only after the previous wave is accepted,
+integrated and verified; their attempts use that checked output.
 An independent reviewer checks the exact submitted task commit. Blocking findings
-require bounded repair and a fresh review. Integration serializes changes and
+hold new dispatch for manual recovery, bounded repair and a fresh review. Integration serializes changes and
 preserves conflicts for scoped repair. Final review and approved goal checks must
-agree on the exact goal-branch commit before publication opens one PR.
+agree on the exact goal-branch commit before publication approval can open one PR.
 
 A stopped process is not proof of a successful task. Uncertain ownership blocks
 replacement work until reconciliation proves the old worker stopped. Aborting
@@ -59,7 +62,7 @@ termination. Retrying a request after a lost response uses its original command 
 
 ## Goal teams and launch profiles
 
-Setup → Agents configures Claude/Codex commands, named CCS or terminal launch
+Setup → Agents & models configures Claude/Codex commands, named CCS or terminal launch
 profiles, eligible roles and preferred profiles. Goal creation freezes validated
 commands, models and readiness so later settings changes cannot redirect saved
 work. Each attempt records its actual assignment, including across restart.
