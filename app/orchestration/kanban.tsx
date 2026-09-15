@@ -4,6 +4,7 @@ import type { Goal } from './goal-board';
 export function attention(goal: Goal) {
   if (goal.status === 'aborted' || goal.status === 'merged') return null;
   if (goal.status === 'delivered' && goal.mergeSync?.state === 'closed') return 'The PR was closed without merging. Review it on GitHub.';
+  if (goal.status === 'ready_to_publish' && !goal.publication?.approved) return 'Review the evidence and approve PR publication.';
   if (goal.startup?.status === 'failed') return goal.startup.error || 'Could not prepare the base branch. Retry startup.';
   if (goal.clarification && !goal.clarification.answer) return goal.clarification.question;
   const latest = new Map(goal.attempts.filter(attempt => attempt.current).map(attempt => [JSON.stringify([attempt.role, attempt.taskId, attempt.target]), attempt]));

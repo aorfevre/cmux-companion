@@ -154,7 +154,11 @@ test('final review and all verification checks gate publication at the current i
   f.command('record_verification', { headSha: HEAD_B, checks: [{ id: 'unit', passed: false, artifactId: 'log' }] });
   fails(() => f.command('request_publication', { operationId: 'publish' }), 'NOT_READY');
   f.command('record_verification', { headSha: HEAD_B, checks: [{ id: 'unit', passed: true, artifactId: 'log2' }] });
-  const result = f.command('request_publication', { operationId: 'publish' }); assert.equal(result.intents[0].kind, 'publish');
+  const pending = f.command('request_publication', { operationId: 'publish' }); assert.equal(pending.intents.length, 0);
+  fails(() => f.command('approve_publication', { operationId: 'publish', headSha: HEAD_B }), 'FORBIDDEN');
+  fails(() => f.command('approve_publication', { operationId: 'publish', headSha: HEAD_A }, f.user), 'STALE_TARGET');
+  fails(() => f.command('record_pr', { operationId: 'publish', number: 1, url: 'https://example.test/pr/1', headSha: HEAD_B }), 'STALE_OPERATION');
+  const result = f.command('approve_publication', { operationId: 'publish', headSha: HEAD_B }, f.user); assert.equal(result.intents[0].kind, 'publish');
   fails(() => f.command('record_pr', { operationId: 'publish', number: 1, url: 'https://example.test/pr/1', headSha: HEAD_A }), 'STALE_TARGET');
   f.command('record_pr', { operationId: 'publish', number: 1, url: 'https://example.test/pr/1', headSha: HEAD_B });
   f.command('record_merged'); assert.equal(f.goal.status, 'merged');
@@ -238,6 +242,7 @@ test('conflict resolution and failed-check repair both produce new integration h
   f.request('review2', 'reviewer'); f.dispatch('review2'); f.review('review2', repaired);
   f.command('record_verification', { headSha: repaired, checks: [{ id: 'unit', passed: true, artifactId: 'passed' }] });
   f.command('request_publication', { operationId: 'publish' });
+  f.command('approve_publication', { operationId: 'publish', headSha: repaired }, f.user);
   f.command('abort', {}, f.user);
   f.command('record_pr', { operationId: 'publish', number: 1, url: 'https://example.test/pr/1', headSha: repaired });
   assert.equal(f.goal.status, 'aborted'); assert.equal(f.goal.pr.number, 1);

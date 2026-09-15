@@ -13,6 +13,8 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 - Service-owned merge observation, persisted through the orchestration journal,
   with 15-minute cadence for delivered PRs only. Direct GitHub PR lookup validates
   saved identity; closed-unmerged and unavailable results cannot complete a goal.
+- Exact-head human PR publication approval creates the external intent only after
+  approval; pending proposals can be revised, invalidating the old approval.
 - Production scheduler owns polling; pending remote reads do not block admission
   or other goals. Shutdown prevents late observation writes after release.
 
@@ -34,8 +36,21 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
   failures. After correcting the approved navigation expectations, both affected
   suites passed all 42 tests in their bounded rerun.
 
+- Publication gate: domain/role/scheduler checks passed (100 before two additional
+  scheduler cases; final scheduler rerun 70/70); real Git delivery 5/5 passed.
+- `npm run typecheck`, full `npm run lint`, and bounded orchestration UI 16/16 passed.
+- `goal-workspace.cy.ts`: 1/1 passed on desktop and phone.
+- Real-service `orchestration-core.cy.ts`: 2/2 applicable journeys passed on port
+  3248 after correcting goal selection; the read-only-only case is excluded in
+  this writable fixture and remains separately unverified.
+- Updater routes 9/9 passed, including approval/waiting-merge idle state versus
+  pending/active publication and uncertain worker update fences.
+
 ## Interventions
 
+- Real-service Cypress initially passed publication but failed abort because the
+  test selected the last fleet row (the prior goal). Select the requested goal by
+  title; both journeys passed on rerun. No product exception was suppressed.
 - Port 3221 was already occupied. Used 3247; did not stop the existing owner.
 - Cypress exposed a hydration mismatch on selected-goal reload. Replaced the
   browser-only initial selection with hydration-safe external URL state; rerun
@@ -58,10 +73,10 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | All judgment agents visible in cmux | Not implemented; non-planner adapters still use background mode. |
 | Goal-scoped holds and manual recovery | Not implemented; existing automatic repair remains to be replaced. |
 | Assignment proposals, reasons and snapshots | Not implemented. |
-| Human publication approval | Not implemented; current publication still starts automatically. |
+| Human publication approval | Implemented; exact-head authority/restart/receipt tests and real-service Cypress passed. |
 | Passive merge sync | Implemented and bounded tests passed; broader acceptance integration remains. |
 | Standalone sessions and retired feature cleanup | Sessions navigation retained; Inbox/queue/preview/notification removal pending. |
-| Updater regression and redesigned controls | Updater preserved; final regression and new workflow idle checks pending. |
+| Updater regression and redesigned controls | Approval/waiting-merge idle regression passed; redesigned controls and final regression pending. |
 | Complete restart behavior | Existing core and new merge sync tested; new attachments/holds/teams pending. |
 
 Full `npm run verify`, final backend/UI coverage, real-service redesigned Cypress

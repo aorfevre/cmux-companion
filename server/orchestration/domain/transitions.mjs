@@ -233,7 +233,7 @@ export function transition(before, command, authority) {
       requireAuthority(authority, 'user');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       requireValue(goal.status !== 'delivered', 'Delivered goals require a new goal', 'INVALID_STATE');
-      requireValue(!goal.integration && !goal.publication, 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
+      requireValue(!goal.integration && (!goal.publication || !goal.publication.approval), 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
       const message = text(input.message, 8000);
       for (const attempt of goal.attempts.filter(ownsWorker)) {
         if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
@@ -247,7 +247,7 @@ export function transition(before, command, authority) {
     case 'publish_contract': {
       requireValue(authority.kind === 'user' || (authority.kind === 'agent' && authority.role === 'planner'), 'Planner or user authority required', 'FORBIDDEN');
       requireValue(goal.status !== 'delivered', 'Delivered goals require a new goal', 'INVALID_STATE');
-      requireValue(!goal.integration && !goal.publication, 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
+      requireValue(!goal.integration && (!goal.publication || !goal.publication.approval), 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       const contract = parseContract(input.contract);
       for (const attempt of goal.attempts.filter(ownsWorker)) {
@@ -564,7 +564,22 @@ export function transition(before, command, authority) {
       requireValue(!goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && !goal.attempts.some(ownsWorker), 'Workers still active', 'NOT_READY');
       const plan = { operationId: identifier(input.operationId), goalId: goal.id, repositoryId: goal.repositoryId, headSha: goal.integrationHead, branch: `companion-goals/${goal.id}`, baseBranch: goal.baseBranch, baseSha: goal.baseSha, marker: `<!-- companion-goal:${goal.id} -->` };
       goal.publication = { operationId: plan.operationId, headSha: goal.integrationHead, generation: goal.generation, revision: goal.revision, plan };
-      goal.status = 'ready_to_publish'; intent('publish', goal.publication.operationId, null, { ...plan }); emit('publication_requested', { headSha: goal.integrationHead }); break;
+      goal.status = 'ready_to_publish'; emit('publication_approval_requested', { headSha: goal.integrationHead }); break;
+    }
+    case 'approve_publication': {
+      requireAuthority(authority, 'user');
+      const publication = goal.publication;
+      requireValue(goal.status === 'ready_to_publish' && publication && !publication.approval
+        && publication.operationId === input.operationId && publication.generation === goal.generation && publication.revision === goal.revision,
+      'Publication is not awaiting this approval', 'STALE_OPERATION');
+      requireValue(input.headSha === goal.integrationHead && publication.headSha === goal.integrationHead && goal.approvedRevision === goal.revision
+        && !goal.integration && goal.tasks.every(task => task.status === 'integrated')
+        && goal.verification?.headSha === goal.integrationHead && goal.verification.checks.every(check => check.passed)
+        && acceptedReview(goal, goal.integrationHead, 'integration'), 'Publication evidence changed', 'STALE_TARGET');
+      requireValue(!goal.verificationRuns?.some(run => run.workerState !== 'stopped') && !goal.attempts.some(ownsWorker), 'Workers still active', 'NOT_READY');
+      publication.approval = { commandId: command.id, headSha: goal.integrationHead };
+      intent('publish', publication.operationId, null, { ...publication.plan });
+      emit('publication_approved', { headSha: goal.integrationHead }); break;
     }
     case 'accept_moved_target': {
       requireAuthority(authority, 'user');
@@ -596,7 +611,7 @@ export function transition(before, command, authority) {
     }
     case 'record_pr': {
       requireAuthority(authority, 'system');
-      requireValue(['ready_to_publish', 'aborted'].includes(goal.status) && goal.publication && input.operationId === goal.publication.operationId, 'Publication operation was not requested', 'STALE_OPERATION');
+      requireValue(['ready_to_publish', 'aborted'].includes(goal.status) && goal.publication?.approval && input.operationId === goal.publication.operationId, 'Publication operation was not approved', 'STALE_OPERATION');
       requireValue(input.headSha === goal.integrationHead, 'PR head does not match verified head', 'STALE_TARGET');
       const url = text(input.url, 2000); requireValue(/^https:\/\/[^\s]+$/.test(url), 'Invalid PR URL');
       goal.pr = { number: integer(input.number, 1), url, headSha: goal.integrationHead };

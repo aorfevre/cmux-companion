@@ -8,7 +8,7 @@ export function goalView(goal) {
     baseBranch: goal.baseBranch, baseSha: goal.baseSha, startup: goal.startup ?? null,
     status: goal.status, revision: goal.revision, approvedRevision: goal.approvedRevision,
     integrationHead: goal.integrationHead, pr: goal.pr, mergeSync: goal.mergeSync ?? null, verification: goal.verification,
-    publication: goal.publication ? { branch: goal.publication.plan.branch, baseBranch: goal.publication.plan.baseBranch, baseSha: goal.publication.plan.baseSha, observation: goal.publication.observation ?? null } : null,
+    publication: goal.publication ? { branch: goal.publication.plan.branch, baseBranch: goal.publication.plan.baseBranch, baseSha: goal.publication.plan.baseSha, approved: Boolean(goal.publication.approval), observation: goal.publication.observation ?? null } : null,
     tasks: goal.tasks.map((task) => ({ id: task.id, title: task.title, dependsOn: task.dependsOn,
       status: task.status, candidateSha: task.candidateSha, integratedSha: task.integratedSha,
       repairCount: task.repairCount, repairLimit: task.repairLimit })),

@@ -135,6 +135,10 @@ exit "$code"
     await Promise.all([...scheduler.verifications.active.values()].map((run) => run.job));
     await Promise.all([...scheduler.publications.active.values()].map((run) => run.job));
     const current = store.get('g');
+    if (current.status === 'ready_to_publish' && !current.publication.approval) {
+      assert.equal(github.creates.length, 0);
+      service.execute({ id: 'approve_publication', goalId: 'g', expectedVersion: current.version, type: 'approve_publication', payload: { operationId: current.publication.operationId, headSha: current.integrationHead } }, { kind: 'user' });
+    }
     if (movedTarget && current.publication?.observation?.status === 'target_moved') {
       const before = { head: current.integrationHead, reviews: current.reviews, verification: current.verification };
       service.execute({ id: 'accept_remote_target', goalId: 'g', expectedVersion: current.version, type: 'accept_moved_target', payload: { operationId: current.publication.operationId, baseHeadSha: current.publication.observation.baseHeadSha } }, { kind: 'user' });

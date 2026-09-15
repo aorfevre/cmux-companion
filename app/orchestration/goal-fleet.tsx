@@ -7,7 +7,7 @@ export function goalStage(goal: Goal) {
   if (goal.status === 'merged') return 'Complete';
   if (goal.status === 'aborted') return 'Aborted';
   if (goal.status === 'delivered') return 'Waiting for merge';
-  if (goal.status === 'ready_to_publish') return 'PR delivery';
+  if (goal.status === 'ready_to_publish') return goal.publication?.approved ? 'PR delivery' : 'Ready to publish';
   if (goal.status === 'discovering') return 'Planning';
   if (goal.status === 'awaiting_approval') return 'Needs approval';
   if (goal.tasks.length && goal.tasks.every(task => task.status === 'integrated')) return goal.verification ? 'Verification' : 'Review';

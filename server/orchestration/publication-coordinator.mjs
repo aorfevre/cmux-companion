@@ -51,7 +51,7 @@ export class PublicationCoordinator {
       const goal = this.store.get(operation.goalId), publication = goal?.publication;
       requireValue(goal && publication?.operationId === operation.id, 'Publication operation has no owner');
       if (goal.pr) { this.store.advanceOperation(operation.id, operation.status, 'completed'); continue; }
-      const permitted = goal.status === 'ready_to_publish' && goal.generation === operation.generation && goal.revision === operation.revision && this.service.repositoryIds.has(goal.repositoryId);
+      const permitted = goal.status === 'ready_to_publish' && publication.approval?.headSha === publication.headSha && goal.generation === operation.generation && goal.revision === operation.revision && this.service.repositoryIds.has(goal.repositoryId);
       // A moved target needs an explicit user decision, not another remote read
       // every scheduler tick. Revoked goals must still settle their effects.
       if (permitted && publication.observation?.status === 'target_moved' && publication.observation.baseHeadSha !== null) continue;

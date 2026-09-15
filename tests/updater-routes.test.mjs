@@ -173,3 +173,25 @@ test('verified supported planners hand off across maintenance while old clients 
   attempt.workerState = 'unknown'; assert.equal((await f.maintenance.acquire('handoff-001')).ready, false);
   attempt.workerState = 'running'; attempt.mode = 'background'; assert.equal((await f.maintenance.acquire('handoff-001')).ready, false);
 });
+
+
+test('publication approval and waiting for GitHub merge are idle, but publication effects still fence updates', async t => {
+  const f = await fixture(t);
+  f.control.request({ id: 'publication-idle', sha, whenIdle: true });
+  const goal = { status: 'ready_to_publish', attempts: [], publication: { headSha: sha }, pr: null };
+  f.runtime.store.list = () => [goal];
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, true);
+  f.control.unfence('publication-idle');
+  goal.publication.approval = { commandId: 'approved', headSha: sha };
+  f.runtime.store.operations = () => [{ kind: 'publish', status: 'pending' }];
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, false);
+  f.runtime.store.operations = () => [];
+  f.runtime.scheduler.publications.active.set('publish', {});
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, false);
+  f.runtime.scheduler.publications.active.clear();
+  goal.status = 'delivered'; goal.pr = { number: 1, headSha: sha };
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, true);
+  f.control.unfence('publication-idle');
+  goal.attempts.push({ workerState: 'unknown' });
+  assert.equal((await f.maintenance.acquire('publication-idle')).ready, false);
+});

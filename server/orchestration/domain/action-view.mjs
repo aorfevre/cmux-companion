@@ -16,6 +16,7 @@ export function actionView(goal) {
   offer('request_revision', 'Request revision', { message: 'Revision feedback' });
   offer('abort', 'Abort goal', {});
   offer('retry_startup', 'Retry startup', {});
+  if (goal.publication) offer('approve_publication', 'Approve & publish PR', { operationId: goal.publication.operationId, headSha: goal.publication.headSha });
   if (goal.integration) offer('retry_integration', 'Retry integration', { operationId: goal.integration.operationId });
   offer('retry_verification', 'Retry verification', {});
   if (goal.publication?.observation?.baseHeadSha) offer('accept_moved_target', 'Publish reviewed head against moved target', { operationId: goal.publication.operationId, baseHeadSha: goal.publication.observation.baseHeadSha });
