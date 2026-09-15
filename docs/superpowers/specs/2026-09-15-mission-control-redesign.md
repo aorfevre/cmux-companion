@@ -87,8 +87,8 @@ Needs You collects goal questions, approvals and manual recovery decisions.
 Standalone sessions retain session listing, terminal inspection and deliberate
 terminal input. Native CLI interactions remain possible in their cmux sessions.
 The separate native-permission Inbox, prompt queues, local-app previews and
-legacy notification product surfaces are retired. The browser-local update-notice
-settings specified below are retained as a new bounded surface. Remove unused routes, jobs,
+legacy notification product surfaces are retired. The notification settings and
+background Web Push specified below form the new supported surface. Remove unused routes, jobs,
 storage ownership and UI code, while retaining shared functionality still needed
 by execution, session control, pairing or updates.
 
@@ -184,56 +184,175 @@ surface sync status; retry on the normal cadence without holding up other goals.
 Remove completed items from the waiting poll set. Never merge or deploy as an
 effect of polling. GitHub merge is exclusively an external user action.
 
-## Notification settings amendment — pending human review
+## Notification settings and background push — pending human review
 
 ### Outcome and user journey
 
 Setup gains a Notifications category at `/settings#notifications`. A paired user
-can choose whether this browser shows update-available banners, then navigate to
-Goals or Sessions and see that choice applied. The page labels the scope as
-"This browser" and explains that notices appear while Companion is open.
+can keep existing in-app update notices, enable background notifications for this
+browser or installed PWA, choose event types, send a test notification, and disable
+this device's subscription. Background delivery is opt-in and off by default.
+In-app update banners remain enabled by default and independently controllable.
 
-The "Update available notices" switch defaults to on, preserving current behavior.
-Changes save immediately on this browser, survive reload, and synchronize across
-open tabs on the same origin. A failed browser-storage write shows an error and
-keeps the previously saved choice. Malformed or missing stored preferences use
-the default. A "Show test notice" button previews the in-app presentation without
-claiming a real update exists or changing the dismissed candidate.
+The page shows browser support, OS permission, subscription state, last delivery
+attempt and sanitized errors as separate facts. Permission is requested only from
+an explicit "Enable background notifications" gesture. Permission granted alone
+must not be presented as a successfully registered subscription. Failed server
+registration is retryable; a newly created orphan browser subscription is cleaned
+up or its cleanup failure is shown. No automatic permission prompt on page load.
 
-Disabling notices hides only optional update-available banners. Update discovery,
-automatic installation, the update status page, errors, approval questions and
-recovery messages remain available. "Later" continues to dismiss just the current
-candidate on this browser. Re-enabling notices respects that dismissal; a newer
-candidate can appear. Notification preferences do not alter Mac-wide settings.
+Enabled event choices default to: Needs your attention (questions, approval or
+recovery required), Goal complete (confirmed merged goal), and Updates (eligible
+update available, installation succeeded or failed). Users can disable each type.
+Do not send one notification per task/token or treat a PR opened as a completed
+goal. A test notification uses the real configured delivery path with harmless
+fixed text and reports "Accepted by push service" rather than "Delivered" unless
+receipt evidence exists. It never creates an update or workflow command.
 
-### Non-goals and boundaries
+"Hide project and goal names" defaults to on. Discreet payloads use fixed copy
+such as "Companion needs your attention" without goal descriptions, filenames,
+repository names, terminal output, credentials, question text or failure details.
+Turning it off may include a bounded, sanitized goal title; full content remains
+inside the paired app. The setting explains both lock-screen exposure and transit
+through the browser's push provider. It applies to future deliveries only.
 
-Background Web Push, OS notifications, permission prompts, sounds, quiet hours,
-email, notification history and new agent-event delivery are outside this initial
-slice. Do not show switches for unsupported delivery channels. The page explains
-that background notifications are not available. No new API, backend storage,
-service worker subscription, external service, credential or schema is required.
-A future background delivery feature requires its own privacy and delivery design.
+Preferences and subscriptions are scoped to this browser/PWA subscription, not a
+unique human identity: pairing still uses the installation's shared trust model.
+In-app preference changes persist and synchronize between same-origin tabs; failed
+storage writes cannot claim success. Other subscribed devices retain their choices.
+"Disable background notifications on this device" revokes server delivery and
+unsubscribes the browser, cancelling pending sends. If either step fails, show the
+remaining state and a retry. Logout attempts the same cleanup without preventing
+logout; unsuccessful revocation must not be falsely reported as completed. Offer
+an explicitly confirmed "Revoke all push subscriptions on this Mac" recovery
+control because copied subscriptions and devices lost after pairing cannot be
+revoked by clearing this browser's cookie alone.
+
+### Background behavior and platform limits
+
+Use standards-based Web Push with a service worker, not a browser-tab polling
+loop. Notifications can arrive when the app page is closed, subject to browser/OS
+background delivery support. The Mac service must be running, awake and online;
+a sleeping/offline Mac cannot originate a push. OS settings, force-quit behavior,
+Focus modes and push-service availability may delay or suppress display. Do not
+promise guaranteed or instantaneous delivery.
+
+Remote phone pairing/navigation remains private through Tailscale and HTTPS;
+no public inbound server or cloud relay is introduced. Sending push requires
+outbound HTTPS to the browser vendor's push service. A browser may receive the
+push without tailnet access, but opening private Companion content requires
+Tailscale and valid pairing. Push-service operators see endpoint, sender and
+traffic metadata; Web Push encrypts the payload, while the receiving browser/OS
+can display its contents. Generic payloads reduce disclosure rather than making
+this an entirely tailnet-only channel.
+
+For iPhone/iPad, explain that supported iOS/iPadOS 16.4+ requires adding Companion
+to the Home Screen and enabling notifications from that installed app. Desktop
+support is feature-detected and subject to OS/browser permission. Unsupported
+browsers retain in-app notices with an honest explanation. OS denial links to
+browser/OS instructions; repeatedly toggling cannot bypass a denied permission.
+
+A notification click focuses an existing same-origin app window or opens a
+validated same-origin Goals/Needs You/Updates destination. Payload URLs cannot
+open arbitrary origins or execute actions. If unpaired, show pairing; if offline,
+show the normal offline shell. Viewing the latest authoritative projection, not
+the notification's stale text, determines which actions are currently available.
+No approve, retry, publish, merge, terminal-input or install action is available
+from a notification button.
+
+### Delivery, persistence and security boundaries
+
+The Mac creates one persistent private VAPID keypair per installation, independent
+of release directories. Keys never appear in logs, APIs, reports or browser
+storage; only the public application-server key is exposed. Setup documents the
+operator's valid VAPID contact and outbound providers without sending mail. A key
+rotation is explicit and requires re-subscription; restarting or self-updating
+must preserve the key and existing subscriptions.
+
+Pairing and same-origin protections apply to subscription, preference, test and
+revocation APIs. Store subscription endpoints/auth material as secrets in a
+private notification store. Use unguessable per-subscription management proof;
+responses for one browser do not disclose other devices' endpoints or keys.
+Validate payload shape/length, HTTPS endpoints, public destination addresses,
+provider host/path policy and subscription public-key/auth lengths. Do not turn
+subscription registration into arbitrary outbound HTTP: use a narrow documented
+set of supported vendor endpoints, no redirects, public-address validation at
+connection time, bounded requests and tests for loopback, tailnet, private/link-local
+addresses, malicious host suffixes and DNS rebinding. Apply request/subscription
+limits and a rate limit to test notifications. Never log endpoints, key material
+or raw push-provider errors.
+
+Consume committed orchestration journal events through the existing notification
+consumer boundary, and eligible updater transitions through one Mac-side observer.
+Derive notification categories from authoritative workflow/updater state, without
+adding notification authority to scheduler commands. Register new subscriptions
+from their enrollment point; enabling notifications does not replay old history.
+
+Write an idempotent durable outbox entry before acknowledging a journal event.
+Dedupe by installation, source event/milestone and subscription; updater candidate
+notifications use the exact candidate SHA and update result uses the request ID.
+Replaying an event or polling the same status cannot enqueue duplicates. Only one
+owned sender claims an entry at a time, with leases and bounded attempt timeouts.
+Delivery cannot block command acceptance, worker admission, service startup or
+shutdown. Recheck revocation/preferences and whether an attention/update notice
+is still relevant immediately before sending.
+
+Expire queued attention/update-candidate notifications after one hour, and goal
+completion/update-result notices after 24 hours. Retry transient failures with
+bounded backoff and attempt limits, respecting bounded Retry-After; discard stale
+or resolved notices. Remove subscriptions on provider 404/410. Other permanent
+errors surface sanitized delivery status without an endless retry loop. Duplicate
+OS display after an ambiguous network/process failure cannot be absolutely
+excluded; stable notification tags and durable state reduce duplicates, and this
+limit is documented. Clearing a preference does not retract already displayed
+notifications or notifications already accepted by a vendor.
+
+Retain delivery metadata, not private payload bodies, for at most seven days and
+bound the store size. Keep keys/subscriptions/outbox outside versioned release
+paths. Define the notification schema and updater compatibility/backup behavior
+explicitly before implementation; a rollback cannot silently reset identities,
+replay stale notifications or damage core workflow state. Old versions without
+push may leave the private additive store inert; downgrade safety must be tested.
+Opt-in must not alter updater automatic-installation policy or mandatory in-app
+errors, recovery messages and approval questions.
+
+### Non-goals
+
+Email/SMS, Slack/Discord integration, a hosted relay, push-driven workflow actions,
+quiet hours, custom sounds, a notification inbox, guaranteed delivery and restoration
+of retired native-permission/legacy notification products are outside this change.
+OS Focus/notification settings control platform sound and quiet periods.
+No installed user device or production push subscription is exercised by routine
+tests. Real-device delivery is a separately identified validation step.
 
 ### Acceptance criteria
 
 | Criterion | Primary verification |
 | --- | --- |
-| Notifications is discoverable in Setup and directly linkable on desktop and phone. | Responsive Cypress settings navigation journey. |
-| The enabled default displays eligible update notices and disabling persists after reload. | Cypress preference-to-banner journey with a disposable update fixture. |
-| Changes synchronize between mounted consumers and browser tabs. | UI regression dispatching same-document and storage change events. |
-| Invalid stored data falls back safely; failed saves report failure without claiming success. | UI storage-failure and malformed-preference regression. |
-| Test notice is dismissible and cannot fabricate or approve an update. | UI test covering preview dismissal and absence of updater mutations. |
-| Candidate dismissal survives off/on; a new candidate can notify. | Update-notice UI regression covering candidate transitions. |
-| Notification preferences do not change automatic installation or hide required workflow/error feedback. | UI integration regression with updater state and error feedback. |
+| Notifications is discoverable in Setup on desktop/phone; in-app preferences persist with accurate save failures. | Responsive Cypress settings journey. |
+| Permission is requested only on explicit opt-in; denied/unsupported/enrollment-failed states are accurate. | UI permission/subscription lifecycle regression. |
+| Per-device event/privacy preferences and disable/logout/revoke-all cleanup behave as described. | Authenticated API lifecycle regression with two independent device subscriptions. |
+| Push settings/test/revoke endpoints preserve auth/origin rules and prevent arbitrary/private destination requests. | Backend adversarial API/transport regression with fake DNS and transport. |
+| Discreet payloads omit project/private content; optional titles are bounded and test messages harmless. | Payload allowlist regression covering workflow/error/credential-like fixture text. |
+| Event classes map to current questions/approval/recovery, confirmed completion and exact updater transitions. | Real-service fixture integration with fake push adapter and authoritative projections. |
+| Restart, journal replay, enrollment baseline, leases, revocation and terminal retry outcomes preserve bounded delivery. | Fake-clock outbox crash/replay regression. |
+| Service-worker push displays safely and click targets are same-origin navigation only, with the page closed. | Service-worker event harness with closed-client and hostile-payload cases. |
+| A subscribed device survives update/restart, and rollback preserves keys/state without replay or core-data damage. | Disposable updater compatibility/rollback integration test. |
+| Offline/OS/provider limitations are accurately explained and a real push reaches an enrolled background device. | Explicitly scoped real-device smoke test, separately recorded from fake browser tests. |
 
-Success measure: the responsive browser journey changes the preference, reloads,
-and confirms the expected banner visibility without any updater preference write.
-Run `npm run verify` and the relevant local Cypress journey for implementation.
+Success measure: on one supported desktop browser and one iOS Home Screen PWA,
+a test push and a Needs your attention event each display after the app page closes,
+and tapping opens the correct paired private destination. Record actual delivery
+latency and any missed/duplicate deliveries; fake tests do not satisfy this measure.
 
-This amendment is proposed following the request to add notification settings;
-it requires human review after its spec commit and before an implementation plan
-commit, as required by AGENTS.md. It does not reinstate retired legacy channels.
+Run `npm run verify`, `npm run test:mac` and relevant local Cypress journeys before
+reviewing implementation. Background OS delivery cannot be established by Cypress
+mocks alone; keep the real-device success measure explicitly unverified until run.
+
+The user selected background push on 2026-09-15. This committed amendment still
+requires the human spec review before an implementation plan commit mandated by
+AGENTS.md; selection of the feature scope is not a claim that its detailed privacy,
+delivery and persistence contract has already been reviewed.
 
 ## Updater, data and cleanup boundaries
 
