@@ -1,7 +1,8 @@
 # Mission Control product redesign
 
 Date: 2026-09-15
-Status: Draft delivery contract for human review. No implementation plan yet.
+Status: Approved for implementation by the user's “do it” after review of commit
+`7c7e9b5`. The representative run and success target remain deferred by the user.
 
 ## Outcome
 
@@ -242,6 +243,7 @@ goal, reported alongside failures so unsuccessful runs are not hidden. The user
 explicitly deferred selection of the representative goal and target until the
 design is ready; both remain pending human review, not assumed release success.
 
-Human review of this committed draft must precede the implementation plan.
-Review should confirm the concrete initial gates and navigation, and resolve the
-success target before this contract is considered fully approved for delivery.
+The user reviewed the committed draft and authorized implementation. Choose the
+representative run and success target with the user when the implementation is
+ready for evaluation; their deferral does not block implementation or replace
+the acceptance criteria above.
