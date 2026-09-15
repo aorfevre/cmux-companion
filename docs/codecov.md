@@ -25,7 +25,7 @@ thresholds were weakened. Codecov measures covered lines, not test quality.
 4. Run Verify on `main` through the next main push to establish the baseline,
    then confirm both reports and a subsequent PR comparison in Codecov.
 
-When enabled, main pushes run full verification instead of using the verified-tree
+When Codecov or SonarQube reporting is enabled, main pushes run full verification instead of using the verified-tree
 shortcut. This costs another test run but produces a real baseline for the main
 commit; the pipeline does not relabel a PR report as a main report. All verification
 evidence and installed-updater eligibility checks otherwise remain unchanged.

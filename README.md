@@ -278,6 +278,9 @@ code scanning. A skipped workflow is not a completed scan.
 [Codecov reporting](docs/codecov.md) uploads the existing backend/UI coverage
 reports after account activation; local 90% line-coverage gates remain required.
 
+[SonarQube Cloud](docs/sonarqube.md) shares those coverage reports and runs its
+quality gate after the project credentials and analysis mode are configured.
+
 ## Configuration
 
 New installations need no environment configuration: pair and open `/onboarding`
