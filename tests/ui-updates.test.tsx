@@ -33,7 +33,7 @@ test('automatic installation starts unchecked and requires unlocking before a re
 });
 test('manual installation pins the displayed commit, requires confirmation, then offers cancellation', async () => {
   const calls = api(); render(<UpdateSettings readOnly={false} />);
-  await userEvent.click(await screen.findByRole('button', { name: 'Update when idle' })); assert.equal(calls.length, 0);
+  await userEvent.click(await screen.findByRole('button', { name: 'Update when ready' })); assert.equal(calls.length, 0);
   assert.ok(screen.getByRole('group', { name: 'Confirm update' }));
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' })); assert.equal(calls.length, 0);
   await userEvent.click(screen.getByRole('button', { name: 'Update now' }));
@@ -64,4 +64,13 @@ test('check, retry, automatic waiting, recovery and pending-CI states are explai
   view.unmount(); state.request = { ...state.request!, source: 'automatic', status: 'queued' }; api(state); const queued = render(<UpdateSettings readOnly={false} />); assert.ok(await screen.findByText('Queued by automatic installation.')); queued.unmount();
   state.request = { ...state.request, status: 'running', phase: 'restarting' }; api(state); const running = render(<UpdateSettings readOnly={false} />); assert.ok(await screen.findByText(/This transaction has started/)); running.unmount();
   state.candidate = null; state.request = null; state.checkError = null; api(state); render(<UpdateSettings readOnly={false} />); assert.ok(await screen.findByText('A newer main commit is awaiting successful checks.'));
+});
+
+test('readiness names the blocking effect and explains cmux continuity', async () => {
+  const state = initial(); state.blockers = ['A goal repository fetch is still running'];
+  api(state); render(<UpdateSettings readOnly={false} />);
+  assert.ok(await screen.findByText('A goal repository fetch is still running'));
+  assert.ok(screen.getByText(/Existing cmux sessions and supported planning terminals remain open/));
+  await userEvent.click(screen.getByRole('button', { name: 'Update now' }));
+  assert.ok(screen.getByRole('group', { name: 'Confirm update' }).textContent?.includes('Existing cmux sessions remain open'));
 });

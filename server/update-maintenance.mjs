@@ -1,14 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { updateError } from '../updater/src/control.mjs';
 
+export function managedWorkBlockers(runtime, handoff = []) {
+  if (!runtime?.scheduler || !runtime.store) return ['Companion workflow state is unavailable'];
+  const blockers = [];
+  if (runtime.scheduler.startupJobs?.size) blockers.push('A goal repository fetch is still running');
+  if (runtime.scheduler.verifications?.active.size) blockers.push('A verification process is still running');
+  if (runtime.scheduler.publications?.active.size) blockers.push('A pull request publication is still running');
+  if (runtime.store.operations().some(op => op.status !== 'completed')) blockers.push('A managed operation has not settled');
+  for (const goal of runtime.store.list()) {
+    if (goal.attempts.some(attempt => attempt.workerState !== 'stopped' && !handoff.some(entry => entry.goalId === goal.id && entry.operationId === attempt.operationId && entry.identity === attempt.identity && attempt.role === 'planner' && attempt.mode === 'interactive' && attempt.workerState === 'running' && attempt.status === 'running' && attempt.generation === goal.generation && attempt.revision === goal.revision))) blockers.push('A managed agent requires a verified handoff or completion');
+    if (goal.verificationRuns?.some(run => run.workerState !== 'stopped')) blockers.push('A verification worker has not confirmed it stopped');
+    if (goal.results?.some(result => result.status === 'pending')) blockers.push('A submitted agent result is awaiting reconciliation');
+  }
+  return [...new Set(blockers)];
+}
+
 export function managedWorkBusy(runtime, handoff = []) {
-  if (!runtime?.scheduler || !runtime.store) return true;
-  if (runtime.scheduler.startupJobs?.size) return true;
-  if (runtime.scheduler.verifications?.active.size || runtime.scheduler.publications?.active.size) return true;
-  if (runtime.store.operations().some(op => op.status !== 'completed')) return true;
-  return runtime.store.list().some(goal => goal.attempts.some(attempt => attempt.workerState !== 'stopped' && !handoff.some(entry => entry.goalId === goal.id && entry.operationId === attempt.operationId && entry.identity === attempt.identity && attempt.role === 'planner' && attempt.mode === 'interactive' && attempt.workerState === 'running' && attempt.status === 'running' && attempt.generation === goal.generation && attempt.revision === goal.revision))
-    || goal.verificationRuns?.some(run => run.workerState !== 'stopped')
-    || goal.results?.some(result => result.status === 'pending'));
+  return managedWorkBlockers(runtime, handoff).length > 0;
 }
 
 // A goal's lifecycle label and queued work are durable, resumable state. The
@@ -31,6 +40,9 @@ export function installUpdateMaintenance({ runtime, control, serviceId = randomU
     mutations++; request.updateMutation = true;
   });
   runtime.app.addHook('onResponse', async request => { if (request.updateMutation) { request.updateMutation = false; mutations--; } });
+  function blockers() {
+    return [...(mutations ? ['A Companion change request is still in progress'] : []), ...managedWorkBlockers(runtime, handoff())];
+  }
   async function busy() {
     if (mutations || managedWorkBusy(runtime, handoff())) return true;
     // Standalone cmux agents live independently of Companion's service process.
@@ -39,6 +51,7 @@ export function installUpdateMaintenance({ runtime, control, serviceId = randomU
   }
   return {
     serviceId,
+    blockers,
     async adopt() {
       if (handoff().length) {
         const observed = await runtime.prepareHandoff(handoff());
@@ -56,7 +69,8 @@ export function installUpdateMaintenance({ runtime, control, serviceId = randomU
           const evidence = await runtime.prepareHandoff();
           control.change(state => { if (state.fence?.id !== id || state.fence.serviceId !== serviceId) throw updateError('Update fence changed'); state.fence.handoff = evidence; });
         }
-        if (await busy()) { control.unfence(id); return { ready: false, serviceId, reason: 'Waiting for Companion-managed work to finish' }; }
+        const waiting = blockers();
+        if (waiting.length) { control.unfence(id); return { ready: false, serviceId, reason: waiting.join('; ') }; }
         // Include requests that entered before the fence while external evidence
         // was being collected; new requests cannot pass onRequest during it.
         if (mutations || managedWorkBusy(runtime, handoff())) throw updateError('Work changed during update admission');
