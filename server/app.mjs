@@ -17,6 +17,7 @@ import { CcsReconnectManager } from "./ccs-reconnect.mjs";
 import { deploymentStatus, updaterLaunchAgentRunning } from "./deployment-health.mjs";
 import {
   isAuthorized,
+  isBearerAuthorized,
   isSessionAuthorized,
   isSafeOrigin,
   safeEqual,
@@ -93,7 +94,9 @@ export async function buildApp({
       if (authorized && path !== "/api/auth/pair" && path !== "/api/auth/logout" && isSessionAuthorized(request, token)) {
         reply.header("Set-Cookie", sessionCookie(request, token));
       }
-      if (MUTATING.has(request.method) && !isSafeOrigin(request)) {
+      const eventUpgrade = path === '/api/events' && request.headers.upgrade?.toLowerCase() === 'websocket';
+      if ((MUTATING.has(request.method) || eventUpgrade) && (!isSafeOrigin(request)
+        || eventUpgrade && !request.headers.origin && !isBearerAuthorized(request, token))) {
         return reply.code(403).send({ error: "Origin rejected", code: "BAD_ORIGIN" });
       }
     }

@@ -7,7 +7,21 @@ permissions:
   contents: read
   actions: read
 jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run macOS boundary checks
+        run: npm run test:mac
   verify:
+    needs: macos
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

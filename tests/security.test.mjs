@@ -34,7 +34,7 @@ test("authorizes only the pairing bearer or signed session cookie", () => {
 });
 
 test("issues a secure one-year session cookie", () => {
-  const cookie = sessionCookie({ headers: { "x-forwarded-proto": "https" }, protocol: "http" }, "a-secure-pairing-token-that-is-long-enough");
+  const cookie = sessionCookie({ headers: { host: "mac.tail.test", "x-forwarded-proto": "https" }, raw: { socket: { remoteAddress: "127.0.0.1" } }, protocol: "http" }, "a-secure-pairing-token-that-is-long-enough");
   assert.match(cookie, /Max-Age=31536000/);
   assert.match(cookie, /HttpOnly/);
   assert.match(cookie, /SameSite=Strict/);
@@ -53,7 +53,25 @@ test("malformed cookies do not break valid session or bearer authentication", ()
 
 test("parses cookies and validates same-origin mutations", () => {
   assert.deepEqual(parseCookies("one=1; encoded=hello%20world"), { one: "1", encoded: "hello world" });
-  assert.equal(isSafeOrigin({ headers: { origin: "https://mac.tail.test", host: "mac.tail.test" } }), true);
+  assert.equal(isSafeOrigin({ headers: { origin: "https://mac.tail.test", host: "mac.tail.test" }, protocol: "https" }), true);
   assert.equal(isSafeOrigin({ headers: { origin: "https://evil.test", host: "mac.tail.test" } }), false);
   assert.equal(isSafeOrigin({ headers: {} }), true);
+});
+
+
+test('origin comparison checks scheme, port and only trusts loopback forwarded headers', () => {
+  const request = { headers: { host: 'bridge.local:3210', 'x-forwarded-host': 'mac.tail.test:8443', 'x-forwarded-proto': 'https', origin: 'https://mac.tail.test:8443' }, raw: { socket: { remoteAddress: '127.0.0.1' } } };
+  assert.equal(isSafeOrigin(request), true);
+  assert.match(sessionCookie(request, 'fixture'), /; Secure$/);
+  for (const origin of ['http://mac.tail.test:8443', 'https://mac.tail.test:9443', 'https://evil.test', 'null', '', 'https://mac.tail.test:8443/path']) {
+    assert.equal(isSafeOrigin({ ...request, headers: { ...request.headers, origin } }), false, origin);
+  }
+  const remote = { ...request, raw: { socket: { remoteAddress: '192.0.2.1' } } };
+  assert.equal(isSafeOrigin(remote), false);
+  assert.doesNotMatch(sessionCookie(remote, 'fixture'), /; Secure$/);
+  assert.equal(isSafeOrigin({ ...remote, headers: { ...remote.headers, origin: 'http://bridge.local:3210' } }), true);
+  for (const host of ['mac.tail.test@evil.test', 'mac.tail.test/path', 'mac.tail.test,evil.test']) {
+    assert.equal(isSafeOrigin({ headers: { host, origin: 'http://evil.test' } }), false);
+  }
+  assert.equal(isSafeOrigin({ headers: { host: 'mac.tail.test:443', origin: 'https://mac.tail.test' }, protocol: 'https' }), true);
 });

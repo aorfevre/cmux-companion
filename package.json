@@ -21,17 +21,18 @@
     "update:disable": "node scripts/updater-operator.mjs disable",
     "update:enable": "node scripts/updater-operator.mjs enable",
     "test": "node scripts/run-backend-tests.mjs",
-    "test:coverage": "node --test --test-concurrency=4 --experimental-test-coverage --test-coverage-include='server/**' --test-coverage-include='updater/src/**' --test-coverage-exclude='server/index.mjs' --test-coverage-exclude='server/supervisor.mjs' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/backend.lcov $(node scripts/run-backend-tests.mjs --list)",
+    "test:coverage": "node --test --test-concurrency=4 --experimental-test-coverage --test-coverage-lines=90 --test-coverage-include='server/**' --test-coverage-include='updater/src/**' --test-coverage-exclude='server/index.mjs' --test-coverage-exclude='server/supervisor.mjs' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/backend.lcov $(node scripts/run-backend-tests.mjs --list)",
     "test:live": "node --test tests/cmux.live.mjs",
     "test:ui": "NODE_ENV=test vitest run --config vitest.config.ts",
     "test:ui:coverage": "NODE_ENV=test vitest run --config vitest.config.ts --coverage",
     "test:e2e:local": "node scripts/run-local-cypress.mjs",
     "test:e2e:open": "node scripts/run-local-cypress.mjs --open",
     "typecheck": "tsc --noEmit && tsc --project tsconfig.backend.json",
-    "verify": "npm test && npm run test:ui && npm run lint && npm run typecheck && npm run build",
+    "verify": "npm run test:coverage && npm run test:ui:coverage && npm run lint && npm run typecheck && npm run build",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "orchestration:faults": "node scripts/run-orchestration-faults.mjs",
-    "orchestration:inventory": "node scripts/orchestration-inventory.mjs"
+    "orchestration:inventory": "node scripts/orchestration-inventory.mjs",
+    "test:mac": "node --test --test-concurrency=4 tests/codex-native.test.mjs tests/security.test.mjs tests/api-routes.test.mjs tests/orchestration-native-background.test.mjs tests/orchestration-native-terminal.test.mjs tests/orchestration-ownership.test.mjs tests/orchestration-cleanup.test.mjs"
   },
   "dependencies": {
     "@fastify/http-proxy": "^11.6.1",
@@ -76,5 +77,10 @@
     "vitest": "^4.1.11",
     "wrangler": "^4.127.1"
   },
-  "type": "module"
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aorfevre/cmux-companion.git"
+  }
 }

@@ -18,14 +18,19 @@ export function eligibleProof({ repository, tree, sourceHeadSha, workflowId, run
     || !Number.isSafeInteger(run.id) || run.id < 1 || !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) return false;
   if (artifact.expired !== false || artifact.name !== `verified-tree-${run.id}-${run.run_attempt}`
     || artifact.workflow_run?.id !== run.id || !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes < 1 || artifact.size_in_bytes > 65536) return false;
-  const verifyJobs = jobs?.filter(job => job.name === 'verify');
-  if (verifyJobs?.length !== 1 || verifyJobs[0].conclusion !== 'success' || verifyJobs[0].status !== 'completed'
-    || verifyJobs[0].run_id !== run.id || verifyJobs[0].run_attempt !== run.run_attempt) return false;
-  for (const name of ['Install dependencies', 'Run full verification']) {
-    const steps = verifyJobs[0].steps?.filter(step => step.name === name);
-    if (steps?.length !== 1 || steps[0].status !== 'completed' || steps[0].conclusion !== 'success') return false;
+  for (const [jobName, stepNames] of [
+    ['verify', ['Install dependencies', 'Run full verification']],
+    ['macos', ['Install dependencies', 'Run macOS boundary checks']],
+  ]) {
+    const matching = jobs?.filter(job => job.name === jobName);
+    if (matching?.length !== 1 || matching[0].conclusion !== 'success' || matching[0].status !== 'completed'
+      || matching[0].run_id !== run.id || matching[0].run_attempt !== run.run_attempt) return false;
+    for (const name of stepNames) {
+      const steps = matching[0].steps?.filter(step => step.name === name);
+      if (steps?.length !== 1 || steps[0].status !== 'completed' || steps[0].conclusion !== 'success') return false;
+    }
   }
-  return evidence.version === 1 && evidence.repository === repository && evidence.workflow === WORKFLOW
+  return evidence.version === 2 && evidence.repository === repository && evidence.workflow === WORKFLOW
     && evidence.runId === run.id && evidence.runAttempt === run.run_attempt
     && evidence.sourceHeadSha === sourceHeadSha && evidence.tree === tree && hash(evidence.testedSha)
     && testedCommit.sha === evidence.testedSha && testedCommit.tree?.sha === tree
@@ -48,7 +53,7 @@ function record(env) {
   const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
   const sourceHeadSha = event.pull_request?.head?.sha, testedSha = git('rev-parse', 'HEAD');
   if (!hash(sourceHeadSha) || testedSha !== env.GITHUB_SHA) throw new Error('Unsupported checkout');
-  const evidence = { version: 1, repository, workflow: WORKFLOW, runId, runAttempt, sourceHeadSha, testedSha, tree: git('rev-parse', 'HEAD^{tree}') };
+  const evidence = { version: 2, repository, workflow: WORKFLOW, runId, runAttempt, sourceHeadSha, testedSha, tree: git('rev-parse', 'HEAD^{tree}') };
   mkdirSync('.ci-evidence', { recursive: true });
   writeFileSync('.ci-evidence/verified-tree.json', JSON.stringify(evidence));
 }

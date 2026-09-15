@@ -36,9 +36,10 @@ of 100 main commits; no eligible candidate in that window means no update offere
 GitHub Enterprise and alternate channels are not supported in this version.
 
 Main's Verify run can reuse a successful pull-request verification when the merged
-Git tree is identical to the checkout that passed the full suite. It validates
-GitHub run, attempt, job and artifact evidence, and links the source run in its
-summary. Missing evidence, a changed tree, a failed rerun, fork-origin evidence or
+Git tree is identical to the checkout that passed the full suite. Reuse requires
+successful Linux verification with enforced coverage and macOS boundary checks.
+It validates GitHub run, attempt, job and versioned artifact evidence, and links
+the source run in its summary. Missing evidence, a changed tree, a failed rerun, fork-origin evidence or
 a direct push runs the full suite instead. PR checks and installation-time checks
 remain unchanged. This assumes verification depends on the checked-out source
 and the configured environment, rather than the branch name or merge commit ID.
@@ -72,8 +73,31 @@ node scripts/configure-cmux-automation.mjs
 
 Then pair through localhost and configure projects/tools at `/onboarding`. The
 pairing token is at `~/.config/cmux-companion/token`; read it locally without
-including it in logs or screenshots. Configure Tailscale Serve for the chosen
-Companion loopback port through your existing operator procedure. The bundled
+including it in logs or screenshots.
+
+For private remote access, first run `tailscale status` and `tailscale serve status`
+on the Mac. Confirm it is connected to your tailnet, inspect existing handlers,
+and enable MagicDNS/HTTPS certificates through your tailnet's normal administration
+if required. With the default Companion port and **no existing handler on 8443**:
+
+```sh
+tailscale serve --bg --https=8443 http://127.0.0.1:3210
+tailscale serve status
+```
+
+Use the HTTPS URL printed by Serve (including `:8443`) on another tailnet device,
+then pair there using the local token. Keep port 443 handlers intact. If 8443 is
+already owned, stop and choose an unused HTTPS port supported by your Tailscale
+version; do not overwrite that handler. For a custom Companion port, substitute
+its actual loopback address. Do not use `tailscale funnel`, public forwarding,
+or a non-loopback Companion bind.
+
+Confirm that the URL loads from a connected tailnet device, an unpaired browser
+cannot access protected APIs, and paired monitoring works. To remove only this
+handler later, after verifying it is still yours, use
+`tailscale serve --https=8443 off`; never use a global Serve reset to uninstall
+Companion. See [Tailscale Serve documentation](https://tailscale.com/kb/1242/tailscale-serve)
+for version-specific setup and ACL requirements. The bundled
 installer does not replace Tailscale handlers or change cmux configuration as a
 side effect of installing an application release.
 

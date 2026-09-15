@@ -8,13 +8,15 @@ import { eligibleProof, latestRun, main } from '../scripts/ci-verified-tree.mjs'
 
 function proof() {
   const repository = 'owner/repo', tree = 'a'.repeat(40), sourceHeadSha = 'b'.repeat(40), testedSha = 'c'.repeat(40);
-  return { repository, tree, sourceHeadSha, workflowId: 7,
+  const value = { repository, tree, sourceHeadSha, workflowId: 7,
     run: { id: 123, run_attempt: 2, repository: { full_name: repository }, head_repository: { full_name: repository }, event: 'pull_request', workflow_id: 7, path: '.github/workflows/verify.yml', head_sha: sourceHeadSha, status: 'completed', conclusion: 'success' },
     jobs: [{ name: 'verify', run_id: 123, run_attempt: 2, status: 'completed', conclusion: 'success', steps: ['Install dependencies', 'Run full verification'].map(name => ({ name, status: 'completed', conclusion: 'success' })) }],
     artifact: { expired: false, name: 'verified-tree-123-2', workflow_run: { id: 123 }, size_in_bytes: 1200 },
-    evidence: { version: 1, repository, workflow: '.github/workflows/verify.yml', runId: 123, runAttempt: 2, sourceHeadSha, testedSha, tree },
+    evidence: { version: 2, repository, workflow: '.github/workflows/verify.yml', runId: 123, runAttempt: 2, sourceHeadSha, testedSha, tree },
     testedCommit: { sha: testedSha, tree: { sha: tree }, parents: [{ sha: 'd'.repeat(40) }, { sha: sourceHeadSha }] },
   };
+  value.jobs.push({ ...structuredClone(value.jobs[0]), name: 'macos', steps: ['Install dependencies', 'Run macOS boundary checks'].map(name => ({ name, status: 'completed', conclusion: 'success' })) });
+  return value;
 }
 
 test('only the same tested merge tree with independently successful full steps is reusable', () => {
@@ -112,4 +114,16 @@ test('real depth-one merge checkout and ZIP proof reuse only complete independen
     }
     assert.equal(downloads, 2, 'only valid and malformed scenarios reach archive handling');
   } finally { process.chdir(original); rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('reuse requires current macOS evidence and rejects pre-coverage proofs', () => {
+  for (const mutate of [
+    value => { value.jobs = value.jobs.filter(job => job.name !== 'macos'); },
+    value => { value.jobs[1].conclusion = 'failure'; },
+    value => { value.jobs[1].steps[1].conclusion = 'skipped'; },
+    value => { value.jobs[1].run_attempt++; },
+    value => { value.jobs.push(structuredClone(value.jobs[1])); },
+    value => { value.evidence.version = 1; },
+  ]) { const value = proof(); mutate(value); assert.equal(eligibleProof(value), false); }
 });

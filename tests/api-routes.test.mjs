@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
+import { sessionValue } from "../server/security.mjs";
 import { CmuxCommandError } from "../server/cmux-client.mjs";
 import { buildTestApp as buildApp } from "./helpers/api-app.mjs";
 
@@ -12,7 +13,7 @@ const TOKEN = "route-token-that-is-deliberately-long-and-private";
 const WS_ID = "11111111-2222-4333-8444-555555555555";
 const TERM_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const REPO_ID = "repository12345678";
-const ORIGIN = { host: "mac.tail.test", origin: "https://mac.tail.test" };
+const ORIGIN = { host: "mac.tail.test", origin: "https://mac.tail.test", "x-forwarded-proto": "https" };
 const AUTH = { authorization: `Bearer ${TOKEN}`, ...ORIGIN };
 
 function fakeCmux() {
@@ -205,4 +206,30 @@ test("an idle viewport lease is released after twenty-five seconds", async (t) =
   assert.deepEqual(cmux.calls.at(-1), ["viewport", TERM_ID, { clientId: "phone-3", generation: 8, clear: true }]);
   await app.close();
   assert.equal(cmux.calls.length, 2, "an expired lease is not cleared a second time on shutdown");
+});
+
+
+test('event upgrades reject foreign origins and origin-less cookies before subscribing', async t => {
+  const hub = fakeHub(), app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, eventHub: hub });
+  await app.ready();
+  const cookie = `cmux_session=${sessionValue(TOKEN)}`;
+  for (const origin of ['https://mac.tail.test:9443', 'http://mac.tail.test', 'https://evil.test', 'null', undefined]) {
+    const headers = { host: 'mac.tail.test', 'x-forwarded-proto': 'https', cookie, ...(origin === undefined ? {} : { origin }) };
+    await assert.rejects(app.injectWS('/api/events', { headers, socket: { remoteAddress: '127.0.0.1' } }), /403/);
+    assert.equal(hub.consumers, 0);
+    assert.equal(hub.listenerCount('event'), 0);
+  }
+  // Browser pairing still produces a usable same-origin cookie. Non-browser
+  // clients without Origin must explicitly carry the bearer credential.
+  const paired = await app.inject({ method: 'POST', url: '/api/auth/pair', headers: ORIGIN, payload: { token: TOKEN } });
+  assert.equal(paired.statusCode, 200);
+  for (const headers of [{ ...ORIGIN, cookie: paired.headers['set-cookie'].split(';')[0] }, { authorization: `Bearer ${TOKEN}` }]) {
+    let serverSocket;
+    app.websocketServer.once('connection', socket => { serverSocket = socket; });
+    const socket = await app.injectWS('/api/events', { headers, socket: { remoteAddress: '127.0.0.1' } });
+    assert.equal(hub.consumers, 1);
+    const closed = new Promise(resolve => serverSocket.once('close', resolve));
+    serverSocket.terminate(); await closed; socket.terminate();
+    assert.equal(hub.consumers, 0);
+  }
 });

@@ -238,7 +238,7 @@ test("renews the one-year session cookie during authenticated use", async (t) =>
   assert.match(response.headers["set-cookie"], /Secure/);
   const bearer = await app.inject({ url: "/api/bootstrap", headers: { authorization: `Bearer ${TOKEN}` } });
   assert.equal(bearer.headers["set-cookie"], undefined);
-  const logout = await app.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" } });
+  const logout = await app.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test", "x-forwarded-proto": "https" } });
   assert.match(logout.headers["set-cookie"], /Max-Age=0/);
   assert.doesNotMatch(logout.headers["set-cookie"], /Max-Age=31536000/);
 });
@@ -268,7 +268,7 @@ test("protects and serves the CCS reconnect lifecycle", async (t) => {
   const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, ccsReconnect });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
-  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test", "x-forwarded-proto": "https" };
   assert.equal((await app.inject({ method: "POST", url: "/api/account-usage/0123456789abcdefabcd/reconnect" })).statusCode, 401);
   assert.equal((await app.inject({ method: "POST", url: "/api/account-usage/0123456789abcdefabcd/reconnect", headers: { ...headers, origin: "https://evil.test" } })).statusCode, 403);
   assert.equal((await app.inject({ method: "POST", url: "/api/account-usage/0123456789abcdefabcd/reconnect", headers })).statusCode, 201);
@@ -305,7 +305,7 @@ test("paired clients can read state and safely control a terminal", async (t) =>
   const viewport = await app.inject({
     method: "POST",
     url: `/api/terminals/${TERM_ID}/viewport`,
-    headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test", "x-forwarded-proto": "https" },
     payload: { clientId: "phone-client-123", generation: 1, columns: 42, rows: 18 },
   });
   assert.equal(viewport.statusCode, 200);
@@ -314,7 +314,7 @@ test("paired clients can read state and safely control a terminal", async (t) =>
   const image = await app.inject({
     method: "POST",
     url: "/api/attachments/images",
-    headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test", "x-forwarded-proto": "https" },
     payload: { dataUrl: "data:image/png;base64,aW1hZ2U=", name: "paste.png" },
   });
   assert.equal(image.statusCode, 201);
@@ -324,7 +324,7 @@ test("paired clients can read state and safely control a terminal", async (t) =>
   const input = await app.inject({
     method: "POST",
     url: `/api/terminals/${TERM_ID}/input`,
-    headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" },
+    headers: { cookie, host: "mac.tail.test", origin: "https://mac.tail.test", "x-forwarded-proto": "https" },
     payload: { text: "continue", enter: true },
   });
   assert.equal(input.statusCode, 200);
@@ -423,7 +423,7 @@ test("launches only catalogued repositories and exposes overview state", async (
   const app = await buildApp(t, { cmux, token: TOKEN, repoCatalog });
   t.after(() => app.close());
   const cookie = await pairedCookie(app);
-  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test", "x-forwarded-proto": "https" };
   const launched = await app.inject({ method: "POST", url: "/api/workspaces", headers, payload: { repoId: repo.id, agent: "codex", prompt: "test it", script: null } });
   assert.equal(launched.statusCode, 201);
   assert.deepEqual(cmux.calls.at(-1)[0], "create");
@@ -455,7 +455,7 @@ test("model settings require pairing and a safe origin, then affect manual agent
   t.after(() => app.close());
   assert.equal((await app.inject({ url: "/api/settings/models" })).statusCode, 401);
   const cookie = await pairedCookie(app);
-  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test" };
+  const headers = { cookie, host: "mac.tail.test", origin: "https://mac.tail.test", "x-forwarded-proto": "https" };
   const payload = { roles: { coder: { models: { codex: "custom-coder" } } } };
   assert.equal((await app.inject({ method: "PATCH", url: "/api/settings/models", headers: { ...headers, origin: "https://evil.test" }, payload })).statusCode, 403);
   const saved = await app.inject({ method: "PATCH", url: "/api/settings/models", headers, payload });

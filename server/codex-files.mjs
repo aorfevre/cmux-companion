@@ -4,9 +4,14 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 const hash = value => createHash('sha256').update(value).digest('hex');
+// Use one portable policy for reads, writes and enumeration. macOS can preserve
+// caller spelling in realpath while resolving case/Unicode aliases to metadata.
+const protectedComponent = name => ['.git', '.codex', '.companion'].includes(
+  name.normalize('NFKC').toLowerCase().replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, ''),
+);
 function inside(root, path) {
   const rel = relative(root, path);
-  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) || rel.split(sep).some(part => ['.git', '.codex', '.companion'].includes(part))) throw new Error('Path is outside the permitted project files');
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) || rel.split(sep).some(protectedComponent)) throw new Error('Path is outside the permitted project files');
   return path;
 }
 export function scopedFile(config, name, input) {
@@ -15,7 +20,7 @@ export function scopedFile(config, name, input) {
   const path = inside(root, resolve(root, input.path));
   if (name === 'list_files') {
     inside(root, realpathSync(path));
-    return { entries: readdirSync(path, { withFileTypes: true }).filter(entry => !entry.isSymbolicLink() && !['.git', '.codex', '.companion'].includes(entry.name)).slice(0, 500).map(entry => ({ name: entry.name, directory: entry.isDirectory() })) };
+    return { entries: readdirSync(path, { withFileTypes: true }).filter(entry => !entry.isSymbolicLink() && !protectedComponent(entry.name)).slice(0, 500).map(entry => ({ name: entry.name, directory: entry.isDirectory() })) };
   }
   if (name === 'read_file') {
     inside(root, realpathSync(path));
