@@ -34,7 +34,8 @@ jobs:
           cache: npm
       - name: Check verified merge tree
         id: proof
-        if: github.event_name == 'push'
+        # Reporting needs fresh main coverage, not a reused verification receipt.
+        if: github.event_name == 'push' && vars.SONAR_ENABLED != 'true'
         run: node scripts/ci-verified-tree.mjs reuse
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -59,4 +60,61 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      - name: Save coverage reports
+        if: vars.SONAR_ENABLED == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            coverage/backend.lcov
+            coverage/ui/lcov.info
+          if-no-files-found: error
+          retention-days: 7
       # Cypress is intentionally local-only; see AGENTS.md.
+  sonarqube:
+    name: SonarQube analysis and quality gate
+    needs: verify
+    # Never expose the analysis secret to forks or Dependabot workflows.
+    # PR analysis is opt-in after the SonarQube plan's capabilities are confirmed.
+    if: >-
+      vars.SONAR_ENABLED == 'true' && github.actor != 'dependabot[bot]' &&
+      (github.event_name == 'push' ||
+       (vars.SONAR_PR_ANALYSIS_ENABLED == 'true' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.login != 'dependabot[bot]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out analysis source and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download this run's coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: coverage
+      - name: Require reports and account configuration
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+        run: |
+          test -s coverage/backend.lcov
+          test -s coverage/ui/lcov.info
+          test -n "$SONAR_TOKEN" || { echo 'Set the SONAR_TOKEN Actions secret.'; exit 1; }
+          test -n "$SONAR_ORGANIZATION" || { echo 'Set the SONAR_ORGANIZATION Actions variable.'; exit 1; }
+      - name: Analyze and wait for the quality gate
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >-
+            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.projectKey=aorfevre_cmux-companion
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300

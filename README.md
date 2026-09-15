@@ -275,6 +275,9 @@ changes do not update that installation.
 JavaScript/TypeScript; activation requires public visibility or licensed private
 code scanning. A skipped workflow is not a completed scan.
 
+[SonarQube Cloud](docs/sonarqube.md) imports backend/UI coverage reports and runs its
+quality gate after the project credentials and analysis mode are configured.
+
 ## Configuration
 
 New installations need no environment configuration: pair and open `/onboarding`
