@@ -16,7 +16,7 @@ export function registerUpdateRoutes(app, { control, token, maintenance, request
     if (!isAuthorized(request, token)) return reply.code(401).send({ error: 'Pair this device to continue' });
     if (request.method !== 'GET' && !isSafeOrigin(request)) return reply.code(403).send({ error: 'Origin rejected' });
   });
-  app.get('/api/updater/updates', async () => control.status());
+  app.get('/api/updater/updates', async () => ({ ...control.status(), blockers: maintenance?.blockers() ?? ['Companion workflow state is unavailable'] }));
   app.post('/api/updater/check', { schema: object({}) }, async () => { await requestCheck(); return control.status(); });
   app.patch('/api/updater/preferences', { schema: object({ revision: { type: 'integer', minimum: 0 }, automatic: { type: 'boolean' } }) }, async request => {
     control.policy(request.body.revision, request.body.automatic); return control.status();
