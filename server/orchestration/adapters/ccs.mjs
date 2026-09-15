@@ -67,15 +67,27 @@ export function ccsCommand({ request, engine, capabilities, env, contextPath, se
  * @param {string} stdout @param {string} conversationId */
 export function nativeResult(stdout, conversationId) {
   requireValue(Buffer.byteLength(stdout) <= 2 * 1024 * 1024, 'Native output exceeds result limit', 'INVALID_RESULT');
-  const records = stdout.split('\n').filter((line) => line.trim()).map((line) => {
+  const lines = stdout.split('\n').filter((line) => line.trim());
+  // CCS writes this local proxy startup notice to stdout before Claude's JSONL.
+  // Ignore only that known preamble, never arbitrary diagnostics or broken JSON.
+  if (/^\[i\] Joined existing CLIProxy on port [0-9]{1,5} \(https?\)\r?$/.test(lines[0] ?? '')) lines.shift();
+  const records = lines.map((line) => {
     try { return JSON.parse(line); } catch { throw new Error('Native output is not valid structured transport'); }
   });
   const results = records.filter((record) => record && record.type === 'result');
   requireValue(results.length === 1, 'Native output needs exactly one terminal result', 'INVALID_RESULT');
   const result = results[0];
   requireValue(result.session_id === conversationId && result.subtype === 'success' && result.is_error === false && typeof result.result === 'string', 'Native result did not succeed for its recorded conversation', 'INVALID_RESULT');
+  let raw = result.result.trim();
+  // Some providers wrap their final object in one JSON fence. Unwrap only an
+  // unambiguous fence in the terminal result, never intermediate assistant text.
+  if (!raw.startsWith('{')) {
+    const fenced = /^([\s\S]*?)```json[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*(?:\r?\n|$)([\s\S]*)$/.exec(raw);
+    requireValue(fenced && (!fenced[1] || fenced[1].endsWith('\n')) && !/[{}]|```/.test(fenced[1] + fenced[3]) && !fenced[2].includes('```'), 'Native result is not a single JSON role envelope', 'INVALID_RESULT');
+    raw = fenced[2].trim();
+  }
   let envelope;
-  try { envelope = JSON.parse(result.result); } catch { throw new Error('Native result is not a JSON role envelope'); }
+  try { envelope = JSON.parse(raw); } catch { throw new Error('Native result is not a JSON role envelope'); }
   requireValue(envelope && typeof envelope === 'object' && !Array.isArray(envelope), 'Native result is not a role object', 'INVALID_RESULT');
-  return result.result;
+  return raw;
 }
