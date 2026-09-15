@@ -43,7 +43,8 @@ separate future work, as identified as such in the review.
 | --- | --- |
 | Security, WebSocket, proof reuse, and settings-selection tests | Passed |
 | `npm run test:mac` | Passed: 74 tests, no skips |
-| `npm run verify` | Passed: 844 backend tests, 1 platform skip; 155 UI tests; lint, types and build; backend/UI lines 97.21% / 95.09% |
+| `npm run verify` | App-code run passed: 844 backend tests, 1 platform skip; 155 UI tests; lint, types and build; backend/UI lines 97.21% / 95.09% |
+| CI follow-up watchdog/runtime tests | Passed: 23 tests with production environment and coverage; includes deterministic early-exit refusal |
 | Under-coverage negative fixtures | Passed: both expected threshold-specific failures verified |
 | Full `npm audit --json` | Passed: zero advisories |
 | `npm audit --package-lock-only --audit-level=high` | Passed: zero advisories |
@@ -78,6 +79,15 @@ needed to verify these boundaries.
   case was accepted. The fixture now supplies the intended loopback peer; the
   complete origin matrix passes. One full verification had already started with
   the earlier fixture and failed; the final full run uses the corrected fixture.
+- Hosted Linux run 34973912866 failed an existing updater watchdog test: the
+  instant-exit command completed before asynchronous identity persistence and
+  returned conservative ownership uncertainty. That test targets recorded
+  success/failure and durable replay. Its fixture now waits for its own persisted
+  provider receipt before exiting, with the same 5-second ceiling; it no longer
+  depends on scheduling speed. Production ownership rules and assertions remain
+  strict. A separate regression holds identity persistence unresolved and proves
+  both zero/nonzero early exits still produce `IDENTITY_FAILED`. The follow-up
+  PR run verifies the complete suite with this correction.
 - Existing port owners were preserved. Browser checks used free ports
   33381–33383. Owned harnesses cleaned up their services and workers.
 - Native SQLite, Node filesystem globbing, and vinext route-classification notices
