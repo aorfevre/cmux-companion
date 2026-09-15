@@ -116,7 +116,7 @@
       "height": 192,
       "first_add_commit": "8828037f96ab4c21e03d1a49be142f31da19561d",
       "kind": "application icon",
-      "rights_evidence": "Maintainer source/license confirmation pending; no generator or embedded license found."
+      "rights_evidence": "Maintainer confirmed on 2026-09-15 that the icons were generated in Codex. No third-party asset source reported; generation session/prompt/model not retained. Origin attestation, not independent exclusivity/third-party rights clearance."
     },
     {
       "path": "public/icon-512.png",
@@ -125,7 +125,7 @@
       "height": 512,
       "first_add_commit": "8828037f96ab4c21e03d1a49be142f31da19561d",
       "kind": "application icon",
-      "rights_evidence": "Maintainer source/license confirmation pending; no generator or embedded license found."
+      "rights_evidence": "Maintainer confirmed on 2026-09-15 that the icons were generated in Codex. No third-party asset source reported; generation session/prompt/model not retained. Origin attestation, not independent exclusivity/third-party rights clearance."
     }
   ]
 }

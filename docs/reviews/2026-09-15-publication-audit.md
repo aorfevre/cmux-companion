@@ -18,8 +18,8 @@ plan does not support it on this private repository. **Required CI is not enable
 as a server-side merge restriction.** The prepared configuration is retained below.
 
 The dependency/artwork audit is complete within its stated scope. **Bundled binary
-distribution is not cleared:** native-library notices/source obligations, font
-notices and icon provenance remain unresolved. The source MIT notices are present.
+distribution is not cleared:** native-library notices/source obligations and font
+notices remain unresolved. Icon origin is now maintainer-attested Codex generation. The source MIT notices are present.
 
 ## Privacy evidence
 
@@ -127,8 +127,9 @@ The audit confirmed both source MIT notices and matching installed versions for
 embedded-library list and the Noto Sans font's embedded license metadata. It found
 33 installed packages without a named license/notice file, and two app icons with
 no recorded source/license. Missing named files are evidence to resolve, not proof
-that each upstream project has no license. A maintainer artwork-source question
-is pending. No copyright assertion was fabricated and no dependency was relicensed.
+that each upstream project has no license. The maintainer subsequently confirmed both icons were generated in Codex; that
+attestation is now recorded in the asset inventory. No independent copyright
+exclusivity is asserted and no dependency was relicensed.
 
 No Companion binary is currently published in GitHub releases. The local-build
 installer obtains dependencies with npm, including development tools. Before
@@ -146,7 +147,7 @@ Failed: main branch-protection configuration, HTTP 403 (plan restriction).
 History scanners returned their expected finding exit code for the documented
 fixture; neither scan failed to execute.
 
-Unverified: original app-icon creation/license; complete notices and corresponding
+Unverified: independent third-party/exclusive rights clearance for generated icons; complete notices and corresponding
 source/relink compliance for a hypothetical binary bundle; arbitrary confidential
 content beyond the stated privacy review. No runtime implementation changed, so
 application unit/UI/build/Cypress suites were not rerun for this documentation-only
@@ -154,5 +155,5 @@ audit. Inventory consistency and `git diff --check` are the relevant local check
 
 Owner actions still needed: resolve the GitHub plan/visibility prerequisite,
 confirm or sanitize the identified personal account examples and live-operation
-prose, and provide icon provenance or replace the assets. Binary packaging requires
+prose. Icon origin has been supplied by the maintainer. Binary packaging requires
 the artifact-specific compliance work described in the distribution audit.

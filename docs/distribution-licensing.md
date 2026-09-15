@@ -99,11 +99,14 @@ The [asset inventory](licenses/2026-09-15-artwork.json) records each PNG's
 SHA-256, dimensions and first-add commit.
 
 - `public/icon-192.png` and `public/icon-512.png` first appear in commit `8828037`.
-  Both depict the same simple C tile. PNG metadata contains color information,
-  but no creator/license/source statement. No generator source or asset license
-  was found in the repository. Git authorship alone does not establish the glyph
-  or artwork's rights. **Maintainer confirmation of the source/license remains
-  required**, or replace them with newly created assets with recorded provenance.
+  Both depict the same simple C tile. On 2026-09-15 the maintainer confirmed:
+  "yes, we generated them on codex." Origin is therefore recorded as
+  maintainer-attested Codex generation, with no third-party asset source reported.
+  The generation prompt/session/model and glyph construction are not retained in
+  the repository, so this is an origin attestation rather than independent proof
+  of copyright exclusivity or third-party clearance. The project's existing MIT
+  notice applies to the repository assets to the extent the maintainer holds
+  rights; AI generation does not justify inventing an upstream asset license.
 - The 12 documentation PNGs are screenshots of Companion's own UI with
   demo/example/disposable data. Their creation commits were identified and the
   contact sheet reviewed. No visible credential was identified. This establishes
@@ -115,6 +118,6 @@ SHA-256, dimensions and first-add commit.
 Freeze the exact target OS/architecture and artifact contents. Regenerate the
 inventory from that artifact, preserve each applicable notice, account for all
 embedded libraries/fonts/runtimes, provide required corresponding source/build
-materials, and test any required library replacement/relink path. Resolve icon
-provenance and record the resulting evidence with that release. Source-repository
+materials, and test any required library replacement/relink path. Retain the icon
+provenance record with that release. Source-repository
 publication and binary-distribution approval are separate decisions.
