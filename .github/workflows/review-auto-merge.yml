@@ -1,0 +1,46 @@
+name: Review and auto-merge
+on:
+  workflow_run:
+    workflows: [Verify]
+    types: [completed]
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+concurrency:
+  group: review-auto-merge
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Always trusted default-branch code; never fetch PR code or artifacts.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Create repository-scoped merge token
+        id: merge-token
+        if: vars.AUTO_MERGE_APP_ID != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AUTO_MERGE_APP_ID }}
+          private-key: ${{ secrets.AUTO_MERGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-administration: read
+          permission-actions: read
+      - name: Request reviews and queue protected merges
+        run: node scripts/review-auto-merge.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTO_MERGE_TOKEN: ${{ steps.merge-token.outputs.token }}

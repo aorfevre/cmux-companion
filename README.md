@@ -355,3 +355,10 @@ Settings → Notifications controls in-app update notices and opt-in background
 Web Push for each browser/PWA. See [device setup, privacy, recovery and delivery
 limits](docs/notifications.md). The Mac must stay awake and online; iPhone push
 requires a supported Home Screen installation.
+
+## Pull request review
+
+Goal PRs are created as drafts and promoted after completed, reviewed, verified
+work and human publication approval. CodeRabbit reviews ready PRs; protected
+auto-merge additionally requires current CI, its approval and resolved discussions.
+See [review configuration and activation](docs/code-review-workflow.md).

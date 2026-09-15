@@ -48,19 +48,39 @@ export class GitHubCli {
       for (const pr of response) {
         requireValue(pr.head?.repo?.full_name?.toLowerCase() === slug.toLowerCase() && pr.base?.repo?.full_name?.toLowerCase() === slug.toLowerCase() && pr.head.ref === branch
           && Number.isSafeInteger(pr.number) && pr.number > 0 && typeof pr.html_url === 'string' && pr.html_url.toLowerCase() === `https://github.com/${slug.toLowerCase()}/pull/${pr.number}`
-          && ['open', 'closed'].includes(pr.state) && typeof pr.body === 'string', 'GitHub PR identity changed', 'OWNERSHIP_UNCERTAIN');
+          && ['open', 'closed'].includes(pr.state) && typeof pr.body === 'string' && typeof pr.draft === 'boolean', 'GitHub PR identity changed', 'OWNERSHIP_UNCERTAIN');
         const markers = pr.body.match(/<!-- companion-goal:[A-Za-z0-9][A-Za-z0-9_-]* -->/g) ?? [];
-        matches.push({ number: pr.number, url: pr.html_url, branch: pr.head.ref, baseBranch: branchName(pr.base.ref), headSha: sha(pr.head.sha), marker: markers.length === 1 ? markers[0] : null, state: pr.state === 'open' ? 'open' : pr.merged_at ? 'merged' : 'closed' });
+        matches.push({ number: pr.number, url: pr.html_url, branch: pr.head.ref, baseBranch: branchName(pr.base.ref), headSha: sha(pr.head.sha), marker: markers.length === 1 ? markers[0] : null, draft: pr.draft, state: pr.state === 'open' ? 'open' : pr.merged_at ? 'merged' : 'closed' });
       }
       if (response.length < 100) return matches;
     }
     throw new DomainError('OWNERSHIP_UNCERTAIN', 'GitHub PR inventory exceeded the bounded observation limit');
   }
+  /** Promote only the observed, completed goal commit; callers retain publication authority.
+   * @param {import('../types.d.ts').PublicationInput} input @param {{ beforeSend?: ()=>boolean }} [options] */
+  async ready(input, { beforeSend } = {}) {
+    const matches = await this.find(input.repositoryId, input.branch);
+    requireValue(matches.length === 1, 'Draft PR identity is uncertain', 'OWNERSHIP_UNCERTAIN');
+    const pr = matches[0];
+    requireValue(pr.marker === input.marker && pr.baseBranch === input.baseBranch && pr.headSha === input.headSha && pr.state === 'open', 'Draft PR target changed', 'STALE_TARGET');
+    if (!pr.draft) return;
+    const slug = this.repository(input.repositoryId);
+    const raw = JSON.parse(await this.execute(['api', '--hostname', 'github.com', '--method', 'GET', `repos/${slug}/pulls/${pr.number}`]));
+    requireValue(typeof raw.node_id === 'string' && raw.number === pr.number && raw.html_url === pr.url && raw.head?.sha === input.headSha
+      && raw.head?.ref === input.branch && raw.base?.ref === input.baseBranch && raw.base?.sha === (input.acceptedTargets?.at(-1)?.baseHeadSha ?? input.baseSha) && raw.head?.repo?.full_name?.toLowerCase() === slug.toLowerCase()
+      && raw.base?.repo?.full_name?.toLowerCase() === slug.toLowerCase() && typeof raw.body === 'string'
+      && JSON.stringify(raw.body.match(/<!-- companion-goal:[A-Za-z0-9][A-Za-z0-9_-]* -->/g)) === JSON.stringify([input.marker]) && raw.state === 'open' && raw.draft === true, 'Draft PR changed before promotion', 'STALE_TARGET');
+    if (beforeSend && !beforeSend()) return;
+    const response = JSON.parse(await this.execute(['api', '--hostname', 'github.com', 'graphql', '--input', '-'], JSON.stringify({
+      query: 'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}', variables: { id: raw.node_id },
+    })));
+    requireValue(!response.errors && response.data?.markPullRequestReadyForReview?.pullRequest?.isDraft === false, 'Draft promotion was not confirmed', 'GITHUB_OPERATION_UNCERTAIN');
+  }
   /** @param {import('../types.d.ts').PublicationInput} input @param {{ beforeSend?: ()=>boolean }} [options] */
   async create(input, { beforeSend } = {}) {
     const slug = this.repository(input.repositoryId); branchName(input.branch); branchName(input.baseBranch); identifier(input.goalId); sha(input.headSha);
     requireValue(input.marker === `<!-- companion-goal:${input.goalId} -->`, 'Publication marker changed');
-    const payload = { title: `Companion goal ${input.goalId}`, head: input.branch, base: input.baseBranch, body: `${input.marker}\n\nImplements the approved goal at verified commit \`${input.headSha}\`.\n\nIndependent integration review and required repository checks passed before publication.\n` };
+    const payload = { draft: true, title: `Companion goal ${input.goalId}`, head: input.branch, base: input.baseBranch, body: `${input.marker}\n\nImplements the approved goal at verified commit \`${input.headSha}\`.\n\nIndependent integration review and required repository checks passed before publication.\n` };
     if (beforeSend && !beforeSend()) return;
     await this.execute(['api', '--hostname', 'github.com', '--method', 'POST', `repos/${slug}/pulls`, '--input', '-'], JSON.stringify(payload));
   }

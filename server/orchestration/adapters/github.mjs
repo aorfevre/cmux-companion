@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { DomainError, identifier, requireValue, sha, branchName } from '../domain/contracts.mjs';
 import { pathExists } from './git.mjs';
 
-/** Publication has two external effects. Sent markers precede each request;
+/** Publication pushes a branch, creates a draft and promotes the completed PR. Sent markers precede each request;
  * reconciliation observes exact remote/PR identity and never creates another PR.
  */
 export class GitHubPublication {
@@ -82,6 +82,7 @@ export class GitHubPublication {
     const pr = matches[0];
     if (pr) {
       if (!pathExists(join(directory, 'pr.sent.json')) || (head !== input.headSha && !(head === null && ['closed', 'merged'].includes(pr.state))) || pr.headSha !== input.headSha || !['open', 'closed', 'merged'].includes(pr.state)) return { status: 'unknown', baseHeadSha, pr: null };
+      if (pr.state === 'open' && pr.draft) return { status: baseHeadSha === targetSha ? 'pending' : 'target_moved', baseHeadSha, pr: null };
       return { status: 'published', baseHeadSha, pr: { number: pr.number, url: pr.url, headSha: pr.headSha, state: pr.state } };
     }
     if (pathExists(join(directory, 'pr.sent.json'))) return { status: 'unknown', baseHeadSha, pr: null };
@@ -101,6 +102,7 @@ export class GitHubPublication {
     let observed = await this.observe(input);
     if (observed.status !== 'pending') return observed;
     if (signal?.aborted) return { ...observed, status: 'cancelled' };
+    if (pathExists(join(directory, 'pr.sent.json'))) return this.promote(input, signal);
     if (newTargets) { this.request(input); this.save(targetsPath, acceptedTargets); }
     const pushPath = join(directory, 'push.sent.json');
     if (!pathExists(pushPath)) {
@@ -141,6 +143,19 @@ export class GitHubPublication {
     }
     if (!claimed) return signal?.aborted ? { ...observed, status: 'cancelled' } : this.observe(input);
     this.failpoint('pr_returned');
+    return this.promote(input, signal);
+  }
+  /** Idempotent promotion reconciles lost responses without another create.
+   * @param {import('../types.d.ts').PublicationInput} input @param {AbortSignal} [signal] */
+  async promote(input, signal) {
+    const observed = await this.observe(input);
+    if (observed.status !== 'pending') return observed;
+    if (signal?.aborted) return { ...observed, status: /** @type {const} */ ('cancelled') };
+    requireValue(this.github.ready, 'Draft promotion is unavailable', 'UNSUPPORTED_CAPABILITY');
+    this.failpoint('pr_ready');
+    await this.github.ready(input, { beforeSend: () => !signal?.aborted });
+    this.failpoint('pr_ready_returned');
     return this.observe(input);
   }
+
 }
