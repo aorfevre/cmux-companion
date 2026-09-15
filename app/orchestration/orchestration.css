@@ -43,6 +43,9 @@
 }
 
 .orch-attention { color:var(--text); border-left:3px solid #d8b870; padding-left:8px; margin-top:8px; font-size:12px; }
+/* Drop-target state while files are dragged over the goal form (paste/drop share the picker intake). */
+.orch-create.orch-dropzone-active { outline:2px dashed var(--accent); outline-offset:-6px; border-color:var(--accent); background:var(--panel-raised); }
+.mission-control .orch-create.orch-dropzone-active { background:#f5f0df; border-color:var(--accent); }
 .orch-description { white-space:pre-wrap; overflow-wrap:anywhere; }
 /* Mission Control follows the supplied desktop reference; state stays service-owned. */
 .mission-control .orch-header { min-height:66px; padding:12px 0; }

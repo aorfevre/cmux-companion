@@ -9,6 +9,7 @@ import { MissionShell } from '../mission-shell';
 import { ProjectPicker } from './project-picker';
 import { GoalDetail } from './goal-detail';
 import { GoalFleet } from './goal-fleet';
+import { filesFromDataTransfer, nameReferenceFile, transferHasFiles, validateReferenceFiles } from './reference-files';
 
 export type Goal = ReturnType<typeof goalView> & { lastActivity?: { kind: string; createdAt: string } | null };
 export type Action = Goal['actions'][number];
@@ -29,6 +30,7 @@ export function GoalBoard() {
   const [brief, setBrief] = useState('');
   const [attachments, setAttachments] = useState<{ name: string; data: string }[]>([]);
   const [readingFiles, setReadingFiles] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [creating, setCreating] = useState(false);
   const createButton = useRef<HTMLButtonElement>(null), createHeading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (creating) createHeading.current?.focus(); }, [creating]);
@@ -113,6 +115,23 @@ export function GoalBoard() {
   };
   const readOnly = Boolean(snapshot?.readOnly || configuration?.readOnly), disabled = busy || readingFiles || readOnly || Boolean(pending);
   const chosenRepo = configuration?.repositories.find(entry => entry.id === repository);
+  /** One intake for picker, clipboard paste and drop: validate the batch, name it safely, read it as base64. */
+  const addReferenceFiles = async (files: File[]) => {
+    if (disabled || !files.length) return;
+    const { files: accepted, error: rejection } = validateReferenceFiles(files, attachments.length);
+    if (rejection) { setError(rejection); return; }
+    const taken = new Set(attachments.map(file => file.name));
+    const named = accepted.map(file => { const name = nameReferenceFile(file, taken); taken.add(name); return { file, name }; });
+    setReadingFiles(true); setError('');
+    try {
+      const added = await Promise.all(named.map(({ file, name }) => new Promise<{ name: string; data: string }>((resolve, reject) => {
+        const reader = new FileReader(); reader.onerror = () => reject(new Error('Could not read the selected file.'));
+        reader.onload = () => resolve({ name, data: String(reader.result).split(',')[1] }); reader.readAsDataURL(file);
+      })));
+      setAttachments(current => [...current, ...added]);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not read reference files.'); }
+    finally { setReadingFiles(false); }
+  };
   const pendingRecovery = pending && <div className="orch-banner">The request outcome is uncertain. Retry the same request to reconcile its receipt. <button disabled={busy || readOnly} onClick={() => void submit(pending)}>Retry pending request</button></div>;
   return <MissionShell className="orchestration" active={needsOnly ? 'needs' : 'goals'}>
     <header className="orch-header"><a href="/">cmux companion</a><span role="status">{auth === 'paired' ? connected ? 'Live updates' : 'Reconnecting · polling' : 'Connect your Mac'}</span></header>
@@ -130,26 +149,24 @@ export function GoalBoard() {
       {!selected && <details className="orch-capacity"><summary>Execution capacity</summary>{configuration?.limits.global} execution agents · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</details>}
       {Boolean(configuration?.repositories.length) && !configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Your planning agent is not ready. <a href="/settings#agents">Choose an agent</a> to start a goal.</p>}
       {!selected && <button ref={createButton} className="primary-button" aria-expanded={creating} aria-controls="goal-create" disabled={disabled} onClick={() => setCreating(true)}>Start a goal</button>}
-      {creating && (configuration?.repositories.length ? <form id="goal-create" className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo || disabled) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { ...(title.trim() ? { title: title.trim() } : {}), description: brief, ...(attachments.length ? { attachments } : {}), repositoryId: chosenRepo.id, baseBranch: baseBranch.trim() || 'main' } }); }}>
+      {creating && (configuration?.repositories.length ? <form id="goal-create" className={`orch-card orch-create${dragging ? ' orch-dropzone-active' : ''}`} onSubmit={event => { event.preventDefault(); if (!chosenRepo || disabled) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { ...(title.trim() ? { title: title.trim() } : {}), description: brief, ...(attachments.length ? { attachments } : {}), repositoryId: chosenRepo.id, baseBranch: baseBranch.trim() || 'main' } }); }}
+        onDragEnter={event => { event.preventDefault(); if (!disabled && transferHasFiles(event.dataTransfer)) setDragging(true); }}
+        onDragOver={event => { event.preventDefault(); if (!disabled && transferHasFiles(event.dataTransfer)) setDragging(true); }}
+        onDragLeave={event => { const next = event.relatedTarget; if (!(next instanceof Node) || !event.currentTarget.contains(next)) setDragging(false); }}
+        onDrop={event => { event.preventDefault(); setDragging(false); void addReferenceFiles(filesFromDataTransfer(event.dataTransfer)); }}>
         <h2 ref={createHeading} tabIndex={-1}>Start a goal</h2><p>The agent will inspect the project and propose a plan with suitable verification checks.</p><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<ProjectPicker repositories={configuration.repositories} selected={repository} onSelect={setRepository} disabled={disabled} />
         <p className="project-context">Starts from freshly fetched {baseBranch.trim() || 'main'} in an isolated worktree.</p><details><summary>Advanced</summary><label>Base branch<input value={baseBranch} onChange={event => setBaseBranch(event.target.value)} disabled={disabled} placeholder="main" /></label></details>
         {chosenRepo?.error && <p role="alert">{chosenRepo.error} <a href={`/settings?repository=${encodeURIComponent(chosenRepo.id)}#dev-repos`}>Configure repository</a></p>}
         <label>Title (optional)<input value={title} maxLength={120} onChange={event => setTitle(event.target.value)} disabled={disabled} placeholder="A short name for this goal" /></label>
-        <label>What should we accomplish?<textarea value={brief} maxLength={12000} onChange={event => setBrief(event.target.value)} disabled={disabled} required rows={3} /></label><p>Describe the outcome, constraints and relevant links.</p>
-        <label>Reference files<input type="file" multiple disabled={disabled} onChange={async event => {
-          const files = Array.from(event.target.files ?? []); event.target.value = '';
+        <label>What should we accomplish?<textarea value={brief} maxLength={12000} onChange={event => setBrief(event.target.value)} onPaste={event => {
+          const files = filesFromDataTransfer(event.clipboardData);
           if (!files.length) return;
-          if (attachments.length + files.length > 8 || files.some(file => !file.size || file.size > 1024 * 1024)) { setError('Attach up to 8 nonempty files, at most 1 MiB each.'); return; }
-          setReadingFiles(true); setError('');
-          try {
-            const added = await Promise.all(files.map(file => new Promise<{ name: string; data: string }>((resolve, reject) => {
-              const reader = new FileReader(); reader.onerror = () => reject(new Error('Could not read the selected file.'));
-              reader.onload = () => resolve({ name: file.name, data: String(reader.result).split(',')[1] }); reader.readAsDataURL(file);
-            })));
-            setAttachments(current => [...current, ...added]);
-          } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not read reference files.'); }
-          finally { setReadingFiles(false); }
-        }} /></label><p>UTF-8 text/source files or PNG, JPEG and WebP images. Up to 8 files, 1 MiB each.</p>
+          event.preventDefault(); void addReferenceFiles(files);
+        }} disabled={disabled} required rows={3} /></label><p>Describe the outcome, constraints and relevant links.</p>
+        <label>Reference files<input type="file" multiple disabled={disabled} onChange={event => {
+          const files = Array.from(event.target.files ?? []); event.target.value = '';
+          void addReferenceFiles(files);
+        }} /></label><p>UTF-8 text/source files or PNG, JPEG and WebP images. Up to 8 files, 1 MiB each. Paste images into the brief or drop files anywhere on this form.</p>
         {readingFiles && <p role="status">Reading files…</p>}
         {attachments.length > 0 && <ul aria-label="Selected references">{attachments.map((file, index) => <li key={`${index}:${file.name}`}>{file.name} <button type="button" disabled={disabled} onClick={() => setAttachments(current => current.filter((_, position) => position !== index))}>Remove {file.name}</button></li>)}</ul>}
         <button className="primary-button" disabled={disabled || !chosenRepo || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start goal</button> <button type="button" disabled={busy || Boolean(pending)} onClick={closeCreation}>Cancel</button>
