@@ -105,7 +105,11 @@ The explicit `configure-cmux-automation.mjs` setup step enables cmux’s support
 
 ## Requirements
 
-- macOS with cmux installed in `/Applications/cmux.app`
+**Install [cmux](https://cmux.com) on the same Mac before setting up Companion.**
+Companion connects to an existing cmux installation; it does not bundle or install
+cmux. Open cmux to make its sessions available for monitoring and agent work.
+
+- macOS with cmux installed (the default location is `/Applications/cmux.app`)
 - Node.js 22.23.1 (the supported Node 22 runtime is pinned in `.nvmrc`)
 - Tailscale connected on both the Mac and phone
 - For goals: a configured and authenticated supported Claude Code or Codex CLI
@@ -136,6 +140,28 @@ Settings offers an update notice, **Update now**, **Update when idle**, and an
 with successful CI qualify. Installation waits for safely idle agents and retains
 verified recovery of the previous compatible version. Checking alone never
 installs. Source review, merge and local tests do not change installed services.
+
+### cmux detection and custom installations
+
+Companion initially looks for the CLI at
+`/Applications/cmux.app/Contents/Resources/bin/cmux`. Provider readiness checks
+report a missing executable; this checks the configured path rather than searching
+for every installed copy. If cmux is installed elsewhere, open **Setup → Execution
+& tools → Tool paths**, set **cmux executable** to its absolute CLI path, and save.
+Use the executable path, not a shell command with arguments. If the executable is
+present but Companion shows **Waiting for cmux**, open the cmux app and check the
+[automation setup](docs/updates.md#fresh-installation).
+
+### Start automatically at login
+
+`npm run install:mac` creates and loads two per-user LaunchAgents in
+`~/Library/LaunchAgents/`: `org.cmux-companion.service.plist` and
+`org.cmux-companion.updater.plist`. It registers them with `launchctl bootstrap`
+in the current user's GUI session and checks Companion's health. Run installation
+as your normal logged-in Mac user; do not use `sudo`. These agents run at login,
+not before login, and do not launch the cmux app for you. There is no need to write
+or load the plists manually. See [installation and recovery](docs/updates.md)
+for existing installations, which must stop their identified owners first.
 
 ## Daily use
 
