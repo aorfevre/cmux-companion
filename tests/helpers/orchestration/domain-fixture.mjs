@@ -18,6 +18,7 @@ export function fixture() {
     goal = result.goal; return result;
   };
   command('create_goal', { repositoryId: 'repo', title: 'Build modules', baseSha: BASE }, user);
+  /** @param {string} id @param {import('../../../server/orchestration/types.d.ts').Role} role @param {string | null} [taskId] */
   const request = (id, role, taskId = null) => command('request_attempt', { attemptId: id, operationId: `op_${id}`, role, taskId, conversationId: `conversation_${id}` });
   const dispatch = (id) => command('record_dispatch', { attemptId: id, identity: `process_${id}`, worktree: `/tmp/${id}`, branch: `goal/${id}` });
   const review = (id, target, blocking = false) => { const result = command('record_review', { attemptId: id, reviewId: `review_${id}`, review: { schemaVersion: 1, target, disposition: blocking ? 'request_changes' : 'accept', findings: blocking ? [{ id: 'F1', severity: 'high', blocking: true, title: 'Incorrect value', evidence: 'src/a.mjs:1', suggestion: 'Return the required value' }] : [] } }); command('record_stopped', { attemptId: id }); return result; };

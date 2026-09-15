@@ -291,3 +291,16 @@ test('held goal shows failure and reconciliation guidance, then submits the exac
   fireEvent.click(screen.getByRole('button', { name: 'Recover goal' }));
   expect(act).toHaveBeenCalledWith(goal, goal.actions.find(action => action.type === 'recover_goal'));
 });
+
+test('execution agents expose their service-owned terminal control inside Waves & sessions', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.approve(); f.request('implementation', 'implementer', 'A'); f.dispatch('implementation');
+  const goal = { ...goalView(f.goal), contracts: f.goal.contracts }, control = vi.fn().mockResolvedValue(undefined);
+  render(<GoalDetail goal={goal} disabled={false} terminal={true} act={vi.fn()} control={control} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Waves & sessions' }));
+  fireEvent.click(screen.getByText('Agent session'));
+  fireEvent.click(screen.getByRole('button', { name: 'Open implementer terminal' }));
+  expect(control).toHaveBeenCalledWith(goal, 'terminal', 'implementation');
+});

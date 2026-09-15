@@ -161,6 +161,12 @@ process.stdout.write(JSON.stringify({ workspace_id: ${JSON.stringify(workspaceId
   assert.ok(sent.text.startsWith('exec ')); assert.ok(sent.text.includes('native-terminal-worker.mjs'));
   assert.ok(sent.text.includes("'\\''"));
   await assert.rejects(terminal.start('other-target', '/private/config'));
+  await terminal.startManaged(workspaceId, join(root, "private ' managed.json"));
+  const managed = JSON.parse((await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse).at(-1)[3]);
+  assert.ok(managed.text.includes('native-managed-terminal.mjs'));
+  assert.ok(managed.text.includes("'\\''"));
+  await assert.rejects(terminal.startManaged('other-target', '/private/config'));
+  await assert.rejects(terminal.startManaged(workspaceId, 'relative.json'));
   terminal.env.FIXTURE_FAIL = '1';
   await assert.rejects(terminal.open(workspaceId), error => error.code === 'CMUX_UNAVAILABLE' && !error.message.includes('private-credential'));
 });

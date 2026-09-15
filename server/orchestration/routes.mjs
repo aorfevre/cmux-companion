@@ -74,7 +74,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     const input = object(request.body);
     requireValue(Object.keys(input).length === 2 && Number.isSafeInteger(input.expectedVersion) && input.expectedVersion === goal.version, 'Goal version changed', 'VERSION_CONFLICT');
     const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
-    requireValue(['discovering', 'awaiting_approval'].includes(goal.status) && attempt && attempt.status === 'running' && attempt.role === 'planner' && attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.workerState === 'running', 'Owned planner terminal is unavailable', 'NOT_READY');
+    requireValue(!['aborted', 'merged', 'delivered'].includes(goal.status) && attempt && ['running', 'succeeded'].includes(attempt.status) && attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.workerState === 'running', 'Owned agent terminal is unavailable', 'NOT_READY');
     requireValue(service.ownership && service.agents.open, 'Native terminal is unavailable', 'UNSUPPORTED_CAPABILITY');
     service.ownership.assertOwned(); await service.agents.open(attempt.operationId);
     return { opened: true };

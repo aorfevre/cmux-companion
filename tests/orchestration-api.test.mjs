@@ -92,3 +92,36 @@ test('cleanup preview is authenticated; cleanup execution preserves same-origin 
   assert.equal((await readonly.app.inject({ method: 'POST', url: path, headers: HEADERS, payload: { expectedVersion: 2, attemptId: 'a' } })).statusCode, 403);
   assert.equal(writes, 1);
 });
+
+test('paired users can open each current execution role without opening historical or unowned sessions', async t => {
+  const { contract, BASE, HEAD_A } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const { planTarget } = await import('../server/orchestration/domain/transitions.mjs');
+  const { app, service, store } = await apiFixture(t); let id = 0; const opened = [];
+  service.agents.capabilities.push({ role: 'implementer', mode: 'background' }, { role: 'integrator', mode: 'background' });
+  service.agents.open = async operationId => { opened.push(operationId); };
+  service.ownership = { assertOwned() {} };
+  const command = (type, payload, kind = 'system') => service.execute({ id: `terminal-${++id}`, goalId: 'goal', expectedVersion: store.get('goal')?.version ?? 0, type, payload }, { kind });
+  const request = role => { command('request_attempt', { role, taskId: role === 'implementer' ? 'A' : null, attemptId: role, operationId: role, conversationId: role }); command('record_dispatch', { attemptId: role, identity: role, worktree: `/tmp/${role}`, branch: role }); };
+  const endpoint = '/api/orchestration/goals/goal/terminal';
+  const open = (attemptId, headers = HEADERS) => app.inject({ method: 'POST', url: endpoint, headers, payload: { expectedVersion: store.get('goal').version, attemptId } });
+  command('create_goal', { repositoryId: 'repo', title: 'Visible roles', baseSha: BASE }, 'user');
+  const plan = contract(); plan.tasks = [plan.tasks[0]]; command('publish_contract', { contract: plan }, 'user');
+  request('reviewer');
+  assert.equal((await open('reviewer', {})).statusCode, 401);
+  assert.equal((await open('reviewer', { ...HEADERS, origin: 'https://invalid.example' })).statusCode, 403);
+  assert.equal((await open('reviewer')).statusCode, 200);
+  command('record_review', { attemptId: 'reviewer', reviewId: 'plan-review', review: { schemaVersion: 1, target: planTarget(store.get('goal')), disposition: 'accept', findings: [] } });
+  assert.equal((await open('reviewer')).statusCode, 200, 'A submitted result does not hide a still-running terminal');
+  command('record_stopped', { attemptId: 'reviewer' }); command('approve', { revision: 1 }, 'user');
+  request('implementer'); assert.equal((await open('implementer')).statusCode, 200);
+  assert.equal((await open('reviewer')).statusCode, 409);
+  command('confirm_candidate', { attemptId: 'implementer', headSha: HEAD_A }); command('record_stopped', { attemptId: 'implementer' });
+  command('request_attempt', { role: 'reviewer', taskId: 'A', attemptId: 'task-review', operationId: 'task-review', conversationId: 'task-review' });
+  command('record_dispatch', { attemptId: 'task-review', identity: 'task-review', worktree: '/tmp/task-review', branch: 'task-review' });
+  command('record_review', { attemptId: 'task-review', reviewId: 'task-review', review: { schemaVersion: 1, target: HEAD_A, disposition: 'accept', findings: [] } });
+  command('record_stopped', { attemptId: 'task-review' }); command('request_integration', { taskId: 'A', operationId: 'integrate' });
+  command('record_integration_conflict', { operationId: 'integrate' }); command('recover_goal', { holdId: store.get('goal').hold.id }, 'user');
+  request('integrator'); assert.equal((await open('integrator')).statusCode, 200);
+  service.repositoryIds.clear(); assert.equal((await open('integrator')).statusCode, 404);
+  assert.deepEqual(opened, ['reviewer', 'reviewer', 'implementer', 'integrator']);
+});

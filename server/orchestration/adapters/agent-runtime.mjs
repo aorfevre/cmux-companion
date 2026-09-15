@@ -22,10 +22,10 @@ export function backgroundPolicy(input) {
  * public error message. Process completion does not itself prove workflow success
  * or the termination of all provider-owned resources; adapters observe those.
  * @param {{ bin: string; argv: string[]; cwd: string; env: NodeJS.ProcessEnv }} command
- * @param {{ policy: import('../types.d.ts').BackgroundPolicy; signal?: AbortSignal; clock?: import('../types.d.ts').RuntimeClock; identity?: () => string; onIdentity: (identity: { identity: string; pid: number }) => void | Promise<void> }} options
+ * @param {{ policy: import('../types.d.ts').BackgroundPolicy; signal?: AbortSignal; clock?: import('../types.d.ts').RuntimeClock; identity?: () => string; onOutput?: (stream: 'stdout' | 'stderr', chunk: Buffer) => void; onIdentity: (identity: { identity: string; pid: number }) => void | Promise<void> }} options
  * @returns {Promise<import('../types.d.ts').BackgroundHandle>}
  */
-export function startBackgroundProcess(command, { policy: input, signal, clock: timers = clock, identity = randomUUID, onIdentity }) {
+export function startBackgroundProcess(command, { policy: input, signal, clock: timers = clock, identity = randomUUID, onIdentity, onOutput }) {
   const policy = backgroundPolicy(input);
   requireValue(process.platform !== 'win32', 'Background execution requires process-group support', 'UNSUPPORTED_CAPABILITY');
   requireValue(command.bin.length > 0 && !command.bin.includes('\0') && command.argv.every((arg) => typeof arg === 'string' && !arg.includes('\0')), 'Invalid process argv');
@@ -94,7 +94,10 @@ export function startBackgroundProcess(command, { policy: input, signal, clock: 
     const receive = (output, chunk) => {
       activity();
       const remaining = Math.max(0, policy.maxOutputBytes - bytes);
-      if (remaining) output.push(chunk.subarray(0, remaining));
+      if (remaining) {
+        const accepted = chunk.subarray(0, remaining); output.push(accepted);
+        try { onOutput?.(output === stdout ? 'stdout' : 'stderr', accepted); } catch { /* Display does not own execution or its durable evidence. */ }
+      }
       bytes += chunk.length;
       if (bytes > policy.maxOutputBytes) stop('OUTPUT_LIMIT');
     };
@@ -162,8 +165,9 @@ export class AgentRuntime {
   }
   /** @param {string} operationId */
   async open(operationId) {
-    requireValue(this.locate({ operationId }) === 'interactive' && this.interactive.open, 'Owned native terminal is unavailable', 'UNSUPPORTED_CAPABILITY');
-    await this.interactive.open(operationId);
+    const mode = this.locate({ operationId }), driver = mode ? this[mode] : null;
+    requireValue(driver?.open, 'Owned native terminal is unavailable', 'UNSUPPORTED_CAPABILITY');
+    await driver.open(operationId);
   }
   /** @param {string} identity */
   async terminate(identity) {

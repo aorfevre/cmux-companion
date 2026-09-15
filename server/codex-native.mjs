@@ -83,8 +83,9 @@ export class CodexInputs extends NativeInputs {
 
 export function createCodexAgents({ directory, installation, direct, ccsxp, profile, engine, env, cmux, policy }, context) {
   const inputs = new CodexInputs({ installation, direct, ccsxp, profile, engine, env, capabilities: installation.capabilities, describe: context.describe });
-  const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal: new CmuxTerminal(cmux), killGraceMs: policy.killGraceMs });
-  const background = new NativeBackground({ directory: join(directory, 'background'), bin: installation.bin, inputs, policy, onResult: context.onResult, parseResult: codexResult });
+  const terminal = new CmuxTerminal(cmux);
+  const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal, killGraceMs: policy.killGraceMs });
+  const background = new NativeBackground({ terminal, directory: join(directory, 'background'), bin: installation.bin, inputs, policy, onResult: context.onResult, parseResult: codexResult });
   const runtime = new AgentRuntime({ interactive, background, locate: context.locate });
   return Object.assign(runtime, {
     /** @param {{preserve?: import('./orchestration/types.d.ts').LaunchRequest[]}} [options] */

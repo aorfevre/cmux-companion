@@ -13,6 +13,12 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 - Service-owned merge observation, persisted through the orchestration journal,
   with 15-minute cadence for delivered PRs only. Direct GitHub PR lookup validates
   saved identity; closed-unmerged and unavailable results cannot complete a goal.
+- Claude/CCS and Codex production adapters now host implementer, reviewer and
+  repair supervisors in visible cmux workspaces. Their existing noninteractive
+  permission policy, time/output limits, process groups and private result receipts
+  remain enforced. Terminal output is bounded and closing it requests termination.
+- Goal workspace controls open each current owned execution terminal, including
+  a worker that submitted its result but has not yet stopped.
 - Durable goal failure holds stop new agent, integration, verification and
   publication dispatch. Active siblings/checks settle without releasing the hold;
   unrelated goals remain eligible. Queued identities survive provisioning races.
@@ -81,6 +87,15 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
   Backend file concurrency is now four in both ordinary and coverage commands;
   no tests or assertions were removed to obtain this result.
 
+- Visible-role adapter/API/runtime/Codex suites: 56 passed; expanded API/runtime
+  rerun passed after covering submitted-but-running workers.
+- Visible-role full UI suite: 165 passed. Typecheck and lint passed.
+- Chrome Mission Control Cypress: 4/4 passed, including responsive terminal control
+  with an exact owned-attempt request. Real native cmux/provider integration remains
+  unverified; the adapter tests use a fake cmux boundary and real local supervisors.
+- Full backend coverage run passed: 97.36% line coverage (minimum 90%); no
+  failures. Latest visible-role full UI run passed all 165 tests.
+
 ## Interventions
 
 - The first broader failure-hold run reported 846 passes, 10 failures and one
@@ -112,7 +127,7 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | Brief/files/images and authorized agent context | Not implemented. |
 | Combined planner/design with approved suggested team | Existing planner retained; role/routing contract changes pending. |
 | Explicit wave barriers with verification | Not implemented; current scheduler still uses task dependencies. |
-| All judgment agents visible in cmux | Not implemented; non-planner adapters still use background mode. |
+| All judgment agents visible in cmux | Production adapters launch all judgment roles through cmux; bounded noninteractive policy is retained internally. Adapter/UI/API checks passed; native live validation unverified. |
 | Goal-scoped holds and manual recovery | Implemented with persistence, sibling/provisioning-race tests and real-service manual-recovery Cypress; final full verification passed for this slice. |
 | Assignment proposals, reasons and snapshots | Not implemented. |
 | Human publication approval | Implemented; exact-head authority/restart/receipt tests and real-service Cypress passed. |

@@ -46,4 +46,19 @@ describe('Mission Control navigation', () => {
     cy.findByRole('button', { name: 'Publish dashboard' }).should('not.exist');
     cy.findByRole('button', { name: 'Improve search' }).should('not.exist');
   });
+  it('opens the selected execution agent terminal from the phone workspace', () => {
+    const f = fixture(); f.approve(); f.request('implementation', 'implementer', 'A'); f.dispatch('implementation');
+    const goal = { ...goalView(f.goal), contracts: f.goal.contracts };
+    cy.intercept('GET', '/api/orchestration/snapshot', { goals: [goal], cursor: 1, journalId: 'visible', readOnly: false });
+    cy.intercept('GET', '/api/orchestration/configuration', { readOnly: false, terminal: true, limits: { global: 4, perGoal: 4, planners: 2 }, capabilities: [{ role: 'planner', mode: 'interactive' }, { role: 'implementer', mode: 'background' }], repositories: [] });
+    cy.intercept('GET', '/api/orchestration/goals/goal', goal);
+    cy.intercept('POST', '/api/orchestration/goals/goal/terminal', { opened: true }).as('openOwnedTerminal');
+    cy.viewport(390, 844); cy.visit('/orchestration?goal=goal');
+    cy.findByRole('tab', { name: 'Waves & sessions' }).click();
+    cy.contains('summary', 'Agent session').click();
+    cy.findByRole('button', { name: 'Open implementer terminal' }).should('be.visible').click();
+    cy.wait('@openOwnedTerminal').its('request.body').should('deep.equal', { expectedVersion: goal.version, attemptId: 'implementation' });
+    cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
+  });
+
 });
