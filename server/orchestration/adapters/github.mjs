@@ -82,6 +82,8 @@ export class GitHubPublication {
     const pr = matches[0];
     if (pr) {
       if (!pathExists(join(directory, 'pr.sent.json')) || (head !== input.headSha && !(head === null && ['closed', 'merged'].includes(pr.state))) || pr.headSha !== input.headSha || !['open', 'closed', 'merged'].includes(pr.state)) return { status: 'unknown', baseHeadSha, pr: null };
+      if (typeof pr.draft !== 'boolean') return { status: 'unknown', baseHeadSha, pr: null };
+      if (pr.state === 'open' && !pr.draft && baseHeadSha !== targetSha) return { status: 'unknown', baseHeadSha, pr: null };
       if (pr.state === 'open' && pr.draft) return { status: baseHeadSha === targetSha ? 'pending' : 'target_moved', baseHeadSha, pr: null };
       return { status: 'published', baseHeadSha, pr: { number: pr.number, url: pr.url, headSha: pr.headSha, state: pr.state } };
     }
@@ -146,14 +148,16 @@ export class GitHubPublication {
     return this.promote(input, signal);
   }
   /** Idempotent promotion reconciles lost responses without another create.
-   * @param {import('../types.d.ts').PublicationInput} input @param {AbortSignal} [signal] */
+   * @param {import('../types.d.ts').PublicationInput} input @param {AbortSignal} [signal]
+   * @returns {Promise<import('../types.d.ts').PublicationResult>} */
   async promote(input, signal) {
     const observed = await this.observe(input);
     if (observed.status !== 'pending') return observed;
     if (signal?.aborted) return { ...observed, status: /** @type {const} */ ('cancelled') };
     requireValue(this.github.ready, 'Draft promotion is unavailable', 'UNSUPPORTED_CAPABILITY');
     this.failpoint('pr_ready');
-    await this.github.ready(input, { beforeSend: () => !signal?.aborted });
+    const promotion = await this.github.ready(input, { beforeSend: () => !signal?.aborted });
+    if (promotion === 'unknown') return { status: 'unknown', baseHeadSha: null, pr: null };
     this.failpoint('pr_ready_returned');
     return this.observe(input);
   }

@@ -307,7 +307,7 @@ test('revoked publication leaves its created PR in draft', async t => {
   assert.equal(f.github.pulls[0].draft, true); assert.equal(f.github.promotions.length, 0);
 });
 
-test('GitHub promotion checks exact draft identity and uses a bounded GraphQL mutation', async t => {
+for (const accepted of [false, true]) test(`GitHub promotion checks exact draft identity and accepted target=${accepted}`, async t => {
   const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
   const f = await fixture(t), calls = [];
   const pr = { node_id: 'PR_node', number: 3, html_url: 'https://github.com/owner/repo/pull/3', state: 'open', draft: true, body: f.input.marker, head: { ref: f.input.branch, sha: f.input.headSha, repo: { full_name: 'owner/repo' } }, base: { ref: 'main', sha: f.input.baseSha, repo: { full_name: 'owner/repo' } } };
@@ -315,8 +315,57 @@ test('GitHub promotion checks exact draft identity and uses a bounded GraphQL mu
     calls.push({ argv, input });
     return JSON.stringify(argv.includes('graphql') ? { data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } } : argv.at(-1).includes('?') ? [pr] : pr);
   } });
-  await cli.ready(f.input, { beforeSend: () => false }); assert.equal(calls.length, 2);
-  await cli.ready(f.input); assert.deepEqual(JSON.parse(calls.at(-1).input).variables, { id: 'PR_node' });
+  const input = accepted ? { ...f.input, acceptedTargets: [{ id: 'accept', previousBaseSha: f.input.baseSha, baseHeadSha: f.input.headSha }] } : f.input;
+  if (accepted) pr.base.sha = f.input.headSha;
+  await cli.ready(input, { beforeSend: () => false }); assert.equal(calls.length, 2);
+  await cli.ready(input); assert.deepEqual(JSON.parse(calls.find(call => call.argv.includes('graphql')).input).variables, { id: 'PR_node' });
   pr.head.sha = f.repo.baseSha;
   await assert.rejects(cli.ready(f.input), { code: 'STALE_TARGET' });
+});
+
+for (const mode of ['restored', 'lost-conversion-response', 'conversion-failed', 'confirmation-failed', 'identity-changed']) test(`promotion target race: ${mode}`, async t => {
+  const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
+  const f = await fixture(t);
+  const pr = { node_id: 'PR_node', number: 3, html_url: 'https://github.com/owner/repo/pull/3', state: 'open', draft: true, body: f.input.marker, head: { ref: f.input.branch, sha: f.input.headSha, repo: { full_name: 'owner/repo' } }, base: { ref: 'main', sha: f.input.baseSha, repo: { full_name: 'owner/repo' } } };
+  let conversions = 0;
+  const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: {}, execute: async (argv, payload) => {
+    if (argv.includes('graphql')) {
+      const { query } = JSON.parse(payload);
+      if (query.includes('markPullRequestReadyForReview')) {
+        pr.draft = false; pr.base.sha = f.input.headSha;
+        await fixtureGit(f.repo.remote, ['update-ref', 'refs/heads/main', f.input.headSha]);
+        if (mode === 'identity-changed') pr.body = '<!-- companion-goal:another -->';
+        return JSON.stringify({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } } });
+      }
+      conversions++;
+      if (mode === 'conversion-failed') throw new Error('conversion refused');
+      pr.draft = true;
+      if (mode === 'lost-conversion-response') throw new Error('lost response');
+      return JSON.stringify({ data: { convertPullRequestToDraft: { pullRequest: { isDraft: true } } } });
+    }
+    if (conversions && mode === 'confirmation-failed') throw new Error('read unavailable');
+    return JSON.stringify(argv.at(-1).includes('?') ? [pr] : pr);
+  } });
+  f.publisher.failpoint = point => { if (point === 'pr_returned') throw new Error('pause'); };
+  await assert.rejects(f.publisher.publish(f.input), /pause/);
+  // Keep real Git/publication receipts, but exercise the production GitHub adapter.
+  const publisher = new GitHubPublication({ ...f.options, github: { identity: id => f.github.identity(id), find: (...args) => cli.find(...args), ready: (...args) => cli.ready(...args) } });
+  const result = await publisher.publish(f.input);
+  assert.equal(result.status, ['restored', 'lost-conversion-response'].includes(mode) ? 'target_moved' : 'unknown');
+  assert.equal(result.pr, null);
+  assert.equal(conversions, mode === 'identity-changed' ? 0 : 1);
+  assert.equal(f.github.creates.length, 1);
+});
+
+test('observation refuses missing draft metadata and moved targets on open ready PRs', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.publisher.publish(f.input)).status, 'published');
+  delete f.github.pulls[0].draft;
+  assert.equal((await f.publisher.observe(f.input)).status, 'unknown');
+  f.github.pulls[0].draft = false;
+  await fixtureGit(f.repo.remote, ['update-ref', 'refs/heads/main', f.input.headSha]);
+  assert.equal((await f.publisher.observe(f.input)).status, 'unknown');
+  // Historical merged evidence survives normal target advancement.
+  f.github.pulls[0].state = 'merged';
+  assert.equal((await f.publisher.observe(f.input)).status, 'published');
 });

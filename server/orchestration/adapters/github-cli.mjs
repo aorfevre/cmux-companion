@@ -75,6 +75,28 @@ export class GitHubCli {
       query: 'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}', variables: { id: raw.node_id },
     })));
     requireValue(!response.errors && response.data?.markPullRequestReadyForReview?.pullRequest?.isDraft === false, 'Draft promotion was not confirmed', 'GITHUB_OPERATION_UNCERTAIN');
+    // GitHub's mutation has no expected-base argument. Re-read after the write
+    // and compensate only while the same open PR is still owned by this goal.
+    const after = JSON.parse(await this.execute(['api', '--hostname', 'github.com', '--method', 'GET', `repos/${slug}/pulls/${pr.number}`]));
+    const samePull = (/** @type {typeof raw} */ value) => value.node_id === raw.node_id && value.number === pr.number
+      && value.html_url === pr.url && value.head?.sha === input.headSha && value.head?.ref === input.branch
+      && value.base?.ref === input.baseBranch && value.head?.repo?.full_name?.toLowerCase() === slug.toLowerCase()
+      && value.base?.repo?.full_name?.toLowerCase() === slug.toLowerCase() && value.state === 'open'
+      && typeof value.body === 'string' && JSON.stringify(value.body.match(/<!-- companion-goal:[A-Za-z0-9][A-Za-z0-9_-]* -->/g)) === JSON.stringify([input.marker]);
+    if (!samePull(after) || typeof after.draft !== 'boolean') return /** @type {const} */ ('unknown');
+    if (after.base?.sha === (input.acceptedTargets?.at(-1)?.baseHeadSha ?? input.baseSha)) return;
+    if (!after.draft) {
+      try {
+        await this.execute(['api', '--hostname', 'github.com', 'graphql', '--input', '-'], JSON.stringify({
+          query: 'mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id}){pullRequest{isDraft}}}', variables: { id: raw.node_id },
+        }));
+      } catch { /* A lost response may still have converted the PR; confirm by read. */ }
+    }
+    try {
+      const restored = JSON.parse(await this.execute(['api', '--hostname', 'github.com', '--method', 'GET', `repos/${slug}/pulls/${pr.number}`]));
+      if (samePull(restored) && restored.draft === true) return;
+    } catch { /* Unconfirmed restoration must never count as delivery. */ }
+    return /** @type {const} */ ('unknown');
   }
   /** @param {import('../types.d.ts').PublicationInput} input @param {{ beforeSend?: ()=>boolean }} [options] */
   async create(input, { beforeSend } = {}) {

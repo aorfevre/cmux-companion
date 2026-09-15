@@ -14,7 +14,11 @@ checks on the exact integration head, stopped workers and human publication
 approval. It creates the PR as a draft, verifies its identity and head, then marks
 it ready. A crash between creation and promotion reconciles that same PR. Abort
 or target movement before promotion leaves it a draft for operator recovery;
-a draft does not count as delivered. A later externally edited PR is not proof of
+a draft does not count as delivered. Because GitHub cannot atomically check the
+base SHA during promotion, Companion re-reads the PR after promotion and restores
+draft status if the target moved. Unconfirmed restoration or an open ready PR
+with a moved target remains unknown, never delivered; operators reconcile that
+uncertainty before retrying publication. A later externally edited PR is not proof of
 the original goal's completion. Existing already-published PRs are unchanged.
 
 This does not publish a PR at goal creation or grant the coding agent publication
