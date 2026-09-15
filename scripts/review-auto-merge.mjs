@@ -10,7 +10,7 @@ export function mergeEligible(pr, protection, repository, verified) {
     || !protection.required_pull_request_reviews?.dismiss_stale_reviews
     || !protection.required_pull_request_reviews?.require_last_push_approval
     || !required.some(check => check.context === 'CodeRabbit')
-    || protection.required_pull_request_reviews.required_approving_review_count < 1
+    || (protection.required_pull_request_reviews.required_approving_review_count ?? 0) < 1
     || !['macos', 'verify'].every(name => required.some(check => check.context === name && check.app_id === 15368))) return false;
   if (pr.isDraft || pr.baseRefName !== 'main' || pr.mergeable !== 'MERGEABLE' || !verified
     || pr.reviews.pageInfo.hasPreviousPage || pr.reviewThreads.pageInfo.hasNextPage
