@@ -124,7 +124,7 @@ Plan: [implementation sequence](superpowers/plans/2026-09-15-mission-control-red
 | --- | --- |
 | Fleet stages, active wave and last activity | Fleet implemented; wave/activity projection still needed. |
 | Setup redesign and account usage | Existing implementation retained; redesign incomplete. |
-| Brief/files/images and authorized agent context | Not implemented. |
+| Brief/files/images and authorized agent context | Implemented with private durable references, scoped agent reads and real-service Cypress. Full verification in progress. |
 | Combined planner/design with approved suggested team | Existing planner retained; role/routing contract changes pending. |
 | Explicit wave barriers with verification | Not implemented; current scheduler still uses task dependencies. |
 | All judgment agents visible in cmux | Production adapters launch all judgment roles through cmux; bounded noninteractive policy is retained internally. Adapter/UI/API checks passed; native live validation unverified. |
@@ -140,3 +140,24 @@ Final backend coverage, remaining redesigned Cypress
 journeys, completion audit and PR review remain outstanding. Native cmux/provider
 and installed updater validation have not run and require separate live authority.
 No merge, deployment, installed data reset or external account change performed.
+
+## Goal inputs delivery
+
+- Added an optional explicit title, separate full brief/links and up to eight
+  durable UTF-8 source/text or PNG/JPEG/WebP references (1 MiB each).
+- Private content-addressed bytes precede journal metadata; paired downloads and
+  goal-scoped agent reads enforce repository and credential boundaries. HTML/SVG
+  remain plain-text attachments. Reviewers gain only reference/status MCP tools.
+- UI preserves file/title/brief drafts and exact uncertain command retries.
+- Reference lifecycle/security suites: four passed, including journal and blob
+  reopen, tamper detection, rejected files, revoked credentials and bounded reads.
+- Bounded native/API/presentation/MCP run: 48 passed, one obsolete empty-reviewer
+  tool-list expectation failed. Updated it to assert the two read-only tools;
+  the complete ten-test MCP suite then passed. No mutation-denial assertion removed.
+- UI orchestration suite: 20 passed. Typecheck and lint passed after adding scoped
+  explanations for intentional control-byte rejection regexes.
+- Chrome real-service orchestration Cypress: two writable journeys passed with
+  image/source uploads, authenticated safe download, recovery and publication.
+  The first invocation omitted `--orchestration` and ran zero journeys (three
+  pending); corrected invocation ran the real disposable service. Read-only-only
+  journey remains separately unverified. Full verification is in progress.

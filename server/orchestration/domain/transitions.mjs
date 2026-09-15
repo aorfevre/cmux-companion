@@ -1,5 +1,6 @@
 import { DomainError, identifier, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
+import { parseGoalReferences } from './goal-references.mjs';
 import { captureFailureHold, recoverGoal } from './recovery.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
@@ -59,10 +60,12 @@ export function transition(before, command, authority) {
   if (command.type === 'create_goal') {
     requireAuthority(authority, 'user');
     requireValue(!before && command.expectedVersion === 0, 'Goal already exists', 'VERSION_CONFLICT');
+    const description = input.description === undefined ? undefined : text(input.description, 12000);
+    const title = description === undefined ? text(input.title, 500) : input.title === undefined ? shortGoalTitle(description) : text(input.title, 120);
     const goal = /** @type {Goal} */ ({ id: command.goalId, version: 1, generation: 1,
-      repositoryId: identifier(input.repositoryId), title: input.description === undefined ? text(input.title, 500) : shortGoalTitle(text(input.description, 12000)),
+      repositoryId: identifier(input.repositoryId), title, ...(input.references === undefined ? {} : { references: parseGoalReferences(input.references) }),
       ...(input.description === undefined ? {} : { description: text(input.description, 12000), projectCode: projectCode(input.projectCode ?? input.repositoryId),
-        plannerName: planningName(projectCode(input.projectCode ?? input.repositoryId), shortGoalTitle(text(input.description, 12000))) }), baseSha: input.baseSha === undefined ? '' : sha(input.baseSha), ...(input.baseSha === undefined ? { startup: { status: 'pending', error: null } } : {}), baseBranch: branchName(input.baseBranch ?? 'main'),
+        plannerName: planningName(projectCode(input.projectCode ?? input.repositoryId), title) }), baseSha: input.baseSha === undefined ? '' : sha(input.baseSha), ...(input.baseSha === undefined ? { startup: { status: 'pending', error: null } } : {}), baseBranch: branchName(input.baseBranch ?? 'main'),
       status: 'discovering', revision: 0, approvedRevision: null, contracts: [], tasks: [],
       attempts: [], reviews: [], integrationHead: input.baseSha === undefined ? '' : sha(input.baseSha), verification: null,
       finalRepairCount: 0, finalRepairLimit: 2, pr: null, integration: null, publication: null,

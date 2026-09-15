@@ -1,4 +1,6 @@
 import Fastify from 'fastify';
+import { join } from 'node:path';
+import { GoalReferences } from './goal-references.mjs';
 import { ResourceCleanup } from './cleanup.mjs';
 import { nativeBinding } from './adapters/native-background.mjs';
 import { rolePrompt } from './adapters/role-prompts.mjs';
@@ -48,6 +50,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
   let agents;
   /** @type {((request: import('./types.d.ts').LaunchRequest) => import('./adapters/native-inputs.mjs').NativeDescription) | undefined} */ let describe;
   try {
+    const references = new GoalReferences({ directory: join(storage.artifacts, 'references') });
     const artifacts = new ArtifactStore({ directory: storage.artifacts });
     const repositories = new GitRepository({ repositories: configured, directory: storage.resources, artifacts });
     agents = createAgents({ locate: ({ operationId, identity }) => store.list().flatMap((goal) => goal.attempts).find((attempt) => operationId ? attempt.operationId === operationId : identity ? attempt.identity === identity : false)?.mode ?? null, describe: (request) => { requireValue(describe, 'Runtime context is not ready', 'NOT_READY'); return describe(request); }, onResult: (request, raw) => {
@@ -65,7 +68,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
     const app = Fastify({ logger: logLevel ? { level: logLevel, redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]'] } : false, bodyLimit: 2 * 1024 * 1024, ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
     const cleanup = new ResourceCleanup({ service, repositories, assertOwned: () => scheduler.ownership.assertOwned() });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
-    registerOrchestrationRoutes(app, { service, token, bridgeAuth, results, agentTools, stream, readOnly, suspension, cleanup, beforeCommand, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {
+    registerOrchestrationRoutes(app, { references, service, token, bridgeAuth, results, agentTools, stream, readOnly, suspension, cleanup, beforeCommand, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {
       try {
         const { repository } = await repositories.repository(id);
         let baseBranch;
@@ -92,7 +95,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
       const prompt = rolePrompt(goal, attempt);
       const credential = bridgeAuth.issueForDispatch(goal.id, attempt.id, request.operationId);
       const activation = { endpoint: `http://127.0.0.1:${address.port}`, credential };
-      return { prompt, plannerName: goal.plannerName, activation, ...(attempt.role === 'reviewer' ? {} : { bridge: activation }) };
+      return { prompt, plannerName: goal.plannerName, activation, bridge: activation };
     };
     const ownedAgents = agents;
     let started = false, closed = false, shutdownRequested = false;

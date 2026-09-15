@@ -60,7 +60,7 @@ test('uncertain command retries exactly the original id, payload and expected ve
   fireEvent.click(retry);
   await waitFor(() => expect(commands).toHaveLength(2));
   expect(commands[1]).toBe(commands[0]);
-  expect(JSON.parse(commands[0])).toMatchObject({ expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'A useful goal' } });
+  expect(JSON.parse(commands[0])).toMatchObject({ expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', description: 'A useful goal' } });
 });
 test('a definitive stale conflict refreshes and allows a new deliberate command', async () => {
   await start(); const original = api.getMockImplementation()!;
@@ -199,7 +199,7 @@ test('creation submits a full request from main without the current checkout SHA
   fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
   await screen.findByText('Goal saved. Its planning agent will start automatically.');
   const body = JSON.parse(String(api.mock.calls.find(([url]) => url.endsWith('/commands'))?.[1]?.body));
-  expect(body.payload).toEqual({ title: 'A useful goal', description: 'A useful goal', repositoryId: 'repo', baseBranch: 'main' });
+  expect(body.payload).toEqual({ description: 'A useful goal', repositoryId: 'repo', baseBranch: 'main' });
   expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Start a goal' }));
   expect(screen.getByLabelText('What should we accomplish?')).toHaveProperty('value', '');
@@ -303,4 +303,41 @@ test('execution agents expose their service-owned terminal control inside Waves 
   fireEvent.click(screen.getByText('Agent session'));
   fireEvent.click(screen.getByRole('button', { name: 'Open implementer terminal' }));
   expect(control).toHaveBeenCalledWith(goal, 'terminal', 'implementation');
+});
+
+test('explicit title, brief and files retain their draft and exact uncertain receipt', async () => {
+  await start();
+  fireEvent.change(screen.getByLabelText('Title (optional)'), { target: { value: 'Design refresh' } });
+  const reference = new File(['<svg>reference only</svg>'], 'design.svg', { type: 'image/svg+xml' });
+  fireEvent.change(screen.getByLabelText('Reference files'), { target: { files: [reference] } });
+  await screen.findByRole('button', { name: 'Remove design.svg' });
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Start a goal' }));
+  expect(screen.getByLabelText('Title (optional)')).toHaveProperty('value', 'Design refresh');
+  const original = api.getMockImplementation()!, commands: string[] = [];
+  api.mockImplementation(async (url, options) => {
+    if (url.endsWith('/commands')) { commands.push(String(options?.body)); if (commands.length === 1) throw new Error('Disconnected'); return {}; }
+    return original(url, options);
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
+  const retry = await screen.findByRole('button', { name: 'Retry pending request' });
+  await waitFor(() => expect(retry).toHaveProperty('disabled', false));
+  expect(screen.getByRole('button', { name: 'Remove design.svg' })).toHaveProperty('disabled', true);
+  fireEvent.click(retry);
+  await waitFor(() => expect(screen.queryByLabelText('What should we accomplish?')).toBeNull());
+  expect(commands[0]).toBe(commands[1]);
+  expect(JSON.parse(commands[0]).payload).toMatchObject({ title: 'Design refresh', description: 'A useful goal', attachments: [{ name: 'design.svg', data: btoa('<svg>reference only</svg>') }] });
+  fireEvent.click(screen.getByRole('button', { name: 'Start a goal' }));
+  expect(screen.getByLabelText('Title (optional)')).toHaveProperty('value', '');
+  expect(screen.queryByRole('button', { name: 'Remove design.svg' })).toBeNull();
+});
+
+test('reference selection rejects size/count limits and supports removal', async () => {
+  await start();
+  fireEvent.change(screen.getByLabelText('Reference files'), { target: { files: [new File(['a'.repeat(1024 * 1024 + 1)], 'big.txt')] } });
+  await screen.findByText('Attach up to 8 nonempty files, at most 1 MiB each.');
+  expect(screen.queryByRole('button', { name: 'Remove big.txt' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Reference files'), { target: { files: [new File(['hi'], 'brief.txt')] } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Remove brief.txt' }));
+  expect(screen.queryByRole('button', { name: 'Remove brief.txt' })).toBeNull();
 });

@@ -36,7 +36,9 @@ export interface Task extends TaskContract {
 export interface Verification {
   headSha: string; checks: { id: string; passed: boolean; artifactId: string }[];
 }
+export interface GoalReference { id: string; name: string; bytes: number; mimeType: 'text/plain' | 'image/png' | 'image/jpeg' | 'image/webp' }
 export interface Goal {
+  references?: GoalReference[];
   hold?: { id: string; reasons: { kind: 'attempt' | 'review' | 'integration' | 'verification' | 'publication'; target: string; message: string }[] } | null;
   recoveries?: { commandId: string; hold: NonNullable<Goal['hold']> }[];
   description?: string; projectCode?: string; plannerName?: string; clarification?: {question:string;answer?:string};

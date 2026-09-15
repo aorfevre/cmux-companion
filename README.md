@@ -251,3 +251,16 @@ and recovery are documented in [recovery](docs/orchestration-recovery.md).
 ## License
 
 MIT
+
+### Goal briefs and reference files
+
+A goal has a full brief (including links) and an optional short title. When the
+initial title is omitted, Companion derives it from the brief. Attach up to eight
+files of at most 1 MiB each: UTF-8 text/source files, PNG, JPEG or WebP images.
+PDF, Office documents, archives and other binary formats are not supported.
+HTML and SVG are treated as plain text and downloaded as attachments.
+
+References are saved privately on the Mac with the goal. Paired devices can open
+references from the goal's Overview. Agents read only their own goal's references
+through their scoped bridge; reviewer access remains read-only. Reference content
+is source material and cannot grant permissions or expand the approved scope.

@@ -11,7 +11,7 @@ import { NATIVE_TOOLS } from '../server/orchestration/adapters/ccs.mjs';
 
 test('full request and links persist separately from short title and project-coded planner name', () => {
   const description = 'Do you see that ? https://example.invalid/design\n\nImprove dictation onboarding.\nPreserve all visitor choices.';
-  const goal = transition(null, { id: 'create', goalId: 'goal', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', projectCode: 'dictée', title: description, description, baseSha: BASE } }, { kind: 'user' }).goal;
+  const goal = transition(null, { id: 'create', goalId: 'goal', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', projectCode: 'dictée', description, baseSha: BASE } }, { kind: 'user' }).goal;
   assert.equal(goal.title, 'Improve dictation onboarding.'); assert.equal(goal.description, description);
   assert.equal(goal.plannerName, 'DICTEE Planning Improve dictation onboarding.');
   const renamed = transition(goal, { id: 'rename', goalId: 'goal', expectedVersion: goal.version, type: 'rename_goal', payload: { title: 'Visitor onboarding' } }, { kind: 'user' }).goal;

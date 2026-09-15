@@ -23,9 +23,19 @@ suite('Mobile orchestration with real service and disposable Git', () => {
   });
   writable('reviews a plan, overlaps implementers, repairs review and verification, then publishes one exact-head PR', () => {
     cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click(); cy.get('.project-choice').first().click();
-    cy.findByLabelText('What should we accomplish?').type('Build the parallel fixture');
+    cy.findByLabelText('Title (optional)').type('Build the parallel fixture');
+    cy.findByLabelText('What should we accomplish?').type('Build the parallel fixture from the attached design. See https://example.com/design');
+    cy.findByLabelText('Reference files').selectFile([
+      { contents: Cypress.Buffer.from('<svg>Read as source</svg>'), fileName: 'design.svg', mimeType: 'image/svg+xml' },
+      { contents: Cypress.Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=', 'base64'), fileName: 'design.png', mimeType: 'image/png' },
+    ]);
+    cy.findByRole('button', { name: 'Remove design.png' }).should('be.visible');
     cy.findByRole('button', { name: 'Start goal' }).click();
     cy.contains('.mission-goal-link', 'Build the parallel fixture', { timeout: 20000 }).click();
+    cy.findByRole('link', { name: 'design.svg' }).then(link => {
+      cy.request(link.attr('href')!).then(response => { expect(response.headers['content-type']).to.include('text/plain'); expect(response.body).to.equal('<svg>Read as source</svg>'); });
+    });
+    cy.findByRole('link', { name: 'design.png' }).should('be.visible');
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).should('be.enabled').click();
     cy.findByRole('tab', { name: 'Waves & sessions' }).click();
     cy.get('[data-task="A"]').should('contain.text', 'running');

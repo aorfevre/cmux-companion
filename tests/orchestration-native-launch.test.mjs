@@ -73,7 +73,7 @@ process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_err
     const listening = runtime.listen();
     await entered.promise;
     assert.ok(description.activation.credential.length >= 32);
-    assert.equal(description.bridge, undefined, 'reviewer gets no scoped MCP tool credential');
+    assert.equal(description.bridge.credential, description.activation.credential, 'reviewer gets its own scoped read-only MCP credential');
     const headers = { authorization: `Bearer ${description.activation.credential}` };
     assert.equal((await fetch(`${description.activation.endpoint}/api/orchestration/agent/ready`, { headers })).status, 409);
     assert.equal((await fetch(`${description.activation.endpoint}/api/orchestration/agent/status`, { headers })).status, 403);

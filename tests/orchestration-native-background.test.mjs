@@ -138,7 +138,7 @@ test('independent native watchdog survives actual service SIGKILL and enforces i
 import { NativeInputs } from ${JSON.stringify(inputsUrl)};
 import { NativeBackground } from ${JSON.stringify(driverUrl)};
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-const inputs = new NativeInputs({ engine: { provider: 'default', model: 'fixture' }, capabilities: config.capabilities, env: config.env, describe: () => ({ prompt: config.prompt }) });
+const inputs = new NativeInputs({ engine: { provider: 'default', model: 'fixture' }, capabilities: config.capabilities, env: config.env, describe: () => ({ prompt: config.prompt, bridge: { endpoint: 'http://127.0.0.1:1', credential: 'c'.repeat(48) } }) });
 const driver = new NativeBackground({ ...config, inputs, onResult: () => {} });
 await driver.launch(config.request); process.stdout.write('ready\\n');
 `, { mode: 0o600 });
