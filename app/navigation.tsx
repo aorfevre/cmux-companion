@@ -1,5 +1,5 @@
 'use client';
-export function AppNavigation({ active }: { active: 'sessions' | 'goals' | 'needs' | 'inbox' | 'settings'; onNavigate?: (view: 'sessions' | 'inbox') => void }) {
+export function AppNavigation({ active }: { active: 'sessions' | 'goals' | 'needs' | 'settings' }) {
   return <nav className="app-navigation" aria-label="Main navigation">{([
     ['goals', '/orchestration', 'Mission Control', '▤'], ['needs', '/orchestration?view=needs', 'Needs You', '◇'],
     ['sessions', '/?view=sessions', 'Sessions', '▣'], ['settings', '/settings', 'Setup', '⚙'],

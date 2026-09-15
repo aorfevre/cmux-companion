@@ -38,14 +38,12 @@ describe("TerminalGrid", () => {
   });
 
   test("renders plain text references as inert text unless handlers are supplied", async () => {
-    const markdown = vi.fn(); const local = vi.fn();
+    const markdown = vi.fn();
     const { rerender } = render(<TerminalGrid view={{ mode: "text", text: "Read docs/plan.md then http://localhost:3000" }} />);
     assert.equal(screen.queryByRole("button"), null);
-    rerender(<TerminalGrid view={{ mode: "text", text: "Read docs/plan.md then http://localhost:3000" }} onMarkdownLink={markdown} onLocalUrl={local} />);
+    rerender(<TerminalGrid view={{ mode: "text", text: "Read docs/plan.md then http://localhost:3000" }} onMarkdownLink={markdown} />);
     await userEvent.click(screen.getByRole("button", { name: "docs/plan.md" }));
-    await userEvent.click(screen.getByRole("button", { name: "http://localhost:3000" }));
     assert.deepEqual(markdown.mock.calls, [["docs/plan.md"]]);
-    assert.deepEqual(local.mock.calls, [["http://localhost:3000"]]);
   });
 
   test("lays out grid spans by column with safe styles and a cursor", async () => {
@@ -103,7 +101,7 @@ describe("TerminalGrid", () => {
   });
 
   test("reflow mode collapses column gaps and marks decorative rules", async () => {
-    const local = vi.fn();
+
     const grid = baseGrid({ columns: 60, rows: 4, scrollback_rows: 0, scrollback_spans: [], row_spans: [
       { row: 0, column: 30, cell_width: 3, style_id: 1, text: "end" },
       { row: 0, column: 0, cell_width: 5, style_id: 0, text: "start" },
@@ -112,7 +110,7 @@ describe("TerminalGrid", () => {
       { row: 2, column: 0, cell_width: 5, style_id: 0, text: "     " },
       { row: 3, column: 2, cell_width: 21, style_id: 0, text: "http://localhost:3000   " },
     ] });
-    render(<TerminalGrid view={{ mode: "grid", render_grid: grid }} reflow onLocalUrl={local} />);
+    render(<TerminalGrid view={{ mode: "grid", render_grid: grid }} reflow />);
     const log = screen.getByRole("log");
     assert.ok(log.classList.contains("reflow"));
     assert.equal(log.style.width, "100%");
@@ -123,8 +121,6 @@ describe("TerminalGrid", () => {
     assert.ok(!rows[2].classList.contains("decorative"));
     assert.equal(rows[3].textContent, "  http://localhost:3000", "the trailing span is trimmed");
     assert.equal(within(rows[0] as HTMLElement).getByText("end").classList.contains("blinking"), true);
-    await userEvent.click(screen.getByRole("button", { name: "http://localhost:3000" }));
-    assert.deepEqual(local.mock.calls, [["http://localhost:3000"]]);
     assert.equal(log.querySelectorAll(".terminal-cursor").length, 0, "reflow never draws the cursor");
   });
 });

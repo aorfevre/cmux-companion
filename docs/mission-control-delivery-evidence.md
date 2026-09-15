@@ -307,3 +307,47 @@ tests, lint, typecheck and build. The full routine suite includes deterministic
 updater regressions; installed/native live paths remain unverified. Remaining
 redesign work is Sessions and legacy feature retirement, fleet last activity and
 run-evidence polish, final coverage/audit and the PR targeting main.
+
+
+## Standalone Sessions and retired product owners
+
+Sessions now shares the Mission Control shell, searchable cards and a responsive
+terminal detail with visible terminal selection, health/changes navigation and
+explicit input protection. Retained text/image/key input, shortcuts, Markdown,
+terminal follow/fit controls and stale-response ownership checks.
+
+Removed Inbox, prompt queues, local-app preview capture/management, push
+notifications, their authenticated routes and startup/job owners, exclusive tests,
+service-worker push handlers, CSS and web-push dependency. Retired route requests
+return 404; no removed cmux feed RPC is used by session control. Local URLs in
+terminal output are inert while safe Markdown remains inspectable. Old navigation
+links redirect to Mission Control or the corresponding Setup section.
+
+Settings APIs and Setup no longer expose preview ports or Chrome capture paths.
+The two obsolete fields remain inert in schema-2 disk JSON solely for updater
+rollback compatibility. Current reads strip them; writes preserve their original
+values. Historical goal snapshots, projects, favorites and imported/revision
+metadata survive restart. The archived previous reader still reads and writes
+upgraded data, and backup restoration returns the exact pre-update data. An
+initial schema-3 deletion was discarded after the compatibility audit, before
+commit; no installed data was used or changed.
+
+Updater queue draining no longer references retired prompt queues. Owned workers,
+verification, publication, mutation fencing and handoff still block unsafe updates.
+Pairing, same-origin validation, loopback binding and repository restrictions remain.
+
+Verification interventions: repaired low-contrast inherited Sessions text and a
+phone minimum-height that hid its composer; removed an obsolete CSS assertion;
+updated retired navigation fixtures and restored a reconnect fixture's required
+fresh timestamp. Cypress explicitly checks composer bounds and narrow overflow.
+Final check results are recorded below after the completion run.
+
+Retirement checks: `npm run verify` passed (833 backend passed, one intentional
+skip; 149 UI; lint, frontend/backend types and build). Retained Sessions/ownership,
+responsive interface matrix, pairing, launch, goal navigation, deployment health
+and Setup browser journeys passed. Account usage passed all eight journeys after
+correcting the fixture timestamp; both real-service onboarding journeys passed.
+The updater browser journey passed separately. Its initial combined run correctly
+stayed busy because onboarding had created live fixture work; isolation removed
+the cross-suite state without weakening the updater fence. Installed/native live
+paths remain unrun. Final redesign coverage is still pending.

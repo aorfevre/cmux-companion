@@ -85,7 +85,7 @@ function spanStyle(style: TerminalStyle | undefined, foreground: string, backgro
   };
 }
 
-export function TerminalGrid({ view, hideNativeComposer = false, reflow = false, onMarkdownLink, onLocalUrl }: { view: TerminalView | null; hideNativeComposer?: boolean; reflow?: boolean; onMarkdownLink?: (path: string) => void; onLocalUrl?: (url: string) => void }) {
+export function TerminalGrid({ view, hideNativeComposer = false, reflow = false, onMarkdownLink }: { view: TerminalView | null; hideNativeComposer?: boolean; reflow?: boolean; onMarkdownLink?: (path: string) => void }) {
   const grid = useMemo(() => view?.mode === "grid" ? normalizeRenderGrid(view.render_grid) as RenderGrid | null : null, [view]);
   const model = useMemo(() => {
     if (!grid) return null;
@@ -101,7 +101,7 @@ export function TerminalGrid({ view, hideNativeComposer = false, reflow = false,
   if (view.mode === "text" || !grid || !model) {
     const rawText = view.mode === "text" ? view.text || "No terminal output yet." : "Terminal replay is unavailable.";
     const text = hideNativeComposer ? withoutNativeComposer(rawText) : rawText;
-    return <pre className="terminal-fallback">{renderContextText(text, onMarkdownLink, onLocalUrl)}</pre>;
+    return <pre className="terminal-fallback">{renderContextText(text, onMarkdownLink)}</pre>;
   }
 
   const foreground = safeTerminalColor(grid.terminal_foreground, "#f2f2f2");
@@ -124,7 +124,7 @@ export function TerminalGrid({ view, hideNativeComposer = false, reflow = false,
         const decorative = reflow && chunks.length > 0 && /^[─━═_\s-]+$/.test(chunks.map((chunk) => `${chunk.gap}${chunk.text}`).join(""));
         return <div className={`terminal-grid-row${decorative ? " decorative" : ""}`} key={rowIndex}>
           {reflow ? chunks.map((chunk, spanIndex) => (
-            <span className={model.styles.get(chunk.span.style_id)?.blink ? "terminal-span blinking" : "terminal-span"} key={`${chunk.span.column}-${spanIndex}`} style={spanStyle(model.styles.get(chunk.span.style_id), foreground, background)}>{chunk.gap}{renderContextText(chunk.text, onMarkdownLink, onLocalUrl)}</span>
+            <span className={model.styles.get(chunk.span.style_id)?.blink ? "terminal-span blinking" : "terminal-span"} key={`${chunk.span.column}-${spanIndex}`} style={spanStyle(model.styles.get(chunk.span.style_id), foreground, background)}>{chunk.gap}{renderContextText(chunk.text, onMarkdownLink)}</span>
           )) : spans.map((span, spanIndex) => (
             <span
               className={model.styles.get(span.style_id)?.blink ? "terminal-span blinking" : "terminal-span"}
@@ -133,7 +133,7 @@ export function TerminalGrid({ view, hideNativeComposer = false, reflow = false,
                 gridColumn: `${span.column + 1} / span ${span.cell_width}`,
                 ...spanStyle(model.styles.get(span.style_id), foreground, background),
               }}
-            >{renderContextText(span.text, onMarkdownLink, onLocalUrl)}</span>
+            >{renderContextText(span.text, onMarkdownLink)}</span>
           ))}
           {!reflow && grid.cursor?.visible && grid.cursor.row < screenRows.length && rowIndex === cursorRow && (
             <i
@@ -147,10 +147,9 @@ export function TerminalGrid({ view, hideNativeComposer = false, reflow = false,
   );
 }
 
-function renderContextText(text: string, onMarkdownLink?: (path: string) => void, onLocalUrl?: (url: string) => void) {
+function renderContextText(text: string, onMarkdownLink?: (path: string) => void) {
   return splitContextLinks(text).map((part: { type: string; text: string }, index: number) => {
     if (part.type === "markdown" && onMarkdownLink) return <button type="button" className="terminal-context-link" onClick={() => onMarkdownLink(part.text)} key={`${index}-${part.text}`}>{part.text}</button>;
-    if (part.type === "local" && onLocalUrl) return <button type="button" className="terminal-context-link preview" onClick={() => onLocalUrl(part.text)} key={`${index}-${part.text}`}>{part.text}</button>;
     return part.text;
   });
 }

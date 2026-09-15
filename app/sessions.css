@@ -1,0 +1,63 @@
+.sessions-mission { color:var(--text); }
+.sessions-mission .mission-content { align-self:start; margin:0 auto; padding-bottom:32px; }
+.sessions-mission :focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+.sessions-mission button { min-height:44px; cursor:pointer; }
+.sessions-mission .topbar { position:static; padding:18px 0; background:transparent; border-bottom:1px solid var(--line); }
+.sessions-mission .brand-mark { background:var(--accent); color:white; }
+.sessions-mission .hero { display:block; padding:28px 0; background:none; }
+.sessions-mission .hero>h1 { color:var(--text); margin:8px 0; font-size:32px; }
+.sessions-mission .hero>p { color:var(--muted); }
+.sessions-mission .hero>.summary-row { width:100%; max-width:660px; margin:22px 0 0; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:20px; }
+.sessions-mission .accent-number { color:var(--accent); }
+.sessions-mission .content-section,.sessions-mission .subpage { padding:16px 0 32px; }
+.sessions-mission .workspace-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:16px; }
+.sessions-mission .workspace-card { border-radius:10px; background:var(--panel); color:var(--text); padding:20px; }
+.sessions-mission .workspace-card-head strong { color:var(--text); }
+.sessions-mission .workspace-card p,.sessions-mission .card-foot { color:var(--muted); }
+.sessions-mission .state-pill { color:var(--accent); background:var(--panel-raised); }
+.sessions-mission .state-pill.attention { color:#86600b; background:#faf0d8; }
+.sessions-mission .primary-button,.sessions-mission .primary-small { background:var(--accent); color:white; }
+.sessions-mission .empty-card { background:var(--panel); border-color:var(--line); }
+.session-search { display:block; max-width:660px; margin:0 0 20px; color:var(--muted); font-size:14px; }
+.session-search input,.session-toolbar select,.sessions-mission .launch-form input,.sessions-mission .launch-form textarea,.sessions-mission .launch-form select { display:block; width:100%; padding:12px; margin-top:6px; border:1px solid var(--line); border-radius:8px; color:var(--text); background:var(--input-bg); }
+.sessions-mission .launch-form>label,.sessions-mission .launch-form legend { color:var(--text); }
+.sessions-mission .launch-form fieldset button.selected { border-color:var(--accent); color:var(--accent); background:var(--panel-raised); }
+.sessions-mission .detail-shell { width:100%; max-width:none; height:100%; min-height:0; margin:0; border:0; background:var(--bg); }
+.sessions-mission .detail-header { position:static; background:transparent; padding:16px 0; }
+.sessions-mission .detail-header strong { font-size:18px; color:var(--text); }
+.sessions-mission .detail-header>div { text-align:left; }
+.sessions-mission .back-button,.sessions-mission .session-menu-button,.session-toolbar button,.session-back { color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 14px; }
+.session-toolbar { display:flex; flex-wrap:wrap; gap:12px; align-items:end; margin:16px 0; }
+.session-toolbar label { flex:1; min-width:120px; font-size:13px; color:var(--muted); }
+.session-toolbar select { margin:5px 0 0; }
+.sessions-mission .terminal-window { border:1px solid #29332d; border-radius:10px 10px 0 0; background:#101813; color:#e1e8df; }
+.sessions-mission .terminal-scroll { background:#101813; color:#e1e8df; }
+.sessions-mission .terminal-controls { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:0 0 10px 10px; padding:10px; }
+.sessions-mission .composer { background:transparent; border:0; }
+.sessions-mission .compact-composer textarea { color:var(--text); background:var(--input-bg); border-color:var(--line); padding-right:38px; }
+.sessions-mission .composer>button { background:var(--accent); color:white; }
+.sessions-mission .shortcut-palette { background:var(--panel); color:var(--text); }
+.sessions-mission .shortcut-palette code { color:var(--accent); }
+.sessions-mission .health-page,.sessions-mission .changes-page { background:var(--panel); border:1px solid var(--line); border-radius:10px; }
+.sessions-mission .session-menu { background:var(--panel); color:var(--text); border-color:var(--line); }
+.sessions-mission .session-menu button { background:var(--input-bg); color:var(--text); border-color:var(--line); }
+.sessions-mission .session-menu button.active { background:var(--panel-raised); color:var(--accent); }
+.sessions-mission .writing-mode { background:var(--panel); color:var(--text); }
+.sessions-mission .writing-mode textarea { color:var(--text); }
+.sessions-mission .writing-mode button { color:var(--accent); }
+@media(max-width:760px) {
+  .sessions-mission:has(.detail-shell) { display:flex; flex-direction:column; }
+  .sessions-mission:has(.detail-shell) .mission-sidebar { flex:none; }
+  .sessions-mission .session-toolbar { gap:8px; margin:10px 0; }
+  .session-toolbar button { width:100%; }
+  .sessions-mission .detail-header { gap:8px; }
+  .sessions-mission .detail-header strong { font-size:15px; }
+  .sessions-mission .topbar { flex-wrap:wrap; }
+}
+
+.sessions-mission .section-heading h2,.sessions-mission .summary-row strong,.sessions-mission .brand-copy strong { color:var(--text); }
+.sessions-mission .summary-row .accent-number { color:var(--accent); }
+.sessions-mission:has(.detail-shell) { height:100dvh; min-height:0; }
+.sessions-mission:has(.detail-shell) .mission-content { align-self:stretch; flex:1; min-height:0; margin:0 auto; padding-bottom:12px; }
+.sessions-mission .detail-header,.sessions-mission .session-toolbar { flex:none; }
+.sessions-mission .terminal-window { min-height:100px; }

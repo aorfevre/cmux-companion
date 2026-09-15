@@ -1,7 +1,7 @@
 {
   "name": "cmux-companion",
   "version": "0.1.0",
-  "description": "A private, mobile-first cmux companion for your Tailscale network.",
+  "description": "A private, desktop-first cmux control center for your Tailscale network.",
   "private": true,
   "engines": {
     "node": ">=22.23.1 <23"
@@ -23,7 +23,6 @@
     "test": "node scripts/run-backend-tests.mjs",
     "test:coverage": "node --test --test-concurrency=4 --experimental-test-coverage --test-coverage-include='server/**' --test-coverage-include='updater/src/**' --test-coverage-exclude='server/index.mjs' --test-coverage-exclude='server/supervisor.mjs' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/backend.lcov $(node scripts/run-backend-tests.mjs --list)",
     "test:live": "node --test tests/cmux.live.mjs",
-    "test:preview-live": "node --test tests/tailscale-preview.live.mjs",
     "test:ui": "NODE_ENV=test vitest run --config vitest.config.ts",
     "test:ui:coverage": "NODE_ENV=test vitest run --config vitest.config.ts --coverage",
     "test:e2e:local": "node scripts/run-local-cypress.mjs",
@@ -44,8 +43,7 @@
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1",
-    "web-push": "^3.6.7"
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.54.2",

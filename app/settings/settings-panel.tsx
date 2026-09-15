@@ -22,9 +22,9 @@ export type LaunchProfile = { id: string; label: string; provider: Provider; com
 export type Settings = {
   launchProfiles?: LaunchProfile[]; teamDefaults?: Partial<Record<'planner' | 'implementer' | 'reviewer' | 'integrator', string>>;
   devRepos?: DevRepo[]; projects: Project[]; providers: Record<Provider, Command>; provider: Provider;
-  tools: { cmux: string; tailscale: string; chrome: string };
+  tools: { cmux: string; tailscale: string };
   execution: { global: number; perGoal: number; planners: number; ceilingMs: number; idleMs: number; maxOutputBytes: number; killGraceMs: number };
-  previews: { portStart: number; portEnd: number }; onboarding: { completed: boolean };
+  onboarding: { completed: boolean };
 };
 export type Snapshot = { revision: number; settings: Settings; imported: boolean };
 const categories = { 'dev-repos': 'Projects', agents: 'Agents & models', usage: 'Account usage', updates: 'Updates', general: 'This device', advanced: 'Execution & tools' };

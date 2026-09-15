@@ -12,7 +12,7 @@ button:disabled { cursor: not-allowed; }
 .app-shell, .orchestration { padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
 .orchestration, .local-settings-page, .app-shell { color:var(--text); }
 .orchestration a { color:var(--accent); }
-.orch-card, .orch-goals button, .settings-list, .push-card, .deployment-card, .privacy-note { background:var(--panel); border-color:var(--line); }
+.orch-card, .orch-goals button, .settings-list, .deployment-card, .privacy-note { background:var(--panel); border-color:var(--line); }
 .orchestration input, .orchestration textarea, .orchestration select { background:var(--input-bg); color:var(--text); border-color:var(--line); }
 .orchestration button { background:var(--panel-raised); color:var(--text); border-color:var(--line); }
 .orch-goals button[aria-current=true] { border-color:var(--accent); background:var(--panel-raised); }
@@ -22,10 +22,10 @@ button:disabled { cursor: not-allowed; }
 .orch-header, .orch-attempt, .orch-review { border-color:var(--line); }
 .app-shell button, .detail-shell button { min-height:44px; }
 .app-shell input:not([type=checkbox]), .app-shell select, .app-shell textarea { font-size:16px; }
-.subpage p, .privacy-note p, .push-guidance { font-size:14px; }
+.subpage p, .privacy-note p { font-size:14px; }
 .subpage { overflow-wrap:anywhere; }
-.setting-row strong, .push-title strong { font-size:14px; }
-.setting-row span, .push-title span { color:var(--muted); font-size:12px; }
+.setting-row strong { font-size:14px; }
+.setting-row span { color:var(--muted); font-size:12px; }
 .update-settings { color:var(--text); }
 .update-settings p { overflow-wrap:anywhere; }
 .update-notice { flex-wrap:wrap; }
@@ -52,8 +52,7 @@ button:disabled { cursor: not-allowed; }
 .orchestration h1 { font-size:32px; }
 /* Icon controls keep the same touch target as labeled actions. */
 button, .app-navigation a { min-width:44px; }
-.detail-shell button, .session-menu button, .queue-sheet button, .writing-mode button { min-height:44px; }
+.detail-shell button, .session-menu button, .writing-mode button { min-height:44px; }
 .compact-composer .expand-writer { width:44px; height:44px; top:0; right:0; }
-.compact-composer .queue-draft { width:44px; height:44px; top:0; right:44px; }
 .compact-composer .composer-editor textarea { padding-right:92px; }
-.detail-shell textarea, .queue-sheet textarea { font-size:16px; }
+.detail-shell textarea { font-size:16px; }

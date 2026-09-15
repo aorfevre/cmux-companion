@@ -19,7 +19,7 @@ test("repository discovery includes the safety test and excludes every live npm 
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const selected = backendTestFiles(fileURLToPath(new URL(".", import.meta.url))).map(path => basename(path));
   assert.ok(selected.includes("test-discovery.test.mjs"));
-  for (const name of ["test:live", "test:preview-live"]) {
+  for (const name of Object.keys(manifest.scripts).filter(name => name.startsWith("test:") && name.includes("live"))) {
     const file = manifest.scripts[name].split(" ").at(-1);
     assert.ok(file.endsWith(".live.mjs"), `${name} must use the live naming convention`);
     assert.ok(!selected.includes(basename(file)), `${name} must never enter verify`);

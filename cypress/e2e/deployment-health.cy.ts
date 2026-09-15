@@ -25,18 +25,15 @@ function scenario() {
   cy.intercept("GET", "**/api/settings/local", { statusCode: 404, body: { error: "Legacy settings" } });
   cy.intercept("GET", "**/api/auth/status", { paired: true });
   cy.intercept("GET", "**/api/bootstrap", { connected: true, host: { mac_display_name: "E2E Mac" }, workspaces: [], error: null, refreshedAt: iso(0) });
-  cy.intercept("GET", "**/api/inbox", { items: [], actionableCount: 0, unreadCount: 0 });
   cy.intercept("GET", "**/api/repos", { repos: [] });
-  cy.intercept("GET", "**/api/prompt-queue*", { items: [] });
   cy.intercept("GET", "**/api/settings/models", { roles: DEFAULT_MODEL_ROLES, defaults: DEFAULT_MODEL_ROLES, warning: null });
-  cy.intercept("GET", "**/api/push/status*", { supported: false, subscribed: false });
   cy.intercept("GET", "**/api/health", { ok: true, service: "cmux-companion", now: iso(0), version: { gitSha: CURRENT, builtAt: iso(-60 * 26) } }).as("health");
 }
 
 function visitSettings() {
   cy.clock(frozenNow.getTime(), ["Date"]);
   cy.visit("/settings#advanced");
-  cy.findByRole("heading", { name: /^Settings$/ }).should("be.visible");
+  cy.findByRole("heading", { name: /^Setup$/ }).should("be.visible");
 }
 
 function card() { return cy.findByRole("region", { name: "Deployment health" }); }

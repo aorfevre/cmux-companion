@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
-import { normalizeInbox } from "../server/app.mjs";
 import { CmuxCommandError } from "../server/cmux-client.mjs";
 import { buildTestApp as buildApp } from "./helpers/api-app.mjs";
 
@@ -78,28 +77,6 @@ test("pairing is rate limited per client and the window resets after fifteen min
   assert.match(good.headers["set-cookie"], /cmux_session=/);
 });
 
-test("bootstrap syncs detected previews and survives a sync that never finishes", async (t) => {
-  const synced = [];
-  let release;
-  const gate = new Promise((resolve) => { release = resolve; });
-  const previewManager = {
-    list: () => ({ previews: [] }),
-    syncWorkspaces: async (workspaces, repos) => { synced.push([workspaces.map((item) => item.id), repos]); if (synced.length === 1) await gate; },
-  };
-  const repoCatalog = { roots: [], list: async () => [{ id: REPO_ID, name: "fixture", path: "/repo/fixture" }], get: async () => { throw new TypeError("Unknown repository"); } };
-  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, previewManager, repoCatalog, bootstrapTimeoutMs: 40 });
-  const waiting = await app.inject({ url: "/api/bootstrap", headers: AUTH });
-  assert.equal(waiting.statusCode, 200);
-  assert.equal(waiting.json().connected, false, "the page is not held hostage by a slow preview scan");
-  assert.equal(waiting.json().error, "Waiting for cmux");
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  release();
-  const settled = await app.inject({ url: "/api/bootstrap", headers: AUTH });
-  assert.equal(settled.json().connected, true, "the finished scan is served from its snapshot");
-  assert.deepEqual(synced[0][0], [WS_ID]);
-  assert.equal(synced[0][1][0].id, REPO_ID);
-});
-
 test("workspace lifecycle routes forward to cmux", async (t) => {
   const cmux = fakeCmux();
   const app = await buildApp(t, { cmux, token: TOKEN });
@@ -143,14 +120,14 @@ test("shutdown releases every viewport lease that is still held", async (t) => {
   assert.deepEqual(cmux.calls.at(-1), ["viewport", TERM_ID, { clientId: "phone-2", generation: 5, clear: true }]);
 });
 
-test("optional services answer 503 when the app was built without them", async (t) => {
+test("retired product routes are absent even for paired clients", async (t) => {
   const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN });
-  assert.deepEqual((await app.inject({ url: "/api/push/status", headers: AUTH })).json(), { supported: false, subscribed: false });
+  assert.equal((await app.inject({ url: "/api/push/status", headers: AUTH })).statusCode, 404);
   const posts = ["/api/push/subscribe", "/api/push/settings", "/api/push/unsubscribe", "/api/push/test", "/api/previews/discover", "/api/previews/x/enable", "/api/previews/x/stop", "/api/previews/x/restart", "/api/previews/x/capture", "/api/prompt-queue/x/send"];
-  for (const url of posts) assert.equal((await app.inject({ method: "POST", url, headers: AUTH, payload: {} })).statusCode, 503, url);
-  for (const url of ["/api/previews", "/api/prompt-queue"]) assert.equal((await app.inject({ url, headers: AUTH })).statusCode, 503, url);
-  assert.equal((await app.inject({ method: "DELETE", url: "/api/previews/x", headers: AUTH })).statusCode, 503);
-  assert.equal((await app.inject({ method: "DELETE", url: "/api/prompt-queue/x", headers: AUTH })).statusCode, 503);
+  for (const url of posts) assert.equal((await app.inject({ method: "POST", url, headers: AUTH, payload: {} })).statusCode, 404, url);
+  for (const url of ["/api/previews", "/api/prompt-queue", "/api/inbox"]) assert.equal((await app.inject({ url, headers: AUTH })).statusCode, 404, url);
+  assert.equal((await app.inject({ method: "DELETE", url: "/api/previews/x", headers: AUTH })).statusCode, 404);
+  assert.equal((await app.inject({ method: "DELETE", url: "/api/prompt-queue/x", headers: AUTH })).statusCode, 404);
 });
 
 test("repository diffs require a file and forward the staged flag", async (t) => {
@@ -166,11 +143,9 @@ test("repository diffs require a file and forward the staged flag", async (t) =>
   assert.equal((await app.inject({ url: `/api/repos/${REPO_ID}/assets`, headers: AUTH })).statusCode, 400);
 });
 
-test("the event stream fans out hub and queue events to a paired socket and detaches on close", async (t) => {
+test("the event stream fans out hub events to a paired socket and detaches on close", async (t) => {
   const hub = fakeHub();
-  const queue = new EventEmitter();
-  queue.attach = () => () => {};
-  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, eventHub: hub, promptQueue: queue });
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, eventHub: hub });
   await app.ready();
   const unauthorized = await app.injectWS("/api/events").catch((cause) => cause);
   assert.match(String(unauthorized.message), /401/);
@@ -190,9 +165,8 @@ test("the event stream fans out hub and queue events to a paired socket and deta
   assert.equal(hub.listenerCount("state"), 1);
   hub.emit("event", { name: "agent.hook.Stop" });
   hub.emit("state", { connected: true });
-  queue.emit("changed", { workspaceId: WS_ID });
-  await received(4);
-  assert.deepEqual(messages.slice(1).map((message) => message.type), ["cmux:event", "cmux:state", "queue:changed"]);
+  await received(3);
+  assert.deepEqual(messages.slice(1).map((message) => message.type), ["cmux:event", "cmux:state"]);
   assert.deepEqual(messages[1].payload, { name: "agent.hook.Stop" });
   // The injected duplex never completes a close handshake, so the phone going
   // away is simulated the way it really happens: the connection is dropped.
@@ -201,7 +175,6 @@ test("the event stream fans out hub and queue events to a paired socket and deta
   await closed;
   assert.equal(hub.consumers, 0, "the socket released its consumer");
   assert.equal(hub.listenerCount("state"), 0);
-  assert.equal(queue.listenerCount("changed"), 0);
   await app.close();
   assert.equal(hub.stopped, 1);
 });
@@ -219,20 +192,6 @@ test("non-API paths are proxied to the frontend with the upstream host header", 
   assert.deepEqual(seen, [new URL(frontendUpstream).host]);
   assert.equal(page.headers["x-content-type-options"], "nosniff");
   assert.equal((await app.inject({ url: "/api/bootstrap", headers: { host: "mac.tail.test" } })).statusCode, 401, "the API stays in front of the proxy");
-});
-
-test("inbox items fall back to a title that names the request kind", () => {
-  const result = normalizeInbox({ items: [
-    { request_id: "r1", kind: "question", questions: [{ options: ["Yes", "No"] }] },
-    { request_id: "r2", kind: "exitPlan", plan_summary: "Ship" },
-    { request_id: "r3", kind: "permissionRequest" },
-    { request_id: "r4", kind: "unknown" },
-    { kind: "question" },
-  ] });
-  assert.deepEqual(result.items.map((item) => item.title), ["Agent question", "Plan ready for review", "Permission requested"]);
-  assert.deepEqual(result.items[0].questionOptions, ["Yes", "No"]);
-  assert.equal(result.items[1].body, "Ship");
-  assert.equal(result.actionableCount, 3);
 });
 
 test("an idle viewport lease is released after twenty-five seconds", async (t) => {

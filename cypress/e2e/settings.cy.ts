@@ -3,7 +3,7 @@ function fixtures() {
   const now = new Date().toISOString();
   let snapshot = { revision: 1, imported: false, settings: {
     devRepos: [], projects: [], provider: 'claude', providers: { claude: { executable: 'ccs', args: ['claude'], model: 'default' }, codex: { executable: 'ccs', args: ['codex'], model: 'default' } },
-    launchProfiles: [], teamDefaults: {}, tools: { cmux: 'cmux', tailscale: 'tailscale', chrome: 'chrome' }, execution: { global: 4, perGoal: 4, planners: 2, ceilingMs: 1800000, idleMs: 240000, maxOutputBytes: 1048576, killGraceMs: 5000 }, previews: { portStart: 8500, portEnd: 8599 }, onboarding: { completed: true },
+    launchProfiles: [], teamDefaults: {}, tools: { cmux: 'cmux', tailscale: 'tailscale' }, execution: { global: 4, perGoal: 4, planners: 2, ceilingMs: 1800000, idleMs: 240000, maxOutputBytes: 1048576, killGraceMs: 5000 }, onboarding: { completed: true },
   } as Settings };
   cy.intercept('**/api/**', { statusCode: 501, body: { error: 'Missing deterministic API fixture' } });
   cy.intercept('GET', '**/api/settings/local', req => req.reply(snapshot));

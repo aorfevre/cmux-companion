@@ -195,62 +195,6 @@ export class CmuxClient {
     return this.runJSON(["todo", action, todoId, "--workspace", workspaceId]);
   }
 
-  pendingFeed() {
-    return this.rpc("feed.list", { pending_only: true });
-  }
-
-  notifications() {
-    return this.rpc("notification.list", {});
-  }
-
-  async markNotificationRead(id) {
-    assertTarget(id);
-    return this.rpc("notification.mark_read", { id });
-  }
-
-  // A notification is a courtesy, so its text is clamped and defaulted rather
-  // than rejected: a blank title is a caller bug, and failing here would abort
-  // the delivery this call only meant to report on.
-  //
-  // notification.create is the only method that takes a workspace alone.
-  // notification.create_for_target rejects that shape with "Missing or invalid
-  // surface_id" - it wants BOTH a surface_id and a workspace_id - and because
-  // every caller sits inside a publish catch, switching back would silently
-  // swallow every notification instead of failing loudly.
-  async notify(workspaceId, { title, body = "" }) {
-    assertTarget(workspaceId);
-    const heading = String(title || "").trim().slice(0, 100) || "cmux companion";
-    return this.rpc("notification.create", {
-      workspace_id: workspaceId,
-      title: heading,
-      body: String(body || "").trim().slice(0, 500),
-    });
-  }
-
-  feedReply(requestId, kind, body = {}) {
-    assertTarget(requestId);
-    if (kind === "permissionRequest") {
-      const mode = String(body.mode || "");
-      if (!["once", "always", "all", "bypass", "deny"].includes(mode)) throw new TypeError("Invalid permission response");
-      return this.rpc("feed.permission.reply", { request_id: requestId, mode });
-    }
-    if (kind === "question") {
-      const selections = Array.isArray(body.selections) ? body.selections : [];
-      if (!selections.length || selections.length > 20 || selections.some((item) => typeof item !== "string" || !item.trim() || item.length > 500)) {
-        throw new TypeError("Select at least one valid answer");
-      }
-      return this.rpc("feed.question.reply", { request_id: requestId, selections });
-    }
-    if (kind === "exitPlan") {
-      const mode = String(body.mode || "");
-      if (!["ultraplan", "bypassPermissions", "autoAccept", "manual", "deny"].includes(mode)) throw new TypeError("Invalid plan response");
-      const feedback = typeof body.feedback === "string" ? body.feedback.trim() : "";
-      if (feedback.length > 4_000) throw new TypeError("Feedback is too long");
-      return this.rpc("feed.exit_plan.reply", { request_id: requestId, mode, ...(feedback ? { feedback } : {}) });
-    }
-    throw new TypeError("Unsupported inbox item");
-  }
-
   async workspaceCreate(options) {
     if (typeof options?.cwd !== "string" || !options.cwd.startsWith("/")) throw new TypeError("Invalid repository path");
     if (!statSync(options.cwd, { throwIfNoEntry: false })?.isDirectory()) throw new TypeError(`This directory does not exist: ${options.cwd}`);

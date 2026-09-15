@@ -98,7 +98,6 @@ cmux CLI → replay grid / safe input RPCs → cmux Unix socket → cmux.app
 
 The service binds only to `127.0.0.1`. Tailscale Serve is the only network-facing listener. The documented transport defaults to HTTPS port 8443 to preserve an existing Tailscale Serve handler on port 443; the bundled installer leaves transport configuration to the operator.
 
-Local app previews use separate HTTPS ports from 8500 through 8599. This preserves application root paths, redirects, assets, and WebSockets better than path-prefix proxying. A detected app is not exposed until you tap **Create private link**; links remain tailnet-only and Companion never enables Tailscale Funnel.
 
 By default, the phone reflows the full Mac-width replay grid locally, keeping the Mac terminal unchanged while preserving enough history to scroll. The **Fit** control switches between this readable phone layout and the exact terminal grid. Older cmux versions automatically fall back to the authenticated plain-text screen endpoint.
 
@@ -127,9 +126,9 @@ installs. Source review, merge and local tests do not change installed services.
 
 Open a session to inspect terminal output, tasks and Git changes. Enable terminal
 input explicitly before sending text or safe keys. The session menu contains
-terminal selection, display controls, shortcuts and local apps. Inbox decisions
-remain scoped to their native request. Model defaults in Settings apply only to
-new manual coding sessions; orchestration models are operator-configured.
+terminal selection, display controls and shortcuts. Setup manages supported launch
+profiles and team defaults. Goal-specific assignments are approved with the plan;
+started attempts retain their recorded configuration.
 
 Use `/orchestration` for saved goals. Read-only configuration disables workflow
 mutations in both the UI and service. Existing installations must complete the
@@ -156,7 +155,7 @@ abort/reconciliation, reload and one PR at the verified Git commit. See
 [disposable development](docs/orchestration-development.md) for retained evidence.
 
 Live cmux, Tailscale, native-provider and GitHub checks require separate explicit
-authorization. `test:live` and `test:preview-live` exercise live services; they are
+authorization. `test:live` exercises live services; it is
 not routine verification. Native adapter live prerequisites and opt-ins are in
 [the adapter guide](docs/orchestration-native-adapters.md).
 
@@ -175,12 +174,7 @@ not routine verification. Native adapter live prerequisites and opt-ins are in
 - Git diff requests are restricted to files currently reported as changed, and untracked symlink content is hidden.
 - The CLI is spawned with argv arrays and never through a shell.
 - Read-only protection is enabled by default on each phone.
-- Push subscriptions and VAPID keys stay in a mode-`0600` file on the Mac; notification content is hidden by default.
-- Alert categories, quiet hours, persistent deduplication, and lock-screen privacy are configurable per phone.
 - Markdown reads are restricted to regular `.md`/`.markdown` files inside allow-listed repositories; canonical paths block traversal and out-of-repo symlinks, rendered HTML is not executed, and local images are type and size restricted.
-- Preview targets must be localhost TCP ports. Tailscale HTTPS ports are allocated from a bounded range, can be stopped from the Apps screen, and are never exposed with Funnel.
-- Preview capture runs in headless Chrome with every non-loopback request blocked; annotated screenshots use the same private attachment validation and retention policy.
-- Queued prompts are stored in a mode-`0600` file and can target only validated cmux workspace and terminal identifiers.
 - Pasted images are magic-byte validated, limited to 8 MB, stored with mode `0600`, and removed automatically after seven days.
 
 Treat a paired phone as privileged: unlocking terminal input gives it control of interactive processes running in cmux.
@@ -246,20 +240,13 @@ and recovery are documented in [recovery](docs/orchestration-recovery.md).
 | `CMUX_COMPANION_PORT` | `3210` | Companion HTTP port |
 | `CMUX_COMPANION_FRONTEND_PORT` | `3211` | Internal PWA server port |
 | `CMUX_COMPANION_TAILSCALE_PORT` | `8443` | Private HTTPS port |
-| `CMUX_COMPANION_TAILSCALE_BIN` | Tailscale macOS app CLI, then `tailscale` | CLI used to manage private preview links |
 | `CMUX_COMPANION_TOKEN_FILE` | `~/.config/cmux-companion/token` | Pairing token path |
 | `CMUX_COMPANION_DATA_DIR` | `~/.config/cmux-companion` | Local settings, workflow and artifact directory |
 | `CMUX_COMPANION_SETTINGS_DB` | `<data directory>/settings.sqlite` | Optional settings database location |
 | `CMUX_COMPANION_REPO_ROOTS` | Empty | Legacy catalog override; database-backed production uses explicit projects |
-| `CMUX_COMPANION_PUSH_FILE` | `~/.config/cmux-companion/push.json` | Private push keys and device subscriptions |
 | `CMUX_COMPANION_VAPID_SUBJECT` | Installed private Tailscale HTTPS URL | Web Push sender identity advertised to Apple and other push services |
-| `CMUX_COMPANION_PREVIEWS_FILE` | `~/.config/cmux-companion/previews.json` | Managed private preview registry |
-| `CMUX_COMPANION_QUEUE_FILE` | `~/.config/cmux-companion/prompt-queue.json` | Persistent follow-up prompt queue |
 | `CMUX_COMPANION_REPO_DB` | `~/.config/cmux-companion/repo-identity.db` | Rebuildable SQLite repository/worktree cache |
-| `CMUX_COMPANION_CHROME_BIN` | Google Chrome, Chromium, or Edge in `/Applications` | Browser executable used for private preview capture |
 | `CCS_BIN` | First `ccs` executable in `PATH`, then installed NVM versions | Optional explicit CCS executable used to discover structured account quota support |
-| `CMUX_COMPANION_PREVIEW_PORT_START` | `8500` | First Tailscale HTTPS preview port |
-| `CMUX_COMPANION_PREVIEW_PORT_END` | `8599` | Last Tailscale HTTPS preview port |
 
 ## Troubleshooting
 
