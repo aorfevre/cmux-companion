@@ -211,3 +211,21 @@ test('plan review toggle saves independently and can be re-enabled', async () =>
   fireEvent.click(toggle); click('Save changes'); await saved();
   assert.equal(state.saved.settings.automation?.planReviews, true);
 });
+
+test('the repository editor shows the detected prepare command and lets the user edit or disable it', async () => {
+  const settings = defaults();
+  settings.projects = [{ id: 'one', name: 'One', path: '/projects/one', enabled: true, github: 'example/one', remote: 'git@github.com:example/one.git', checks: [], prepare: { source: 'detected', executable: 'npm', args: ['ci'] } }];
+  const state = fixture('dev-repos', settings);
+  render(<LocalSettingsPanel />);
+  await screen.findByText('Your repositories, organized');
+  click(/One.*Repository ready/);
+  await screen.findByText('npm ci · detected');
+  click('Edit prepare command');
+  change('Prepare executable', 'pnpm'); change('Prepare arguments (one per line)', 'install\n--frozen-lockfile');
+  click('Save changes'); await saved();
+  assert.deepEqual(state.saved.settings.projects[0].prepare, { source: 'custom', executable: 'pnpm', args: ['install', '--frozen-lockfile'] });
+  click('Disable prepare');
+  click('Save changes'); await saved();
+  assert.deepEqual(state.saved.settings.projects[0].prepare, { source: 'disabled' });
+  await screen.findByText('Disabled · verification runs without installing dependencies');
+});
