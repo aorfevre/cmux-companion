@@ -48,6 +48,10 @@ own clearly labeled protection control on the single Updates screen.
    choose approved npm scripts, or define executable/argument checks in Advanced
    verification. Repository configuration and provider readiness are both required
    before creating a goal. Monitoring does not require delivery checks.
+   Each repository also shows **Prepare dependencies**: the install command
+   detected from its lockfile. It runs once in every verification checkout
+   before the checks. Edit it for an unusual layout, or disable it for
+   repositories that need no install. Detection never executes anything.
 
 Repository rows show the next step: **Choose checks** when GitHub is already
 configured, **Check GitHub remote** when detection is incomplete, **Disabled**

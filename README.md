@@ -53,6 +53,16 @@ Rejected plans are revised and reviewed automatically, up to two revisions per
 manual revision cycle. A required clarification or exhausted budget needs your input.
 Requesting changes invalidates the proposal's approval authority.
 
+Before the approved checks run, each verification checkout installs its
+dependencies with the project's prepare command. Companion detects it from the
+lockfile (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`
+or `bun install --frozen-lockfile`) and you can edit or disable it in Setup. The
+install is recorded as a `prepare` check with its own output. When it fails, the
+planned checks are not run and the hold says that dependencies did not install.
+Verification checkouts are removed as soon as their result is recorded; a private
+npm cache under the data directory keeps repeated installs fast and is pruned
+above 2 GiB.
+
 Eligible independent tasks run concurrently from day one. Each attempt owns an
 isolated worktree. Later waves start only after the previous wave is accepted,
 integrated and verified; their attempts use that checked output.
