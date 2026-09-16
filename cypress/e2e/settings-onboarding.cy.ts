@@ -19,9 +19,13 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
       cy.findByRole('button', { name: 'Add selected repositories' }).should('not.exist');
     }
     cy.get('.repository-row').first().click(); cy.findByLabelText('Repository name').clear().type('My project');
+    cy.findByRole('heading', { name: 'Prepare dependencies' }).should('be.visible');
+    cy.findByRole('button', { name: 'Edit prepare command' }).click();
+    cy.findByLabelText('Prepare executable').clear().type('npm'); cy.findByLabelText('Prepare arguments (one per line)').clear().type('ci');
     cy.contains('summary', 'Check GitHub remote').click();
     cy.findByLabelText('GitHub destination').type('example/disposable'); cy.findByLabelText('Git remote').type('git@github.com:example/disposable.git');
     cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
+    cy.contains('code', 'npm ci · custom').should('be.visible');
     cy.findByRole('button', { name: 'Choose an agent' }).click(); cy.findByLabelText('Default provider').select('codex'); cy.findByRole('button', { name: 'Save changes' }).click(); cy.contains('Saved on this Mac.').should('be.visible');
     cy.findByRole('button', { name: 'Complete setup' }).click(); cy.location('pathname').should('equal', '/orchestration');
     cy.visit('/settings#agents'); cy.findByLabelText('Default provider').should('have.value', 'codex');

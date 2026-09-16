@@ -97,6 +97,9 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.contains('Blocking: Composition does not add its inputs', { timeout: 30000 }).should('be.visible');
     // Task review findings repair automatically; verification failures still require recovery.
     cy.findByRole('region', { name: 'Combined verification', timeout: 30000 }).contains('p', 'injected_dependencies', { timeout: 30000 }).should('contain.text', 'Failed');
+    cy.findByRole('region', { name: 'Combined verification' }).contains('p', 'prepare').should('contain.text', 'Passed');
+    cy.findByRole('region', { name: 'Combined verification' }).findAllByRole('button', { name: 'Inspect check output' }).first().click();
+    cy.findByLabelText('Check output').should('contain.text', 'fixture prepare');
     cy.findByRole('link', { name: /Open pull request/ }).should('not.exist');
     cy.task<Evidence>('orchestrationEvidence').then(evidence => { expect(evidence.prCreates).to.have.length(0); });
     cy.task<string>('orchestrationAdvanceTarget').as('movedTarget');
