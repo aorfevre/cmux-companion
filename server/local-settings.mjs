@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { normalizeModelId } from './model-options.mjs';
 
-import { assertDevChild, contains, inspectDevRepo, macPath, suggestedChecks } from './dev-repositories.mjs';
+import { assertDevChild, contains, detectPrepare, inspectDevRepo, macPath, suggestedChecks } from './dev-repositories.mjs';
 const execute = promisify(execFile);
 export const DEFAULT_DATA_DIRECTORY = join(homedir(), '.config', 'cmux-companion');
 export const defaultSettings = () => ({
@@ -39,6 +39,18 @@ export function validateExecutable(value) {
   string(value, 'executable');
   if ((!isAbsolute(value) && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value)) || /[;$`|&<>]/.test(value)) invalid('Use an executable name or absolute path, without shell syntax');
   return value;
+}
+export function validatePrepare(value) {
+  if (value === undefined) return { source: 'none' };
+  keys(value, ['source', 'executable', 'args'], 'prepare');
+  if (!['detected', 'custom', 'disabled', 'none'].includes(value.source)) invalid('Invalid prepare source');
+  const commanded = ['detected', 'custom'].includes(value.source);
+  if (!commanded) { if (value.executable !== undefined || value.args !== undefined) invalid('Disabled or undetected prepare has no command'); return { source: value.source }; }
+  validateExecutable(value.executable);
+  if (['sh', 'bash', 'zsh', 'fish', 'csh', 'dash', 'env'].includes(basename(value.executable))) invalid('Configure the prepare executable directly');
+  if (!Array.isArray(value.args) || value.args.length > 100) invalid('Invalid prepare arguments');
+  for (const arg of value.args) string(arg, 'prepare argument');
+  return { source: value.source, executable: value.executable, args: [...value.args] };
 }
 export function providerCommand(value, provider) {
   keys(value, ['executable', 'args', 'model'], `${provider} provider`);
@@ -84,7 +96,8 @@ function validateSettings(value) {
   }
   const ids = new Set(), paths = new Set();
   for (const project of value.projects) {
-    keys(project, ['id', 'name', 'path', 'enabled', 'github', 'remote', 'checks', 'devRepoId'], 'project');
+    keys(project, ['id', 'name', 'path', 'enabled', 'github', 'remote', 'checks', 'devRepoId', 'prepare'], 'project');
+    project.prepare = validatePrepare(project.prepare);
     if (typeof project.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(project.id) || ids.has(project.id)) invalid('Project IDs must be unique letters, numbers, underscores or hyphens');
     if (project.devRepoId != null && !rootIds.has(project.devRepoId)) invalid('Unknown Dev repo');
     ids.add(project.id); string(project.name, 'project name', 160); string(project.path, 'project path');
@@ -136,7 +149,7 @@ export async function inspectProject(path, run = execute, { timeout = 5000 } = {
   // A repository's config is untrusted and may embed a token. Return only a
   // recognized credential-free GitHub destination as a suggestion.
   const match = remote?.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/)([\w-]+\/[\w.-]+?)(?:\.git)?$/);
-  return { path: canonical, name: basename(canonical), github: match?.[1] ?? null, remote: match ? remote : null, suggestedChecks: await suggestedChecks(canonical) };
+  return { path: canonical, name: basename(canonical), github: match?.[1] ?? null, remote: match ? remote : null, suggestedChecks: await suggestedChecks(canonical), prepare: await detectPrepare(canonical) };
 }
 
 export class LocalSettings {
@@ -220,7 +233,11 @@ export class LocalSettings {
     for (const project of next.projects) {
       const existing = before.settings.projects.find(entry => entry.id === project.id);
       if (existing && existing.path !== project.path) invalid('Project paths cannot be changed; add another project');
-      if (!existing || !existing.enabled && project.enabled) project.path = (await inspect(project.path)).path;
+      if (!existing || !existing.enabled && project.enabled) {
+        const inspected = await inspect(project.path);
+        project.path = inspected.path;
+        if (['detected', 'none'].includes(project.prepare.source) && inspected.prepare) project.prepare = inspected.prepare;
+      }
     }
     for (const project of next.projects) {
       const existing = before.settings.projects.find(entry => entry.id === project.id);

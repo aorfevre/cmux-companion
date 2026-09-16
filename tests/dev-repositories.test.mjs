@@ -30,7 +30,7 @@ test('named directory migration, discovery, association, renaming and removal pr
   const backup = await backupData({ root: join(directory, 'backups'), id: 'schema-v1', files: [path], previousSha: 'a'.repeat(40) });
   let store = new LocalSettings({ path });
   assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
-  assert.deepEqual(store.read().settings.projects, old.projects); assert.equal(store.read().revision, 7); assert.equal(store.read().imported, true);
+  assert.deepEqual(store.read().settings.projects, old.projects.map(entry => ({ ...entry, prepare: { source: 'none' } }))); assert.equal(store.read().revision, 7); assert.equal(store.read().imported, true);
   await store.update(7, { ...store.read().settings, devRepos: roots });
   assert.equal(store.read().settings.projects[0].devRepoId, 'karven'); assert.equal(store.read().settings.projects[0].enabled, false);
   await store.update(8, { ...store.read().settings, devRepos: roots.map(root => ({ ...root, name: root.name.toUpperCase() })) });
