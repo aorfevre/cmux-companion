@@ -235,3 +235,39 @@ test('supervisor outcome written during process inspection wins over the disappe
   });
   assert.equal(inspections, 1); assert.equal(result.workerState, 'stopped'); assert.equal(result.cause.code, 'ABORTED');
 });
+
+const prepareOptions = (f, script) => ({ ...f.options, resolvePrepare: (repositoryId, goalId) => { assert.equal(repositoryId, 'repo'); assert.equal(goalId, 'g'); return { bin: process.execPath, argv: ['-e', script], env: { PATH: process.env.PATH }, environmentId: 'fixture-prepare', policy }; } });
+const markerCheck = { id: 'marker', argv: ['node', '-e', "require('node:fs').accessSync('node_modules/marker')"] };
+
+test('prepare runs first in the worktree, its output is evidence, and the planned checks see its files', async (t) => {
+  const f = await fixture(t);
+  const runner = new VerificationRunner(prepareOptions(f, "require('node:fs').mkdirSync('node_modules'); require('node:fs').writeFileSync('node_modules/marker', process.env.npm_config_cache ?? 'no-cache'); console.log('installed')"));
+  const result = await runner.run({ ...f.input, checks: [...f.input.checks, markerCheck] });
+  assert.deepEqual(result.verification.checks.map((check) => [check.id, check.passed]), [['prepare', true], ['unit', true], ['marker', true]]);
+  const evidence = JSON.parse(f.artifacts.get(result.verification.checks[0].artifactId).toString());
+  assert.equal(evidence.checkId, 'prepare'); assert.match(evidence.outcome.stdout, /installed/); assert.equal(evidence.environment.id, 'fixture-prepare');
+  assert.deepEqual(await new VerificationRunner(prepareOptions(f, 'throw 1')).run({ ...f.input, checks: [...f.input.checks, markerCheck] }), result);
+});
+
+test('a failing prepare records PREPARE_FAILED for every planned check without launching them', async (t) => {
+  const f = await fixture(t);
+  const result = await new VerificationRunner(prepareOptions(f, "console.error('lockfile mismatch'); process.exit(1)")).run(f.input);
+  assert.deepEqual(result.verification.checks.map((check) => [check.id, check.passed]), [['prepare', false], ['unit', false]]);
+  const [prepare, unit] = result.verification.checks.map((check) => JSON.parse(f.artifacts.get(check.artifactId).toString()));
+  assert.equal(prepare.code, 'EXIT_FAILED'); assert.match(prepare.outcome.stderr, /lockfile mismatch/);
+  assert.equal(unit.code, 'PREPARE_FAILED'); assert.equal(unit.outcome, null); assert.equal(f.resolved(), 0);
+  assert.equal(result.workerState, 'stopped');
+});
+
+test('a check that changes tracked files after prepare is still a recorded failure', async (t) => {
+  const f = await fixture(t);
+  const runner = new VerificationRunner(prepareOptions(f, "require('node:fs').mkdirSync('node_modules')"));
+  const result = await runner.run({ ...f.input, checks: [{ id: 'mutating', argv: ['node', '-e', "require('node:fs').writeFileSync('src/a.mjs','tampered');"] }] });
+  assert.deepEqual(result.verification.checks.map((check) => [check.id, check.passed]), [['prepare', true], ['mutating', false]]);
+  assert.equal(JSON.parse(f.artifacts.get(result.verification.checks[1].artifactId).toString()).code, 'DIRTY_WORKTREE');
+});
+
+test('a plan may not name a check called prepare', async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(f.runner.run({ ...f.input, checks: [{ id: 'prepare', argv: ['node', '-e', '0'] }] }), /reserved/);
+});
