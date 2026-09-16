@@ -208,6 +208,20 @@ export class GitRepository {
     requireValue(await this.checkCheckout(resource) === baseSha, 'Provisioned checkout moved from its recorded base', 'STALE_TARGET');
     return { worktree, branch, baseSha };
   }
+  /** Remove a verification checkout after its evidence is recorded. Untracked
+   * files are install output the run created, so force is acceptable here and
+   * only here. Branch, ownership ref and manifest remain for the journal.
+   * @param {string} operationId @returns {Promise<{ removed: boolean }>} */
+  async removeVerificationWorktree(operationId) {
+    const resource = this.resource(operationId);
+    if (!resource || !pathExists(resource.worktree)) return { removed: false };
+    await this.checkCheckout(resource, false);
+    const registered = (await git(resource.repository, ['worktree', 'list', '--porcelain', '-z'])).split('\0\0').map((record) => record.split('\0')).find((fields) => fields[0] === `worktree ${resource.worktree}`);
+    requireValue(registered && registered.includes(`branch refs/heads/${resource.branch}`), 'Worktree registration changed', 'OWNERSHIP_UNCERTAIN');
+    await git(resource.repository, ['worktree', 'remove', '--force', resource.worktree]);
+    requireValue(!pathExists(resource.worktree), 'Worktree removal is incomplete', 'OWNERSHIP_UNCERTAIN');
+    return { removed: true };
+  }
   /** @param {{repositoryId: string; attempt: import('../types.d.ts').Attempt; headSha: string; ownedAreas: string[]}} input */
   async candidate({ repositoryId, attempt, headSha, ownedAreas }) {
     sha(headSha); const { repository, common } = await this.repository(repositoryId);
