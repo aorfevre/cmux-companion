@@ -107,3 +107,19 @@ test('the public creation boundary requires explicit waves for all new goals', a
   assert.throws(() => publish(contract()), /explicit waves/);
   publish(proposed()); assert.equal(store.get('goal').contracts[0].contract.schemaVersion, 2);
 });
+test('a verification result may lead with a prepare check, and a failed prepare names dependencies in the hold', () => {
+  const passed = modules(); passed.command('request_verification', { operationId: 'prepared' });
+  const withPrepare = result(passed, 'prepared');
+  withPrepare.result.verification.checks.unshift({ id: 'prepare', passed: true, artifactId: 'install' });
+  passed.command('record_verification_result', withPrepare);
+  assert.deepEqual(passed.goal.verification.checks.map(check => check.id), ['prepare', 'modules']);
+  assert.ok(!passed.goal.hold); assert.equal(currentWave(passed.goal).id, 'composition');
+  const failed = modules(); failed.command('request_verification', { operationId: 'unprepared' });
+  const broken = result(failed, 'unprepared', false);
+  broken.result.verification.checks.unshift({ id: 'prepare', passed: false, artifactId: 'install' });
+  failed.command('record_verification_result', broken);
+  assert.deepEqual(failed.goal.hold.reasons, [{ kind: 'verification', target: failed.goal.integrationHead, message: 'Dependencies did not install on the integrated head.' }]);
+  const duplicate = result(modules(), 'x'); duplicate.result.verification.checks.push({ id: 'prepare', passed: true, artifactId: 'a' }, { id: 'prepare', passed: true, artifactId: 'b' });
+  const dup = modules(); dup.command('request_verification', { operationId: 'x' });
+  assert.throws(() => dup.command('record_verification_result', duplicate));
+});

@@ -586,7 +586,9 @@ export function transition(before, command, authority) {
       const checks = array(verification.checks, 30).map((entry) => { const check = object(entry); requireValue(typeof check.passed === 'boolean', 'Missing check outcome'); return { id: identifier(check.id), passed: check.passed, artifactId: identifier(check.artifactId) }; });
       const contract = goal.contracts.find((entry) => entry.revision === run.revision)?.contract;
       const required = contract?.verification.filter(check => !run.checkIds || run.checkIds.includes(check.id));
-      requireValue(required && checks.length === required.length && new Set(checks.map((check) => check.id)).size === checks.length && required.every((check) => checks.some((entry) => entry.id === check.id)), 'Verification must report every required check');
+      // A leading `prepare` entry is user-approved dependency installation, not a planned check.
+      const planned = checks.filter((check) => check.id !== 'prepare');
+      requireValue(required && planned.length === required.length && new Set(checks.map((check) => check.id)).size === checks.length && required.every((check) => planned.some((entry) => entry.id === check.id)), 'Verification must report every required check');
       requireValue(received.workerState === 'stopped' || checks.some((check) => !check.passed), 'Unknown workers cannot pass verification');
       requireValue(!run.result || JSON.stringify(run.result.verification) === JSON.stringify({ headSha: run.headSha, checks }), 'Completed check evidence cannot change during observation', 'STALE_TARGET');
       run.workerState = received.workerState === 'stopped' ? 'stopped' : 'unknown'; run.status = run.workerState === 'stopped' ? 'complete' : 'uncertain';

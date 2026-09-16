@@ -23,7 +23,8 @@ export function captureFailureHold(before, change, commandId) {
     reasons.push({ kind: 'integration', target: goal.integration.operationId, message: goal.integration.state === 'conflict' ? 'Integration has a conflict.' : 'Integration failed or its outcome is uncertain.' });
   }
   if (goal.verification?.checks.some(check => !check.passed) && JSON.stringify(goal.verification) !== JSON.stringify(before.verification)) {
-    reasons.push({ kind: 'verification', target: goal.verification.headSha, message: 'Required verification failed on the integrated head.' });
+    const prepareFailed = goal.verification.checks.some(check => check.id === 'prepare' && !check.passed);
+    reasons.push({ kind: 'verification', target: goal.verification.headSha, message: prepareFailed ? 'Dependencies did not install on the integrated head.' : 'Required verification failed on the integrated head.' });
   }
   for (const run of goal.verificationRuns ?? []) if (run.status === 'uncertain' && run.generation === goal.generation && run.revision === goal.revision && before.verificationRuns?.find(entry => entry.operationId === run.operationId)?.status !== 'uncertain') {
     reasons.push({ kind: 'verification', target: run.operationId, message: 'Verification ownership needs reconciliation.' });
