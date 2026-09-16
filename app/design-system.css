@@ -56,3 +56,5 @@ button, .app-navigation a { min-width:44px; }
 .compact-composer .expand-writer { width:44px; height:44px; top:0; right:0; }
 .compact-composer .composer-editor textarea { padding-right:92px; }
 .detail-shell textarea { font-size:16px; }
+
+.pairing-help { font-size:14px; line-height:1.55; color:var(--muted); margin:0 0 12px; } .pairing-help code { font-size:13px; color:var(--text); overflow-wrap:anywhere; }
