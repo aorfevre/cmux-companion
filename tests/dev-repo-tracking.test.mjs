@@ -63,3 +63,10 @@ test('the settings capacity produces an explicit partial result without removing
   const result = await tracking.all();
   assert.equal(result.settings.projects.length, 500); assert.equal(result.scans.root.partial, true); assert.match(result.scans.root.reason, /500/);
 });
+
+test('discovered repositories keep the prepare command detected during the scan', async t => {
+  const { settings, root, entry, options } = await fixture(t);
+  const tracking = createDevRepoTracking({ ...options, scan: async () => ({ repositories: [{ ...entry, prepare: { source: 'detected', executable: 'npm', args: ['ci'] } }], partial: false, reason: null }) });
+  await tracking.one(root.id);
+  assert.deepEqual(settings.read().settings.projects[0].prepare, { source: 'detected', executable: 'npm', args: ['ci'] });
+});
