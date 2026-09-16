@@ -174,6 +174,7 @@ export class LocalSettings {
         CREATE TABLE IF NOT EXISTS team_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS project_favorites (project_id TEXT PRIMARY KEY, favorite INTEGER NOT NULL CHECK(favorite IN (0,1)));
         CREATE TABLE IF NOT EXISTS goal_configuration (goal_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS project_prepare (project_id TEXT PRIMARY KEY, value TEXT NOT NULL);
         COMMIT;`);
       this.db.prepare('INSERT OR IGNORE INTO local_settings(id,revision,value) VALUES(1,0,?)').run(JSON.stringify(this.compatibleSettings(defaultSettings())));
       const raw = JSON.parse(String(this.db.prepare('SELECT value FROM local_settings WHERE id=1').get().value));
@@ -183,7 +184,7 @@ export class LocalSettings {
           const current = this.read().settings;
           current.devRepos ??= [];
           validateSettings(current);
-          this.saveTeamSettings(current);
+          this.saveTeamSettings(current); this.saveProjectPrepare(current);
           this.db.prepare('UPDATE local_settings SET value=? WHERE id=1').run(JSON.stringify(this.compatibleSettings(current)));
           this.db.exec('PRAGMA user_version=2; COMMIT;');
         } catch (error) { this.db.exec('ROLLBACK'); throw error; }
@@ -198,17 +199,26 @@ export class LocalSettings {
     Object.assign(settings, team ? JSON.parse(String(team.value)) : { launchProfiles: settings.launchProfiles ?? [], teamDefaults: settings.teamDefaults ?? {} });
     const automation = this.db.prepare('SELECT value FROM automation_settings WHERE id=1').get();
     settings.automation = automation ? JSON.parse(String(automation.value)) : defaultSettings().automation;
+    const prepared = new Map(this.db.prepare('SELECT project_id,value FROM project_prepare').all().map(row => [String(row.project_id), JSON.parse(String(row.value))]));
+    for (const project of settings.projects) project.prepare = prepared.get(project.id) ?? project.prepare ?? { source: 'none' };
     delete settings.previews; delete settings.tools.chrome;
     return { revision: Number(row.revision), settings, imported: Boolean(row.imported) };
   }
   // Keep inert schema-2 fields exclusively on disk so the bundled updater can
   // return to the previous reader. They are neither exposed nor consumed here.
+  // Newer per-project fields live in side tables for the same reason.
   compatibleSettings(settings) {
     const row = this.db.prepare('SELECT value FROM local_settings WHERE id=1').get();
     const prior = row ? JSON.parse(String(row.value)) : {};
-    const legacy = { ...settings }; delete legacy.launchProfiles; delete legacy.teamDefaults; delete legacy.automation;
+    const legacy = { ...settings, projects: settings.projects.map(project => { const legacyProject = { ...project }; delete legacyProject.prepare; return legacyProject; }) }; delete legacy.launchProfiles; delete legacy.teamDefaults; delete legacy.automation;
     return { ...legacy, previews: prior.previews ?? { portStart: 8500, portEnd: 8599 },
       tools: { ...settings.tools, chrome: prior.tools?.chrome ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' } };
+  }
+  saveProjectPrepare(settings) {
+    const ids = settings.projects.map(project => project.id);
+    this.db.prepare(`DELETE FROM project_prepare WHERE project_id NOT IN (${ids.map(() => '?').join(',') || "''"})`).run(...ids);
+    const upsert = this.db.prepare('INSERT INTO project_prepare VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET value=excluded.value');
+    for (const project of settings.projects) upsert.run(project.id, JSON.stringify(project.prepare ?? { source: 'none' }));
   }
   saveTeamSettings(settings) {
     this.db.prepare('INSERT INTO team_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value')
@@ -262,7 +272,7 @@ export class LocalSettings {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.assertRevision(expected, this.read().revision);
-      this.saveTeamSettings(settings);
+      this.saveTeamSettings(settings); this.saveProjectPrepare(settings);
       this.db.prepare('INSERT INTO automation_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value')
         .run(JSON.stringify(settings.automation ?? this.read().settings.automation));
       this.db.prepare('UPDATE local_settings SET revision=revision+1,value=?,imported=MAX(imported,?) WHERE id=1').run(JSON.stringify(this.compatibleSettings(settings)), Number(imported));
