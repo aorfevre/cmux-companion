@@ -33,7 +33,8 @@ async function acquire() {
       if (Number.isInteger(owner.enginePid)) {
         try { process.kill(owner.enginePid, 0); alive = true; } catch (pidError) { if (pidError.code === 'EPERM') alive = true; }
       }
-      if (owner.spawnClaim && !Number.isInteger(owner.enginePid)) return false;
+      // An in-progress spawn claim (no engine pid yet) is protected only while
+      // its owner lives or the claim is fresh; a crashed owner must not deadlock.
       if (alive || Date.now() - info.mtimeMs <= 15 * 60_000) return false;
       await rm(lockPath, { recursive: true });
       await mkdir(lockPath, { mode: 0o700 });
