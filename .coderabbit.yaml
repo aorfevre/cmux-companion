@@ -10,6 +10,9 @@ reviews:
   fail_commit_status: true
   poem: false
   in_progress_fortune: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
   auto_review:
     enabled: true
     auto_incremental_review: true
