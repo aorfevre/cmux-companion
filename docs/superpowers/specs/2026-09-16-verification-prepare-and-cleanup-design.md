@@ -31,8 +31,8 @@ cache keeps repeated installs fast without touching the user's home cache.
    name only and never executes anything. The project row shows a Prepare line,
    for example "npm ci · detected". The user may edit the executable and
    arguments, or disable prepare, with the same controls used for checks. A
-   custom or disabled value survives later rescans; only rows still marked
-   detected follow detection.
+   custom or disabled value survives later rescans; only rows marked detected
+   or none follow detection.
 2. A goal reaches verification. The runner resolves the project's prepare command
    through the same executable resolution as checks and runs it first in the
    verification worktree, supervised, with the run's isolated HOME and TMPDIR,
@@ -57,9 +57,17 @@ cache keeps repeated installs fast without touching the user's home cache.
   --frozen-lockfile`; `yarn.lock` → `yarn install --immutable`; `bun.lockb` or
   `bun.lock` → `bun install --frozen-lockfile`. The first match in that order
   wins. No other source may set a detected value.
-- Project setting `prepare: { executable, args, source }` with source
-  `detected`, `custom` or `none`. Validation reuses check validation: no shell
-  wrappers, bounded arguments, executable name or absolute path.
+- Project setting `prepare: { source, executable?, args? }` with source
+  `detected` (Companion chose it from the lockfile), `custom` (the user edited
+  it), `disabled` (the user turned it off) or `none` (no lockfile was found).
+  Only `detected` and `none` rows follow later detection; `custom` and
+  `disabled` rows never change on their own. Validation reuses check
+  validation: no shell wrappers, bounded arguments, executable name or absolute
+  path.
+- The prepare command is read from the current project setting at run time,
+  not from the goal's configuration snapshot, because it is infrastructure the
+  user approved in Setup. This is what lets an already-held goal recover after
+  the user enables or corrects prepare.
 - Runner: prepare resolves through the project setting, not the goal contract,
   because it is infrastructure the user approved in Setup. Prepare shares the
   execution policy of checks and is subject to the same ceiling, idle and output
