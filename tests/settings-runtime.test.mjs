@@ -279,3 +279,16 @@ test('task profile overrides route real scheduler launches and remain frozen aft
   assert.deepEqual(f.launched.slice(2).map(config => config.provider).sort(), ['claude', 'codex']);
   assert.ok(f.launched.slice(2).every(config => config.command.model === 'default'));
 });
+test('verification prepare is read from the live project setting so a held goal recovers after Setup changes', async t => {
+  const resolved = [];
+  const { runtime, settings, path } = await fixture(t, { resolvePrepare: project => { resolved.push(project.prepare); return null; } });
+  const value = defaultSettings(); value.projects.push({ id: 'project', name: 'Project', path, enabled: true, github: 'example/project', remote: 'git@github.com:example/project.git', checks: [], prepare: { source: 'disabled' } });
+  assert.equal((await runtime.app.inject({ method: 'PUT', url: '/api/settings/local', headers, payload: { expectedRevision: 0, settings: value } })).statusCode, 200);
+  settings.snapshotGoal('goal-x', 'project');
+  runtime.resolvePrepareForTest('project', 'goal-x');
+  const next = settings.read(); next.settings.projects[0].prepare = { source: 'custom', executable: 'npm', args: ['ci'] };
+  assert.equal((await runtime.app.inject({ method: 'PUT', url: '/api/settings/local', headers, payload: { expectedRevision: next.revision, settings: next.settings } })).statusCode, 200);
+  runtime.resolvePrepareForTest('project', 'goal-x');
+  assert.throws(() => runtime.resolvePrepareForTest('other', 'goal-x'), { code: 'FORBIDDEN' });
+  assert.deepEqual(resolved, [{ source: 'disabled' }, { source: 'custom', executable: 'npm', args: ['ci'] }]);
+});
