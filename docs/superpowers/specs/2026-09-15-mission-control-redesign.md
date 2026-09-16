@@ -106,7 +106,9 @@ instructions or additional filesystem authority. Enforce documented type/size
 limits, safe filenames, authenticated retrieval and safe rendering. Provide clear
 errors for rejected uploads; implementation must specify and test the supported
 formats and limits before release. Phone uploads must reach the Mac rather than
-remain browser-only file handles.
+remain browser-only file handles. The goal form accepts clipboard image paste
+into the brief and file drag-and-drop onto the form as additional intake paths
+for the same attachments, subject to the same limits and errors as the picker.
 
 Agent roles requiring judgment run visibly in cmux: combined planner/designer,
 implementers, independent reviewers and any agent performing integration repair.

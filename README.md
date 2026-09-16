@@ -303,6 +303,11 @@ initial title is omitted, Companion derives it from the brief. Attach up to eigh
 files of at most 1 MiB each: UTF-8 text/source files, PNG, JPEG or WebP images.
 PDF, Office documents, archives and other binary formats are not supported.
 HTML and SVG are treated as plain text and downloaded as attachments.
+Besides the file picker, you can paste images from the clipboard into the brief
+and drop files anywhere on the goal form; pasted images are saved under generated
+names such as `pasted-image-1.png`. The same limits apply to every intake path:
+up to eight files of 1 MiB each, PNG, JPEG, WebP or UTF-8 text (SVG and HTML
+still count as text), and rejected files show the same errors as the picker.
 
 References are saved privately on the Mac with the goal. Paired devices can open
 references from the goal's Overview. Agents read only their own goal's references

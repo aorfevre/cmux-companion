@@ -13,6 +13,16 @@ describe('Goal workspace navigation', () => {
     cy.findByRole('button', { name: 'Start a goal' }).click();
     cy.findByRole('heading', { name: 'Start a goal' }).should('have.focus');
     cy.findByLabelText('What should we accomplish?').type('Keep this request');
+    cy.get('#goal-create').selectFile({ contents: Cypress.Buffer.from('dropped note'), fileName: 'note.txt', mimeType: 'text/plain' }, { action: 'drag-drop' });
+    cy.findByRole('button', { name: 'Remove note.txt' }).should('be.visible');
+    cy.window().then(win => {
+      // Build the File in the app window so the form's FileReader reads it; expose it through both files and items like real browsers do.
+      const file = new win.File([Cypress.Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')], 'image.png', { type: 'image/png' });
+      cy.findByLabelText('What should we accomplish?').trigger('paste', { clipboardData: { files: [file], items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }], types: ['Files'] } });
+    });
+    cy.findAllByRole('button', { name: 'Remove pasted-image-1.png' }).should('have.length', 1);
+    cy.findAllByRole('button', { name: /^Remove / }).should('have.length', 2);
+    cy.findByLabelText('What should we accomplish?').should('have.value', 'Keep this request');
     cy.findByRole('button', { name: 'Cancel' }).click();
     cy.findByRole('button', { name: 'Start a goal' }).should('have.focus').click();
     cy.findByLabelText('What should we accomplish?').should('have.value', 'Keep this request');
