@@ -124,6 +124,7 @@ export interface RepositoryPort {
   acceptRepair(input: RepairInput): Promise<{ status: 'integrated'; headSha: string }>;
   observeRepair(input: RepairInput): Promise<{ status: 'integrated' | 'pending' | 'unknown'; headSha: string | null }>;
   observeIntegration(operationId: string): Promise<{ status: 'integrated' | 'pending' | 'unknown'; headSha: string | null }>;
+  removeVerificationWorktree(operationId: string): Promise<{ removed: boolean }>;
 }
 export interface VerificationPort {
   run(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; checks: Check[]; signal?: AbortSignal }): Promise<VerificationRunResult>;

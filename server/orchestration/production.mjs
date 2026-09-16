@@ -67,6 +67,8 @@ export async function createProductionRuntime({ config, token, sessions, monitor
         const remote = new GitRemote({ repositories: runtime.repositories, directory: join(config.storage.resources, 'goal-base', goal.id), destinations: new Map(config.repositories.map(repo => [repo.id, repo.remote])) });
         return remote.fetchBase(goal.repositoryId, goal.baseBranch);
       },
+      // Production JSON configuration has no prepare command; Settings-based installs supply it.
+      resolvePrepare: () => null,
       resolveCheck: (repositoryId, check, goalId) => {
         const resolved = resolveGoalCheck({ goal: runtime?.store.get(goalId), repositoryId, check,
           env: config.native.env, environmentId: 'production', policy: config.policy });

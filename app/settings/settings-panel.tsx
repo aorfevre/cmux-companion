@@ -17,7 +17,8 @@ import { DevRepositories } from './dev-repositories';
 export type Provider = 'claude' | 'codex';
 export type Command = { executable: string; args: string[]; model: string };
 export type Check = { id: string; executable: string; args: string[]; script?: string };
-export type Project = { id: string; name: string; path: string; enabled: boolean; github: string | null; remote: string | null; checks: Check[]; devRepoId?: string };
+export type Prepare = { source: 'detected' | 'custom' | 'disabled' | 'none'; executable?: string; args?: string[] };
+export type Project = { id: string; name: string; path: string; enabled: boolean; github: string | null; remote: string | null; checks: Check[]; devRepoId?: string; prepare?: Prepare };
 export type DevRepo = { id: string; name: string; path: string };
 export type LaunchProfile = { id: string; label: string; provider: Provider; command: Command; roles: ('planner' | 'implementer' | 'reviewer' | 'integrator')[]; enabled: boolean };
 export type Settings = {

@@ -3,8 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 import { repositoryReadiness } from '../../server/repository-readiness.mjs';
 import { FolderPicker } from './folder-picker';
 import { request } from '../api-request';
-import type { Check, DevRepo, Project, Settings, Snapshot } from './settings-panel';
-type Inspected = Pick<Project, 'name' | 'path' | 'github' | 'remote'> & { suggestedChecks?: Check[]; error?: string };
+import type { Check, DevRepo, Prepare, Project, Settings, Snapshot } from './settings-panel';
+type Inspected = Pick<Project, 'name' | 'path' | 'github' | 'remote'> & { suggestedChecks?: Check[]; prepare?: Prepare; error?: string };
 type Scan = { repositories: Inspected[]; partial: boolean; reason: string | null; snapshot?: Snapshot };
 export function DevRepositories({ draft, onChange, save, busy, onError, onNotice, onSync }: { draft: Settings; onSync: (value: Snapshot) => void; onChange: (value: Settings) => void; save: (value: Settings) => Promise<boolean>; busy: boolean; onError: (message: string) => void; onNotice: (message: string) => void }) {
   const [adding, setAdding] = useState(false), [name, setName] = useState(''), [path, setPath] = useState(''), [validated, setValidated] = useState<string | null>(null);
@@ -55,7 +55,7 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
     try {
       const result = await request<Inspected>('/api/settings/projects/inspect', { method: 'POST', body: JSON.stringify({ path: individualPath }) });
       if (draft.projects.some(project => project.path === result.path)) throw new Error('This repository is already added.');
-      const project: Project = { id: crypto.randomUUID(), name: result.name, path: result.path, github: result.github, remote: result.remote, enabled: true, checks: [] };
+      const project: Project = { id: crypto.randomUUID(), name: result.name, path: result.path, github: result.github, remote: result.remote, enabled: true, checks: [], prepare: result.prepare ?? { source: 'none' } };
       onChange({ ...draft, projects: [...draft.projects, project] }); setEditing(project.id); setSuggestions(current => ({ ...current, [project.id]: result.suggestedChecks ?? [] })); setIndividualPath(''); setIndividual(false); onNotice('Repository inspected. Review its destination, then save. Verification defaults are optional.');
     } catch (cause) { failure(cause); } finally { setWorking(false); }
   }
@@ -109,6 +109,8 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
       <details><summary>{project.github && project.remote ? 'Advanced Git settings' : 'Check GitHub remote'}</summary><p>GitHub details are filled from the repository’s origin when it is added. Edit them only to correct detection or an intentional override.</p>
       <label>GitHub destination<input placeholder="owner/repository" value={project.github ?? ''} onChange={event => updateProject(project.id, { github: event.target.value || null })} /></label>
       <label>Git remote<input value={project.remote ?? ''} onChange={event => updateProject(project.id, { remote: event.target.value || null })} placeholder="git@github.com:owner/repository.git" /></label></details>
+      <h4>Prepare dependencies</h4><p>Runs once in each verification checkout before the checks. Detected from the lockfile; nothing runs during setup.</p>
+      <PrepareRow prepare={project.prepare ?? { source: 'none' }} onChange={prepare => updateProject(project.id, { prepare })} />
       <h4>Verification defaults (optional)</h4><p>The agent discovers checks when planning each goal. You can save preferred commands here as starting points. Nothing runs during setup.</p>
       {(suggestions[project.id] ?? []).map(check => { const exists = project.checks.some(entry => entry.executable === check.executable && JSON.stringify(entry.args) === JSON.stringify(check.args)); return <label className="discovery-row" key={check.id} htmlFor={`check-${check.id}`}><input id={`check-${check.id}`} type="checkbox" checked={exists} onChange={event => updateProject(project.id, { checks: event.target.checked ? [...project.checks, { id: `check-${crypto.randomUUID()}`, executable: check.executable, args: check.args }] : project.checks.filter(entry => !(entry.executable === check.executable && JSON.stringify(entry.args) === JSON.stringify(check.args))) })} /><span>{[check.executable, ...check.args].join(' ')}<code className="setting-description">{check.script}</code></span></label>; })}
       {!(suggestions[project.id] ?? []).length && <p>No defaults suggested. The agent will discover suitable validation during goal planning.</p>}
@@ -118,3 +120,17 @@ export function DevRepositories({ draft, onChange, save, busy, onError, onNotice
   </section>;
 }
 function RepositoryRow({ project, open }: { project: Project; open: () => void }) { return <button className="repository-row" onClick={open}><span><strong>{project.name}</strong><span className="setting-description">{project.github ?? 'GitHub remote needs attention'}</span></span><span className="status-badge">{repositoryReadiness(project).label} ›</span></button>; }
+
+function PrepareRow({ prepare, onChange }: { prepare: Prepare; onChange: (prepare: Prepare) => void }) {
+  const [editing, setEditing] = useState(false);
+  const commanded = prepare.source === 'detected' || prepare.source === 'custom';
+  const summary = commanded ? `${[prepare.executable, ...(prepare.args ?? [])].join(' ')} · ${prepare.source}`
+    : prepare.source === 'disabled' ? 'Disabled · verification runs without installing dependencies' : 'No lockfile found · verification runs without installing dependencies';
+  return <div className="settings-command">
+    <p><code>{summary}</code></p>
+    {editing && <><label>Prepare executable<input value={prepare.executable ?? ''} onChange={event => onChange({ source: 'custom', executable: event.target.value, args: prepare.args ?? [] })} autoCapitalize="none" spellCheck={false} /></label>
+      <label>Prepare arguments (one per line)<textarea value={(prepare.args ?? []).join('\n')} onChange={event => onChange({ source: 'custom', executable: prepare.executable ?? '', args: event.target.value ? event.target.value.split('\n') : [] })} /></label></>}
+    <button type="button" onClick={() => { if (!editing && !commanded) onChange({ source: 'custom', executable: 'npm', args: ['ci'] }); setEditing(!editing); }}>{editing ? 'Done editing' : 'Edit prepare command'}</button>
+    {prepare.source !== 'disabled' && <button type="button" onClick={() => { setEditing(false); onChange({ source: 'disabled' }); }}>Disable prepare</button>}
+  </div>;
+}

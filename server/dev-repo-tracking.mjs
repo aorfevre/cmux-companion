@@ -14,7 +14,7 @@ export function createDevRepoTracking({ settings, inspect, onChange, scan = scan
       for (const entry of result.repositories) {
         if (entry.error || paths.has(entry.path)) continue;
         if (projects.length >= 500) { result.partial = true; result.reason = 'Repository limit reached (500). Some repositories could not be tracked.'; break; }
-        projects.push({ id: randomUUID(), name: entry.name, path: entry.path, github: entry.github, remote: entry.remote, enabled: true, checks: [], devRepoId: root.id });
+        projects.push({ id: randomUUID(), name: entry.name, path: entry.path, github: entry.github, remote: entry.remote, enabled: true, checks: [], devRepoId: root.id, prepare: entry.prepare ?? { source: 'none' } });
         paths.add(entry.path);
       }
       if (projects.length === before.settings.projects.length) return result;

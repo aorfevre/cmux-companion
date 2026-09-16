@@ -25,7 +25,7 @@ test('fresh settings are generic, private and survive restart independently of t
   await store.update(0, settings);
   writeFileSync(join(directory, 'repo-identity.db'), 'disposable'); rmSync(join(directory, 'repo-identity.db'));
   const reopened = new LocalSettings({ path }); t.after(() => reopened.close());
-  assert.deepEqual(reopened.read().settings, settings);
+  assert.deepEqual(reopened.read().settings, { ...settings, projects: settings.projects.map(entry => ({ ...entry, prepare: { source: 'none' } })) });
   assert.equal(statSync(path).mode & 0o777, 0o600);
   assert.equal(reopened.read().revision, 1);
 });
@@ -191,7 +191,8 @@ test('retirement hides inert schema-2 fields and preserves rollback data, favori
       const expected = structuredClone(old.settings); delete expected.previews; delete expected.tools.chrome;
       assert.deepEqual(migrated.read(), { revision: 1, settings: expected, imported: true });
       assert.deepEqual(migrated.goalConfiguration('historical'), { revision: 1, ...historical });
-      const raw = { ...old.settings }; delete raw.launchProfiles; delete raw.teamDefaults; delete raw.automation;
+      // Per-project prepare lives in its side table; the raw row stays readable by the previous reader.
+      const raw = { ...old.settings, projects: old.settings.projects.map(entry => { const raw = { ...entry }; delete raw.prepare; return raw; }) }; delete raw.launchProfiles; delete raw.teamDefaults; delete raw.automation;
       assert.deepEqual(JSON.parse(migrated.db.prepare('SELECT value FROM local_settings').get().value), raw);
       assert.equal(migrated.db.prepare('SELECT favorite FROM project_favorites WHERE project_id=?').get(project.id).favorite, 1);
       assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 2);
@@ -211,4 +212,30 @@ test('plan review setting defaults on, persists separately for rollback, and rej
   const reopened = new LocalSettings({ path });
   try { assert.equal(reopened.read().settings.automation.planReviews, false); }
   finally { reopened.close(); }
+});
+
+test('prepare settings validate their source, default to none and follow detection only when detected or none', async t => {
+  const { store, project } = fixture(t);
+  const settings = store.read().settings;
+  settings.projects.push(project);
+  await store.update(0, settings);
+  assert.deepEqual(store.read().settings.projects[0].prepare, { source: 'none' });
+  writeFileSync(join(project.path, 'package-lock.json'), '{}');
+  const detected = store.read().settings;
+  detected.projects[0].enabled = false; await store.update(1, detected);
+  const reenabled = store.read().settings; reenabled.projects[0].enabled = true; await store.update(2, reenabled);
+  assert.deepEqual(store.read().settings.projects[0].prepare, { source: 'detected', executable: 'npm', args: ['ci'] });
+  const custom = store.read().settings; custom.projects[0].prepare = { source: 'custom', executable: 'npm', args: ['install'] };
+  await store.update(3, custom);
+  const again = store.read().settings; again.projects[0].enabled = false; await store.update(4, again);
+  const back = store.read().settings; back.projects[0].enabled = true; await store.update(5, back);
+  assert.deepEqual(store.read().settings.projects[0].prepare, { source: 'custom', executable: 'npm', args: ['install'] });
+  const disabled = store.read().settings; disabled.projects[0].prepare = { source: 'disabled' }; await store.update(6, disabled);
+  assert.deepEqual(store.read().settings.projects[0].prepare, { source: 'disabled' });
+  for (const bad of [{ source: 'detected' }, { source: 'none', executable: 'npm', args: [] }, { source: 'custom', executable: 'sh', args: ['-c', 'x'] }, { source: 'other' }]) {
+    const invalid = store.read().settings; invalid.projects[0].prepare = bad;
+    await assert.rejects(store.update(7, invalid), TypeError);
+  }
+  const inspected = await inspectProject(project.path);
+  assert.deepEqual(inspected.prepare, { source: 'detected', executable: 'npm', args: ['ci'] });
 });

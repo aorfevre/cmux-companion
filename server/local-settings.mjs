@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { normalizeModelId } from './model-options.mjs';
 
-import { assertDevChild, contains, inspectDevRepo, macPath, suggestedChecks } from './dev-repositories.mjs';
+import { assertDevChild, contains, detectPrepare, inspectDevRepo, macPath, suggestedChecks } from './dev-repositories.mjs';
 const execute = promisify(execFile);
 export const DEFAULT_DATA_DIRECTORY = join(homedir(), '.config', 'cmux-companion');
 export const defaultSettings = () => ({
@@ -39,6 +39,18 @@ export function validateExecutable(value) {
   string(value, 'executable');
   if ((!isAbsolute(value) && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value)) || /[;$`|&<>]/.test(value)) invalid('Use an executable name or absolute path, without shell syntax');
   return value;
+}
+export function validatePrepare(value) {
+  if (value === undefined) return { source: 'none' };
+  keys(value, ['source', 'executable', 'args'], 'prepare');
+  if (!['detected', 'custom', 'disabled', 'none'].includes(value.source)) invalid('Invalid prepare source');
+  const commanded = ['detected', 'custom'].includes(value.source);
+  if (!commanded) { if (value.executable !== undefined || value.args !== undefined) invalid('Disabled or undetected prepare has no command'); return { source: value.source }; }
+  validateExecutable(value.executable);
+  if (['sh', 'bash', 'zsh', 'fish', 'csh', 'dash', 'env'].includes(basename(value.executable))) invalid('Configure the prepare executable directly');
+  if (!Array.isArray(value.args) || value.args.length > 100) invalid('Invalid prepare arguments');
+  for (const arg of value.args) string(arg, 'prepare argument');
+  return { source: value.source, executable: value.executable, args: [...value.args] };
 }
 export function providerCommand(value, provider) {
   keys(value, ['executable', 'args', 'model'], `${provider} provider`);
@@ -84,7 +96,8 @@ function validateSettings(value) {
   }
   const ids = new Set(), paths = new Set();
   for (const project of value.projects) {
-    keys(project, ['id', 'name', 'path', 'enabled', 'github', 'remote', 'checks', 'devRepoId'], 'project');
+    keys(project, ['id', 'name', 'path', 'enabled', 'github', 'remote', 'checks', 'devRepoId', 'prepare'], 'project');
+    project.prepare = validatePrepare(project.prepare);
     if (typeof project.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(project.id) || ids.has(project.id)) invalid('Project IDs must be unique letters, numbers, underscores or hyphens');
     if (project.devRepoId != null && !rootIds.has(project.devRepoId)) invalid('Unknown Dev repo');
     ids.add(project.id); string(project.name, 'project name', 160); string(project.path, 'project path');
@@ -136,7 +149,7 @@ export async function inspectProject(path, run = execute, { timeout = 5000 } = {
   // A repository's config is untrusted and may embed a token. Return only a
   // recognized credential-free GitHub destination as a suggestion.
   const match = remote?.match(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/)([\w-]+\/[\w.-]+?)(?:\.git)?$/);
-  return { path: canonical, name: basename(canonical), github: match?.[1] ?? null, remote: match ? remote : null, suggestedChecks: await suggestedChecks(canonical) };
+  return { path: canonical, name: basename(canonical), github: match?.[1] ?? null, remote: match ? remote : null, suggestedChecks: await suggestedChecks(canonical), prepare: await detectPrepare(canonical) };
 }
 
 export class LocalSettings {
@@ -161,6 +174,7 @@ export class LocalSettings {
         CREATE TABLE IF NOT EXISTS team_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS project_favorites (project_id TEXT PRIMARY KEY, favorite INTEGER NOT NULL CHECK(favorite IN (0,1)));
         CREATE TABLE IF NOT EXISTS goal_configuration (goal_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS project_prepare (project_id TEXT PRIMARY KEY, value TEXT NOT NULL);
         COMMIT;`);
       this.db.prepare('INSERT OR IGNORE INTO local_settings(id,revision,value) VALUES(1,0,?)').run(JSON.stringify(this.compatibleSettings(defaultSettings())));
       const raw = JSON.parse(String(this.db.prepare('SELECT value FROM local_settings WHERE id=1').get().value));
@@ -170,7 +184,7 @@ export class LocalSettings {
           const current = this.read().settings;
           current.devRepos ??= [];
           validateSettings(current);
-          this.saveTeamSettings(current);
+          this.saveTeamSettings(current); this.saveProjectPrepare(current);
           this.db.prepare('UPDATE local_settings SET value=? WHERE id=1').run(JSON.stringify(this.compatibleSettings(current)));
           this.db.exec('PRAGMA user_version=2; COMMIT;');
         } catch (error) { this.db.exec('ROLLBACK'); throw error; }
@@ -185,17 +199,26 @@ export class LocalSettings {
     Object.assign(settings, team ? JSON.parse(String(team.value)) : { launchProfiles: settings.launchProfiles ?? [], teamDefaults: settings.teamDefaults ?? {} });
     const automation = this.db.prepare('SELECT value FROM automation_settings WHERE id=1').get();
     settings.automation = automation ? JSON.parse(String(automation.value)) : defaultSettings().automation;
+    const prepared = new Map(this.db.prepare('SELECT project_id,value FROM project_prepare').all().map(row => [String(row.project_id), JSON.parse(String(row.value))]));
+    for (const project of settings.projects) project.prepare = prepared.get(project.id) ?? project.prepare ?? { source: 'none' };
     delete settings.previews; delete settings.tools.chrome;
     return { revision: Number(row.revision), settings, imported: Boolean(row.imported) };
   }
   // Keep inert schema-2 fields exclusively on disk so the bundled updater can
   // return to the previous reader. They are neither exposed nor consumed here.
+  // Newer per-project fields live in side tables for the same reason.
   compatibleSettings(settings) {
     const row = this.db.prepare('SELECT value FROM local_settings WHERE id=1').get();
     const prior = row ? JSON.parse(String(row.value)) : {};
-    const legacy = { ...settings }; delete legacy.launchProfiles; delete legacy.teamDefaults; delete legacy.automation;
+    const legacy = { ...settings, projects: settings.projects.map(project => { const legacyProject = { ...project }; delete legacyProject.prepare; return legacyProject; }) }; delete legacy.launchProfiles; delete legacy.teamDefaults; delete legacy.automation;
     return { ...legacy, previews: prior.previews ?? { portStart: 8500, portEnd: 8599 },
       tools: { ...settings.tools, chrome: prior.tools?.chrome ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' } };
+  }
+  saveProjectPrepare(settings) {
+    const ids = settings.projects.map(project => project.id);
+    this.db.prepare(`DELETE FROM project_prepare WHERE project_id NOT IN (${ids.map(() => '?').join(',') || "''"})`).run(...ids);
+    const upsert = this.db.prepare('INSERT INTO project_prepare VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET value=excluded.value');
+    for (const project of settings.projects) upsert.run(project.id, JSON.stringify(project.prepare ?? { source: 'none' }));
   }
   saveTeamSettings(settings) {
     this.db.prepare('INSERT INTO team_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value')
@@ -220,7 +243,11 @@ export class LocalSettings {
     for (const project of next.projects) {
       const existing = before.settings.projects.find(entry => entry.id === project.id);
       if (existing && existing.path !== project.path) invalid('Project paths cannot be changed; add another project');
-      if (!existing || !existing.enabled && project.enabled) project.path = (await inspect(project.path)).path;
+      if (!existing || !existing.enabled && project.enabled) {
+        const inspected = await inspect(project.path);
+        project.path = inspected.path;
+        if (['detected', 'none'].includes(project.prepare.source) && inspected.prepare) project.prepare = inspected.prepare;
+      }
     }
     for (const project of next.projects) {
       const existing = before.settings.projects.find(entry => entry.id === project.id);
@@ -245,7 +272,7 @@ export class LocalSettings {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.assertRevision(expected, this.read().revision);
-      this.saveTeamSettings(settings);
+      this.saveTeamSettings(settings); this.saveProjectPrepare(settings);
       this.db.prepare('INSERT INTO automation_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value')
         .run(JSON.stringify(settings.automation ?? this.read().settings.automation));
       this.db.prepare('UPDATE local_settings SET revision=revision+1,value=?,imported=MAX(imported,?) WHERE id=1').run(JSON.stringify(this.compatibleSettings(settings)), Number(imported));

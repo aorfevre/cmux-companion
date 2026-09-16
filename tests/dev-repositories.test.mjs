@@ -6,7 +6,7 @@ import { tmpdir, homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { LocalSettings, defaultSettings, inspectProject } from '../server/local-settings.mjs';
-import { assertDevChild, contains, inspectDevRepo, macPath, scanDevRepo, suggestedChecks } from '../server/dev-repositories.mjs';
+import { assertDevChild, contains, detectPrepare, inspectDevRepo, macPath, scanDevRepo, suggestedChecks } from '../server/dev-repositories.mjs';
 import { RepoCatalog } from '../server/repo-catalog.mjs';
 import { buildApp } from '../server/app.mjs';
 import { backupData, restoreData } from '../updater/src/data-recovery.mjs';
@@ -30,7 +30,7 @@ test('named directory migration, discovery, association, renaming and removal pr
   const backup = await backupData({ root: join(directory, 'backups'), id: 'schema-v1', files: [path], previousSha: 'a'.repeat(40) });
   let store = new LocalSettings({ path });
   assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
-  assert.deepEqual(store.read().settings.projects, old.projects); assert.equal(store.read().revision, 7); assert.equal(store.read().imported, true);
+  assert.deepEqual(store.read().settings.projects, old.projects.map(entry => ({ ...entry, prepare: { source: 'none' } }))); assert.equal(store.read().revision, 7); assert.equal(store.read().imported, true);
   await store.update(7, { ...store.read().settings, devRepos: roots });
   assert.equal(store.read().settings.projects[0].devRepoId, 'karven'); assert.equal(store.read().settings.projects[0].enabled, false);
   await store.update(8, { ...store.read().settings, devRepos: roots.map(root => ({ ...root, name: root.name.toUpperCase() })) });
@@ -116,4 +116,20 @@ test('cached manual repository lookup rechecks enablement and collection contain
   enabled = false; await assert.rejects(catalog.get(entry.id), /no longer enabled/); enabled = true;
   rmSync(project.path, { recursive: true }); symlinkSync(outside, project.path);
   await assert.rejects(catalog.get(entry.id), /direct Git directory/);
+});
+
+test('prepare detection follows the lockfile table in order and never executes anything', async t => {
+  const { directory } = fixture(t);
+  const project = join(directory, 'detect'); mkdirSync(project);
+  assert.deepEqual(await detectPrepare(project), { source: 'none' });
+  writeFileSync(join(project, 'bun.lock'), '');
+  assert.deepEqual(await detectPrepare(project), { source: 'detected', executable: 'bun', args: ['install', '--frozen-lockfile'] });
+  writeFileSync(join(project, 'yarn.lock'), '');
+  assert.deepEqual(await detectPrepare(project), { source: 'detected', executable: 'yarn', args: ['install', '--immutable'] });
+  writeFileSync(join(project, 'pnpm-lock.yaml'), '');
+  assert.deepEqual(await detectPrepare(project), { source: 'detected', executable: 'pnpm', args: ['install', '--frozen-lockfile'] });
+  writeFileSync(join(project, 'package-lock.json'), '{}');
+  assert.deepEqual(await detectPrepare(project), { source: 'detected', executable: 'npm', args: ['ci'] });
+  mkdirSync(join(project, 'symlinked')); symlinkSync(join(project, 'package-lock.json'), join(project, 'symlinked', 'package-lock.json'));
+  assert.deepEqual(await detectPrepare(join(project, 'symlinked')), { source: 'none' });
 });

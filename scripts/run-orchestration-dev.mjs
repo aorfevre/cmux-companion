@@ -74,6 +74,10 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
           agents.close = async () => { for (const controller of agents.controllers.values()) controller.abort(); await agents.drain(); };
           return agents;
         },
+        resolvePrepare: (repositoryId) => {
+          if (repositoryId !== 'repo') throw new Error('Unknown fixture repository');
+          return { bin: process.execPath, argv: ['-e', "require('node:fs').mkdirSync('node_modules', { recursive: true }); console.log('fixture prepare')"], env: { PATH: process.env.PATH }, environmentId: 'disposable-fixture-prepare', policy: { ceilingMs: 10000, idleMs: 2000, maxOutputBytes: 8192, killGraceMs: 100 } };
+        },
         resolveCheck: (repositoryId, check) => {
           if (repositoryId !== 'repo' || !repo.contract.verification.some((approved) => JSON.stringify(approved) === JSON.stringify(check))) throw new Error('Unknown fixture verification command');
           // Keep fast fixture checks alive until the watchdog records their PID.

@@ -37,6 +37,24 @@ export async function suggestedChecks(path) {
       .map(([name, script], index) => ({ id: `script-${index + 1}`, executable: 'npm', args: ['run', name], script }));
   } catch { return []; }
 }
+/** Prepare detection reads lockfile names only. The command table is owned by
+ * Companion; repository content never selects an executable or argument. */
+const PREPARE_TABLE = [
+  ['package-lock.json', { executable: 'npm', args: ['ci'] }],
+  ['pnpm-lock.yaml', { executable: 'pnpm', args: ['install', '--frozen-lockfile'] }],
+  ['yarn.lock', { executable: 'yarn', args: ['install', '--immutable'] }],
+  ['bun.lockb', { executable: 'bun', args: ['install', '--frozen-lockfile'] }],
+  ['bun.lock', { executable: 'bun', args: ['install', '--frozen-lockfile'] }],
+];
+export async function detectPrepare(path) {
+  for (const [name, command] of PREPARE_TABLE) {
+    try {
+      const info = await lstat(join(path, name));
+      if (info.isFile() && !info.isSymbolicLink()) return { source: 'detected', executable: command.executable, args: [...command.args] };
+    } catch { /* Try the next lockfile. */ }
+  }
+  return { source: 'none' };
+}
 export async function scanDevRepo(root, inspect, { entryLimit = 1000, deadlineMs = 30000, now = Date.now } = {}) {
   const started = now(), results = [], children = []; let partial = false, reason = null;
   if ((await inspectDevRepo(root.path)).path !== root.path) throw new TypeError('Dev repo directory moved. Restore its original location.');

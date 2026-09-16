@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { join } from 'node:path';
 import { GoalReferences } from './goal-references.mjs';
 import { ResourceCleanup } from './cleanup.mjs';
+import { NpmCache } from './adapters/npm-cache.mjs';
 import { nativeBinding } from './adapters/native-background.mjs';
 import { rolePrompt } from './adapters/role-prompts.mjs';
 import { OrchestrationStore } from './storage/store.mjs';
@@ -27,6 +28,7 @@ import { requireValue } from './domain/contracts.mjs';
  * repositories: ReadonlyMap<string,string>; token: string; readOnly?: boolean;
  * createAgents: (context: { locate: (key: {operationId?: string; identity?:string}) => import('./types.d.ts').Mode | null; describe: (request: import('./types.d.ts').LaunchRequest) => import('./adapters/native-inputs.mjs').NativeDescription; onResult: (request: import('./types.d.ts').LaunchRequest, raw: string) => void }) => import('./types.d.ts').AgentPort & { close(options?: {preserve?: import('./types.d.ts').LaunchRequest[]}): Promise<void> };
  * resolveCheck: ConstructorParameters<typeof VerificationRunner>[0]['resolveCheck'];
+ * resolvePrepare?: ConstructorParameters<typeof VerificationRunner>[0]['resolvePrepare'];
  * createPublisher: (context: { repositories: GitRepository }) => import('./types.d.ts').PublicationPort;
  * consumers?: { id: string; from?: number; handle: ConstructorParameters<typeof JournalConsumer>[0]['handle'] }[];
  * limits?: { global?: number; perGoal?: number; planners?: number };
@@ -40,7 +42,7 @@ import { requireValue } from './domain/contracts.mjs';
  * goalLimits?: (goalId: string) => { global: number; perGoal: number; planners: number };
  * }} options
  */
-export async function createRuntime({ storage, repositories: configured, token, readOnly = false, createAgents, resolveCheck, createPublisher, consumers = [], limits, logLevel, planReviewEnabled, suspension = () => null, prepareGoal, beforeCommand, projectStatus, goalLimits, onError = () => {} }) {
+export async function createRuntime({ storage, repositories: configured, token, readOnly = false, createAgents, resolveCheck, resolvePrepare, createPublisher, consumers = [], limits, logLevel, planReviewEnabled, suspension = () => null, prepareGoal, beforeCommand, projectStatus, goalLimits, onError = () => {} }) {
   requireValue(typeof token === 'string' && token.length >= 32, 'Explicit private pairing token required');
   requireValue(typeof readOnly === 'boolean' && new Set(consumers.map((consumer) => consumer.id)).size === consumers.length, 'Invalid runtime configuration');
   for (const path of Object.values(storage)) requireValue(typeof path === 'string' && path.length > 0, 'Explicit storage paths required');
@@ -65,7 +67,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
     const stream = new EventStream({ store, onError: report });
     const subscribers = consumers.map((options) => new JournalConsumer({ ...options, store, onError: report }));
     store.onCommit = () => { stream.wake(); for (const subscriber of subscribers) subscriber.wake(); };
-    const scheduler = new Scheduler({ service, repositories, planReviewEnabled, prepareGoal, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck }), publisher: createPublisher({ repositories }), results, onError: report });
+    const scheduler = new Scheduler({ service, repositories, planReviewEnabled, prepareGoal, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck, resolvePrepare, cache: new NpmCache({ directory: join(storage.resources, 'npm-cache') }) }), publisher: createPublisher({ repositories }), results, onError: report });
     const app = Fastify({ logger: logLevel ? { level: logLevel, redact: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-companion-push-device"]', 'res.headers["set-cookie"]'] } : false, bodyLimit: 2 * 1024 * 1024, ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
     const cleanup = new ResourceCleanup({ service, repositories, assertOwned: () => scheduler.ownership.assertOwned() });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });

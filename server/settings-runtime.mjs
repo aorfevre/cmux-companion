@@ -14,10 +14,11 @@ import { GitHubPublication } from './orchestration/adapters/github.mjs';
 import { transition } from './orchestration/domain/transitions.mjs';
 import { requireValue } from './orchestration/domain/contracts.mjs';
 import { resolveGoalCheck } from './goal-verification.mjs';
+import { resolvePrepare as resolvePrepareCommand } from './prepare-command.mjs';
 
 // Every provider instance and publication adapter is bound to a durable goal
 // configuration, never to the mutable current Settings form.
-export async function createSettingsRuntime({ settings, directory, token, createAgents, probeProvider, probeGit = probeGitCapabilities, own = acquireRepositoryOwnership, publisherFactory, prepareGoal, resolveProviderCommand, usageSnapshot = async () => ({ available: false }) }) {
+export async function createSettingsRuntime({ settings, directory, token, createAgents, probeProvider, probeGit = probeGitCapabilities, own = acquireRepositoryOwnership, publisherFactory, prepareGoal, resolveProviderCommand, resolvePrepare = resolvePrepareCommand, usageSnapshot = async () => ({ available: false }) }) {
   const storage = { database: join(directory, 'core.sqlite'), artifacts: join(directory, 'artifacts'), resources: join(directory, 'resources') };
   const repositories = new Map(settings.read().settings.projects.map(project => [project.id, project.path]));
   const agents = new Map(), publications = new Map(), owners = new Map();
@@ -52,6 +53,15 @@ export async function createSettingsRuntime({ settings, directory, token, create
     }
     return publications.get(goalId);
   }
+  // Prepare is infrastructure approved in Setup, so the live project setting
+  // applies; this is what lets an already-held goal recover after a Setup fix.
+  const prepareFor = (repositoryId, goalId) => {
+    const config = configured(goalId);
+    requireValue(config.project.id === repositoryId, 'Verification repository changed', 'FORBIDDEN');
+    const current = settings.read();
+    const live = current.settings.projects.find(entry => entry.id === repositoryId) ?? config.project;
+    return resolvePrepare(live, { env: environment(), environmentId: `settings-${current.revision}`, policy: config.execution });
+  };
   const capabilities = [{ role: 'planner', mode: 'interactive' }, ...['implementer', 'reviewer', 'integrator'].map(role => ({ role, mode: 'background' }))];
   let agentContext;
   async function agent(goalId, attempt) {
@@ -156,10 +166,12 @@ export async function createSettingsRuntime({ settings, directory, token, create
         return resolveGoalCheck({ goal: runtime.store.get(goalId), repositoryId, check,
           env: environment(), environmentId: `settings-${config.revision}`, policy: config.execution });
       },
+      resolvePrepare: prepareFor,
       createPublisher: () => ({ observeMerge: (input, pr) => publication(input.goalId).observeMerge(input, pr), publish: (input, options) => publication(input.goalId).publish(input, options), observe: input => publication(input.goalId).observe(input) }),
     });
     const close = runtime.close.bind(runtime);
     runtime.close = async () => { await close(); for (const pending of owners.values()) (await pending).close(); owners.clear(); };
+    runtime.resolvePrepareForTest = prepareFor;
     runtime.settingsChanged = async () => {
       const current = settings.read().settings;
       for (const project of current.projects) { repositories.set(project.id, project.path); runtime.service.repositoryIds.add(project.id); }

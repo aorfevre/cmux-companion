@@ -5,7 +5,7 @@ import { DomainError, identifier, requireValue, sha } from '../domain/contracts.
 import { backgroundPolicy } from './agent-runtime.mjs';
 import { runSupervisedProcess, observeSupervisedProcess } from './supervised-process.mjs';
 import { bootIdentity } from './process-evidence.mjs';
-import { pathExists } from './git.mjs';
+import { git, pathExists } from './git.mjs';
 
 /** @typedef {{ bin: string; argv: string[]; env: NodeJS.ProcessEnv; environmentId: string; policy: import('../types.d.ts').BackgroundPolicy }} ResolvedCheck */
 /** Verification executes approved argv through an explicit repository policy.
@@ -13,9 +13,9 @@ import { pathExists } from './git.mjs';
  * uncertain on reopen; absence of a completion receipt never authorizes rerun.
  */
 export class VerificationRunner {
-  /** @param {{ repositories: import('./git.mjs').GitRepository; resolveCheck: (repositoryId: string, check: import('../types.d.ts').Check, goalId: string) => ResolvedCheck; failpoint?: (point: string) => void; boot?: ()=>string|null }} options */
-  constructor({ repositories, resolveCheck, failpoint = () => {}, boot = bootIdentity }) {
-    this.boot = boot; this.repositories = repositories; this.resolveCheck = resolveCheck; this.failpoint = failpoint;
+  /** @param {{ repositories: import('./git.mjs').GitRepository; resolveCheck: (repositoryId: string, check: import('../types.d.ts').Check, goalId: string) => ResolvedCheck; resolvePrepare?: (repositoryId: string, goalId: string) => ResolvedCheck | null; cache?: import('./npm-cache.mjs').NpmCache | null; cacheCapBytes?: number; failpoint?: (point: string) => void; boot?: ()=>string|null }} options */
+  constructor({ repositories, resolveCheck, resolvePrepare = () => null, cache = null, cacheCapBytes = 2 * 1024 * 1024 * 1024, failpoint = () => {}, boot = bootIdentity }) {
+    this.boot = boot; this.repositories = repositories; this.resolveCheck = resolveCheck; this.resolvePrepare = resolvePrepare; this.cache = cache; this.cacheCapBytes = cacheCapBytes; this.failpoint = failpoint;
     this.directory = join(repositories.directory, 'verification');
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     requireValue(!lstatSync(this.directory).isSymbolicLink(), 'Verification directory is a symlink', 'OWNERSHIP_UNCERTAIN');
@@ -47,6 +47,7 @@ export class VerificationRunner {
       identifier(check.id);
       requireValue(check.argv.length > 0 && check.argv.length <= 100 && check.argv.every((arg) => typeof arg === 'string' && arg.length > 0 && arg.length <= 4000 && !arg.includes('\0')), 'Invalid verification argv');
     }
+    requireValue(!checks.some((check) => check.id === 'prepare'), 'The check id "prepare" is reserved for dependency preparation');
     const directory = this.runDirectory(operationId), requestPath = join(directory, 'request.json');
     const request = { schemaVersion: 1, operationId, goalId, repositoryId, headSha, checks };
     if (pathExists(requestPath)) {
@@ -65,19 +66,29 @@ export class VerificationRunner {
     mkdirSync(home, { mode: 0o700 }); mkdirSync(temp, { mode: 0o700 }); mkdirSync(join(directory, 'workers'), { mode: 0o700 });
     /** @type {import('../types.d.ts').Verification['checks']} */ const outcomes = [];
     /** @type {'stopped' | 'unknown'} */ let workerState = 'stopped';
-    for (const check of checks) {
+    // Prepare is user-approved infrastructure from Settings, never from the plan.
+    // Its installed files are untracked, so later cleanliness checks compare
+    // tracked files only once a prepare command exists.
+    const prepare = this.resolvePrepare(repositoryId, goalId);
+    let prepareFailed = false;
+    /** @type {(import('../types.d.ts').Check & { resolved: ResolvedCheck | null })[]} */
+    const plan = [...(prepare ? [{ id: 'prepare', argv: ['prepare'], resolved: prepare }] : []), ...checks.map((check) => ({ ...check, resolved: null }))];
+    for (const check of plan) {
       let resolved, outcome = null, code = '', environment = null;
       if (workerState === 'unknown') code = 'PRIOR_WORKER_UNCERTAIN';
       else if (signal?.aborted) code = 'ABORTED';
+      else if (prepareFailed) code = 'PREPARE_FAILED';
       else {
         try {
-          resolved = this.resolveCheck(repositoryId, structuredClone(check), goalId);
-          requireValue(isAbsolute(resolved.bin) && resolved.environmentId.length > 0 && JSON.stringify(resolved.argv) === JSON.stringify(check.argv.slice(1)), 'Repository policy did not resolve the approved argv', 'UNSUPPORTED_CAPABILITY');
+          resolved = check.resolved ?? this.resolveCheck(repositoryId, structuredClone({ id: check.id, argv: check.argv }), goalId);
+          if (check.resolved) requireValue(isAbsolute(resolved.bin) && resolved.environmentId.length > 0, 'Prepare policy did not resolve an executable', 'UNSUPPORTED_CAPABILITY');
+          else requireValue(isAbsolute(resolved.bin) && resolved.environmentId.length > 0 && JSON.stringify(resolved.argv) === JSON.stringify(check.argv.slice(1)), 'Repository policy did not resolve the approved argv', 'UNSUPPORTED_CAPABILITY');
           backgroundPolicy(resolved.policy);
           requireValue(resolved.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Verification output budget exceeds supervisor transport limit', 'UNSUPPORTED_CAPABILITY');
-          const env = { ...resolved.env, HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: join(home, 'cache'), TMPDIR: temp, CI: 'true' };
+          const env = { ...resolved.env, ...(this.cache?.environment() ?? {}), HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: join(home, 'cache'), TMPDIR: temp, CI: 'true' };
           environment = { id: resolved.environmentId, bin: resolved.bin, argv: resolved.argv, platform: process.platform, architecture: process.arch, nodeVersion: process.version, environmentHash: createHash('sha256').update(JSON.stringify(env)).digest('hex') };
-          requireValue(await this.repositories.checkCheckout(recorded) === headSha, 'Verification target changed', 'STALE_TARGET');
+          requireValue(await this.repositories.checkCheckout(recorded, !prepare) === headSha, 'Verification target changed', 'STALE_TARGET');
+          if (prepare) requireValue(!(await git(resource.worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=no'])), 'Worktree has uncommitted changes', 'DIRTY_WORKTREE');
           this.save(join(directory, `${check.id}.launch.json`), { checkId: check.id, headSha, environment });
           this.failpoint('before_launch');
           outcome = await runSupervisedProcess({ bin: resolved.bin, argv: resolved.argv, cwd: resource.worktree, env }, {
@@ -87,7 +98,8 @@ export class VerificationRunner {
           workerState = outcome.workerState;
           code = outcome.cause?.code ?? '';
           if (workerState !== 'stopped') code ||= 'OWNERSHIP_UNCERTAIN';
-          requireValue(await this.repositories.checkCheckout(recorded) === headSha, 'Verification changed its recorded checkout', 'STALE_TARGET');
+          requireValue(await this.repositories.checkCheckout(recorded, !prepare) === headSha, 'Verification changed its recorded checkout', 'STALE_TARGET');
+          if (prepare) requireValue(!(await git(resource.worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=no'])), 'Check changed tracked files', 'DIRTY_WORKTREE');
         } catch (error) {
           if (!(error instanceof DomainError)) throw error;
           code = error.code;
@@ -95,10 +107,13 @@ export class VerificationRunner {
           if (!outcome && pathExists(join(directory, `${check.id}.launch.json`))) workerState = 'unknown';
         }
       }
+      const passed = !code && outcome?.status === 'succeeded' && workerState === 'stopped';
+      if (check.id === 'prepare' && !passed) prepareFailed = true;
       const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, checkId: check.id, headSha, argv: check.argv, environment, code, outcome }));
-      outcomes.push({ id: check.id, passed: !code && outcome?.status === 'succeeded' && workerState === 'stopped', artifactId: artifact.id });
+      outcomes.push({ id: check.id, passed, artifactId: artifact.id });
       this.save(join(directory, `${check.id}.result.json`), { ...outcomes.at(-1), workerState }); this.failpoint('check_recorded');
     }
+    if (this.cache) { try { this.cache.prune(this.cacheCapBytes); } catch { /* Cache pruning never changes a verification result. */ } }
     const verification = { headSha, checks: outcomes };
     const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, goalId, repositoryId, verification, workerState }));
     const result = { verification, workerState, artifactId: artifact.id };
@@ -129,7 +144,9 @@ export class VerificationRunner {
     }
     /** @type {import('../types.d.ts').Verification['checks']} */ const outcomes = [];
     /** @type {'stopped'|'unknown'} */ let workerState = 'stopped';
-    for (const check of /** @type {import('../types.d.ts').Check[]} */ (request.checks)) {
+    const prepared = pathExists(join(directory, 'prepare.result.json')) || pathExists(join(directory, 'prepare.launch.json'));
+    /** @type {import('../types.d.ts').Check[]} */ const observedChecks = prepared ? [{ id: 'prepare', argv: ['prepare'] }, ...request.checks] : request.checks;
+    for (const check of observedChecks) {
       const resultPath = join(directory, `${check.id}.result.json`);
       if (pathExists(resultPath)) {
         const completed = this.read(resultPath), evidence = JSON.parse(this.repositories.artifacts.get(completed.artifactId).toString('utf8'));
@@ -153,7 +170,7 @@ export class VerificationRunner {
         if (workerState !== 'stopped') code ||= 'OWNERSHIP_UNCERTAIN';
         const resource = this.repositories.resource(operationId);
         try {
-          requireValue(resource && await this.repositories.checkCheckout(resource) === request.headSha, 'Verification checkout changed', 'STALE_TARGET');
+          requireValue(resource && await this.repositories.checkCheckout(resource, !prepared) === request.headSha, 'Verification checkout changed', 'STALE_TARGET');
         } catch (error) { if (!(error instanceof DomainError)) throw error; code = error.code; }
       }
       const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, checkId: check.id, headSha: request.headSha, argv: check.argv, environment, code, outcome }));
@@ -171,11 +188,13 @@ export class VerificationRunner {
     if (!pathExists(path)) return null;
     const request = /** @type {Parameters<import('../types.d.ts').VerificationPort['run']>[0]} */ (this.read(join(directory, 'request.json')));
     const result = /** @type {import('../types.d.ts').VerificationRunResult} */ (this.read(path)), artifact = JSON.parse(this.repositories.artifacts.get(result.artifactId).toString('utf8'));
-    requireValue(request.operationId === operationId && artifact.goalId === request.goalId && artifact.repositoryId === request.repositoryId && artifact.verification.headSha === request.headSha && artifact.verification.checks.length === request.checks.length && request.checks.every((check) => artifact.verification.checks.some((/** @type {import('../types.d.ts').Check} */ entry) => entry.id === check.id)), 'Verification request and receipt disagree', 'OWNERSHIP_UNCERTAIN');
+    const planned = artifact.verification.checks.filter((/** @type {{ id: string }} */ entry) => entry.id !== 'prepare');
+    requireValue(request.operationId === operationId && artifact.goalId === request.goalId && artifact.repositoryId === request.repositoryId && artifact.verification.headSha === request.headSha && planned.length === request.checks.length && request.checks.every((check) => planned.some((/** @type {import('../types.d.ts').Check} */ entry) => entry.id === check.id)), 'Verification request and receipt disagree', 'OWNERSHIP_UNCERTAIN');
     requireValue(artifact.operationId === operationId && JSON.stringify(artifact.verification) === JSON.stringify(result.verification) && artifact.workerState === result.workerState, 'Verification receipt changed', 'OWNERSHIP_UNCERTAIN');
     for (const check of result.verification.checks) {
       const evidence = JSON.parse(this.repositories.artifacts.get(check.artifactId).toString('utf8'));
-      requireValue(evidence.operationId === operationId && evidence.checkId === check.id && evidence.headSha === request.headSha && JSON.stringify(evidence.argv) === JSON.stringify(request.checks.find((entry) => entry.id === check.id)?.argv), 'Verification check evidence changed', 'OWNERSHIP_UNCERTAIN');
+      const expectedArgv = check.id === 'prepare' ? ['prepare'] : request.checks.find((entry) => entry.id === check.id)?.argv;
+      requireValue(evidence.operationId === operationId && evidence.checkId === check.id && evidence.headSha === request.headSha && JSON.stringify(evidence.argv) === JSON.stringify(expectedArgv), 'Verification check evidence changed', 'OWNERSHIP_UNCERTAIN');
     }
     return result;
   }
