@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -66,6 +66,7 @@ test('the settings capacity produces an explicit partial result without removing
 
 test('discovered repositories keep the prepare command detected during the scan', async t => {
   const { settings, root, entry, options } = await fixture(t);
+  writeFileSync(join(entry.path, 'package-lock.json'), '{}');
   const tracking = createDevRepoTracking({ ...options, scan: async () => ({ repositories: [{ ...entry, prepare: { source: 'detected', executable: 'npm', args: ['ci'] } }], partial: false, reason: null }) });
   await tracking.one(root.id);
   assert.deepEqual(settings.read().settings.projects[0].prepare, { source: 'detected', executable: 'npm', args: ['ci'] });
