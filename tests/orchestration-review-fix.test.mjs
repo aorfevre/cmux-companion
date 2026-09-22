@@ -75,7 +75,7 @@ test('a closed pull request and a terminal goal refuse a round', () => {
 
 test('zero threads settle the round at once and an unavailable read fails it with a hold', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [] });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [], mergeable: 'mergeable' });
   assert.equal(f.goal.status, 'delivered'); assert.equal(f.goal.reviewRound, null);
   assert.equal(f.goal.reviewRounds[0].outcome, 'nothing_to_address');
   const g = fixture(); g.deliver(); g.command('request_review_fix', {}, g.user);
@@ -88,7 +88,7 @@ test('zero threads settle the round at once and an unavailable read fails it wit
 
 test('threads move the round to fixing and expose review_fixer work at the pull request head', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads() });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   assert.equal(f.goal.reviewRound.state, 'fixing');
   assert.deepEqual(readyWork(f.goal).map((entry) => [entry.role, entry.target]), [['review_fixer', HEAD_B]]);
   f.request('fx', 'review_fixer'); const attempt = f.goal.attempts.at(-1);
@@ -100,7 +100,7 @@ test('threads move the round to fixing and expose review_fixer work at the pull 
 
 test('a fix result with a new head needs verification; replies only skip to replying', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads() });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 's', replies: replies('fixed') }), 'STALE_TARGET');
   fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('declined') }), 'STALE_TARGET');
@@ -109,7 +109,7 @@ test('a fix result with a new head needs verification; replies only skip to repl
   assert.equal(f.goal.reviewRound.state, 'verifying'); assert.equal(f.goal.reviewRound.fixHeadSha, HEAD_C);
   assert.equal(f.goal.attempts.at(-1).status, 'succeeded');
   const g = fixture(); g.deliver(); g.command('request_review_fix', {}, g.user);
-  g.command('record_review_threads', { roundId: g.goal.reviewRound.id, threads: threads() });
+  g.command('record_review_threads', { roundId: g.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   g.request('fx', 'review_fixer'); g.dispatch('fx');
   g.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 'No code change', replies: replies('comment') });
   assert.equal(g.goal.reviewRound.state, 'replying'); assert.equal(g.goal.reviewRound.fixHeadSha, undefined);
@@ -118,7 +118,7 @@ test('a fix result with a new head needs verification; replies only skip to repl
 test('verification of the fix head gates the push and a failed check holds the goal', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
   const roundId = f.goal.reviewRound.id;
-  f.command('record_review_threads', { roundId, threads: threads() });
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('fixed') }); f.command('record_stopped', { attemptId: 'fx' });
   const requested = f.command('request_review_fix_verification', { roundId, operationId: 'verify_fix' });
@@ -136,7 +136,7 @@ test('a passed fix verification, push and settlement advance the head and clear 
   f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', checkedAt: 5 });
   f.command('request_review_fix', {}, f.user);
   const roundId = f.goal.reviewRound.id;
-  f.command('record_review_threads', { roundId, threads: threads() });
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('fixed') }); f.command('record_stopped', { attemptId: 'fx' });
   f.command('request_review_fix_verification', { roundId, operationId: 'verify_fix' });
@@ -156,7 +156,7 @@ test('a passed fix verification, push and settlement advance the head and clear 
 test('an uncertain push holds the round until the remote head confirms one outcome', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
   const roundId = f.goal.reviewRound.id;
-  f.command('record_review_threads', { roundId, threads: threads() });
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('fixed') }); f.command('record_stopped', { attemptId: 'fx' });
   f.command('request_review_fix_verification', { roundId, operationId: 'verify_fix' });
@@ -171,7 +171,7 @@ test('an uncertain push holds the round until the remote head confirms one outco
 
 test('abort during a round terminates the fixer and keeps the old pull request head', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads() });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   const aborted = f.command('abort', {}, f.user);
   assert.equal(aborted.intents[0].kind, 'terminate'); assert.equal(f.goal.status, 'aborted'); assert.equal(f.goal.pr.headSha, HEAD_B);
@@ -211,7 +211,7 @@ test('the fixer inherits the integrator team assignment', () => {
 
 test('a fixer result with the pull request head and replies only is accepted without Git proof', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads() });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   f.command('receive_role_result', { resultId: 'res1', attemptId: 'fx', artifactId: 'b'.repeat(64) });
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 'Answered', replies: replies('comment') });
@@ -411,4 +411,35 @@ test('the publication adapter returns the mergeable verdict with the threads', a
     assert.equal(observed.threads.length, 1);
     assert.deepEqual(calls, [['readPull', 1], ['threads']]);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a conflicting or unknown verdict merges rather than settling', () => {
+  const clean = fixture(); clean.deliver(); clean.command('request_review_fix', {}, clean.user);
+  clean.command('record_review_threads', { roundId: clean.goal.reviewRound.id, threads: [], mergeable: 'mergeable' });
+  assert.equal(clean.goal.status, 'delivered');
+  assert.equal(clean.goal.reviewRounds[0].outcome, 'nothing_to_address');
+
+  const conflicting = fixture(); conflicting.deliver(); conflicting.command('request_review_fix', {}, conflicting.user);
+  conflicting.command('record_review_threads', { roundId: conflicting.goal.reviewRound.id, threads: [], mergeable: 'conflicting' });
+  assert.equal(conflicting.goal.status, 'addressing_review');
+  assert.equal(conflicting.goal.reviewRound.state, 'merging');
+  assert.equal(conflicting.goal.reviewRound.mergeable, 'conflicting');
+  assert.equal(reviewRoundPhase(conflicting.goal.reviewRound), 'Merging the target branch');
+
+  const unknown = fixture(); unknown.deliver(); unknown.command('request_review_fix', {}, unknown.user);
+  unknown.command('record_review_threads', { roundId: unknown.goal.reviewRound.id, threads: threads(), mergeable: 'unknown' });
+  assert.equal(unknown.goal.reviewRound.state, 'merging', 'an uncomputed verdict is decided by the local merge');
+  assert.equal(readyWork(unknown.goal).length, 0, 'no fixer runs before the merge is recorded');
+
+  const threadsOnly = fixture(); threadsOnly.deliver(); threadsOnly.command('request_review_fix', {}, threadsOnly.user);
+  threadsOnly.command('record_review_threads', { roundId: threadsOnly.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
+  assert.equal(threadsOnly.goal.reviewRound.state, 'fixing');
+});
+
+test('a missing or unknown mergeable verdict is refused', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  fails(() => f.command('record_review_threads', { roundId, threads: [] }));
+  fails(() => f.command('record_review_threads', { roundId, threads: [], mergeable: 'maybe' }));
+  assert.equal(f.goal.reviewRound.state, 'fetching', 'a refused record leaves the round untouched');
 });

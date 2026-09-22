@@ -39,7 +39,7 @@ test('a review round resolves its planned checks at the head it recorded, and no
   // Refused while the round has not recorded a fix head to verify.
   f.command('request_review_fix', {}, f.user);
   assert.throws(() => resolve(f.goal), { code: 'NOT_READY' });
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Explain this.', isBot: true }], at: 1 });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Explain this.', isBot: true }], mergeable: 'mergeable', at: 1 });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   assert.throws(() => resolve(f.goal), { code: 'NOT_READY' });
   f.command('receive_role_result', { resultId: 'res1', attemptId: 'fx', artifactId: 'b'.repeat(64) });

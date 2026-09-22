@@ -42,7 +42,12 @@ export function activeReviewRound(goal) {
 /** @param {import('../types.d.ts').ReviewRound} round */
 export function reviewRoundPhase(round) {
   if (round.state === 'fetching') return 'Fetching review threads';
-  if (round.state === 'fixing') return `Fixing ${round.threads.length} ${round.threads.length === 1 ? 'thread' : 'threads'}`;
+  if (round.state === 'merging') return 'Merging the target branch';
+  if (round.state === 'fixing') {
+    const conflicts = round.conflictPaths?.length ?? 0;
+    const threads = `${round.threads.length} ${round.threads.length === 1 ? 'thread' : 'threads'}`;
+    return conflicts ? `Fixing ${threads} and ${conflicts} ${conflicts === 1 ? 'conflict' : 'conflicts'}` : `Fixing ${threads}`;
+  }
   if (round.state === 'verifying') return 'Verifying fix';
   if (round.state === 'pushing' || round.state === 'replying') return 'Pushing and replying';
   return round.state === 'settled' ? 'Round complete' : round.state === 'unknown' ? 'Push outcome uncertain' : 'Round failed';

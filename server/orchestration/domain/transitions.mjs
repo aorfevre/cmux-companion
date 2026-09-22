@@ -719,7 +719,13 @@ export function transition(before, command, authority) {
       requireAuthority(authority, 'system');
       const round = activeRound(goal, input.roundId);
       requireValue(round.state === 'fetching', 'Review threads were already recorded', 'STALE_OPERATION');
+      requireValue(['mergeable', 'conflicting', 'unknown'].includes(String(input.mergeable)), 'Invalid mergeable verdict');
       round.threads = parseReviewThreads(input.threads);
+      round.mergeable = /** @type {import('../types.d.ts').MergeableVerdict} */ (input.mergeable);
+      if (round.mergeable !== 'mergeable') {
+        round.state = 'merging';
+        emit('review_merge_requested', { roundId: round.id, mergeable: round.mergeable, count: round.threads.length }); break;
+      }
       if (!round.threads.length) {
         closeRound(goal, round, 'nothing_to_address', integer(input.at ?? 0));
         emit('review_fix_settled', { roundId: round.id, outcome: 'nothing_to_address' }); break;

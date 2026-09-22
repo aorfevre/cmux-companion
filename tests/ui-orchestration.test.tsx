@@ -371,7 +371,7 @@ test('a delivered goal offers the review round and a running round shows its pha
   expect(act).toHaveBeenCalledWith(delivered, delivered.actions.find(action => action.type === 'request_review_fix'));
   unmount();
   f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }] });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }], mergeable: 'mergeable' });
   const fixing = { ...goalView(f.goal), contracts: [] };
   expect(goalStage(fixing)).toBe('Addressing review');
   render(<GoalDetail goal={fixing} disabled={false} terminal={false} act={act} control={vi.fn()} />);

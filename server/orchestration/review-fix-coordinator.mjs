@@ -86,7 +86,7 @@ export class ReviewFixCoordinator {
           }
           if (this.stopped) return;
           this.ownership.assertOwned();
-          if (this.current(goal.id, round.id)) this.record(goal.id, 'record_review_threads', { roundId: round.id, threads: threads.threads, at: this.now() });
+          if (this.current(goal.id, round.id)) this.record(goal.id, 'record_review_threads', { roundId: round.id, threads: threads.threads, mergeable: threads.mergeable, at: this.now() });
         });
       } else if (round.state === 'verifying' && !round.verificationOperationId) {
         if (goal.hold || goal.attempts.some((attempt) => attempt.workerState !== 'stopped')) continue;

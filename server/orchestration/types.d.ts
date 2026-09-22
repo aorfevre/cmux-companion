@@ -47,10 +47,12 @@ export interface TeamProposal { revision: number; approved: boolean; assignments
 export type MergeableVerdict = 'mergeable' | 'conflicting' | 'unknown';
 export interface ReviewThread { id: string; path: string | null; line: number | null; author: string; body: string; isBot: boolean }
 export interface ReviewReply { threadId: string; action: 'fixed' | 'declined' | 'comment'; body: string }
-export type ReviewRoundState = 'fetching' | 'fixing' | 'verifying' | 'pushing' | 'replying' | 'settled' | 'failed' | 'unknown';
+export type ReviewRoundState = 'fetching' | 'merging' | 'fixing' | 'verifying' | 'pushing' | 'replying' | 'settled' | 'failed' | 'unknown';
 export type ReviewRoundOutcome = 'addressed' | 'nothing_to_address' | 'failed';
 export interface ReviewRound {
   id: string; prHeadSha: string; startedAt: number; state: ReviewRoundState; threads: ReviewThread[];
+  trigger?: 'user' | 'conflict'; mergeable?: MergeableVerdict;
+  mergedBaseSha?: string; mergeCommitSha?: string; conflictPaths?: string[];
   attemptId?: string; summary?: string; fixHeadSha?: string; replies?: ReviewReply[]; verificationOperationId?: string;
   posted?: string[]; unconfirmed?: string[]; resolved?: string[]; outcome?: ReviewRoundOutcome; error?: string | null; settledAt?: number;
 }
