@@ -69,3 +69,17 @@ test('direct GitHub PR observation validates repository/number and requires expl
   response.number = 7; delete response.merged; await assert.rejects(cli.readPull('repo', 7), { code: 'OWNERSHIP_UNCERTAIN' });
   await assert.rejects(cli.readPull('unknown', 7), { code: 'UNSUPPORTED_CAPABILITY' });
 });
+
+test('the pull request read reports a bounded mergeable verdict', async () => {
+  let response = { number: 7, html_url: 'https://github.com/owner/repo/pull/7', base: { repo: { full_name: 'owner/repo' }, sha: 'a'.repeat(40) }, state: 'open', merged: false, mergeable: true };
+  const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: tmpdir(), env: {}, execute: async () => JSON.stringify(response) });
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'mergeable');
+  response = { ...response, mergeable: false };
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'conflicting');
+  response = { ...response, mergeable: null };
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'unknown');
+  response = { ...response, mergeable: 'yes' };
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'unknown', 'an unexpected value never reads as mergeable');
+  delete response.mergeable;
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'unknown');
+});

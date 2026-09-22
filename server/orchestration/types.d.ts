@@ -44,6 +44,7 @@ export interface TeamProfile { id: string; label: string; provider: 'claude' | '
 export interface TeamConfiguration { profiles: TeamProfile[]; defaults: Record<TeamRole, string>; capturedAt: string }
 export interface TeamAssignment { key: string; role: TeamRole; taskId: string | null; profileId: string | null; manual: boolean; reason: string }
 export interface TeamProposal { revision: number; approved: boolean; assignments: TeamAssignment[]; changes: { commandId: string; key: string; from: string | null; to: string }[] }
+export type MergeableVerdict = 'mergeable' | 'conflicting' | 'unknown';
 export interface ReviewThread { id: string; path: string | null; line: number | null; author: string; body: string; isBot: boolean }
 export interface ReviewReply { threadId: string; action: 'fixed' | 'declined' | 'comment'; body: string }
 export type ReviewRoundState = 'fetching' | 'fixing' | 'verifying' | 'pushing' | 'replying' | 'settled' | 'failed' | 'unknown';
@@ -163,7 +164,7 @@ export interface RemotePort {
   push(input: { repositoryId: string; branch: string; headSha: string; expectedHead: string | null }, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface GitHubPort {
-  readPull?(repositoryId: string, number: number): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
+  readPull?(repositoryId: string, number: number): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged'; mergeable: MergeableVerdict }>;
   listReviewThreads?(repositoryId: string, number: number): Promise<ReviewThread[]>;
   replyToThread?(repositoryId: string, threadId: string, body: string, options?: { beforeSend?: () => boolean }): Promise<void>;
   resolveThread?(repositoryId: string, threadId: string, options?: { beforeSend?: () => boolean }): Promise<void>;

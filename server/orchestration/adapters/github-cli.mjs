@@ -25,7 +25,7 @@ export class GitHubCli {
   identity(repositoryId) { return `github.com:${this.repository(repositoryId).toLowerCase()}`; }
   /** Read a saved PR directly; branch deletion and later head updates do not erase merge evidence.
    * @param {string} repositoryId @param {number} number
-   * @returns {Promise<{ number:number; url:string; state:'open'|'closed'|'merged' }>}
+   * @returns {Promise<{ number:number; url:string; state:'open'|'closed'|'merged'; mergeable:'mergeable'|'conflicting'|'unknown' }>}
    */
   async readPull(repositoryId, number) {
     const slug = this.repository(repositoryId); integer(number, 1);
@@ -34,7 +34,8 @@ export class GitHubCli {
       && typeof pr.html_url === 'string' && pr.html_url.toLowerCase() === `https://github.com/${slug.toLowerCase()}/pull/${number}`
       && ['open', 'closed'].includes(pr.state) && typeof pr.merged === 'boolean'
       && (!pr.merged || pr.state === 'closed'), 'GitHub PR identity or merge state changed', 'OWNERSHIP_UNCERTAIN');
-    return { number, url: pr.html_url, state: pr.merged ? 'merged' : pr.state === 'open' ? 'open' : 'closed' };
+    return { number, url: pr.html_url, state: pr.merged ? 'merged' : pr.state === 'open' ? 'open' : 'closed',
+      mergeable: pr.mergeable === true ? /** @type {const} */ ('mergeable') : pr.mergeable === false ? /** @type {const} */ ('conflicting') : /** @type {const} */ ('unknown') };
   }
   /** Unresolved review threads only. Every page must arrive or the read fails closed.
    * @param {string} repositoryId @param {number} number
