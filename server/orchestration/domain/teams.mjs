@@ -1,5 +1,11 @@
 import { array, identifier, identifiers, object, requireValue, text } from './contracts.mjs';
 export const TEAM_ROLES = /** @type {const} */ (['planner', 'implementer', 'reviewer', 'integrator']);
+/** Every dispatchable role. A composition that omits one cannot start that
+ * work, so each agent port declares its capability from this list. */
+export const ROLES = /** @type {const} */ (['planner', 'implementer', 'reviewer', 'integrator', 'review_fixer']);
+/** The planner is the only interactive role; every other role runs in the background.
+ * @param {import('../types.d.ts').Role} role */
+export const roleMode = (role) => role === 'planner' ? 'interactive' : 'background';
 /** @param {unknown} value @returns {import('../types.d.ts').TeamConfiguration} */
 export function parseTeamConfiguration(value) {
   const input = object(value), defaults = object(input.defaults);

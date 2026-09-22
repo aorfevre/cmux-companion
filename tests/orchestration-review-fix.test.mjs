@@ -354,3 +354,27 @@ test('a missing thread write capability is reported before any reply is posted',
   assert.match(round.error, /unavailable in this configuration/);
   assert.equal(f.calls.replies.length, 0);
 });
+
+test('a round whose fixer cannot be dispatched reports a configuration fault instead of waiting in silence', async (t) => {
+  const f = coordinatorFixture(t);
+  f.service.agents.capabilities = f.service.agents.capabilities.filter((capability) => capability.role !== 'review_fixer');
+  f.send('request_review_fix', {}, 'user');
+  await f.coordinator.run(); await settle(f.coordinator);
+  assert.equal(f.store.get('goal').reviewRound.state, 'fixing');
+  await f.coordinator.run(); await settle(f.coordinator);
+  const round = f.store.get('goal').reviewRound;
+  assert.equal(round.state, 'failed');
+  assert.match(round.error, /cannot start a review fixer/);
+  assert.match(round.error, /Waiting will not help/);
+});
+
+test('a declared fixer capability leaves the round fixing so the scheduler can dispatch it', async (t) => {
+  const f = coordinatorFixture(t);
+  f.send('request_review_fix', {}, 'user');
+  await f.coordinator.run(); await settle(f.coordinator);
+  await f.coordinator.run(); await settle(f.coordinator);
+  const round = f.store.get('goal').reviewRound;
+  assert.equal(round.state, 'fixing');
+  assert.equal(round.error, undefined);
+  assert.equal(f.store.ready().filter((work) => work.role === 'review_fixer').length, 1);
+});

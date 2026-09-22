@@ -8,6 +8,7 @@ import { LocalSettings, defaultSettings } from '../server/local-settings.mjs';
 import { createSettingsRuntime } from '../server/settings-runtime.mjs';
 import { buildApp } from '../server/app.mjs';
 import { contract } from './helpers/orchestration/domain-fixture.mjs';
+import { ROLES, roleMode } from '../server/orchestration/domain/teams.mjs';
 import { planTarget } from '../server/orchestration/domain/transitions.mjs';
 import { FakeAgents } from './helpers/orchestration/fake-agents.mjs';
 const token = 'x'.repeat(48), headers = { host: 'localhost', origin: 'http://localhost', authorization: `Bearer ${token}` };
@@ -330,4 +331,15 @@ test('an adapter missing a publication capability names it instead of reading as
     assert.throws(() => runtime.scheduler.reviewFixes.publisher[name]({ goalId: 'goal', repositoryId: 'project' }, {}),
       error => error.code === 'UNSUPPORTED_CAPABILITY' && error.message.includes(name), `${name} must name itself`);
   }
+});
+
+test('the saved-settings runtime declares every dispatchable role, so no accepted work waits without a session', async t => {
+  const f = await fixture(t);
+  const declared = f.runtime.scheduler.agents.capabilities;
+  for (const role of ROLES) {
+    const mode = roleMode(role);
+    assert.ok(declared.some(capability => capability.role === role && capability.mode === mode),
+      `${role}/${mode} must be declared; an accepted role that no composition declares leaves its work queued with no session`);
+  }
+  assert.equal(declared.length, ROLES.length);
 });
