@@ -343,3 +343,33 @@ test('the saved-settings runtime declares every dispatchable role, so no accepte
   }
   assert.equal(declared.length, ROLES.length);
 });
+
+test('the saved-settings composition resolves the approved checks for a review round fix head', async t => {
+  const { runtime, settings, path } = await fixture(t);
+  const value = defaultSettings(); value.projects = [{ id: 'project', name: 'Project', path, enabled: true, github: 'example/repo', remote: 'git@github.com:example/repo.git', checks: [] }];
+  await settings.update(0, value); await runtime.settingsChanged();
+  const project = (await runtime.app.inject({ url: '/api/orchestration/configuration', headers })).json().repositories[0];
+  settings.snapshotGoal('round', 'project');
+  const plan = contract();
+  let n = 0;
+  const apply = (type, payload, kind = 'system') => runtime.store.apply({ id: `round-${++n}`, goalId: 'round', expectedVersion: runtime.store.get('round')?.version ?? 0, type, payload }, { kind });
+  apply('create_goal', { title: 'Round verification', repositoryId: 'project', baseSha: project.baseSha, baseBranch: 'main' }, 'user');
+  apply('publish_contract', { contract: plan }, 'user');
+  apply('request_attempt', { attemptId: 'pr', operationId: 'pr-op', role: 'reviewer', taskId: null, conversationId: 'pr-conversation' });
+  apply('record_dispatch', { attemptId: 'pr', identity: 'pr-process', worktree: path, branch: 'goal/pr' });
+  apply('record_review', { attemptId: 'pr', reviewId: 'pr-review', review: { schemaVersion: 1, target: planTarget(runtime.store.get('round')), disposition: 'accept', findings: [] } });
+  apply('record_stopped', { attemptId: 'pr' });
+  apply('approve', { revision: 1 }, 'user');
+  const resolver = runtime.scheduler.verifications.verifier.resolveCheck;
+  const building = resolver('project', plan.verification[0], 'round');
+  // The same approved command must resolve while a round verifies its fix head.
+  const goal = runtime.store.get('round');
+  runtime.store.apply({ id: 'round-seed', goalId: 'round', expectedVersion: runtime.store.get('round').version, type: 'seed', payload: {} }, { kind: 'system' }, () => ({
+    goal: { ...goal, version: goal.version + 2, status: 'addressing_review', pr: { number: 3, url: 'https://github.com/example/repo/pull/3', headSha: project.baseSha },
+      publication: { plan: { goalId: 'round', repositoryId: 'project' } },
+      reviewRound: { id: 'r1', state: 'verifying', prHeadSha: project.baseSha, fixHeadSha: 'e'.repeat(40), verificationOperationId: 'verify-fix', threads: [], startedAt: 1 } }, events: [], intents: [],
+  }));
+  assert.equal(runtime.store.get('round').reviewRound.state, 'verifying');
+  assert.deepEqual(resolver('project', plan.verification[0], 'round').argv, building.argv);
+  assert.throws(() => resolver('project', { id: 'unit', argv: ['node', '--version'] }, 'round'), { code: 'UNSUPPORTED_CAPABILITY' });
+});

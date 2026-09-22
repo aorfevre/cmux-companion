@@ -9,7 +9,11 @@ import { currentContract } from './orchestration/domain/transitions.mjs';
  */
 export function resolveGoalCheck({ goal, repositoryId, check, env, environmentId, policy }) {
   requireValue(goal && goal.repositoryId === repositoryId, 'Verification repository changed', 'FORBIDDEN');
-  requireValue(goal.status === 'building' && goal.revision > 0 && goal.approvedRevision === goal.revision,
+  // A review round verifies the head it recorded, under the same approved plan.
+  // The commands still come from that plan, never from the round or the fixer.
+  const fixing = goal.status === 'addressing_review' && goal.reviewRound?.state === 'verifying'
+    && Boolean(goal.reviewRound.verificationOperationId) && Boolean(goal.reviewRound.fixHeadSha);
+  requireValue((goal.status === 'building' || fixing) && goal.revision > 0 && goal.approvedRevision === goal.revision,
     'Verification requires approval of the current goal plan', 'NOT_READY');
   const allowed = currentContract(goal).verification.find(entry => canonicalJson(entry) === canonicalJson(check));
   requireValue(allowed, 'Verification command is not in the approved goal plan', 'UNSUPPORTED_CAPABILITY');
