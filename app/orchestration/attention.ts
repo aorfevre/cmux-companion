@@ -6,6 +6,7 @@ export function attention(goal: Goal) {
   if (goal.team?.assignments.some(assignment => !assignment.profileId)) return 'Choose an eligible team profile to continue.';
   if (goal.status === 'addressing_review' && goal.reviewRound?.state === 'unknown') return 'The fix push outcome is uncertain. Companion is confirming the remote branch.';
   if (goal.status === 'delivered' && goal.mergeSync?.state === 'closed') return 'The PR was closed without merging. Review it on GitHub.';
+  if (goal.status === 'delivered' && goal.mergeSync?.mergeable === 'conflicting') return 'The PR conflicts with its target branch. A round starts automatically at the next merge check.';
   if (goal.status === 'ready_to_publish' && !goal.publication?.approved) return 'Review the evidence and approve PR publication.';
   if (goal.startup?.status === 'failed') return goal.startup.error || 'Could not prepare the base branch. Retry startup.';
   if (goal.clarification && !goal.clarification.answer) return goal.clarification.question;
