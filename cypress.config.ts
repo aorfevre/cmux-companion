@@ -18,6 +18,13 @@ export default defineConfig({
       const settingsManifestPath = process.env.CMUX_SETTINGS_CYPRESS_MANIFEST;
       if (settingsManifestPath) {
         const settingsManifest = JSON.parse(readFileSync(settingsManifestPath, 'utf8'));
+        const flag = (name: string, on: boolean) => {
+          if (typeof on !== 'boolean') throw new Error('Expected a fixture boolean');
+          const path = join(settingsManifest.directory, name);
+          if (on) writeFileSync(path, 'on', { mode: 0o600 });
+          else if (existsSync(path)) unlinkSync(path);
+          return null;
+        };
         on('task', {
           settingsPairing: () => readFileSync(settingsManifest.tokenFile, 'utf8'),
           settingsAddRepository: () => {
@@ -29,13 +36,11 @@ export default defineConfig({
           },
           settingsProjectPath: () => settingsManifest.repository,
           settingsDevRepoPath: (name: string) => { if (!['karven', 'rekord'].includes(name)) throw new Error('Unknown fixture folder'); return settingsManifest.devRepos[name]; },
-          updatesBusy: (busy: boolean) => {
-            if (typeof busy !== 'boolean') throw new Error('Expected a fixture boolean');
-            const path = join(settingsManifest.directory, 'updates-busy');
-            if (busy) writeFileSync(path, 'busy', { mode: 0o600 });
-            else if (existsSync(path)) unlinkSync(path);
-            return null;
-          },
+          updatesBusy: (busy: boolean) => flag('updates-busy', busy),
+          // Keeps one real tracked mutation open, so blocker diagnostics have a
+          // live subject. Release it before any reload: an aborted request never
+          // reaches onResponse, so its record would never clear.
+          updatesHold: (held: boolean) => flag('update-hold', held),
           updatesEvidence: () => JSON.parse(readFileSync(join(settingsManifest.directory, 'updates-evidence.json'), 'utf8')),
         });
       }

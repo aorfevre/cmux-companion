@@ -404,3 +404,5 @@
 .update-settings [role="alert"] { color: #ffb5a8; }
 
 .connection-delete{margin-top:12px;padding:8px 12px;border:1px solid currentColor;border-radius:8px;background:transparent;color:var(--danger,#b42335);font-size:12px;cursor:pointer}.connection-confirmation{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:13px;overflow-wrap:anywhere}.connection-confirmation p{margin:0 0 10px}.connection-confirmation>div{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.connection-confirmation button{margin-top:0}.connection-confirmation button:disabled{opacity:.5;cursor:wait}
+
+.update-readiness li{padding:12px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.update-readiness li p{margin:6px 0}.update-readiness summary{cursor:pointer;padding:8px 0}.update-readiness dl{display:grid;grid-template-columns:minmax(90px,auto) minmax(0,1fr);gap:8px;font-size:12px}.update-readiness dd{margin:0;overflow-wrap:anywhere}.update-readiness code{white-space:normal;overflow-wrap:anywhere}

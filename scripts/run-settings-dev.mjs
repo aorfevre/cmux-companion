@@ -4,6 +4,7 @@ import { UpdateControl } from '../updater/src/control.mjs';
 import { updateCycle } from '../updater/src/transaction.mjs';
 import { registerUpdateRoutes } from '../server/update-routes.mjs';
 import { installUpdateMaintenance } from '../server/update-maintenance.mjs';
+import { isAuthorized, isSafeOrigin } from '../server/security.mjs';
 import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, realpath, writeFile, rm, mkdir, cp } from 'node:fs/promises';
@@ -41,6 +42,15 @@ export async function startSettingsDemo() {
     updateControl = new UpdateControl(join(directory, 'updates.sqlite'));
     const cmux = { workspaceList: async () => ({ workspaces: [] }) };
     const maintenance = installUpdateMaintenance({ runtime, control: updateControl, cmux });
+    // A real held mutation, so restart readiness and its diagnostics come from
+    // the same tracked request instead of a substituted fixture reason.
+    const holdFile = join(directory, 'update-hold');
+    runtime.app.post('/api/fixture/update-hold', async (request, reply) => {
+      if (!isAuthorized(request, token) || !isSafeOrigin(request)) return reply.code(401).send({ error: 'Pair this device to continue' });
+      const deadline = Date.now() + 120000;
+      while (existsSync(holdFile) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+      return { held: false };
+    });
     await runtime.app.register(async app => registerUpdateRoutes(app, { control: updateControl, token, maintenance }));
     const sha = 'a'.repeat(40), base = 'b'.repeat(40), evidence = { activations: [], checks: 0 };
     const adapter = {
@@ -60,6 +70,6 @@ export async function startSettingsDemo() {
     const manifest = { directory, tokenFile, address, repository: repository.repository, devRepos: { karven: join(directory, 'karven'), rekord: join(directory, 'rekord') } };
     const manifestFile = join(directory, 'connection.json');
     await writeFile(tokenFile, token, { mode: 0o600 }); await writeFile(manifestFile, JSON.stringify(manifest), { mode: 0o600 });
-    return { manifest, manifestFile, async close() { clearInterval(updateTimer); await updatePending; await runtime.close(); updateControl.close(); settings.close(); await repository.close(); await rm(directory, { recursive: true, force: true }); } };
+    return { manifest, manifestFile, async close() { clearInterval(updateTimer); await rm(holdFile, { force: true }); await updatePending; await runtime.close(); updateControl.close(); settings.close(); await repository.close(); await rm(directory, { recursive: true, force: true }); } };
   } catch (error) { clearInterval(updateTimer); await updatePending; await runtime?.close(); updateControl?.close(); settings.close(); await repository.close(); await rm(directory, { recursive: true, force: true }); throw error; }
 }

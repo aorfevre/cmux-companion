@@ -37,7 +37,8 @@ describe('Mission Control navigation', () => {
     cy.findByRole('searchbox').type('search');
     cy.findByRole('button', { name: 'Improve search' }).should('be.visible');
     cy.document().then(document => expect(document.documentElement.scrollWidth).to.be.at.most(width));
-    cy.scrollTo('top'); cy.screenshot(`mission-control-${width}`, { capture: 'fullPage' });
+    // A desktop viewport fits the whole fleet, so the document may not scroll.
+    cy.scrollTo('top', { ensureScrollable: false }); cy.screenshot(`mission-control-${width}`, { capture: 'fullPage' });
   });
   it('Needs You shows only outstanding decisions', () => {
     cy.viewport(1440, 900); cy.visit('/orchestration?view=needs');

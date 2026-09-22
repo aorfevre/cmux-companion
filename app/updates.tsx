@@ -6,7 +6,8 @@ import { request } from './api-request';
 
 type Candidate = { sha: string; changesUrl: string };
 type UpdateRequest = { id: string; sha: string; source: 'manual' | 'automatic'; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'recovery_required'; phase: string; error: string | null };
-export type Updates = { blockers?: string[]; available: boolean; revision: number; automatic: boolean; candidate: Candidate | null; observedSha: string | null; deployedSha: string | null; lastCheckAt: string | null; checkError: string | null; checking: boolean; maintenance: boolean; request: UpdateRequest | null };
+type UpdateBlocker = { id: string; code: string; message: string; observedAt: string; elapsedMs: number; method?: string; route?: string; clientDisconnected?: boolean; goalId?: string; operationId?: string; attemptId?: string; resultId?: string; state?: string };
+export type Updates = { blockerDetails?: UpdateBlocker[]; blockers?: string[]; available: boolean; revision: number; automatic: boolean; candidate: Candidate | null; observedSha: string | null; deployedSha: string | null; lastCheckAt: string | null; checkError: string | null; checking: boolean; maintenance: boolean; request: UpdateRequest | null };
 const endpoint = '/api/updater/updates';
 function useUpdates() {
   const [status, setStatus] = useState<Updates | null>(null);
@@ -71,9 +72,34 @@ export function UpdateSettings({ readOnly }: { readOnly?: boolean }) {
         {status.request.status === 'running' && !status.automatic && <p>This transaction has started and will finish or recover safely. Future automatic installations are off.</p>}
         {status.request.error && <p role="alert">{status.request.error}</p>}
       </div>}
-      {!!status.blockers?.length && <div aria-label="Update readiness"><p>Readiness checks (supported planners are verified during installation):</p><ul>{status.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul></div>}
+      <div className="update-readiness" aria-label="Update readiness">
+        <h3>{status.blockers?.length || status.blockerDetails?.length ? 'What is preventing a restart' : 'Restart readiness'}</h3>
+        <p>These checks concern Companion-owned work. Ordinary cmux sessions do not block a restart.</p>
+        {status.blockerDetails?.length ? <ul>{status.blockerDetails.map(blocker => <li key={blocker.id}>
+          <strong>{blocker.message}</strong>
+          <p>Observed for {blockerDuration(blocker.elapsedMs)}{blocker.state ? ` · ${blocker.state}` : ''}</p>
+          {blocker.clientDisconnected && <p>Client disconnected. Completion is unconfirmed; this may be a stale request. Disconnection alone does not prove the action stopped.</p>}
+          {blocker.code === 'managed_agent' && <p>Supported planning terminals are checked for safe handoff during installation.</p>}
+          <details><summary>Diagnostic details</summary><dl>
+            <dt>Blocker</dt><dd><code>{blocker.code}</code></dd>
+            <dt>Observed since</dt><dd><time dateTime={blocker.observedAt}>{new Date(blocker.observedAt).toLocaleString()}</time></dd>
+            {blocker.method && <><dt>Request</dt><dd><code>{blocker.method} {blocker.route}</code></dd><dt>Diagnostic request ID</dt><dd><code>{blocker.id}</code></dd><dt>Client</dt><dd>{blocker.clientDisconnected ? 'Disconnected' : 'No disconnect observed'}</dd></>}
+            {blocker.goalId && <><dt>Goal ID</dt><dd><code>{blocker.goalId}</code></dd></>}
+            {blocker.operationId && <><dt>Operation ID</dt><dd><code>{blocker.operationId}</code></dd></>}
+            {blocker.attemptId && <><dt>Attempt ID</dt><dd><code>{blocker.attemptId}</code></dd></>}
+            {blocker.resultId && <><dt>Result ID</dt><dd><code>{blocker.resultId}</code></dd></>}
+          </dl></details>
+        </li>)}</ul> : status.blockers?.length ? <ul>{status.blockers.map(blocker => <li key={blocker}>{blocker}</li>)}</ul> : <p>{status.blockers ? 'No active restart blockers. Update eligibility and CI checks still apply.' : 'Detailed readiness is unavailable from this service version.'}</p>}
+      </div>
       {status.checkError && <p role="alert">{status.checkError}</p>}
     </>}
     {notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}
   </section>;
+}
+
+function blockerDuration(milliseconds: number) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
 }
