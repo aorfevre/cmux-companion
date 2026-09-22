@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { createDevelopmentServer } from '../server/orchestration/dev-server.mjs';
 import { GitRemote } from '../server/orchestration/adapters/git-remote.mjs';
 import { GitHubPublication } from '../server/orchestration/adapters/github.mjs';
+import { ReviewMerge } from '../server/orchestration/adapters/review-merge.mjs';
 import { createRepositoryFixture, fixtureGit } from '../tests/helpers/orchestration/fixture.mjs';
 import { ScriptedAgents, barrier } from '../tests/helpers/orchestration/fake-agents.mjs';
 import { FakeGitHub } from '../tests/helpers/orchestration/fake-github.mjs';
@@ -111,8 +112,30 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
             ]);
             return listThreads(repositoryId, number);
           };
+          const readPull = fixtureGithub.readPull.bind(fixtureGithub);
+          // Seed at read time, same as the threads override above. A real
+          // conflict needs real Git: move the target branch on the disposable
+          // remote so ReviewMerge finds a genuine, non-empty conflictPaths.
+          fixtureGithub.readPull = async (repositoryId, number) => {
+            if (existsSync(join(directory, 'release-conflict')) && fixtureGithub.pulls.find((pr) => pr.number === number)?.mergeable !== 'conflicting') {
+              fixtureGithub.setMergeable(number, 'conflicting');
+              // The remote's main may already sit ahead of the fixture's
+              // original base (an earlier round can have moved it); fetch
+              // and branch from its current tip so this push is a
+              // fast-forward and the commit exists locally to check out.
+              await fixtureGit(repo.repository, ['fetch', 'origin', 'main']);
+              const currentMain = await fixtureGit(repo.repository, ['rev-parse', 'FETCH_HEAD']);
+              const target = await repo.checkout(`conflict-${number}`, currentMain);
+              await writeFile(join(target.worktree, 'src/a.mjs'), 'export function a() { return 99; } // moved by the target branch\n');
+              await fixtureGit(target.worktree, ['add', 'src']); await fixtureGit(target.worktree, ['commit', '-m', 'Move main to conflict with the pull request branch']);
+              const targetHead = await fixtureGit(target.worktree, ['rev-parse', 'HEAD']);
+              await fixtureGit(target.worktree, ['push', 'origin', `${targetHead}:refs/heads/main`]);
+            }
+            return readPull(repositoryId, number);
+          };
           return new GitHubPublication({ directory: join(directory, 'publications'), remote, github: fixtureGithub });
         },
+        createReviewMerge: ({ repositories }) => new ReviewMerge({ repositories, remote: fixtureRemote }),
       },
     };
   } });
