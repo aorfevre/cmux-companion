@@ -1,6 +1,6 @@
 describe('Goal workspace navigation', () => {
   it('preserves creation drafts and opens the complete request on desktop and phone', () => {
-    const base = { repositoryId: 'example', version: 1, generation: 0, title: '', revision: 0, approvedRevision: null, integrationHead: 'a'.repeat(40), baseBranch: 'main', pr: null, verification: null, publication: null, tasks: [], attempts: [], reviews: [], actions: [], approvalBlocked: null };
+    const base = { repositoryId: 'example', version: 1, generation: 0, title: '', revision: 0, approvedRevision: null, integrationHead: 'a'.repeat(40), baseBranch: 'main', pr: null, verification: null, publication: null, tasks: [], attempts: [], reviews: [], reviewRound: null, reviewRounds: [], verificationRuns: [], actions: [], approvalBlocked: null };
     const goals = (['discovering', 'awaiting_approval', 'building', 'ready_to_publish', 'merged'] as const).map((status, i) => ({ ...base, id: `board-${i}`, status, title: `Outcome ${i}`, description: `Full request ${i}\nhttps://example.com/design`, plannerName: `EXAMPLE Planning Outcome ${i}`, contracts: [] }));
     cy.intercept('GET', '**/api/orchestration/snapshot', { goals, cursor: 1, journalId: 'kanban', readOnly: false });
     cy.intercept('GET', '**/api/orchestration/configuration', { readOnly: false, terminal: false, limits: { global: 4, perGoal: 2, planners: 1 }, capabilities: [{ role: 'planner', mode: 'interactive' }], repositories: [{ id: base.repositoryId, name: 'Example', baseSha: null, baseBranch: 'main', error: null }] });

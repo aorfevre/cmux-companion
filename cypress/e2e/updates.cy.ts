@@ -8,6 +8,9 @@ updatesSuite('User-approved bundled updates with a real disposable service', () 
       cy.findByLabelText('Pairing code').type(token, { log: false });
       cy.findByRole('button', { name: 'Pair this device' }).click();
     });
+    cy.task('updatesHold', true);
+    // One real tracked mutation, held open so readiness has a live subject.
+    cy.window().then(win => { void win.fetch('/api/fixture/update-hold', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {}); });
     cy.findByRole('switch', { name: 'Automatic installation' }).should('not.be.checked').and('be.disabled');
     cy.findByRole('checkbox', { name: 'Allow update changes on this device' }).check();
     cy.findByRole('button', { name: 'Check for updates' }).click();
@@ -18,19 +21,22 @@ updatesSuite('User-approved bundled updates with a real disposable service', () 
     cy.findByRole('button', { name: 'Cancel queued update' }).should('be.visible').click();
     cy.findByRole('switch', { name: 'Automatic installation' }).check();
     cy.contains('Queued by automatic installation.', { timeout: 12000 }).should('be.visible');
-    cy.contains('A goal repository fetch is still running').should('be.visible');
+    cy.contains('A Companion change request is still in progress').should('be.visible');
     cy.get('[aria-label="Update readiness"]').within(() => {
       cy.contains('What is preventing a restart').should('be.visible');
       cy.contains('Observed for').should('be.visible');
       cy.contains('Diagnostic details').click();
-      cy.contains('repository_fetch').should('be.visible');
-      cy.contains('Goal ID').should('be.visible');
+      cy.contains('http_request').should('be.visible');
+      cy.contains('POST /api/fixture/update-hold').should('be.visible');
+      cy.contains('Diagnostic request ID').should('be.visible');
     });
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
     cy.viewport(1200, 900);
     cy.get('[aria-label="Update readiness"]').should('contain.text', 'Ordinary cmux sessions do not block a restart');
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(1200));
     cy.viewport(390, 844);
+    cy.task('updatesHold', false);
+    cy.get('[aria-label="Update readiness"]', { timeout: 12000 }).should('contain.text', 'No active restart blockers');
     cy.reload();
     cy.findByRole('switch', { name: 'Automatic installation' }).should('be.checked');
     cy.findByRole('checkbox', { name: 'Allow update changes on this device' }).check();
