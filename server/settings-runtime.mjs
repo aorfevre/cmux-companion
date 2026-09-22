@@ -11,6 +11,7 @@ import { probeGitCapabilities } from './orchestration/adapters/git-capabilities.
 import { GitRemote } from './orchestration/adapters/git-remote.mjs';
 import { GitHubCli } from './orchestration/adapters/github-cli.mjs';
 import { GitHubPublication } from './orchestration/adapters/github.mjs';
+import { ReviewMerge } from './orchestration/adapters/review-merge.mjs';
 import { transition } from './orchestration/domain/transitions.mjs';
 import { requireValue } from './orchestration/domain/contracts.mjs';
 import { resolveGoalCheck } from './goal-verification.mjs';
@@ -21,7 +22,7 @@ import { resolvePrepare as resolvePrepareCommand } from './prepare-command.mjs';
 export async function createSettingsRuntime({ settings, directory, token, createAgents, probeProvider, probeGit = probeGitCapabilities, own = acquireRepositoryOwnership, publisherFactory, prepareGoal, resolveProviderCommand, resolvePrepare = resolvePrepareCommand, usageSnapshot = async () => ({ available: false }) }) {
   const storage = { database: join(directory, 'core.sqlite'), artifacts: join(directory, 'artifacts'), resources: join(directory, 'resources') };
   const repositories = new Map(settings.read().settings.projects.map(project => [project.id, project.path]));
-  const agents = new Map(), publications = new Map(), owners = new Map();
+  const agents = new Map(), publications = new Map(), reviewMerges = new Map(), owners = new Map();
   let runtime, suspensionReason = null;
   const configured = goalId => {
     const value = settings.goalConfiguration(goalId);
@@ -52,6 +53,19 @@ export async function createSettingsRuntime({ settings, directory, token, create
       }
     }
     return publications.get(goalId);
+  }
+  // The merge remote follows the same per-goal staging as the publication
+  // remote above; the merge is only ever pushed nowhere, so it needs no
+  // GitHub client, but it needs the same destination and directory identity.
+  function reviewMerge(goalId) {
+    if (!reviewMerges.has(goalId)) {
+      const config = configured(goalId), project = config.project;
+      requireValue(project.remote, 'Configure a GitHub destination before creating this goal', 'NOT_READY');
+      const destinations = new Map([[project.id, { url: project.remote, protocol: project.remote.startsWith('https:') ? 'https' : 'ssh', env: environment() }]]);
+      const remote = new GitRemote({ repositories: runtime.repositories, directory: join(storage.resources, 'remote-stage', goalId), destinations });
+      reviewMerges.set(goalId, new ReviewMerge({ repositories: runtime.repositories, remote }));
+    }
+    return reviewMerges.get(goalId);
   }
   // Prepare is infrastructure approved in Setup, so the live project setting
   // applies; this is what lets an already-held goal recover after a Setup fix.
@@ -178,6 +192,7 @@ export async function createSettingsRuntime({ settings, directory, token, create
           requireValue(typeof adapter[name] === 'function', `Publication capability ${name} is unavailable in this configuration`, 'UNSUPPORTED_CAPABILITY');
           return adapter[name](input, second);
         }])),
+      createReviewMerge: () => ({ prepareReviewMerge: input => reviewMerge(input.goalId).prepareReviewMerge(input) }),
     });
     const close = runtime.close.bind(runtime);
     runtime.close = async () => { await close(); for (const pending of owners.values()) (await pending).close(); owners.clear(); };

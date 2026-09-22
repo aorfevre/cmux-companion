@@ -570,3 +570,62 @@ test('the Git proof for a merged round widens to owned areas plus the recorded c
   assert.ok(!captured.includes('docs/readme.md'), 'an unrelated path is not swept in');
   assert.equal(f.store.get('goal').reviewRound.state, 'verifying');
 });
+
+test('the coordinator prepares the merge and records it', async (t) => {
+  const c = coordinatorFixture(t);
+  c.publisher.threads = [];
+  c.publisher.mergeable = 'conflicting';
+  const prepared = [];
+  c.coordinator.reviewMerges = { async prepareReviewMerge(input) { prepared.push(input); return { mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: ['src/a.mjs'] }; } };
+  c.send('request_review_fix', {}, 'user');
+  await c.coordinator.run(); await settle(c.coordinator);
+  assert.equal(c.store.get('goal').reviewRound.state, 'merging');
+  await c.coordinator.run(); await settle(c.coordinator);
+  const round = c.store.get('goal').reviewRound;
+  assert.equal(round.state, 'fixing');
+  assert.equal(round.mergeCommitSha, 'e'.repeat(40));
+  assert.deepEqual(round.conflictPaths, ['src/a.mjs']);
+  assert.equal(prepared.length, 1);
+  assert.equal(prepared[0].prHeadSha, round.prHeadSha);
+  assert.equal(prepared[0].roundId, round.id);
+  assert.equal(prepared[0].baseBranch, c.store.get('goal').baseBranch);
+});
+
+test('a clean merge with no threads reaches verification without an agent', async (t) => {
+  const c = coordinatorFixture(t);
+  c.publisher.threads = [];
+  c.publisher.mergeable = 'unknown';
+  c.coordinator.reviewMerges = { async prepareReviewMerge() { return { mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: [] }; } };
+  c.send('request_review_fix', {}, 'user');
+  await c.coordinator.run(); await settle(c.coordinator);
+  await c.coordinator.run(); await settle(c.coordinator);
+  const round = c.store.get('goal').reviewRound;
+  assert.equal(round.state, 'verifying');
+  assert.equal(round.fixHeadSha, 'e'.repeat(40));
+});
+
+test('a missing merge capability fails the round instead of waiting for a retry', async (t) => {
+  const c = coordinatorFixture(t);
+  c.publisher.threads = [];
+  c.publisher.mergeable = 'conflicting';
+  c.coordinator.reviewMerges = {};
+  c.send('request_review_fix', {}, 'user');
+  await c.coordinator.run(); await settle(c.coordinator);
+  await c.coordinator.run(); await settle(c.coordinator);
+  const round = c.store.get('goal').reviewRound;
+  assert.equal(round.state, 'failed');
+  assert.match(round.error, /UNSUPPORTED_CAPABILITY/);
+});
+
+test('one merge is prepared even when the coordinator runs twice concurrently', async (t) => {
+  const c = coordinatorFixture(t);
+  c.publisher.threads = [];
+  c.publisher.mergeable = 'conflicting';
+  let calls = 0;
+  c.coordinator.reviewMerges = { async prepareReviewMerge() { calls++; return { mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: ['src/a.mjs'] }; } };
+  c.send('request_review_fix', {}, 'user');
+  await c.coordinator.run(); await settle(c.coordinator);
+  await Promise.all([c.coordinator.run(), c.coordinator.run()]);
+  await settle(c.coordinator);
+  assert.equal(calls, 1, 'the active-job map prevents a second merge for the same goal');
+});

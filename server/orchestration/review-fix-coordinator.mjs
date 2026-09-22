@@ -7,9 +7,9 @@ import { DomainError, requireValue } from './domain/contracts.mjs';
  * a lost response never repeats a write.
  */
 export class ReviewFixCoordinator {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; publisher: import('./types.d.ts').PublicationPort; ownership: { assertOwned(): void }; now?: () => number; id?: () => string; onError?: (error: unknown) => void }} options */
-  constructor({ service, publisher, ownership, now = Date.now, id = randomUUID, onError = () => {} }) {
-    this.service = service; this.store = service.store; this.agents = service.agents; this.publisher = publisher; this.ownership = ownership;
+  /** @param {{ service: import('./service.mjs').OrchestrationService; publisher: import('./types.d.ts').PublicationPort; reviewMerges?: Pick<import('./types.d.ts').RepositoryPort, 'prepareReviewMerge'>; ownership: { assertOwned(): void }; now?: () => number; id?: () => string; onError?: (error: unknown) => void }} options */
+  constructor({ service, publisher, reviewMerges, ownership, now = Date.now, id = randomUUID, onError = () => {} }) {
+    this.service = service; this.store = service.store; this.agents = service.agents; this.publisher = publisher; this.reviewMerges = reviewMerges; this.ownership = ownership;
     this.now = now; this.id = id; this.onError = onError; this.stopped = false;
     /** @type {Map<string, Promise<void>>} */ this.active = new Map();
   }
@@ -87,6 +87,14 @@ export class ReviewFixCoordinator {
           if (this.stopped) return;
           this.ownership.assertOwned();
           if (this.current(goal.id, round.id)) this.record(goal.id, 'record_review_threads', { roundId: round.id, threads: threads.threads, mergeable: threads.mergeable, at: this.now() });
+        });
+      } else if (round.state === 'merging') {
+        this.spawn(goal, async (round) => {
+          requireValue(this.reviewMerges?.prepareReviewMerge, 'Review merges are unavailable in this configuration', 'UNSUPPORTED_CAPABILITY');
+          const prepared = await this.reviewMerges.prepareReviewMerge({ goalId: goal.id, repositoryId: goal.repositoryId, roundId: round.id, prHeadSha: round.prHeadSha, baseBranch: goal.baseBranch });
+          if (this.stopped) return;
+          this.ownership.assertOwned();
+          if (this.current(goal.id, round.id)) this.record(goal.id, 'record_review_merge', { roundId: round.id, ...prepared });
         });
       } else if (round.state === 'verifying' && !round.verificationOperationId) {
         if (goal.hold || goal.attempts.some((attempt) => attempt.workerState !== 'stopped')) continue;
