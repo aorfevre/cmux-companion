@@ -15,7 +15,7 @@ export class FakeGitHub {
   async listReviewThreads(repositoryId, number) {
     if (this.threadsUnavailable) throw new Error('GraphQL unavailable');
     if (!this.pulls.some(pr => pr.repositoryId === repositoryId && pr.number === number)) throw new Error('PR not found');
-    return structuredClone(this.threads.get(number) ?? []).filter(thread => !thread.resolved).map(({ resolved, ...thread }) => thread);
+    return structuredClone(this.threads.get(number) ?? []).filter(thread => !thread.resolved).map(thread => { delete thread.resolved; return thread; });
   }
   async replyToThread(repositoryId, threadId, body, { beforeSend } = {}) {
     if (beforeSend && !beforeSend()) return;
