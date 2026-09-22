@@ -629,3 +629,37 @@ test('one merge is prepared even when the coordinator runs twice concurrently', 
   await settle(c.coordinator);
   assert.equal(calls, 1, 'the active-job map prevents a second merge for the same goal');
 });
+
+test('a conflicting observation admits exactly one automatic round per pull request head', () => {
+  const f = fixture(); f.deliver();
+  fails(() => f.command('request_review_fix', { trigger: 'conflict' }), 'NOT_READY');
+  f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', mergeable: 'conflicting', checkedAt: 5 });
+  assert.equal(f.goal.mergeSync.mergeable, 'conflicting');
+  f.command('request_review_fix', { trigger: 'conflict' });
+  assert.equal(f.goal.status, 'addressing_review');
+  assert.equal(f.goal.reviewRound.trigger, 'conflict');
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [], mergeable: 'mergeable' });
+  assert.equal(f.goal.status, 'delivered');
+  f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', mergeable: 'conflicting', checkedAt: 6 });
+  fails(() => f.command('request_review_fix', { trigger: 'conflict' }), 'NOT_READY');
+  assert.equal(f.goal.status, 'delivered', 'the same head never starts a second automatic round');
+  f.command('request_review_fix', {}, f.user);
+  assert.equal(f.goal.reviewRound.trigger, 'user', 'the user may still press the button');
+});
+
+test('an automatic round needs an observed conflict and system authority', () => {
+  const f = fixture(); f.deliver();
+  f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', mergeable: 'mergeable', checkedAt: 5 });
+  fails(() => f.command('request_review_fix', { trigger: 'conflict' }), 'NOT_READY');
+  f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', mergeable: 'conflicting', checkedAt: 6 });
+  fails(() => f.command('request_review_fix', { trigger: 'conflict' }, f.user), 'FORBIDDEN');
+  f.command('request_review_fix', { trigger: 'conflict' });
+  assert.equal(f.goal.reviewRound.trigger, 'conflict');
+});
+
+test('a user round is still refused to system authority and records a user trigger', () => {
+  const f = fixture(); f.deliver();
+  fails(() => f.command('request_review_fix', {}), 'FORBIDDEN');
+  f.command('request_review_fix', {}, f.user);
+  assert.equal(f.goal.reviewRound.trigger, 'user');
+});

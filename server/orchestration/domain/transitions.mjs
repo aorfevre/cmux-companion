@@ -697,7 +697,9 @@ export function transition(before, command, authority) {
       requireValue(!goal.mergeSync || checkedAt >= goal.mergeSync.checkedAt, 'Stale merge observation', 'STALE_TARGET');
       requireValue(['open', 'closed', 'merged', 'unknown'].includes(String(input.state)), 'Invalid merge observation');
       const state = /** @type {NonNullable<import('../types.d.ts').Goal['mergeSync']>['state']} */ (input.state);
-      goal.mergeSync = { checkedAt, state, error: state === 'unknown' ? 'GitHub sync unavailable. Will retry on the next scheduled check.' : null };
+      requireValue(input.mergeable === undefined || ['mergeable', 'conflicting', 'unknown'].includes(String(input.mergeable)), 'Invalid mergeable verdict');
+      goal.mergeSync = { checkedAt, state, error: state === 'unknown' ? 'GitHub sync unavailable. Will retry on the next scheduled check.' : null,
+        ...(input.mergeable === undefined ? {} : { mergeable: /** @type {import('../types.d.ts').MergeableVerdict} */ (input.mergeable) }) };
       if (state === 'merged') { goal.status = 'merged'; emit('pr_merged', { number: goal.pr.number }); }
       emit('merge_sync_observed', { number: goal.pr.number, checkedAt, state }); break;
     }
@@ -706,15 +708,23 @@ export function transition(before, command, authority) {
       goal.status = 'merged'; emit('pr_merged', { number: goal.pr.number }); break;
     }
     case 'request_review_fix': {
-      requireAuthority(authority, 'user');
+      const automatic = input.trigger === 'conflict';
+      requireAuthority(authority, automatic ? 'system' : 'user');
       requireValue(goal.status === 'delivered' && goal.pr && goal.publication, 'Only a delivered goal with a pull request can address review comments', 'NOT_READY');
       requireValue(goal.mergeSync?.state !== 'closed', 'The pull request is closed on GitHub', 'NOT_READY');
       requireValue(!goal.reviewRound, 'A review round is already active', 'NOT_READY');
       requireValue(!goal.attempts.some(ownsWorker) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && !goal.results?.some((result) => result.status === 'pending'), 'Workers still active', 'NOT_READY');
+      // One automatic round per pull request head. A push moves that head, so a
+      // conflict that survives a round waits for a press, never an endless retry.
+      if (automatic) {
+        requireValue(goal.mergeSync?.mergeable === 'conflicting', 'No observed merge conflict', 'NOT_READY');
+        requireValue(goal.conflictRoundKey !== goal.pr.headSha, 'This conflict already started a round', 'NOT_READY');
+        goal.conflictRoundKey = goal.pr.headSha;
+      }
       goal.generation++;
-      goal.reviewRound = { id: command.id, prHeadSha: goal.pr.headSha, startedAt: integer(input.startedAt ?? 0), state: 'fetching', threads: [] };
+      goal.reviewRound = { id: command.id, prHeadSha: goal.pr.headSha, startedAt: integer(input.startedAt ?? 0), state: 'fetching', threads: [], trigger: automatic ? 'conflict' : 'user' };
       goal.status = 'addressing_review';
-      emit('review_fix_requested', { roundId: command.id, prHeadSha: goal.pr.headSha }); break;
+      emit('review_fix_requested', { roundId: command.id, prHeadSha: goal.pr.headSha, trigger: automatic ? 'conflict' : 'user' }); break;
     }
     case 'record_review_threads': {
       requireAuthority(authority, 'system');

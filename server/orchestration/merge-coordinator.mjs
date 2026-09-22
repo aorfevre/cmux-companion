@@ -20,16 +20,26 @@ export class MergeCoordinator {
       const job = Promise.resolve().then(async () => {
         if (this.stopped) return;
         /** @type {'open'|'closed'|'merged'|'unknown'} */ let state = 'unknown';
+        /** @type {import('./types.d.ts').MergeableVerdict | undefined} */ let mergeable;
         try {
           const observation = await this.publisher.observeMerge?.(plan, pr);
           requireValue(observation?.number === pr.number && observation.url === pr.url, 'PR identity changed');
-          state = observation.state;
+          state = observation.state; mergeable = observation.mergeable;
         } catch { /* Persist a sanitized error; never expose CLI output or credentials. */ }
         if (this.stopped) return;
         this.ownership.assertOwned();
         const latest = this.service.store.get(goal.id);
         if (!latest || latest.status !== 'delivered' || latest.generation !== goal.generation || latest.pr?.number !== pr.number || latest.pr.url !== pr.url) return;
-        this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: latest.version, type: 'record_merge_sync', payload: { number: pr.number, url: pr.url, state, checkedAt: this.now() } }, { kind: 'system' });
+        this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: latest.version, type: 'record_merge_sync', payload: { number: pr.number, url: pr.url, state, checkedAt: this.now(), ...(mergeable === undefined ? {} : { mergeable }) } }, { kind: 'system' });
+        const observed = this.service.store.get(goal.id);
+        // A conflicted pull request cannot merge, so the round starts here rather
+        // than waiting for a press. A refusal is the expected outcome once one
+        // round already covered this head. The command id is distinct from the
+        // merge-sync id above even when an id generator is deterministic per tick.
+        if (observed?.status === 'delivered' && observed.mergeSync?.mergeable === 'conflicting') {
+          try { this.service.execute({ id: `${this.id()}-conflict-round`, goalId: goal.id, expectedVersion: observed.version, type: 'request_review_fix', payload: { trigger: 'conflict', startedAt: this.now() } }, { kind: 'system' }); }
+          catch { /* A refusal is normal: another round is active, or this head already had one. */ }
+        }
       }).finally(() => this.active.delete(goal.id));
       this.active.set(goal.id, job); void job.catch(this.onError);
     }
