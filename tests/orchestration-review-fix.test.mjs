@@ -443,3 +443,60 @@ test('a missing or unknown mergeable verdict is refused', () => {
   fails(() => f.command('record_review_threads', { roundId, threads: [], mergeable: 'maybe' }));
   assert.equal(f.goal.reviewRound.state, 'fetching', 'a refused record leaves the round untouched');
 });
+
+const MERGE_COMMIT = 'e'.repeat(40);
+const BASE_HEAD = 'f'.repeat(40);
+
+test('a clean merge with no threads skips the agent and verifies the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: [], mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] });
+  assert.equal(f.goal.reviewRound.state, 'verifying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, MERGE_COMMIT);
+  assert.equal(f.goal.reviewRound.mergedBaseSha, BASE_HEAD);
+  assert.equal(readyWork(f.goal).length, 0, 'no fixer is dispatched for a clean merge with no threads');
+});
+
+test('a conflicted merge dispatches the fixer against the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: [], mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['src/a.mjs', 'package-lock.json'] });
+  assert.equal(f.goal.reviewRound.state, 'fixing');
+  assert.deepEqual(f.goal.reviewRound.conflictPaths, ['src/a.mjs', 'package-lock.json']);
+  assert.deepEqual(readyWork(f.goal).map((entry) => [entry.role, entry.target]), [['review_fixer', MERGE_COMMIT]]);
+  f.request('fx', 'review_fixer'); const attempt = f.goal.attempts.at(-1);
+  assert.equal(attempt.target, MERGE_COMMIT);
+  assert.equal(attempt.baseSha, MERGE_COMMIT, 'the fixer worktree starts on the merge, with its conflict markers');
+  assert.equal(reviewRoundPhase(f.goal.reviewRound), 'Fixing 0 threads and 2 conflicts');
+});
+
+test('a merged round with threads also targets the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] });
+  assert.equal(f.goal.reviewRound.state, 'fixing');
+  assert.deepEqual(readyWork(f.goal).map((entry) => entry.target), [MERGE_COMMIT]);
+  f.request('fx', 'review_fixer');
+  assert.equal(f.goal.attempts.at(-1).target, MERGE_COMMIT);
+});
+
+test('an unmerged round still targets the pull request head', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
+  assert.deepEqual(readyWork(f.goal).map((entry) => entry.target), [HEAD_B]);
+  f.request('fx', 'review_fixer');
+  assert.equal(f.goal.attempts.at(-1).target, HEAD_B);
+});
+
+test('a merge record is refused outside the merging state and rejects an unowned path', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  fails(() => f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] }), 'NOT_READY');
+  f.command('record_review_threads', { roundId, threads: [], mergeable: 'conflicting' });
+  fails(() => f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['../outside'] }));
+  fails(() => f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: HEAD_B, conflictPaths: [] }), 'STALE_TARGET');
+  assert.equal(f.goal.reviewRound.state, 'merging', 'a refused record leaves the round untouched');
+});

@@ -8,7 +8,7 @@ import { captureFailureHold, recoverGoal } from './recovery.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
 import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
-import { parseReviewThreads, parseReviewReplies } from './review-round.mjs';
+import { parseReviewThreads, parseReviewReplies, parseConflictPaths } from './review-round.mjs';
 
 /** @typedef {import('../types.d.ts').Goal} Goal */
 /** @typedef {import('../types.d.ts').Attempt} Attempt */
@@ -376,9 +376,10 @@ export function transition(before, command, authority) {
       }
       if (role === 'review_fixer') {
         const round = goal.reviewRound;
-        requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && round.threads.length > 0, 'No review threads await a fix', 'NOT_READY');
+        // A conflict is work even with no thread: the merge markers need resolving.
+        requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && (round.threads.length > 0 || round.conflictPaths?.length), 'No review threads or conflicts await a fix', 'NOT_READY');
         requireValue(!goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification worker is not settled', 'NOT_READY');
-        target = round.prHeadSha;
+        target = round.mergeCommitSha ?? round.prHeadSha;
       }
       requireValue(!goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || role === 'review_fixer' || (attempt.taskId === taskId && (role === 'implementer' || role === 'planner' || attempt.target === target)))), 'Attempt already active', 'ALREADY_RUNNING');
       if (role === 'planner' || role === 'reviewer') {
@@ -732,6 +733,21 @@ export function transition(before, command, authority) {
       }
       round.state = 'fixing';
       emit('review_threads_recorded', { roundId: round.id, count: round.threads.length }); break;
+    }
+    case 'record_review_merge': {
+      requireAuthority(authority, 'system');
+      const round = activeRound(goal, input.roundId);
+      requireValue(round.state === 'merging', 'A merge is not awaited', 'NOT_READY');
+      const mergedBaseSha = sha(input.mergedBaseSha), mergeCommitSha = sha(input.mergeCommitSha);
+      requireValue(mergeCommitSha !== round.prHeadSha && mergeCommitSha !== mergedBaseSha, 'A merge needs a new commit', 'STALE_TARGET');
+      const conflictPaths = parseConflictPaths(input.conflictPaths);
+      round.mergedBaseSha = mergedBaseSha; round.mergeCommitSha = mergeCommitSha; round.conflictPaths = conflictPaths;
+      if (!conflictPaths.length && !round.threads.length) {
+        round.fixHeadSha = mergeCommitSha; round.state = 'verifying';
+        emit('review_merge_recorded', { roundId: round.id, headSha: mergeCommitSha, conflicts: 0 }); break;
+      }
+      round.state = 'fixing';
+      emit('review_merge_recorded', { roundId: round.id, headSha: mergeCommitSha, conflicts: conflictPaths.length }); break;
     }
     case 'accept_review_fix_result': {
       // Internal: the service proves Git evidence before issuing it, like confirm_candidate.

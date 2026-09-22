@@ -18,6 +18,17 @@ export function parseReviewThreads(value) {
   return threads;
 }
 
+export const MAX_CONFLICT_PATHS = 1000;
+
+/** Conflicted paths are Git's own output, recorded literally and bounded. They
+ * widen the fixer's allowed scope, so they are validated as repository paths.
+ * @param {unknown} value @returns {string[]} */
+export function parseConflictPaths(value) {
+  const paths = array(value, MAX_CONFLICT_PATHS).map((entry) => ownedArea(entry));
+  requireValue(new Set(paths).size === paths.length, 'Duplicate conflict path');
+  return paths;
+}
+
 /** Exactly one reply per recorded thread, no unknown targets.
  * @param {unknown} value @param {import('../types.d.ts').ReviewThread[]} threads
  * @returns {import('../types.d.ts').ReviewReply[]} */
