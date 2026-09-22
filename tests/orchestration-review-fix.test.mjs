@@ -314,3 +314,30 @@ test('a moved remote head fails the round before any reply, and an unknown push 
     }
   }
 });
+
+test('a composition without the review round capability reports a configuration fault, not an offline Mac', async (t) => {
+  const f = coordinatorFixture(t);
+  delete f.publisher.reviewThreads;
+  f.send('request_review_fix', {}, 'user');
+  await f.coordinator.run(); await settle(f.coordinator);
+  const round = f.store.get('goal').reviewRound;
+  assert.equal(round.state, 'failed');
+  assert.match(round.error, /unavailable in this configuration/);
+  assert.doesNotMatch(round.error, /online|offline/i);
+});
+
+test('a missing thread write capability is reported before any reply is posted', async (t) => {
+  const f = coordinatorFixture(t);
+  delete f.publisher.replyAndResolve;
+  f.send('request_review_fix', {}, 'user'); await f.coordinator.run(); await settle(f.coordinator);
+  await fix(f);
+  f.send('receive_role_result', { resultId: 'res1', attemptId: 'fx', artifactId: 'b'.repeat(64) });
+  f.send('accept_review_fix_result', { attemptId: 'fx', headSha: f.store.get('goal').pr.headSha, summary: 'Answered', replies: replies('comment') });
+  f.send('mark_result_accepted', { resultId: 'res1' });
+  assert.equal(f.store.get('goal').reviewRound.state, 'replying');
+  await f.coordinator.run(); await settle(f.coordinator);
+  const round = f.store.get('goal').reviewRound;
+  assert.equal(round.state, 'failed');
+  assert.match(round.error, /unavailable in this configuration/);
+  assert.equal(f.calls.replies.length, 0);
+});

@@ -167,7 +167,16 @@ export async function createSettingsRuntime({ settings, directory, token, create
           env: environment(), environmentId: `settings-${config.revision}`, policy: config.execution });
       },
       resolvePrepare: prepareFor,
-      createPublisher: () => ({ observeMerge: (input, pr) => publication(input.goalId).observeMerge(input, pr), publish: (input, options) => publication(input.goalId).publish(input, options), observe: input => publication(input.goalId).observe(input) }),
+      // Every method the publication port defines is forwarded to the adapter
+      // bound to that goal. A dropped method reads as a missing capability.
+      createPublisher: () => ({
+        observeMerge: (input, pr) => publication(input.goalId).observeMerge(input, pr),
+        publish: (input, options) => publication(input.goalId).publish(input, options),
+        observe: input => publication(input.goalId).observe(input),
+        reviewThreads: (input, pr) => publication(input.goalId).reviewThreads(input, pr),
+        pushFix: (input, fix) => publication(input.goalId).pushFix(input, fix),
+        replyAndResolve: (input, fix) => publication(input.goalId).replyAndResolve(input, fix),
+      }),
     });
     const close = runtime.close.bind(runtime);
     runtime.close = async () => { await close(); for (const pending of owners.values()) (await pending).close(); owners.clear(); };

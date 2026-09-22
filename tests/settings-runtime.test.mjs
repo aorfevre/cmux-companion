@@ -292,3 +292,29 @@ test('verification prepare is read from the live project setting so a held goal 
   assert.throws(() => runtime.resolvePrepareForTest('other', 'goal-x'), { code: 'FORBIDDEN' });
   assert.deepEqual(resolved, [{ source: 'disabled' }, { source: 'custom', executable: 'npm', args: ['ci'] }]);
 });
+
+test('the saved-settings publisher forwards every publication port method to the goal adapter', async t => {
+  const calls = [];
+  const record = name => (input, second) => { calls.push({ name, goalId: input.goalId, second }); return Promise.resolve(null); };
+  const { runtime, settings, path } = await fixture(t, { publisherFactory: ({ goalId }) => ({
+    publish: record('publish'), observe: record('observe'), observeMerge: record('observeMerge'),
+    reviewThreads: (input, pr) => { calls.push({ name: 'reviewThreads', goalId, second: pr }); return Promise.resolve([]); },
+    pushFix: (input, fix) => { calls.push({ name: 'pushFix', goalId, second: fix }); return Promise.resolve('pushed'); },
+    replyAndResolve: (input, fix) => { calls.push({ name: 'replyAndResolve', goalId, second: fix }); return Promise.resolve({ posted: [], unconfirmed: [], resolved: [] }); },
+  }) });
+  const value = defaultSettings(); value.projects = [{ id: 'project', name: 'Project', path, enabled: true, github: 'example/original', remote: 'git@github.com:example/original.git', checks: [] }];
+  await settings.update(0, value); await runtime.settingsChanged();
+  settings.snapshotGoal('goal', 'project');
+  const publisher = runtime.scheduler.reviewFixes.publisher;
+  // A dropped method reads to the coordinator as a missing capability and the
+  // round then fails as if GitHub were unreachable.
+  for (const name of ['publish', 'observe', 'observeMerge', 'reviewThreads', 'pushFix', 'replyAndResolve']) {
+    assert.equal(typeof publisher[name], 'function', `${name} must be forwarded`);
+  }
+  const plan = { goalId: 'goal', repositoryId: 'project' };
+  await publisher.reviewThreads(plan, { number: 7 });
+  await publisher.pushFix(plan, { roundId: 'r1' });
+  await publisher.replyAndResolve(plan, { roundId: 'r1', replies: [] });
+  assert.deepEqual(calls.map(entry => entry.name), ['reviewThreads', 'pushFix', 'replyAndResolve']);
+  assert.ok(calls.every(entry => entry.goalId === 'goal'), 'each call addresses the adapter bound to that goal');
+});
