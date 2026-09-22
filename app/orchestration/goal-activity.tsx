@@ -10,6 +10,10 @@ export function activityLabel(kind: string) {
     publication_approved: 'PR publication approved', pr_observed: 'Pull request published', pr_merged: 'Merged on GitHub',
     merge_sync_observed: 'GitHub merge status checked', clarification_requested: 'Planner asked a question',
     clarification_answered: 'Planner question answered', verification_result_recorded: 'Verification results recorded',
+    review_fix_requested: 'Review round started', review_threads_recorded: 'Review threads fetched',
+    review_fix_result_accepted: 'Review fix reported', review_fix_verification_requested: 'Fix verification requested',
+    review_fix_verified: 'Fix verification passed', review_fix_pushed: 'Fix pushed to the pull request',
+    review_fix_settled: 'Review round finished', review_fix_failed: 'Review round failed',
   };
   return labels[kind] ?? kind.replaceAll('_', ' ').replace(/^./, char => char.toUpperCase());
 }
