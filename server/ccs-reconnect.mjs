@@ -15,9 +15,30 @@ export class CcsReconnectManager {
     this.sessionTtlMs = sessionTtlMs;
     this.tokenGraceMs = tokenGraceMs;
     this.sessions = new Map();
+    this.accountOperations = new Set();
+  }
+
+  async #withAccountOperation(id, operation) {
+    if (this.accountOperations.has(id)) throw Object.assign(new Error("An account change is already in progress"), { statusCode: 409 });
+    this.accountOperations.add(id);
+    try { return await operation(); } finally { this.accountOperations.delete(id); }
+  }
+
+  async removeConnection(id) {
+    return this.#withAccountOperation(id, async () => {
+      this.#prune();
+      if ([...this.sessions.values()].some(session => session.opaqueAccountId === id && (session.pending || ["waiting", "processing"].includes(session.status)))) {
+        throw Object.assign(new Error("Close the active reconnect before deleting this connection"), { statusCode: 409 });
+      }
+      return this.accountUsage.removeConnection(id);
+    });
   }
 
   async start(opaqueAccountId) {
+    return this.#withAccountOperation(opaqueAccountId, () => this.#start(opaqueAccountId));
+  }
+
+  async #start(opaqueAccountId) {
     this.#prune();
     const target = await this.accountUsage.resolveReconnectTarget(opaqueAccountId);
     if (!target || !ALLOWED_PROVIDERS.has(target.provider)) throw requestError("That account does not need to reconnect", 404);
@@ -104,6 +125,7 @@ export class CcsReconnectManager {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     if (!token) throw new Error("Token was not saved");
+    if (!["waiting", "processing"].includes(session.status)) return;
     const account = session.source.register(session.provider, session.nickname, session.expectedAccountId || token.file);
     if (!account) throw new Error("Account was not registered");
     session.status = "success";

@@ -232,6 +232,8 @@ export async function buildApp({
     refresh: request.query?.refresh === "1",
   }));
 
+  app.delete("/api/account-usage/:accountId", async (request) => reconnect.removeConnection(request.params.accountId));
+
   app.post("/api/account-usage/:accountId/reconnect", async (request, reply) => (
     reply.code(201).send(await reconnect.start(request.params.accountId))
   ));

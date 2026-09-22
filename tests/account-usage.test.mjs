@@ -344,3 +344,64 @@ test("falls back to the CCS Codex fetcher without credentials or when the usage 
   assert.equal(value.providers.find((provider) => provider.id === "codex").accounts[0].status, "unavailable");
   assert.equal(requests.length, 0);
 });
+
+test("removes only the exact provider connection and invalidates cached usage", async () => {
+  const accounts = { claude: [{ id: 'same@example.test' }], codex: [{ id: 'same@example.test' }] };
+  const calls = [];
+  const fixture = { getProviderAccounts: provider => accounts[provider], fetchAllClaudeQuotas: async () => [], fetchAllCodexQuotas: async () => [], removeAccount: (provider, id) => { calls.push([provider, id]); accounts[provider] = []; return true; } };
+  const usage = new AccountUsage({ sourceLoader: async () => fixture });
+  const before = await usage.snapshot();
+  assert.deepEqual(await usage.removeConnection(before.providers[0].accounts[0].id), { removed: true });
+  assert.deepEqual(calls, [['claude', 'same@example.test']]);
+  const after = await usage.snapshot();
+  assert.equal(after.providers[0].accounts.length, 0);
+  assert.equal(after.providers[1].accounts.length, 1);
+  await assert.rejects(usage.removeConnection(before.providers[0].accounts[0].id), { statusCode: 404 });
+  await assert.rejects(usage.removeConnection('../private-token.json'), { statusCode: 404 });
+});
+
+test("connection removal sanitizes failures and rejects unsupported CCS versions", async () => {
+  const fixture = source();
+  const usage = new AccountUsage({ sourceLoader: async () => fixture });
+  const id = (await usage.snapshot()).providers[0].accounts[0].id;
+  for (const removeAccount of [undefined, () => false, () => { throw new Error('private token'); }]) {
+    fixture.removeAccount = removeAccount;
+    await assert.rejects(usage.removeConnection(id), { message: 'CCS could not remove this connection', statusCode: 503 });
+  }
+  usage.sourceLoader = async () => { throw new Error('private path'); };
+  await assert.rejects(usage.removeConnection(id), { message: 'CCS connection removal is unavailable', statusCode: 503 });
+});
+
+test("an old pending snapshot cannot repopulate the cache after deletion", async () => {
+  const fixture = source();
+  const usage = new AccountUsage({ sourceLoader: async () => fixture });
+  const id = (await usage.snapshot()).providers[0].accounts[0].id;
+  let release;
+  fixture.fetchAllClaudeQuotas = () => new Promise(resolve => { release = resolve; });
+  const stale = usage.snapshot({ refresh: true });
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.removeAccount = () => { fixture.getProviderAccounts = () => []; fixture.fetchAllClaudeQuotas = async () => []; fixture.fetchAllCodexQuotas = async () => []; return true; };
+  await usage.removeConnection(id);
+  const fresh = await usage.snapshot();
+  release([]);
+  await stale;
+  assert.equal(await usage.snapshot(), fresh);
+  assert.equal(fresh.providers[0].accounts.length, 0);
+});
+
+test('production source forwards deletion to CCS without using quota results as authority', async t => {
+  const root = installFakeCcs(t);
+  writeFileSync(join(root, 'dist/cliproxy/accounts/account-manager.js'), `
+    let accounts = [{id:'fixture@example.test', paused:true, isDefault:true}];
+    exports.getProviderAccounts = provider => provider === 'codex' ? accounts : [];
+    exports.removeAccount = (provider, id) => {
+      if (provider !== 'codex' || id !== 'fixture@example.test') throw new Error('Wrong target');
+      accounts = []; return true;
+    };
+  `);
+  const usage = new AccountUsage();
+  const before = await usage.snapshot();
+  const id = before.providers[1].accounts[0].id;
+  assert.deepEqual(await usage.removeConnection(id), { removed: true });
+  assert.equal((await usage.snapshot()).providers[1].accounts.length, 0);
+});

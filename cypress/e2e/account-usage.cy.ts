@@ -95,6 +95,42 @@ describe("licence usage", () => {
     });
   }
 
+  for (const width of [390, 1440]) {
+    it(`deletes a connection after confirmation and retries failures at ${width}px`, () => {
+      cy.viewport(width, 900);
+      scenario();
+      let removed = false;
+      let attempts = 0;
+      cy.intercept("GET", "**/api/account-usage*", request => {
+        const usage = usageFixture();
+        if (removed) { usage.providers[0].accounts.shift(); usage.summary.ready = 0; }
+        request.reply(usage);
+      }).as("usage");
+      cy.intercept("DELETE", "**/api/account-usage/claude-work", request => {
+        attempts++;
+        if (attempts === 1) request.reply({ statusCode: 409, body: { error: "Close the active reconnect before deleting this connection" } });
+        else { removed = true; request.reply({ removed: true }); }
+      }).as("delete");
+      visitUsage();
+      cy.wait("@usage");
+      account("work@example.test").findByRole("button", { name: "Delete connection" }).click();
+      cy.findByRole("group", { name: "Delete connection confirmation" }).should("contain.text", "Claude Code").and("contain.text", "subscription remain active");
+      cy.findByRole("button", { name: "Cancel" }).click();
+      cy.get("@delete.all").should("have.length", 0);
+      account("work@example.test").findByRole("button", { name: "Delete connection" }).click();
+      cy.findByRole("button", { name: "Confirm delete" }).click();
+      cy.wait("@delete");
+      cy.findByRole("alert").should("contain.text", "Close the active reconnect");
+      cy.findByRole("button", { name: "Confirm delete" }).click();
+      cy.wait("@delete");
+      cy.wait("@usage");
+      cy.contains(".usage-account", "work@example.test").should("not.exist");
+      cy.get(".usage-account").should("have.length", 3);
+      cy.contains(".usage-provider", "Claude Code").should("contain.text", "1 connected account");
+      cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
+    });
+  }
+
   it("refreshes from CCS on demand and returns to Settings", () => {
     cy.viewport(390, 844);
     scenario();

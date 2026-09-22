@@ -484,3 +484,18 @@ test("write schemas reject coercion and unknown controls before invoking cmux", 
   assert.equal(valid.statusCode, 200);
   assert.deepEqual(cmux.calls, [["text", TERM_ID, "hello"]]);
 });
+
+test("connection deletion requires pairing and a safe origin", async t => {
+  const calls = [];
+  const app = await buildApp(t, { cmux: fakeCmux(), token: TOKEN, ccsReconnect: { removeConnection: async id => { calls.push(id); return { removed: true }; } } });
+  t.after(() => app.close());
+  const cookie = await pairedCookie(app);
+  const url = '/api/account-usage/0123456789abcdefabcd';
+  assert.equal((await app.inject({ method: 'DELETE', url })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'DELETE', url, headers: { cookie, origin: 'https://evil.test' } })).statusCode, 403);
+  assert.deepEqual(calls, []);
+  const response = await app.inject({ method: 'DELETE', url, headers: { cookie, host: 'mac.tail.test', origin: 'https://mac.tail.test', 'x-forwarded-proto': 'https' } });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { removed: true });
+  assert.deepEqual(calls, ['0123456789abcdefabcd']);
+});

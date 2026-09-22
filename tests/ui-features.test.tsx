@@ -271,3 +271,30 @@ test('embedded capacity expires old readings and hides cached percentages after 
   assert.ok(await screen.findByText('Provider unavailable'));
   assert.equal(screen.queryByText('82%'), null);
 });
+
+test('confirms connection deletion, keeps failures retryable and refreshes the account list', async () => {
+  const usage = { generatedAt: new Date().toISOString(), available: true, summary: { ready: 1 }, providers: [{ id: 'claude', label: 'Claude Code', available: true, accounts: [{ id: 'one', label: 'work', email: 'work@example.test', isDefault: true, status: 'ready', updatedAt: new Date().toISOString(), windows: [] }] }] };
+  let removed = false, fail = true;
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, options?: RequestInit) => {
+    if (options?.method === 'DELETE') {
+      if (fail) return new Response(JSON.stringify({ error: 'Close the active reconnect first' }), { status: 409 });
+      removed = true;
+      return new Response(JSON.stringify({ removed: true }));
+    }
+    return new Response(JSON.stringify(removed ? { ...usage, summary: { ready: 0 }, providers: [{ ...usage.providers[0], accounts: [] }] } : usage));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<AccountUsageView embedded onBack={() => {}} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Delete connection' }));
+  assert.ok(screen.getByRole('group', { name: 'Delete connection confirmation' }).textContent?.includes('Claude Code'));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  assert.equal(fetchMock.mock.calls.some(([, options]) => options?.method === 'DELETE'), false);
+  fireEvent.click(screen.getByRole('button', { name: 'Delete connection' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+  assert.equal((await screen.findByRole('alert')).textContent, 'Close the active reconnect first');
+  fail = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+  await screen.findByText('No CCS account connected.');
+  assert.equal(screen.queryByText('work@example.test'), null);
+  assert.ok(fetchMock.mock.calls.some(([url]) => url === '/api/account-usage?refresh=1'));
+});
