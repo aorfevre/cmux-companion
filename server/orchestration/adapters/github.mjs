@@ -20,6 +20,89 @@ export class GitHubPublication {
     requireValue(observed.number === pr.number && observed.url === pr.url, 'Saved PR identity changed', 'STALE_TARGET');
     return observed;
   }
+  /** @param {import('../types.d.ts').PublicationInput} input @param {NonNullable<import('../types.d.ts').Goal['pr']>} pr */
+  async reviewThreads(input, pr) {
+    requireValue(this.github.listReviewThreads && this.github.readPull, 'GitHub review threads are unavailable', 'UNSUPPORTED_CAPABILITY');
+    const observed = await this.github.readPull(input.repositoryId, pr.number);
+    requireValue(observed.number === pr.number && observed.url === pr.url, 'Saved PR identity changed', 'STALE_TARGET');
+    return this.github.listReviewThreads(input.repositoryId, pr.number);
+  }
+  /** Sent marker per round. A lost response is resolved by reading the remote head,
+   * never by pushing again.
+   * @param {import('../types.d.ts').PublicationInput} input
+   * @param {{ roundId: string; expectedHead: string; headSha: string }} fix
+   * @returns {Promise<'pushed' | 'remote_moved' | 'unknown'>} */
+  async pushFix(input, fix) {
+    const { directory } = this.request(input);
+    identifier(fix.roundId); sha(fix.expectedHead); sha(fix.headSha);
+    const path = join(directory, `fix.${fix.roundId}.push.sent.json`);
+    const current = await this.remote.head(input.repositoryId, input.branch);
+    if (current === fix.headSha) return 'pushed';
+    if (pathExists(path)) {
+      requireValue(JSON.stringify(this.read(path)) === JSON.stringify({ roundId: fix.roundId, expectedHead: fix.expectedHead, headSha: fix.headSha }), 'Fix push request was reused', 'IDEMPOTENCY_CONFLICT');
+      return current === fix.expectedHead ? 'unknown' : 'remote_moved';
+    }
+    if (current !== fix.expectedHead) return 'remote_moved';
+    let claimed = false;
+    try {
+      await this.remote.push({ repositoryId: input.repositoryId, branch: input.branch, headSha: fix.headSha, expectedHead: fix.expectedHead }, { beforeSend: () => {
+        claimed = this.claim(path, { roundId: fix.roundId, expectedHead: fix.expectedHead, headSha: fix.headSha });
+        if (claimed) this.failpoint('fix_push_sent');
+        return claimed;
+      } });
+    } catch (error) {
+      if (claimed && error instanceof DomainError && error.code === 'EXTERNAL_NOT_SENT') { unlinkSync(path); return 'remote_moved'; }
+      return 'unknown';
+    }
+    const pushed = await this.remote.head(input.repositoryId, input.branch);
+    return pushed === fix.headSha ? 'pushed' : pushed === fix.expectedHead ? 'remote_moved' : 'unknown';
+  }
+  /** One sent marker per thread write. A lost response becomes unconfirmed, never re-sent.
+   * @param {import('../types.d.ts').PublicationInput} input
+   * @param {{ roundId: string; replies: import('../types.d.ts').ReviewReply[] }} fix */
+  async replyAndResolve(input, fix) {
+    const { directory } = this.request(input); identifier(fix.roundId);
+    requireValue(this.github.replyToThread && this.github.resolveThread, 'GitHub thread writes are unavailable', 'UNSUPPORTED_CAPABILITY');
+    /** @type {string[]} */ const posted = [];
+    /** @type {string[]} */ const unconfirmed = [];
+    /** @type {string[]} */ const resolved = [];
+    for (const reply of fix.replies) {
+      identifier(reply.threadId);
+      const sent = join(directory, `fix.${fix.roundId}.reply.${reply.threadId}.sent.json`);
+      const done = join(directory, `fix.${fix.roundId}.reply.${reply.threadId}.done.json`);
+      if (pathExists(done)) posted.push(reply.threadId);
+      else if (pathExists(sent)) unconfirmed.push(reply.threadId);
+      else {
+        let claimed = false;
+        try {
+          await this.github.replyToThread(input.repositoryId, reply.threadId, reply.body, { beforeSend: () => {
+            claimed = this.claim(sent, { roundId: fix.roundId, threadId: reply.threadId });
+            if (claimed) this.failpoint('fix_reply_sent');
+            return claimed;
+          } });
+          if (claimed) { this.save(done, { roundId: fix.roundId, threadId: reply.threadId }); posted.push(reply.threadId); }
+        } catch (error) {
+          if (claimed && error instanceof DomainError && error.code === 'EXTERNAL_NOT_SENT') unlinkSync(sent);
+          throw error;
+        }
+      }
+      if (reply.action !== 'fixed') continue;
+      const resolveSent = join(directory, `fix.${fix.roundId}.resolve.${reply.threadId}.sent.json`);
+      if (pathExists(resolveSent)) { resolved.push(reply.threadId); continue; }
+      let claimedResolve = false;
+      try {
+        await this.github.resolveThread(input.repositoryId, reply.threadId, { beforeSend: () => {
+          claimedResolve = this.claim(resolveSent, { roundId: fix.roundId, threadId: reply.threadId });
+          return claimedResolve;
+        } });
+        if (claimedResolve) resolved.push(reply.threadId);
+      } catch (error) {
+        if (claimedResolve && error instanceof DomainError && error.code === 'EXTERNAL_NOT_SENT') unlinkSync(resolveSent);
+        throw error;
+      }
+    }
+    return { posted, unconfirmed, resolved };
+  }
   /** @param {string} path @param {unknown} value */
   save(path, value) {
     const temporary = `${path}.${randomUUID()}.tmp`;
