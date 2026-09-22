@@ -1,6 +1,7 @@
 const updatesSuite = Cypress.expose('settings') ? describe : describe.skip;
 updatesSuite('User-approved bundled updates with a real disposable service', () => {
   it('defaults off, confirms an exact commit, queues safely and supports opt-in without installing early', () => {
+    let hold: Promise<Response> | null = null;
     cy.viewport(390, 844);
     cy.task('updatesBusy', true);
     cy.visit('/settings#updates');
@@ -10,7 +11,8 @@ updatesSuite('User-approved bundled updates with a real disposable service', () 
     });
     cy.task('updatesHold', true);
     // One real tracked mutation, held open so readiness has a live subject.
-    cy.window().then(win => { void win.fetch('/api/fixture/update-hold', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {}); });
+    // Keep the promise: a rejected or failed hold must fail the test, not hide.
+    cy.window().then(win => { hold = win.fetch('/api/fixture/update-hold', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); });
     cy.findByRole('switch', { name: 'Automatic installation' }).should('not.be.checked').and('be.disabled');
     cy.findByRole('checkbox', { name: 'Allow update changes on this device' }).check();
     cy.findByRole('button', { name: 'Check for updates' }).click();
@@ -37,6 +39,7 @@ updatesSuite('User-approved bundled updates with a real disposable service', () 
     cy.viewport(390, 844);
     cy.task('updatesHold', false);
     cy.get('[aria-label="Update readiness"]', { timeout: 12000 }).should('contain.text', 'No active restart blockers');
+    cy.wrap(null, { timeout: 12000 }).then(() => hold!.then(response => { expect(response.ok, 'held request completed').to.equal(true); }));
     cy.reload();
     cy.findByRole('switch', { name: 'Automatic installation' }).should('be.checked');
     cy.findByRole('checkbox', { name: 'Allow update changes on this device' }).check();
