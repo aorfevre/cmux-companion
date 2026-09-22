@@ -28,10 +28,15 @@ Interventions and gaps:
 
 - Cypress's default port 3221 was occupied. Used disposable port 3237 without
   stopping its existing owner; the harness stopped its own frontend on completion.
-- Full npm run verify encountered a 60-second timeout in the existing
-  orchestration-delivery no-conflict scenario. That test and orchestration code
-  are unchanged from main; coverage execution continued. No thresholds were
-  lowered, tests skipped, or unchanged failing test rerun.
+- Full npm run verify exited 1: 968 backend tests passed, two were cancelled
+  after 60-second timeouts (orchestration-delivery no-conflict and
+  orchestration-dev disposable composition), and one was skipped by the suite.
+  Backend line coverage was 97.31%. Both timed-out tests and orchestration code
+  are unchanged from main. Inspection found bounded, Git-heavy scheduler journeys;
+  the output identifies no failed assertion or precise stalled operation, so the
+  timeout cause remains unresolved. No thresholds were lowered, additional tests
+  skipped, or unchanged failing test rerun. Remaining verify stages were run
+  separately and passed.
 - Real installed CCS token deletion is intentionally unverified; tests use
   disposable fake CCS modules. Installed source was inspected to confirm the
   removeAccount(provider, accountId) contract includes token deletion and default
