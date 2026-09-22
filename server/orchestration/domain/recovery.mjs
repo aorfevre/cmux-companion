@@ -7,7 +7,8 @@ import { requireValue } from './contracts.mjs';
  */
 export function captureFailureHold(before, change, commandId) {
   const goal = change.goal;
-  if (['aborted', 'merged', 'delivered'].includes(goal.status) || goal.generation !== before.generation || goal.revision !== before.revision) return;
+  if (['aborted', 'merged', 'delivered'].includes(goal.status) || goal.revision !== before.revision) return;
+  if (goal.generation !== before.generation && goal.status !== 'addressing_review') return;
   /** @type {NonNullable<Goal['hold']>['reasons']} */ const reasons = [];
   for (const attempt of goal.attempts) {
     if (attempt.generation !== goal.generation || attempt.revision !== goal.revision) continue;
@@ -30,6 +31,10 @@ export function captureFailureHold(before, change, commandId) {
     reasons.push({ kind: 'verification', target: run.operationId, message: 'Verification ownership needs reconciliation.' });
   }
   if (goal.publication?.observation?.status === 'unknown' && before.publication?.observation?.status !== 'unknown') reasons.push({ kind: 'publication', target: goal.publication.operationId, message: 'Publication outcome is uncertain; reconcile before retrying.' });
+  const round = goal.reviewRound;
+  if (goal.status === 'addressing_review' && round && ['failed', 'unknown'].includes(round.state) && before.reviewRound?.state !== round.state) {
+    reasons.push({ kind: 'review_fix', target: round.id, message: round.state === 'unknown' ? 'The fix push outcome is uncertain; Companion is confirming the remote branch.' : `Addressing review comments failed. ${round.error ?? ''}`.trim() });
+  }
   if (!reasons.length) return;
   goal.hold ??= { id: commandId, reasons: [] };
   for (const reason of reasons) if (!goal.hold.reasons.some(entry => entry.kind === reason.kind && entry.target === reason.target)) goal.hold.reasons.push(reason);
@@ -47,6 +52,7 @@ export function recoverGoal(goal, holdId, commandId, mode = 'repair') {
   requireValue(!goal.attempts.some(attempt => attempt.workerState !== 'stopped' && !(attempt.workerState === 'pending' && attempt.status === 'queued' && !attempt.identity))
     && !goal.verificationRuns?.some(run => run.workerState !== 'stopped'), 'Let active workers finish and reconcile uncertain ownership before recovery', 'OWNERSHIP_UNCERTAIN');
   requireValue(!goal.results?.some(result => result.status === 'pending' && !result.repair), 'Wait for submitted results to settle before recovery', 'NOT_READY');
+  requireValue(goal.reviewRound?.state !== 'unknown', 'Confirm the fix push outcome before recovery', 'OWNERSHIP_UNCERTAIN');
   requireValue(!goal.hold.reasons.some(reason => reason.kind === 'review' && goal.reviews.some(review => review.id === reason.target && review.kind === 'plan')), 'Request a plan revision to address the blocking review', 'NOT_READY');
   if (mode === 'retry_verification') {
     const run = goal.verificationRuns?.filter(entry => entry.generation === goal.generation && entry.revision === goal.revision && entry.headSha === goal.integrationHead).at(-1);
@@ -65,6 +71,11 @@ export function recoverGoal(goal, holdId, commandId, mode = 'repair') {
   const finalNeedsRepair = goal.verification?.checks.some(check => !check.passed) || goal.reviews.some(review => review.kind === 'integration' && review.target === goal.integrationHead && review.disposition === 'request_changes');
   if (finalNeedsRepair && goal.finalRepairCount >= goal.finalRepairLimit) goal.finalRepairLimit++;
   if (goal.publication?.observation?.status === 'unknown') delete goal.publication.observation;
+  if (goal.status === 'addressing_review' && goal.reviewRound) {
+    const active = goal.reviewRound;
+    (goal.reviewRounds ??= []).push({ ...active, state: 'failed', outcome: 'failed', settledAt: 0 });
+    goal.reviewRound = null; goal.status = 'delivered';
+  }
   (goal.recoveries ??= []).push({ commandId, hold: goal.hold });
   goal.hold = null;
 }

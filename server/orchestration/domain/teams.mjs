@@ -5,20 +5,20 @@ export function parseTeamConfiguration(value) {
   const input = object(value), defaults = object(input.defaults);
   const profiles = array(input.profiles, 50).map(entry => {
     const profile = object(entry), capacity = object(profile.capacity), roles = identifiers(profile.roles);
-    requireValue(['claude', 'codex'].includes(String(profile.provider)) && roles.length > 0 && roles.every(role => TEAM_ROLES.includes(/** @type {import('../types.d.ts').Role} */ (role))), 'Invalid profile eligibility');
+    requireValue(['claude', 'codex'].includes(String(profile.provider)) && roles.length > 0 && roles.every(role => TEAM_ROLES.includes(/** @type {import('../types.d.ts').TeamRole} */ (role))), 'Invalid profile eligibility');
     requireValue(typeof profile.ready === 'boolean', 'Missing profile readiness');
     requireValue(capacity.remainingPercent === null || (typeof capacity.remainingPercent === 'number' && Number.isFinite(capacity.remainingPercent) && capacity.remainingPercent >= 0 && capacity.remainingPercent <= 100), 'Invalid remaining capacity');
-    return { id: identifier(profile.id), label: text(profile.label, 160), provider: /** @type {'claude'|'codex'} */ (profile.provider), model: text(profile.model, 160), roles: /** @type {import('../types.d.ts').Role[]} */ (roles), ready: profile.ready,
+    return { id: identifier(profile.id), label: text(profile.label, 160), provider: /** @type {'claude'|'codex'} */ (profile.provider), model: text(profile.model, 160), roles: /** @type {import('../types.d.ts').TeamRole[]} */ (roles), ready: profile.ready,
       reason: text(profile.reason, 1000), capacity: { remainingPercent: /** @type {number|null} */ (capacity.remainingPercent), source: text(capacity.source, 100), checkedAt: capacity.checkedAt === null ? null : text(capacity.checkedAt, 100), reason: text(capacity.reason, 1000) } };
   });
   requireValue(profiles.length > 0 && new Set(profiles.map(profile => profile.id)).size === profiles.length, 'Profiles must be nonempty and unique');
-  /** @type {Record<import('../types.d.ts').Role,string>} */ const preferred = { planner: '', implementer: '', reviewer: '', integrator: '' };
+  /** @type {Record<import('../types.d.ts').TeamRole,string>} */ const preferred = { planner: '', implementer: '', reviewer: '', integrator: '' };
   for (const role of TEAM_ROLES) { preferred[role] = identifier(defaults[role]); requireValue(profiles.some(profile => profile.id === preferred[role] && profile.roles.includes(role)), 'Default profile is not eligible for its role'); }
   return { profiles, defaults: preferred, capturedAt: text(input.capturedAt, 100) };
 }
-/** @param {import('../types.d.ts').Role} role @param {string|null} taskId */
+/** @param {import('../types.d.ts').TeamRole} role @param {string|null} taskId */
 export const assignmentKey = (role, taskId) => `${role}:${taskId ?? '*'}`;
-/** @param {import('../types.d.ts').TeamConfiguration} config @param {import('../types.d.ts').Role} role @param {string|null} taskId @returns {import('../types.d.ts').TeamAssignment} */
+/** @param {import('../types.d.ts').TeamConfiguration} config @param {import('../types.d.ts').TeamRole} role @param {string|null} taskId @returns {import('../types.d.ts').TeamAssignment} */
 export function suggestAssignment(config, role, taskId) {
   const eligible = config.profiles.filter(profile => profile.ready && profile.roles.includes(role) && profile.capacity.remainingPercent !== 0);
   const rank = (/** @type {typeof eligible[number]} */ profile) => (profile.capacity.remainingPercent === null ? 0 : 100 + profile.capacity.remainingPercent) + (profile.id === config.defaults[role] ? 0.5 : 0);
@@ -30,7 +30,7 @@ export function suggestAssignment(config, role, taskId) {
 export function proposeTeam(goal) {
   const config = goal.teamConfiguration; if (!config) return;
   const previous = goal.team;
-  /** @param {import('../types.d.ts').Role} role @param {string|null} taskId */
+  /** @param {import('../types.d.ts').TeamRole} role @param {string|null} taskId */
   const choose = (role, taskId) => {
     const manual = previous?.assignments.find(entry => entry.manual && entry.key === assignmentKey(role, taskId)) ?? previous?.assignments.find(entry => entry.manual && entry.key === assignmentKey(role, null));
     return manual && config.profiles.some(profile => profile.id === manual.profileId && profile.ready && profile.roles.includes(role)) ? { ...structuredClone(manual), key: assignmentKey(role, taskId), taskId } : suggestAssignment(config, role, taskId);
@@ -40,13 +40,15 @@ export function proposeTeam(goal) {
   if (previous) (goal.teamHistory ??= []).push(structuredClone(previous));
   goal.team = { revision: goal.revision, approved: false, assignments, changes: [] };
 }
-/** @param {import('../types.d.ts').Goal} goal @param {import('../types.d.ts').Role} role @param {string|null} taskId */
+/** The review fixer has no configured team role; it reuses the integrator profile.
+ * @param {import('../types.d.ts').Goal} goal @param {import('../types.d.ts').Role} role @param {string|null} taskId */
 export function assignmentFor(goal, role, taskId) {
-  const assignment = goal.team?.assignments.find(entry => entry.key === assignmentKey(role, taskId)) ?? goal.team?.assignments.find(entry => entry.key === assignmentKey(role, null));
+  const lookup = /** @type {import('../types.d.ts').TeamRole} */ (role === 'review_fixer' ? 'integrator' : role);
+  const assignment = goal.team?.assignments.find(entry => entry.key === assignmentKey(lookup, taskId)) ?? goal.team?.assignments.find(entry => entry.key === assignmentKey(lookup, null));
   if (!goal.teamConfiguration) return undefined;
   requireValue(assignment?.profileId, 'Choose a ready team profile before dispatch', 'NOT_READY');
   const profile = goal.teamConfiguration.profiles.find(entry => entry.id === assignment.profileId);
-  requireValue(profile && profile.ready && profile.roles.includes(role), 'Assigned profile is not ready for this role', 'NOT_READY');
+  requireValue(profile && profile.ready && profile.roles.includes(lookup), 'Assigned profile is not ready for this role', 'NOT_READY');
   return { ...structuredClone(assignment), provider: profile.provider, model: profile.model, label: profile.label };
 }
 /** Explicit edits affect only future attempts. Their recorded snapshots never change.

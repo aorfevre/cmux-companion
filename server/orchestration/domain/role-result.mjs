@@ -1,6 +1,7 @@
 import { array, identifier, integer, object, requireValue, sha, text } from './contracts.mjs';
 import { ownedArea, parseContract } from './graph.mjs';
 import { parseReview } from './review.mjs';
+import { MAX_REVIEW_THREADS } from './review-round.mjs';
 
 /** @param {Record<string, unknown>} value @param {string[]} fields */
 function fields(value, fields) {
@@ -50,6 +51,16 @@ export function parseRoleResult(value, { goalId, attempt }) {
     case 'integrator':
       fields(output, ['headSha', 'operationId', 'summary', 'evidence']);
       return { ...common, role: 'integrator', output: { headSha: sha(output.headSha), operationId: output.operationId === null ? null : identifier(output.operationId), summary: text(output.summary, 8000), evidence: evidence(output.evidence) } };
+    case 'review_fixer': {
+      fields(output, ['headSha', 'summary', 'replies']);
+      // Thread identity is validated again against the recorded round at acceptance.
+      const replies = array(output.replies, MAX_REVIEW_THREADS).map((entry) => {
+        const item = object(entry); fields(item, ['threadId', 'action', 'body']);
+        requireValue(['fixed', 'declined', 'comment'].includes(String(item.action)), 'Unknown reply action');
+        return { threadId: identifier(item.threadId), action: /** @type {import('../types.d.ts').ReviewReply['action']} */ (item.action), body: text(item.body, 8000) };
+      });
+      return { ...common, role: 'review_fixer', output: { headSha: sha(output.headSha), summary: text(output.summary, 8000), replies } };
+    }
   }
 }
 export const MAX_ROLE_RESULTS_PER_ATTEMPT = 8;
