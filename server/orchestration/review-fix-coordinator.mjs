@@ -69,8 +69,11 @@ export class ReviewFixCoordinator {
           try {
             threads = await this.publisher.reviewThreads(plan, pr);
             requireValue(threads, 'GitHub review threads are unavailable', 'UNSUPPORTED_CAPABILITY');
-          } catch {
+          } catch (error) {
             if (this.stopped) return;
+            // A capability fault raised inside the call is still a
+            // configuration fault; only a transport failure reads as offline.
+            if (error instanceof DomainError && error.code === 'UNSUPPORTED_CAPABILITY') throw error;
             this.ownership.assertOwned();
             this.fail(goal.id, round.id, 'GITHUB_UNAVAILABLE', 'GitHub review threads were unavailable. Retry when your Mac is online.');
             return;

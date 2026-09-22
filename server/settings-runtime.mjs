@@ -168,15 +168,14 @@ export async function createSettingsRuntime({ settings, directory, token, create
       },
       resolvePrepare: prepareFor,
       // Every method the publication port defines is forwarded to the adapter
-      // bound to that goal. A dropped method reads as a missing capability.
-      createPublisher: () => ({
-        observeMerge: (input, pr) => publication(input.goalId).observeMerge(input, pr),
-        publish: (input, options) => publication(input.goalId).publish(input, options),
-        observe: input => publication(input.goalId).observe(input),
-        reviewThreads: (input, pr) => publication(input.goalId).reviewThreads(input, pr),
-        pushFix: (input, fix) => publication(input.goalId).pushFix(input, fix),
-        replyAndResolve: (input, fix) => publication(input.goalId).replyAndResolve(input, fix),
-      }),
+      // bound to that goal. A silently dropped method reads downstream as a
+      // failed remote call, so an absent one names itself instead.
+      createPublisher: () => Object.fromEntries(['observeMerge', 'publish', 'observe', 'reviewThreads', 'pushFix', 'replyAndResolve']
+        .map(name => [name, (input, second) => {
+          const adapter = publication(input.goalId);
+          requireValue(typeof adapter[name] === 'function', `Publication capability ${name} is unavailable in this configuration`, 'UNSUPPORTED_CAPABILITY');
+          return adapter[name](input, second);
+        }])),
     });
     const close = runtime.close.bind(runtime);
     runtime.close = async () => { await close(); for (const pending of owners.values()) (await pending).close(); owners.clear(); };

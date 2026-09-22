@@ -11,6 +11,7 @@ import { OrchestrationStore } from '../server/orchestration/storage/store.mjs';
 import { OrchestrationService } from '../server/orchestration/service.mjs';
 import { ReviewFixCoordinator } from '../server/orchestration/review-fix-coordinator.mjs';
 import { fixture, HEAD_B } from './helpers/orchestration/domain-fixture.mjs';
+import { DomainError } from '../server/orchestration/domain/contracts.mjs';
 
 const fails = (fn, code) => assert.throws(fn, code ? (error) => error.code === code : undefined);
 
@@ -318,6 +319,18 @@ test('a moved remote head fails the round before any reply, and an unknown push 
 test('a composition without the review round capability reports a configuration fault, not an offline Mac', async (t) => {
   const f = coordinatorFixture(t);
   delete f.publisher.reviewThreads;
+  f.send('request_review_fix', {}, 'user');
+  await f.coordinator.run(); await settle(f.coordinator);
+  const round = f.store.get('goal').reviewRound;
+  assert.equal(round.state, 'failed');
+  assert.match(round.error, /unavailable in this configuration/);
+  assert.doesNotMatch(round.error, /online|offline/i);
+});
+
+test('a capability fault raised inside the thread read is not reported as an offline Mac', async (t) => {
+  const f = coordinatorFixture(t);
+  f.publisher.threadsError = Object.assign(new Error('Publication capability reviewThreads is unavailable in this configuration'), { code: 'UNSUPPORTED_CAPABILITY' });
+  Object.setPrototypeOf(f.publisher.threadsError, DomainError.prototype);
   f.send('request_review_fix', {}, 'user');
   await f.coordinator.run(); await settle(f.coordinator);
   const round = f.store.get('goal').reviewRound;

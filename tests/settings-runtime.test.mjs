@@ -318,3 +318,16 @@ test('the saved-settings publisher forwards every publication port method to the
   assert.deepEqual(calls.map(entry => entry.name), ['reviewThreads', 'pushFix', 'replyAndResolve']);
   assert.ok(calls.every(entry => entry.goalId === 'goal'), 'each call addresses the adapter bound to that goal');
 });
+
+test('an adapter missing a publication capability names it instead of reading as a failed request', async t => {
+  const omitted = ['publish', 'observe', 'observeMerge', 'reviewThreads', 'pushFix', 'replyAndResolve'];
+  for (const name of omitted) {
+    const { runtime, settings, path } = await fixture(t, { publisherFactory: () => Object.fromEntries(omitted
+      .filter(entry => entry !== name).map(entry => [entry, async () => null])) });
+    const value = defaultSettings(); value.projects = [{ id: 'project', name: 'Project', path, enabled: true, github: 'example/original', remote: 'git@github.com:example/original.git', checks: [] }];
+    await settings.update(0, value); await runtime.settingsChanged();
+    settings.snapshotGoal('goal', 'project');
+    assert.throws(() => runtime.scheduler.reviewFixes.publisher[name]({ goalId: 'goal', repositoryId: 'project' }, {}),
+      error => error.code === 'UNSUPPORTED_CAPABILITY' && error.message.includes(name), `${name} must name itself`);
+  }
+});
