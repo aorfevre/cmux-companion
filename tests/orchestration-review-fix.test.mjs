@@ -327,6 +327,17 @@ test('a composition without the review round capability reports a configuration 
   assert.doesNotMatch(round.error, /online|offline/i);
 });
 
+test('a publisher resolving to an object without threads fails as a configuration fault, not a parse error', async (t) => {
+  const f = coordinatorFixture(t);
+  f.publisher.reviewThreads = async () => { f.calls.threads++; return {}; };
+  f.send('request_review_fix', {}, 'user');
+  await f.coordinator.run(); await settle(f.coordinator);
+  const round = f.store.get('goal').reviewRound;
+  assert.equal(round.state, 'failed');
+  assert.match(round.error, /unavailable/);
+  assert.doesNotMatch(round.error, /online|offline/i);
+});
+
 test('a capability fault raised inside the thread read is not reported as an offline Mac', async (t) => {
   const f = coordinatorFixture(t);
   f.publisher.threadsError = Object.assign(new Error('Publication capability reviewThreads is unavailable in this configuration'), { code: 'UNSUPPORTED_CAPABILITY' });

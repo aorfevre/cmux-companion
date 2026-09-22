@@ -74,7 +74,7 @@ export class ReviewFixCoordinator {
           let threads;
           try {
             threads = await this.publisher.reviewThreads(plan, pr);
-            requireValue(threads, 'GitHub review threads are unavailable', 'UNSUPPORTED_CAPABILITY');
+            requireValue(threads?.threads, 'GitHub review threads are unavailable', 'UNSUPPORTED_CAPABILITY');
           } catch (error) {
             if (this.stopped) return;
             // A capability fault raised inside the call is still a
