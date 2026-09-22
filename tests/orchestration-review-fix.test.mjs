@@ -7,6 +7,9 @@ import { goalView } from '../server/orchestration/domain/state-view.mjs';
 import { actionView } from '../server/orchestration/domain/action-view.mjs';
 import { assignmentFor } from '../server/orchestration/domain/teams.mjs';
 import { USER_COMMANDS } from '../server/orchestration/domain/commands.mjs';
+import { OrchestrationStore } from '../server/orchestration/storage/store.mjs';
+import { OrchestrationService } from '../server/orchestration/service.mjs';
+import { ReviewFixCoordinator } from '../server/orchestration/review-fix-coordinator.mjs';
 import { fixture, HEAD_B } from './helpers/orchestration/domain-fixture.mjs';
 
 const fails = (fn, code) => assert.throws(fn, code ? (error) => error.code === code : undefined);
@@ -212,4 +215,101 @@ test('a fixer result with the pull request head and replies only is accepted wit
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 'Answered', replies: replies('comment') });
   f.command('mark_result_accepted', { resultId: 'res1' });
   assert.equal(f.goal.results[0].status, 'accepted'); assert.equal(f.goal.reviewRound.state, 'replying');
+});
+
+function coordinatorFixture(t) {
+  const store = new OrchestrationStore({ path: ':memory:' }); t.after(() => store.close());
+  const agents = { capabilities: [{ role: 'planner', mode: 'interactive' }, ...['implementer', 'reviewer', 'integrator', 'review_fixer'].map((role) => ({ role, mode: 'background' }))] };
+  const service = new OrchestrationService({ store, agents, repositoryIds: new Set(['repo']), ownership: { assertOwned() {} } });
+  const seed = fixture(); seed.deliver();
+  store.apply({ id: 'seed', goalId: 'goal', expectedVersion: 0, type: 'create_goal', payload: {} }, { kind: 'user' }, () => ({ goal: { ...seed.goal, id: 'goal' }, events: [], intents: [] }));
+  const calls = { threads: 0, pushes: [], replies: [] };
+  const publisher = {
+    threads: threads(), threadsError: null, pushResult: 'pushed', replyOutcome: { posted: ['PRRT_1', 'PRRT_2'], unconfirmed: [], resolved: ['PRRT_1'] },
+    async reviewThreads() { calls.threads++; if (publisher.threadsError) throw publisher.threadsError; return publisher.threads; },
+    async pushFix(plan, fix) { calls.pushes.push(fix); return publisher.pushResult; },
+    async replyAndResolve(plan, fix) { calls.replies.push(fix); return publisher.replyOutcome; },
+  };
+  let sequence = 0;
+  const coordinator = new ReviewFixCoordinator({ service, publisher, ownership: { assertOwned() {} }, now: () => 1000, id: () => `id${++sequence}` });
+  const send = (type, payload = {}, kind = 'system') => service.execute({ id: `c${++sequence}`, goalId: 'goal', expectedVersion: store.get('goal').version, type, payload }, { kind });
+  return { store, service, publisher, coordinator, calls, send };
+}
+const settle = (coordinator) => Promise.all([...coordinator.active.values()]);
+async function fix(f) {
+  f.send('request_attempt', { attemptId: 'fx', operationId: 'opfx', role: 'review_fixer', taskId: null, conversationId: 'cfx' });
+  f.send('record_dispatch', { attemptId: 'fx', identity: 'w', worktree: '/tmp/fx', branch: 'companion/goal/fx' });
+}
+
+test('the coordinator fetches threads once and settles an empty round without an attempt', async (t) => {
+  const f = coordinatorFixture(t); f.publisher.threads = [];
+  f.send('request_review_fix', {}, 'user');
+  await f.coordinator.run(); await settle(f.coordinator); await f.coordinator.run(); await settle(f.coordinator);
+  assert.equal(f.calls.threads, 1);
+  const goal = f.store.get('goal');
+  assert.equal(goal.status, 'delivered'); assert.equal(goal.reviewRounds[0].outcome, 'nothing_to_address');
+  assert.equal(goal.attempts.filter((attempt) => attempt.role === 'review_fixer').length, 0);
+});
+
+test('an unavailable GitHub read fails the round with a sanitized hold', async (t) => {
+  const f = coordinatorFixture(t); f.publisher.threadsError = new Error('secret token in output');
+  f.send('request_review_fix', {}, 'user');
+  await f.coordinator.run(); await settle(f.coordinator);
+  const goal = f.store.get('goal');
+  assert.equal(goal.reviewRound.state, 'failed'); assert.equal(goal.hold.reasons.at(-1).kind, 'review_fix');
+  assert.doesNotMatch(JSON.stringify(goal), /secret token/);
+});
+
+test('a replies-only result skips verification, pushes nothing and settles', async (t) => {
+  const f = coordinatorFixture(t);
+  f.send('request_review_fix', {}, 'user'); await f.coordinator.run(); await settle(f.coordinator);
+  assert.equal(f.store.get('goal').reviewRound.state, 'fixing'); assert.equal(f.store.ready().length, 1);
+  await fix(f);
+  f.send('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 's', replies: replies('comment') });
+  f.send('record_stopped', { attemptId: 'fx' });
+  await f.coordinator.run(); await settle(f.coordinator);
+  const goal = f.store.get('goal');
+  assert.equal(f.calls.pushes.length, 0); assert.equal(f.calls.replies.length, 1);
+  assert.equal(goal.status, 'delivered'); assert.equal(goal.pr.headSha, HEAD_B); assert.equal(goal.reviewRounds[0].outcome, 'addressed');
+});
+
+test('a fixed result requests verification, then pushes and replies after the checks pass', async (t) => {
+  const f = coordinatorFixture(t);
+  f.send('request_review_fix', {}, 'user'); await f.coordinator.run(); await settle(f.coordinator);
+  await fix(f);
+  f.send('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('fixed') });
+  f.send('record_stopped', { attemptId: 'fx' });
+  await f.coordinator.run(); await settle(f.coordinator);
+  let goal = f.store.get('goal');
+  const operationId = goal.reviewRound.verificationOperationId;
+  assert.equal(goal.reviewRound.state, 'verifying'); assert.ok(operationId);
+  assert.equal(f.store.operations().find((operation) => operation.id === operationId)?.kind, 'verify');
+  assert.equal(f.calls.pushes.length, 0);
+  f.send('record_verification_result', { operationId, result: { verification: { headSha: HEAD_C, checks: [{ id: 'unit', passed: true, artifactId: 'log' }] }, workerState: 'stopped', artifactId: 'a'.repeat(64) } });
+  for (let pass = 0; pass < 3; pass++) { await f.coordinator.run(); await settle(f.coordinator); }
+  goal = f.store.get('goal');
+  assert.deepEqual(f.calls.pushes[0], { roundId: goal.reviewRounds[0].id, expectedHead: HEAD_B, headSha: HEAD_C });
+  assert.equal(goal.status, 'delivered'); assert.equal(goal.pr.headSha, HEAD_C); assert.deepEqual(goal.reviewRounds[0].resolved, ['PRRT_1']);
+});
+
+test('a moved remote head fails the round before any reply, and an unknown push holds until confirmed', async (t) => {
+  for (const [result, state] of [['remote_moved', 'failed'], ['unknown', 'unknown']]) {
+    const f = coordinatorFixture(t); f.publisher.pushResult = result;
+    f.send('request_review_fix', {}, 'user'); await f.coordinator.run(); await settle(f.coordinator);
+    await fix(f);
+    f.send('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('fixed') });
+    f.send('record_stopped', { attemptId: 'fx' });
+    await f.coordinator.run(); await settle(f.coordinator);
+    const operationId = f.store.get('goal').reviewRound.verificationOperationId;
+    f.send('record_verification_result', { operationId, result: { verification: { headSha: HEAD_C, checks: [{ id: 'unit', passed: true, artifactId: 'log' }] }, workerState: 'stopped', artifactId: 'a'.repeat(64) } });
+    for (let pass = 0; pass < 3; pass++) { await f.coordinator.run(); await settle(f.coordinator); }
+    const goal = f.store.get('goal');
+    assert.equal(goal.reviewRound.state, state); assert.equal(f.calls.replies.length, 0);
+    assert.equal(goal.pr.headSha, HEAD_B); assert.ok(goal.hold);
+    if (result === 'unknown') {
+      f.publisher.pushResult = 'pushed';
+      for (let pass = 0; pass < 3; pass++) { await f.coordinator.run(); await settle(f.coordinator); }
+      assert.equal(f.store.get('goal').status, 'delivered'); assert.equal(f.store.get('goal').pr.headSha, HEAD_C);
+    }
+  }
 });

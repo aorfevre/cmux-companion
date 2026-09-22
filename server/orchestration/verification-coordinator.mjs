@@ -35,9 +35,11 @@ export class VerificationCoordinator {
     await pending;
   }
   cancelRevoked() {
-    for (const run of this.active.values()) {
+    for (const [operationId, run] of this.active) {
       const goal = this.store.get(run.goalId);
-      if (!goal || goal.status !== 'building' || goal.generation !== run.generation || goal.revision !== run.revision || goal.integrationHead !== run.headSha || !this.service.repositoryIds.has(goal.repositoryId)) run.controller.abort();
+      const building = goal?.status === 'building' && goal.integrationHead === run.headSha;
+      const fixing = goal?.status === 'addressing_review' && goal.reviewRound?.verificationOperationId === operationId && goal.reviewRound.fixHeadSha === run.headSha;
+      if (!goal || !(building || fixing) || goal.generation !== run.generation || goal.revision !== run.revision || !this.service.repositoryIds.has(goal.repositoryId)) run.controller.abort();
     }
   }
   async stop() {
@@ -78,7 +80,8 @@ export class VerificationCoordinator {
         if (receipt?.workerState === 'stopped') { this.store.advanceOperation(operation.id, operation.status, 'completed'); await this.release(operation.id); }
         continue;
       }
-      const permitted = goal.status === 'building' && goal.generation === operation.generation && goal.revision === operation.revision && goal.integrationHead === run.headSha && this.service.repositoryIds.has(goal.repositoryId);
+      const fixing = goal.status === 'addressing_review' && goal.reviewRound?.verificationOperationId === operation.id && goal.reviewRound.fixHeadSha === run.headSha;
+      const permitted = ((goal.status === 'building' && goal.integrationHead === run.headSha) || fixing) && goal.generation === operation.generation && goal.revision === operation.revision && this.service.repositoryIds.has(goal.repositoryId);
       if (!permitted) {
         this.record(goal.id, 'cancel_verification', { operationId: operation.id }); this.store.advanceOperation(operation.id, 'pending', 'completed'); continue;
       }
