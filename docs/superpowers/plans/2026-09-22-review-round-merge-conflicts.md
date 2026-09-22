@@ -432,7 +432,23 @@ In `server/orchestration/domain/transitions.mjs`, import `parseConflictPaths` al
     }
 ```
 
-- [ ] **Step 5: Dispatch the fixer on threads or conflicts**
+- [ ] **Step 5: Let a conflict-only round request a fixer**
+
+The `request_attempt` case in the same file gates `review_fixer` on threads and
+pins the pull request head as the target. A conflict-only round has zero
+threads and must target the merge commit. Replace that block:
+
+```javascript
+      if (role === 'review_fixer') {
+        const round = goal.reviewRound;
+        // A conflict is work even with no thread: the merge markers need resolving.
+        requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && (round.threads.length > 0 || round.conflictPaths?.length), 'No review threads or conflicts await a fix', 'NOT_READY');
+        requireValue(!goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification worker is not settled', 'NOT_READY');
+        target = round.mergeCommitSha ?? round.prHeadSha;
+      }
+```
+
+- [ ] **Step 6: Dispatch the fixer on threads or conflicts**
 
 In `server/orchestration/domain/scheduling.mjs`, replace the `addressing_review` block:
 
@@ -447,12 +463,13 @@ In `server/orchestration/domain/scheduling.mjs`, replace the `addressing_review`
   }
 ```
 
-- [ ] **Step 6: Run the tests and the type check**
+- [ ] **Step 7: Run the tests and the type check**
 
 Run: `node --test tests/orchestration-review-fix.test.mjs && npx tsc --noEmit`
+Then: `npm test` and `npx eslint server app --quiet`.
 Expected: PASS, no type errors.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add server/orchestration/domain/review-round.mjs server/orchestration/domain/transitions.mjs server/orchestration/domain/scheduling.mjs tests/orchestration-review-fix.test.mjs
