@@ -160,6 +160,12 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       expect(goal.reviewRounds!).to.have.length(3);
       expect(goal.reviewRounds!.map(round => round.outcome)).to.deep.equal(['failed', 'failed', 'addressed']);
       expect(goal.pr!.headSha).to.equal(goal.reviewRounds!.at(-1)!.fixHeadSha);
+      // The approved checks must execute on the fix head. A refused check would
+      // fail the round with no run and no output at all.
+      const fixRun = goal.verificationRuns!.find(run => run.headSha === goal.reviewRounds!.at(-1)!.fixHeadSha)!;
+      expect(fixRun, 'the fix head is verified by its own run').to.not.equal(undefined);
+      expect(fixRun.result!.verification.checks.map(check => check.id)).to.include('unit');
+      expect(fixRun.result!.verification.checks.every(check => check.passed)).to.equal(true);
       expect(goal.mergeSync).to.equal(undefined);
       expect(evidence.replies).to.have.length(2);
       expect(evidence.resolutions).to.have.length(1);
