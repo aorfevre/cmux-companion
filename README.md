@@ -42,6 +42,10 @@ to publish → Waiting for merge → Complete. Open a fleet row for Overview,
 Waves & sessions, Team & models, Run report and Activity. Needs You collects
 questions, approvals and manual recovery actions. Aborted goals are hidden from the
 default fleet; select **Aborted** to browse them. Click anywhere on a goal row to open it.
+While a goal waits for merge, **Address review comments** runs one agent round
+that fixes or answers every unresolved pull request review thread and pushes the
+verified fix to the same pull request; see
+[docs/code-review-workflow.md](docs/code-review-workflow.md).
 
 The planner publishes a versioned contract with task ownership, dependencies and
 verification. Essential questions appear inside the goal; answering resumes

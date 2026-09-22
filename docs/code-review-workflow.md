@@ -24,6 +24,25 @@ the original goal's completion. Existing already-published PRs are unchanged.
 This does not publish a PR at goal creation or grant the coding agent publication
 authority. Ready means completed for external review, not permission to skip CI.
 
+## Addressing review comments
+
+A delivered goal offers **Address review comments**. One press runs one review
+round. Companion reads every unresolved review thread on the pull request, runs
+one background fixer agent in a fresh worktree at the pull request head with the
+integrator's team profile and tool set, and requires the approved project checks
+to pass on the fix head before any push. The push uses force-with-lease against
+the recorded head; a moved branch fails the round and posts nothing. Companion
+then posts exactly one reply per thread and resolves the threads the agent marked
+fixed. Declined and comment threads stay open for the human. Each reply is
+preceded by a sent marker, so a lost response is recorded as unconfirmed and
+never re-sent. Rounds are manual and unlimited; one round runs at a time.
+
+A failed round holds the goal with the existing **Recover goal** action and
+leaves the recorded head unchanged. The saved publication operation is the
+identity of the original request, so a round never rewrites it; it advances the
+recorded pull request head only. The round does not review the fix
+independently, and it never merges, rebases or edits the target branch.
+
 ## Auto-merge activation
 
 The trusted default-branch `Review and auto-merge` workflow runs every 15 minutes and on manual dispatch from `main`. It never checks out PR code or downloads PR artifacts. It does not use
