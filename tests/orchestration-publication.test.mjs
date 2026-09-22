@@ -5,6 +5,7 @@ import { realpathSync, readFileSync, writeFileSync, copyFileSync, renameSync, rm
 import { GitRepository } from '../server/orchestration/adapters/git.mjs';
 import { GitRemote } from '../server/orchestration/adapters/git-remote.mjs';
 import { GitHubPublication } from '../server/orchestration/adapters/github.mjs';
+import { ReviewMerge } from '../server/orchestration/adapters/review-merge.mjs';
 import { ArtifactStore } from '../server/orchestration/storage/artifacts.mjs';
 import { FakeGitHub } from './helpers/orchestration/fake-github.mjs';
 import { createRepositoryFixture, fixtureGit } from './helpers/orchestration/fixture.mjs';
@@ -484,4 +485,63 @@ test('replies post once per thread, resolve fixed threads and never resend after
   assert.equal(f.github.resolutions.length, 1);
   const again = await new GitHubPublication(f.options).replyAndResolve(f.input, { roundId: 'r1', replies });
   assert.deepEqual(again, outcome); assert.equal(f.github.replies.length, 2); assert.equal(f.github.resolutions.length, 1);
+});
+
+test('a conflicted review round merges, resolves, verifies and pushes against real Git', async (t) => {
+  const f = await deliveredFixture(t);
+  // Move the target branch so it genuinely conflicts with the same file/lines the PR branch changed.
+  const target = await f.repo.checkout('target-conflict', f.repo.baseSha);
+  await writeFile(join(target.worktree, 'src/a.mjs'), 'export function a() { return 99; }\n');
+  await fixtureGit(target.worktree, ['add', 'src']); await fixtureGit(target.worktree, ['commit', '-m', 'Move main to conflict with the PR branch']);
+  const targetHead = await fixtureGit(target.worktree, ['rev-parse', 'HEAD']);
+  await fixtureGit(target.worktree, ['push', 'origin', `${targetHead}:refs/heads/main`]);
+  f.github.setMergeable(1, 'conflicting');
+
+  const reviewMerge = new ReviewMerge({ repositories: f.repositories, remote: f.remote });
+  const result = await reviewMerge.prepareReviewMerge({ goalId: f.input.goalId, repositoryId: f.input.repositoryId, roundId: 'round_conflict', prHeadSha: f.input.headSha, baseBranch: f.input.baseBranch });
+
+  assert.deepEqual(result.conflictPaths, ['src/a.mjs']);
+  assert.equal(result.mergedBaseSha, targetHead);
+  const parents = (await fixtureGit(f.repo.repository, ['rev-list', '--parents', '-n', '1', result.mergeCommitSha])).split(' ');
+  assert.deepEqual(parents.slice(1), [f.input.headSha, targetHead]);
+  const conflictedFile = await fixtureGit(f.repo.repository, ['show', `${result.mergeCommitSha}:src/a.mjs`]);
+  assert.ok(conflictedFile.includes('<<<<<<<'), 'the merge commit carries the conflict markers for the fixer to resolve');
+
+  // Resolve the conflict the way the fixer would: a worktree at the merge commit.
+  const resolve = await f.repo.checkout('resolve-conflict', result.mergeCommitSha);
+  await writeFile(join(resolve.worktree, 'src/a.mjs'), 'export function a() { return 2; } // resolved\n');
+  await fixtureGit(resolve.worktree, ['add', 'src']); await fixtureGit(resolve.worktree, ['commit', '-m', 'Resolve review round conflict']);
+  const resolvedHead = await fixtureGit(resolve.worktree, ['rev-parse', 'HEAD']);
+
+  const pushed = await f.publisher.pushFix(f.input, { roundId: 'round_conflict', expectedHead: f.input.headSha, headSha: resolvedHead });
+  assert.equal(pushed, 'pushed');
+  assert.equal(await f.remote.head('repo', f.input.branch), resolvedHead);
+
+  // The resolved head must descend from both the original PR head and the merged target head:
+  // proof that the target branch's work actually landed, not just that some commit was pushed.
+  await assert.doesNotReject(fixtureGit(f.repo.repository, ['merge-base', '--is-ancestor', f.input.headSha, resolvedHead]));
+  await assert.doesNotReject(fixtureGit(f.repo.repository, ['merge-base', '--is-ancestor', targetHead, resolvedHead]));
+});
+
+test('a clean review round produces an agentless two-parent merge with no conflicts', async (t) => {
+  const f = await deliveredFixture(t);
+  // Move the target branch with a non-conflicting change (a different file).
+  const target = await f.repo.checkout('target-clean', f.repo.baseSha);
+  const targetHead = await f.repo.implement(target.worktree, 'B');
+  await fixtureGit(target.worktree, ['push', 'origin', `${targetHead}:refs/heads/main`]);
+
+  const reviewMerge = new ReviewMerge({ repositories: f.repositories, remote: f.remote });
+  const result = await reviewMerge.prepareReviewMerge({ goalId: f.input.goalId, repositoryId: f.input.repositoryId, roundId: 'round_clean', prHeadSha: f.input.headSha, baseBranch: f.input.baseBranch });
+
+  assert.deepEqual(result.conflictPaths, []);
+  assert.equal(result.mergedBaseSha, targetHead);
+  const parents = (await fixtureGit(f.repo.repository, ['rev-list', '--parents', '-n', '1', result.mergeCommitSha])).split(' ');
+  assert.deepEqual(parents.slice(1), [f.input.headSha, targetHead]);
+
+  // Both sides' work is present in the merge tree, unmarked, with no agent involved.
+  const fromPrBranch = await fixtureGit(f.repo.repository, ['show', `${result.mergeCommitSha}:src/a.mjs`]);
+  const fromTargetBranch = await fixtureGit(f.repo.repository, ['show', `${result.mergeCommitSha}:src/b.mjs`]);
+  assert.ok(!fromPrBranch.includes('<<<<<<<')); assert.ok(!fromTargetBranch.includes('<<<<<<<'));
+  assert.equal(fromPrBranch, 'export function a() { return 2; }');
+  assert.equal(fromTargetBranch, 'export function b() { return 3; }');
 });
