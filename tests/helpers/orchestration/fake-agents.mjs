@@ -3,7 +3,7 @@
  */
 export class FakeAgents {
   constructor() {
-    this.capabilities = [{ role: 'planner', mode: 'interactive' }, ...['implementer', 'reviewer', 'integrator'].map((role) => ({ role, mode: 'background' }))];
+    this.capabilities = [{ role: 'planner', mode: 'interactive' }, ...['implementer', 'reviewer', 'integrator', 'review_fixer'].map((role) => ({ role, mode: 'background' }))];
     this.workers = new Map(); this.launches = []; this.terminations = [];
     this.loseResponse = false; this.observationUnknown = false; this.ignoreTermination = false;
     this.onLaunch = async () => {};

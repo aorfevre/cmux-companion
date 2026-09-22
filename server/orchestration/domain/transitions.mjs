@@ -771,7 +771,9 @@ export function transition(before, command, authority) {
       requireAuthority(authority, 'system');
       const round = activeRound(goal, input.roundId);
       requireValue(['pushing', 'unknown'].includes(round.state) && round.fixHeadSha && goal.pr && goal.publication, 'Fix push is not awaited', 'NOT_READY');
-      goal.pr.headSha = round.fixHeadSha; goal.publication.headSha = round.fixHeadSha; goal.publication.plan.headSha = round.fixHeadSha;
+      // The saved publication operation is the identity of the original request.
+      // The adapter refuses a changed plan, so a round advances the PR head only.
+      goal.pr.headSha = round.fixHeadSha;
       delete goal.mergeSync;
       if (round.state === 'unknown' && goal.hold) {
         goal.hold.reasons = goal.hold.reasons.filter((reason) => !(reason.kind === 'review_fix' && reason.target === round.id));

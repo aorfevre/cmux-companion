@@ -58,6 +58,13 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
                 await fixtureGit(attempt.worktree, ['add', 'src']); await fixtureGit(attempt.worktree, ['commit', '-m', 'Repair injectable composition']);
                 return { headSha: await fixtureGit(attempt.worktree, ['rev-parse', 'HEAD']), operationId: null, summary: 'Repair final check failure', evidence: [] };
               }
+              if (attempt.role === 'review_fixer') {
+                const current = demo.runtime.store.get(goalId), pinned = current?.reviewRound?.threads ?? [];
+                await writeFile(join(attempt.worktree, 'src/a.mjs'), 'export function a() { return 2; } // addressed review\n');
+                await fixtureGit(attempt.worktree, ['add', 'src']); await fixtureGit(attempt.worktree, ['commit', '-m', 'Address review comments']);
+                return { headSha: await fixtureGit(attempt.worktree, ['rev-parse', 'HEAD']), summary: 'Addressed the fixture review threads',
+                  replies: pinned.map((thread, index) => ({ threadId: thread.id, action: index === 0 ? 'fixed' : 'declined', body: index === 0 ? 'Fixed in the latest commit.' : 'Out of scope for this goal.' })) };
+              }
               if (browserHarness && attempt.target.startsWith('contract:') && existsSync(join(directory, 'release-reject-plan'))
                 && agents.launches.filter(entry => entry.goalId === goalId && entry.attempt.role === 'reviewer' && entry.attempt.target.startsWith('contract:')).length === 1) {
                 return { schemaVersion: 1, target: attempt.target, disposition: 'request_changes', findings: [{ id: 'plan_scope', severity: 'high', blocking: true, title: 'Clarify the fixture plan', evidence: 'First plan needs a review round', suggestion: 'Republish the bounded fixture contract' }] };
@@ -91,6 +98,15 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
           const remote = new GitRemote({ repositories, directory: join(directory, 'remote-stage'), destinations: new Map([['repo', { url: realpathSync(repo.remote), protocol: 'file', env: { PATH: process.env.PATH } }]]) });
           fixtureRemote = remote;
           fixtureGithub = new FakeGitHub({ remote });
+          const listThreads = fixtureGithub.listReviewThreads.bind(fixtureGithub);
+          // Seed at read time; a released fixture must not depend on a polling timer.
+          fixtureGithub.listReviewThreads = async (repositoryId, number) => {
+            if (existsSync(join(directory, 'release-seed-threads')) && !fixtureGithub.threads.has(number)) fixtureGithub.threads.set(number, [
+              { id: `PRRT_${number}_1`, path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Document why module A returns two.', isBot: true },
+              { id: `PRRT_${number}_2`, path: null, line: null, author: 'alex', body: 'Consider a rename later.', isBot: false },
+            ]);
+            return listThreads(repositoryId, number);
+          };
           return new GitHubPublication({ directory: join(directory, 'publications'), remote, github: fixtureGithub });
         },
       },
@@ -102,7 +118,8 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
     const record = () => {
       writing = writing.catch(error => { recordingError = error; }).then(async () => {
         const goals = demo.runtime.store.list();
-        const evidence = { goals, overlaps: [...overlaps], launches: fixtureAgents?.launches ?? [], prCreates: fixtureGithub?.creates ?? [], pulls: fixtureGithub?.pulls ?? [] };
+        const evidence = { goals, overlaps: [...overlaps], launches: fixtureAgents?.launches ?? [], prCreates: fixtureGithub?.creates ?? [], pulls: fixtureGithub?.pulls ?? [],
+          replies: fixtureGithub?.replies ?? [], resolutions: fixtureGithub?.resolutions ?? [] };
         const path = join(demo.manifest.directory, 'browser-evidence.json'), temporary = `${path}.tmp`;
         await writeFile(temporary, JSON.stringify(evidence), { mode: 0o600 }); renameSync(temporary, path);
       });

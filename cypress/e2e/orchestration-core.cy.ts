@@ -1,5 +1,5 @@
 import type { Goal, LaunchRequest } from '../../server/orchestration/types';
-type Evidence = {goals:Goal[];overlaps:string[];launches:LaunchRequest[];prCreates:unknown[];pulls:{branch:string}[]};
+type Evidence = {goals:Goal[];overlaps:string[];launches:LaunchRequest[];prCreates:unknown[];pulls:{branch:string}[];replies:unknown[];resolutions:unknown[]};
 const suite = Cypress.expose('orchestration') ? describe : describe.skip;
 suite('Mobile orchestration with real service and disposable Git', () => {
   beforeEach(() => {
@@ -135,6 +135,22 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       cy.task<string>('orchestrationGit', { branch: composition.attempt.branch, file: 'src/a.mjs' }).should('include', 'return 2');
       cy.task<string>('orchestrationGit', { branch: composition.attempt.branch, file: 'src/b.mjs' }).should('include', 'return 3');
       cy.task<string>('orchestrationGit', { branch: evidence.pulls[0].branch, file: 'src/composition.mjs' }).should('include', 'aSource() + bSource()');
+    });
+    cy.task('orchestrationRelease', 'seed-threads');
+    cy.findByRole('button', { name: 'Address review comments', timeout: 30000 }).should('be.enabled').click();
+    cy.findByRole('button', { name: 'Address review comments', timeout: 60000 }).should('be.enabled');
+    cy.findByRole('tab', { name: 'Run report' }).click();
+    cy.findByRole('heading', { name: 'Review rounds' }).should('be.visible');
+    cy.contains(/Addressed · 2 threads/).should('be.visible');
+    cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', status: 'delivered' }).then(evidence => {
+      const goal = evidence.goals.find(entry => entry.title === 'Build the parallel fixture')!;
+      expect(goal.reviewRounds!).to.have.length(1);
+      expect(goal.reviewRounds![0].outcome).to.equal('addressed');
+      expect(goal.pr!.headSha).to.equal(goal.reviewRounds![0].fixHeadSha);
+      expect(goal.mergeSync).to.equal(undefined);
+      expect(evidence.replies).to.have.length(2);
+      expect(evidence.resolutions).to.have.length(1);
+      cy.task<string>('orchestrationGit', { branch: evidence.pulls[0].branch, file: 'src/a.mjs' }).should('include', 'addressed review');
     });
     cy.document().then(doc => { expect(doc.documentElement.scrollWidth).to.be.at.most(390); });
   });

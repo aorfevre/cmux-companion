@@ -144,7 +144,8 @@ test('a passed fix verification, push and settlement advance the head and clear 
   assert.equal(f.goal.reviewRound.state, 'pushing');
   f.command('record_review_fix_push', { roundId });
   assert.equal(f.goal.reviewRound.state, 'replying'); assert.equal(f.goal.pr.headSha, HEAD_C);
-  assert.equal(f.goal.publication.headSha, HEAD_C); assert.equal(f.goal.mergeSync, undefined);
+  assert.equal(f.goal.publication.headSha, HEAD_B, 'the saved publication operation keeps its approved head');
+  assert.equal(f.goal.publication.plan.headSha, HEAD_B); assert.equal(f.goal.mergeSync, undefined);
   f.command('settle_review_fix', { roundId, posted: ['PRRT_1', 'PRRT_2'], unconfirmed: [], resolved: ['PRRT_1'] });
   assert.equal(f.goal.status, 'delivered'); assert.equal(f.goal.reviewRound, null);
   assert.equal(f.goal.reviewRounds[0].outcome, 'addressed'); assert.deepEqual(f.goal.reviewRounds[0].resolved, ['PRRT_1']);

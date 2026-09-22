@@ -43,7 +43,10 @@ export class ReviewFixCoordinator {
         if (this.stopped) return;
         this.ownership.assertOwned();
         if (error instanceof DomainError && error.code === 'VERSION_CONFLICT') return;
-        this.fail(goal.id, round.id, 'REVIEW_FIX_FAILED', 'Addressing review comments failed. Check GitHub access and retry.');
+        this.onError(error);
+        // The code is Companion's own classification, never external output.
+        const code = error instanceof DomainError ? error.code : 'REVIEW_FIX_FAILED';
+        this.fail(goal.id, round.id, code, `Addressing review comments failed (${code}). Check GitHub access and retry.`);
       }
     }).finally(() => this.active.delete(goal.id));
     this.active.set(goal.id, job); void job.catch(this.onError);
