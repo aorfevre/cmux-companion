@@ -500,3 +500,73 @@ test('a merge record is refused outside the merging state and rejects an unowned
   fails(() => f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: HEAD_B, conflictPaths: [] }), 'STALE_TARGET');
   assert.equal(f.goal.reviewRound.state, 'merging', 'a refused record leaves the round untouched');
 });
+
+test('a merged round validates the fix head against the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['src/a.mjs'] });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 's', replies: replies('comment') }), 'STALE_TARGET');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 'Resolved', replies: replies('fixed') });
+  assert.equal(f.goal.reviewRound.state, 'verifying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, HEAD_C);
+});
+
+test('a merged round with replies only keeps the merge commit as the fix head', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: MERGE_COMMIT, summary: 'Answered only', replies: replies('comment') });
+  assert.equal(f.goal.reviewRound.state, 'verifying', 'the merge itself still needs the approved checks');
+  assert.equal(f.goal.reviewRound.fixHeadSha, MERGE_COMMIT);
+});
+
+test('an unmerged round still settles replies without verification', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 'Answered', replies: replies('comment') });
+  assert.equal(f.goal.reviewRound.state, 'replying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, undefined);
+});
+
+test('the Git proof for a merged round widens to owned areas plus the recorded conflicted paths', async (t) => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { ArtifactStore } = await import('../server/orchestration/storage/artifacts.mjs');
+  const { AgentResults } = await import('../server/orchestration/agent-results.mjs');
+
+  const f = coordinatorFixture(t);
+  const directory = mkdtempSync(join(tmpdir(), 'companion-scope-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const artifacts = new ArtifactStore({ directory });
+  let captured = null;
+  const repositories = {
+    async candidate(input) {
+      captured = input.ownedAreas;
+      return { headSha: input.headSha, artifactId: artifacts.put(JSON.stringify({ headSha: input.headSha, changedPaths: [] })).id };
+    },
+  };
+  const results = new AgentResults({ service: f.service, artifacts, repositories });
+
+  f.send('request_review_fix', {}, 'user');
+  const roundId = f.store.get('goal').reviewRound.id;
+  f.send('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.send('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['package-lock.json'] });
+  await fix(f);
+  const attempt = f.store.get('goal').attempts.at(-1);
+  const authority = { kind: 'agent', goalId: 'goal', attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision };
+  const raw = JSON.stringify({ schemaVersion: 1, goalId: 'goal', attemptId: attempt.id, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: 'review_fixer', target: attempt.target, output: { headSha: HEAD_C, summary: 'Resolved the conflict', replies: replies('fixed') } });
+  results.receive(authority, 'res1', raw);
+  await results.drain();
+
+  assert.ok(captured, 'the fake repository received a candidate() call');
+  assert.ok(captured.includes('package-lock.json'), 'a conflicted file outside the contract is resolvable');
+  assert.ok(captured.includes('src/a.mjs'), 'the contract owned areas stay in scope');
+  assert.ok(!captured.includes('docs/readme.md'), 'an unrelated path is not swept in');
+  assert.equal(f.store.get('goal').reviewRound.state, 'verifying');
+});

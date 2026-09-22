@@ -756,12 +756,14 @@ export function transition(before, command, authority) {
       requireValue(attempt.role === 'review_fixer', 'Not a review fixer', 'FORBIDDEN');
       requireValue(attempt.status === 'running', 'Attempt is not running', 'STALE_ATTEMPT');
       const round = goal.reviewRound;
-      requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && round.attemptId === attempt.id && attempt.target === round.prHeadSha, 'Review round target changed', 'STALE_TARGET');
+      const roundTarget = round?.mergeCommitSha ?? round?.prHeadSha;
+      requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && round.attemptId === attempt.id && attempt.target === roundTarget, 'Review round target changed', 'STALE_TARGET');
       const headSha = sha(input.headSha), replies = parseReviewReplies(input.replies, round.threads);
       const fixed = replies.some((reply) => reply.action === 'fixed');
-      requireValue(fixed ? headSha !== round.prHeadSha : headSha === round.prHeadSha, fixed ? 'A fix needs a new commit' : 'Replies without a fix must keep the pull request head', 'STALE_TARGET');
+      requireValue(fixed ? headSha !== roundTarget : headSha === roundTarget, fixed ? 'A fix needs a new commit' : 'Replies without a fix must keep the recorded round head', 'STALE_TARGET');
       round.replies = replies; round.summary = text(input.summary, 8000);
-      if (fixed) { round.fixHeadSha = headSha; round.state = 'verifying'; } else round.state = 'replying';
+      // A merged round verifies its merge commit even when the agent changed nothing.
+      if (fixed || round.mergeCommitSha) { round.fixHeadSha = headSha; round.state = 'verifying'; } else round.state = 'replying';
       attempt.status = 'succeeded';
       emit('review_fix_result_accepted', { roundId: round.id, headSha, fixed }); break;
     }

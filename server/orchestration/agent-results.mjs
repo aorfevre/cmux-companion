@@ -76,8 +76,11 @@ export class AgentResults {
           requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
           const round = goal.reviewRound;
           requireValue(round && round.attemptId === attempt.id, 'Review round changed', 'STALE_TARGET');
-          if (parsed.output.headSha !== round.prHeadSha) {
-            const proof = await this.repositories.candidate({ repositoryId: goal.repositoryId, attempt, headSha: parsed.output.headSha, ownedAreas: [...new Set(currentContract(goal).tasks.flatMap((entry) => entry.ownedAreas))] });
+          // A conflicted path is Companion's own merge output, so resolving it is
+          // in scope even when the contract does not own that file.
+          const ownedAreas = [...new Set([...currentContract(goal).tasks.flatMap((entry) => entry.ownedAreas), ...round.conflictPaths ?? []])];
+          if (parsed.output.headSha !== (round.mergeCommitSha ?? round.prHeadSha)) {
+            const proof = await this.repositories.candidate({ repositoryId: goal.repositoryId, attempt, headSha: parsed.output.headSha, ownedAreas });
             requireValue(proof.headSha === parsed.output.headSha, 'Git proof targets a different fix', 'STALE_TARGET');
             this.artifacts.get(proof.artifactId);
             requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
