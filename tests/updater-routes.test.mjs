@@ -1,20 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
+import http from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UpdateControl } from '../updater/src/control.mjs';
 import { registerUpdateRoutes } from '../server/update-routes.mjs';
-import { installUpdateMaintenance, managedWorkBusy } from '../server/update-maintenance.mjs';
+import { installUpdateMaintenance, managedWorkBusy, managedWorkBlockerDetails } from '../server/update-maintenance.mjs';
 import { sessionValue } from '../server/security.mjs';
 const sha = 'a'.repeat(40), token = 't'.repeat(32);
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'update-routes-')), control = new UpdateControl(join(root, 'control.sqlite'));
-  const app = Fastify({ ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
+  const app = Fastify({ ...(options.logger ? { logger: options.logger } : {}), ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
   const runtime = { app, scheduler: { sweep: null, verifications: { active: new Map() }, publications: { active: new Map() } }, store: { operations: () => [], list: () => [] } };
   const cmux = { workspaceList: async () => ({ workspaces: [] }), workspaceStatus: async () => ({ signals: { any_agent_running: false, any_agent_needs_input: false } }) };
-  const maintenance = installUpdateMaintenance({ runtime, control, cmux, serviceId: 'service' });
+  const maintenance = installUpdateMaintenance({ runtime, control, cmux, serviceId: 'service', ...(options.now ? { now: options.now } : {}) });
   app.post('/api/launch', async () => ({ launched: true }));
   await app.register(async scope => registerUpdateRoutes(scope, { control, token, maintenance }));
   const headers = { host: 'localhost', authorization: `Bearer ${token}`, origin: 'http://localhost' };
@@ -213,4 +214,63 @@ test('read-only readiness names in-flight effects and clears after they settle w
   assert.equal((await f.maintenance.acquire('diagnostic-001')).reason, 'A goal repository fetch is still running');
   f.runtime.scheduler.startupJobs.clear();
   assert.equal((await f.maintenance.acquire('diagnostic-001')).ready, true);
+});
+
+
+test('request diagnostics identify held mutations and log transitions without secrets or poll spam', async t => {
+  const logs = []; let clock = Date.parse('2026-09-22T12:00:00Z');
+  const f = await fixture(t, { now: () => clock, logger: { level: 'info', stream: { write: line => logs.push(JSON.parse(line)) } } });
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const waiting = new Promise(resolve => { release = resolve; });
+  f.app.post('/api/action/:id', async () => { entered(); await waiting; return {}; });
+  const change = f.send('/api/action/private-value?token=private-query', { secret: 'private-body' }, 'POST', { 'x-request-id': 'private-header' });
+  await started; clock += 65000;
+  const response = await f.send('/api/updater/updates', undefined, 'GET');
+  const [detail] = response.json().blockerDetails;
+  assert.equal(detail.route, '/api/action/:id'); assert.equal(detail.method, 'POST');
+  assert.match(detail.id, /^[a-f0-9-]{36}$/); assert.equal(detail.elapsedMs, 65000);
+  assert.equal(detail.clientDisconnected, false);
+  assert.equal(detail.observedAt, '2026-09-22T12:00:00.000Z');
+  f.maintenance.diagnostics();
+  const diagnosticLogs = () => logs.filter(log => log.event?.startsWith('update_blocker_'));
+  assert.equal(diagnosticLogs().length, 1);
+  assert.equal(diagnosticLogs()[0].blocker.id, detail.id);
+  assert.doesNotMatch(JSON.stringify([response.json(), diagnosticLogs()]), /private-value|private-query|private-body|private-header/);
+  release(); await change;
+  assert.deepEqual(f.maintenance.diagnostics(), []);
+  assert.deepEqual(diagnosticLogs().map(log => log.event), ['update_blocker_active', 'update_blocker_cleared']);
+});
+
+test('disconnected HTTP client remains identifiable and does not bypass restart safety', async t => {
+  const f = await fixture(t); let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const waiting = new Promise(resolve => { release = resolve; });
+  f.app.post('/api/held', async () => { entered(); await waiting; return {}; });
+  await f.app.listen({ host: '127.0.0.1', port: 0 });
+  const request = http.request(new URL('/api/held', f.app.listeningOrigin), { method: 'POST' });
+  request.on('error', () => {}); request.end(); await started;
+  const before = f.maintenance.diagnostics()[0]; request.destroy();
+  for (let i = 0; i < 50 && !f.maintenance.diagnostics()[0].clientDisconnected; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  const after = f.maintenance.diagnostics()[0];
+  assert.equal(after.id, before.id); assert.equal(after.clientDisconnected, true);
+  f.control.request({ id: 'disconnect-001', sha, whenIdle: true });
+  assert.equal((await f.maintenance.acquire('disconnect-001')).ready, false);
+  release();
+});
+
+test('each managed blocker exposes only the identifiers for its owning work', () => {
+  const attempt = { id: 'attempt-1', operationId: 'agent-op', workerState: 'unknown', prompt: 'private-prompt' };
+  const runtime = { scheduler: { startupJobs: new Map([['fetch-goal', Promise.resolve()]]), verifications: { active: new Map([['verify-op', { goalId: 'verify-goal' }]]) }, publications: { active: new Map([['publish-op', { goalId: 'publish-goal' }]]) } }, store: {
+    operations: () => [{ id: 'pending-op', goalId: 'goal-1', status: 'dispatching', path: '/private/path' }, { status: 'completed' }],
+    list: () => [{ id: 'goal-1', attempts: [attempt], verificationRuns: [{ operationId: 'worker-op', workerState: 'unknown' }], results: [{ id: 'result-1', operationId: 'result-op', status: 'pending', output: 'private-output' }] }],
+  } };
+  const details = managedWorkBlockerDetails(runtime);
+  assert.deepEqual(details.map(detail => detail.code), ['repository_fetch', 'verification_process', 'publication', 'managed_operation', 'managed_agent', 'verification_worker', 'pending_result']);
+  assert.equal(details[0].goalId, 'fetch-goal');
+  assert.equal(details[1].operationId, 'verify-op'); assert.equal(details[2].goalId, 'publish-goal');
+  assert.equal(details[3].state, 'dispatching'); assert.equal(details[4].attemptId, 'attempt-1');
+  assert.equal(details[5].operationId, 'worker-op'); assert.equal(details[6].resultId, 'result-1');
+  assert.doesNotMatch(JSON.stringify(details), /private/);
+  assert.equal(managedWorkBlockerDetails(null)[0].code, 'workflow_unavailable');
 });

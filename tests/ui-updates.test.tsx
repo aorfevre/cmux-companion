@@ -74,3 +74,18 @@ test('readiness names the blocking effect and explains cmux continuity', async (
   await userEvent.click(screen.getByRole('button', { name: 'Update now' }));
   assert.ok(screen.getByRole('group', { name: 'Confirm update' }).textContent?.includes('Existing cmux sessions remain open'));
 });
+
+
+test('readiness explains disconnected requests with safe diagnostic identifiers and elapsed time', async () => {
+  const state = initial();
+  state.blockers = ['A Companion change request is still in progress'];
+  state.blockerDetails = [{ id: 'diagnostic-1', code: 'http_request', message: state.blockers[0], method: 'POST', route: '/api/action/:id', observedAt: '2026-09-22T12:00:00Z', elapsedMs: 65000, clientDisconnected: true },
+    { id: 'managed-1', code: 'managed_agent', message: 'A managed agent requires a verified handoff or completion', observedAt: '2026-09-22T12:00:00Z', elapsedMs: 3700000, goalId: 'goal-1', operationId: 'op-1', attemptId: 'attempt-1', state: 'unknown', resultId: 'result-1' }];
+  api(state); const view = render(<UpdateSettings readOnly />);
+  assert.ok(await screen.findByText('What is preventing a restart'));
+  assert.ok(screen.getByText(/Client disconnected. Completion is unconfirmed/));
+  assert.ok(screen.getByText('Observed for 1m 5s')); assert.ok(screen.getByText('Observed for 1h 1m · unknown'));
+  assert.ok(screen.getByText('POST /api/action/:id')); assert.ok(screen.getByText('diagnostic-1')); assert.ok(screen.getByText('goal-1'));
+  view.unmount(); state.blockers = []; state.blockerDetails = []; api(state); render(<UpdateSettings readOnly />);
+  assert.ok(await screen.findByText('No active restart blockers. Update eligibility and CI checks still apply.'));
+});
