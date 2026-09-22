@@ -401,3 +401,39 @@ test('abort at the promotion send boundary returns cancellation and leaves the P
   assert.equal(f.github.pulls[0].draft, true); assert.equal(f.github.promotions.length, 0);
   assert.equal((await f.publisher.publish(f.input, { signal: controller.signal })).status, 'cancelled');
 });
+
+test('GitHub CLI lists unresolved review threads through bounded GraphQL pages and fails closed', async (t) => {
+  const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
+  const f = await fixture(t), calls = [];
+  const node = (id, resolved, path = 'src/a.mjs') => ({ id, isResolved: resolved, path, line: 4, comments: { nodes: [{ author: { login: 'coderabbitai', __typename: 'Bot' }, body: 'Fix this.' }] } });
+  let pages = [
+    { data: { repository: { pullRequest: { number: 3, reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [node('PRRT_1', false), node('PRRT_2', true)] } } } } },
+    { data: { repository: { pullRequest: { number: 3, reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [node('PRRT_3', false, null)] } } } } },
+  ];
+  const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: {}, execute: async (argv, input) => { calls.push({ argv, input }); return JSON.stringify(pages.shift()); } });
+  const threads = await cli.listReviewThreads('repo', 3);
+  assert.deepEqual(threads.map((thread) => thread.id), ['PRRT_1', 'PRRT_3']);
+  assert.equal(threads[0].isBot, true); assert.equal(threads[1].path, null);
+  assert.deepEqual(calls[0].argv, ['api', '--hostname', 'github.com', 'graphql', '--input', '-']);
+  assert.equal(JSON.parse(calls[1].input).variables.after, 'c1');
+  pages = [{ data: { repository: { pullRequest: { number: 3, reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [] } } } } }, { errors: [{ message: 'rate limited' }] }];
+  await assert.rejects(cli.listReviewThreads('repo', 3), { code: 'GITHUB_OPERATION_UNCERTAIN' });
+  pages = [{ data: { repository: { pullRequest: { number: 4, reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] } } } } }];
+  await assert.rejects(cli.listReviewThreads('repo', 3), { code: 'OWNERSHIP_UNCERTAIN' });
+});
+
+test('GitHub CLI thread writes send JSON on stdin and honour the beforeSend claim', async (t) => {
+  const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
+  const f = await fixture(t), calls = [];
+  const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: {}, execute: async (argv, input) => { calls.push({ argv, input }); return JSON.stringify({ data: { addPullRequestReviewThreadReply: { comment: { id: 'C1' } }, resolveReviewThread: { thread: { isResolved: true } } } }); } });
+  await cli.replyToThread('repo', 'PRRT_1', 'Fixed in the latest commit.');
+  assert.deepEqual(calls[0].argv, ['api', '--hostname', 'github.com', 'graphql', '--input', '-']);
+  assert.equal(JSON.parse(calls[0].input).variables.threadId, 'PRRT_1');
+  assert.ok(!calls[0].argv.join(' ').includes('Fixed in'));
+  await cli.resolveThread('repo', 'PRRT_1');
+  assert.equal(JSON.parse(calls[1].input).variables.threadId, 'PRRT_1');
+  await cli.replyToThread('repo', 'PRRT_2', 'x', { beforeSend: () => false });
+  assert.equal(calls.length, 2);
+  await assert.rejects(cli.replyToThread('repo', 'bad id', 'x'));
+  await assert.rejects(cli.replyToThread('unknown', 'PRRT_1', 'x'), { code: 'UNSUPPORTED_CAPABILITY' });
+});
