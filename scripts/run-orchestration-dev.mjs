@@ -1,4 +1,4 @@
-import { object } from '../server/orchestration/domain/contracts.mjs';
+import { DomainError, object } from '../server/orchestration/domain/contracts.mjs';
 import { existsSync, renameSync, realpathSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { writeFile } from 'node:fs/promises';
@@ -101,6 +101,10 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
           const listThreads = fixtureGithub.listReviewThreads.bind(fixtureGithub);
           // Seed at read time; a released fixture must not depend on a polling timer.
           fixtureGithub.listReviewThreads = async (repositoryId, number) => {
+            // Two distinct faults, so the browser can tell a configuration
+            // fault from an unreachable GitHub.
+            if (existsSync(join(directory, 'release-threads-offline'))) throw new DomainError('GITHUB_OPERATION_UNCERTAIN', 'GitHub request did not return confirmed success');
+            if (existsSync(join(directory, 'release-threads-uncapable'))) throw new DomainError('UNSUPPORTED_CAPABILITY', 'Publication capability reviewThreads is unavailable in this configuration');
             if (existsSync(join(directory, 'release-seed-threads')) && !fixtureGithub.threads.has(number)) fixtureGithub.threads.set(number, [
               { id: `PRRT_${number}_1`, path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Document why module A returns two.', isBot: true },
               { id: `PRRT_${number}_2`, path: null, line: null, author: 'alex', body: 'Consider a rename later.', isBot: false },

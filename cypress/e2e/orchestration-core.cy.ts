@@ -136,6 +136,18 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       cy.task<string>('orchestrationGit', { branch: composition.attempt.branch, file: 'src/b.mjs' }).should('include', 'return 3');
       cy.task<string>('orchestrationGit', { branch: evidence.pulls[0].branch, file: 'src/composition.mjs' }).should('include', 'aSource() + bSource()');
     });
+    // A configuration fault and an unreachable GitHub must read differently:
+    // one says a retry is useless, the other invites a retry.
+    cy.task('orchestrationRelease', 'threads-uncapable');
+    cy.findByRole('button', { name: 'Address review comments', timeout: 30000 }).should('be.enabled').click();
+    cy.findByLabelText('Review round phase', { timeout: 30000 }).should('contain.text', 'unavailable in this configuration').and('not.contain.text', 'online');
+    cy.task('orchestrationRelease', 'clear-threads-uncapable');
+    cy.findByRole('button', { name: 'Recover goal', timeout: 30000 }).click();
+    cy.task('orchestrationRelease', 'threads-offline');
+    cy.findByRole('button', { name: 'Address review comments', timeout: 30000 }).should('be.enabled').click();
+    cy.findByLabelText('Review round phase', { timeout: 30000 }).should('contain.text', 'Retry when your Mac is online');
+    cy.task('orchestrationRelease', 'clear-threads-offline');
+    cy.findByRole('button', { name: 'Recover goal', timeout: 30000 }).click();
     cy.task('orchestrationRelease', 'seed-threads');
     cy.findByRole('button', { name: 'Address review comments', timeout: 30000 }).should('be.enabled').click();
     cy.findByRole('button', { name: 'Address review comments', timeout: 60000 }).should('be.enabled');
@@ -144,9 +156,10 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.contains(/Addressed · 2 threads/).should('be.visible');
     cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', status: 'delivered' }).then(evidence => {
       const goal = evidence.goals.find(entry => entry.title === 'Build the parallel fixture')!;
-      expect(goal.reviewRounds!).to.have.length(1);
-      expect(goal.reviewRounds![0].outcome).to.equal('addressed');
-      expect(goal.pr!.headSha).to.equal(goal.reviewRounds![0].fixHeadSha);
+      // The two fault rounds are recorded before the successful one.
+      expect(goal.reviewRounds!).to.have.length(3);
+      expect(goal.reviewRounds!.map(round => round.outcome)).to.deep.equal(['failed', 'failed', 'addressed']);
+      expect(goal.pr!.headSha).to.equal(goal.reviewRounds!.at(-1)!.fixHeadSha);
       expect(goal.mergeSync).to.equal(undefined);
       expect(evidence.replies).to.have.length(2);
       expect(evidence.resolutions).to.have.length(1);

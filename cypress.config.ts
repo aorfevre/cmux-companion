@@ -60,10 +60,14 @@ export default defineConfig({
             return head;
           },
           orchestrationRelease(stage: string) {
-            if (!['siblings', 'final', 'reject-plan', 'seed-threads', 'reset'].includes(stage)) throw new Error('Unknown fixture barrier');
-            for (const name of stage === 'reset' ? ['siblings', 'final', 'reject-plan', 'seed-threads'] : [stage]) {
-              const path = join(manifest.directory, `release-${name}`);
-              if (stage === 'reset') { if (existsSync(path)) unlinkSync(path); }
+            // A fault barrier is also cleared on its own, so one journey can
+            // observe a failure and then the recovered path.
+            const stages = ['siblings', 'final', 'reject-plan', 'seed-threads', 'threads-offline', 'threads-uncapable'];
+            const clear = stage.startsWith('clear-'), name = clear ? stage.slice(6) : stage;
+            if (!stages.includes(name) && stage !== 'reset') throw new Error('Unknown fixture barrier');
+            for (const entry of stage === 'reset' ? stages : [name]) {
+              const path = join(manifest.directory, `release-${entry}`);
+              if (stage === 'reset' || clear) { if (existsSync(path)) unlinkSync(path); }
               else writeFileSync(path, 'released', { mode: 0o600 });
             }
             return null;
