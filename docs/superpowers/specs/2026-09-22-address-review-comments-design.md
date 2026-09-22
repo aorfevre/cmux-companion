@@ -68,9 +68,12 @@ thread, resolves the threads that were fixed, and returns the goal to
   fix head. All checks passed moves the round to `pushing`. A failed check or
   an unknown worker fails the round.
 - `record_review_fix_push` (system). Runs after the remote branch head equals
-  the fix head. Sets `pr.headSha` and `publication.headSha` to the fix head,
-  clears `mergeSync`, moves the round to `replying`. When it resolves an
-  `unknown` round, it also clears that round's hold reason.
+  the fix head. Sets `pr.headSha` to the fix head, clears `mergeSync`, moves the
+  round to `replying`. When it resolves an `unknown` round, it also clears that
+  round's hold reason. It never edits the saved publication operation: that plan
+  is the identity of the original request, and the adapter refuses a plan that
+  differs from its recorded request. `publication.headSha` therefore keeps the
+  head that was approved and first published, as historical evidence.
 - `settle_review_fix` (system). Records posted, unconfirmed and resolved thread
   ids, sets status `delivered` and appends the round to `reviewRounds`.
 - `fail_review_fix` (system). Marks the round `failed`, or `unknown` for an
