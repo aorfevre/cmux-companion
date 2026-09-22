@@ -174,8 +174,8 @@ export interface GitHubPort {
   create(input: PublicationInput, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface PublicationPort {
-  observeMerge?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
-  reviewThreads?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<ReviewThread[]>;
+  observeMerge?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged'; mergeable: MergeableVerdict }>;
+  reviewThreads?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<{ threads: ReviewThread[]; mergeable: MergeableVerdict }>;
   pushFix?(input: PublicationInput, fix: { roundId: string; expectedHead: string; headSha: string }): Promise<'pushed' | 'remote_moved' | 'unknown'>;
   replyAndResolve?(input: PublicationInput, fix: { roundId: string; replies: ReviewReply[] }): Promise<{ posted: string[]; unconfirmed: string[]; resolved: string[] }>;
   publish(input: PublicationInput, options?: { signal?: AbortSignal }): Promise<PublicationResult>;

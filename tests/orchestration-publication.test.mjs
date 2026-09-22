@@ -452,7 +452,7 @@ async function deliveredFixture(t) {
 
 test('review threads are read for the exact saved pull request and fail closed when unavailable', async (t) => {
   const f = await deliveredFixture(t);
-  assert.deepEqual((await f.publisher.reviewThreads(f.input, f.pr)).map(thread => thread.id), ['PRRT_1', 'PRRT_2']);
+  assert.deepEqual((await f.publisher.reviewThreads(f.input, f.pr)).threads.map(thread => thread.id), ['PRRT_1', 'PRRT_2']);
   await assert.rejects(f.publisher.reviewThreads(f.input, { ...f.pr, number: 9 }));
   f.github.threadsUnavailable = true;
   await assert.rejects(f.publisher.reviewThreads(f.input, f.pr));

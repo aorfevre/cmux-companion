@@ -227,8 +227,8 @@ function coordinatorFixture(t) {
   store.apply({ id: 'seed', goalId: 'goal', expectedVersion: 0, type: 'create_goal', payload: {} }, { kind: 'user' }, () => ({ goal: { ...seed.goal, id: 'goal' }, events: [], intents: [] }));
   const calls = { threads: 0, pushes: [], replies: [] };
   const publisher = {
-    threads: threads(), threadsError: null, pushResult: 'pushed', replyOutcome: { posted: ['PRRT_1', 'PRRT_2'], unconfirmed: [], resolved: ['PRRT_1'] },
-    async reviewThreads() { calls.threads++; if (publisher.threadsError) throw publisher.threadsError; return publisher.threads; },
+    threads: threads(), mergeable: 'mergeable', threadsError: null, pushResult: 'pushed', replyOutcome: { posted: ['PRRT_1', 'PRRT_2'], unconfirmed: [], resolved: ['PRRT_1'] },
+    async reviewThreads() { calls.threads++; if (publisher.threadsError) throw publisher.threadsError; return { threads: publisher.threads, mergeable: publisher.mergeable }; },
     async pushFix(plan, fix) { calls.pushes.push(fix); return publisher.pushResult; },
     async replyAndResolve(plan, fix) { calls.replies.push(fix); return publisher.replyOutcome; },
   };
@@ -377,4 +377,27 @@ test('a declared fixer capability leaves the round fixing so the scheduler can d
   assert.equal(round.state, 'fixing');
   assert.equal(round.error, undefined);
   assert.equal(f.store.ready().filter((work) => work.role === 'review_fixer').length, 1);
+});
+
+test('the publication adapter returns the mergeable verdict with the threads', async () => {
+  const calls = [];
+  const github = {
+    identity: () => 'fake',
+    async readPull(repositoryId, number) { calls.push(['readPull', number]); return { number, url: 'https://example.test/pr/1', state: 'open', mergeable: 'conflicting' }; },
+    async listReviewThreads() { calls.push(['threads']); return [thread('PRRT_1')]; },
+    async find() { return []; },
+    async create() {},
+  };
+  const { GitHubPublication } = await import('../server/orchestration/adapters/github.mjs');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const directory = mkdtempSync(join(tmpdir(), 'companion-pub-'));
+  try {
+    const publication = new GitHubPublication({ directory, remote: { identity: () => 'r', async head() { return null; }, async push() {} }, github });
+    const observed = await publication.reviewThreads({ repositoryId: 'repo' }, { number: 1, url: 'https://example.test/pr/1', headSha: HEAD_B });
+    assert.equal(observed.mergeable, 'conflicting');
+    assert.equal(observed.threads.length, 1);
+    assert.deepEqual(calls, [['readPull', 1], ['threads']]);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
