@@ -59,19 +59,36 @@ thread, resolves the threads that were fixed, and returns the goal to
 - `record_review_threads` (system). Stores
   `{ id, path, line, author, body, isBot }[]`. Zero threads settles the round
   with outcome `nothing_to_address`.
-- `settle_review_fix` (system). Records pushed head, posted replies, resolved
-  thread ids. Sets `pr.headSha` and `publication.headSha` to the new head,
-  clears `mergeSync`, sets status `delivered`, appends the round to
-  `reviewRounds`.
+- `accept_review_fix_result` (system). Validates the fixer result against the
+  recorded threads and Git proof, then moves the round to `verifying` when a
+  reply is `fixed`, or straight to `replying` when no reply is `fixed`.
+- `request_review_fix_verification` (system). Pins the verification operation
+  id before the checks run, so a restart resumes the same run.
+- `record_review_fix_verification` (system). Records the check results for the
+  fix head. All checks passed moves the round to `pushing`. A failed check or
+  an unknown worker fails the round.
+- `record_review_fix_push` (system). Runs after the remote branch head equals
+  the fix head. Sets `pr.headSha` and `publication.headSha` to the fix head,
+  clears `mergeSync`, moves the round to `replying`. When it resolves an
+  `unknown` round, it also clears that round's hold reason.
+- `settle_review_fix` (system). Records posted, unconfirmed and resolved thread
+  ids, sets status `delivered` and appends the round to `reviewRounds`.
+- `fail_review_fix` (system). Marks the round `failed`, or `unknown` for an
+  uncertain push only, with a sanitized message.
 - Attempt role `review_fixer`, background mode, worktree at the PR head on a
-  private branch. Result: `{ headSha, summary, replies: [{ threadId, action:
-  'fixed' | 'declined' | 'comment', body }] }`. Exactly one reply per thread id.
-  A `fixed` reply requires `headSha` to differ from the PR head. Existing result
-  intake, rejection and hold rules apply.
+  private branch. The fixer uses the integrator's team assignment and tool set;
+  no new team role is configured. Result: `{ headSha, summary, replies: [{
+  threadId, action: 'fixed' | 'declined' | 'comment', body }] }`. Exactly one
+  reply per thread id. A `fixed` reply requires `headSha` to differ from the PR
+  head; replies alone require `headSha` equal to the PR head. A fix head needs
+  the same Git proof as a repair: on the attempt branch, descending from the PR
+  head, inside the contract's owned areas. Existing result intake, rejection
+  and hold rules apply.
 - Failure at any step creates a hold with reason kind `review_fix`. Recovery
-  returns the goal to `delivered` with the old PR head and records outcome
-  `failed`. An uncertain push marks the round `unknown`; the goal stays on hold
-  until observation of the remote branch head confirms one outcome.
+  ends the round with outcome `failed` and returns the goal to `delivered`. The
+  PR head stays at the old head unless `record_review_fix_push` already ran. An
+  uncertain push marks the round `unknown`; the goal stays on hold until
+  observation of the remote branch head confirms one outcome.
 
 ## Adapters and effects
 
@@ -88,8 +105,10 @@ thread, resolves the threads that were fixed, and returns the goal to
   `--force-with-lease`, reply, resolve, settle.
 - The fixer prompt: fix valid findings inside the approved scope, decline with
   a reason otherwise, never change unrelated files, never push.
-- The fixer worktree and the verification worktree are removed on settlement or
-  failure through the existing cleanup path.
+- A reply whose request was sent but whose response was lost is recorded as
+  unconfirmed, never re-sent. The round card shows it as unconfirmed.
+- The verification worktree is removed when its run stops. The fixer worktree
+  follows the existing manual cleanup of delivered goals.
 
 ## API and UI
 
