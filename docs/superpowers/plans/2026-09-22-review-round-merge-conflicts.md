@@ -810,8 +810,14 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `server/orchestration/review-fix-coordinator.mjs`
-- Modify: `server/orchestration/production.mjs`
+- Modify: `server/orchestration/scheduler.mjs:30` (the coordinator is built here, not in `production.mjs`)
+- Modify: `server/orchestration/create-runtime.mjs:32, 45, 70`
+- Modify: `server/orchestration/production.mjs:78-82`
 - Test: `tests/orchestration-review-fix.test.mjs`
+
+**Naming:** `Scheduler` already owns `this.merges`, the `MergeCoordinator`. The
+review merge port is therefore called `reviewMerges` everywhere, so the two
+never read as the same thing.
 
 The coordinator gains one branch for the `merging` state. It calls `prepareReviewMerge` under the ownership fence, then records the result. A missing method is a configuration fault, as every other capability is.
 
@@ -825,7 +831,7 @@ test('the coordinator prepares the merge and records it', async (t) => {
   c.publisher.threads = [];
   c.publisher.mergeable = 'conflicting';
   const prepared = [];
-  c.coordinator.merges = { async prepareReviewMerge(input) { prepared.push(input); return { mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: ['src/a.mjs'] }; } };
+  c.coordinator.reviewMerges = { async prepareReviewMerge(input) { prepared.push(input); return { mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: ['src/a.mjs'] }; } };
   c.send('request_review_fix', {}, 'user');
   await c.coordinator.run(); await settle(c.coordinator);
   assert.equal(c.store.get('goal').reviewRound.state, 'merging');
@@ -842,7 +848,7 @@ test('a missing merge capability fails the round instead of waiting for a retry'
   const c = coordinatorFixture(t);
   c.publisher.threads = [];
   c.publisher.mergeable = 'conflicting';
-  c.coordinator.merges = {};
+  c.coordinator.reviewMerges = {};
   c.send('request_review_fix', {}, 'user');
   await c.coordinator.run(); await settle(c.coordinator);
   await c.coordinator.run(); await settle(c.coordinator);
@@ -869,9 +875,9 @@ Expected: FAIL, because the round stays in `merging`.
 In `server/orchestration/review-fix-coordinator.mjs`, replace the constructor signature and its first assignment line:
 
 ```javascript
-  /** @param {{ service: import('./service.mjs').OrchestrationService; publisher: import('./types.d.ts').PublicationPort; merges?: Pick<import('./types.d.ts').RepositoryPort, 'prepareReviewMerge'>; ownership: { assertOwned(): void }; now?: () => number; id?: () => string; onError?: (error: unknown) => void }} options */
-  constructor({ service, publisher, merges, ownership, now = Date.now, id = randomUUID, onError = () => {} }) {
-    this.service = service; this.store = service.store; this.agents = service.agents; this.publisher = publisher; this.merges = merges; this.ownership = ownership;
+  /** @param {{ service: import('./service.mjs').OrchestrationService; publisher: import('./types.d.ts').PublicationPort; reviewMerges?: Pick<import('./types.d.ts').RepositoryPort, 'prepareReviewMerge'>; ownership: { assertOwned(): void }; now?: () => number; id?: () => string; onError?: (error: unknown) => void }} options */
+  constructor({ service, publisher, reviewMerges, ownership, now = Date.now, id = randomUUID, onError = () => {} }) {
+    this.service = service; this.store = service.store; this.agents = service.agents; this.publisher = publisher; this.reviewMerges = reviewMerges; this.ownership = ownership;
 ```
 
 - [ ] **Step 4: Record the verdict and drive the merge**
@@ -887,8 +893,8 @@ Then add a branch immediately after the closing brace of the `fetching` branch, 
 ```javascript
       } else if (round.state === 'merging') {
         this.spawn(goal, async (round, plan, pr) => {
-          requireValue(this.merges?.prepareReviewMerge, 'Review merges are unavailable in this configuration', 'UNSUPPORTED_CAPABILITY');
-          const prepared = await this.merges.prepareReviewMerge({ goalId: goal.id, repositoryId: goal.repositoryId, roundId: round.id, prHeadSha: round.prHeadSha, baseBranch: goal.baseBranch });
+          requireValue(this.reviewMerges?.prepareReviewMerge, 'Review merges are unavailable in this configuration', 'UNSUPPORTED_CAPABILITY');
+          const prepared = await this.reviewMerges.prepareReviewMerge({ goalId: goal.id, repositoryId: goal.repositoryId, roundId: round.id, prHeadSha: round.prHeadSha, baseBranch: goal.baseBranch });
           if (this.stopped) return;
           this.ownership.assertOwned();
           if (this.current(goal.id, round.id)) this.record(goal.id, 'record_review_merge', { roundId: round.id, ...prepared });
@@ -897,23 +903,63 @@ Then add a branch immediately after the closing brace of the `fetching` branch, 
 
 Also replace the `UNSUPPORTED_CAPABILITY` message branch inside `spawn` so a merge fault reads correctly; it already handles that code with a generic sentence, so no change is needed there.
 
-- [ ] **Step 5: Compose the adapter in production**
+- [ ] **Step 5: Compose the adapter through the runtime factory**
 
-In `server/orchestration/production.mjs`, find where `ReviewFixCoordinator` is constructed. Import the adapter at the top of the file:
+`ReviewMerge` needs a remote, and only the production layer knows the remote
+destinations. It therefore follows the existing `createPublisher` pattern: the
+runtime takes a factory, and production supplies it. Three files change.
+
+**`server/orchestration/scheduler.mjs`.** Accept the port and pass it on.
+Add `reviewMerges` to the destructured options and to the options JSDoc:
+
+```javascript
+  constructor({ service, repositories, integrations, verifier, publisher, reviewMerges, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, planReviewEnabled = () => true, prepareGoal, onError = () => {} }) {
+```
+
+In the same options JSDoc type, add after the `publisher` entry:
+
+```
+reviewMerges?: Pick<import('./types.d.ts').RepositoryPort, 'prepareReviewMerge'>;
+```
+
+Then replace line 30:
+
+```javascript
+    this.reviewFixes = publisher ? new ReviewFixCoordinator({ service, publisher, reviewMerges, ownership, id, onError }) : null;
+```
+
+**`server/orchestration/create-runtime.mjs`.** Add an optional factory beside
+`createPublisher`. In the options JSDoc, after the `createPublisher` line:
+
+```
+ * createReviewMerge?: (context: { repositories: GitRepository }) => Pick<import('./types.d.ts').RepositoryPort, 'prepareReviewMerge'>;
+```
+
+Add `createReviewMerge` to the destructured parameter list on the
+`export async function createRuntime({ ... })` line, then pass it to the
+scheduler on line 70 by adding this option to the existing `new Scheduler({...})`
+call:
+
+```javascript
+      reviewMerges: createReviewMerge ? createReviewMerge({ repositories }) : undefined,
+```
+
+**`server/orchestration/production.mjs`.** Import the adapter:
 
 ```javascript
 import { ReviewMerge } from './adapters/review-merge.mjs';
 ```
 
-Construct it next to the existing repository adapter, and pass it to the coordinator. The repository adapter instance and the remote adapter instance already exist in that scope; use the same variable names the file already uses:
+Then add a `createReviewMerge` factory beside the existing `createPublisher`
+one, reusing the same remote construction that `createPublisher` already uses:
 
 ```javascript
-  const reviewMerge = new ReviewMerge({ repositories, remote });
+      createReviewMerge: ({ repositories }) => new ReviewMerge({ repositories,
+        remote: new GitRemote({ repositories, directory: join(config.storage.resources, 'remote-stage'), destinations: new Map(config.repositories.map(repo => [repo.id, repo.remote])) }) }),
 ```
 
-Add `merges: reviewMerge` to the `ReviewFixCoordinator` options object.
-
-Run `grep -n "ReviewFixCoordinator" -B 20 server/orchestration/production.mjs` first to read the exact variable names in scope, then make the edit against what that prints.
+Read each of the three call sites before editing. Keep every existing option in
+place; add, never replace.
 
 - [ ] **Step 6: Run the tests, the type check and the lint**
 
