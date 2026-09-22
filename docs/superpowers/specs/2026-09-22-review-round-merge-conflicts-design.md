@@ -56,11 +56,12 @@ own, with no press. Every other round stays manual.
   even with zero threads. An `unknown` verdict merges too: GitHub has not
   computed an answer, and the local merge produces the true one.
 - New round fields: `trigger` (`user` or `conflict`), `mergeable`,
-  `mergedBaseSha`, `conflictPaths` and `mergeTreeSha`.
-- `record_review_merge` (system). Records `mergedBaseSha`, `conflictPaths` and
-  `mergeTreeSha` after Companion prepares the merge. Zero conflicted paths and
+  `mergedBaseSha`, `mergeCommitSha` and `conflictPaths`.
+- `record_review_merge` (system). Records `mergedBaseSha`, `mergeCommitSha` and
+  `conflictPaths` after Companion prepares the merge. Zero conflicted paths and
   zero threads move the round to `verifying` with `fixHeadSha` set to the merge
-  commit; no attempt is dispatched. Any other case moves the round to `fixing`.
+  commit; no attempt is dispatched. Any other case moves the round to `fixing`,
+  and the fixer attempt targets the merge commit.
 - `accept_review_fix_result` today requires the reported head to equal the pull
   request head when no reply is `fixed`. A round with a recorded
   `mergedBaseSha` requires the reported head to differ from the pull request
@@ -78,17 +79,25 @@ own, with no press. Every other round stays manual.
 
 ## Scope proof
 
-The fix head must descend from the pull request head, which a merge commit
-does through its first parent. The owned-areas rule changes for a merged round
-only. Companion computes the expected merge tree with
-`git merge-tree --write-tree` and records its SHA. The agent's changes are
-measured from that tree, not from the pull request head, so the target branch's
-own files never count as scope violations.
+Companion always creates the merge commit, clean or conflicted.
+`git merge-tree --write-tree` returns a tree in both cases; a conflicted tree
+carries the conflict markers, exactly as the existing integration path already
+commits one for an integrator. The merge commit has two parents, the pull
+request head and the merged target head, so the fix head still descends from
+the pull request head.
+
+The fixer works from that merge commit, not from the pull request head. Its
+recorded base is the merge commit. The existing candidate proof therefore needs
+no new comparison: it measures the agent's delta from the merge commit, so the
+target branch's own files never appear in that delta, and the merge commit's
+second parent falls outside the range it inspects.
 
 A conflicted path outside the contract's owned areas is still legitimate work.
 Companion records the conflicted path list from its own merge, never from the
 agent's report, and accepts changes inside the owned areas plus exactly those
-paths. Every set is computed by Companion.
+paths. Every set is computed by Companion. An agent that changes nothing
+reports the merge commit itself, and Companion skips the delta proof for that
+one case.
 
 ## Adapters and effects
 
@@ -104,11 +113,17 @@ paths. Every set is computed by Companion.
   the target moves between the two reads. The merge, the verification and the
   proof all use `mergedBaseSha`.
 - New repository port method `prepareReviewMerge`. It imports the target head
-  with the existing `fetchBase`, provisions the fixer worktree at the pull
-  request head, merges the recorded target head, and returns the merge tree
-  SHA, the conflicted paths and, for a clean merge, the merge commit SHA. It is
-  idempotent per round id: a repeat call observes the recorded evidence rather
-  than merging again.
+  with the existing `fetchBase`, computes the merge with
+  `git merge-tree --write-tree`, commits the resulting tree with the pull
+  request head and the merged target head as parents, and records the merge
+  commit under an owned ref. It returns the merged target head, the merge
+  commit and the conflicted paths. It is idempotent per round id: a repeat call
+  observes the recorded evidence rather than merging again.
+- New repository port method `provisionReviewMerge`. The scheduler calls it in
+  place of `provision` for a `review_fixer` attempt whose round recorded a
+  merge. It provisions the attempt worktree at the merge commit, so the agent
+  sees the conflict markers in place. It mirrors the existing
+  `provisionRepair`.
 - The `review_fixer` prompt states the merge state: the recorded conflicted
   paths, the merged target head, and the rule that the resolution and the
   thread answers are one commit. The agent never merges, fetches or pushes.
@@ -152,6 +167,8 @@ push, reply or resolve steps. No new project setting.
   Verification: service test against a disposable Git repository.
 - `prepareReviewMerge` called twice for one round merges once.
   Verification: repository adapter test.
+- The merge commit carries the pull request head and the merged target head as
+  its two parents. Verification: repository adapter test.
 - `readPull` reports an unexpected mergeable value as `unknown`.
   Verification: GitHub CLI boundary test.
 - One observed conflict starts exactly one automatic round; a second
