@@ -61,7 +61,8 @@ own, with no press. Every other round stays manual.
   `conflictPaths` after Companion prepares the merge. Zero conflicted paths and
   zero threads move the round to `verifying` with `fixHeadSha` set to the merge
   commit; no attempt is dispatched. Any other case moves the round to `fixing`,
-  and the fixer attempt targets the merge commit.
+  and the fixer attempt targets the merge commit instead of the pull request
+  head. `accept_review_fix_result` validates the attempt against that target.
 - `accept_review_fix_result` today requires the reported head to equal the pull
   request head when no reply is `fixed`. A round with a recorded
   `mergedBaseSha` requires the reported head to differ from the pull request
@@ -119,11 +120,11 @@ one case.
   commit under an owned ref. It returns the merged target head, the merge
   commit and the conflicted paths. It is idempotent per round id: a repeat call
   observes the recorded evidence rather than merging again.
-- New repository port method `provisionReviewMerge`. The scheduler calls it in
-  place of `provision` for a `review_fixer` attempt whose round recorded a
-  merge. It provisions the attempt worktree at the merge commit, so the agent
-  sees the conflict markers in place. It mirrors the existing
-  `provisionRepair`.
+- No new provisioning method. A `review_fixer` attempt already takes its
+  recorded target as its base, and the scheduler provisions a worktree at that
+  base. A merged round exposes the merge commit as the target, so the agent
+  starts on the merge with its conflict markers in place. The merge commit is
+  pinned under a Companion-owned ref before the attempt is offered.
 - The `review_fixer` prompt states the merge state: the recorded conflicted
   paths, the merged target head, and the rule that the resolution and the
   thread answers are one commit. The agent never merges, fetches or pushes.
