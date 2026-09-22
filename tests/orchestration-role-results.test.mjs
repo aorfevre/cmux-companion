@@ -126,7 +126,32 @@ test('the review fixer prompt pins the threads, forbids pushing and demands one 
   assert.equal(context.requiredAccess, 'assigned-worktree');
   assert.equal(context.reviewThreads.length, 1); assert.equal(context.reviewThreads[0].id, 'PRRT_1');
   assert.equal(context.prHeadSha, f.goal.reviewRound.prHeadSha);
-  assert.match(prompt, /Never push/); assert.match(prompt, /exactly one reply per thread/i);
+  assert.match(prompt, /never push/i); assert.match(prompt, /exactly one reply per thread/i);
   assert.match(prompt, /replies:\[\{threadId,action,body\}\]/);
   assert.match(prompt, /untrusted evidence/);
+});
+
+test('a review fixer on a merged round sees the conflicted paths and the merged target', async () => {
+  const { rolePrompt } = await import('../server/orchestration/adapters/role-prompts.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: [], mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: ['src/a.mjs'] });
+  f.request('fx', 'review_fixer');
+  const prompt = rolePrompt(f.goal, f.goal.attempts.at(-1));
+  assert.match(prompt, /conflict/i);
+  assert.match(prompt, /src\/a\.mjs/);
+  assert.match(prompt, /f{40}/, 'the merged target head is pinned');
+  assert.match(prompt, /e{40}/, 'the merge commit is pinned');
+});
+
+test('a review fixer on an unmerged round is told nothing about a merge', async () => {
+  const { rolePrompt } = await import('../server/orchestration/adapters/role-prompts.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 3, author: 'coderabbitai', body: 'Rename this.', isBot: true }], mergeable: 'mergeable' });
+  f.request('fx', 'review_fixer');
+  const prompt = rolePrompt(f.goal, f.goal.attempts.at(-1));
+  assert.match(prompt, /"reviewMerge":null/, 'an unmerged round pins a null merge, never a stale one');
 });
