@@ -569,29 +569,50 @@ In `server/orchestration/agent-results.mjs`, replace the `review_fixer` proof bl
 
 - [ ] **Step 5: Write the scope test**
 
-The widened scope needs its own proof. Append to `tests/orchestration-review-fix.test.mjs`:
+The widened scope must be proved where it takes effect: the `ownedAreas` list
+that `agent-results.mjs` passes to `candidate()`. A test that rebuilds that
+list itself proves nothing, so capture the real argument instead.
+
+Add to `tests/orchestration-review-fix.test.mjs`, next to the existing
+coordinator tests. Build `AgentResults` with a fake `repositories` whose
+`candidate` records what it was given:
 
 ```javascript
-test('the fixer scope is the owned areas plus the recorded conflicted paths', () => {
-  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  const roundId = f.goal.reviewRound.id;
-  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
-  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['package-lock.json'] });
-  const round = f.goal.reviewRound;
-  const owned = [...new Set([...contract().tasks.flatMap((task) => task.ownedAreas), ...round.conflictPaths])];
-  assert.ok(owned.includes('package-lock.json'), 'a conflicted file outside the contract is still resolvable');
-  assert.ok(owned.includes('src/a.mjs'), 'the contract owned areas stay in scope');
-  assert.ok(!owned.includes('docs/readme.md'), 'no other path is admitted');
+test('the fixer proof scope is the owned areas plus the recorded conflicted paths', async (t) => {
+  const { AgentResults } = await import('../server/orchestration/agent-results.mjs');
+  const c = coordinatorFixture(t);
+  /** @type {string[][]} */ const scopes = [];
+  const artifacts = { put: () => ({ id: 'art' }), get: () => Buffer.from(JSON.stringify({
+    schemaVersion: 1, goalId: 'goal', attemptId: 'fx', operationId: 'op_fx', role: 'review_fixer',
+    generation: c.store.get('goal').generation + 1, revision: c.store.get('goal').revision,
+    target: 'e'.repeat(40), output: { headSha: 'd'.repeat(40), summary: 'Resolved', replies: replies('fixed') } })) };
+  const repositories = { candidate: async ({ headSha, ownedAreas }) => { scopes.push(ownedAreas); return { headSha, changedPaths: [], artifactId: 'art' }; } };
+  const results = new AgentResults({ service: c.service, artifacts, repositories, id: () => `r${scopes.length}` });
+  c.send('request_review_fix', {}, 'user');
+  const roundId = c.store.get('goal').reviewRound.id;
+  c.send('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  c.send('record_review_merge', { roundId, mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: ['package-lock.json'] });
+  c.send('request_attempt', { attemptId: 'fx', operationId: 'op_fx', role: 'review_fixer', taskId: null, conversationId: 'conv_fx' });
+  c.send('record_dispatch', { attemptId: 'fx', identity: 'p', worktree: '/tmp/fx', branch: 'companion/goal/fx' });
+  c.send('receive_role_result', { resultId: 'res1', attemptId: 'fx', artifactId: 'b'.repeat(64) });
+  await results.drain();
+  assert.equal(scopes.length, 1, 'the proof ran once');
+  assert.ok(scopes[0].includes('package-lock.json'), 'a conflicted file outside the contract is resolvable');
+  assert.ok(scopes[0].includes('src/a.mjs'), 'the contract owned areas stay in scope');
+  assert.ok(!scopes[0].includes('docs/readme.md'), 'no other path is admitted');
 });
 ```
 
-Import `contract` from the fixture at the top of the file if it is not already imported:
+The fixture helper and the artifact shape above are a starting point, not a
+contract. Read `coordinatorFixture` and the existing result-intake test in that
+file, and `tests/orchestration-candidate-results.test.mjs`, which already
+builds `AgentResults` with a fake `repositories`. Adapt the wiring to whatever
+those files actually do. The assertions are the requirement: the captured
+`ownedAreas` must contain the conflicted path and the contract's areas, and
+nothing else.
 
-```javascript
-import { fixture, contract, HEAD_B } from './helpers/orchestration/domain-fixture.mjs';
-```
-
-The rejection itself is enforced by `candidate()` in `server/orchestration/adapters/git.mjs`, which already raises `SCOPE_VIOLATION` for a path outside the list it is given. Task 11 proves it against a real repository.
+If wiring this at the service level proves difficult, say so rather than
+weakening the assertions into a test that recomputes the list itself.
 
 - [ ] **Step 6: Run the backend tests and the type check**
 
