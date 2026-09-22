@@ -18,23 +18,47 @@ export class AccountUsage {
     this.cacheMs = cacheMs;
     this.cache = null;
     this.pending = null;
+    this.generation = 0;
   }
 
   async snapshot({ refresh = false } = {}) {
     if (!refresh && this.cache && Date.now() - this.cache.at < this.cacheMs) return this.cache.value;
     if (this.pending) return this.pending;
-    this.pending = this.#load();
+    const generation = this.generation;
+    const pending = this.#load();
+    this.pending = pending;
     try {
-      const value = await this.pending;
-      this.cache = { at: Date.now(), value };
+      const value = await pending;
+      if (generation === this.generation) this.cache = { at: Date.now(), value };
       return value;
     } finally {
-      this.pending = null;
+      if (this.pending === pending) this.pending = null;
     }
   }
 
   invalidate() {
+    this.generation += 1;
+    this.pending = null;
     this.cache = null;
+  }
+
+  async removeConnection(opaqueId) {
+    const failure = (message, statusCode) => Object.assign(new Error(message), { statusCode });
+    if (typeof opaqueId !== "string" || !/^[a-f0-9]{20}$/.test(opaqueId)) throw failure("Unknown connection", 404);
+    let source;
+    try { source = await this.sourceLoader(); } catch { throw failure("CCS connection removal is unavailable", 503); }
+    try {
+      for (const { id: provider } of PROVIDERS) {
+        const account = source.getProviderAccounts(provider).find((item) => typeof item?.id === "string" && opaqueAccountId(provider, item.id) === opaqueId);
+        if (!account) continue;
+        if (typeof source.removeAccount !== "function" || await source.removeAccount(provider, account.id) !== true) {
+          throw new Error("Removal failed");
+        }
+        return { removed: true };
+      }
+    } catch { throw failure("CCS could not remove this connection", 503); }
+    finally { this.invalidate(); }
+    throw failure("Unknown connection", 404);
   }
 
   async resolveReconnectTarget(opaqueId) {
@@ -235,6 +259,7 @@ async function loadCcsSource() {
   const authDirs = claudeAuthDirs(root, accounts);
   return {
     getProviderAccounts: accounts.getProviderAccounts,
+    removeAccount: accounts.removeAccount,
     fetchAllClaudeQuotas: async () => Promise.all(accounts.getProviderAccounts("claude").map(async (account) => ({
       account: account.id,
       quota: await fetchExactClaudeQuota(account.id, claude, authDirs),

@@ -326,3 +326,33 @@ test("refuses to reconnect through a remote CCS", async (t) => {
 test("requires account usage to be supplied", () => {
   assert.throws(() => new CcsReconnectManager(), /Account usage is required/);
 });
+
+test("blocks deletion during reconnect and serializes account changes", async () => {
+  const { manager } = fixture();
+  let release;
+  manager.accountUsage.removeConnection = () => new Promise(resolve => { release = resolve; });
+  const session = await manager.start('account');
+  await assert.rejects(manager.removeConnection('account'), { statusCode: 409 });
+  manager.cancel(session.sessionId);
+  const removing = manager.removeConnection('account');
+  await assert.rejects(manager.start('account'), { statusCode: 409 });
+  await assert.rejects(manager.removeConnection('account'), { statusCode: 409 });
+  release({ removed: true });
+  assert.deepEqual(await removing, { removed: true });
+});
+
+test('cancelled reconnect completion cannot restore a connection being deleted', async () => {
+  const { manager, calls } = fixture();
+  let release;
+  const originalLoader = manager.sourceLoader;
+  manager.sourceLoader = async () => ({ ...await originalLoader(), submitCallback: () => new Promise(resolve => { release = resolve; }) });
+  manager.accountUsage.removeConnection = async () => ({ removed: true });
+  const session = await manager.start('account');
+  await manager.submitCallback(session.sessionId, CALLBACK_URL);
+  manager.cancel(session.sessionId);
+  await assert.rejects(manager.removeConnection('account'), { statusCode: 409 });
+  release();
+  await tick();
+  assert.equal(calls.some(call => call[0] === 'register'), false);
+  assert.deepEqual(await manager.removeConnection('account'), { removed: true });
+});

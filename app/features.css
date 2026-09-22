@@ -402,3 +402,5 @@
 .update-confirmation { padding: 14px; margin-top: 16px; border: 1px solid #65c995; border-radius: 8px; }
 .update-confirmation button { margin-right: 8px; margin-top: 8px; }
 .update-settings [role="alert"] { color: #ffb5a8; }
+
+.connection-delete{margin-top:12px;padding:8px 12px;border:1px solid currentColor;border-radius:8px;background:transparent;color:var(--danger,#b42335);font-size:12px;cursor:pointer}.connection-confirmation{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:13px;overflow-wrap:anywhere}.connection-confirmation p{margin:0 0 10px}.connection-confirmation>div{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.connection-confirmation button{margin-top:0}.connection-confirmation button:disabled{opacity:.5;cursor:wait}
