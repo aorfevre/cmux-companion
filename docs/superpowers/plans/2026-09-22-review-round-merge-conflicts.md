@@ -601,7 +601,23 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 The adapter fetches the target branch, computes the merge with `git merge-tree --write-tree`, commits the tree with two parents, and pins it under `refs/companion/review-merges/<roundId>`. A repeat call for the same round observes the pinned ref instead of merging again.
 
-`git merge-tree --write-tree` prints the tree SHA on the first line. A conflict adds further lines: an "Informational messages" section preceded by a blank line, and before it a conflicted-file list in `mode object stage\tpath` form. Read the conflicted paths from `git ls-tree` over the written tree instead: any path with a stage entry above 0 is conflicted. That reads Git's own object data rather than parsing a human-facing report.
+**Verified Git behaviour** (probed against git 2.50.1; do not assume otherwise):
+
+- Use `-z`, so a path containing a space or a newline stays unambiguous.
+- A clean merge exits 0. The whole output is the tree SHA and one NUL byte.
+- A conflicted merge exits 1. The output is the tree SHA, one NUL, then one
+  record per conflicted stage entry, each `mode SP oid SP stage TAB path` and
+  NUL-terminated. A file conflicting on all three stages appears three times,
+  so the path list must be de-duplicated.
+- The written tree carries the conflict markers inline as ordinary stage-0
+  blobs. `git ls-tree` therefore shows **no** stage numbers; reading conflicts
+  from the tree is impossible. The stdout record list is the only source.
+- `git commit-tree` accepts a conflicted tree, and a worktree checked out at the
+  resulting commit shows the markers in the file.
+
+The existing `gitBytes(cwd, argv, input, allowConflict)` helper already takes a
+fourth argument that tolerates exit 1; the integration path uses it for exactly
+this call. Both `git` and `gitBytes` are exported from `./git.mjs`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -730,17 +746,23 @@ export class ReviewMerge {
     try { return (await git(repository, ['rev-parse', '--verify', '--quiet', name])).trim(); }
     catch (error) { if (/** @type {{exitCode?: unknown}} */ (error).exitCode === 1) return null; throw error; }
   }
-  /** Stage entries above zero are Git's own record of an unresolved path.
-   * @param {string} repository @param {string} treeSha */
-  async conflicts(repository, treeSha) {
-    const listed = (await git(repository, ['ls-tree', '-r', '-z', '--full-tree', treeSha])).split('\0').filter(Boolean);
-    /** @type {string[]} */ const paths = [];
-    for (const entry of listed) {
-      const [meta, path] = entry.split('\t');
-      const stage = meta.split(' ')[3];
-      if (stage && stage !== '0' && !paths.includes(path)) paths.push(path);
+  /** Parse `merge-tree -z` output: the tree SHA, then one NUL-terminated
+   * `mode SP oid SP stage TAB path` record per conflicted stage entry. The
+   * written tree holds stage-0 blobs with markers inline, so this list is the
+   * only record of which paths Git could not resolve.
+   * @param {Buffer} output @returns {{ treeSha: string; conflictPaths: string[] }} */
+  parse(output) {
+    const records = output.toString('utf8').split('\0');
+    const treeSha = sha(records[0].trim());
+    /** @type {string[]} */ const conflictPaths = [];
+    for (const record of records.slice(1)) {
+      if (!record) continue;
+      const tab = record.indexOf('\t');
+      if (tab === -1) continue;
+      const path = record.slice(tab + 1);
+      if (path && !conflictPaths.includes(path)) conflictPaths.push(path);
     }
-    return paths;
+    return { treeSha, conflictPaths };
   }
   /** The port method name matches the coordinator's call, so the adapter drops
    * straight into the repository port without a wrapper.
@@ -751,36 +773,42 @@ export class ReviewMerge {
     const { repository } = await this.repositories.repository(input.repositoryId);
     const ref = this.ref(input.roundId);
     const recorded = await this.read(repository, ref);
-    if (recorded) {
-      const parents = (await git(repository, ['rev-list', '--parents', '-n', '1', recorded])).trim().split(' ').slice(1);
-      requireValue(parents.length === 2 && parents[0] === input.prHeadSha, 'A review merge is recorded for another pull request head', 'IDEMPOTENCY_CONFLICT');
-      const tree = (await git(repository, ['rev-parse', `${recorded}^{tree}`])).trim();
-      return { mergedBaseSha: parents[1], mergeCommitSha: recorded, conflictPaths: await this.conflicts(repository, tree) };
-    }
+    if (recorded) return this.observe(repository, ref, recorded, input);
     const mergedBaseSha = sha(await this.remote.fetchBase(input.repositoryId, input.baseBranch));
     requireValue(mergedBaseSha !== input.prHeadSha, 'The target branch head equals the pull request head', 'STALE_TARGET');
     await git(repository, ['cat-file', '-e', `${input.prHeadSha}^{commit}`]);
-    const merged = await gitBytes(repository, ['merge-tree', '--write-tree', '--no-messages', input.prHeadSha, mergedBaseSha], undefined, true);
-    const newline = merged.indexOf(10);
-    const treeSha = sha((newline === -1 ? merged : merged.subarray(0, newline)).toString('ascii').trim());
+    // allowConflict: a conflicted merge exits 1 and still writes a valid tree.
+    const { treeSha, conflictPaths } = this.parse(await gitBytes(repository,
+      ['merge-tree', '--write-tree', '--no-messages', '-z', input.prHeadSha, mergedBaseSha], undefined, true));
     const message = `Merge ${input.baseBranch} into the pull request branch for review round ${input.roundId}\n`;
-    const commit = (await git(repository, ['-c', 'user.name=Companion', '-c', 'user.email=companion@example.invalid',
-      'commit-tree', treeSha, '-p', input.prHeadSha, '-p', mergedBaseSha], message)).trim();
-    sha(commit);
-    // The ref is the durable record: a crash after this point replays the same
-    // merge, and a target that moved afterwards never rewrites it.
-    const existing = await this.read(repository, ref);
-    if (existing) return this.prepareReviewMerge(input);
-    await git(repository, ['update-ref', ref, commit, '0'.repeat(40)]);
-    return { mergedBaseSha, mergeCommitSha: commit, conflictPaths: await this.conflicts(repository, treeSha) };
+    const commit = sha((await git(repository, ['-c', 'user.name=Companion', '-c', 'user.email=companion@example.invalid',
+      'commit-tree', treeSha, '-p', input.prHeadSha, '-p', mergedBaseSha], message)).trim());
+    // The ref is the durable record. A crash after this point replays the same
+    // merge; a target that moved afterwards never rewrites it. A lost race is
+    // resolved by reading whichever commit the ref actually holds.
+    try { await git(repository, ['update-ref', ref, commit, '0'.repeat(40)]); }
+    catch { const raced = await this.read(repository, ref); requireValue(raced, 'Review merge ref could not be reserved', 'OWNERSHIP_UNCERTAIN'); return this.observe(repository, ref, raced, input); }
+    return { mergedBaseSha, mergeCommitSha: commit, conflictPaths };
+  }
+  /** Re-derive a recorded merge from Git alone, so a replay never re-merges a
+   * target that moved since.
+   * @param {string} repository @param {string} ref @param {string} recorded
+   * @param {{ prHeadSha: string }} input */
+  async observe(repository, ref, recorded, input) {
+    const parents = (await git(repository, ['rev-list', '--parents', '-n', '1', recorded])).trim().split(' ').slice(1);
+    requireValue(parents.length === 2 && parents[0] === input.prHeadSha, 'A review merge is recorded for another pull request head', 'IDEMPOTENCY_CONFLICT');
+    // Recompute against the same two parents: identical inputs, identical tree.
+    const { conflictPaths } = this.parse(await gitBytes(repository,
+      ['merge-tree', '--write-tree', '--no-messages', '-z', parents[0], parents[1]], undefined, true));
+    return { mergedBaseSha: sha(parents[1]), mergeCommitSha: sha(recorded), conflictPaths };
   }
 }
 ```
 
-- [ ] **Step 4: Check that `git` and `gitBytes` are exported**
+- [ ] **Step 4: Confirm the helper signature**
 
-Run: `grep -n "export async function git\|export async function gitBytes\|export function git" server/orchestration/adapters/git.mjs`
-Expected: both names appear. If either is not exported, add `export` to its declaration in that file and run `npx tsc --noEmit` again after Step 6.
+Run: `grep -n "export async function gitBytes\|export async function git" server/orchestration/adapters/git.mjs`
+Expected: `gitBytes(cwd, argv, input, allowConflict = false)` at line 21 and `git(cwd, argv, input)` at line 117. Both are already exported. If the fourth `gitBytes` argument is named differently, use whatever that file actually declares.
 
 - [ ] **Step 5: Declare the port method**
 
