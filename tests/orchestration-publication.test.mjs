@@ -8,6 +8,7 @@ import { GitHubPublication } from '../server/orchestration/adapters/github.mjs';
 import { ArtifactStore } from '../server/orchestration/storage/artifacts.mjs';
 import { FakeGitHub } from './helpers/orchestration/fake-github.mjs';
 import { createRepositoryFixture, fixtureGit } from './helpers/orchestration/fixture.mjs';
+import { writeFile } from 'node:fs/promises';
 
 async function fixture(t) {
   const repo = await createRepositoryFixture(); t.after(() => repo.close());
@@ -400,4 +401,87 @@ test('abort at the promotion send boundary returns cancellation and leaves the P
   assert.equal(result.status, 'cancelled'); assert.equal(result.pr, null);
   assert.equal(f.github.pulls[0].draft, true); assert.equal(f.github.promotions.length, 0);
   assert.equal((await f.publisher.publish(f.input, { signal: controller.signal })).status, 'cancelled');
+});
+
+test('GitHub CLI lists unresolved review threads through bounded GraphQL pages and fails closed', async (t) => {
+  const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
+  const f = await fixture(t), calls = [];
+  const node = (id, resolved, path = 'src/a.mjs') => ({ id, isResolved: resolved, path, line: 4, comments: { nodes: [{ author: { login: 'coderabbitai', __typename: 'Bot' }, body: 'Fix this.' }] } });
+  let pages = [
+    { data: { repository: { pullRequest: { number: 3, reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [node('PRRT_1', false), node('PRRT_2', true)] } } } } },
+    { data: { repository: { pullRequest: { number: 3, reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [node('PRRT_3', false, null)] } } } } },
+  ];
+  const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: {}, execute: async (argv, input) => { calls.push({ argv, input }); return JSON.stringify(pages.shift()); } });
+  const threads = await cli.listReviewThreads('repo', 3);
+  assert.deepEqual(threads.map((thread) => thread.id), ['PRRT_1', 'PRRT_3']);
+  assert.equal(threads[0].isBot, true); assert.equal(threads[1].path, null);
+  assert.deepEqual(calls[0].argv, ['api', '--hostname', 'github.com', 'graphql', '--input', '-']);
+  assert.equal(JSON.parse(calls[1].input).variables.after, 'c1');
+  pages = [{ data: { repository: { pullRequest: { number: 3, reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [] } } } } }, { errors: [{ message: 'rate limited' }] }];
+  await assert.rejects(cli.listReviewThreads('repo', 3), { code: 'GITHUB_OPERATION_UNCERTAIN' });
+  pages = [{ data: { repository: { pullRequest: { number: 4, reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] } } } } }];
+  await assert.rejects(cli.listReviewThreads('repo', 3), { code: 'OWNERSHIP_UNCERTAIN' });
+});
+
+test('GitHub CLI thread writes send JSON on stdin and honour the beforeSend claim', async (t) => {
+  const { GitHubCli } = await import('../server/orchestration/adapters/github-cli.mjs');
+  const f = await fixture(t), calls = [];
+  const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: f.repo.directory, env: {}, execute: async (argv, input) => { calls.push({ argv, input }); return JSON.stringify({ data: { addPullRequestReviewThreadReply: { comment: { id: 'C1' } }, resolveReviewThread: { thread: { isResolved: true } } } }); } });
+  await cli.replyToThread('repo', 'PRRT_1', 'Fixed in the latest commit.');
+  assert.deepEqual(calls[0].argv, ['api', '--hostname', 'github.com', 'graphql', '--input', '-']);
+  assert.equal(JSON.parse(calls[0].input).variables.threadId, 'PRRT_1');
+  assert.ok(!calls[0].argv.join(' ').includes('Fixed in'));
+  await cli.resolveThread('repo', 'PRRT_1');
+  assert.equal(JSON.parse(calls[1].input).variables.threadId, 'PRRT_1');
+  await cli.replyToThread('repo', 'PRRT_2', 'x', { beforeSend: () => false });
+  assert.equal(calls.length, 2);
+  await assert.rejects(cli.replyToThread('repo', 'bad id', 'x'));
+  await assert.rejects(cli.replyToThread('unknown', 'PRRT_1', 'x'), { code: 'UNSUPPORTED_CAPABILITY' });
+});
+
+async function deliveredFixture(t) {
+  const f = await fixture(t);
+  assert.equal((await f.publisher.publish(f.input)).status, 'published');
+  const pr = { number: 1, url: f.github.pulls[0].url, headSha: f.input.headSha };
+  f.github.threads.set(1, [
+    { id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return 2.', isBot: true },
+    { id: 'PRRT_2', path: null, line: null, author: 'alex', body: 'Nit.', isBot: false },
+  ]);
+  return { ...f, pr };
+}
+
+test('review threads are read for the exact saved pull request and fail closed when unavailable', async (t) => {
+  const f = await deliveredFixture(t);
+  assert.deepEqual((await f.publisher.reviewThreads(f.input, f.pr)).map(thread => thread.id), ['PRRT_1', 'PRRT_2']);
+  await assert.rejects(f.publisher.reviewThreads(f.input, { ...f.pr, number: 9 }));
+  f.github.threadsUnavailable = true;
+  await assert.rejects(f.publisher.reviewThreads(f.input, f.pr));
+});
+
+test('a fix push is leased against the recorded head and reports movement or uncertainty', async (t) => {
+  const f = await deliveredFixture(t);
+  const fix = await f.repo.checkout('fix', f.input.headSha);
+  await writeFile(join(fix.worktree, 'src/a.mjs'), 'export function a() { return 2; } // fixed\n');
+  await fixtureGit(fix.worktree, ['add', 'src']); await fixtureGit(fix.worktree, ['commit', '-m', 'Address review']);
+  const fixHead = await fixtureGit(fix.worktree, ['rev-parse', 'HEAD']);
+  assert.equal(await f.publisher.pushFix(f.input, { roundId: 'r1', expectedHead: f.input.headSha, headSha: fixHead }), 'pushed');
+  assert.equal(await f.remote.head('repo', f.input.branch), fixHead);
+  assert.equal(await new GitHubPublication(f.options).pushFix(f.input, { roundId: 'r1', expectedHead: f.input.headSha, headSha: fixHead }), 'pushed');
+  await fixtureGit(f.repo.repository, ['push', '--force', f.repo.remote, `${f.input.headSha}:refs/heads/${f.input.branch}`]);
+  assert.equal(await f.publisher.pushFix(f.input, { roundId: 'r2', expectedHead: fixHead, headSha: fixHead }), 'remote_moved');
+  assert.equal(await f.remote.head('repo', f.input.branch), f.input.headSha);
+});
+
+test('replies post once per thread, resolve fixed threads and never resend after a lost response', async (t) => {
+  const f = await deliveredFixture(t);
+  const replies = [{ threadId: 'PRRT_1', action: 'fixed', body: 'Fixed.' }, { threadId: 'PRRT_2', action: 'declined', body: 'Out of scope.' }];
+  f.github.loseReplyResponse = true;
+  await assert.rejects(f.publisher.replyAndResolve(f.input, { roundId: 'r1', replies }), /Lost reply response/);
+  f.github.loseReplyResponse = false;
+  const outcome = await new GitHubPublication(f.options).replyAndResolve(f.input, { roundId: 'r1', replies });
+  assert.deepEqual(outcome.unconfirmed, ['PRRT_1']); assert.deepEqual(outcome.posted, ['PRRT_2']); assert.deepEqual(outcome.resolved, ['PRRT_1']);
+  assert.equal(f.github.replies.length, 2, 'the lost reply was sent once and never repeated');
+  assert.equal(f.github.resolutions.length, 1);
+  const again = await new GitHubPublication(f.options).replyAndResolve(f.input, { roundId: 'r1', replies });
+  assert.deepEqual(again, outcome); assert.equal(f.github.replies.length, 2); assert.equal(f.github.resolutions.length, 1);
 });

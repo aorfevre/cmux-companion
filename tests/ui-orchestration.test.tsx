@@ -357,3 +357,43 @@ test('wave view shows the active barrier, waiting tasks and retained checked out
   expect(screen.getByText('Waiting for the prior wave barrier')).toBeTruthy();
   expect(screen.getByText('aaaaaaaaaaaa')).toBeTruthy();
 });
+
+test('a delivered goal offers the review round and a running round shows its phase and card', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalStage } = await import('../app/orchestration/goal-fleet');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.deliver();
+  const delivered = { ...goalView(f.goal), contracts: [] };
+  const act = vi.fn().mockResolvedValue(true);
+  const { unmount } = render(<GoalDetail goal={delivered} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Address review comments' }));
+  expect(act).toHaveBeenCalledWith(delivered, delivered.actions.find(action => action.type === 'request_review_fix'));
+  unmount();
+  f.command('request_review_fix', {}, f.user);
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }] });
+  const fixing = { ...goalView(f.goal), contracts: [] };
+  expect(goalStage(fixing)).toBe('Addressing review');
+  render(<GoalDetail goal={fixing} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  expect(screen.getByText(/Addressing review · PLAN 1/i)).toBeTruthy();
+  expect(screen.getByRole('status', { name: 'Review round phase' }).textContent).toContain('Fixing 1 thread');
+  expect(screen.queryByRole('button', { name: 'Address review comments' })).toBeNull();
+  fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
+  expect(screen.getByRole('heading', { name: 'Review rounds' })).toBeTruthy();
+  expect(screen.getByText(/coderabbitai/)).toBeTruthy();
+});
+
+test('a settled round lists each thread action and an unconfirmed reply', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture, HEAD_B } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.deliver();
+  const view = { ...goalView(f.goal), contracts: [], reviewRounds: [{ id: 'r1', prHeadSha: HEAD_B, startedAt: 1, settledAt: 2, state: 'settled' as const, phase: 'Round complete', outcome: 'addressed' as const, fixHeadSha: 'd'.repeat(40),
+    threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }, { id: 'PRRT_2', path: null, line: null, author: 'alex', body: 'Nit.', isBot: false }],
+    replies: [{ threadId: 'PRRT_1', action: 'fixed' as const, body: 'Fixed.' }, { threadId: 'PRRT_2', action: 'declined' as const, body: 'Out of scope.' }], posted: ['PRRT_2'], unconfirmed: ['PRRT_1'], resolved: ['PRRT_1'] }] };
+  render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
+  expect(screen.getByText(/Addressed · 2 threads · new head dddddddddddd/)).toBeTruthy();
+  expect(screen.getByText(/fixed · resolved · reply unconfirmed/)).toBeTruthy();
+  expect(screen.getByText(/^declined$/)).toBeTruthy();
+});

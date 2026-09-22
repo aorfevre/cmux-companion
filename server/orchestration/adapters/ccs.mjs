@@ -13,12 +13,14 @@ export const NATIVE_TOOLS = Object.freeze({
   reviewer: ['Read', 'Grep', 'Glob'],
   implementer: ['Read', 'Grep', 'Glob', 'Edit', 'Write'],
   integrator: ['Read', 'Grep', 'Glob', 'Edit', 'Write'],
+  review_fixer: ['Read', 'Grep', 'Glob', 'Edit', 'Write'],
 });
 export const BRIDGE_TOOLS = Object.freeze({
   planner: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__submit_result'],
   reviewer: ['mcp__companion__read_reference', 'mcp__companion__get_status'],
   implementer: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__commit_candidate'],
   integrator: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__commit_candidate'],
+  review_fixer: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__commit_candidate'],
 });
 
 /** @param {NativeCapabilities} capabilities @param {import('../types.d.ts').Role} role @param {import('../types.d.ts').Mode} mode */

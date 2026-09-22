@@ -22,6 +22,11 @@ export function readyWork(goal) {
     if (goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || (attempt.taskId === taskId && (role === 'implementer' || role === 'planner' || attempt.target === target))))) return;
     result.push({ key: role === 'implementer' ? `${role}:${taskId}` : `${role}:${taskId ?? ''}:${target}`, role, taskId, target });
   };
+  if (goal.status === 'addressing_review') {
+    const round = goal.reviewRound;
+    if (round?.state === 'fixing' && round.threads.length && !goal.attempts.some((attempt) => attempt.role === 'review_fixer' && attempt.generation === goal.generation && attempt.revision === goal.revision)) add('review_fixer', null, round.prHeadSha);
+    return result;
+  }
   if (goal.status === 'discovering' && (!goal.clarification || goal.clarification.answer !== undefined)) add('planner', null, planTarget(goal));
   if (goal.status === 'awaiting_approval' && requiresPlanReview(goal)) add('reviewer', null, planTarget(goal));
   if (goal.status !== 'building' || goal.approvedRevision !== goal.revision) return result;

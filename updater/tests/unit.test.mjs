@@ -115,12 +115,14 @@ test("the persistent updater runner starts more than one bootstrap cycle", async
   assert.equal(code, 0);
 });
 
-test('stale locks retain unknown launch claims and live orphan engines', async t => {
+test('stale locks retain unknown launch claims and live orphan engines, but reclaim dead spawn claims', async t => {
   const root = await mkdtemp(join(tmpdir(), 'updater-orphan-lock-')); t.after(() => rm(root, { recursive: true, force: true }));
   const lock = join(root, 'lock'); await mkdir(lock);
   assert.equal(await acquireLock(lock, { now: Date.now() + 3600000 }), null);
   await writeJson(join(lock, 'owner.json'), { pid: 2147483646, spawnClaim: true });
-  assert.equal(await acquireLock(lock, { now: Date.now() + 3600000 }), null);
+  assert.equal(await acquireLock(lock, { now: Date.now() }), null, 'a fresh spawn claim is protected');
+  const release = await acquireLock(lock, { now: Date.now() + 3600000 });
+  assert.equal(typeof release, 'function', 'a stale spawn claim with a dead owner is an orphan'); await release(); await mkdir(lock);
   await writeJson(join(lock, 'owner.json'), { pid: 2147483646, spawnClaim: true, enginePid: process.pid });
   assert.equal(await acquireLock(lock, { now: Date.now() + 3600000 }), null);
 });

@@ -117,3 +117,16 @@ test('planner context instructs MCP payload submission without the background re
   const background = { ...f.goal.attempts[0], mode: 'background' };
   assert.match(rolePrompt({ ...f.goal, attempts: [background] }, background), /Return one JSON object with exactly schemaVersion/);
 });
+
+test('the review fixer prompt pins the threads, forbids pushing and demands one reply per thread', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }] });
+  f.request('fx', 'review_fixer');
+  const attempt = f.goal.attempts.at(-1), context = roleContext(f.goal, attempt), prompt = rolePrompt(f.goal, attempt);
+  assert.equal(context.requiredAccess, 'assigned-worktree');
+  assert.equal(context.reviewThreads.length, 1); assert.equal(context.reviewThreads[0].id, 'PRRT_1');
+  assert.equal(context.prHeadSha, f.goal.reviewRound.prHeadSha);
+  assert.match(prompt, /Never push/); assert.match(prompt, /exactly one reply per thread/i);
+  assert.match(prompt, /replies:\[\{threadId,action,body\}\]/);
+  assert.match(prompt, /untrusted evidence/);
+});

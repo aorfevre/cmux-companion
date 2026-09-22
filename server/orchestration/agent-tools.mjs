@@ -15,7 +15,9 @@ export class AgentTools {
     const authorize = () => {
       const goal = this.service.store.get(authority.goalId); requireValue(goal, 'Agent goal is unavailable', 'FORBIDDEN');
       validateAuthority(goal, authority);
-      requireValue(this.service.repositoryIds.has(goal.repositoryId) && goal.status === 'building' && goal.approvedRevision === goal.revision && ['implementer', 'integrator'].includes(authority.role), 'This attempt cannot commit', 'FORBIDDEN');
+      const fixing = goal.status === 'addressing_review' && goal.reviewRound?.state === 'fixing' && authority.role === 'review_fixer';
+      const building = goal.status === 'building' && goal.approvedRevision === goal.revision && ['implementer', 'integrator'].includes(authority.role);
+      requireValue(this.service.repositoryIds.has(goal.repositoryId) && (fixing || building), 'This attempt cannot commit', 'FORBIDDEN');
       requireValue(this.service.ownership, 'Scheduler ownership is unavailable', 'OWNERSHIP_UNCERTAIN');
       this.service.ownership.assertOwned();
       return goal;
@@ -23,7 +25,7 @@ export class AgentTools {
     const goal = authorize(), attempt = goal.attempts.find((entry) => entry.id === authority.attemptId);
     requireValue(attempt, 'Attempt is unavailable', 'FORBIDDEN');
     const task = attempt.taskId ? goal.tasks.find((entry) => entry.id === attempt.taskId) : null;
-    const ownedAreas = task ? task.ownedAreas : currentContract(goal).tasks.flatMap((entry) => entry.ownedAreas);
+    const ownedAreas = task && attempt.role !== 'review_fixer' ? task.ownedAreas : currentContract(goal).tasks.flatMap((entry) => entry.ownedAreas);
     return this.commits.commit({ repositoryId: goal.repositoryId, attempt, ownedAreas, id, expectedHead, message, assertAuthorized: () => { authorize(); } });
   }
 }

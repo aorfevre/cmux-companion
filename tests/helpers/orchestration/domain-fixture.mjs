@@ -28,5 +28,18 @@ export function fixture() {
     command('approve', { revision: goal.revision }, user);
   };
   const recover = () => command('recover_goal', { holdId: goal.hold.id }, user);
-  return { recover, get goal() { return goal; }, command, request, dispatch, review, approve, user, system };
+  /** Drive a single-task goal to delivered with pull request 1 at HEAD_B. */
+  const deliver = () => {
+    const single = contract(); single.tasks = [single.tasks[0]]; approve(single);
+    request('a', 'implementer', 'A'); dispatch('a'); command('confirm_candidate', { attemptId: 'a', headSha: HEAD_A }); command('record_stopped', { attemptId: 'a' });
+    request('ar', 'reviewer', 'A'); dispatch('ar'); review('ar', HEAD_A);
+    command('request_integration', { taskId: 'A', operationId: 'integrate' });
+    command('record_integration', { operationId: 'integrate', headSha: HEAD_B });
+    request('final', 'reviewer'); dispatch('final'); review('final', HEAD_B);
+    command('record_verification', { headSha: HEAD_B, checks: [{ id: 'unit', passed: true, artifactId: 'log' }] });
+    command('request_publication', { operationId: 'publish' });
+    command('approve_publication', { operationId: 'publish', headSha: HEAD_B }, user);
+    command('record_pr', { operationId: 'publish', number: 1, url: 'https://example.test/pr/1', headSha: HEAD_B });
+  };
+  return { recover, deliver, get goal() { return goal; }, command, request, dispatch, review, approve, user, system };
 }

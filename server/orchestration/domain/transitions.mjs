@@ -1,4 +1,4 @@
-import { DomainError, identifier, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
+import { DomainError, identifier, identifiers, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
 import { parseTeamConfiguration, proposeTeam, assignmentFor, overrideAssignment } from './teams.mjs';
 import { currentWave, verificationWaveId, integratedWaveReady, waveChecks, acceptWaveVerification } from './waves.mjs';
@@ -8,6 +8,7 @@ import { captureFailureHold, recoverGoal } from './recovery.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
 import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
+import { parseReviewThreads, parseReviewReplies } from './review-round.mjs';
 
 /** @typedef {import('../types.d.ts').Goal} Goal */
 /** @typedef {import('../types.d.ts').Attempt} Attempt */
@@ -20,6 +21,19 @@ export const ownsWorker = (attempt) => attempt.workerState !== 'stopped';
 export const hasPendingRepairResult = (goal) => Boolean(goal.results?.some((result) => result.status === 'pending'
   && goal.attempts.some((attempt) => attempt.id === result.attemptId && attempt.role === 'integrator'
     && attempt.generation === goal.generation && attempt.revision === goal.revision)));
+/** @param {Goal} goal @param {unknown} roundId */
+function activeRound(goal, roundId) {
+  const round = goal.reviewRound;
+  requireValue(goal.status === 'addressing_review' && round && round.id === identifier(roundId), 'Review round changed', 'STALE_OPERATION');
+  return /** @type {NonNullable<Goal['reviewRound']>} */ (round);
+}
+/** Close the active round and return the goal to waiting for merge.
+ * @param {Goal} goal @param {NonNullable<Goal['reviewRound']>} round
+ * @param {import('../types.d.ts').ReviewRoundOutcome} outcome @param {number} settledAt */
+function closeRound(goal, round, outcome, settledAt) {
+  (goal.reviewRounds ??= []).push({ ...round, state: outcome === 'failed' ? 'failed' : 'settled', outcome, settledAt });
+  goal.reviewRound = null; goal.status = 'delivered';
+}
 /** @param {Goal} goal */
 export const planTarget = (goal) => `contract:${goal.generation}:${goal.revision}`;
 /** @param {Goal} goal */
@@ -265,7 +279,7 @@ export function transition(before, command, authority) {
       const rejected = automatic ? revisablePlan(goal) : null;
       if (automatic) requireValue(rejected && rejected.id === input.reviewId, 'Plan review is not eligible for automatic revision', 'NOT_READY');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
-      requireValue(goal.status !== 'delivered', 'Delivered goals require a new goal', 'INVALID_STATE');
+      requireValue(goal.status !== 'delivered' && goal.status !== 'addressing_review', 'Delivered goals require a new goal', 'INVALID_STATE');
       requireValue(!goal.integration && (!goal.publication || !goal.publication.approval), 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
       const message = automatic
         ? `Address the blocking findings in plan review ${rejected?.id}. Preserve the user's outcome and scope. If resolving a finding requires a user decision, ask a focused clarification and stop. Publish the revised contract for independent review; do not approve or implement it.`
@@ -286,7 +300,7 @@ export function transition(before, command, authority) {
     }
     case 'publish_contract': {
       requireValue(authority.kind === 'user' || (authority.kind === 'agent' && authority.role === 'planner'), 'Planner or user authority required', 'FORBIDDEN');
-      requireValue(goal.status !== 'delivered', 'Delivered goals require a new goal', 'INVALID_STATE');
+      requireValue(goal.status !== 'delivered' && goal.status !== 'addressing_review', 'Delivered goals require a new goal', 'INVALID_STATE');
       requireValue(!goal.integration && (!goal.publication || !goal.publication.approval), 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       const contract = parseContract(input.contract);
@@ -320,7 +334,7 @@ export function transition(before, command, authority) {
       requireAuthority(authority, 'system');
       const id = identifier(input.attemptId), operationId = identifier(input.operationId);
       requireValue(!goal.attempts.some((entry) => entry.id === id || entry.operationId === operationId), 'Duplicate attempt');
-      requireValue(['planner', 'implementer', 'reviewer', 'integrator'].includes(String(input.role)), 'Unknown role');
+      requireValue(['planner', 'implementer', 'reviewer', 'integrator', 'review_fixer'].includes(String(input.role)), 'Unknown role');
       const role = /** @type {Attempt['role']} */ (input.role);
       requireValue(role !== 'planner' || !goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       const mode = role === 'planner' ? 'interactive' : 'background';
@@ -360,7 +374,13 @@ export function transition(before, command, authority) {
           target = goal.integrationHead;
         } else requireValue(goal.status === 'awaiting_approval', 'No reviewable contract', 'NOT_READY');
       }
-      requireValue(!goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || (attempt.taskId === taskId && (role === 'implementer' || role === 'planner' || attempt.target === target)))), 'Attempt already active', 'ALREADY_RUNNING');
+      if (role === 'review_fixer') {
+        const round = goal.reviewRound;
+        requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && round.threads.length > 0, 'No review threads await a fix', 'NOT_READY');
+        requireValue(!goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification worker is not settled', 'NOT_READY');
+        target = round.prHeadSha;
+      }
+      requireValue(!goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || role === 'review_fixer' || (attempt.taskId === taskId && (role === 'implementer' || role === 'planner' || attempt.target === target)))), 'Attempt already active', 'ALREADY_RUNNING');
       if (role === 'planner' || role === 'reviewer') {
         const previous = goal.attempts.filter((attempt) => attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.role === role && attempt.taskId === taskId && attempt.target === target).at(-1);
         requireValue(!previous || previous.retryRequested, 'Explicit retry is required for this attempt', 'RETRY_REQUIRED');
@@ -368,9 +388,11 @@ export function transition(before, command, authority) {
       const conversationId = identifier(input.conversationId);
       requireValue(!goal.attempts.some((attempt) => attempt.conversationId === conversationId), 'Independent attempts require fresh conversation identities');
       /** @type {Attempt} */
-      const attempt = { id, operationId, role, mode, taskId, target, generation: goal.generation, revision: goal.revision, status: 'queued', workerState: 'pending', identity: null, baseSha: role === 'reviewer' && !target.startsWith('contract:') ? target : goal.integrationHead, worktree: null, branch: null, conversationId, error: null };
+      const attempt = { id, operationId, role, mode, taskId, target, generation: goal.generation, revision: goal.revision, status: 'queued', workerState: 'pending', identity: null, baseSha: (role === 'reviewer' && !target.startsWith('contract:')) || role === 'review_fixer' ? target : goal.integrationHead, worktree: null, branch: null, conversationId, error: null };
       const assignment = assignmentFor(goal, role, taskId); if (assignment) attempt.assignment = assignment;
-      goal.attempts.push(attempt); intent('launch', operationId, id, { role, mode, target, taskId }); emit('attempt_queued', { attemptId: id, role }); break;
+      goal.attempts.push(attempt);
+      if (role === 'review_fixer' && goal.reviewRound) goal.reviewRound.attemptId = id;
+      intent('launch', operationId, id, { role, mode, target, taskId }); emit('attempt_queued', { attemptId: id, role }); break;
     }
     case 'resume_planner': {
       requireAuthority(authority, 'user');
@@ -681,6 +703,117 @@ export function transition(before, command, authority) {
     case 'record_merged': {
       requireAuthority(authority, 'system'); requireValue(goal.status === 'delivered' && goal.pr, 'No delivered PR');
       goal.status = 'merged'; emit('pr_merged', { number: goal.pr.number }); break;
+    }
+    case 'request_review_fix': {
+      requireAuthority(authority, 'user');
+      requireValue(goal.status === 'delivered' && goal.pr && goal.publication, 'Only a delivered goal with a pull request can address review comments', 'NOT_READY');
+      requireValue(goal.mergeSync?.state !== 'closed', 'The pull request is closed on GitHub', 'NOT_READY');
+      requireValue(!goal.reviewRound, 'A review round is already active', 'NOT_READY');
+      requireValue(!goal.attempts.some(ownsWorker) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && !goal.results?.some((result) => result.status === 'pending'), 'Workers still active', 'NOT_READY');
+      goal.generation++;
+      goal.reviewRound = { id: command.id, prHeadSha: goal.pr.headSha, startedAt: integer(input.startedAt ?? 0), state: 'fetching', threads: [] };
+      goal.status = 'addressing_review';
+      emit('review_fix_requested', { roundId: command.id, prHeadSha: goal.pr.headSha }); break;
+    }
+    case 'record_review_threads': {
+      requireAuthority(authority, 'system');
+      const round = activeRound(goal, input.roundId);
+      requireValue(round.state === 'fetching', 'Review threads were already recorded', 'STALE_OPERATION');
+      round.threads = parseReviewThreads(input.threads);
+      if (!round.threads.length) {
+        closeRound(goal, round, 'nothing_to_address', integer(input.at ?? 0));
+        emit('review_fix_settled', { roundId: round.id, outcome: 'nothing_to_address' }); break;
+      }
+      round.state = 'fixing';
+      emit('review_threads_recorded', { roundId: round.id, count: round.threads.length }); break;
+    }
+    case 'accept_review_fix_result': {
+      // Internal: the service proves Git evidence before issuing it, like confirm_candidate.
+      requireAuthority(authority, 'system');
+      const attempt = attemptById(goal, input.attemptId);
+      requireValue(attempt.role === 'review_fixer', 'Not a review fixer', 'FORBIDDEN');
+      requireValue(attempt.status === 'running', 'Attempt is not running', 'STALE_ATTEMPT');
+      const round = goal.reviewRound;
+      requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && round.attemptId === attempt.id && attempt.target === round.prHeadSha, 'Review round target changed', 'STALE_TARGET');
+      const headSha = sha(input.headSha), replies = parseReviewReplies(input.replies, round.threads);
+      const fixed = replies.some((reply) => reply.action === 'fixed');
+      requireValue(fixed ? headSha !== round.prHeadSha : headSha === round.prHeadSha, fixed ? 'A fix needs a new commit' : 'Replies without a fix must keep the pull request head', 'STALE_TARGET');
+      round.replies = replies; round.summary = text(input.summary, 8000);
+      if (fixed) { round.fixHeadSha = headSha; round.state = 'verifying'; } else round.state = 'replying';
+      attempt.status = 'succeeded';
+      emit('review_fix_result_accepted', { roundId: round.id, headSha, fixed }); break;
+    }
+    case 'request_review_fix_verification': {
+      requireAuthority(authority, 'system');
+      const round = activeRound(goal, input.roundId);
+      requireValue(round.state === 'verifying' && round.fixHeadSha && !round.verificationOperationId, 'Fix verification is not awaited', 'NOT_READY');
+      requireValue(!goal.attempts.some(ownsWorker) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification ownership is occupied', 'NOT_READY');
+      const operationId = identifier(input.operationId), checks = currentContract(goal).verification;
+      round.verificationOperationId = operationId;
+      (goal.verificationRuns ??= []).push({ operationId, generation: goal.generation, revision: goal.revision, headSha: round.fixHeadSha, status: 'pending', workerState: 'pending' });
+      intent('verify', operationId, null, { headSha: round.fixHeadSha, checks: checks.map((check) => ({ id: check.id, argv: check.argv })) });
+      emit('review_fix_verification_requested', { roundId: round.id, operationId, headSha: round.fixHeadSha }); break;
+    }
+    case 'record_review_fix_verification': {
+      requireAuthority(authority, 'system');
+      const round = activeRound(goal, input.roundId);
+      const run = goal.verificationRuns?.find((entry) => entry.operationId === input.operationId);
+      requireValue(round.state === 'verifying' && run && run.operationId === round.verificationOperationId && run.result, 'Fix verification is not complete', 'NOT_READY');
+      if (run.workerState === 'stopped' && run.result.verification.checks.every((check) => check.passed)) {
+        round.state = 'pushing';
+        emit('review_fix_verified', { roundId: round.id, headSha: round.fixHeadSha ?? '' }); break;
+      }
+      round.state = 'failed';
+      round.error = run.workerState === 'stopped' ? 'Required verification failed on the fix head.' : 'Fix verification ownership is uncertain.';
+      emit('review_fix_failed', { roundId: round.id, code: 'VERIFICATION_FAILED' }); break;
+    }
+    case 'record_review_fix_push': {
+      requireAuthority(authority, 'system');
+      const round = activeRound(goal, input.roundId);
+      requireValue(['pushing', 'unknown'].includes(round.state) && round.fixHeadSha && goal.pr && goal.publication, 'Fix push is not awaited', 'NOT_READY');
+      // The saved publication operation is the identity of the original request.
+      // The adapter refuses a changed plan, so a round advances the PR head only.
+      goal.pr.headSha = round.fixHeadSha;
+      delete goal.mergeSync;
+      if (round.state === 'unknown' && goal.hold) {
+        goal.hold.reasons = goal.hold.reasons.filter((reason) => !(reason.kind === 'review_fix' && reason.target === round.id));
+        if (!goal.hold.reasons.length) { (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold }); goal.hold = null; }
+      }
+      round.state = 'replying'; round.error = null;
+      emit('review_fix_pushed', { roundId: round.id, headSha: round.fixHeadSha }); break;
+    }
+    case 'settle_review_fix': {
+      requireAuthority(authority, 'system');
+      const round = activeRound(goal, input.roundId);
+      requireValue(round.state === 'replying' && round.replies, 'Fix replies are not awaited', 'STALE_OPERATION');
+      const known = new Set(round.threads.map((thread) => thread.id));
+      const list = (/** @type {unknown} */ value) => {
+        const items = identifiers(value, 200);
+        for (const id of items) requireValue(known.has(id), 'Unknown settled thread');
+        return items;
+      };
+      round.posted = list(input.posted); round.unconfirmed = list(input.unconfirmed); round.resolved = list(input.resolved);
+      closeRound(goal, round, 'addressed', integer(input.at ?? 0));
+      emit('review_fix_settled', { roundId: round.id, outcome: 'addressed', headSha: goal.pr?.headSha ?? '' }); break;
+    }
+    case 'fail_review_fix': {
+      requireAuthority(authority, 'system');
+      const round = activeRound(goal, input.roundId);
+      requireValue(!['failed', 'unknown'].includes(round.state), 'Review round already failed', 'STALE_OPERATION');
+      const code = identifier(input.code);
+      round.state = code === 'PUSH_UNCERTAIN' ? 'unknown' : 'failed'; round.error = text(input.message, 500);
+      for (const attempt of goal.attempts.filter(ownsWorker)) {
+        if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
+        if (attempt.workerState === 'pending') attempt.workerState = 'unknown';
+      }
+      emit('review_fix_failed', { roundId: round.id, code }); break;
+    }
+    case 'mark_result_accepted': {
+      requireAuthority(authority, 'system');
+      const submission = goal.results?.find((entry) => entry.id === input.resultId);
+      requireValue(submission?.status === 'pending' && !submission.repair, 'Result is not pending', 'STALE_ATTEMPT');
+      submission.status = 'accepted';
+      emit('agent_result_accepted', { resultId: submission.id, attemptId: submission.attemptId, artifactId: submission.artifactId }); break;
     }
     case 'abort': {
       requireAuthority(authority, 'user'); goal.status = 'aborted'; goal.approvedRevision = null; goal.generation++;

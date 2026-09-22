@@ -9,7 +9,11 @@ export async function acquireLock(path, { now = Date.now(), staleMs = 15 * 60_00
       readFile(`${path}/owner.json`, "utf8").then(JSON.parse).catch(() => ({})),
       stat(path),
     ]);
-    if (!Number.isInteger(metadata.pid) || metadata.pid <= 0 || (metadata.spawnClaim && !Number.isInteger(metadata.enginePid))) return null;
+    if (!Number.isInteger(metadata.pid) || metadata.pid <= 0) return null;
+    // A spawn claim without an engine pid is an engine spawn in progress; it is
+    // protected while the owner lives or the claim is fresh. A crashed owner
+    // (for example ENOSPC while recording the pid) leaves an orphan that must
+    // expire like any other stale lock, or the updater deadlocks forever.
     let alive = false;
     if (Number.isInteger(metadata.pid)) {
       try { process.kill(metadata.pid, 0); alive = true; } catch (pidError) { alive = pidError.code === "EPERM"; }

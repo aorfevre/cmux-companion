@@ -55,8 +55,8 @@ export default defineConfig({
             return head;
           },
           orchestrationRelease(stage: string) {
-            if (!['siblings', 'final', 'reject-plan', 'reset'].includes(stage)) throw new Error('Unknown fixture barrier');
-            for (const name of stage === 'reset' ? ['siblings', 'final', 'reject-plan'] : [stage]) {
+            if (!['siblings', 'final', 'reject-plan', 'seed-threads', 'reset'].includes(stage)) throw new Error('Unknown fixture barrier');
+            for (const name of stage === 'reset' ? ['siblings', 'final', 'reject-plan', 'seed-threads'] : [stage]) {
               const path = join(manifest.directory, `release-${name}`);
               if (stage === 'reset') { if (existsSync(path)) unlinkSync(path); }
               else writeFileSync(path, 'released', { mode: 0o600 });

@@ -7,6 +7,7 @@ import { attention } from './attention';
 export function goalStage(goal: Goal) {
   if (goal.status === 'merged') return 'Complete';
   if (goal.status === 'aborted') return 'Aborted';
+  if (goal.status === 'addressing_review') return 'Addressing review';
   if (goal.status === 'delivered') return 'Waiting for merge';
   if (goal.status === 'ready_to_publish') return goal.publication?.approved ? 'PR delivery' : 'Ready to publish';
   if (goal.status === 'discovering') return 'Planning';
@@ -32,7 +33,7 @@ export function GoalFleet({ goals, select, projectName, needsOnly = false, selec
     if (filter === 'Aborted' ? goal.status !== 'aborted' : goal.status === 'aborted') return false;
     if (needsOnly && !attention(goal)) return false;
     if (!`${goal.title} ${projectName(goal.repositoryId)}`.toLowerCase().includes(search.toLowerCase())) return false;
-    return filter === 'All' || filter === 'Aborted' || (filter === 'Needs you' ? Boolean(attention(goal)) : filter === 'Complete' ? goal.status === 'merged' : filter === 'Waiting for merge' ? goal.status === 'delivered' : !attention(goal) && ['discovering', 'building'].includes(goal.status));
+    return filter === 'All' || filter === 'Aborted' || (filter === 'Needs you' ? Boolean(attention(goal)) : filter === 'Complete' ? goal.status === 'merged' : filter === 'Waiting for merge' ? goal.status === 'delivered' : !attention(goal) && ['discovering', 'building', 'addressing_review'].includes(goal.status));
   });
   return <section aria-label={needsOnly ? 'Decision queue' : 'Goal fleet'}>
     {!needsOnly && <div className="mission-stats">
@@ -45,7 +46,7 @@ export function GoalFleet({ goals, select, projectName, needsOnly = false, selec
         <span><span className="mission-goal-link">{goal.title}</span><small>{projectName(goal.repositoryId)}</small>{goal.lastActivity && <small className="mission-last-activity">{activityLabel(goal.lastActivity.kind)} · <time dateTime={goal.lastActivity.createdAt}>{new Date(goal.lastActivity.createdAt).toLocaleString()}</time></small>}</span>
         <span><span className={`mission-badge ${attention(goal) ? 'attention' : goal.status === 'merged' ? 'complete' : ''}`}>{goalStage(goal)}</span>{goal.waves?.find(wave => wave.current) && <small>Wave {goal.waves.find(wave => wave.current)?.number} of {goal.waves.length}</small>}</span>
         <span className="mission-workers"><strong>{activeWorkers(goal)}</strong><span className="mission-mobile-label"> active sessions</span></span>
-        <span className="mission-next">{attention(goal) || (goal.status === 'delivered' ? 'Waiting for GitHub merge' : goal.status === 'merged' ? 'Merged on GitHub' : goal.status === 'aborted' ? 'Execution stopped' : 'Execution continues automatically')}</span>
+        <span className="mission-next">{attention(goal) || (goal.status === 'addressing_review' ? goal.reviewRound?.phase ?? 'Addressing review comments' : goal.status === 'delivered' ? 'Waiting for GitHub merge' : goal.status === 'merged' ? 'Merged on GitHub' : goal.status === 'aborted' ? 'Execution stopped' : 'Execution continues automatically')}</span>
       </button>)}
       {!visible.length && <div className="mission-empty"><h3>{needsOnly ? 'No decisions pending' : search || filter !== 'All' ? 'No matching goals' : 'Your first goal starts here'}</h3><p>{needsOnly ? 'Questions, approvals and recovery decisions will appear here.' : search || filter !== 'All' ? 'Try another search or filter.' : 'Choose a project and describe the outcome you want.'}</p></div>}
     </div>

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { realpathSync } from 'node:fs';
-import { DomainError, branchName, identifier, integer, requireValue, sha } from '../domain/contracts.mjs';
+import { DomainError, branchName, identifier, integer, requireValue, sha, text } from '../domain/contracts.mjs';
 
 /** Explicitly configured GitHub CLI boundary. Fake compositions never construct
  * this adapter or load native credentials. API payloads use stdin, not shell text.
@@ -35,6 +35,57 @@ export class GitHubCli {
       && ['open', 'closed'].includes(pr.state) && typeof pr.merged === 'boolean'
       && (!pr.merged || pr.state === 'closed'), 'GitHub PR identity or merge state changed', 'OWNERSHIP_UNCERTAIN');
     return { number, url: pr.html_url, state: pr.merged ? 'merged' : pr.state === 'open' ? 'open' : 'closed' };
+  }
+  /** Unresolved review threads only. Every page must arrive or the read fails closed.
+   * @param {string} repositoryId @param {number} number
+   * @returns {Promise<import('../types.d.ts').ReviewThread[]>} */
+  async listReviewThreads(repositoryId, number) {
+    const slug = this.repository(repositoryId); integer(number, 1);
+    const [owner, name] = slug.split('/');
+    /** @type {import('../types.d.ts').ReviewThread[]} */ const threads = [];
+    /** @type {string | null} */ let after = null;
+    for (let page = 1; page <= 10; page++) {
+      const response = JSON.parse(await this.execute(['api', '--hostname', 'github.com', 'graphql', '--input', '-'], JSON.stringify({
+        query: 'query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){number reviewThreads(first:50,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved path line comments(first:1){nodes{body author{login __typename}}}}}}}}',
+        variables: { owner, name, number, after },
+      })));
+      const pull = response?.data?.repository?.pullRequest;
+      requireValue(!response.errors && pull, 'GitHub review threads did not return confirmed data', 'GITHUB_OPERATION_UNCERTAIN');
+      requireValue(pull.number === number && Array.isArray(pull.reviewThreads?.nodes) && pull.reviewThreads.pageInfo, 'GitHub review thread identity changed', 'OWNERSHIP_UNCERTAIN');
+      for (const node of pull.reviewThreads.nodes) {
+        requireValue(typeof node.id === 'string' && typeof node.isResolved === 'boolean', 'GitHub review thread shape changed', 'OWNERSHIP_UNCERTAIN');
+        if (node.isResolved) continue;
+        const first = node.comments?.nodes?.[0];
+        threads.push({ id: identifier(node.id), path: typeof node.path === 'string' ? node.path : null,
+          line: Number.isSafeInteger(node.line) && node.line > 0 ? node.line : null,
+          author: typeof first?.author?.login === 'string' ? first.author.login.slice(0, 200) : 'unknown',
+          body: typeof first?.body === 'string' && first.body.trim() ? first.body.slice(0, 16000) : 'No comment body.',
+          isBot: first?.author?.__typename === 'Bot' });
+      }
+      if (!pull.reviewThreads.pageInfo.hasNextPage) return threads;
+      after = pull.reviewThreads.pageInfo.endCursor;
+      requireValue(typeof after === 'string', 'GitHub pagination cursor is missing', 'GITHUB_OPERATION_UNCERTAIN');
+    }
+    throw new DomainError('OWNERSHIP_UNCERTAIN', 'GitHub review thread inventory exceeded the bounded observation limit');
+  }
+  /** @param {string} repositoryId @param {string} threadId @param {string} body @param {{ beforeSend?: () => boolean }} [options] */
+  async replyToThread(repositoryId, threadId, body, { beforeSend } = {}) {
+    this.repository(repositoryId); identifier(threadId); text(body, 8000);
+    if (beforeSend && !beforeSend()) return;
+    const response = JSON.parse(await this.execute(['api', '--hostname', 'github.com', 'graphql', '--input', '-'], JSON.stringify({
+      query: 'mutation($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id}}}',
+      variables: { threadId, body },
+    })));
+    requireValue(!response.errors && response.data?.addPullRequestReviewThreadReply?.comment?.id, 'Thread reply was not confirmed', 'GITHUB_OPERATION_UNCERTAIN');
+  }
+  /** @param {string} repositoryId @param {string} threadId @param {{ beforeSend?: () => boolean }} [options] */
+  async resolveThread(repositoryId, threadId, { beforeSend } = {}) {
+    this.repository(repositoryId); identifier(threadId);
+    if (beforeSend && !beforeSend()) return;
+    const response = JSON.parse(await this.execute(['api', '--hostname', 'github.com', 'graphql', '--input', '-'], JSON.stringify({
+      query: 'mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}', variables: { threadId },
+    })));
+    requireValue(!response.errors && response.data?.resolveReviewThread?.thread?.isResolved === true, 'Thread resolution was not confirmed', 'GITHUB_OPERATION_UNCERTAIN');
   }
   /** @param {string} repositoryId @param {string} branch
    * @returns {ReturnType<import('../types.d.ts').GitHubPort['find']>}

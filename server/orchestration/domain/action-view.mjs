@@ -16,6 +16,7 @@ export function actionView(goal) {
   const approvalBlocked = offer('approve', `Approve revision ${goal.revision}`, { revision: goal.revision });
   offer('request_revision', 'Request revision', { message: 'Revision feedback' });
   offer('abort', 'Abort goal', {});
+  offer('request_review_fix', 'Address review comments', {});
   const recoveryBlocked = goal.hold ? offer('recover_goal', 'Recover goal', { holdId: goal.hold.id }) : null;
   if (goal.hold) offer('recover_goal', 'Retry verification & resume', { holdId: goal.hold.id, mode: 'retry_verification' });
   offer('retry_startup', 'Retry startup', {});

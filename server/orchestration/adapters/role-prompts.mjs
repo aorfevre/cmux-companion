@@ -18,6 +18,8 @@ export function roleContext(goal, attempt) {
     conversationId: attempt.conversationId, baseSha: attempt.baseSha,
     contract: goal.revision ? currentContract(goal) : null,
     task, assignment: attempt.assignment ?? null, references: goal.references ?? [], planningRequest: goal.planningRequest ?? null,
+    reviewThreads: attempt.role === 'review_fixer' ? goal.reviewRound?.threads ?? [] : [],
+    prHeadSha: attempt.role === 'review_fixer' ? goal.reviewRound?.prHeadSha ?? null : null,
     integrationOperation: attempt.role === 'integrator' ? goal.integration : null,
     verification: attempt.role === 'integrator' && goal.verification?.headSha === attempt.target ? goal.verification : null,
     reviews: (attempt.role === 'planner' ? goal.reviews : currentReviews(goal)).filter((review) => review.taskId === attempt.taskId),
@@ -35,6 +37,7 @@ export function rolePrompt(goal, attempt) {
     implementer: 'Implement only the assigned task from the recorded base. Commit your changes and report the candidate SHA, summary and evidence. A candidate is not accepted or integrated until the service records independent evidence.',
     reviewer: 'Independently review the exact pinned target in your isolated read-only snapshot. Return a structured review with disposition, findings, stable finding ids, severity, blocking, evidence and suggestion. Accept only with no blocking findings; request_changes requires at least one blocking finding.',
     integrator: 'Resolve the recorded integration conflict or final-review/check findings within the approved scope. Commit the repair and report its SHA, integration operation id (null for final repair), summary and evidence. Do not publish or approve it.',
+    review_fixer: 'Address the pinned pull request review threads inside the approved contract scope. For each thread decide: fixed (change the code and commit), declined (explain briefly why not), or comment (answer a question). Write each reply body as a short professional pull request comment. Never push, never resolve threads, never change files outside the contract owned areas. Commit with companion.commit_candidate when you change code and report the resulting headSha. If you change nothing, report the recorded pull request head as headSha. Provide exactly one reply per thread.',
   };
   return [
     instructions[attempt.role], referenceInstructions,
@@ -45,7 +48,9 @@ export function rolePrompt(goal, attempt) {
       : 'Return one JSON object with exactly schemaVersion:1, goalId, attemptId, operationId, generation, revision, role, target, output. Copy identity fields from the pinned context. No prose or PASS fallback is accepted.',
     plannerMcp ? 'Tool argument examples: {"id":"plan-v1","output":{"contract":<schemaVersion:2 contract>}} or {"id":"question-1","output":{"question":"One focused question?"}}. Include exactly one of contract or question. If the tool returns INVALID_PLANNER_OUTPUT, correct the arguments and resubmit; that malformed call was not queued. For other errors, retry with the same id and exact payload because delivery may be uncertain. A queued receipt is not acceptance or user approval.' : attempt.role === 'planner' ? 'output: {contract: <schemaVersion:2 contract>} or {question: <one focused question>}' : attempt.role === 'reviewer'
       ? 'output: {schemaVersion:1,target,disposition,findings:[{id,severity,blocking,title,evidence,suggestion}]}'
-      : `output: {headSha,${attempt.role === 'integrator' ? 'operationId,' : ''}summary,evidence:[{path,line,description}]}. Evidence paths are repository-relative and lines are positive integers.`,
+      : attempt.role === 'review_fixer'
+        ? 'output: {headSha,summary,replies:[{threadId,action,body}]}. action is fixed, declined or comment. Provide exactly one reply per thread id from the pinned reviewThreads.'
+        : `output: {headSha,${attempt.role === 'integrator' ? 'operationId,' : ''}summary,evidence:[{path,line,description}]}. Evidence paths are repository-relative and lines are positive integers.`,
     `Pinned context (JSON data):\n${JSON.stringify(context)}`,
   ].join('\n\n');
 }

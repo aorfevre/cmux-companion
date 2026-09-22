@@ -1,6 +1,7 @@
-export type Role = 'planner' | 'implementer' | 'reviewer' | 'integrator';
+export type Role = 'planner' | 'implementer' | 'reviewer' | 'integrator' | 'review_fixer';
+export type TeamRole = 'planner' | 'implementer' | 'reviewer' | 'integrator';
 export type Mode = 'interactive' | 'background';
-export type GoalStatus = 'discovering' | 'awaiting_approval' | 'building' | 'ready_to_publish' | 'delivered' | 'merged' | 'aborted';
+export type GoalStatus = 'discovering' | 'awaiting_approval' | 'building' | 'ready_to_publish' | 'delivered' | 'addressing_review' | 'merged' | 'aborted';
 export type AttemptStatus = 'queued' | 'running' | 'uncertain' | 'succeeded' | 'failed' | 'cancelled';
 export type TaskStatus = 'pending' | 'running' | 'in_review' | 'repair_required' | 'accepted' | 'integrated' | 'failed';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -39,17 +40,26 @@ export interface Task extends TaskContract {
 export interface Verification {
   headSha: string; checks: { id: string; passed: boolean; artifactId: string }[];
 }
-export interface TeamProfile { id: string; label: string; provider: 'claude' | 'codex'; model: string; roles: Role[]; ready: boolean; reason: string; capacity: { remainingPercent: number | null; source: string; checkedAt: string | null; reason: string } }
-export interface TeamConfiguration { profiles: TeamProfile[]; defaults: Record<Role, string>; capturedAt: string }
-export interface TeamAssignment { key: string; role: Role; taskId: string | null; profileId: string | null; manual: boolean; reason: string }
+export interface TeamProfile { id: string; label: string; provider: 'claude' | 'codex'; model: string; roles: TeamRole[]; ready: boolean; reason: string; capacity: { remainingPercent: number | null; source: string; checkedAt: string | null; reason: string } }
+export interface TeamConfiguration { profiles: TeamProfile[]; defaults: Record<TeamRole, string>; capturedAt: string }
+export interface TeamAssignment { key: string; role: TeamRole; taskId: string | null; profileId: string | null; manual: boolean; reason: string }
 export interface TeamProposal { revision: number; approved: boolean; assignments: TeamAssignment[]; changes: { commandId: string; key: string; from: string | null; to: string }[] }
+export interface ReviewThread { id: string; path: string | null; line: number | null; author: string; body: string; isBot: boolean }
+export interface ReviewReply { threadId: string; action: 'fixed' | 'declined' | 'comment'; body: string }
+export type ReviewRoundState = 'fetching' | 'fixing' | 'verifying' | 'pushing' | 'replying' | 'settled' | 'failed' | 'unknown';
+export type ReviewRoundOutcome = 'addressed' | 'nothing_to_address' | 'failed';
+export interface ReviewRound {
+  id: string; prHeadSha: string; startedAt: number; state: ReviewRoundState; threads: ReviewThread[];
+  attemptId?: string; summary?: string; fixHeadSha?: string; replies?: ReviewReply[]; verificationOperationId?: string;
+  posted?: string[]; unconfirmed?: string[]; resolved?: string[]; outcome?: ReviewRoundOutcome; error?: string | null; settledAt?: number;
+}
 export interface GoalReference { id: string; name: string; bytes: number; mimeType: 'text/plain' | 'image/png' | 'image/jpeg' | 'image/webp' }
 export interface Goal {
   teamConfiguration?: TeamConfiguration; team?: TeamProposal; teamHistory?: TeamProposal[];
   contractSchema?: 2;
   waveResults?: { waveId: string; generation: number; revision: number; headSha: string }[];
   references?: GoalReference[];
-  hold?: { id: string; reasons: { kind: 'attempt' | 'review' | 'integration' | 'verification' | 'publication'; target: string; message: string }[] } | null;
+  hold?: { id: string; reasons: { kind: 'attempt' | 'review' | 'integration' | 'verification' | 'publication' | 'review_fix'; target: string; message: string }[] } | null;
   recoveries?: { commandId: string; hold: NonNullable<Goal['hold']> }[];
   description?: string; projectCode?: string; plannerName?: string; clarification?: {question:string;answer?:string};
   startup?: { status: 'pending' | 'failed' | 'ready'; error: string | null };
@@ -60,6 +70,7 @@ export interface Goal {
   verification: Verification | null; finalRepairCount: number; finalRepairLimit: number;
   pr: { number: number; url: string; headSha: string } | null;
   mergeSync?: { checkedAt: number; state: 'open' | 'closed' | 'merged' | 'unknown'; error: string | null };
+  reviewRound?: ReviewRound | null; reviewRounds?: ReviewRound[];
   integration: { operationId: string; taskId: string | null; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' | 'cancelled'; failedFrom?: 'applying' | 'repairing'; code?: string; retryRequested?: boolean } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; approval?: { commandId: string; headSha: string }; observation?: PublicationResult } | null;
   planRevisionCount?: number; planReviewEnabled?: boolean;
@@ -73,7 +84,8 @@ export type RoleOutput =
   | { role: 'planner'; output: { contract: Contract } | { question: string } }
   | { role: 'reviewer'; output: ReviewResult }
   | { role: 'implementer'; output: { headSha: string; summary: string; evidence: EvidenceReference[] } }
-  | { role: 'integrator'; output: { headSha: string; operationId: string | null; summary: string; evidence: EvidenceReference[] } };
+  | { role: 'integrator'; output: { headSha: string; operationId: string | null; summary: string; evidence: EvidenceReference[] } }
+  | { role: 'review_fixer'; output: { headSha: string; summary: string; replies: ReviewReply[] } };
 export type RoleResult = RoleOutput & { schemaVersion: 1; goalId: string; attemptId: string; operationId: string; generation: number; revision: number; target: string };
 export type Authority = { kind: 'user' } | { kind: 'system' } | {
   kind: 'agent'; goalId: string; generation: number; revision: number; attemptId: string; role: Role;
@@ -152,6 +164,9 @@ export interface RemotePort {
 }
 export interface GitHubPort {
   readPull?(repositoryId: string, number: number): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
+  listReviewThreads?(repositoryId: string, number: number): Promise<ReviewThread[]>;
+  replyToThread?(repositoryId: string, threadId: string, body: string, options?: { beforeSend?: () => boolean }): Promise<void>;
+  resolveThread?(repositoryId: string, threadId: string, options?: { beforeSend?: () => boolean }): Promise<void>;
   identity(repositoryId: string): string;
   find(repositoryId: string, branch: string): Promise<{ number: number; url: string; branch: string; baseBranch: string; headSha: string; marker: string | null; draft: boolean; state: 'open' | 'closed' | 'merged' }[]>;
   ready?(input: PublicationInput, options?: { beforeSend?: () => boolean }): Promise<void | 'unknown' | 'cancelled'>;
@@ -159,6 +174,9 @@ export interface GitHubPort {
 }
 export interface PublicationPort {
   observeMerge?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
+  reviewThreads?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<ReviewThread[]>;
+  pushFix?(input: PublicationInput, fix: { roundId: string; expectedHead: string; headSha: string }): Promise<'pushed' | 'remote_moved' | 'unknown'>;
+  replyAndResolve?(input: PublicationInput, fix: { roundId: string; replies: ReviewReply[] }): Promise<{ posted: string[]; unconfirmed: string[]; resolved: string[] }>;
   publish(input: PublicationInput, options?: { signal?: AbortSignal }): Promise<PublicationResult>;
   observe(input: PublicationInput): Promise<PublicationResult>;
 }

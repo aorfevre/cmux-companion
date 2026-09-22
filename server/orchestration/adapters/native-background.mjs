@@ -30,8 +30,8 @@ export class NativeBackground {
     requireValue(!inputs.installation || inputs.installation.bin === bin, 'Native wrapper does not match the probed installation', 'UNSUPPORTED_CAPABILITY');
     this.terminal = terminal; this.parseResult = parseResult;
     this.boot = boot; this.bin = bin; this.inputs = inputs; this.policy = backgroundPolicy(policy); requireValue(this.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Native output budget exceeds transport limit'); this.onResult = onResult; this.onError = onError; this.failpoint = failpoint;
-    for (const role of /** @type {const} */ (['implementer', 'reviewer', 'integrator'])) requireNativeCapabilities(inputs.capabilities, role, 'background');
-    this.capabilities = /** @type {import('../types.d.ts').AgentPort['capabilities']} */ (['implementer', 'reviewer', 'integrator'].map((role) => ({ role, mode: 'background' })));
+    for (const role of /** @type {const} */ (['implementer', 'reviewer', 'integrator', 'review_fixer'])) requireNativeCapabilities(inputs.capabilities, role, 'background');
+    this.capabilities = /** @type {import('../types.d.ts').AgentPort['capabilities']} */ (['implementer', 'reviewer', 'integrator', 'review_fixer'].map((role) => ({ role, mode: 'background' })));
     mkdirSync(directory, { recursive: true, mode: 0o700 }); this.directory = realpathSync(directory);
     requireValue(!lstatSync(directory).isSymbolicLink(), 'Native state directory is a symlink', 'OWNERSHIP_UNCERTAIN');
     this.stopping = false;
