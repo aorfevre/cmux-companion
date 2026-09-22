@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { DomainError, identifier, requireValue } from './domain/contracts.mjs';
 import { parseRoleResult, requireResultCapacity } from './domain/role-result.mjs';
+import { currentContract } from './domain/transitions.mjs';
 
 /** Durable result inbox in the authoritative aggregate. Raw output is written to
  * private artifacts first; accepted/rejected disposition commits with lifecycle
@@ -70,6 +71,24 @@ export class AgentResults {
         try { result = JSON.parse(bytes.toString('utf8')); }
         catch { throw new DomainError('MALFORMED_RESULT', 'Agent result was not a JSON object'); }
         const parsed = parseRoleResult(result, { goalId: goal.id, attempt });
+        if (parsed.role === 'review_fixer') {
+          requireValue(this.repositories, 'Repository evidence verification is unavailable', 'UNSUPPORTED_CAPABILITY');
+          requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+          const round = goal.reviewRound;
+          requireValue(round && round.attemptId === attempt.id, 'Review round changed', 'STALE_TARGET');
+          if (parsed.output.headSha !== round.prHeadSha) {
+            const proof = await this.repositories.candidate({ repositoryId: goal.repositoryId, attempt, headSha: parsed.output.headSha, ownedAreas: [...new Set(currentContract(goal).tasks.flatMap((entry) => entry.ownedAreas))] });
+            requireValue(proof.headSha === parsed.output.headSha, 'Git proof targets a different fix', 'STALE_TARGET');
+            this.artifacts.get(proof.artifactId);
+            requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+          }
+          this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version, type: 'accept_review_fix_result', payload: { attemptId: attempt.id, headSha: parsed.output.headSha, summary: parsed.output.summary, replies: parsed.output.replies } }, { kind: 'system' });
+          const settled = this.store.get(goal.id);
+          if (settled?.results?.find((entry) => entry.id === pending.id)?.status === 'pending') {
+            this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: settled.version, type: 'mark_result_accepted', payload: { resultId: pending.id } }, { kind: 'system' });
+          }
+          continue;
+        }
         if (parsed.role === 'implementer' || parsed.role === 'integrator') {
           requireValue(this.repositories, 'Repository evidence verification is unavailable', 'UNSUPPORTED_CAPABILITY');
           requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');

@@ -21,7 +21,7 @@ export class AgentCommits {
   async commit(input) {
     const { repositoryId, attempt, id, expectedHead, message, assertAuthorized } = input;
     identifier(id); identifier(attempt.operationId); sha(expectedHead); text(message, 1000);
-    requireValue(attempt.role === 'implementer' || attempt.role === 'integrator', 'This role cannot commit', 'FORBIDDEN');
+    requireValue(['implementer', 'integrator', 'review_fixer'].includes(attempt.role), 'This role cannot commit', 'FORBIDDEN');
     const areas = input.ownedAreas.map(ownedArea); requireValue(areas.length > 0, 'Commit needs approved scope');
     requireValue(!this.active.has(attempt.operationId), 'Another commit owns this checkout', 'ALREADY_RUNNING');
     this.active.add(attempt.operationId);

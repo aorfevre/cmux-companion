@@ -34,7 +34,7 @@ const definitions = {
   commit_candidate: { name: 'commit_candidate', description: 'Commit changes in this attempt\'s recorded checkout and approved scope. Does not accept, integrate or publish.', inputSchema: { type: 'object', properties: { id: { type: 'string' }, expectedHead: { type: 'string' }, message: { type: 'string' } }, required: ['id', 'expectedHead', 'message'], additionalProperties: false } },
 };
 /** @param {Binding['role']} role */
-const roleTools = (role) => role === 'planner' ? ['read_reference', 'get_status', 'submit_result'] : role === 'implementer' || role === 'integrator' ? ['read_reference', 'get_status', 'commit_candidate'] : ['read_reference', 'get_status'];
+const roleTools = (role) => role === 'planner' ? ['read_reference', 'get_status', 'submit_result'] : ['implementer', 'integrator', 'review_fixer'].includes(role) ? ['read_reference', 'get_status', 'commit_candidate'] : ['read_reference', 'get_status'];
 
 /** Stateless bridge protocol. The credential's server-side binding remains
  * authoritative even if an agent tampers with its local MCP request/config.

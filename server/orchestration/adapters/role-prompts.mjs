@@ -18,6 +18,8 @@ export function roleContext(goal, attempt) {
     conversationId: attempt.conversationId, baseSha: attempt.baseSha,
     contract: goal.revision ? currentContract(goal) : null,
     task, assignment: attempt.assignment ?? null, references: goal.references ?? [], planningRequest: goal.planningRequest ?? null,
+    reviewThreads: attempt.role === 'review_fixer' ? goal.reviewRound?.threads ?? [] : [],
+    prHeadSha: attempt.role === 'review_fixer' ? goal.reviewRound?.prHeadSha ?? null : null,
     integrationOperation: attempt.role === 'integrator' ? goal.integration : null,
     verification: attempt.role === 'integrator' && goal.verification?.headSha === attempt.target ? goal.verification : null,
     reviews: (attempt.role === 'planner' ? goal.reviews : currentReviews(goal)).filter((review) => review.taskId === attempt.taskId),
@@ -46,7 +48,9 @@ export function rolePrompt(goal, attempt) {
       : 'Return one JSON object with exactly schemaVersion:1, goalId, attemptId, operationId, generation, revision, role, target, output. Copy identity fields from the pinned context. No prose or PASS fallback is accepted.',
     plannerMcp ? 'Tool argument examples: {"id":"plan-v1","output":{"contract":<schemaVersion:2 contract>}} or {"id":"question-1","output":{"question":"One focused question?"}}. Include exactly one of contract or question. If the tool returns INVALID_PLANNER_OUTPUT, correct the arguments and resubmit; that malformed call was not queued. For other errors, retry with the same id and exact payload because delivery may be uncertain. A queued receipt is not acceptance or user approval.' : attempt.role === 'planner' ? 'output: {contract: <schemaVersion:2 contract>} or {question: <one focused question>}' : attempt.role === 'reviewer'
       ? 'output: {schemaVersion:1,target,disposition,findings:[{id,severity,blocking,title,evidence,suggestion}]}'
-      : `output: {headSha,${attempt.role === 'integrator' ? 'operationId,' : ''}summary,evidence:[{path,line,description}]}. Evidence paths are repository-relative and lines are positive integers.`,
+      : attempt.role === 'review_fixer'
+        ? 'output: {headSha,summary,replies:[{threadId,action,body}]}. action is fixed, declined or comment. Provide exactly one reply per thread id from the pinned reviewThreads.'
+        : `output: {headSha,${attempt.role === 'integrator' ? 'operationId,' : ''}summary,evidence:[{path,line,description}]}. Evidence paths are repository-relative and lines are positive integers.`,
     `Pinned context (JSON data):\n${JSON.stringify(context)}`,
   ].join('\n\n');
 }
