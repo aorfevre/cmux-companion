@@ -44,7 +44,9 @@ questions, approvals and manual recovery actions. Aborted goals are hidden from 
 default fleet; select **Aborted** to browse them. Click anywhere on a goal row to open it.
 While a goal waits for merge, **Address review comments** runs one agent round
 that fixes or answers every unresolved pull request review thread and pushes the
-verified fix to the same pull request; see
+verified fix to the same pull request. When GitHub reports a merge conflict, the
+round also merges the target branch and resolves it, and one such round starts
+automatically at the next merge check; see
 [docs/code-review-workflow.md](docs/code-review-workflow.md).
 
 The planner publishes a versioned contract with task ownership, dependencies and
