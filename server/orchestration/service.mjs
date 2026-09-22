@@ -18,7 +18,7 @@ export class OrchestrationService {
       if (input.type === 'resume_planner') requireValue(typeof this.agents.resume === 'function', 'Native resume is unavailable', 'UNSUPPORTED_CAPABILITY');
       if (input.type === 'request_attempt') {
         const payload = object(input.payload);
-        requireValue(['planner', 'implementer', 'reviewer', 'integrator'].includes(String(payload.role)), 'Unknown role');
+        requireValue(['planner', 'implementer', 'reviewer', 'integrator', 'review_fixer'].includes(String(payload.role)), 'Unknown role');
         const role = /** @type {import('./types.d.ts').Role} */ (payload.role);
         const mode = role === 'planner' ? 'interactive' : 'background';
         requireCapability(this.agents, role, mode);

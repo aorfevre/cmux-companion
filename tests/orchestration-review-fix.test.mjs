@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseReviewThreads, parseReviewReplies, activeReviewRound, reviewRoundPhase } from '../server/orchestration/domain/review-round.mjs';
 import { readyWork } from '../server/orchestration/domain/scheduling.mjs';
+import { parseRoleResult } from '../server/orchestration/domain/role-result.mjs';
+import { goalView } from '../server/orchestration/domain/state-view.mjs';
+import { actionView } from '../server/orchestration/domain/action-view.mjs';
+import { assignmentFor } from '../server/orchestration/domain/teams.mjs';
+import { USER_COMMANDS } from '../server/orchestration/domain/commands.mjs';
 import { fixture, HEAD_B } from './helpers/orchestration/domain-fixture.mjs';
 
 const fails = (fn, code) => assert.throws(fn, code ? (error) => error.code === code : undefined);
@@ -166,4 +171,45 @@ test('abort during a round terminates the fixer and keeps the old pull request h
   const aborted = f.command('abort', {}, f.user);
   assert.equal(aborted.intents[0].kind, 'terminate'); assert.equal(f.goal.status, 'aborted'); assert.equal(f.goal.pr.headSha, HEAD_B);
   fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies() }), 'TERMINAL_GOAL');
+});
+
+test('review fixer results carry a head, summary and replies', () => {
+  const attempt = { id: 'fx', operationId: 'op', generation: 2, revision: 1, role: 'review_fixer', target: HEAD_B };
+  const envelope = { schemaVersion: 1, goalId: 'g', attemptId: 'fx', operationId: 'op', generation: 2, revision: 1, role: 'review_fixer', target: HEAD_B, output: { headSha: HEAD_C, summary: 'Fixed', replies: replies() } };
+  const parsed = parseRoleResult(envelope, { goalId: 'g', attempt });
+  assert.equal(parsed.role, 'review_fixer'); assert.equal(parsed.output.replies.length, 2);
+  assert.throws(() => parseRoleResult({ ...envelope, output: { headSha: HEAD_C, summary: 'x' } }, { goalId: 'g', attempt }));
+  assert.throws(() => parseRoleResult({ ...envelope, output: { ...envelope.output, replies: [{ threadId: 'PRRT_1', action: 'push', body: 'x' }] } }, { goalId: 'g', attempt }));
+});
+
+test('the action view offers the round to the user and the projection exposes its phase', () => {
+  const f = fixture();
+  assert.ok(!actionView(f.goal).actions.some((action) => action.type === 'request_review_fix'));
+  f.deliver();
+  assert.equal(actionView(f.goal).actions.find((action) => action.type === 'request_review_fix').label, 'Address review comments');
+  assert.ok(USER_COMMANDS.has('request_review_fix'));
+  f.command('request_review_fix', {}, f.user);
+  assert.ok(!actionView(f.goal).actions.some((action) => action.type === 'request_review_fix'));
+  const view = goalView(f.goal);
+  assert.equal(view.status, 'addressing_review'); assert.equal(view.reviewRound.state, 'fetching');
+  assert.equal(view.reviewRound.phase, 'Fetching review threads'); assert.deepEqual(view.reviewRounds, []);
+});
+
+test('the fixer inherits the integrator team assignment', () => {
+  const f = fixture(); f.deliver();
+  const configured = { ...f.goal,
+    teamConfiguration: { capturedAt: 'now', defaults: { planner: 'p', implementer: 'p', reviewer: 'p', integrator: 'p' }, profiles: [{ id: 'p', label: 'P', provider: 'claude', model: 'm', roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: '', capacity: { remainingPercent: null, source: 's', checkedAt: null, reason: '' } }] },
+    team: { revision: 1, approved: true, assignments: [{ key: 'integrator:*', role: 'integrator', taskId: null, profileId: 'p', manual: false, reason: '' }], changes: [] } };
+  const assignment = assignmentFor(configured, 'review_fixer', null);
+  assert.equal(assignment.profileId, 'p'); assert.equal(assignment.role, 'integrator');
+});
+
+test('a fixer result with the pull request head and replies only is accepted without Git proof', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads() });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  f.command('receive_role_result', { resultId: 'res1', attemptId: 'fx', artifactId: 'b'.repeat(64) });
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 'Answered', replies: replies('comment') });
+  f.command('mark_result_accepted', { resultId: 'res1' });
+  assert.equal(f.goal.results[0].status, 'accepted'); assert.equal(f.goal.reviewRound.state, 'replying');
 });
