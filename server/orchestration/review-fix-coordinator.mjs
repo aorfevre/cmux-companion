@@ -46,7 +46,9 @@ export class ReviewFixCoordinator {
         this.onError(error);
         // The code is Companion's own classification, never external output.
         const code = error instanceof DomainError ? error.code : 'REVIEW_FIX_FAILED';
-        this.fail(goal.id, round.id, code, `Addressing review comments failed (${code}). Check GitHub access and retry.`);
+        this.fail(goal.id, round.id, code, code === 'UNSUPPORTED_CAPABILITY'
+          ? `Addressing review comments is unavailable in this configuration (${code}). A retry cannot succeed until Companion is updated or reconfigured.`
+          : `Addressing review comments failed (${code}). Check GitHub access and retry.`);
       }
     }).finally(() => this.active.delete(goal.id));
     this.active.set(goal.id, job); void job.catch(this.onError);
@@ -60,12 +62,18 @@ export class ReviewFixCoordinator {
         || this.active.has(goal.id) || !this.service.repositoryIds.has(goal.repositoryId)) continue;
       if (round.state === 'fetching') {
         this.spawn(goal, async (round, plan, pr) => {
+          // A missing method is a composition fault, not a transport failure;
+          // reporting it as an offline Mac sends the owner into endless retries.
+          requireValue(this.publisher.reviewThreads, 'Review rounds are unavailable in this configuration', 'UNSUPPORTED_CAPABILITY');
           let threads;
           try {
-            threads = await this.publisher.reviewThreads?.(plan, pr);
+            threads = await this.publisher.reviewThreads(plan, pr);
             requireValue(threads, 'GitHub review threads are unavailable', 'UNSUPPORTED_CAPABILITY');
-          } catch {
+          } catch (error) {
             if (this.stopped) return;
+            // A capability fault raised inside the call is still a
+            // configuration fault; only a transport failure reads as offline.
+            if (error instanceof DomainError && error.code === 'UNSUPPORTED_CAPABILITY') throw error;
             this.ownership.assertOwned();
             this.fail(goal.id, round.id, 'GITHUB_UNAVAILABLE', 'GitHub review threads were unavailable. Retry when your Mac is online.');
             return;
@@ -83,7 +91,8 @@ export class ReviewFixCoordinator {
         if (run?.result && run.status !== 'pending') this.record(goal.id, 'record_review_fix_verification', { roundId: round.id, operationId: run.operationId });
       } else if ((round.state === 'pushing' || round.state === 'unknown') && round.fixHeadSha) {
         this.spawn(goal, async (round, plan) => {
-          const result = await this.publisher.pushFix?.(plan, { roundId: round.id, expectedHead: round.prHeadSha, headSha: /** @type {string} */ (round.fixHeadSha) });
+          requireValue(this.publisher.pushFix, 'Review rounds are unavailable in this configuration', 'UNSUPPORTED_CAPABILITY');
+          const result = await this.publisher.pushFix(plan, { roundId: round.id, expectedHead: round.prHeadSha, headSha: /** @type {string} */ (round.fixHeadSha) });
           if (this.stopped) return;
           this.ownership.assertOwned();
           if (!this.current(goal.id, round.id)) return;
@@ -93,7 +102,8 @@ export class ReviewFixCoordinator {
         });
       } else if (round.state === 'replying') {
         this.spawn(goal, async (round, plan) => {
-          const outcome = await this.publisher.replyAndResolve?.(plan, { roundId: round.id, replies: round.replies ?? [] });
+          requireValue(this.publisher.replyAndResolve, 'Review rounds are unavailable in this configuration', 'UNSUPPORTED_CAPABILITY');
+          const outcome = await this.publisher.replyAndResolve(plan, { roundId: round.id, replies: round.replies ?? [] });
           requireValue(outcome, 'GitHub thread writes are unavailable', 'UNSUPPORTED_CAPABILITY');
           if (this.stopped) return;
           this.ownership.assertOwned();
