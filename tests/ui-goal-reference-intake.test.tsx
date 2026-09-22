@@ -134,12 +134,13 @@ describe('goal form intake', () => {
     Object.defineProperty(outsideLeave, 'relatedTarget', { value: null });
     fireEvent(form, outsideLeave);
     expect(form.className).not.toContain('orch-dropzone-active');
-    fireEvent.dragEnter(form, { dataTransfer: { types: ['text/plain'] } });
+    expect(fireEvent.dragEnter(form, { dataTransfer: { types: ['text/plain'] } })).toBe(true);
+    expect(fireEvent.dragOver(form, { dataTransfer: { types: ['text/plain'] } })).toBe(true);
     expect(form.className).not.toContain('orch-dropzone-active');
-    fireEvent.dragEnter(form, { dataTransfer: { types: ['Files'] } });
+    expect(fireEvent.dragEnter(form, { dataTransfer: { types: ['Files'] } })).toBe(false);
     const svg = new File(['<svg>reference only</svg>'], 'design.svg', { type: 'image/svg+xml' });
     const note = new File(['note'], 'notes.txt', { type: 'text/plain' });
-    fireEvent.drop(form, { dataTransfer: { files: [svg, note], items: [svg, note].map(file => ({ kind: 'file', type: file.type, getAsFile: () => new File([file], file.name, { type: file.type }) })), types: ['Files'] } });
+    expect(fireEvent.drop(form, { dataTransfer: { files: [svg, note], items: [svg, note].map(file => ({ kind: 'file', type: file.type, getAsFile: () => new File([file], file.name, { type: file.type }) })), types: ['Files'] } })).toBe(false);
     expect(form.className).not.toContain('orch-dropzone-active');
     await screen.findByRole('button', { name: 'Remove design.svg' });
     await screen.findByRole('button', { name: 'Remove notes.txt' });
@@ -149,6 +150,16 @@ describe('goal form intake', () => {
     expect(removeButtons()).toHaveLength(3);
     fireEvent.drop(form, { dataTransfer: { files: [], items: [], types: [] } });
     expect(removeButtons()).toHaveLength(3);
+  });
+  test('dropping text onto the brief is not intercepted and adds no reference', async () => {
+    const form = await start();
+    fireEvent.dragEnter(form, { dataTransfer: { types: ['Files'] } });
+    expect(form.className).toContain('orch-dropzone-active');
+    const textTransfer = { files: [], items: [{ kind: 'string', type: 'text/plain', getAsFile: () => null }], types: ['text/plain'], getData: () => 'dragged text' };
+    expect(fireEvent.drop(screen.getByLabelText('What should we accomplish?'), { dataTransfer: textTransfer })).toBe(true);
+    expect(form.className).not.toContain('orch-dropzone-active');
+    expect(removeButtons()).toHaveLength(0);
+    expect(screen.queryByRole('list', { name: 'Selected references' })).toBeNull();
   });
   test('GIF paste and oversized drops are rejected with a clear error and nothing from the batch is added', async () => {
     const form = await start();

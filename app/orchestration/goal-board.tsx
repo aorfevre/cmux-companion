@@ -150,10 +150,14 @@ export function GoalBoard() {
       {Boolean(configuration?.repositories.length) && !configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Your planning agent is not ready. <a href="/settings#agents">Choose an agent</a> to start a goal.</p>}
       {!selected && <button ref={createButton} className="primary-button" aria-expanded={creating} aria-controls="goal-create" disabled={disabled} onClick={() => setCreating(true)}>Start a goal</button>}
       {creating && (configuration?.repositories.length ? <form id="goal-create" className={`orch-card orch-create${dragging ? ' orch-dropzone-active' : ''}`} onSubmit={event => { event.preventDefault(); if (!chosenRepo || disabled) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { ...(title.trim() ? { title: title.trim() } : {}), description: brief, ...(attachments.length ? { attachments } : {}), repositoryId: chosenRepo.id, baseBranch: baseBranch.trim() || 'main' } }); }}
-        onDragEnter={event => { event.preventDefault(); if (!disabled && transferHasFiles(event.dataTransfer)) setDragging(true); }}
-        onDragOver={event => { event.preventDefault(); if (!disabled && transferHasFiles(event.dataTransfer)) setDragging(true); }}
+        onDragEnter={event => { if (!transferHasFiles(event.dataTransfer)) return; event.preventDefault(); if (!disabled) setDragging(true); }}
+        onDragOver={event => { if (!transferHasFiles(event.dataTransfer)) return; event.preventDefault(); if (!disabled) setDragging(true); }}
         onDragLeave={event => { const next = event.relatedTarget; if (!(next instanceof Node) || !event.currentTarget.contains(next)) setDragging(false); }}
-        onDrop={event => { event.preventDefault(); setDragging(false); void addReferenceFiles(filesFromDataTransfer(event.dataTransfer)); }}>
+        onDrop={event => {
+          // Only file transfers are intercepted; text or link drags keep their native behavior (for example inserting text into the brief).
+          setDragging(false); if (!transferHasFiles(event.dataTransfer)) return;
+          event.preventDefault(); void addReferenceFiles(filesFromDataTransfer(event.dataTransfer));
+        }}>
         <h2 ref={createHeading} tabIndex={-1}>Start a goal</h2><p>The agent will inspect the project and propose a plan with suitable verification checks.</p><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<ProjectPicker repositories={configuration.repositories} selected={repository} onSelect={setRepository} disabled={disabled} />
         <p className="project-context">Starts from freshly fetched {baseBranch.trim() || 'main'} in an isolated worktree.</p><details><summary>Advanced</summary><label>Base branch<input value={baseBranch} onChange={event => setBaseBranch(event.target.value)} disabled={disabled} placeholder="main" /></label></details>
         {chosenRepo?.error && <p role="alert">{chosenRepo.error} <a href={`/settings?repository=${encodeURIComponent(chosenRepo.id)}#dev-repos`}>Configure repository</a></p>}
