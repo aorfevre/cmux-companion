@@ -1,5 +1,5 @@
 import { launchProfiles, teamDefaults, teamConfiguration, boundedUsageSnapshot } from './launch-profiles.mjs';
-import { suggestAssignment } from './orchestration/domain/teams.mjs';
+import { ROLES, roleMode, suggestAssignment } from './orchestration/domain/teams.mjs';
 import { AgentPreparationError } from './orchestration/agent-preparation-error.mjs';
 import { projectCode } from './orchestration/domain/goal-presentation.mjs';
 import { repositoryReadiness } from './repository-readiness.mjs';
@@ -62,7 +62,9 @@ export async function createSettingsRuntime({ settings, directory, token, create
     const live = current.settings.projects.find(entry => entry.id === repositoryId) ?? config.project;
     return resolvePrepare(live, { env: environment(), environmentId: `settings-${current.revision}`, policy: config.execution });
   };
-  const capabilities = [{ role: 'planner', mode: 'interactive' }, ...['implementer', 'reviewer', 'integrator'].map(role => ({ role, mode: 'background' }))];
+  // Declared from the canonical list: a role the domain accepts but no
+  // composition declares leaves its work queued with no session and no error.
+  const capabilities = ROLES.map(role => ({ role, mode: roleMode(role) }));
   let agentContext;
   async function agent(goalId, attempt) {
     const profileId = attempt?.assignment?.profileId ?? 'legacy', key = `${goalId}:${profileId}`;

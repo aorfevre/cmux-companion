@@ -9,7 +9,7 @@ import { DomainError, requireValue } from './domain/contracts.mjs';
 export class ReviewFixCoordinator {
   /** @param {{ service: import('./service.mjs').OrchestrationService; publisher: import('./types.d.ts').PublicationPort; ownership: { assertOwned(): void }; now?: () => number; id?: () => string; onError?: (error: unknown) => void }} options */
   constructor({ service, publisher, ownership, now = Date.now, id = randomUUID, onError = () => {} }) {
-    this.service = service; this.store = service.store; this.publisher = publisher; this.ownership = ownership;
+    this.service = service; this.store = service.store; this.agents = service.agents; this.publisher = publisher; this.ownership = ownership;
     this.now = now; this.id = id; this.onError = onError; this.stopped = false;
     /** @type {Map<string, Promise<void>>} */ this.active = new Map();
   }
@@ -60,6 +60,12 @@ export class ReviewFixCoordinator {
       const round = goal.reviewRound;
       if (goal.status !== 'addressing_review' || !round || !goal.pr || !goal.publication
         || this.active.has(goal.id) || !this.service.repositoryIds.has(goal.repositoryId)) continue;
+      // A round whose fixer cannot be dispatched would otherwise stay in
+      // fixing with no session, no error and nothing for the owner to act on.
+      if (round.state === 'fixing' && round.threads.length && !this.agents.capabilities.some(capability => capability.role === 'review_fixer' && capability.mode === 'background')) {
+        this.fail(goal.id, round.id, 'UNSUPPORTED_CAPABILITY', 'This Companion cannot start a review fixer. Waiting will not help; update or reconfigure Companion, then retry.');
+        continue;
+      }
       if (round.state === 'fetching') {
         this.spawn(goal, async (round, plan, pr) => {
           // A missing method is a composition fault, not a transport failure;

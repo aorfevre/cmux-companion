@@ -1,6 +1,6 @@
 import { DomainError, identifier, identifiers, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
-import { parseTeamConfiguration, proposeTeam, assignmentFor, overrideAssignment } from './teams.mjs';
+import { ROLES, parseTeamConfiguration, proposeTeam, assignmentFor, overrideAssignment } from './teams.mjs';
 import { currentWave, verificationWaveId, integratedWaveReady, waveChecks, acceptWaveVerification } from './waves.mjs';
 import { parseGoalReferences } from './goal-references.mjs';
 import { revisablePlan, requiresPlanReview, repairableReviews } from './review-repairs.mjs';
@@ -334,7 +334,7 @@ export function transition(before, command, authority) {
       requireAuthority(authority, 'system');
       const id = identifier(input.attemptId), operationId = identifier(input.operationId);
       requireValue(!goal.attempts.some((entry) => entry.id === id || entry.operationId === operationId), 'Duplicate attempt');
-      requireValue(['planner', 'implementer', 'reviewer', 'integrator', 'review_fixer'].includes(String(input.role)), 'Unknown role');
+      requireValue(/** @type {readonly string[]} */ (ROLES).includes(String(input.role)), 'Unknown role');
       const role = /** @type {Attempt['role']} */ (input.role);
       requireValue(role !== 'planner' || !goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       const mode = role === 'planner' ? 'interactive' : 'background';
