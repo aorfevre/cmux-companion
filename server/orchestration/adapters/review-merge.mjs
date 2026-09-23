@@ -74,12 +74,22 @@ export class ReviewMerge {
     const { repository } = await this.repositories.repository(input.repositoryId);
     /** @type {string[]} */ const unresolved = [];
     for (const path of input.conflictPaths) {
-      const blob = await gitBytes(repository, ['show', `${input.headSha}:${ownedArea(path)}`], undefined, true);
-      const text = blob.toString('utf8');
+      const target = `${input.headSha}:${ownedArea(path)}`;
+      // Deleting the file is a correct resolution of a modify/delete conflict,
+      // and an absent path carries no markers. Only a present blob is read.
+      if (!(await this.exists(repository, target))) continue;
+      const text = (await gitBytes(repository, ['show', target], undefined, true)).toString('utf8');
       // Git's own marker shapes, anchored to a line start as Git writes them.
       if (/^<{7}[ \t]|^={7}$|^>{7}[ \t]/m.test(text)) unresolved.push(path);
     }
     return unresolved;
+  }
+  /** A blob exists at that commit-and-path. Absence is a fact about the tree,
+   * not a failure; every other Git error still propagates.
+   * @param {string} repository @param {string} target */
+  async exists(repository, target) {
+    try { await git(repository, ['cat-file', '-e', target]); return true; }
+    catch { return false; }
   }
   /** Re-derive a recorded merge from Git alone, so a replay never re-merges a
    * target that moved since.

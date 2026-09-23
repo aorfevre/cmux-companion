@@ -8,7 +8,7 @@ import { currentContract } from './domain/transitions.mjs';
  * changes, so response loss cannot replay an accepted mutation after restart.
  */
 export class AgentResults {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; artifacts: import('./storage/artifacts.mjs').ArtifactStore; id?: () => string; repositories?: Pick<import('./types.d.ts').RepositoryPort, 'candidate'> }} options */
+  /** @param {{ service: import('./service.mjs').OrchestrationService; artifacts: import('./storage/artifacts.mjs').ArtifactStore; id?: () => string; repositories?: Pick<import('./types.d.ts').RepositoryPort, 'candidate'>; reviewMerges?: Pick<import('./types.d.ts').RepositoryPort, 'unresolvedPaths'> }} options */
   constructor({ service, artifacts, repositories, reviewMerges, id = randomUUID }) { this.service = service; this.store = service.store; this.artifacts = artifacts; this.id = id; this.repositories = repositories; this.reviewMerges = reviewMerges; }
   /** Receipt reconciliation is read-only and cannot revive authority. The sole
    * generation exception is a planner's own accepted publication, which advances

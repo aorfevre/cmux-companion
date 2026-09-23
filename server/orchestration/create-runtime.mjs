@@ -30,7 +30,7 @@ import { requireValue } from './domain/contracts.mjs';
  * resolveCheck: ConstructorParameters<typeof VerificationRunner>[0]['resolveCheck'];
  * resolvePrepare?: ConstructorParameters<typeof VerificationRunner>[0]['resolvePrepare'];
  * createPublisher: (context: { repositories: GitRepository }) => import('./types.d.ts').PublicationPort;
- * createReviewMerge?: (context: { repositories: GitRepository }) => Pick<import('./types.d.ts').RepositoryPort, 'prepareReviewMerge'>;
+ * createReviewMerge?: (context: { repositories: GitRepository }) => Pick<import('./types.d.ts').RepositoryPort, 'prepareReviewMerge' | 'unresolvedPaths'>;
  * consumers?: { id: string; from?: number; handle: ConstructorParameters<typeof JournalConsumer>[0]['handle'] }[];
  * limits?: { global?: number; perGoal?: number; planners?: number };
  * onError?: (error: unknown) => void;

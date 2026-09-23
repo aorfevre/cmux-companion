@@ -164,3 +164,33 @@ test('a commit that still carries conflict markers is reported as unresolved', a
   const resolvedHead = await git(resolved, ['rev-parse', 'HEAD']);
   assert.deepEqual(await merge.unresolvedPaths({ repositoryId: 'repo', headSha: resolvedHead, conflictPaths: prepared.conflictPaths }), []);
 });
+
+test('deleting a conflicted file resolves a modify/delete conflict', async (t) => {
+  const repo = await repository(t);
+  // The pull request edits the file; the target branch deletes it.
+  await git(repo.directory, ['checkout', 'main']);
+  await git(repo.directory, ['rm', '-q', 'src/a.mjs']);
+  await git(repo.directory, ['commit', '-m', 'the target branch deletes the file']);
+  const targetHead = await git(repo.directory, ['rev-parse', 'main']);
+  const merge = adapter(repo, { targetHead: () => targetHead });
+  const prepared = await merge.prepareReviewMerge({ goalId: 'goal', repositoryId: 'repo', roundId: 'round1', prHeadSha: repo.prHead, baseBranch: 'main' });
+  assert.deepEqual(prepared.conflictPaths, ['src/a.mjs']);
+
+  // Accepting the deletion is the correct resolution, and a reader that assumed
+  // the path still exists would reject this valid fixer result.
+  await git(repo.directory, ['branch', 'deleted', prepared.mergeCommitSha]);
+  const worktree = join(repo.directory, 'deleted-wt');
+  await git(repo.directory, ['worktree', 'add', '-q', worktree, 'deleted']);
+  await git(worktree, ['rm', '-q', 'src/a.mjs']);
+  await git(worktree, ['commit', '-m', 'accept the deletion']);
+  const deletedHead = await git(worktree, ['rev-parse', 'HEAD']);
+  assert.deepEqual(await merge.unresolvedPaths({ repositoryId: 'repo', headSha: deletedHead, conflictPaths: prepared.conflictPaths }), [],
+    'an absent path carries no markers, so the deletion resolves the conflict');
+
+  // A modify/delete conflict writes no markers: Git keeps the modified file
+  // whole, and the disagreement is existence rather than content. The marker
+  // reader therefore reports the merge commit itself as clean here, which is
+  // correct. The content case is covered by the test above.
+  assert.deepEqual(await merge.unresolvedPaths({ repositoryId: 'repo', headSha: prepared.mergeCommitSha, conflictPaths: prepared.conflictPaths }), []);
+  assert.equal(await git(repo.directory, ['show', `${prepared.mergeCommitSha}:src/a.mjs`]), 'export const a = 2;');
+});
