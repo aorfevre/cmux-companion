@@ -35,6 +35,20 @@ function adapter(repo, { targetHead, onFetch = () => {} }) {
   });
 }
 
+/** Move the target branch into a genuine conflict with the pull request branch,
+ * then prepare the merge. Four cases need exactly this setup.
+ * @returns the adapter, the merged target head and the prepared merge */
+async function conflicted(t, { roundId = 'round1', goalId = 'goal', repositoryId = 'repo' } = {}) {
+  const repo = await repository(t);
+  await git(repo.directory, ['checkout', 'main']);
+  writeFileSync(join(repo.directory, 'src', 'a.mjs'), 'export const a = 3;\n');
+  await git(repo.directory, ['commit', '-am', 'conflicting target change']);
+  const targetHead = await git(repo.directory, ['rev-parse', 'main']);
+  const merge = adapter(repo, { targetHead: () => targetHead });
+  const prepared = await merge.prepareReviewMerge({ goalId, repositoryId, roundId, prHeadSha: repo.prHead, baseBranch: 'main' });
+  return { repo, merge, targetHead, prepared };
+}
+
 test('a clean merge produces one commit with both parents', async (t) => {
   const repo = await repository(t);
   writeFileSync(join(repo.directory, 'shared.txt'), 'target change\n');
@@ -131,13 +145,7 @@ test('a worktree at the merge commit shows the markers', async (t) => {
 });
 
 test('a commit that still carries conflict markers is reported as unresolved', async (t) => {
-  const repo = await repository(t);
-  await git(repo.directory, ['checkout', 'main']);
-  writeFileSync(join(repo.directory, 'src', 'a.mjs'), 'export const a = 3;\n');
-  await git(repo.directory, ['commit', '-am', 'conflicting target change']);
-  const targetHead = await git(repo.directory, ['rev-parse', 'main']);
-  const merge = adapter(repo, { targetHead: () => targetHead });
-  const prepared = await merge.prepareReviewMerge({ goalId: 'goal', repositoryId: 'repo', roundId: 'round1', prHeadSha: repo.prHead, baseBranch: 'main' });
+  const { repo, merge, prepared } = await conflicted(t);
   assert.deepEqual(prepared.conflictPaths, ['src/a.mjs']);
 
   // The merge commit itself carries the markers.
@@ -196,13 +204,7 @@ test('deleting a conflicted file resolves a modify/delete conflict', async (t) =
 });
 
 test('a Git failure while reading a conflicted path is never read as a resolution', async (t) => {
-  const repo = await repository(t);
-  await git(repo.directory, ['checkout', 'main']);
-  writeFileSync(join(repo.directory, 'src', 'a.mjs'), 'export const a = 3;\n');
-  await git(repo.directory, ['commit', '-am', 'conflicting target change']);
-  const targetHead = await git(repo.directory, ['rev-parse', 'main']);
-  const merge = adapter(repo, { targetHead: () => targetHead });
-  const prepared = await merge.prepareReviewMerge({ goalId: 'goal', repositoryId: 'repo', roundId: 'round1', prHeadSha: repo.prHead, baseBranch: 'main' });
+  const { repo, merge, targetHead, prepared } = await conflicted(t);
   assert.deepEqual(prepared.conflictPaths, ['src/a.mjs']);
 
   // An unreachable commit is a Git failure, not an absent path. Reporting it as
