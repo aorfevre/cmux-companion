@@ -4,6 +4,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      react:
+        patterns:
+          - react
+          - react-dom
+          - react-server-dom-webpack
+          - "@types/react"
+          - "@types/react-dom"
     open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directory: /
