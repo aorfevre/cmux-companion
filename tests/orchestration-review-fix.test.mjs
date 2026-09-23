@@ -507,7 +507,10 @@ test('a merged round validates the fix head against the merge commit', () => {
   f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
   f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['src/a.mjs'] });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
-  fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 's', replies: replies('comment') }), 'STALE_TARGET');
+  // A conflicted round must move past its merge commit: reporting the merge
+  // itself means the markers were never resolved. A head that is merely
+  // different is admitted here and proved by the Git ancestry check instead.
+  fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: MERGE_COMMIT, summary: 's', replies: replies('comment') }), 'STALE_TARGET');
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 'Resolved', replies: replies('fixed') });
   assert.equal(f.goal.reviewRound.state, 'verifying');
   assert.equal(f.goal.reviewRound.fixHeadSha, HEAD_C);
@@ -662,4 +665,29 @@ test('a user round is still refused to system authority and records a user trigg
   fails(() => f.command('request_review_fix', {}), 'FORBIDDEN');
   f.command('request_review_fix', {}, f.user);
   assert.equal(f.goal.reviewRound.trigger, 'user');
+});
+
+test('a conflict-only round accepts a resolution commit with no replies', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: [], mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['src/a.mjs'] });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  // Resolving a marker always makes a commit, and a round with no thread has no
+  // reply to mark fixed. The merge commit itself is never a valid resolution.
+  fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: MERGE_COMMIT, summary: 'Unresolved', replies: [] }), 'STALE_TARGET');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 'Resolved the conflict', replies: [] });
+  assert.equal(f.goal.reviewRound.state, 'verifying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, HEAD_C);
+});
+
+test('a clean merged round with threads still accepts replies on the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: MERGE_COMMIT, summary: 'Answered only', replies: replies('comment') });
+  assert.equal(f.goal.reviewRound.state, 'verifying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, MERGE_COMMIT, 'no conflict means the merge commit is a valid head');
 });

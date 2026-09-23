@@ -770,10 +770,13 @@ export function transition(before, command, authority) {
       requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && round.attemptId === attempt.id && attempt.target === roundTarget, 'Review round target changed', 'STALE_TARGET');
       const headSha = sha(input.headSha), replies = parseReviewReplies(input.replies, round.threads);
       const fixed = replies.some((reply) => reply.action === 'fixed');
-      requireValue(fixed ? headSha !== roundTarget : headSha === roundTarget, fixed ? 'A fix needs a new commit' : 'Replies without a fix must keep the recorded round head', 'STALE_TARGET');
+      // Resolving a conflict marker is a commit even when no thread was fixed,
+      // and a conflict-only round has no replies at all.
+      const changes = fixed || Boolean(round.conflictPaths?.length);
+      requireValue(changes ? headSha !== roundTarget : headSha === roundTarget, changes ? 'A fix or conflict resolution needs a new commit' : 'Replies without a fix must keep the recorded round head', 'STALE_TARGET');
       round.replies = replies; round.summary = text(input.summary, 8000);
       // A merged round verifies its merge commit even when the agent changed nothing.
-      if (fixed || round.mergeCommitSha) { round.fixHeadSha = headSha; round.state = 'verifying'; } else round.state = 'replying';
+      if (changes || round.mergeCommitSha) { round.fixHeadSha = headSha; round.state = 'verifying'; } else round.state = 'replying';
       attempt.status = 'succeeded';
       emit('review_fix_result_accepted', { roundId: round.id, headSha, fixed }); break;
     }
