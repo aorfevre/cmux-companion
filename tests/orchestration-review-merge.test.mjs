@@ -129,3 +129,38 @@ test('a worktree at the merge commit shows the markers', async (t) => {
   const content = readFileSync(join(worktree, 'src', 'a.mjs'), 'utf8');
   assert.match(content, /<<<<<<</);
 });
+
+test('a commit that still carries conflict markers is reported as unresolved', async (t) => {
+  const repo = await repository(t);
+  await git(repo.directory, ['checkout', 'main']);
+  writeFileSync(join(repo.directory, 'src', 'a.mjs'), 'export const a = 3;\n');
+  await git(repo.directory, ['commit', '-am', 'conflicting target change']);
+  const targetHead = await git(repo.directory, ['rev-parse', 'main']);
+  const merge = adapter(repo, { targetHead: () => targetHead });
+  const prepared = await merge.prepareReviewMerge({ goalId: 'goal', repositoryId: 'repo', roundId: 'round1', prHeadSha: repo.prHead, baseBranch: 'main' });
+  assert.deepEqual(prepared.conflictPaths, ['src/a.mjs']);
+
+  // The merge commit itself carries the markers.
+  assert.deepEqual(await merge.unresolvedPaths({ repositoryId: 'repo', headSha: prepared.mergeCommitSha, conflictPaths: prepared.conflictPaths }), ['src/a.mjs']);
+
+  // A careless fixer edits the file but leaves the markers in place. Ancestry
+  // and changed-path scope both pass, so only a content proof catches it.
+  await git(repo.directory, ['branch', 'careless', prepared.mergeCommitSha]);
+  const careless = join(repo.directory, 'careless-wt');
+  await git(repo.directory, ['worktree', 'add', '-q', careless, 'careless']);
+  writeFileSync(join(careless, 'src', 'a.mjs'), `${await git(careless, ['show', 'HEAD:src/a.mjs'])}\n// touched\n`);
+  await git(careless, ['commit', '-am', 'not really resolved']);
+  const carelessHead = await git(careless, ['rev-parse', 'HEAD']);
+  await assert.doesNotReject(git(repo.directory, ['merge-base', '--is-ancestor', prepared.mergeCommitSha, carelessHead]));
+  assert.deepEqual(await merge.unresolvedPaths({ repositoryId: 'repo', headSha: carelessHead, conflictPaths: prepared.conflictPaths }), ['src/a.mjs'],
+    'a new in-scope commit descending from the merge is still unresolved');
+
+  // A real resolution is accepted.
+  await git(repo.directory, ['branch', 'resolved', prepared.mergeCommitSha]);
+  const resolved = join(repo.directory, 'resolved-wt');
+  await git(repo.directory, ['worktree', 'add', '-q', resolved, 'resolved']);
+  writeFileSync(join(resolved, 'src', 'a.mjs'), 'export const a = 3;\n');
+  await git(resolved, ['commit', '-am', 'resolved']);
+  const resolvedHead = await git(resolved, ['rev-parse', 'HEAD']);
+  assert.deepEqual(await merge.unresolvedPaths({ repositoryId: 'repo', headSha: resolvedHead, conflictPaths: prepared.conflictPaths }), []);
+});

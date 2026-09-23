@@ -48,6 +48,9 @@ answers the threads in one commit. The agent never merges, fetches or pushes.
 
 Companion records the conflicted paths from its own merge, never from the agent's
 report. The agent may change the contract's owned areas plus exactly those paths.
+Before the merged head is verified, Companion reads each recorded conflicted path
+from Git and refuses a head that still carries conflict markers: a commit that
+merely touches a conflicted file is not a resolution.
 A clean merge with no unresolved thread runs no agent at all: Companion verifies
 the merge commit and pushes it.
 

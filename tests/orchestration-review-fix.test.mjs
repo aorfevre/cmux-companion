@@ -554,7 +554,11 @@ test('the Git proof for a merged round widens to owned areas plus the recorded c
       return { headSha: input.headSha, artifactId: artifacts.put(JSON.stringify({ headSha: input.headSha, changedPaths: [] })).id };
     },
   };
-  const results = new AgentResults({ service: f.service, artifacts, repositories });
+  // The recorded conflicted path is proved marker-free from Git contents; this
+  // fixture reports a clean resolution so the scope assertion stays the subject.
+  /** @type {{ repositoryId: string; headSha: string; conflictPaths: string[] }[]} */ const proofs = [];
+  const reviewMerges = { async unresolvedPaths(input) { proofs.push(input); return []; } };
+  const results = new AgentResults({ service: f.service, artifacts, repositories, reviewMerges });
 
   f.send('request_review_fix', {}, 'user');
   const roundId = f.store.get('goal').reviewRound.id;
@@ -567,6 +571,7 @@ test('the Git proof for a merged round widens to owned areas plus the recorded c
   results.receive(authority, 'res1', raw);
   await results.drain();
 
+  assert.deepEqual(proofs.map((entry) => entry.conflictPaths), [['package-lock.json']], 'the resolution is proved against the recorded conflicted path');
   assert.ok(captured, 'the fake repository received a candidate() call');
   assert.ok(captured.includes('package-lock.json'), 'a conflicted file outside the contract is resolvable');
   assert.ok(captured.includes('src/a.mjs'), 'the contract owned areas stay in scope');

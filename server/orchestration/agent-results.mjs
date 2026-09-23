@@ -9,7 +9,7 @@ import { currentContract } from './domain/transitions.mjs';
  */
 export class AgentResults {
   /** @param {{ service: import('./service.mjs').OrchestrationService; artifacts: import('./storage/artifacts.mjs').ArtifactStore; id?: () => string; repositories?: Pick<import('./types.d.ts').RepositoryPort, 'candidate'> }} options */
-  constructor({ service, artifacts, repositories, id = randomUUID }) { this.service = service; this.store = service.store; this.artifacts = artifacts; this.id = id; this.repositories = repositories; }
+  constructor({ service, artifacts, repositories, reviewMerges, id = randomUUID }) { this.service = service; this.store = service.store; this.artifacts = artifacts; this.id = id; this.repositories = repositories; this.reviewMerges = reviewMerges; }
   /** Receipt reconciliation is read-only and cannot revive authority. The sole
    * generation exception is a planner's own accepted publication, which advances
    * generation/revision in the same transaction as accepting that exact result.
@@ -84,6 +84,14 @@ export class AgentResults {
             requireValue(proof.headSha === parsed.output.headSha, 'Git proof targets a different fix', 'STALE_TARGET');
             this.artifacts.get(proof.artifactId);
             requireValue(this.service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+            // Ancestry and scope do not prove a resolution. A fixer can touch a
+            // conflicted file and leave its markers, and that commit would reach
+            // the pull request. Prove every recorded conflicted path is clean.
+            if (round.conflictPaths?.length) {
+              requireValue(this.reviewMerges?.unresolvedPaths, 'Conflict resolution evidence is unavailable', 'UNSUPPORTED_CAPABILITY');
+              const unresolved = await this.reviewMerges.unresolvedPaths({ repositoryId: goal.repositoryId, headSha: parsed.output.headSha, conflictPaths: round.conflictPaths });
+              requireValue(!unresolved.length, `Conflict markers remain in ${unresolved.join(', ')}`, 'UNRESOLVED_CONFLICT');
+            }
           }
           this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version, type: 'accept_review_fix_result', payload: { attemptId: attempt.id, headSha: parsed.output.headSha, summary: parsed.output.summary, replies: parsed.output.replies } }, { kind: 'system' });
           const settled = this.store.get(goal.id);

@@ -1,4 +1,5 @@
 import { identifier, requireValue, sha } from '../domain/contracts.mjs';
+import { ownedArea } from '../domain/graph.mjs';
 import { git, gitBytes } from './git.mjs';
 
 /** Companion's own merge of the target branch into the pull request branch.
@@ -60,6 +61,25 @@ export class ReviewMerge {
     try { await git(repository, ['update-ref', ref, commit, '0'.repeat(40)]); }
     catch { const raced = await this.read(repository, ref); requireValue(raced, 'Review merge ref could not be reserved', 'OWNERSHIP_UNCERTAIN'); return this.observe(repository, /** @type {string} */ (raced), input); }
     return { mergedBaseSha, mergeCommitSha: commit, conflictPaths };
+  }
+  /** Every recorded conflicted path is free of conflict markers at the given
+   * commit. Ancestry and changed-path scope do not prove a resolution: a fixer
+   * can touch a conflicted file and leave its markers, and that commit would
+   * otherwise reach the pull request. Git holds the contents, so the proof
+   * belongs here.
+   * @param {{ repositoryId: string; headSha: string; conflictPaths: string[] }} input
+   * @returns {Promise<string[]>} the paths that still carry markers */
+  async unresolvedPaths(input) {
+    sha(input.headSha);
+    const { repository } = await this.repositories.repository(input.repositoryId);
+    /** @type {string[]} */ const unresolved = [];
+    for (const path of input.conflictPaths) {
+      const blob = await gitBytes(repository, ['show', `${input.headSha}:${ownedArea(path)}`], undefined, true);
+      const text = blob.toString('utf8');
+      // Git's own marker shapes, anchored to a line start as Git writes them.
+      if (/^<{7}[ \t]|^={7}$|^>{7}[ \t]/m.test(text)) unresolved.push(path);
+    }
+    return unresolved;
   }
   /** Re-derive a recorded merge from Git alone, so a replay never re-merges a
    * target that moved since.

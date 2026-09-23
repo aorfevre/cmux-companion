@@ -63,12 +63,15 @@ export async function createRuntime({ storage, repositories: configured, token, 
       results.receive({ kind: 'agent', goalId, attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision }, request.operationId, raw);
     } });
     const service = new OrchestrationService({ store, agents, repositoryIds: new Set(configured.keys()), limits, goalLimits });
-    results = new AgentResults({ service, artifacts, repositories });
+    // One instance serves both result intake, which proves a conflict was
+    // resolved, and the scheduler, which prepares the merge.
+    const reviewMerges = createReviewMerge ? createReviewMerge({ repositories }) : undefined;
+    results = new AgentResults({ service, artifacts, repositories, reviewMerges });
     const bridgeAuth = new BridgeAuthority(store);
     const stream = new EventStream({ store, onError: report });
     const subscribers = consumers.map((options) => new JournalConsumer({ ...options, store, onError: report }));
     store.onCommit = () => { stream.wake(); for (const subscriber of subscribers) subscriber.wake(); };
-    const scheduler = new Scheduler({ service, repositories, planReviewEnabled, prepareGoal, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck, resolvePrepare, cache: new NpmCache({ directory: join(storage.resources, 'npm-cache') }) }), publisher: createPublisher({ repositories }), reviewMerges: createReviewMerge ? createReviewMerge({ repositories }) : undefined, results, onError: report });
+    const scheduler = new Scheduler({ service, repositories, planReviewEnabled, prepareGoal, integrations: new GitIntegration({ repositories }), verifier: new VerificationRunner({ repositories, resolveCheck, resolvePrepare, cache: new NpmCache({ directory: join(storage.resources, 'npm-cache') }) }), publisher: createPublisher({ repositories }), reviewMerges, results, onError: report });
     const app = Fastify({ logger: logLevel ? { level: logLevel, redact: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-companion-push-device"]', 'res.headers["set-cookie"]'] } : false, bodyLimit: 2 * 1024 * 1024, ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
     const cleanup = new ResourceCleanup({ service, repositories, assertOwned: () => scheduler.ownership.assertOwned() });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
