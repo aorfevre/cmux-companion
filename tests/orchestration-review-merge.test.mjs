@@ -194,3 +194,24 @@ test('deleting a conflicted file resolves a modify/delete conflict', async (t) =
   assert.deepEqual(await merge.unresolvedPaths({ repositoryId: 'repo', headSha: prepared.mergeCommitSha, conflictPaths: prepared.conflictPaths }), []);
   assert.equal(await git(repo.directory, ['show', `${prepared.mergeCommitSha}:src/a.mjs`]), 'export const a = 2;');
 });
+
+test('a Git failure while reading a conflicted path is never read as a resolution', async (t) => {
+  const repo = await repository(t);
+  await git(repo.directory, ['checkout', 'main']);
+  writeFileSync(join(repo.directory, 'src', 'a.mjs'), 'export const a = 3;\n');
+  await git(repo.directory, ['commit', '-am', 'conflicting target change']);
+  const targetHead = await git(repo.directory, ['rev-parse', 'main']);
+  const merge = adapter(repo, { targetHead: () => targetHead });
+  const prepared = await merge.prepareReviewMerge({ goalId: 'goal', repositoryId: 'repo', roundId: 'round1', prHeadSha: repo.prHead, baseBranch: 'main' });
+  assert.deepEqual(prepared.conflictPaths, ['src/a.mjs']);
+
+  // An unreachable commit is a Git failure, not an absent path. Reporting it as
+  // resolved would let an unreadable repository push conflict markers.
+  await assert.rejects(merge.unresolvedPaths({ repositoryId: 'repo', headSha: 'd'.repeat(40), conflictPaths: prepared.conflictPaths }),
+    (error) => error.code === 'GIT_OPERATION_FAILED');
+
+  // A broken repository path fails the same way.
+  const broken = adapter(repo, { targetHead: () => targetHead });
+  broken.repositories = { async repository() { return { repository: join(repo.directory, 'no-such-repository'), common: join(repo.directory, '.git') }; } };
+  await assert.rejects(broken.unresolvedPaths({ repositoryId: 'repo', headSha: prepared.mergeCommitSha, conflictPaths: prepared.conflictPaths }));
+});
