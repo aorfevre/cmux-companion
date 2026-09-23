@@ -27,21 +27,45 @@ authority. Ready means completed for external review, not permission to skip CI.
 ## Addressing review comments
 
 A delivered goal offers **Address review comments**. One press runs one review
-round. Companion reads every unresolved review thread on the pull request, runs
-one background fixer agent in a fresh worktree at the pull request head with the
-integrator's team profile and tool set, and requires the approved project checks
-to pass on the fix head before any push. The push uses force-with-lease against
+round. Companion reads every unresolved review thread on the pull request and
+GitHub's mergeable verdict in one call, runs one background fixer agent in a
+fresh worktree with the integrator's team profile and tool set, and requires the
+approved project checks to pass on the fix head before any push. The push uses force-with-lease against
 the recorded head; a moved branch fails the round and posts nothing. Companion
 then posts exactly one reply per thread and resolves the threads the agent marked
 fixed. Declined and comment threads stay open for the human. Each reply is
 preceded by a sent marker, so a lost response is recorded as unconfirmed and
-never re-sent. Rounds are manual and unlimited; one round runs at a time.
+never re-sent. Rounds are unlimited; one round runs at a time.
+
+### Merge conflicts
+
+When GitHub reports the pull request as conflicting, or has not yet computed a
+verdict, the round first merges the target branch into the pull request branch.
+Companion performs that merge itself and commits it with two parents, whether or
+not it conflicts. A conflicted merge commit carries the conflict markers, and the
+fixer's worktree starts on that commit, so the agent resolves the markers and
+answers the threads in one commit. The agent never merges, fetches or pushes.
+
+Companion records the conflicted paths from its own merge, never from the agent's
+report. The agent may change the contract's owned areas plus exactly those paths.
+Before the merged head is verified, Companion reads each recorded conflicted path
+from Git and refuses a head that still carries conflict markers: a commit that
+merely touches a conflicted file is not a resolution.
+A clean merge with no unresolved thread runs no agent at all: Companion verifies
+the merge commit and pushes it.
+
+One round starts automatically per pull request head when the 15-minute merge
+check observes a conflict. A push moves that head, so a conflict that survives a
+round waits for a press rather than retrying. A failed automatic round never
+restarts by itself. Review threads alone never start a round.
 
 A failed round holds the goal with the existing **Recover goal** action and
 leaves the recorded head unchanged. The saved publication operation is the
 identity of the original request, so a round never rewrites it; it advances the
 recorded pull request head only. The round does not review the fix
-independently, and it never merges, rebases or edits the target branch.
+independently. It never rebases, never edits the target branch, and never merges
+the pull request itself; it merges the target branch into the pull request branch
+only to resolve a reported conflict.
 
 ## Auto-merge activation
 

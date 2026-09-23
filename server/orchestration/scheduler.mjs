@@ -12,8 +12,8 @@ import { revisablePlan, repairableReviews } from './domain/review-repairs.mjs';
 import { Reconciler } from './reconciler.mjs';
 
 export class Scheduler {
-  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'> & Partial<Pick<import('./types.d.ts').RepositoryPort,'removeVerificationWorktree'>>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration' | 'acceptRepair' | 'observeRepair'>>; verifier?: import('./types.d.ts').VerificationPort; publisher?: import('./types.d.ts').PublicationPort; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; planReviewEnabled?: () => boolean; prepareGoal?: (goal: import('./types.d.ts').Goal) => Promise<string>; onError?: (error: unknown) => void }} options */
-  constructor({ service, repositories, integrations, verifier, publisher, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, planReviewEnabled = () => true, prepareGoal, onError = () => {} }) {
+  /** @param {{ service: import('./service.mjs').OrchestrationService; repositories: Pick<import('./types.d.ts').RepositoryPort,'provision'> & Partial<Pick<import('./types.d.ts').RepositoryPort,'removeVerificationWorktree'>>; integrations?: Pick<import('./types.d.ts').RepositoryPort, 'integrate'> & Partial<Pick<import('./types.d.ts').RepositoryPort, 'provisionRepair' | 'observeIntegration' | 'acceptRepair' | 'observeRepair'>>; verifier?: import('./types.d.ts').VerificationPort; publisher?: import('./types.d.ts').PublicationPort; reviewMerges?: Pick<import('./types.d.ts').RepositoryPort, 'prepareReviewMerge' | 'unresolvedPaths'>; results?: { drain(): void | Promise<void> }; ownership?: SchedulerOwnership; id?: () => string; intervalMs?: number; planReviewEnabled?: () => boolean; prepareGoal?: (goal: import('./types.d.ts').Goal) => Promise<string>; onError?: (error: unknown) => void }} options */
+  constructor({ service, repositories, integrations, verifier, publisher, reviewMerges, results, ownership = new SchedulerOwnership({ store: service.store }), id = randomUUID, intervalMs = 2500, planReviewEnabled = () => true, prepareGoal, onError = () => {} }) {
     this.service = service; this.store = service.store; this.agents = service.agents; this.repositories = repositories;
     this.ownership = ownership; this.id = id; this.intervalMs = integer(intervalMs, 1); this.onError = onError;
     this.reconciler = new Reconciler({ service, ownership, results, id });
@@ -27,7 +27,7 @@ export class Scheduler {
     this.verifications = verifier ? new VerificationCoordinator({ service, verifier, ownership, repositories, id, onError }) : null;
     this.publications = publisher ? new PublicationCoordinator({ service, publisher, ownership, id, onError }) : null;
     this.merges = publisher ? new MergeCoordinator({ service, publisher, ownership, id, onError }) : null;
-    this.reviewFixes = publisher ? new ReviewFixCoordinator({ service, publisher, ownership, id, onError }) : null;
+    this.reviewFixes = publisher ? new ReviewFixCoordinator({ service, publisher, reviewMerges, ownership, id, onError }) : null;
     this.previousNotify = this.store.onCommit;
     /** @param {number} cursor */
     this.notify = (cursor) => { try { this.previousNotify(cursor); } finally { this.verifications?.cancelRevoked(); this.publications?.cancelRevoked(); void this.tick().catch(this.onError); } };

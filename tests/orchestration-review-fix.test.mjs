@@ -75,7 +75,7 @@ test('a closed pull request and a terminal goal refuse a round', () => {
 
 test('zero threads settle the round at once and an unavailable read fails it with a hold', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [] });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [], mergeable: 'mergeable' });
   assert.equal(f.goal.status, 'delivered'); assert.equal(f.goal.reviewRound, null);
   assert.equal(f.goal.reviewRounds[0].outcome, 'nothing_to_address');
   const g = fixture(); g.deliver(); g.command('request_review_fix', {}, g.user);
@@ -88,7 +88,7 @@ test('zero threads settle the round at once and an unavailable read fails it wit
 
 test('threads move the round to fixing and expose review_fixer work at the pull request head', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads() });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   assert.equal(f.goal.reviewRound.state, 'fixing');
   assert.deepEqual(readyWork(f.goal).map((entry) => [entry.role, entry.target]), [['review_fixer', HEAD_B]]);
   f.request('fx', 'review_fixer'); const attempt = f.goal.attempts.at(-1);
@@ -100,7 +100,7 @@ test('threads move the round to fixing and expose review_fixer work at the pull 
 
 test('a fix result with a new head needs verification; replies only skip to replying', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads() });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 's', replies: replies('fixed') }), 'STALE_TARGET');
   fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('declined') }), 'STALE_TARGET');
@@ -109,7 +109,7 @@ test('a fix result with a new head needs verification; replies only skip to repl
   assert.equal(f.goal.reviewRound.state, 'verifying'); assert.equal(f.goal.reviewRound.fixHeadSha, HEAD_C);
   assert.equal(f.goal.attempts.at(-1).status, 'succeeded');
   const g = fixture(); g.deliver(); g.command('request_review_fix', {}, g.user);
-  g.command('record_review_threads', { roundId: g.goal.reviewRound.id, threads: threads() });
+  g.command('record_review_threads', { roundId: g.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   g.request('fx', 'review_fixer'); g.dispatch('fx');
   g.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 'No code change', replies: replies('comment') });
   assert.equal(g.goal.reviewRound.state, 'replying'); assert.equal(g.goal.reviewRound.fixHeadSha, undefined);
@@ -118,7 +118,7 @@ test('a fix result with a new head needs verification; replies only skip to repl
 test('verification of the fix head gates the push and a failed check holds the goal', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
   const roundId = f.goal.reviewRound.id;
-  f.command('record_review_threads', { roundId, threads: threads() });
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('fixed') }); f.command('record_stopped', { attemptId: 'fx' });
   const requested = f.command('request_review_fix_verification', { roundId, operationId: 'verify_fix' });
@@ -136,7 +136,7 @@ test('a passed fix verification, push and settlement advance the head and clear 
   f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', checkedAt: 5 });
   f.command('request_review_fix', {}, f.user);
   const roundId = f.goal.reviewRound.id;
-  f.command('record_review_threads', { roundId, threads: threads() });
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('fixed') }); f.command('record_stopped', { attemptId: 'fx' });
   f.command('request_review_fix_verification', { roundId, operationId: 'verify_fix' });
@@ -156,7 +156,7 @@ test('a passed fix verification, push and settlement advance the head and clear 
 test('an uncertain push holds the round until the remote head confirms one outcome', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
   const roundId = f.goal.reviewRound.id;
-  f.command('record_review_threads', { roundId, threads: threads() });
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 's', replies: replies('fixed') }); f.command('record_stopped', { attemptId: 'fx' });
   f.command('request_review_fix_verification', { roundId, operationId: 'verify_fix' });
@@ -171,7 +171,7 @@ test('an uncertain push holds the round until the remote head confirms one outco
 
 test('abort during a round terminates the fixer and keeps the old pull request head', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads() });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   const aborted = f.command('abort', {}, f.user);
   assert.equal(aborted.intents[0].kind, 'terminate'); assert.equal(f.goal.status, 'aborted'); assert.equal(f.goal.pr.headSha, HEAD_B);
@@ -211,7 +211,7 @@ test('the fixer inherits the integrator team assignment', () => {
 
 test('a fixer result with the pull request head and replies only is accepted without Git proof', () => {
   const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads() });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
   f.request('fx', 'review_fixer'); f.dispatch('fx');
   f.command('receive_role_result', { resultId: 'res1', attemptId: 'fx', artifactId: 'b'.repeat(64) });
   f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 'Answered', replies: replies('comment') });
@@ -227,8 +227,8 @@ function coordinatorFixture(t) {
   store.apply({ id: 'seed', goalId: 'goal', expectedVersion: 0, type: 'create_goal', payload: {} }, { kind: 'user' }, () => ({ goal: { ...seed.goal, id: 'goal' }, events: [], intents: [] }));
   const calls = { threads: 0, pushes: [], replies: [] };
   const publisher = {
-    threads: threads(), threadsError: null, pushResult: 'pushed', replyOutcome: { posted: ['PRRT_1', 'PRRT_2'], unconfirmed: [], resolved: ['PRRT_1'] },
-    async reviewThreads() { calls.threads++; if (publisher.threadsError) throw publisher.threadsError; return publisher.threads; },
+    threads: threads(), mergeable: 'mergeable', threadsError: null, pushResult: 'pushed', replyOutcome: { posted: ['PRRT_1', 'PRRT_2'], unconfirmed: [], resolved: ['PRRT_1'] },
+    async reviewThreads() { calls.threads++; if (publisher.threadsError) throw publisher.threadsError; return { threads: publisher.threads, mergeable: publisher.mergeable }; },
     async pushFix(plan, fix) { calls.pushes.push(fix); return publisher.pushResult; },
     async replyAndResolve(plan, fix) { calls.replies.push(fix); return publisher.replyOutcome; },
   };
@@ -327,6 +327,17 @@ test('a composition without the review round capability reports a configuration 
   assert.doesNotMatch(round.error, /online|offline/i);
 });
 
+test('a publisher resolving to an object without threads fails as a configuration fault, not a parse error', async (t) => {
+  const f = coordinatorFixture(t);
+  f.publisher.reviewThreads = async () => { f.calls.threads++; return {}; };
+  f.send('request_review_fix', {}, 'user');
+  await f.coordinator.run(); await settle(f.coordinator);
+  const round = f.store.get('goal').reviewRound;
+  assert.equal(round.state, 'failed');
+  assert.match(round.error, /unavailable/);
+  assert.doesNotMatch(round.error, /online|offline/i);
+});
+
 test('a capability fault raised inside the thread read is not reported as an offline Mac', async (t) => {
   const f = coordinatorFixture(t);
   f.publisher.threadsError = Object.assign(new Error('Publication capability reviewThreads is unavailable in this configuration'), { code: 'UNSUPPORTED_CAPABILITY' });
@@ -377,4 +388,311 @@ test('a declared fixer capability leaves the round fixing so the scheduler can d
   assert.equal(round.state, 'fixing');
   assert.equal(round.error, undefined);
   assert.equal(f.store.ready().filter((work) => work.role === 'review_fixer').length, 1);
+});
+
+test('the publication adapter returns the mergeable verdict with the threads', async () => {
+  const calls = [];
+  const github = {
+    identity: () => 'fake',
+    async readPull(repositoryId, number) { calls.push(['readPull', number]); return { number, url: 'https://example.test/pr/1', state: 'open', mergeable: 'conflicting' }; },
+    async listReviewThreads() { calls.push(['threads']); return [thread('PRRT_1')]; },
+    async find() { return []; },
+    async create() {},
+  };
+  const { GitHubPublication } = await import('../server/orchestration/adapters/github.mjs');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const directory = mkdtempSync(join(tmpdir(), 'companion-pub-'));
+  try {
+    const publication = new GitHubPublication({ directory, remote: { identity: () => 'r', async head() { return null; }, async push() {} }, github });
+    const observed = await publication.reviewThreads({ repositoryId: 'repo' }, { number: 1, url: 'https://example.test/pr/1', headSha: HEAD_B });
+    assert.equal(observed.mergeable, 'conflicting');
+    assert.equal(observed.threads.length, 1);
+    assert.deepEqual(calls, [['readPull', 1], ['threads']]);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a conflicting or unknown verdict merges rather than settling', () => {
+  const clean = fixture(); clean.deliver(); clean.command('request_review_fix', {}, clean.user);
+  clean.command('record_review_threads', { roundId: clean.goal.reviewRound.id, threads: [], mergeable: 'mergeable' });
+  assert.equal(clean.goal.status, 'delivered');
+  assert.equal(clean.goal.reviewRounds[0].outcome, 'nothing_to_address');
+
+  const conflicting = fixture(); conflicting.deliver(); conflicting.command('request_review_fix', {}, conflicting.user);
+  conflicting.command('record_review_threads', { roundId: conflicting.goal.reviewRound.id, threads: [], mergeable: 'conflicting' });
+  assert.equal(conflicting.goal.status, 'addressing_review');
+  assert.equal(conflicting.goal.reviewRound.state, 'merging');
+  assert.equal(conflicting.goal.reviewRound.mergeable, 'conflicting');
+  assert.equal(reviewRoundPhase(conflicting.goal.reviewRound), 'Merging the target branch');
+
+  const unknown = fixture(); unknown.deliver(); unknown.command('request_review_fix', {}, unknown.user);
+  unknown.command('record_review_threads', { roundId: unknown.goal.reviewRound.id, threads: threads(), mergeable: 'unknown' });
+  assert.equal(unknown.goal.reviewRound.state, 'merging', 'an uncomputed verdict is decided by the local merge');
+  assert.equal(readyWork(unknown.goal).length, 0, 'no fixer runs before the merge is recorded');
+
+  const threadsOnly = fixture(); threadsOnly.deliver(); threadsOnly.command('request_review_fix', {}, threadsOnly.user);
+  threadsOnly.command('record_review_threads', { roundId: threadsOnly.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
+  assert.equal(threadsOnly.goal.reviewRound.state, 'fixing');
+});
+
+test('a missing or unknown mergeable verdict is refused', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  fails(() => f.command('record_review_threads', { roundId, threads: [] }));
+  fails(() => f.command('record_review_threads', { roundId, threads: [], mergeable: 'maybe' }));
+  assert.equal(f.goal.reviewRound.state, 'fetching', 'a refused record leaves the round untouched');
+});
+
+const MERGE_COMMIT = 'e'.repeat(40);
+const BASE_HEAD = 'f'.repeat(40);
+
+test('a clean merge with no threads skips the agent and verifies the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: [], mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] });
+  assert.equal(f.goal.reviewRound.state, 'verifying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, MERGE_COMMIT);
+  assert.equal(f.goal.reviewRound.mergedBaseSha, BASE_HEAD);
+  assert.equal(readyWork(f.goal).length, 0, 'no fixer is dispatched for a clean merge with no threads');
+});
+
+test('a conflicted merge dispatches the fixer against the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: [], mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['src/a.mjs', 'package-lock.json'] });
+  assert.equal(f.goal.reviewRound.state, 'fixing');
+  assert.deepEqual(f.goal.reviewRound.conflictPaths, ['src/a.mjs', 'package-lock.json']);
+  assert.deepEqual(readyWork(f.goal).map((entry) => [entry.role, entry.target]), [['review_fixer', MERGE_COMMIT]]);
+  f.request('fx', 'review_fixer'); const attempt = f.goal.attempts.at(-1);
+  assert.equal(attempt.target, MERGE_COMMIT);
+  assert.equal(attempt.baseSha, MERGE_COMMIT, 'the fixer worktree starts on the merge, with its conflict markers');
+  assert.equal(reviewRoundPhase(f.goal.reviewRound), 'Fixing 0 threads and 2 conflicts');
+});
+
+test('a merged round with threads also targets the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] });
+  assert.equal(f.goal.reviewRound.state, 'fixing');
+  assert.deepEqual(readyWork(f.goal).map((entry) => entry.target), [MERGE_COMMIT]);
+  f.request('fx', 'review_fixer');
+  assert.equal(f.goal.attempts.at(-1).target, MERGE_COMMIT);
+});
+
+test('an unmerged round still targets the pull request head', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
+  assert.deepEqual(readyWork(f.goal).map((entry) => entry.target), [HEAD_B]);
+  f.request('fx', 'review_fixer');
+  assert.equal(f.goal.attempts.at(-1).target, HEAD_B);
+});
+
+test('a merge record is refused outside the merging state and rejects an unowned path', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  fails(() => f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] }), 'NOT_READY');
+  f.command('record_review_threads', { roundId, threads: [], mergeable: 'conflicting' });
+  fails(() => f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['../outside'] }));
+  fails(() => f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: HEAD_B, conflictPaths: [] }), 'STALE_TARGET');
+  assert.equal(f.goal.reviewRound.state, 'merging', 'a refused record leaves the round untouched');
+});
+
+test('a merged round validates the fix head against the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['src/a.mjs'] });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  // A conflicted round must move past its merge commit: reporting the merge
+  // itself means the markers were never resolved. A head that is merely
+  // different is admitted here and proved by the Git ancestry check instead.
+  fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: MERGE_COMMIT, summary: 's', replies: replies('comment') }), 'STALE_TARGET');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 'Resolved', replies: replies('fixed') });
+  assert.equal(f.goal.reviewRound.state, 'verifying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, HEAD_C);
+});
+
+test('a merged round with replies only keeps the merge commit as the fix head', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: MERGE_COMMIT, summary: 'Answered only', replies: replies('comment') });
+  assert.equal(f.goal.reviewRound.state, 'verifying', 'the merge itself still needs the approved checks');
+  assert.equal(f.goal.reviewRound.fixHeadSha, MERGE_COMMIT);
+});
+
+test('an unmerged round still settles replies without verification', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: threads(), mergeable: 'mergeable' });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_B, summary: 'Answered', replies: replies('comment') });
+  assert.equal(f.goal.reviewRound.state, 'replying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, undefined);
+});
+
+test('the Git proof for a merged round widens to owned areas plus the recorded conflicted paths', async (t) => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { ArtifactStore } = await import('../server/orchestration/storage/artifacts.mjs');
+  const { AgentResults } = await import('../server/orchestration/agent-results.mjs');
+
+  const f = coordinatorFixture(t);
+  const directory = mkdtempSync(join(tmpdir(), 'companion-scope-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const artifacts = new ArtifactStore({ directory });
+  let captured = null;
+  const repositories = {
+    async candidate(input) {
+      captured = input.ownedAreas;
+      return { headSha: input.headSha, artifactId: artifacts.put(JSON.stringify({ headSha: input.headSha, changedPaths: [] })).id };
+    },
+  };
+  // The recorded conflicted path is proved marker-free from Git contents; this
+  // fixture reports a clean resolution so the scope assertion stays the subject.
+  /** @type {{ repositoryId: string; headSha: string; conflictPaths: string[] }[]} */ const proofs = [];
+  const reviewMerges = { async unresolvedPaths(input) { proofs.push(input); return []; } };
+  const results = new AgentResults({ service: f.service, artifacts, repositories, reviewMerges });
+
+  f.send('request_review_fix', {}, 'user');
+  const roundId = f.store.get('goal').reviewRound.id;
+  f.send('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.send('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['package-lock.json'] });
+  await fix(f);
+  const attempt = f.store.get('goal').attempts.at(-1);
+  const authority = { kind: 'agent', goalId: 'goal', attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision };
+  const raw = JSON.stringify({ schemaVersion: 1, goalId: 'goal', attemptId: attempt.id, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: 'review_fixer', target: attempt.target, output: { headSha: HEAD_C, summary: 'Resolved the conflict', replies: replies('fixed') } });
+  results.receive(authority, 'res1', raw);
+  await results.drain();
+
+  assert.deepEqual(proofs.map((entry) => entry.conflictPaths), [['package-lock.json']], 'the resolution is proved against the recorded conflicted path');
+  assert.ok(captured, 'the fake repository received a candidate() call');
+  assert.ok(captured.includes('package-lock.json'), 'a conflicted file outside the contract is resolvable');
+  assert.ok(captured.includes('src/a.mjs'), 'the contract owned areas stay in scope');
+  assert.ok(!captured.includes('docs/readme.md'), 'an unrelated path is not swept in');
+  assert.equal(f.store.get('goal').reviewRound.state, 'verifying');
+});
+
+test('the coordinator prepares the merge and records it', async (t) => {
+  const c = coordinatorFixture(t);
+  c.publisher.threads = [];
+  c.publisher.mergeable = 'conflicting';
+  const prepared = [];
+  c.coordinator.reviewMerges = { async prepareReviewMerge(input) { prepared.push(input); return { mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: ['src/a.mjs'] }; } };
+  c.send('request_review_fix', {}, 'user');
+  await c.coordinator.run(); await settle(c.coordinator);
+  assert.equal(c.store.get('goal').reviewRound.state, 'merging');
+  await c.coordinator.run(); await settle(c.coordinator);
+  const round = c.store.get('goal').reviewRound;
+  assert.equal(round.state, 'fixing');
+  assert.equal(round.mergeCommitSha, 'e'.repeat(40));
+  assert.deepEqual(round.conflictPaths, ['src/a.mjs']);
+  assert.equal(prepared.length, 1);
+  assert.equal(prepared[0].prHeadSha, round.prHeadSha);
+  assert.equal(prepared[0].roundId, round.id);
+  assert.equal(prepared[0].baseBranch, c.store.get('goal').baseBranch);
+});
+
+test('a clean merge with no threads reaches verification without an agent', async (t) => {
+  const c = coordinatorFixture(t);
+  c.publisher.threads = [];
+  c.publisher.mergeable = 'unknown';
+  c.coordinator.reviewMerges = { async prepareReviewMerge() { return { mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: [] }; } };
+  c.send('request_review_fix', {}, 'user');
+  await c.coordinator.run(); await settle(c.coordinator);
+  await c.coordinator.run(); await settle(c.coordinator);
+  const round = c.store.get('goal').reviewRound;
+  assert.equal(round.state, 'verifying');
+  assert.equal(round.fixHeadSha, 'e'.repeat(40));
+});
+
+test('a missing merge capability fails the round instead of waiting for a retry', async (t) => {
+  const c = coordinatorFixture(t);
+  c.publisher.threads = [];
+  c.publisher.mergeable = 'conflicting';
+  c.coordinator.reviewMerges = {};
+  c.send('request_review_fix', {}, 'user');
+  await c.coordinator.run(); await settle(c.coordinator);
+  await c.coordinator.run(); await settle(c.coordinator);
+  const round = c.store.get('goal').reviewRound;
+  assert.equal(round.state, 'failed');
+  assert.match(round.error, /UNSUPPORTED_CAPABILITY/);
+});
+
+test('one merge is prepared even when the coordinator runs twice concurrently', async (t) => {
+  const c = coordinatorFixture(t);
+  c.publisher.threads = [];
+  c.publisher.mergeable = 'conflicting';
+  let calls = 0;
+  c.coordinator.reviewMerges = { async prepareReviewMerge() { calls++; return { mergedBaseSha: 'f'.repeat(40), mergeCommitSha: 'e'.repeat(40), conflictPaths: ['src/a.mjs'] }; } };
+  c.send('request_review_fix', {}, 'user');
+  await c.coordinator.run(); await settle(c.coordinator);
+  await Promise.all([c.coordinator.run(), c.coordinator.run()]);
+  await settle(c.coordinator);
+  assert.equal(calls, 1, 'the active-job map prevents a second merge for the same goal');
+});
+
+test('a conflicting observation admits exactly one automatic round per pull request head', () => {
+  const f = fixture(); f.deliver();
+  fails(() => f.command('request_review_fix', { trigger: 'conflict' }), 'NOT_READY');
+  f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', mergeable: 'conflicting', checkedAt: 5 });
+  assert.equal(f.goal.mergeSync.mergeable, 'conflicting');
+  f.command('request_review_fix', { trigger: 'conflict' });
+  assert.equal(f.goal.status, 'addressing_review');
+  assert.equal(f.goal.reviewRound.trigger, 'conflict');
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [], mergeable: 'mergeable' });
+  assert.equal(f.goal.status, 'delivered');
+  f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', mergeable: 'conflicting', checkedAt: 6 });
+  fails(() => f.command('request_review_fix', { trigger: 'conflict' }), 'NOT_READY');
+  assert.equal(f.goal.status, 'delivered', 'the same head never starts a second automatic round');
+  f.command('request_review_fix', {}, f.user);
+  assert.equal(f.goal.reviewRound.trigger, 'user', 'the user may still press the button');
+});
+
+test('an automatic round needs an observed conflict and system authority', () => {
+  const f = fixture(); f.deliver();
+  f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', mergeable: 'mergeable', checkedAt: 5 });
+  fails(() => f.command('request_review_fix', { trigger: 'conflict' }), 'NOT_READY');
+  f.command('record_merge_sync', { number: 1, url: 'https://example.test/pr/1', state: 'open', mergeable: 'conflicting', checkedAt: 6 });
+  fails(() => f.command('request_review_fix', { trigger: 'conflict' }, f.user), 'FORBIDDEN');
+  f.command('request_review_fix', { trigger: 'conflict' });
+  assert.equal(f.goal.reviewRound.trigger, 'conflict');
+});
+
+test('a user round is still refused to system authority and records a user trigger', () => {
+  const f = fixture(); f.deliver();
+  fails(() => f.command('request_review_fix', {}), 'FORBIDDEN');
+  f.command('request_review_fix', {}, f.user);
+  assert.equal(f.goal.reviewRound.trigger, 'user');
+});
+
+test('a conflict-only round accepts a resolution commit with no replies', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: [], mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: ['src/a.mjs'] });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  // Resolving a marker always makes a commit, and a round with no thread has no
+  // reply to mark fixed. The merge commit itself is never a valid resolution.
+  fails(() => f.command('accept_review_fix_result', { attemptId: 'fx', headSha: MERGE_COMMIT, summary: 'Unresolved', replies: [] }), 'STALE_TARGET');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: HEAD_C, summary: 'Resolved the conflict', replies: [] });
+  assert.equal(f.goal.reviewRound.state, 'verifying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, HEAD_C);
+});
+
+test('a clean merged round with threads still accepts replies on the merge commit', () => {
+  const f = fixture(); f.deliver(); f.command('request_review_fix', {}, f.user);
+  const roundId = f.goal.reviewRound.id;
+  f.command('record_review_threads', { roundId, threads: threads(), mergeable: 'conflicting' });
+  f.command('record_review_merge', { roundId, mergedBaseSha: BASE_HEAD, mergeCommitSha: MERGE_COMMIT, conflictPaths: [] });
+  f.request('fx', 'review_fixer'); f.dispatch('fx');
+  f.command('accept_review_fix_result', { attemptId: 'fx', headSha: MERGE_COMMIT, summary: 'Answered only', replies: replies('comment') });
+  assert.equal(f.goal.reviewRound.state, 'verifying');
+  assert.equal(f.goal.reviewRound.fixHeadSha, MERGE_COMMIT, 'no conflict means the merge commit is a valid head');
 });

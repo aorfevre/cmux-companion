@@ -371,7 +371,7 @@ test('a delivered goal offers the review round and a running round shows its pha
   expect(act).toHaveBeenCalledWith(delivered, delivered.actions.find(action => action.type === 'request_review_fix'));
   unmount();
   f.command('request_review_fix', {}, f.user);
-  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }] });
+  f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }], mergeable: 'mergeable' });
   const fixing = { ...goalView(f.goal), contracts: [] };
   expect(goalStage(fixing)).toBe('Addressing review');
   render(<GoalDetail goal={fixing} disabled={false} terminal={false} act={act} control={vi.fn()} />);
@@ -396,4 +396,49 @@ test('a settled round lists each thread action and an unconfirmed reply', async 
   expect(screen.getByText(/Addressed · 2 threads · new head dddddddddddd/)).toBeTruthy();
   expect(screen.getByText(/fixed · resolved · reply unconfirmed/)).toBeTruthy();
   expect(screen.getByText(/^declined$/)).toBeTruthy();
+});
+
+test('an automatic round shows its merge evidence and conflicted paths', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture, HEAD_B } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.deliver();
+  const view = { ...goalView(f.goal), contracts: [], reviewRound: {
+    id: 'r1', prHeadSha: HEAD_B, startedAt: 1, state: 'fixing' as const, phase: 'Fixing 0 threads and 2 conflicts',
+    trigger: 'conflict' as const, mergedBaseSha: 'e'.repeat(40), mergeCommitSha: 'f'.repeat(40), conflictPaths: ['src/a.mjs', 'package-lock.json'],
+    threads: [],
+  } };
+  render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
+  expect(screen.getByText(/Fixing 0 threads and 2 conflicts/)).toBeTruthy();
+  expect(screen.getByText(/Started automatically by an observed merge conflict/)).toBeTruthy();
+  expect(screen.getByText(/src\/a\.mjs/)).toBeTruthy();
+  expect(screen.getByText(/package-lock\.json/)).toBeTruthy();
+  expect(screen.getByText(/eeeeeeeeeeee/)).toBeTruthy();
+});
+
+test('a round with no merge shows no merge evidence', async () => {
+  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture, HEAD_B } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.deliver();
+  const view = { ...goalView(f.goal), contracts: [], reviewRound: {
+    id: 'r1', prHeadSha: HEAD_B, startedAt: 1, state: 'fixing' as const, phase: 'Fixing 1 thread',
+    trigger: 'user' as const, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }],
+  } };
+  render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
+  expect(screen.getByText(/Fixing 1 thread/)).toBeTruthy();
+  expect(screen.queryByText(/Started automatically by an observed merge conflict/)).toBeNull();
+  expect(screen.queryByText(/Merged target/)).toBeNull();
+});
+
+test('a conflicted pull request with no active round needs attention', async () => {
+  const { attention } = await import('../app/orchestration/attention');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const f = fixture(); f.deliver();
+  f.command('record_merge_sync', { number: f.goal.pr.number, url: f.goal.pr.url, checkedAt: 1, state: 'open', mergeable: 'conflicting' }, f.system);
+  const goal = { ...goalView(f.goal), contracts: [] };
+  expect(attention(goal)).toBe('The PR conflicts with its target branch. A round starts automatically at the next merge check.');
 });

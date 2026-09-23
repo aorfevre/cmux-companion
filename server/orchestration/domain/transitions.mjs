@@ -8,7 +8,7 @@ import { captureFailureHold, recoverGoal } from './recovery.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
 import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
-import { parseReviewThreads, parseReviewReplies } from './review-round.mjs';
+import { parseReviewThreads, parseReviewReplies, parseConflictPaths } from './review-round.mjs';
 
 /** @typedef {import('../types.d.ts').Goal} Goal */
 /** @typedef {import('../types.d.ts').Attempt} Attempt */
@@ -376,9 +376,10 @@ export function transition(before, command, authority) {
       }
       if (role === 'review_fixer') {
         const round = goal.reviewRound;
-        requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && round.threads.length > 0, 'No review threads await a fix', 'NOT_READY');
+        // A conflict is work even with no thread: the merge markers need resolving.
+        requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && (round.threads.length > 0 || round.conflictPaths?.length), 'No review threads or conflicts await a fix', 'NOT_READY');
         requireValue(!goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification worker is not settled', 'NOT_READY');
-        target = round.prHeadSha;
+        target = round.mergeCommitSha ?? round.prHeadSha;
       }
       requireValue(!goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || role === 'review_fixer' || (attempt.taskId === taskId && (role === 'implementer' || role === 'planner' || attempt.target === target)))), 'Attempt already active', 'ALREADY_RUNNING');
       if (role === 'planner' || role === 'reviewer') {
@@ -696,7 +697,9 @@ export function transition(before, command, authority) {
       requireValue(!goal.mergeSync || checkedAt >= goal.mergeSync.checkedAt, 'Stale merge observation', 'STALE_TARGET');
       requireValue(['open', 'closed', 'merged', 'unknown'].includes(String(input.state)), 'Invalid merge observation');
       const state = /** @type {NonNullable<import('../types.d.ts').Goal['mergeSync']>['state']} */ (input.state);
-      goal.mergeSync = { checkedAt, state, error: state === 'unknown' ? 'GitHub sync unavailable. Will retry on the next scheduled check.' : null };
+      requireValue(input.mergeable === undefined || ['mergeable', 'conflicting', 'unknown'].includes(String(input.mergeable)), 'Invalid mergeable verdict');
+      goal.mergeSync = { checkedAt, state, error: state === 'unknown' ? 'GitHub sync unavailable. Will retry on the next scheduled check.' : null,
+        ...(input.mergeable === undefined ? {} : { mergeable: /** @type {import('../types.d.ts').MergeableVerdict} */ (input.mergeable) }) };
       if (state === 'merged') { goal.status = 'merged'; emit('pr_merged', { number: goal.pr.number }); }
       emit('merge_sync_observed', { number: goal.pr.number, checkedAt, state }); break;
     }
@@ -705,27 +708,56 @@ export function transition(before, command, authority) {
       goal.status = 'merged'; emit('pr_merged', { number: goal.pr.number }); break;
     }
     case 'request_review_fix': {
-      requireAuthority(authority, 'user');
+      const automatic = input.trigger === 'conflict';
+      requireAuthority(authority, automatic ? 'system' : 'user');
       requireValue(goal.status === 'delivered' && goal.pr && goal.publication, 'Only a delivered goal with a pull request can address review comments', 'NOT_READY');
       requireValue(goal.mergeSync?.state !== 'closed', 'The pull request is closed on GitHub', 'NOT_READY');
       requireValue(!goal.reviewRound, 'A review round is already active', 'NOT_READY');
       requireValue(!goal.attempts.some(ownsWorker) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && !goal.results?.some((result) => result.status === 'pending'), 'Workers still active', 'NOT_READY');
+      // One automatic round per pull request head. A push moves that head, so a
+      // conflict that survives a round waits for a press, never an endless retry.
+      if (automatic) {
+        requireValue(goal.mergeSync?.mergeable === 'conflicting', 'No observed merge conflict', 'NOT_READY');
+        requireValue(goal.conflictRoundKey !== goal.pr.headSha, 'This conflict already started a round', 'NOT_READY');
+        goal.conflictRoundKey = goal.pr.headSha;
+      }
       goal.generation++;
-      goal.reviewRound = { id: command.id, prHeadSha: goal.pr.headSha, startedAt: integer(input.startedAt ?? 0), state: 'fetching', threads: [] };
+      goal.reviewRound = { id: command.id, prHeadSha: goal.pr.headSha, startedAt: integer(input.startedAt ?? 0), state: 'fetching', threads: [], trigger: automatic ? 'conflict' : 'user' };
       goal.status = 'addressing_review';
-      emit('review_fix_requested', { roundId: command.id, prHeadSha: goal.pr.headSha }); break;
+      emit('review_fix_requested', { roundId: command.id, prHeadSha: goal.pr.headSha, trigger: automatic ? 'conflict' : 'user' }); break;
     }
     case 'record_review_threads': {
       requireAuthority(authority, 'system');
       const round = activeRound(goal, input.roundId);
       requireValue(round.state === 'fetching', 'Review threads were already recorded', 'STALE_OPERATION');
+      requireValue(['mergeable', 'conflicting', 'unknown'].includes(String(input.mergeable)), 'Invalid mergeable verdict');
       round.threads = parseReviewThreads(input.threads);
+      round.mergeable = /** @type {import('../types.d.ts').MergeableVerdict} */ (input.mergeable);
+      if (round.mergeable !== 'mergeable') {
+        round.state = 'merging';
+        emit('review_merge_requested', { roundId: round.id, mergeable: round.mergeable, count: round.threads.length }); break;
+      }
       if (!round.threads.length) {
         closeRound(goal, round, 'nothing_to_address', integer(input.at ?? 0));
         emit('review_fix_settled', { roundId: round.id, outcome: 'nothing_to_address' }); break;
       }
       round.state = 'fixing';
       emit('review_threads_recorded', { roundId: round.id, count: round.threads.length }); break;
+    }
+    case 'record_review_merge': {
+      requireAuthority(authority, 'system');
+      const round = activeRound(goal, input.roundId);
+      requireValue(round.state === 'merging', 'A merge is not awaited', 'NOT_READY');
+      const mergedBaseSha = sha(input.mergedBaseSha), mergeCommitSha = sha(input.mergeCommitSha);
+      requireValue(mergeCommitSha !== round.prHeadSha && mergeCommitSha !== mergedBaseSha, 'A merge needs a new commit', 'STALE_TARGET');
+      const conflictPaths = parseConflictPaths(input.conflictPaths);
+      round.mergedBaseSha = mergedBaseSha; round.mergeCommitSha = mergeCommitSha; round.conflictPaths = conflictPaths;
+      if (!conflictPaths.length && !round.threads.length) {
+        round.fixHeadSha = mergeCommitSha; round.state = 'verifying';
+        emit('review_merge_recorded', { roundId: round.id, headSha: mergeCommitSha, conflicts: 0 }); break;
+      }
+      round.state = 'fixing';
+      emit('review_merge_recorded', { roundId: round.id, headSha: mergeCommitSha, conflicts: conflictPaths.length }); break;
     }
     case 'accept_review_fix_result': {
       // Internal: the service proves Git evidence before issuing it, like confirm_candidate.
@@ -734,12 +766,17 @@ export function transition(before, command, authority) {
       requireValue(attempt.role === 'review_fixer', 'Not a review fixer', 'FORBIDDEN');
       requireValue(attempt.status === 'running', 'Attempt is not running', 'STALE_ATTEMPT');
       const round = goal.reviewRound;
-      requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && round.attemptId === attempt.id && attempt.target === round.prHeadSha, 'Review round target changed', 'STALE_TARGET');
+      const roundTarget = round?.mergeCommitSha ?? round?.prHeadSha;
+      requireValue(goal.status === 'addressing_review' && round?.state === 'fixing' && round.attemptId === attempt.id && attempt.target === roundTarget, 'Review round target changed', 'STALE_TARGET');
       const headSha = sha(input.headSha), replies = parseReviewReplies(input.replies, round.threads);
       const fixed = replies.some((reply) => reply.action === 'fixed');
-      requireValue(fixed ? headSha !== round.prHeadSha : headSha === round.prHeadSha, fixed ? 'A fix needs a new commit' : 'Replies without a fix must keep the pull request head', 'STALE_TARGET');
+      // Resolving a conflict marker is a commit even when no thread was fixed,
+      // and a conflict-only round has no replies at all.
+      const changes = fixed || Boolean(round.conflictPaths?.length);
+      requireValue(changes ? headSha !== roundTarget : headSha === roundTarget, changes ? 'A fix or conflict resolution needs a new commit' : 'Replies without a fix must keep the recorded round head', 'STALE_TARGET');
       round.replies = replies; round.summary = text(input.summary, 8000);
-      if (fixed) { round.fixHeadSha = headSha; round.state = 'verifying'; } else round.state = 'replying';
+      // A merged round verifies its merge commit even when the agent changed nothing.
+      if (changes || round.mergeCommitSha) { round.fixHeadSha = headSha; round.state = 'verifying'; } else round.state = 'replying';
       attempt.status = 'succeeded';
       emit('review_fix_result_accepted', { roundId: round.id, headSha, fixed }); break;
     }

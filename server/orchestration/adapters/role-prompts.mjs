@@ -20,6 +20,9 @@ export function roleContext(goal, attempt) {
     task, assignment: attempt.assignment ?? null, references: goal.references ?? [], planningRequest: goal.planningRequest ?? null,
     reviewThreads: attempt.role === 'review_fixer' ? goal.reviewRound?.threads ?? [] : [],
     prHeadSha: attempt.role === 'review_fixer' ? goal.reviewRound?.prHeadSha ?? null : null,
+    reviewMerge: attempt.role === 'review_fixer' && goal.reviewRound?.mergeCommitSha
+      ? { mergedBaseSha: goal.reviewRound.mergedBaseSha ?? null, mergeCommitSha: goal.reviewRound.mergeCommitSha, conflictPaths: goal.reviewRound.conflictPaths ?? [] }
+      : null,
     integrationOperation: attempt.role === 'integrator' ? goal.integration : null,
     verification: attempt.role === 'integrator' && goal.verification?.headSha === attempt.target ? goal.verification : null,
     reviews: (attempt.role === 'planner' ? goal.reviews : currentReviews(goal)).filter((review) => review.taskId === attempt.taskId),
@@ -37,7 +40,7 @@ export function rolePrompt(goal, attempt) {
     implementer: 'Implement only the assigned task from the recorded base. Commit your changes and report the candidate SHA, summary and evidence. A candidate is not accepted or integrated until the service records independent evidence.',
     reviewer: 'Independently review the exact pinned target in your isolated read-only snapshot. Return a structured review with disposition, findings, stable finding ids, severity, blocking, evidence and suggestion. Accept only with no blocking findings; request_changes requires at least one blocking finding.',
     integrator: 'Resolve the recorded integration conflict or final-review/check findings within the approved scope. Commit the repair and report its SHA, integration operation id (null for final repair), summary and evidence. Do not publish or approve it.',
-    review_fixer: 'Address the pinned pull request review threads inside the approved contract scope. For each thread decide: fixed (change the code and commit), declined (explain briefly why not), or comment (answer a question). Write each reply body as a short professional pull request comment. Never push, never resolve threads, never change files outside the contract owned areas. Commit with companion.commit_candidate when you change code and report the resulting headSha. If you change nothing, report the recorded pull request head as headSha. Provide exactly one reply per thread.',
+    review_fixer: 'Address the pinned pull request review threads inside the approved contract scope. For each thread decide: fixed (change the code and commit), declined (explain briefly why not), or comment (answer a question). Write each reply body as a short professional pull request comment. When reviewMerge is present, your worktree already contains Companion\'s merge of the target branch: resolve every conflict marker in its conflictPaths, and change no other file the merge brought in. Never merge, never fetch, never push, never resolve threads, and never change files outside the contract owned areas or the pinned conflictPaths. Commit with companion.commit_candidate when you change code and report the resulting headSha. If you change nothing, report the recorded target head from your pinned context as headSha. Provide exactly one reply per thread.',
   };
   return [
     instructions[attempt.role], referenceInstructions,

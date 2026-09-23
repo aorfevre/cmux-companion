@@ -171,6 +171,29 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       expect(evidence.resolutions).to.have.length(1);
       cy.task<string>('orchestrationGit', { branch: evidence.pulls[0].branch, file: 'src/a.mjs' }).should('include', 'addressed review');
     });
+    // A conflicting verdict from GitHub moves the round through a real merge:
+    // the fixer's worktree starts at the conflicted merge commit and must
+    // resolve its markers before anything is pushed.
+    cy.task('orchestrationRelease', 'conflict');
+    cy.findByRole('button', { name: 'Address review comments', timeout: 30000 }).should('be.enabled').click();
+    cy.findByLabelText('Review round phase', { timeout: 30000 }).invoke('text').should('match', /Merging the target branch|conflict/);
+    cy.findByRole('button', { name: 'Address review comments', timeout: 60000 }).should('be.enabled');
+    cy.findByRole('tab', { name: 'Run report' }).click();
+    cy.contains(/Merged target [0-9a-f]+.*resolved 1 conflict: src\/a\.mjs/).should('be.visible');
+    cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', status: 'delivered' }).then(evidence => {
+      const goal = evidence.goals.find(entry => entry.title === 'Build the parallel fixture')!;
+      const round = goal.reviewRounds!.at(-1)!;
+      expect(goal.reviewRounds!).to.have.length(4);
+      expect(round.outcome).to.equal('addressed');
+      expect(round.trigger).to.equal('user');
+      expect(round.conflictPaths).to.deep.equal(['src/a.mjs']);
+      expect(round.mergeCommitSha, 'the merge commit is recorded').to.be.a('string');
+      expect(round.mergedBaseSha, 'the moved target head is recorded').to.be.a('string');
+      // The most important assertion in this spec: a round that pushed
+      // conflict markers to the pull request would be a serious defect.
+      cy.task<string>('orchestrationGit', { branch: evidence.pulls[0].branch, file: 'src/a.mjs' })
+        .should('include', 'addressed review').and('not.include', '<<<<<<<').and('not.include', '=======').and('not.include', '>>>>>>>');
+    });
     cy.document().then(doc => { expect(doc.documentElement.scrollWidth).to.be.at.most(390); });
   });
   writable('aborts waiting siblings and reconciles without running their dependent task', () => {

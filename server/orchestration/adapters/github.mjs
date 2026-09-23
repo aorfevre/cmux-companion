@@ -25,7 +25,7 @@ export class GitHubPublication {
     requireValue(this.github.listReviewThreads && this.github.readPull, 'GitHub review threads are unavailable', 'UNSUPPORTED_CAPABILITY');
     const observed = await this.github.readPull(input.repositoryId, pr.number);
     requireValue(observed.number === pr.number && observed.url === pr.url, 'Saved PR identity changed', 'STALE_TARGET');
-    return this.github.listReviewThreads(input.repositoryId, pr.number);
+    return { threads: await this.github.listReviewThreads(input.repositoryId, pr.number), mergeable: observed.mergeable };
   }
   /** Sent marker per round. A lost response is resolved by reading the remote head,
    * never by pushing again.

@@ -9,6 +9,7 @@ import { createNativeAgents } from './adapters/native-agents.mjs';
 import { GitHubCli } from './adapters/github-cli.mjs';
 import { GitRemote } from './adapters/git-remote.mjs';
 import { GitHubPublication } from './adapters/github.mjs';
+import { ReviewMerge } from './adapters/review-merge.mjs';
 import { backgroundPolicy } from './adapters/agent-runtime.mjs';
 import { identifier, requireValue, object } from './domain/contracts.mjs';
 
@@ -80,6 +81,8 @@ export async function createProductionRuntime({ config, token, sessions, monitor
         const github = new GitHubCli({ repositories: new Map(config.repositories.map(repo => [repo.id, repo.github])), cwd: config.storage.resources, env: config.native.env });
         return new GitHubPublication({ directory: join(config.storage.resources, 'publication'), remote, github });
       }),
+      createReviewMerge: ({ repositories }) => new ReviewMerge({ repositories,
+        remote: new GitRemote({ repositories, directory: join(config.storage.resources, 'remote-stage'), destinations: new Map(config.repositories.map(repo => [repo.id, repo.remote])) }) }),
     });
     if (monitor) await runtime.app.register(async app => monitor(app));
     const close = runtime.close.bind(runtime);

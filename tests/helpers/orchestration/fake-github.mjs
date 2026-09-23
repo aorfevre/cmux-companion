@@ -10,7 +10,12 @@ export class FakeGitHub {
   async readPull(repositoryId, number) {
     const pr = this.pulls.find(pr => pr.repositoryId === repositoryId && pr.number === number);
     if (!pr) throw new Error('PR not found');
-    return { number: pr.number, url: pr.url, state: pr.state };
+    return { number: pr.number, url: pr.url, state: pr.state, mergeable: pr.mergeable ?? 'mergeable' };
+  }
+  setMergeable(number, mergeable) {
+    const pr = this.pulls.find(pr => pr.number === number);
+    if (!pr) throw new Error('PR not found');
+    pr.mergeable = mergeable;
   }
   async listReviewThreads(repositoryId, number) {
     if (this.threadsUnavailable) throw new Error('GraphQL unavailable');

@@ -123,10 +123,16 @@ thread, resolves the threads that were fixed, and returns the goal to
 
 ## Non-goals
 
-No automatic rounds. No thread selection. No independent reviewer on the fix.
-No merge, rebase or target-branch update. No reply to plain PR comments or
-resolved threads. No change to first publication, CodeRabbit configuration or
-auto-merge.
+No thread selection. No independent reviewer on the fix. No rebase. No reply
+to plain PR comments or resolved threads. No change to first publication,
+CodeRabbit configuration or auto-merge.
+
+Two earlier non-goals are superseded by
+`2026-09-22-review-round-merge-conflicts-design.md`. That spec adds one
+automatic round, started only by an observed merge conflict, and one merge of
+the target branch into the pull request branch, performed only to resolve that
+conflict. Every other round stays manual. A round still never merges the pull
+request itself.
 
 ## Acceptance criteria
 

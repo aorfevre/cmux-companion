@@ -69,3 +69,36 @@ test('direct GitHub PR observation validates repository/number and requires expl
   response.number = 7; delete response.merged; await assert.rejects(cli.readPull('repo', 7), { code: 'OWNERSHIP_UNCERTAIN' });
   await assert.rejects(cli.readPull('unknown', 7), { code: 'UNSUPPORTED_CAPABILITY' });
 });
+
+test('the pull request read reports a bounded mergeable verdict', async () => {
+  let response = { number: 7, html_url: 'https://github.com/owner/repo/pull/7', base: { repo: { full_name: 'owner/repo' }, sha: 'a'.repeat(40) }, state: 'open', merged: false, mergeable: true };
+  const cli = new GitHubCli({ repositories: new Map([['repo', 'owner/repo']]), cwd: tmpdir(), env: {}, execute: async () => JSON.stringify(response) });
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'mergeable');
+  response = { ...response, mergeable: false };
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'conflicting');
+  response = { ...response, mergeable: null };
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'unknown');
+  response = { ...response, mergeable: 'yes' };
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'unknown', 'an unexpected value never reads as mergeable');
+  delete response.mergeable;
+  assert.equal((await cli.readPull('repo', 7)).mergeable, 'unknown');
+});
+
+test('an observed conflict starts one automatic review round', async t => {
+  const store = new OrchestrationStore({ path: ':memory:' }); t.after(() => store.close()); seed(store, 'a');
+  let now = 1000, mergeable = 'conflicting';
+  const coordinator = new MergeCoordinator({ service: service(store), ownership: { assertOwned() {} }, now: () => now, id: () => `auto${now}`,
+    publisher: { async observeMerge(plan, pr) { return { ...pr, state: 'open', mergeable }; } } });
+  coordinator.run(); await settle(coordinator);
+  assert.equal(store.get('a').status, 'addressing_review');
+  assert.equal(store.get('a').reviewRound.trigger, 'conflict');
+});
+
+test('a mergeable observation starts no round', async t => {
+  const store = new OrchestrationStore({ path: ':memory:' }); t.after(() => store.close()); seed(store, 'a');
+  const coordinator = new MergeCoordinator({ service: service(store), ownership: { assertOwned() {} }, now: () => 1000, id: () => 'auto',
+    publisher: { async observeMerge(plan, pr) { return { ...pr, state: 'open', mergeable: 'mergeable' }; } } });
+  coordinator.run(); await settle(coordinator);
+  assert.equal(store.get('a').status, 'delivered');
+  assert.equal(store.get('a').reviewRound ?? null, null);
+});

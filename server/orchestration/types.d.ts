@@ -44,12 +44,15 @@ export interface TeamProfile { id: string; label: string; provider: 'claude' | '
 export interface TeamConfiguration { profiles: TeamProfile[]; defaults: Record<TeamRole, string>; capturedAt: string }
 export interface TeamAssignment { key: string; role: TeamRole; taskId: string | null; profileId: string | null; manual: boolean; reason: string }
 export interface TeamProposal { revision: number; approved: boolean; assignments: TeamAssignment[]; changes: { commandId: string; key: string; from: string | null; to: string }[] }
+export type MergeableVerdict = 'mergeable' | 'conflicting' | 'unknown';
 export interface ReviewThread { id: string; path: string | null; line: number | null; author: string; body: string; isBot: boolean }
 export interface ReviewReply { threadId: string; action: 'fixed' | 'declined' | 'comment'; body: string }
-export type ReviewRoundState = 'fetching' | 'fixing' | 'verifying' | 'pushing' | 'replying' | 'settled' | 'failed' | 'unknown';
+export type ReviewRoundState = 'fetching' | 'merging' | 'fixing' | 'verifying' | 'pushing' | 'replying' | 'settled' | 'failed' | 'unknown';
 export type ReviewRoundOutcome = 'addressed' | 'nothing_to_address' | 'failed';
 export interface ReviewRound {
   id: string; prHeadSha: string; startedAt: number; state: ReviewRoundState; threads: ReviewThread[];
+  trigger?: 'user' | 'conflict'; mergeable?: MergeableVerdict;
+  mergedBaseSha?: string; mergeCommitSha?: string; conflictPaths?: string[];
   attemptId?: string; summary?: string; fixHeadSha?: string; replies?: ReviewReply[]; verificationOperationId?: string;
   posted?: string[]; unconfirmed?: string[]; resolved?: string[]; outcome?: ReviewRoundOutcome; error?: string | null; settledAt?: number;
 }
@@ -69,7 +72,8 @@ export interface Goal {
   attempts: Attempt[]; reviews: Review[]; integrationHead: string;
   verification: Verification | null; finalRepairCount: number; finalRepairLimit: number;
   pr: { number: number; url: string; headSha: string } | null;
-  mergeSync?: { checkedAt: number; state: 'open' | 'closed' | 'merged' | 'unknown'; error: string | null };
+  mergeSync?: { checkedAt: number; state: 'open' | 'closed' | 'merged' | 'unknown'; error: string | null; mergeable?: MergeableVerdict } | null;
+  conflictRoundKey?: string;
   reviewRound?: ReviewRound | null; reviewRounds?: ReviewRound[];
   integration: { operationId: string; taskId: string | null; expectedHead: string; candidateSha: string; baseSha: string; state: 'applying' | 'conflict' | 'repairing' | 'failed' | 'cancelled'; failedFrom?: 'applying' | 'repairing'; code?: string; retryRequested?: boolean } | null;
   publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; approval?: { commandId: string; headSha: string }; observation?: PublicationResult } | null;
@@ -137,6 +141,8 @@ export interface RepositoryPort {
   observeRepair(input: RepairInput): Promise<{ status: 'integrated' | 'pending' | 'unknown'; headSha: string | null }>;
   observeIntegration(operationId: string): Promise<{ status: 'integrated' | 'pending' | 'unknown'; headSha: string | null }>;
   removeVerificationWorktree(operationId: string): Promise<{ removed: boolean }>;
+  prepareReviewMerge?(input: { goalId: string; repositoryId: string; roundId: string; prHeadSha: string; baseBranch: string }): Promise<{ mergedBaseSha: string; mergeCommitSha: string; conflictPaths: string[] }>;
+  unresolvedPaths?(input: { repositoryId: string; headSha: string; conflictPaths: string[] }): Promise<string[]>;
 }
 export interface VerificationPort {
   run(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; checks: Check[]; signal?: AbortSignal }): Promise<VerificationRunResult>;
@@ -163,7 +169,7 @@ export interface RemotePort {
   push(input: { repositoryId: string; branch: string; headSha: string; expectedHead: string | null }, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface GitHubPort {
-  readPull?(repositoryId: string, number: number): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
+  readPull?(repositoryId: string, number: number): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged'; mergeable: MergeableVerdict }>;
   listReviewThreads?(repositoryId: string, number: number): Promise<ReviewThread[]>;
   replyToThread?(repositoryId: string, threadId: string, body: string, options?: { beforeSend?: () => boolean }): Promise<void>;
   resolveThread?(repositoryId: string, threadId: string, options?: { beforeSend?: () => boolean }): Promise<void>;
@@ -173,8 +179,8 @@ export interface GitHubPort {
   create(input: PublicationInput, options?: { beforeSend?: () => boolean }): Promise<void>;
 }
 export interface PublicationPort {
-  observeMerge?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged' }>;
-  reviewThreads?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<ReviewThread[]>;
+  observeMerge?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<{ number: number; url: string; state: 'open' | 'closed' | 'merged'; mergeable: MergeableVerdict }>;
+  reviewThreads?(input: PublicationInput, pr: NonNullable<Goal['pr']>): Promise<{ threads: ReviewThread[]; mergeable: MergeableVerdict }>;
   pushFix?(input: PublicationInput, fix: { roundId: string; expectedHead: string; headSha: string }): Promise<'pushed' | 'remote_moved' | 'unknown'>;
   replyAndResolve?(input: PublicationInput, fix: { roundId: string; replies: ReviewReply[] }): Promise<{ posted: string[]; unconfirmed: string[]; resolved: string[] }>;
   publish(input: PublicationInput, options?: { signal?: AbortSignal }): Promise<PublicationResult>;
