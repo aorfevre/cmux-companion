@@ -7,31 +7,35 @@ screen without confusing remaining capacity, model limits or reset durations.
 
 ## User journey
 Opening `/` shows the tracker in the main shell, with pairing when required.
-Claude and Codex accounts appear in vertically stacked provider groups with compact
-account rows. Five accounts fit within the home page at 1280×900 without opening
-details. Connection management, reading timestamps and additional limits remain
-available through each row's Details disclosure. Every percentage
-explicitly identifies remaining capacity and also shows used capacity. Claude's
-overall weekly limit stays separate from its named model limits. Each account
-shows its reading time; visible pages refresh every minute and on returning to
-the tab. Reset durations use explicit day/hour/minute units. Existing Setup usage
-and session/goal deep links continue to work.
+Time until reset is the primary dimension: a cross-provider Reset queue appears
+before All accounts. Each overall usage window is a row, ordered by its future
+reset, with a prominent countdown, provider/account, limit, unused percentage,
+capacity bar and local reset time. Equal times prefer more unused quota and then
+stable source order. Fully used windows remain visible as upcoming fresh quota;
+paused accounts and accounts exhausted on another limit are explicitly labeled.
+Named model/code-review limits remain separate in account Details.
 
-The top of the tracker identifies the earliest future overall usage-window reset
-that still has capacity remaining, across both providers. It shows the account,
-provider, limit, unused percentage, countdown and local reset date/time, and links
-to the highlighted row. Equal reset times prefer the larger unused percentage;
-remaining ties keep provider/account order. This compares reported limits rather
-than predicting account routing or subscription renewal. Named model/code-review
-limits remain separate in Details and never replace an overall limit.
+Two compact summaries distinguish Next refresh (earliest reported future reset,
+even if fully used) from Capacity to use before reset (earliest eligible reset
+with positive remaining capacity on an unpaused account with no exhausted or
+elapsed reported overall limit). A Usable now filter applies this same rule to
+the queue without changing chronological ordering. The suggestion states that it
+uses reported limits; it never promises model-specific availability or changes
+account routing. A low percentage alone must not hide an imminent reset.
 
-Only successful, fresh provider/account readings and valid percentages/timestamps
-qualify. Zero remaining, overdue resets, missing timestamps, failed/reconnect
-accounts and readings older than 15 minutes are excluded. Paused connections are
-included but explicitly marked as paused; an account exhausted on another limit
-is marked exhausted, never recommended as immediately usable. If no trustworthy
-candidate exists, the page explains that no upcoming reset with unused quota is
-reported. It recomputes after refresh, failure, time passage and deletion.
+Only successful fresh snapshot/provider/account readings (at most 15 minutes old),
+valid percentages from 0 to 100 and future reset timestamps qualify for the queue.
+Missing, stale, failed, reconnect-required and elapsed readings never qualify.
+Empty states explain when no reliable reset or usable capacity is reported.
+Queue and summaries recompute after refresh, failure, time passage and deletion.
+Links focus the matching account without changing Setup's category hash.
+
+All accounts remains below the queue, with compact rows, 5-hour/weekly remaining
+and used capacity, reconnect and Details for additional limits, reading times and
+confirmed deletion. Every percentage identifies remaining/unused or used quota.
+Visible pages refresh every minute and on returning to the tab. Durations use
+explicit day/hour/minute units. Desktop content is capped at 920 pixels and mobile
+wraps without horizontal overflow. Existing Setup and session/goal links work.
 
 ## Non-goals
 Billing credits, monetary balances, provider subscription changes, authentication
@@ -49,13 +53,14 @@ fixture verification must not be represented as a live account reconciliation.
 | Remaining/used labels, all reported cadences, reading age and reset units are visible. | Account usage UI test. |
 | Visible pages refresh once a minute/on return; stale or failed readings do not claim available capacity. | Fake-clock UI tests. |
 | Compact desktop and mobile layouts retain reconnect and confirmed deletion. | Account usage Cypress at 390 and 1440 pixels. |
-| Five collapsed accounts fit within the home page at 1280×900, without horizontal overflow; Details exposes all secondary information and connection actions. | Five-account viewport Cypress journey. |
-| The next reset with unused capacity is chosen across providers, preserves limit meaning and labels paused/exhausted states; invalid, stale and elapsed readings never win. | Deterministic account usage UI selection tests. |
+| The five-account fixture’s seven reset entries fit at 1280×900 without horizontal overflow; account Details retains secondary information and connection actions. | Reset-queue viewport Cypress journey. |
+| The queue sorts resets across providers and distinguishes fresh quota from usable unused capacity; paused/exhausted states and invalid, stale or elapsed readings cannot become usage suggestions. | Deterministic account usage UI selection tests. |
 
 ## Success measure
-In the five-account fixture, the earliest eligible reset and all five account
-identities are visible together at 1280×900; expanding Details retains every
-reported window under its original meaning.
+In the five-account fixture, all seven reset entries are visible at 1280×900,
+and the owner can distinguish the paused 5%-remaining imminent weekly reset from
+the active account with 82% remaining before its session reset; Details retains
+every reported window under its original meaning.
 
 ## Ownership and boundaries
 The implementing agent owns routing, tracker UI, quota adapter corrections,
