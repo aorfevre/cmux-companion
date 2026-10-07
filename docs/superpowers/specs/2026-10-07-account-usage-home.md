@@ -11,7 +11,10 @@ Time until reset is the primary dimension: a cross-provider Reset queue appears
 before All accounts. Each overall usage window is a row, ordered by its future
 reset, with a prominent countdown, provider/account, limit, unused percentage,
 capacity bar and local reset time. Anthropic/OpenAI logos precede the provider
-name in queue links and both summary cards; text remains the accessible label. Equal times prefer more unused quota and then
+name in queue links and both summary cards; text remains the accessible label.
+A 5-hour entry and its summary cards also show the same account’s overall weekly
+remaining quota. Missing/invalid weekly data says Not reported; an elapsed weekly
+reset says Awaiting refresh. Named model windows cannot substitute for it. Equal times prefer more unused quota and then
 stable source order. Fully used windows remain visible as upcoming fresh quota;
 paused accounts and accounts exhausted on another limit are explicitly labeled.
 Named model/code-review limits remain separate in account Details.
