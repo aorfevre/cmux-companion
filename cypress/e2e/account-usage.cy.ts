@@ -79,7 +79,7 @@ describe("licence usage", () => {
       cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
       cy.get('.usage-page-head').should($head => expect($head[0].getBoundingClientRect().right).to.be.at.most(width));
       cy.findByRole('heading', { name: 'Account usage' }).should('have.css', 'color', 'rgb(23, 40, 32)');
-      cy.findByRole('complementary', { name: 'Next refresh' }).should('contain.text', 'personal@example.test').and('contain.text', '5% unused').and('contain.text', '47m').and('contain.text', 'Paused in CCS');
+      cy.findByRole('complementary', { name: 'Next weekly reset' }).should('contain.text', 'personal@example.test').and('contain.text', '5% unused').and('contain.text', '47m').and('contain.text', 'Paused in CCS');
       cy.get('.usage-account').should('have.length', 5);
       cy.get('.usage-account-details[open]').should('not.exist');
       cy.get('.reset-highlights aside').each($card => {
@@ -89,15 +89,15 @@ describe("licence usage", () => {
         const provider = $row.text().includes('OpenAI') ? 'codex' : 'claude';
         cy.wrap($row).find(`a svg[data-provider="${provider}"]`).should('be.visible');
       });
-      cy.get('.reset-queue-row.use-next').should('contain.text', '82% unused').and('contain.text', 'Weekly: 55% remaining');
-      cy.findByRole('complementary', { name: 'Capacity to use before reset' }).should('contain.text', 'Weekly: 55% remaining');
-      cy.get('.reset-queue-row').should('have.length', 7).first().should('contain.text', 'personal@example.test').and('contain.text', '47m');
-      cy.findByRole('complementary', { name: 'Capacity to use before reset' }).should('contain.text', 'work@example.test').and('contain.text', '82%');
+      cy.get('.reset-queue-row.use-next').should('contain.text', '55% unused').and('contain.text', '5h: 82% remaining');
+      cy.findByRole('complementary', { name: 'Weekly capacity to use before reset' }).should('contain.text', '5h: 82% remaining');
+      cy.get('.reset-queue-row').should('have.length', 5).first().should('contain.text', 'personal@example.test').and('contain.text', '47m');
+      cy.findByRole('complementary', { name: 'Weekly capacity to use before reset' }).should('contain.text', 'work@example.test').and('contain.text', '55%');
       if (width >= 1280) cy.get('.reset-queue-row').each($row => {
         expect($row[0].getBoundingClientRect().bottom).to.be.at.most(900);
       });
       cy.findByRole('button', { name: 'Usable now' }).click();
-      cy.get('.reset-queue-row').should('have.length', 6).first().should('contain.text', 'work@example.test');
+      cy.get('.reset-queue-row').should('have.length', 4).first().should('contain.text', 'work@example.test');
       cy.get('.reset-queue').should('not.contain.text', 'personal@example.test');
       cy.findByRole('button', { name: /^Next reset$/ }).click();
       cy.get('.next-reset-account').should('contain.text', 'personal@example.test');
@@ -157,7 +157,7 @@ describe("licence usage", () => {
         cy.get("summary").click();
         cy.get(".usage-status").should("have.text", "Reconnect");
         cy.contains("The OpenAI session expired").should("be.visible");
-        cy.get(".core-window").should("have.length", 2).each(($window) => expect($window.text()).to.include("Not reported"));
+        cy.get(".core-window").should("have.length", 1).each(($window) => expect($window.text()).to.include("Not reported"));
         cy.findByRole("button", { name: "Reconnect account" }).should("be.visible");
       });
       account("daily@example.test").within(() => {
