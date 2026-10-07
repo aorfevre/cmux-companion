@@ -82,6 +82,15 @@ describe("licence usage", () => {
       cy.findByRole('complementary', { name: 'Next refresh' }).should('contain.text', 'personal@example.test').and('contain.text', '5% unused').and('contain.text', '47m').and('contain.text', 'Paused in CCS');
       cy.get('.usage-account').should('have.length', 5);
       cy.get('.usage-account-details[open]').should('not.exist');
+      cy.get('.reset-highlights aside').each($card => {
+        cy.wrap($card).find('a svg[data-provider="claude"]').should('be.visible').and('have.attr', 'aria-hidden', 'true');
+      });
+      cy.get('.reset-queue-row').each($row => {
+        const provider = $row.text().includes('OpenAI') ? 'codex' : 'claude';
+        cy.wrap($row).find(`a svg[data-provider="${provider}"]`).should('be.visible');
+      });
+      cy.get('.reset-queue-row.use-next').should('contain.text', '82% unused').and('contain.text', 'Weekly: 55% remaining');
+      cy.findByRole('complementary', { name: 'Capacity to use before reset' }).should('contain.text', 'Weekly: 55% remaining');
       cy.get('.reset-queue-row').should('have.length', 7).first().should('contain.text', 'personal@example.test').and('contain.text', '47m');
       cy.findByRole('complementary', { name: 'Capacity to use before reset' }).should('contain.text', 'work@example.test').and('contain.text', '82%');
       if (width >= 1280) cy.get('.reset-queue-row').each($row => {
