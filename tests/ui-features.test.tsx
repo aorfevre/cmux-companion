@@ -44,12 +44,14 @@ describe("contextual mobile features", () => {
     render(<AccountUsageView onBack={back} />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     assert.ok(await screen.findByText("one@example.test"));
-    assert.ok(screen.getByText("82%", { exact: false }));
-    assert.ok(screen.getByText("55%", { exact: false }));
     const reportedAccount = screen.getByText("one@example.test").closest("article");
     const emptyAccount = screen.getByText("two@example.test").closest("article");
     assert.ok(reportedAccount);
     assert.ok(emptyAccount);
+    const sessionWindow = within(reportedAccount).getByText("5 hours").closest<HTMLElement>(".core-window");
+    assert.ok(sessionWindow);
+    assert.ok(within(sessionWindow).getByText("82%", { exact: false }));
+    assert.ok(within(reportedAccount).getByText("55%", { exact: false }));
     assert.equal(within(reportedAccount).queryByText("Not reported"), null);
     assert.equal(within(emptyAccount).getAllByText("Not reported").length, 2);
     assert.equal(screen.getAllByText("5 hours").length, 2);
@@ -285,6 +287,7 @@ test('confirms connection deletion, keeps failures retryable and refreshes the a
   });
   vi.stubGlobal('fetch', fetchMock);
   render(<AccountUsageView embedded onBack={() => {}} />);
+  fireEvent.click(await screen.findByText('Details'));
   fireEvent.click(await screen.findByRole('button', { name: 'Delete connection' }));
   assert.ok(screen.getByRole('group', { name: 'Delete connection confirmation' }).textContent?.includes('Claude Code'));
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
