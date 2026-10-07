@@ -53,8 +53,8 @@ describe("contextual mobile features", () => {
     assert.ok(within(sessionWindow).getByText("82%", { exact: false }));
     assert.ok(within(reportedAccount).getByText("55%", { exact: false }));
     assert.equal(within(reportedAccount).queryByText("Not reported"), null);
-    assert.equal(within(emptyAccount).getAllByText("Not reported").length, 2);
-    assert.equal(screen.getAllByText("5 hours").length, 2);
+    assert.equal(within(emptyAccount).getAllByText("Not reported").length, 1);
+    assert.equal(screen.getAllByText("5 hours").length, 1);
     assert.equal(screen.getAllByText("Weekly").length, 2);
     assert.equal(screen.queryByText("Daily"), null);
     assert.equal(screen.queryByText("Monthly"), null);

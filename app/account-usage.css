@@ -125,3 +125,7 @@
 }
 
 .account-usage-page .usage-provider-logo { display:inline-block; width:16px; height:16px; margin-right:6px; vertical-align:-3px; }
+
+.mission-control .account-usage-page .core-window-grid.weekly-only { grid-template-columns:minmax(0,1fr); }
+.account-usage-page .core-window.secondary-session strong { font-size:14px; font-weight:500; }
+.account-usage-page .session-context { color:var(--muted); }
