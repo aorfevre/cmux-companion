@@ -1,0 +1,51 @@
+.usage-home .mission-content { align-self:start; margin:0 auto; }
+.mission-control .account-usage-page { --red:#a23e33; --orange:#8a5100; --lime:var(--accent); color:var(--text); max-width:1320px; margin:0 auto; padding:36px 0 48px; }
+.account-usage-page .usage-page-head { grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:16px; }
+.account-usage-page .usage-page-head.with-back { grid-template-columns:auto minmax(0,1fr) auto; }
+.account-usage-page .usage-page-head h1,.account-usage-page .usage-page-head h2 { margin:0; font-size:30px; letter-spacing:-.8px; }
+.account-usage-page .usage-page-head .eyebrow { color:var(--muted); }
+.mission-control .account-usage-page .usage-refresh { width:auto; height:auto; min-height:42px; padding:8px 14px; background:var(--panel); color:var(--text); font-size:14px; }
+.account-usage-page .usage-intro { max-width:780px; font-size:14px; }
+.mission-control .account-usage-page .usage-summary { flex-wrap:wrap; overflow:visible; gap:8px; margin-bottom:28px; background:transparent; }
+.mission-control .account-usage-page .usage-summary>span { background:var(--panel); color:var(--text); }
+.account-usage-page .usage-summary>small { margin-left:0; white-space:normal; color:var(--muted); }
+.account-usage-page .usage-providers { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr)); gap:24px; }
+.account-usage-page .usage-provider>header { margin:0 0 14px; }
+.account-usage-page .usage-provider h2 { font-size:20px; }
+.mission-control .account-usage-page .usage-account-list { display:grid; grid-template-columns:minmax(0,1fr); gap:14px; }
+.mission-control .account-usage-page .usage-account { padding:18px; border:1px solid var(--line); background:var(--panel); border-radius:12px; }
+.account-usage-page .usage-account>header strong { font-size:14px; white-space:normal; overflow-wrap:anywhere; }
+.account-usage-page .account-reading { margin:8px 0 0; font-size:12px; color:var(--muted); }
+.mission-control .account-usage-page .core-window-grid { grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); gap:10px; }
+.mission-control .account-usage-page .core-window { border-color:var(--line); background:var(--input-bg); padding:12px; }
+.account-usage-page .core-window>div:first-child { flex-wrap:wrap; }
+.mission-control .account-usage-page .core-window span,.mission-control .account-usage-page .core-window small { color:var(--muted); }
+.account-usage-page .core-window strong { display:block; font-size:24px; }
+.account-usage-page .core-window em { font-size:12px; font-weight:400; font-style:normal; letter-spacing:0; }
+.account-usage-page .core-window .quota-used { margin-top:4px; }
+.mission-control .account-usage-page .quota-track { background:var(--line); height:5px; }
+.mission-control .account-usage-page .quota-track i { background:var(--accent); }
+.mission-control .account-usage-page .usage-status { color:var(--accent); background:var(--panel-raised); }
+.mission-control .account-usage-page .usage-status.low,.mission-control .account-usage-page .extra-window.low b { color:#8a5100; background:#fff2dc; }
+.mission-control .account-usage-page .core-window.low .quota-track i { background:#b97518; }
+.mission-control .account-usage-page .usage-status.exhausted,.mission-control .account-usage-page .usage-status.reconnect,.mission-control .account-usage-page .extra-window.exhausted b { color:#a23e33; background:#f9e7e3; }
+.mission-control .account-usage-page .core-window.exhausted .quota-track i { background:#a23e33; }
+.mission-control .account-usage-page .usage-status.unavailable { color:var(--muted); background:var(--input-bg); }
+.mission-control .account-usage-page .account-message { color:#8b4235; background:#fbefeb; }
+.mission-control .account-usage-page .extra-windows { border-color:var(--line); }
+.account-usage-page .extra-windows>p,.account-usage-page .usage-privacy { color:var(--muted); }
+.account-usage-page .extra-window strong { white-space:normal; overflow-wrap:anywhere; }
+.mission-control .account-usage-page .extra-window b { color:var(--accent); }
+.account-usage-page .connection-delete { margin-top:12px; font-size:12px; }
+.account-usage-page .usage-pairing { max-width:480px; padding:20px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+.account-usage-page .usage-pairing label,.account-usage-page .usage-pairing input { display:block; width:100%; margin:12px 0; }
+.mission-control .account-usage-page .account-reconnect { color:var(--red); background:#fbefeb; }
+.mission-control .account-usage-page .reconnect-sheet { color:var(--text); background:var(--panel); border-color:var(--line); }
+.mission-control .account-usage-page .reconnect-login { color:var(--accent); background:var(--panel-raised); border-color:var(--line); }
+.mission-control .account-usage-page .reconnect-manual textarea { color:var(--text); background:var(--input-bg); border-color:var(--line); }
+.mission-control .account-usage-page .reconnect-manual button,.mission-control .account-usage-page .reconnect-success button { color:var(--on-accent); background:var(--accent); }
+.mission-control .account-usage-page .reconnect-error { color:var(--red); background:#fbefeb; }
+@media (max-width:480px) {
+  .account-usage-page .usage-page-head h1,.account-usage-page .usage-page-head h2 { font-size:25px; }
+  .account-usage-page .usage-refresh span { display:none; }
+}

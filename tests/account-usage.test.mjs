@@ -111,7 +111,7 @@ test("keeps Claude core windows when the provider reports no reset time", () => 
   ]);
 });
 
-test("promotes the most restrictive Claude weekly window and demotes the rest", () => {
+test("preserves Claude overall weekly usage separately from model limits", () => {
   const windows = exactClaudeWindows({
     five_hour: { utilization: 20, resets_at: "2026-09-01T23:30:00.000Z" },
     seven_day: { utilization: 4, resets_at: "2026-09-02T08:00:00.000Z" },
@@ -119,14 +119,38 @@ test("promotes the most restrictive Claude weekly window and demotes the rest", 
   });
   assert.deepEqual(windows.map((window) => [window.label, window.cadence, window.category, window.remainingPercent]), [
     ["Session limit", "5h", "usage", 80],
-    ["Weekly limit", "weekly", "additional", 96],
-    ["Opus weekly limit", "weekly", "usage", 39],
+    ["Weekly limit", "weekly", "usage", 96],
+    ["Opus weekly limit", "weekly", "additional", 39],
   ]);
 });
 
 test("ignores Claude payloads that carry no usable window", () => {
   assert.deepEqual(exactClaudeWindows(null), []);
   assert.deepEqual(exactClaudeWindows({ five_hour: { utilization: "n/a" }, extra_usage: { utilization: 10 } }), []);
+});
+
+test("matches the supplied Claude comparison and retains newly reported model limits", () => {
+  const windows = exactClaudeWindows({ five_hour: { utilization: 0, resets_at: null },
+    seven_day: { utilization: 95, resets_at: '2026-10-07T08:00:00Z' },
+    seven_day_fable: { utilization: 96, resets_at: '2026-10-07T08:00:00Z' },
+    seven_day_future_model: { utilization: 23 } });
+  assert.deepEqual(windows.map(window => [window.label, window.category, window.remainingPercent]), [
+    ['Session limit', 'usage', 100], ['Weekly limit', 'usage', 5],
+    ['Fable weekly limit', 'additional', 4], ['future model weekly limit', 'additional', 77],
+  ]);
+  assert.equal(exactClaudeWindows({ seven_day_fable: { utilization: 96 } })[0].category, 'additional');
+});
+
+test("missing and malformed percentages never become fabricated zero or full capacity", async () => {
+  for (const value of [null, undefined, '', ' ', true, false, [], {}, -1, 101, 'invalid']) {
+    assert.deepEqual(exactClaudeWindows({ five_hour: { utilization: value } }), []);
+    assert.deepEqual(exactCodexWindows({ rate_limit: { primary_window: { used_percent: value } } }), []);
+    const fixture = source();
+    fixture.fetchAllClaudeQuotas = async () => [{ account: 'one@example.test', quota: {
+      success: true, windows: [{ remainingPercent: value }],
+    } }];
+    assert.deepEqual((await new AccountUsage({ sourceLoader: async () => fixture }).snapshot()).providers[0].accounts[0].windows, []);
+  }
 });
 
 test("uses Codex provider window durations for accurate cadence labels", () => {
@@ -180,7 +204,7 @@ function stubFetch(t, handler) {
   globalThis.fetch = async (url, options = {}) => {
     requests.push({ url: String(url), options });
     const result = await handler(String(url), options);
-    return { ok: result.ok ?? true, json: async () => result.body };
+    return { ok: result.ok ?? true, status: result.status ?? 200, json: async () => result.body };
   };
   t.after(() => { globalThis.fetch = original; });
   return requests;
@@ -282,14 +306,14 @@ test("reads a fresh Claude token from disk and fetches the exact usage payload",
   const byEmail = Object.fromEntries(claude.accounts.map((account) => [account.email, account]));
   assert.equal(byEmail["active@example.test"].status, "low");
   assert.deepEqual(byEmail["active@example.test"].windows.map((window) => [window.cadence, window.remainingPercent]), [["5h", 70], ["weekly", 15]]);
-  // Expired token falls back to the CCS fetcher; an empty exact payload does too.
-  assert.equal(byEmail["stale@example.test"].status, "unavailable");
+  // Expired credentials require reconnect; an empty payload remains unknown.
+  assert.equal(byEmail["stale@example.test"].status, "reconnect");
   assert.equal(byEmail["nested@example.test"].status, "unavailable");
   assert.equal(requests.length, 2);
   assert.doesNotMatch(JSON.stringify(value), /live-token|nested-token|stale-token/);
 });
 
-test("falls back to the CCS Claude fetcher when the exact usage request fails", async (t) => {
+test("keeps Claude capacity unknown when the exact usage request fails", async (t) => {
   const authDir = mkdtempSync(join(tmpdir(), "ccs-auth-"));
   t.after(() => rmSync(authDir, { recursive: true, force: true }));
   writeFileSync(join(authDir, "claude-a.json"), JSON.stringify({ email: "a@example.test", access_token: "a-token" }));
@@ -303,6 +327,37 @@ test("falls back to the CCS Claude fetcher when the exact usage request fails", 
   const claude = value.providers.find((provider) => provider.id === "claude");
   assert.deepEqual(claude.accounts.map((account) => account.status), ["unavailable", "unavailable"]);
   assert.equal(claude.available, true);
+});
+
+test("a provider-rejected Claude token requires reconnect without falling back to a different lookup", async (t) => {
+  const authDir = mkdtempSync(join(tmpdir(), 'ccs-auth-rejected-'));
+  t.after(() => rmSync(authDir, { recursive: true, force: true }));
+  writeFileSync(join(authDir, 'claude-owner.json'), JSON.stringify({ email: 'owner@example.test', access_token: 'rejected-token' }));
+  const root = installFakeCcs(t, { authDir, claudeAccounts: [claudeAccount('owner@example.test')] });
+  writeFileSync(join(root, 'dist', 'cliproxy', 'quota', 'quota-fetcher-claude.js'), `
+    exports.fetchAllClaudeQuotas = () => {};
+    exports.fetchClaudeQuota = () => { throw new Error('Must not use the ambiguous fallback'); };
+  `);
+  stubFetch(t, () => ({ ok: false, status: 401, body: {} }));
+  const value = await new AccountUsage().snapshot();
+  assert.equal(value.providers[0].accounts[0].status, 'reconnect');
+  assert.deepEqual(value.providers[0].accounts[0].windows, []);
+});
+
+test("Claude token lookup rejects conflicting emails and partial account filename matches", async (t) => {
+  const authDir = mkdtempSync(join(tmpdir(), 'ccs-auth-identity-'));
+  t.after(() => rmSync(authDir, { recursive: true, force: true }));
+  writeFileSync(join(authDir, 'claude-a@example.test.json'), JSON.stringify({ email: 'other@example.test', access_token: 'wrong-email' }));
+  writeFileSync(join(authDir, 'claude-prefix-b@example.test.json'), JSON.stringify({ access_token: 'wrong-partial' }));
+  writeFileSync(join(authDir, 'claude-c_example_test.json'), JSON.stringify({ access_token: 'exact-file' }));
+  installFakeCcs(t, { authDir, claudeAccounts: ['a', 'b', 'c'].map(name => claudeAccount(`${name}@example.test`)) });
+  const requests = stubFetch(t, (url, options) => {
+    assert.equal(options.headers.Authorization, 'Bearer exact-file');
+    return { body: { five_hour: { utilization: 10 } } };
+  });
+  const value = await new AccountUsage().snapshot();
+  assert.deepEqual(value.providers[0].accounts.map(account => account.status), ['unavailable', 'unavailable', 'ready']);
+  assert.equal(requests.length, 1);
 });
 
 test("fetches exact Codex usage with the stored account credentials", async (t) => {

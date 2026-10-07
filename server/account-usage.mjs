@@ -199,8 +199,9 @@ function cadenceLabel(cadence) {
 }
 
 function finitePercent(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return null;
   const number = Number(value);
-  return Number.isFinite(number) ? Math.max(0, Math.min(100, Math.round(number))) : null;
+  return Number.isFinite(number) && number >= 0 && number <= 100 ? Math.round(number) : null;
 }
 
 function cleanText(value) {
@@ -262,7 +263,7 @@ async function loadCcsSource() {
     removeAccount: accounts.removeAccount,
     fetchAllClaudeQuotas: async () => Promise.all(accounts.getProviderAccounts("claude").map(async (account) => ({
       account: account.id,
-      quota: await fetchExactClaudeQuota(account.id, claude, authDirs),
+      quota: await fetchExactClaudeQuota(account.id, authDirs),
     }))),
     fetchAllCodexQuotas: async () => Promise.all(accounts.getProviderAccounts("codex").map(async (account) => ({
       account: account.id,
@@ -292,12 +293,14 @@ function bearerToken(value) {
 }
 
 function matchesAccount(file, email, accountId) {
-  if (cleanText(email) === accountId) return true;
+  if (cleanText(email)) return cleanText(email) === accountId;
   const sanitized = accountId.replaceAll("@", "_").replaceAll(".", "_");
-  return file.includes(accountId) || file.includes(sanitized);
+  return ["claude", "anthropic"].some(provider =>
+    file === `${provider}-${accountId}.json` || file === `${provider}-${sanitized}.json`);
 }
 
 function readClaudeAccessToken(accountId, authDirs) {
+  let expired = false;
   for (const dir of authDirs) {
     let files = [];
     try {
@@ -320,16 +323,19 @@ function readClaudeAccessToken(accountId, authDirs) {
       if (!matchesAccount(file, parsed?.email, accountId)) continue;
       const expiry = cleanText(parsed?.expired) || cleanText(parsed?.token?.expiry);
       const expiresAt = expiry ? new Date(expiry).getTime() : Number.NaN;
-      if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) continue;
-      return token;
+      if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) { expired = true; continue; }
+      return { token, expired: false };
     }
   }
-  return null;
+  return { token: null, expired };
 }
 
-async function fetchExactClaudeQuota(accountId, claude, authDirs) {
-  const token = readClaudeAccessToken(accountId, authDirs);
-  if (!token) return claude.fetchClaudeQuota(accountId, false);
+async function fetchExactClaudeQuota(accountId, authDirs) {
+  const { token, expired } = readClaudeAccessToken(accountId, authDirs);
+  const unavailable = (needsReauth = false) => ({ success: false, windows: [], needsReauth, accountId });
+  // Do not fall back to CCS's account lookup: it accepts substring filename
+  // matches and its normalized weekly window can lose the provider's meaning.
+  if (!token) return unavailable(expired);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
@@ -341,13 +347,13 @@ async function fetchExactClaudeQuota(accountId, claude, authDirs) {
         "Content-Type": "application/json",
       },
     });
-    if (!response.ok) return claude.fetchClaudeQuota(accountId, false);
+    if (!response.ok) return unavailable(response.status === 401);
     const payload = await response.json();
     const windows = exactClaudeWindows(payload);
-    if (windows.length === 0) return claude.fetchClaudeQuota(accountId, false);
+    if (windows.length === 0) return unavailable();
     return { success: true, windows, lastUpdated: Date.now(), accountId };
   } catch {
-    return claude.fetchClaudeQuota(accountId, false);
+    return unavailable();
   } finally {
     clearTimeout(timeout);
   }
@@ -359,6 +365,7 @@ const CLAUDE_WEEKLY_LABELS = {
   seven_day_sonnet: "Sonnet weekly limit",
   seven_day_oauth_apps: "OAuth apps weekly limit",
   seven_day_cowork: "Cowork weekly limit",
+  seven_day_fable: "Fable weekly limit",
 };
 
 export function exactClaudeWindows(payload) {
@@ -366,29 +373,20 @@ export function exactClaudeWindows(payload) {
   const windows = [];
   const session = claudeWindow(payload.five_hour, "5h", "usage", "Session limit");
   if (session) windows.push(session);
-  const weekly = Object.entries(CLAUDE_WEEKLY_LABELS)
-    .map(([key, label]) => claudeWindow(payload[key], "weekly", "usage", label))
-    .filter(Boolean);
-  const core = mostRestrictive(weekly);
-  for (const window of weekly) {
-    windows.push(window === core ? window : { ...window, category: "additional" });
+  for (const key of Object.keys(payload).filter(key => key === "seven_day" || key.startsWith("seven_day_"))) {
+    const label = CLAUDE_WEEKLY_LABELS[key] || `${key.slice("seven_day_".length).replaceAll("_", " ")} weekly limit`;
+    const window = claudeWindow(payload[key], "weekly", key === "seven_day" ? "usage" : "additional", label);
+    if (window) windows.push(window);
   }
   return windows;
 }
 
 function claudeWindow(raw, cadence, category, label) {
   if (!raw || typeof raw !== "object") return null;
-  const remainingPercent = finitePercent(100 - Number(raw.utilization));
-  if (remainingPercent === null) return null;
+  const usedPercent = finitePercent(raw.utilization);
+  if (usedPercent === null) return null;
+  const remainingPercent = 100 - usedPercent;
   return { label, featureLabel: label, category, cadence, remainingPercent, resetAt: safeDate(raw.resets_at) };
-}
-
-function mostRestrictive(windows) {
-  let best = null;
-  for (const window of windows) {
-    if (!best || window.remainingPercent < best.remainingPercent) best = window;
-  }
-  return best;
 }
 
 async function fetchExactCodexQuota(accountId, codex) {
@@ -425,8 +423,8 @@ export function exactCodexWindows(payload) {
   const windows = [];
   const add = (label, raw, category, featureLabel = null) => {
     if (!raw || typeof raw !== "object") return;
-    const usedPercent = Number(raw.used_percent ?? raw.usedPercent);
-    if (!Number.isFinite(usedPercent)) return;
+    const usedPercent = finitePercent(raw.used_percent ?? raw.usedPercent);
+    if (usedPercent === null) return;
     const remainingPercent = finitePercent(100 - usedPercent);
     if (remainingPercent === null) return;
     const duration = Number(raw.limit_window_seconds ?? raw.limitWindowSeconds);
