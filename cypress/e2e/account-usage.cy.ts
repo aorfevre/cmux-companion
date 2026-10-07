@@ -49,6 +49,42 @@ function visitUsage() {
 function account(name: string) { return cy.contains(".usage-account", name); }
 
 describe("licence usage", () => {
+  for (const width of [390, 1280, 1440]) {
+    it(`opens the tracker directly from home at ${width}px`, () => {
+      cy.viewport(width, 900);
+      scenario();
+      cy.intercept('GET', '**/api/account-usage*', usageFixture()).as('usage');
+      cy.clock(frozenNow.getTime(), ['Date']);
+      cy.visit('/');
+      cy.wait('@usage');
+      cy.findByRole('heading', { name: 'Account usage' }).should('be.visible');
+      cy.findByRole('link', { name: 'Account usage' }).should('have.attr', 'aria-current', 'page');
+      cy.get('.settings-categories').should('not.exist');
+      account('work@example.test').should('contain.text', '82% remaining').and('contain.text', '18% used');
+      cy.findByRole('link', { name: 'Mission Control' }).should('have.attr', 'href', '/orchestration');
+      cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
+      cy.get('.usage-page-head').should($head => expect($head[0].getBoundingClientRect().right).to.be.at.most(width));
+      cy.findByRole('heading', { name: 'Account usage' }).should('have.css', 'color', 'rgb(23, 40, 32)');
+      if (width <= 1280) cy.screenshot(`account-usage-home-${width}`, { capture: 'fullPage', scale: true });
+    });
+  }
+
+  it('pairs a new device on the home tracker before showing account usage', () => {
+    scenario();
+    let paired = false;
+    cy.intercept('GET', '**/api/account-usage*', req => req.reply(paired ? usageFixture() : { statusCode: 401, body: { error: 'Pair this device' } })).as('usage');
+    cy.intercept('POST', '**/api/auth/pair', req => { expect(req.body.token).to.eq('disposable-code'); paired = true; req.reply({ paired: true }); }).as('pair');
+    cy.clock(frozenNow.getTime(), ['Date']);
+    cy.visit('/');
+    cy.wait('@usage');
+    cy.get('.usage-account').should('not.exist');
+    cy.findByLabelText('Pairing code').type('disposable-code');
+    cy.findByRole('button', { name: 'Pair this device' }).click();
+    cy.wait('@pair');
+    account('work@example.test').should('be.visible');
+    cy.findByLabelText('Pairing code').should('not.exist');
+  });
+
   for (const [width, height] of [[390, 844], [1440, 900]]) {
     it(`groups accounts by provider with every cadence and status readable at ${width}px`, () => {
       cy.viewport(width, height);
@@ -63,13 +99,12 @@ describe("licence usage", () => {
       account("work@example.test").within(() => {
         cy.contains("max · default").should("be.visible");
         cy.get(".usage-status").should("have.text", "Available");
-        cy.contains(".core-window", "5 hours").should("contain.text", "82%").and("contain.text", "Resets in 00:01:35");
-        cy.contains(".core-window", "Weekly").should("contain.text", "55%").and("contain.text", "Resets in 03:02:07");
+        cy.contains(".core-window", "5 hours").should("contain.text", "82%").and("contain.text", "Resets in 1h 35m");
+        cy.contains(".core-window", "Weekly").should("contain.text", "55%").and("contain.text", "Resets in 3d 2h 7m");
         cy.contains("Additional limits").should("be.visible");
-        // Only the two core usage windows get a gauge; a monthly usage window
-        // is neither core nor an extra, so it is not drawn at all.
-        cy.get(".extra-window").should("have.length", 1);
-        cy.contains("Monthly provider limit").should("not.exist");
+        // Every reported cadence remains visible, including monthly limits.
+        cy.get(".extra-window").should("have.length", 2);
+        cy.contains("Monthly provider limit").should("be.visible");
         cy.contains(".extra-window", "code review tokens").should("contain.text", "12%").and("contain.text", "Reset unknown");
         cy.findByRole("button", { name: "Reconnect account" }).should("not.exist");
       });
@@ -78,7 +113,7 @@ describe("licence usage", () => {
         cy.get(".usage-status").should("have.text", "Exhausted");
         cy.contains("Weekly limit reached. Resets automatically.").should("be.visible");
         cy.contains(".core-window", "5 hours").should("contain.text", "0%").and("contain.text", "Reset due");
-        cy.contains(".core-window", "Weekly").should("contain.text", "Resets in 01:12:00");
+        cy.contains(".core-window", "Weekly").should("contain.text", "Resets in 1d 12h 0m");
       });
       account("codex@example.test").within(() => {
         cy.get(".usage-status").should("have.text", "Reconnect");
@@ -88,9 +123,9 @@ describe("licence usage", () => {
       });
       account("daily@example.test").within(() => {
         cy.get(".usage-status").should("have.text", "Low");
-        cy.contains(".extra-window", "GPT 5 daily").should("contain.text", "15%").and("contain.text", "daily").and("contain.text", "Resets in 00:06:00");
+        cy.contains(".extra-window", "GPT 5 daily").should("contain.text", "15%").and("contain.text", "daily").and("contain.text", "Resets in 6h 0m");
       });
-      cy.contains("OAuth credentials never leave your Mac").should("be.visible");
+      cy.contains("OAuth credentials are used only on your Mac").should("be.visible");
       cy.document().then((doc) => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
     });
   }
@@ -190,7 +225,7 @@ describe("licence usage", () => {
     cy.get(".usage-summary").should("contain.text", "0").and("contain.text", "accounts");
     cy.contains(".usage-provider", "Claude Code").should("contain.text", "This provider did not return usage.");
     cy.contains(".usage-provider", "OpenAI Codex").should("contain.text", "No CCS account connected.");
-    cy.contains("OAuth credentials never leave your Mac").should("not.exist");
+    cy.contains("OAuth credentials are used only on your Mac").should("not.exist");
   });
 
   it("reconnects an expired account by polling the login session and refreshes usage on success", () => {

@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { request } from "./api-request";
+import './account-usage.css';
 
 type Cadence = "5h" | "daily" | "weekly" | "monthly" | "other";
 type UsageWindow = { id: string; cadence: Cadence; label: string; category: "usage" | "additional" | "code-review"; remainingPercent: number; resetAt: string | null; reported: true };
@@ -14,32 +16,46 @@ const CORE_WINDOWS: Array<{ cadence: Exclude<Cadence, "other">; label: string }>
   { cadence: "weekly", label: "Weekly" },
 ];
 
-export function AccountUsageView({ onBack, embedded = false }: { onBack: () => void; embedded?: boolean }) {
+export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => void; embedded?: boolean }) {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [unpaired, setUnpaired] = useState(false);
+  const [token, setToken] = useState("");
+  const [pairing, setPairing] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [reconnecting, setReconnecting] = useState<{ provider: UsageProvider; account: UsageAccount } | null>(null);
   const loadSequence = useRef(0);
+  const pendingRead = useRef(false);
   const load = useCallback(async (refresh = false) => {
     const sequence = ++loadSequence.current;
+    pendingRead.current = true;
     setLoading(true);
     try {
       const response = await fetch(`/api/account-usage${refresh ? "?refresh=1" : ""}`);
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || "Could not read CCS usage");
       if (sequence !== loadSequence.current) return;
+      if (response.status === 401) { setUnpaired(true); setUsage(null); setError(""); return; }
+      if (!response.ok) throw new Error(body.error || "Could not read CCS usage");
+      setUnpaired(false);
       setUsage(body as UsageResponse);
       setNow(Date.now());
       setError("");
     } catch (cause) {
       if (sequence === loadSequence.current) setError(cause instanceof Error ? cause.message : "Could not read CCS usage");
     } finally {
-      if (sequence === loadSequence.current) setLoading(false);
+      if (sequence === loadSequence.current) { pendingRead.current = false; setLoading(false); }
     }
   }, []);
-  useEffect(() => { const timer = setTimeout(load, 0); return () => clearTimeout(timer); }, [load]);
+  useEffect(() => { const timer = setTimeout(load, 0); return () => { clearTimeout(timer); loadSequence.current += 1; }; }, [load]);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => {
+    if (unpaired) return;
+    const refresh = () => { if (document.visibilityState === 'visible' && !pendingRead.current) void load(true); };
+    const timer = window.setInterval(refresh, 60_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', refresh); };
+  }, [load, unpaired]);
   const total = useMemo(() => usage?.providers.reduce((sum, provider) => sum + provider.accounts.length, 0) || 0, [usage]);
   const attention = (usage?.summary.low || 0) + (usage?.summary.exhausted || 0) + (usage?.summary.reconnect || 0);
   const reconnectSuccess = useCallback(() => load(true), [load]);
@@ -55,14 +71,20 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack: () => v
   };
 
   return <section className="account-usage-page">
-    <header className="usage-page-head">{!embedded && <button onClick={onBack}>‹ Settings</button>}<div><p className="eyebrow">CCS · LIVE QUOTA</p>{embedded ? <h2>Account usage</h2> : <h1>Licence usage</h1>}</div><button className="usage-refresh" disabled={loading} onClick={() => load(true)} aria-label="Refresh account usage">↻</button></header>
-    <p className="usage-intro">Remaining coding capacity for every account connected to CCS. Missing windows are never treated as zero.</p>
-    {usage && <div className="usage-summary"><span><strong>{total}</strong> accounts</span><span className={attention ? "attention" : "ready"}><strong>{attention}</strong> need attention</span><small>{relativeUpdated(usage.generatedAt)} · {freshReading(usage.generatedAt, now) ? 'Fresh snapshot' : 'Stale or unavailable snapshot'}</small></div>}
+    <header className={`usage-page-head ${!embedded && onBack ? 'with-back' : ''}`}>{!embedded && onBack && <button onClick={onBack}>‹ Settings</button>}<div><p className="eyebrow">YOUR ACCOUNTS</p>{embedded ? <h2>Account usage</h2> : <h1>Account usage</h1>}</div><button className="usage-refresh" disabled={loading || unpaired} onClick={() => load(true)} aria-label="Refresh account usage">↻ <span>Refresh</span></button></header>
+    <p className="usage-intro">Subscription limits for accounts connected to CCS. Percentages show remaining capacity, with used amounts alongside for comparison with your provider. These are usage limits, not a credit balance.</p>
+    {unpaired && <form className="usage-pairing" onSubmit={async event => {
+      event.preventDefault(); setPairing(true); setError('');
+      try { await request('/api/auth/pair', { method: 'POST', body: JSON.stringify({ token: token.trim() }) }); setToken(''); await load(true); }
+      catch (cause) { setError(cause instanceof Error ? cause.message : 'Pairing failed'); }
+      finally { setPairing(false); }
+    }}><h2>Pair this device</h2><p>Enter the private pairing code from Companion on your Mac.</p><label>Pairing code<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></label><button disabled={pairing || !token.trim()}>{pairing ? 'Pairing…' : 'Pair this device'}</button></form>}
+    {usage && <div className="usage-summary"><span><strong>{total}</strong> accounts</span><span className={attention ? "attention" : "ready"}><strong>{attention}</strong> need attention</span><small>{relativeUpdated(usage.generatedAt, now)} · Refreshes every minute while visible</small></div>}
     {loading && !usage && <div className="usage-loading"><i /><i /><i /></div>}
     {error && <div className="usage-error"><strong>Usage unavailable</strong><span>{error}</span><button onClick={() => load(true)}>Try again</button></div>}
     {usage && !usage.available && !error && <div className="usage-error"><strong>CCS usage is unavailable</strong><span>Check that CCS is installed on this Mac, then refresh.</span></div>}
     <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} provider={provider} now={now} onDeleted={connectionDeleted} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
-    {usage?.available && <p className="usage-privacy">Quota comes directly from CCS. OAuth credentials never leave your Mac or appear in this view.</p>}
+    {usage?.available && <p className="usage-privacy">Provider usage for your CCS connections. Missing limits are not reported, never zero. OAuth credentials are used only on your Mac to contact the provider and are never sent to this browser.</p>}
     {reconnecting && <ReconnectSheet key={reconnecting.account.id} provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
   </section>;
 }
@@ -98,8 +120,11 @@ function AccountCard({ account, now, onReconnect, onDeleted, providerLabel, snap
   };
   const capacityKnown = snapshotFresh && freshReading(account.updatedAt, now) && ['ready', 'low', 'exhausted'].includes(account.status);
   const windows = capacityKnown ? account.windows.filter(window => Number.isFinite(window.remainingPercent) && window.remainingPercent >= 0 && window.remainingPercent <= 100) : [];
-  const extras = windows.filter((window) => window.category !== "usage" || window.cadence === "other");
-  return <article className={`usage-account ${account.status}`}><header><div><strong>{account.email || account.label}</strong><span>{[account.plan, account.isDefault ? "default" : null, account.paused ? "paused" : null].filter(Boolean).join(" · ") || "CCS account"}</span></div><span className={`usage-status ${account.status}`}>{!capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span></header>
+  const core = CORE_WINDOWS.map(({ cadence }) => windows.find(window => window.category === 'usage' && window.cadence === cadence));
+  const extras = windows.filter(window => !core.includes(window));
+  const displayStatus = !capacityKnown && account.status !== 'reconnect' ? 'unavailable' : account.status;
+  return <article className={`usage-account ${displayStatus}`}><header><div><strong>{account.email || account.label}</strong><span>{[account.plan?.replaceAll('_', ' '), account.isDefault ? "default" : null, account.paused ? "paused" : null].filter(Boolean).join(" · ") || "CCS account"}</span></div><span className={`usage-status ${displayStatus}`}>{!capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span></header>
+    <p className="account-reading">{account.updatedAt ? relativeUpdated(account.updatedAt, now) : 'Reading time unavailable'}</p>
     {!capacityKnown && <p className="account-message">Capacity unknown: the reading is unavailable, failed or older than 15 minutes.</p>}
     {account.message && <p className={`account-message ${account.status}`}>{account.message}</p>}
     <div className="core-window-grid">{CORE_WINDOWS.map(({ cadence, label }) => <CoreWindow label={label} window={windows.find((item) => item.category === "usage" && item.cadence === cadence)} now={now} key={cadence} />)}</div>
@@ -215,11 +240,11 @@ function ReconnectSheet({ provider, account, onClose, onSuccess }: { provider: U
 
 function CoreWindow({ label, window, now }: { label: string; window?: UsageWindow; now: number }) {
   const tone = window ? percentTone(window.remainingPercent) : "missing";
-  return <div className={`core-window ${tone}`}><div><span>{label}</span>{window ? <strong>{window.remainingPercent}%</strong> : <strong>—</strong>}</div>{window ? <><div className="quota-track"><i style={{ width: `${window.remainingPercent}%` }} /></div><ResetTime value={window.resetAt} now={now} /></> : <small>Not reported</small>}</div>;
+  return <div className={`core-window ${tone}`}><div><span>{label}</span>{window ? <strong>{window.remainingPercent}% <em>remaining</em></strong> : <strong>—</strong>}</div>{window ? <><small className="quota-used">{100 - window.remainingPercent}% used</small><div className="quota-track"><i style={{ width: `${window.remainingPercent}%` }} /></div><ResetTime value={window.resetAt} now={now} /></> : <small>Not reported</small>}</div>;
 }
 
 function ExtraWindow({ window, now }: { window: UsageWindow; now: number }) {
-  return <div className={`extra-window ${percentTone(window.remainingPercent)}`}><div><strong>{displayLabel(window.label)}</strong><span>{window.cadence}</span></div><b>{window.remainingPercent}%</b><ResetTime value={window.resetAt} now={now} /></div>;
+  return <div className={`extra-window ${percentTone(window.remainingPercent)}`}><div><strong>{displayLabel(window.label)}</strong><span>{window.cadence} · {100 - window.remainingPercent}% used</span></div><b>{window.remainingPercent}% remaining</b><ResetTime value={window.resetAt} now={now} /></div>;
 }
 
 function ResetTime({ value, now }: { value: string | null; now: number }) {
@@ -231,7 +256,7 @@ function ResetTime({ value, now }: { value: string | null; now: number }) {
 function percentTone(percent: number) { return percent <= 0 ? "exhausted" : percent <= 20 ? "low" : "ready"; }
 function statusLabel(status: UsageAccount["status"], windowCount = 1) { return status === "ready" && windowCount === 0 ? "Connected" : ({ ready: "Available", low: "Low", exhausted: "Exhausted", reconnect: "Reconnect", unavailable: "Unavailable" })[status]; }
 function displayLabel(label: string) { return label.replaceAll("-", " ").replace(/\bGpt\b/i, "GPT"); }
-function relativeUpdated(value: string) { const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000)); return seconds < 15 ? "Updated now" : seconds < 60 ? `Updated ${seconds}s ago` : `Updated ${Math.floor(seconds / 60)}m ago`; }
+function relativeUpdated(value: string, now: number) { const seconds = Math.round((now - new Date(value).getTime()) / 1000); if (!Number.isFinite(seconds) || seconds < 0) return 'Reading time unavailable'; return seconds < 15 ? "Updated now" : seconds < 60 ? `Updated ${seconds}s ago` : `Updated ${Math.floor(seconds / 60)}m ago`; }
 // The one countdown in the app. The goals board reuses it so a quota reset
 // never reads two different ways on two screens.
 export function resetText(value: string | null, now: number) {
@@ -243,5 +268,5 @@ export function resetText(value: string | null, now: number) {
   const minutes = Math.ceil(milliseconds / 60_000);
   const days = Math.floor(minutes / 1_440);
   const hours = Math.floor((minutes % 1_440) / 60);
-  return `Resets in ${String(days).padStart(2, "0")}:${String(hours).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  return `Resets in ${days ? `${days}d ` : ''}${hours ? `${hours}h ` : ''}${minutes % 60}m`;
 }

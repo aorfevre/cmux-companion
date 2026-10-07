@@ -1,6 +1,8 @@
 'use client';
 import { useSyncExternalStore, type ReactNode } from 'react';
 import { GoalBoard } from './orchestration/goal-board';
+import { AccountUsageView } from './account-usage';
+import { MissionShell } from './mission-shell';
 import './orchestration/orchestration.css';
 
 export function isMonitoringDestination(search: string) {
@@ -12,5 +14,8 @@ const subscribe = (changed: () => void) => { window.addEventListener('popstate',
 export function HomeDestination({ sessions }: { sessions: ReactNode }) {
   const search = useSyncExternalStore(subscribe, () => location.search, () => null);
   if (search === null) return <main><p role="status">Opening Companion…</p></main>;
-  return isMonitoringDestination(search) ? sessions : <GoalBoard />;
+  if (isMonitoringDestination(search)) return sessions;
+  const query = new URLSearchParams(search);
+  if (query.has('goal') || query.get('view') === 'needs') return <GoalBoard />;
+  return <MissionShell active="usage" className="usage-home"><AccountUsageView /></MissionShell>;
 }

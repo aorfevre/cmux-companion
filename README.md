@@ -6,7 +6,10 @@ No cloud application server is involved. Terminal output and input travel direct
 
 ## What it does
 
-- Opens desktop-first Mission Control with a goal fleet, Needs You decisions,
+- Opens Account usage with Claude/Codex subscription limits, explicit used and
+  remaining percentages, named model limits and per-account reading times.
+  Refreshes every minute while visible; missing readings remain unknown.
+- Provides desktop-first Mission Control with a goal fleet, Needs You decisions,
   active wave/worker status and responsive goal workspaces.
 - Saves briefs, links and private source/image references for scoped agent access.
 - Runs planning/design, independent review and implementation in visible cmux
