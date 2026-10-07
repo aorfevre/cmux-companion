@@ -44,12 +44,14 @@ describe("contextual mobile features", () => {
     render(<AccountUsageView onBack={back} />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     assert.ok(await screen.findByText("one@example.test"));
-    assert.ok(screen.getAllByText("82%", { exact: false }).length);
-    assert.ok(screen.getByText("55%", { exact: false }));
     const reportedAccount = screen.getByText("one@example.test").closest("article");
     const emptyAccount = screen.getByText("two@example.test").closest("article");
     assert.ok(reportedAccount);
     assert.ok(emptyAccount);
+    const sessionWindow = within(reportedAccount).getByText("5 hours").closest<HTMLElement>(".core-window");
+    assert.ok(sessionWindow);
+    assert.ok(within(sessionWindow).getByText("82%", { exact: false }));
+    assert.ok(within(reportedAccount).getByText("55%", { exact: false }));
     assert.equal(within(reportedAccount).queryByText("Not reported"), null);
     assert.equal(within(emptyAccount).getAllByText("Not reported").length, 2);
     assert.equal(screen.getAllByText("5 hours").length, 2);

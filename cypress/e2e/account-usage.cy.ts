@@ -79,12 +79,18 @@ describe("licence usage", () => {
       cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
       cy.get('.usage-page-head').should($head => expect($head[0].getBoundingClientRect().right).to.be.at.most(width));
       cy.findByRole('heading', { name: 'Account usage' }).should('have.css', 'color', 'rgb(23, 40, 32)');
-      cy.findByRole('complementary', { name: 'Next reset with unused quota' }).should('contain.text', 'personal@example.test').and('contain.text', '5% unused').and('contain.text', 'Resets in 47m').and('contain.text', 'Paused in CCS');
+      cy.findByRole('complementary', { name: 'Next refresh' }).should('contain.text', 'personal@example.test').and('contain.text', '5% unused').and('contain.text', '47m').and('contain.text', 'Paused in CCS');
       cy.get('.usage-account').should('have.length', 5);
       cy.get('.usage-account-details[open]').should('not.exist');
-      if (width >= 1280) cy.get('.usage-account').each($account => {
-        expect($account[0].getBoundingClientRect().bottom).to.be.at.most(900);
+      cy.get('.reset-queue-row').should('have.length', 7).first().should('contain.text', 'personal@example.test').and('contain.text', '47m');
+      cy.findByRole('complementary', { name: 'Capacity to use before reset' }).should('contain.text', 'work@example.test').and('contain.text', '82%');
+      if (width >= 1280) cy.get('.reset-queue-row').each($row => {
+        expect($row[0].getBoundingClientRect().bottom).to.be.at.most(900);
       });
+      cy.findByRole('button', { name: 'Usable now' }).click();
+      cy.get('.reset-queue-row').should('have.length', 6).first().should('contain.text', 'work@example.test');
+      cy.get('.reset-queue').should('not.contain.text', 'personal@example.test');
+      cy.findByRole('button', { name: /^Next reset$/ }).click();
       cy.get('.next-reset-account').should('contain.text', 'personal@example.test');
       if (width <= 1280) cy.screenshot(`account-usage-home-${width}`, { capture: 'fullPage', scale: true });
     });

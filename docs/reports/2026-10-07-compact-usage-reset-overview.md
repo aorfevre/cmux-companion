@@ -1,80 +1,74 @@
-# Compact usage overview and next unused reset
+# Reset queue and unused capacity overview
 
-## Result and comparison
+## Result
 
-The tracker now uses compact account rows under vertically stacked provider
-headings. Each row keeps its account identity, status, 5-hour/weekly remaining and
-used percentages, and countdowns visible. Additional limits, reading time,
-messages and confirmed connection deletion are available through Details;
-Reconnect remains directly accessible when needed.
+Time until reset now leads the tracker. A cross-provider queue appears above All
+accounts, ordered by each overall usage window’s reset time. Countdowns, unused
+percentages and bars, account identity, limit and localized calendar date/time
+are visible together. Desktop content is capped at 920 pixels; mobile rows wrap.
 
-The five-account desktop fixture fits all five rows within a 1280×900 viewport.
-Mobile keeps the two primary limits side by side below the account identity,
-with no horizontal overflow. The overview is capped at 1100 pixels wide.
+Two summaries distinguish the earliest future **Next refresh**, including fully
+used or paused windows, from **Capacity to use before reset**, the earliest reset
+with unused capacity on an unpaused account with no exhausted, invalid or elapsed
+reported overall limit. The Usable now filter keeps chronological ordering.
+Suggestions are based on reported limits and do not change routing or guarantee
+model-specific availability. Paused/exhausted limitations remain explicit.
 
-A top summary identifies the earliest future overall usage reset with quota
-remaining, across both providers. It displays the provider, account, exact limit,
-unused percentage, countdown and local reset date/time. The selected row is
-highlighted and a keyboard-accessible link scrolls/focuses it without modifying
-Setup's category hash.
+The five-account fixture contains seven queue entries, including a monthly limit.
+Its paused personal account resets in 47 minutes with 5% unused; the active work
+account has 82% unused before its session reset in 1h35m. These are independent
+fixture readings, not claims about current live quota or subscription renewal.
 
-In the supplied screenshot, the paused personal Claude account's weekly limit
-was next: **47 minutes until reset, 5% unused**. That is a usage-window reset,
-not renewal of a paid subscription. It is historical screenshot evidence, not a
-claim about the live percentage at delivery time.
+Compact All accounts rows below the queue retain 5-hour/weekly used and remaining
+percentages. Details contains reading time, additional/model limits, messages and
+confirmed deletion; reconnect remains directly accessible. Queue links focus the
+matching account without replacing Setup’s category hash.
 
-## Selection rules and boundaries
+## Selection and boundaries
 
-- Only fresh successful snapshot/provider/account readings qualify (the existing
-  15-minute freshness limit applies).
-- Overall usage windows require a finite remaining percentage above zero and at
-  most 100, plus a valid reset timestamp strictly in the future.
-- Named model and code-review limits stay separate. Missing, stale, failed,
-  reconnect-required, overdue and fully used windows cannot win.
-- Ties choose the higher unused percentage, then retain provider/account order.
-- Paused accounts remain visible and explicitly say **Paused in CCS**. If another
-  overall limit is exhausted, the summary says so rather than implying immediate
-  usability. No connection is resumed or account routing changed.
-- Selection recomputes on refreshed data, time passage, failed reads and deletion.
-  No eligible candidate produces an explicit no-upcoming-reset message.
+- Only successful fresh snapshot/provider/account readings qualify, using the
+  existing 15-minute limit. Percentages must be finite and between 0 and 100;
+  reset timestamps must be valid and in the future.
+- Missing, stale, failed, reconnect-required and elapsed readings are excluded.
+  Named model/code-review windows remain separate in Details.
+- Ties choose more unused quota, then stable source order. Fully used windows
+  remain in Next reset but cannot become usable-capacity suggestions.
+- Refresh, failure, time passage and deletion recompute queue and summaries.
+  Empty states explicitly explain missing trustworthy or usable readings.
 
-The implementing agent owns the UI, selection rule, integration and checks. This
-change is frontend-only: no API, storage, background worker, provider request or
-credential behavior changes. Existing pairing, refresh, reconnect and deletion
-boundaries are preserved. No installed service changes or deployment occurred in
-this follow-up. The pre-existing untracked burst-scan plan remains untouched.
-
-## Older UI in the screenshot
-
-The installed service reports merged commit `82cabdda`. Its root HTML referenced
-11 JavaScript assets; fetching those assets found the current tracker copy
-(`Refreshes every minute while visible`) and no old `Fresh snapshot` copy.
-The screenshot still shows the old copy and day/hour/minute colon notation.
-The evidence indicates an older frontend is still open in that browser; it does
-not establish a particular service-worker defect. Reload the browser tab to load
-the deployed frontend. The in-page refresh control only refreshes quota data.
+The implementing agent owns UI, selection, checks and cleanup. No API, storage,
+background worker, provider request or credential behavior changes. Existing
+pairing, refresh, reconnect and deletion boundaries remain. The unrelated
+untracked burst-scan plan is untouched. The delivery contract was amended in its
+own commit before implementation; no implementation plan was introduced.
 
 ## Verification
 
-- `npm run verify`: **passed**, including coverage, lint, types and build.
-  Backend: **1,028 passed, 1 existing macOS invalid-UTF-8 filename skip, 0 failed**;
-  **97.38% line coverage**. UI: **182 passed**, **95.29% line coverage**.
-  Both 90% line-coverage thresholds remain enforced.
-- Account usage Cypress: **14 passed**, including five-account home views at
-  390/1280/1440 pixels; all five row bottoms are asserted within 900 pixels on
-  desktop. Also covers Details visibility, Setup hash preservation and focused
-  row navigation, pairing, refresh failures, reconnect and confirmed deletion.
-- Pure/UI regressions cover cross-provider selection, ties, stale/invalid/fully
-  used readings, model-limit separation, paused/exhausted notices, elapsed resets,
-  failed refreshes and deleting the highlighted account.
-- Desktop and mobile generated screenshots were visually inspected:
-  `cypress/screenshots/account-usage.cy.ts/account-usage-home-1280.png` and
-  `account-usage-home-390.png` (generated, not committed).
-- Live quota accuracy beyond the supplied screenshot, other device/browser sizes,
-  CI and CodeRabbit approval are not established by the fixture checks.
+- Backend: 1,028 passed, one existing macOS invalid-UTF-8 filename skip;
+  line coverage 97.38%.
+- UI coverage: 185 passed, 95.20% line coverage. Both 90% thresholds retained.
+- Lint, typecheck and production build passed. The full `npm run verify` run
+  initially stopped at two test typing errors; these were fixed, then typecheck,
+  build and 27 focused UI tests passed. Backend checks were not needlessly rerun
+  for those test-only type corrections; CI runs the complete command again.
+- Account usage Cypress: 14 passed, including desktop viewport bounds and mobile
+  no-overflow checks. Desktop/mobile screenshots were visually inspected.
 
-Interventions: focused UI checks initially failed because the new summary repeats
-the selected percentage/countdown; assertions were scoped to their intended
-content. Review found that a normal fragment link would replace Setup's category
-hash, so the link now scrolls/focuses its row without changing that hash and the
-browser journey verifies this. No coverage threshold was reduced.
+Final CI and delivery evidence are recorded in the PR. Local focused UI
+checks cover cross-provider order, ties, stale/invalid readings, model separation,
+fully used resets, paused/exhausted constraints, elapsed resets, failed refresh,
+confirmed deletion, filter behavior and localized calendar dates. Cypress covers
+390/1280/1440-pixel home views, seven-entry desktop fit, filtering, Details,
+Setup hash/focus, pairing, refresh failure, reconnect and confirmed deletion.
+
+Interventions: the first queue Cypress run passed 12/14; the seventh desktop row
+extended below 900 pixels. Row line height/spacing and summary timestamp spacing
+were corrected before rerunning. A page-wide quota assertion became ambiguous
+when the queue repeated the percentage; it now targets the intended account’s
+core window. CodeRabbit’s earlier findings about that assertion and missing
+calendar dates are addressed. Typechecking also caught an unsupported Cypress role-query option and a generic DOM Element type; the role selector now uses an exact regular expression and the core-window element has its HTMLElement type. Coverage thresholds remain unchanged.
+
+Live quota parity beyond the user-supplied screenshot and other browser/device
+sizes remain unverified. Generated screenshots are not committed. A browser tab
+reload is needed to replace an already-open older frontend; in-page Refresh only
+refreshes quota data.
