@@ -202,7 +202,7 @@ test('explains an empty usable queue without presenting paused capacity as a sug
 
 
 test.each([
-  ['valid', '60% remaining · Resets in 2m'], ['missing', 'Not reported'], ['invalid', 'Not reported'], ['elapsed', 'Awaiting refresh'], ['bad reset', 'Awaiting refresh'],
+  ['valid', '60% remaining · Resets in 2m'], ['missing reset', '60% remaining · Not reported'], ['missing', 'Not reported'], ['invalid', 'Not reported'], ['elapsed', 'Awaiting refresh'], ['bad reset', 'Awaiting refresh'],
 ])('shows Claude session context beside the primary weekly reset: %s', async (kind, expected) => {
   await setup(async () => {
     const usage = fixture();
@@ -212,6 +212,7 @@ test.each([
     if (kind === 'missing') account.windows.splice(0, 1);
     else if (kind === 'elapsed') account.windows[0].resetAt = instant;
     else if (kind === 'bad reset') account.windows[0].resetAt = 'invalid';
+    else if (kind === 'missing reset') account.windows[0].resetAt = null;
     return new Response(JSON.stringify(usage));
   });
   const queue = screen.getByRole('list', { name: 'Weekly reset queue' });
@@ -219,7 +220,7 @@ test.each([
   expect(within(queue).getByRole('listitem').textContent).toContain(`5h: ${expected}`);
   expect(within(queue).getByRole('listitem').textContent).toContain('5% unused');
   expect(screen.getByRole('complementary', { name: 'Next weekly reset' }).textContent).toContain(`5h: ${expected}`);
-  if (kind === 'valid') expect(screen.getByRole('complementary', { name: 'Weekly capacity to use before reset' }).textContent).toContain('5h: 60% remaining');
+  if (kind === 'valid' || kind === 'missing reset') expect(screen.getByRole('complementary', { name: 'Weekly capacity to use before reset' }).textContent).toContain('5h: 60% remaining');
 });
 
 test('weekly queue ignores earlier session and monthly resets and never substitutes a missing weekly limit', () => {

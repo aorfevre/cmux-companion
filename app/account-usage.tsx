@@ -141,7 +141,7 @@ function SessionContext({ reset, now }: { reset: UpcomingReset; now: number }) {
   let label = 'Not reported';
   if (session && Number.isFinite(session.remainingPercent) && session.remainingPercent >= 0 && session.remainingPercent <= 100) {
     label = session.resetAt !== null && (!Number.isFinite(Date.parse(session.resetAt)) || Date.parse(session.resetAt) <= now)
-      ? 'Awaiting refresh' : `${session.remainingPercent}% remaining · ${resetText(session.resetAt, now)}`;
+      ? 'Awaiting refresh' : `${session.remainingPercent}% remaining · ${session.resetAt === null ? 'Not reported' : resetText(session.resetAt, now)}`;
   }
   return <span className="session-context"> · 5h: {label}</span>;
 }
