@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { request } from "./api-request";
+import { ProviderLogo } from "./provider-logo";
 import './account-usage.css';
 
 type Cadence = "5h" | "daily" | "weekly" | "monthly" | "other";
@@ -126,13 +127,23 @@ function AccountResetLink({ reset }: { reset: UpcomingReset }) {
     event.preventDefault();
     const row = document.getElementById(`usage-account-${reset.account.id}`);
     row?.scrollIntoView({ block: 'nearest' }); row?.focus({ preventScroll: true });
-  }}>{reset.provider.label} · {reset.account.email || reset.account.label}</a>;
+  }}><ProviderLogo provider={reset.provider.id} />{reset.provider.label} · {reset.account.email || reset.account.label}</a>;
 }
 function resetConstraint({ account }: UpcomingReset) {
   return [account.paused ? 'Paused in CCS' : '', account.status === 'exhausted' || account.windows.some(item => item.category === 'usage' && item.remainingPercent === 0) ? 'Usage limit exhausted' : ''].filter(Boolean).join(' · ');
 }
 function ResetCountdown({ reset, now }: { reset: UpcomingReset; now: number }) {
   return <time dateTime={reset.window.resetAt!} title={new Date(reset.reset).toLocaleString()}><strong>{resetText(reset.window.resetAt, now).replace('Resets in ', '')}</strong><span>until reset</span></time>;
+}
+function WeeklyContext({ reset, now }: { reset: UpcomingReset; now: number }) {
+  if (reset.window.cadence !== '5h') return null;
+  const weekly = reset.account.windows.find(window => window.category === 'usage' && window.cadence === 'weekly');
+  let label = 'Not reported';
+  if (weekly && Number.isFinite(weekly.remainingPercent) && weekly.remainingPercent >= 0 && weekly.remainingPercent <= 100) {
+    label = weekly.resetAt !== null && (!Number.isFinite(Date.parse(weekly.resetAt)) || Date.parse(weekly.resetAt) <= now)
+      ? 'Awaiting refresh' : `${weekly.remainingPercent}% remaining`;
+  }
+  return <span className="weekly-context"> · Weekly: {label}</span>;
 }
 function ResetOverview({ resets, now }: { resets: UpcomingReset[]; now: number }) {
   const [usableOnly, setUsableOnly] = useState(false);
@@ -143,13 +154,13 @@ function ResetOverview({ resets, now }: { resets: UpcomingReset[]; now: number }
     <div className="reset-highlights">
       <aside className="next-usage-reset" aria-label="Next refresh"><h2>Next refresh</h2>{next ? <>
         <ResetCountdown reset={next} now={now} /><AccountResetLink reset={next} />
-        <p>{limitLabel(next.window)} · {next.window.remainingPercent}% unused</p>
+        <p>{limitLabel(next.window)} · {next.window.remainingPercent}% unused<WeeklyContext reset={next} now={now} /></p>
         <p>{resetConstraint(next) || 'Fresh quota after this reset'}</p><p><time dateTime={next.window.resetAt!}>{new Date(next.reset).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time></p>
       </> : <p>No upcoming reset is reported in fresh readings.</p>}</aside>
       <aside className="use-before-reset" aria-label="Capacity to use before reset"><h2>Capacity to use before reset</h2>{useNext ? <>
         <div className="capacity-amount"><strong>{useNext.window.remainingPercent}%</strong><span>unused</span></div>
         <AccountResetLink reset={useNext} /><p>{limitLabel(useNext.window)} · {resetText(useNext.window.resetAt, now)}</p>
-        <p>Earliest usable reset · Based on reported limits</p>
+        <p>Based on reported limits<WeeklyContext reset={useNext} now={now} /></p>
       </> : <p>No usable capacity with an upcoming reset is reported.</p>}</aside>
     </div>
     <header className="reset-queue-head"><div><h2>Reset queue</h2><p>Unused quota expires at each reset · Soonest first</p></div><div className="reset-filter" role="group" aria-label="Reset queue filter">
@@ -157,7 +168,7 @@ function ResetOverview({ resets, now }: { resets: UpcomingReset[]; now: number }
     </div></header>
     {visible.length ? <ol className="reset-queue" aria-label="Reset queue">{visible.map(reset => <li className={`reset-queue-row${reset === useNext ? ' use-next' : ''}`} key={`${reset.provider.id}:${reset.account.id}:${reset.window.id}`}>
       <ResetCountdown reset={reset} now={now} />
-      <div className="reset-queue-account"><AccountResetLink reset={reset} /><span className="reset-limit">{limitLabel(reset.window)}</span><div className="quota-track"><i style={{ width: `${reset.window.remainingPercent}%` }} /></div><small>{reset.window.remainingPercent}% unused{resetConstraint(reset) ? ` · ${resetConstraint(reset)}` : ''}</small></div>
+      <div className="reset-queue-account"><AccountResetLink reset={reset} /><span className="reset-limit">{limitLabel(reset.window)}</span><div className="quota-track"><i style={{ width: `${reset.window.remainingPercent}%` }} /></div><small>{reset.window.remainingPercent}% unused<WeeklyContext reset={reset} now={now} />{resetConstraint(reset) ? ` · ${resetConstraint(reset)}` : ''}</small></div>
       <div className="reset-queue-meta"><span>{resetConstraint(reset) ? 'Check account' : reset === useNext ? 'Use before reset' : reset.window.remainingPercent === 0 ? 'Fully used' : 'Upcoming'}</span><time dateTime={reset.window.resetAt!}>{new Date(reset.reset).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time></div>
     </li>)}</ol> : <p className="reset-empty">{usableOnly ? 'No usable capacity with an upcoming reset is reported.' : 'No upcoming reset is reported in fresh readings.'}</p>}
   </section>;

@@ -199,3 +199,23 @@ test('explains an empty usable queue without presenting paused capacity as a sug
   expect(screen.queryByRole('list', { name: 'Reset queue' })).toBeNull();
   expect(screen.getAllByText('No usable capacity with an upcoming reset is reported.')).toHaveLength(2);
 });
+
+
+test.each([
+  ['valid', '60% remaining'], ['missing', 'Not reported'], ['invalid', 'Not reported'], ['elapsed', 'Awaiting refresh'], ['bad reset', 'Awaiting refresh'],
+])('shows overall weekly context beside a 5-hour reset: %s', async (kind, expected) => {
+  await setup(async () => {
+    const usage = fixture();
+    const account = usage.providers[0].accounts[0]; account.paused = false;
+    account.windows[0].resetAt = '2026-10-07T07:57:00Z';
+    account.windows[1].remainingPercent = kind === 'invalid' ? 101 : 60;
+    if (kind === 'missing') account.windows.splice(1, 1);
+    else if (kind === 'elapsed') account.windows[1].resetAt = instant;
+    else if (kind === 'bad reset') account.windows[1].resetAt = 'invalid';
+    return new Response(JSON.stringify(usage));
+  });
+  const queue = screen.getByRole('list', { name: 'Reset queue' });
+  expect(within(queue).getAllByRole('listitem')[0].textContent).toContain(`Weekly: ${expected}`);
+  expect(screen.getByRole('complementary', { name: 'Next refresh' }).textContent).toContain(`Weekly: ${expected}`);
+  if (kind === 'valid') expect(screen.getByRole('complementary', { name: 'Capacity to use before reset' }).textContent).toContain('Weekly: 60% remaining');
+});

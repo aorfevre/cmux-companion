@@ -10,7 +10,11 @@ Opening `/` shows the tracker in the main shell, with pairing when required.
 Time until reset is the primary dimension: a cross-provider Reset queue appears
 before All accounts. Each overall usage window is a row, ordered by its future
 reset, with a prominent countdown, provider/account, limit, unused percentage,
-capacity bar and local reset time. Equal times prefer more unused quota and then
+capacity bar and local reset time. Anthropic/OpenAI logos precede the provider
+name in queue links and both summary cards; text remains the accessible label.
+A 5-hour entry and its summary cards also show the same account’s overall weekly
+remaining quota. Missing/invalid weekly data says Not reported; an elapsed weekly
+reset says Awaiting refresh. Named model windows cannot substitute for it. Equal times prefer more unused quota and then
 stable source order. Fully used windows remain visible as upcoming fresh quota;
 paused accounts and accounts exhausted on another limit are explicitly labeled.
 Named model/code-review limits remain separate in account Details.
@@ -48,6 +52,8 @@ fixture verification must not be represented as a live account reconciliation.
 | --- | --- |
 | Home opens account usage; existing explicit destinations remain reachable. | Navigation UI test. |
 | A new device pairs before seeing protected usage. | Cypress home pairing journey. |
+| Anthropic/OpenAI logos precede provider names in queue links and both summary cards; decorative icons retain the provider/account text as the accessible link label. | Account usage Cypress home journey checks provider-specific visible icons and existing named-link navigation. |
+| A 5-hour queue entry and summary cards highlighting that entry show the same account’s overall weekly quota; missing/invalid percentages say Not reported, and elapsed/invalid reset times say Awaiting refresh. | Parameterized weekly-context UI test checks the queue and summary association, excludes named model substitution, and asserts both fallback states. |
 | Claude overall weekly usage is never replaced by a model-specific limit. | Backend payload regression test. |
 | Missing/malformed percentages are unknown, and token lookup cannot select a different named account. | Backend normalization and token-selection tests. |
 | Remaining/used labels, all reported cadences, reading age and reset units are visible. | Account usage UI test. |

@@ -123,3 +123,5 @@
 @media (max-width:480px) {
   .account-usage-page .core-window>div:first-child { display:block; }
 }
+
+.account-usage-page .usage-provider-logo { display:inline-block; width:16px; height:16px; margin-right:6px; vertical-align:-3px; }
