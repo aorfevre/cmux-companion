@@ -41,6 +41,20 @@ function scenario() {
   cy.intercept("GET", "**/api/settings/models", { roles: DEFAULT_MODEL_ROLES, defaults: DEFAULT_MODEL_ROLES, warning: null });
 }
 
+function fiveAccountFixture() {
+  const usage = usageFixture();
+  const personal = usage.providers[0].accounts[1];
+  personal.email = 'personal@example.test'; personal.status = 'low'; personal.message = null;
+  personal.windows[0].remainingPercent = 100; personal.windows[0].resetAt = null;
+  personal.windows[1].remainingPercent = 5; personal.windows[1].resetAt = iso(47);
+  usage.providers[1].accounts = [32, 95, 48].map((remainingPercent, index) => ({
+    ...usage.providers[0].accounts[0], id: `codex-${index}`, email: `codex-${index}@example.test`,
+    windows: [{ id: 'weekly', cadence: 'weekly', category: 'usage', label: 'Weekly limit', remainingPercent, resetAt: iso(6 * 24 * 60 + index * 60), reported: true }],
+  }));
+  usage.summary = { ready: 4, low: 1, exhausted: 0, reconnect: 0, unavailable: 0 };
+  return usage;
+}
+
 function visitUsage() {
   cy.clock(frozenNow.getTime(), ["Date"]);
   cy.visit("/?view=usage");
@@ -53,7 +67,7 @@ describe("licence usage", () => {
     it(`opens the tracker directly from home at ${width}px`, () => {
       cy.viewport(width, 900);
       scenario();
-      cy.intercept('GET', '**/api/account-usage*', usageFixture()).as('usage');
+      cy.intercept('GET', '**/api/account-usage*', fiveAccountFixture()).as('usage');
       cy.clock(frozenNow.getTime(), ['Date']);
       cy.visit('/');
       cy.wait('@usage');
@@ -65,6 +79,13 @@ describe("licence usage", () => {
       cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
       cy.get('.usage-page-head').should($head => expect($head[0].getBoundingClientRect().right).to.be.at.most(width));
       cy.findByRole('heading', { name: 'Account usage' }).should('have.css', 'color', 'rgb(23, 40, 32)');
+      cy.findByRole('complementary', { name: 'Next reset with unused quota' }).should('contain.text', 'personal@example.test').and('contain.text', '5% unused').and('contain.text', 'Resets in 47m').and('contain.text', 'Paused in CCS');
+      cy.get('.usage-account').should('have.length', 5);
+      cy.get('.usage-account-details[open]').should('not.exist');
+      if (width >= 1280) cy.get('.usage-account').each($account => {
+        expect($account[0].getBoundingClientRect().bottom).to.be.at.most(900);
+      });
+      cy.get('.next-reset-account').should('contain.text', 'personal@example.test');
       if (width <= 1280) cy.screenshot(`account-usage-home-${width}`, { capture: 'fullPage', scale: true });
     });
   }
@@ -97,6 +118,7 @@ describe("licence usage", () => {
       cy.contains(".usage-provider", "Claude Code").should("contain.text", "2 connected accounts");
       cy.contains(".usage-provider", "OpenAI Codex").should("contain.text", "2 connected accounts");
       account("work@example.test").within(() => {
+        cy.get("summary").click();
         cy.contains("max · default").should("be.visible");
         cy.get(".usage-status").should("have.text", "Available");
         cy.contains(".core-window", "5 hours").should("contain.text", "82%").and("contain.text", "Resets in 1h 35m");
@@ -109,6 +131,7 @@ describe("licence usage", () => {
         cy.findByRole("button", { name: "Reconnect account" }).should("not.exist");
       });
       account("personal").within(() => {
+        cy.get("summary").click();
         cy.contains("pro · paused").should("be.visible");
         cy.get(".usage-status").should("have.text", "Exhausted");
         cy.contains("Weekly limit reached. Resets automatically.").should("be.visible");
@@ -116,15 +139,18 @@ describe("licence usage", () => {
         cy.contains(".core-window", "Weekly").should("contain.text", "Resets in 1d 12h 0m");
       });
       account("codex@example.test").within(() => {
+        cy.get("summary").click();
         cy.get(".usage-status").should("have.text", "Reconnect");
         cy.contains("The OpenAI session expired").should("be.visible");
         cy.get(".core-window").should("have.length", 2).each(($window) => expect($window.text()).to.include("Not reported"));
         cy.findByRole("button", { name: "Reconnect account" }).should("be.visible");
       });
       account("daily@example.test").within(() => {
+        cy.get("summary").click();
         cy.get(".usage-status").should("have.text", "Low");
         cy.contains(".extra-window", "GPT 5 daily").should("contain.text", "15%").and("contain.text", "daily").and("contain.text", "Resets in 6h 0m");
       });
+      cy.contains("summary", "About these readings").click();
       cy.contains("OAuth credentials are used only on your Mac").should("be.visible");
       cy.document().then((doc) => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
     });
@@ -148,6 +174,7 @@ describe("licence usage", () => {
       }).as("delete");
       visitUsage();
       cy.wait("@usage");
+      account("work@example.test").find("summary").click();
       account("work@example.test").findByRole("button", { name: "Delete connection" }).click();
       cy.findByRole("group", { name: "Delete connection confirmation" }).should("contain.text", "Claude Code").and("contain.text", "subscription remain active");
       cy.findByRole("button", { name: "Cancel" }).click();
@@ -183,6 +210,9 @@ describe("licence usage", () => {
     cy.wait("@usage").its("request.url").should("include", "refresh=1");
     account("work@example.test").contains(".core-window", "5 hours").should("contain.text", "61%");
     cy.get(".usage-summary").should("contain.text", "Updated now");
+    cy.get(".next-usage-reset a").click();
+    cy.location("hash").should("eq", "#usage");
+    cy.get(".next-reset-account").should("have.focus");
     cy.findByRole("button", { name: "This device" }).click();
     cy.findByRole("heading", { name: /^Setup$/ }).should("be.visible");
     cy.location("pathname").should("eq", "/settings");
