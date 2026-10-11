@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AccountUsage, cadenceFromDuration, exactClaudeWindows, exactCodexWindows, findCcsPackageRoot } from "../server/account-usage.mjs";
+import { AccountUsage, cadenceFromDuration, claudePlan, exactClaudeWindows, exactCodexWindows, findCcsPackageRoot } from "../server/account-usage.mjs";
 
 function source({ delay = 0 } = {}) {
   const accounts = {
@@ -198,10 +198,14 @@ function installFakeCcs(t, { claudeAccounts = [], codexAccounts = [], withConfig
   return root;
 }
 
-function stubFetch(t, handler) {
+function stubFetch(t, handler, profileHandler = () => ({ ok: false, status: 503, body: {} })) {
   const original = globalThis.fetch;
   const requests = [];
   globalThis.fetch = async (url, options = {}) => {
+    if (String(url).endsWith('/oauth/profile')) {
+      const result = await profileHandler(String(url), options);
+      return { ok: result.ok ?? true, status: result.status ?? 200, json: async () => result.body };
+    }
     requests.push({ url: String(url), options });
     const result = await handler(String(url), options);
     return { ok: result.ok ?? true, status: result.status ?? 200, json: async () => result.body };
@@ -211,6 +215,80 @@ function stubFetch(t, handler) {
 }
 
 function claudeAccount(id, extra = {}) { return { id, email: id, nickname: id.split("@")[0], ...extra }; }
+
+test('recognizes reported Claude subscriptions without inferring a plan from quota', () => {
+  for (const [organization, account, expected] of [
+    [{ organization_type: 'claude_team' }, { has_claude_max: true }, 'team'],
+    [{ organization_type: 'claude_enterprise' }, {}, 'enterprise'],
+    [{ organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_20x' }, {}, 'max_20x'],
+    [{ organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_5x' }, {}, 'max_5x'],
+    [{ organization_type: 'claude_max', rate_limit_tier: 'unrecognized' }, {}, 'max'],
+    [{ organization_type: 'claude_pro' }, {}, 'pro'],
+    [{ organization_type: 'claude_free' }, {}, 'free'],
+    [{}, { has_claude_max: true }, 'max'], [{}, { has_claude_pro: true }, 'pro'],
+    [{ organization_type: 'unrecognized' }, { has_claude_pro: false }, null],
+  ]) assert.equal(claudePlan({ organization, account }), expected);
+  assert.equal(claudePlan(null), null);
+});
+
+test('reads plans with exact-account credentials even when usage is rate-limited, caches and renews them', async t => {
+  const authDir = mkdtempSync(join(tmpdir(), 'ccs-plans-'));
+  t.after(() => rmSync(authDir, { recursive: true, force: true }));
+  const writeToken = (name, token) => writeFileSync(join(authDir, `claude-${name}.json`), JSON.stringify({ email: `${name}@example.test`, access_token: token }));
+  writeToken('max', 'max-token'); writeToken('team', 'team-token');
+  installFakeCcs(t, { authDir, claudeAccounts: ['max', 'team'].map(name => claudeAccount(`${name}@example.test`)) });
+  const profiles = [];
+  stubFetch(t, (url, options) => options.headers.Authorization.startsWith('Bearer max')
+    ? { ok: false, status: 429, body: { error: 'private-error-detail' } }
+    : { body: { seven_day: { utilization: 20 } } }, (url, options) => {
+    profiles.push(options.headers.Authorization);
+    assert.match(options.headers.Authorization, /^Bearer (max-token|max-rotated|team-token)$/);
+    assert.equal(options.headers['anthropic-beta'], 'oauth-2025-04-20');
+    const name = options.headers.Authorization.startsWith('Bearer max') ? 'max' : 'team';
+    return { body: { account: { email: `${name}@example.test`, uuid: 'private-account-id' }, organization: {
+      name: 'private-org-name', organization_type: `claude_${name}`, rate_limit_tier: 'default_claude_max_20x',
+    } } };
+  });
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
+  const usage = new AccountUsage();
+  const value = await usage.snapshot({ refresh: true });
+  const [max, team] = value.providers[0].accounts;
+  assert.equal(max.plan, 'max_20x'); assert.equal(max.status, 'unavailable');
+  assert.match(max.message, /temporarily rate-limited/); assert.deepEqual(max.windows, []);
+  assert.equal(team.plan, 'team'); assert.equal(team.status, 'ready');
+  assert.doesNotMatch(JSON.stringify(value), /max-token|team-token|private-/);
+  await usage.snapshot({ refresh: true }); assert.equal(profiles.length, 2);
+  now += 15 * 60_000;
+  await usage.snapshot({ refresh: true }); assert.equal(profiles.length, 4);
+  writeToken('max', 'max-rotated');
+  await usage.snapshot({ refresh: true }); assert.equal(profiles.length, 5);
+  assert.equal(profiles.at(-1), 'Bearer max-rotated');
+});
+
+test('profile failures and mismatched identities leave usage intact and retry after the short cache', async t => {
+  const authDir = mkdtempSync(join(tmpdir(), 'ccs-profile-failure-'));
+  t.after(() => rmSync(authDir, { recursive: true, force: true }));
+  writeFileSync(join(authDir, 'claude-owner.json'), JSON.stringify({ email: 'owner@example.test', access_token: 'owner-token' }));
+  installFakeCcs(t, { authDir, claudeAccounts: [claudeAccount('owner@example.test', { tier: 'Unknown' })] });
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
+  let calls = 0;
+  stubFetch(t, () => ({ body: { seven_day: { utilization: 12 } } }), () => {
+    calls += 1;
+    if (calls === 1) throw new Error('private-network-error');
+    if (calls === 2) return { ok: false, status: 403, body: {} };
+    if (calls === 3) return { body: null };
+    return { body: { account: { email: 'other@example.test' }, organization: { organization_type: 'claude_team' } } };
+  });
+  const usage = new AccountUsage();
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const value = await usage.snapshot({ refresh: true });
+    assert.equal(value.providers[0].accounts[0].plan, null);
+    assert.equal(value.providers[0].accounts[0].windows[0].remainingPercent, 88);
+    assert.equal(value.providers[0].accounts[0].status, 'ready');
+    await usage.snapshot({ refresh: true }); assert.equal(calls, attempt + 1);
+    now += 60_000;
+  }
+});
 
 test("resolves reconnect targets only for opaque ids of accounts that need reauth", async () => {
   const usage = new AccountUsage({ sourceLoader: async () => source() });

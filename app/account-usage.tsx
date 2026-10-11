@@ -60,7 +60,7 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
   const total = useMemo(() => usage?.providers.reduce((sum, provider) => sum + provider.accounts.length, 0) || 0, [usage]);
   const attention = (usage?.summary.low || 0) + (usage?.summary.exhausted || 0) + (usage?.summary.reconnect || 0);
   const resets = error ? [] : upcomingResets(usage, now);
-  const nextReset = resets[0] ?? null;
+  const nextReset = resets.find(reset => reset.window.remainingPercent > 0) ?? null;
   const reconnectSuccess = useCallback(() => load(true), [load]);
 
   const connectionDeleted = async (id: string) => {
@@ -147,7 +147,7 @@ function SessionContext({ reset, now }: { reset: UpcomingReset; now: number }) {
 }
 function ResetOverview({ resets, now }: { resets: UpcomingReset[]; now: number }) {
   const [usableOnly, setUsableOnly] = useState(false);
-  const next = resets[0];
+  const next = resets.find(reset => reset.window.remainingPercent > 0);
   const useNext = resets.find(reset => usableBeforeReset(reset, now));
   const visible = usableOnly ? resets.filter(reset => usableBeforeReset(reset, now)) : resets;
   return <section className="reset-overview" aria-label="Capacity before reset">
@@ -155,8 +155,8 @@ function ResetOverview({ resets, now }: { resets: UpcomingReset[]; now: number }
       <aside className="next-usage-reset" aria-label="Next weekly reset"><h2>Next weekly reset</h2>{next ? <>
         <ResetCountdown reset={next} now={now} /><AccountResetLink reset={next} />
         <p>{limitLabel(next.window)} · {next.window.remainingPercent}% unused<SessionContext reset={next} now={now} /></p>
-        <p>{resetConstraint(next) || 'Fresh quota after this reset'}</p><p><time dateTime={next.window.resetAt!}>{new Date(next.reset).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time></p>
-      </> : <p>No upcoming weekly reset is reported in fresh readings.</p>}</aside>
+        <p>{resetConstraint(next) || 'Earliest reset with weekly quota remaining'}</p><p><time dateTime={next.window.resetAt!}>{new Date(next.reset).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time></p>
+      </> : <p>No upcoming weekly reset with unused quota is reported in fresh readings.</p>}</aside>
       <aside className="use-before-reset" aria-label="Weekly capacity to use before reset"><h2>Weekly capacity to use before reset</h2>{useNext ? <>
         <div className="capacity-amount"><strong>{useNext.window.remainingPercent}%</strong><span>unused</span></div>
         <AccountResetLink reset={useNext} /><p>{limitLabel(useNext.window)} · {resetText(useNext.window.resetAt, now)}</p>
@@ -171,9 +171,16 @@ function ResetOverview({ resets, now }: { resets: UpcomingReset[]; now: number }
       <div className="reset-queue-account"><AccountResetLink reset={reset} /><span className="reset-limit">{limitLabel(reset.window)}</span><div className="quota-track"><i style={{ width: `${reset.window.remainingPercent}%` }} /></div><small>{reset.window.remainingPercent}% unused<SessionContext reset={reset} now={now} />{resetConstraint(reset) ? ` · ${resetConstraint(reset)}` : ''}</small></div>
       <div className="reset-queue-meta"><span>{resetConstraint(reset) ? 'Check account' : reset === useNext ? 'Use before reset' : reset.window.remainingPercent === 0 ? 'Fully used' : 'Upcoming'}</span><time dateTime={reset.window.resetAt!}>{new Date(reset.reset).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time></div>
     </li>)}</ol> : <p className="reset-empty">{usableOnly ? 'No usable capacity with an upcoming weekly reset is reported.' : 'No upcoming weekly reset is reported in fresh readings.'}</p>}
+    <p className="reset-eligibility">Only fresh, reported weekly reset times appear here. See All accounts for missing readings.</p>
   </section>;
 }
 function limitLabel(window: UsageWindow) { return ({ '5h': '5-hour limit', weekly: 'Weekly limit', daily: 'Daily limit', monthly: 'Monthly limit', other: window.label })[window.cadence]; }
+
+function planLabel(plan: string | null) {
+  if (!plan || plan.toLowerCase() === 'unknown') return 'Plan not reported';
+  const known: Record<string, string> = { max_5x: 'Max 5×', max_20x: 'Max 20×', pro_lite: 'Pro Lite', prolite: 'Pro Lite' };
+  return `Plan: ${known[plan.toLowerCase()] || plan.replaceAll('_', ' ').replace(/\b\w/g, letter => letter.toUpperCase())}`;
+}
 
 function ProviderSection({ provider, now, onReconnect, onDeleted, snapshotFresh, nextReset }: { nextReset: UpcomingReset | null; onDeleted: (id: string) => Promise<void>; provider: UsageProvider; now: number; snapshotFresh: boolean; onReconnect: (account: UsageAccount) => void }) {
   return <section className="usage-provider"><header><div className={`provider-mark ${provider.id}`}>{provider.id === "claude" ? "C" : "O"}</div><div><h2>{provider.label}</h2><span>{provider.accounts.length} connected account{provider.accounts.length === 1 ? "" : "s"}</span></div></header>
@@ -208,7 +215,8 @@ function AccountCard({ providerId, account, now, onReconnect, onDeleted, provide
   const core = coreWindows.map(({ cadence }) => windows.find(window => window.category === 'usage' && window.cadence === cadence));
   const extras = windows.filter(window => !core.includes(window));
   const displayStatus = !capacityKnown && account.status !== 'reconnect' ? 'unavailable' : account.status;
-  return <article id={`usage-account-${account.id}`} tabIndex={-1} className={`usage-account ${displayStatus}${nextWindowId ? ' next-reset-account' : ''}`}><header><div><strong>{account.email || account.label}</strong><span>{[account.plan?.replaceAll('_', ' '), account.isDefault ? "default" : null, account.paused ? "paused" : null].filter(Boolean).join(" · ") || "CCS account"}</span></div><span className={`usage-status ${displayStatus}`}>{!capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{nextWindowId && <span className="next-reset-tag">Next reset</span>}
+  return <article id={`usage-account-${account.id}`} tabIndex={-1} className={`usage-account ${displayStatus}${nextWindowId ? ' next-reset-account' : ''}`}><header><div><strong>{account.email || account.label}</strong><span className="account-plan">{planLabel(account.plan)}</span><span>{[account.isDefault ? "Default" : null, account.paused ? "Paused" : null].filter(Boolean).join(" · ")}</span></div><span className={`usage-status ${displayStatus}`}>{!capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{nextWindowId && <span className="next-reset-tag">Next reset</span>}
+    {snapshotFresh && account.status === 'unavailable' && account.message && <p className="account-unavailable-reason">{account.message}</p>}
     {!confirming && account.status === "reconnect" && <button className="account-reconnect" onClick={onReconnect}>Reconnect account</button>}</header>
     <div className={`core-window-grid${providerId === 'codex' ? ' weekly-only' : ''}`}>{coreWindows.map(({ cadence, label }) => <CoreWindow label={label} window={windows.find((item) => item.category === "usage" && item.cadence === cadence)} now={now} key={cadence} />)}</div>
     <details className="usage-account-details"><summary>Details{extras.length > 0 && <span className="sr-only"> · {extras.length} additional limits</span>}</summary><div className="account-detail-content">

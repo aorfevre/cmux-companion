@@ -129,3 +129,6 @@
 .mission-control .account-usage-page .core-window-grid.weekly-only { grid-template-columns:minmax(0,1fr); }
 .account-usage-page .core-window.secondary-session strong { font-size:14px; font-weight:500; }
 .account-usage-page .session-context { color:var(--muted); }
+.account-usage-page .reset-eligibility { margin:8px 0 0; color:var(--muted); font-size:11px; }
+.account-usage-page .usage-account .account-plan { text-transform:none; }
+.account-usage-page .account-unavailable-reason { margin:5px 0 0; color:var(--muted); font-size:11px; }

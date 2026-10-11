@@ -63,6 +63,35 @@ function visitUsage() {
 function account(name: string) { return cy.contains(".usage-account", name); }
 
 describe("licence usage", () => {
+  for (const width of [390, 1440]) {
+    it(`shows the next unsaturated weekly account, plans and unavailable reasons at ${width}px`, () => {
+      cy.viewport(width, 900);
+      scenario();
+      const usage = fiveAccountFixture();
+      const exhausted = usage.providers[0].accounts[1];
+      exhausted.windows[1].remainingPercent = 0; exhausted.status = 'exhausted';
+      const available = usage.providers[0].accounts[0]; available.plan = 'team';
+      usage.providers[0].accounts.push({ ...available, id: 'rate-limited', email: 'limited@example.test',
+        plan: 'max_20x', status: 'unavailable', updatedAt: null, windows: [],
+        message: 'Usage temporarily rate-limited by the provider. Try again later.',
+      });
+      cy.intercept('GET', '**/api/account-usage*', usage).as('usage');
+      cy.clock(frozenNow.getTime(), ['Date']); cy.visit('/'); cy.wait('@usage');
+      cy.findByRole('complementary', { name: 'Next weekly reset' }).should('contain.text', 'work@example.test').and('contain.text', '55% unused').and('not.contain.text', 'personal@example.test');
+      cy.get('.next-reset-account').should('have.length', 1).and('contain.text', 'work@example.test');
+      cy.get('.reset-queue-row').first().should('contain.text', 'personal@example.test').and('contain.text', '0% unused');
+      cy.get('.reset-eligibility').should('contain.text', 'reported weekly reset times');
+      account('work@example.test').find('.account-plan').should('have.text', 'Plan: Team');
+      account('limited@example.test').scrollIntoView().within(() => {
+        cy.get('.account-plan').should('be.visible').and('have.text', 'Plan: Max 20×');
+        cy.get('.account-unavailable-reason').should('be.visible').and('contain.text', 'temporarily rate-limited');
+        cy.get('details').should('not.have.attr', 'open');
+      });
+      cy.get('.reset-queue').should('not.contain.text', 'limited@example.test');
+      cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
+      cy.screenshot(`account-availability-${width}`, { capture: 'fullPage', scale: true });
+    });
+  }
   for (const width of [390, 1280, 1440]) {
     it(`opens the tracker directly from home at ${width}px`, () => {
       cy.viewport(width, 900);
@@ -134,7 +163,8 @@ describe("licence usage", () => {
       cy.contains(".usage-provider", "OpenAI Codex").should("contain.text", "2 connected accounts");
       account("work@example.test").within(() => {
         cy.get("summary").click();
-        cy.contains("max · default").should("be.visible");
+        cy.get('.account-plan').should('be.visible').and('have.text', 'Plan: Max');
+        cy.contains('Default').should('be.visible');
         cy.get(".usage-status").should("have.text", "Available");
         cy.contains(".core-window", "5 hours").should("contain.text", "82%").and("contain.text", "Resets in 1h 35m");
         cy.contains(".core-window", "Weekly").should("contain.text", "55%").and("contain.text", "Resets in 3d 2h 7m");
@@ -147,7 +177,8 @@ describe("licence usage", () => {
       });
       account("personal").within(() => {
         cy.get("summary").click();
-        cy.contains("pro · paused").should("be.visible");
+        cy.get('.account-plan').should('be.visible').and('have.text', 'Plan: Pro');
+        cy.contains('Paused').should('be.visible');
         cy.get(".usage-status").should("have.text", "Exhausted");
         cy.contains("Weekly limit reached. Resets automatically.").should("be.visible");
         cy.contains(".core-window", "5 hours").should("contain.text", "0%").and("contain.text", "Reset due");

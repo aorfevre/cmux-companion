@@ -249,3 +249,47 @@ test('OpenAI shows weekly quota without a session placeholder or primary 5-hour 
   expect(screen.getByRole('complementary', { name: 'Next weekly reset' }).textContent).toContain('5% unused');
   expect(screen.getByRole('complementary', { name: 'Next weekly reset' }).textContent).not.toContain('5h:');
 });
+
+test.each([false, true])('next reset and account highlight skip saturated weekly quota (all saturated: %s)', async allSaturated => {
+  await setup(async () => {
+    const usage = fixture();
+    const saturated = usage.providers[0].accounts[0];
+    saturated.status = 'exhausted'; saturated.windows[1].remainingPercent = 0;
+    const later = { ...structuredClone(saturated), id: 'later', email: 'later@example.test', paused: false };
+    later.windows[1].remainingPercent = allSaturated ? 0 : 30;
+    later.windows[1].resetAt = '2026-10-07T09:00:00Z';
+    // Session saturation must not hide unused weekly quota from the first summary.
+    later.windows[0].remainingPercent = 0;
+    usage.providers[0].accounts.push(later);
+    return new Response(JSON.stringify(usage));
+  });
+  const summary = screen.getByRole('complementary', { name: 'Next weekly reset' });
+  expect(summary.textContent).not.toContain('sample@example.test');
+  expect(within(screen.getByRole('list', { name: 'Weekly reset queue' })).getAllByRole('listitem')).toHaveLength(2);
+  if (allSaturated) {
+    expect(summary.textContent).toContain('No upcoming weekly reset with unused quota');
+    expect(document.querySelector('.next-reset-account')).toBeNull();
+  } else {
+    expect(summary.textContent).toContain('later@example.test');
+    expect(summary.textContent).toContain('30% unused');
+    expect(document.querySelector('.next-reset-account')?.id).toBe('usage-account-later');
+  }
+  expect(screen.getByRole('complementary', { name: 'Weekly capacity to use before reset' }).textContent).toContain('No usable capacity');
+});
+
+test.each([
+  ['team', 'Plan: Team'], ['max_20x', 'Plan: Max 20×'], ['max_5x', 'Plan: Max 5×'],
+  ['prolite', 'Plan: Pro Lite'], [null, 'Plan not reported'], ['unknown', 'Plan not reported'],
+])('keeps plan %s and the usage failure visible outside Details', async (plan, label) => {
+  await setup(async () => {
+    const usage = fixture();
+    Object.assign(usage.providers[0].accounts[0], { plan, status: 'unavailable', updatedAt: null, windows: [], message: 'Usage temporarily rate-limited by the provider. Try again later.' });
+    return new Response(JSON.stringify(usage));
+  });
+  const row = document.querySelector('.usage-account')!;
+  expect(row.querySelector('header')?.textContent).toContain(label);
+  expect(row.querySelector('header')?.textContent).toContain('Usage temporarily rate-limited');
+  expect(row.querySelector('details')?.open).toBe(false);
+  expect(screen.queryByRole('list', { name: 'Weekly reset queue' })).toBeNull();
+  expect(screen.getByText(/Only fresh, reported weekly reset times/)).toBeTruthy();
+});
