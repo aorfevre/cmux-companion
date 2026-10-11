@@ -293,3 +293,22 @@ test.each([
   expect(screen.queryByRole('list', { name: 'Weekly reset queue' })).toBeNull();
   expect(screen.getByText(/Only fresh, reported weekly reset times/)).toBeTruthy();
 });
+
+test('shows provider cooldown through refresh and countdown expiry without claiming quota', async () => {
+  const fetch = await setup(async () => {
+    const usage = fixture();
+    Object.assign(usage.providers[0].accounts[0], { status: 'unavailable', windows: [], updatedAt: null,
+      retryAt: '2026-10-07T07:57:00Z', message: 'Usage temporarily rate-limited by the provider. Try again later.' });
+    return new Response(JSON.stringify(usage));
+  });
+  expect(screen.getByText('Retry in 2m')).toBeTruthy();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh account usage' })); });
+  expect(screen.getByText('Retry in 2m')).toBeTruthy();
+  expect(fetch).toHaveBeenLastCalledWith('/api/account-usage?refresh=1');
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(screen.getByText('Retry in 1m')).toBeTruthy();
+  expect(fetch).toHaveBeenLastCalledWith('/api/account-usage');
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(screen.getByText('Ready to retry usage')).toBeTruthy();
+  expect(screen.getByText('Unknown')).toBeTruthy();
+});

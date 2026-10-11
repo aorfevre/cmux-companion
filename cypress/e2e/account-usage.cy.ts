@@ -7,7 +7,7 @@ import { DEFAULT_MODEL_ROLES } from "../../server/model-options.mjs";
 const frozenNow = new Date("2026-09-08T12:00:00.000Z");
 const iso = (offsetMinutes: number) => new Date(frozenNow.getTime() + offsetMinutes * 60_000).toISOString();
 
-type Account = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; windows: Array<{ id: string; cadence: string; label: string; category: string; remainingPercent: number; resetAt: string | null; reported: true }> };
+type Account = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; retryAt?: string | null; windows: Array<{ id: string; cadence: string; label: string; category: string; remainingPercent: number; resetAt: string | null; reported: true }> };
 
 function usageFixture() {
   const work: Account = { id: "claude-work", label: "work", email: "work@example.test", plan: "max", isDefault: true, paused: false, status: "ready", message: null, updatedAt: iso(-5), windows: [
@@ -72,7 +72,7 @@ describe("licence usage", () => {
       exhausted.windows[1].remainingPercent = 0; exhausted.status = 'exhausted';
       const available = usage.providers[0].accounts[0]; available.plan = 'team';
       usage.providers[0].accounts.push({ ...available, id: 'rate-limited', email: 'limited@example.test',
-        plan: 'max_20x', status: 'unavailable', updatedAt: null, windows: [],
+        plan: 'max_20x', status: 'unavailable', updatedAt: null, retryAt: iso(4), windows: [],
         message: 'Usage temporarily rate-limited by the provider. Try again later.',
       });
       cy.intercept('GET', '**/api/account-usage*', usage).as('usage');
@@ -85,8 +85,11 @@ describe("licence usage", () => {
       account('limited@example.test').scrollIntoView().within(() => {
         cy.get('.account-plan').should('be.visible').and('have.text', 'Plan: Max 20×');
         cy.get('.account-unavailable-reason').should('be.visible').and('contain.text', 'temporarily rate-limited');
+        cy.get('.account-retry').should('be.visible').and('contain.text', 'Retry in 4m');
         cy.get('details').should('not.have.attr', 'open');
       });
+      cy.findByRole('button', { name: 'Refresh account usage' }).click(); cy.wait('@usage');
+      account('limited@example.test').find('.account-retry').should('contain.text', 'Retry in 4m');
       cy.get('.reset-queue').should('not.contain.text', 'limited@example.test');
       cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
       cy.screenshot(`account-availability-${width}`, { capture: 'fullPage', scale: true });

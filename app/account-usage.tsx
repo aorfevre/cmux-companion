@@ -7,7 +7,7 @@ import './account-usage.css';
 
 type Cadence = "5h" | "daily" | "weekly" | "monthly" | "other";
 type UsageWindow = { id: string; cadence: Cadence; label: string; category: "usage" | "additional" | "code-review"; remainingPercent: number; resetAt: string | null; reported: true };
-type UsageAccount = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; windows: UsageWindow[] };
+type UsageAccount = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; retryAt?: string | null; windows: UsageWindow[] };
 type UsageProvider = { id: "claude" | "codex"; label: string; available: boolean; accounts: UsageAccount[] };
 type UsageResponse = { generatedAt: string; source: "CCS"; available: boolean; summary: Record<UsageAccount["status"], number>; providers: UsageProvider[] };
 type ReconnectSession = { sessionId: string; provider: UsageProvider["id"]; status: "waiting" | "processing" | "success" | "error" | "expired" | "cancelled"; message: string; authUrl: string | null; expiresAt: string };
@@ -52,7 +52,7 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => {
     if (unpaired) return;
-    const refresh = () => { if (document.visibilityState === 'visible' && !pendingRead.current) void load(true); };
+    const refresh = () => { if (document.visibilityState === 'visible' && !pendingRead.current) void load(); };
     const timer = window.setInterval(refresh, 60_000);
     document.addEventListener('visibilitychange', refresh);
     return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', refresh); };
@@ -89,7 +89,7 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
     {usage && <ResetOverview resets={resets} now={now} />}
     {usage && <h2 className="all-accounts-heading">All accounts</h2>}
     <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection nextReset={nextReset} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} provider={provider} now={now} onDeleted={connectionDeleted} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
-    {usage?.available && <details className="usage-privacy"><summary>About these readings</summary><p>Provider usage for your CCS connections, not billing credits. Missing limits are not reported, never zero. OAuth credentials are used only on your Mac to contact the provider and are never sent to this browser. The reset queue compares overall weekly limits; named model limits are in Details. Suggestions use reported limits and do not change account routing.</p></details>}
+    {usage?.available && <details className="usage-privacy"><summary>About these readings</summary><p>Provider usage for your CCS connections, not billing credits. Missing limits are not reported, never zero. OAuth credentials are used only on your Mac to contact the provider and are never sent to this browser. Usage is checked at most once per account per minute. Rate-limited accounts wait longer before retrying; Refresh respects that wait. The reset queue compares overall weekly limits; named model limits are in Details. Suggestions use reported limits and do not change account routing.</p></details>}
     {reconnecting && <ReconnectSheet key={reconnecting.account.id} provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
   </section>;
 }
@@ -217,6 +217,7 @@ function AccountCard({ providerId, account, now, onReconnect, onDeleted, provide
   const displayStatus = !capacityKnown && account.status !== 'reconnect' ? 'unavailable' : account.status;
   return <article id={`usage-account-${account.id}`} tabIndex={-1} className={`usage-account ${displayStatus}${nextWindowId ? ' next-reset-account' : ''}`}><header><div><strong>{account.email || account.label}</strong><span className="account-plan">{planLabel(account.plan)}</span><span>{[account.isDefault ? "Default" : null, account.paused ? "Paused" : null].filter(Boolean).join(" · ")}</span></div><span className={`usage-status ${displayStatus}`}>{!capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{nextWindowId && <span className="next-reset-tag">Next reset</span>}
     {snapshotFresh && account.status === 'unavailable' && account.message && <p className="account-unavailable-reason">{account.message}</p>}
+    {snapshotFresh && account.status === 'unavailable' && account.retryAt && Number.isFinite(Date.parse(account.retryAt)) && <p className="account-retry"><time dateTime={account.retryAt} title={new Date(account.retryAt).toLocaleString()}>{Date.parse(account.retryAt) <= now ? 'Ready to retry usage' : resetText(account.retryAt, now).replace('Resets in ', 'Retry in ')}</time></p>}
     {!confirming && account.status === "reconnect" && <button className="account-reconnect" onClick={onReconnect}>Reconnect account</button>}</header>
     <div className={`core-window-grid${providerId === 'codex' ? ' weekly-only' : ''}`}>{coreWindows.map(({ cadence, label }) => <CoreWindow label={label} window={windows.find((item) => item.category === "usage" && item.cadence === cadence)} now={now} key={cadence} />)}</div>
     <details className="usage-account-details"><summary>Details{extras.length > 0 && <span className="sr-only"> · {extras.length} additional limits</span>}</summary><div className="account-detail-content">

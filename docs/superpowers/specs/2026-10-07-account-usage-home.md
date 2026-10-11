@@ -55,7 +55,26 @@ Unavailable accounts stay visible with a concise reason, including provider rate
 limiting, missing credentials, rejected credentials and missing usage windows.
 Accounts without a reliable future weekly reset stay outside the reset queue;
 the queue explains this requirement. Every percentage identifies remaining/unused or used quota.
-Visible pages refresh every minute and on returning to the tab. Durations use
+Visible pages refresh every minute and on returning to the tab. Within the running
+service, all tabs and clients share one usage request budget per provider/account:
+at least 60 seconds between attempts, including failed requests. Manual Refresh,
+snapshot invalidation, reconnect and credential rotation cannot bypass the budget;
+concurrent requests share the same pending read. Cached readings retain their
+original observation time. Claude profile reads have a separate request budget
+with the same minimum interval and the existing 15-minute successful cache.
+
+HTTP 429 pauses that account's affected endpoint for 2, 4, 8, 16, then at most
+30 minutes until a successful read resets the backoff. A valid Retry-After delay
+or HTTP date extends this pause when longer, including beyond 30 minutes; invalid
+or past values cannot shorten it. Other accounts continue normally. Refresh
+cannot bypass a cooldown and does not queue additional retries. An unavailable
+account shows its earliest retry time; no failed reading becomes usable quota.
+Codex uses its exact usage endpoint once per admitted attempt and cannot fall
+back to a second quota request after rejection or network failure. No new timer
+or background provider polling is introduced; the next requested refresh after
+the deadline may retry. These process-local budgets do not control other apps.
+
+Durations use
 explicit day/hour/minute units. Desktop content is capped at 920 pixels and mobile
 wraps without horizontal overflow. Existing Setup and session/goal links work.
 
@@ -80,15 +99,18 @@ fixture verification must not be represented as a live account reconciliation.
 | Missing/malformed percentages are unknown, and token lookup cannot select a different named account. | Backend normalization and token-selection tests. |
 | Remaining/used labels, all reported cadences, reading age and reset units are visible. | Account usage UI test. |
 | Visible pages refresh once a minute/on return; stale or failed readings do not claim available capacity. | Fake-clock UI tests. |
+| All clients share at most one usage attempt per provider/account per minute, including after refresh, invalidation and credential rotation; pending reads coalesce and cached timestamps stay unchanged. | Fake-clock adapter tests counting outgoing requests. |
+| Both providers honor 429 cooldowns and Retry-After, reset backoff after success, and leave other accounts available; Codex failures never issue a fallback usage request. | Backend request-count and recovery regressions. |
+| A rate-limited account displays its retry countdown and Refresh preserves its cooldown. | Account usage Cypress journey with a cooldown response. |
 | Compact desktop and mobile layouts retain reconnect and confirmed deletion. | Account usage Cypress at 390 and 1440 pixels. |
 | The five-account fixture’s five weekly reset entries fit at 1280×900 without horizontal overflow; account Details retains secondary information and connection actions. | Reset-queue viewport Cypress journey. |
 | The queue sorts resets across providers and distinguishes fresh quota from usable unused capacity; paused/exhausted states and invalid, stale or elapsed readings cannot become usage suggestions. | Deterministic account usage UI selection tests. |
 
 ## Success measure
-In the account-availability fixture, the owner can identify the earliest reset
-with weekly capacity, distinguish it from an earlier fully used account, and see
-the plan and reason for a rate-limited account without opening Details; the
-five-account queue still fits at 1280×900 and retains every reported limit's meaning.
+In the rate-limit fixture, repeated requests from multiple clients produce one
+usage call per account during the first minute and zero additional calls during
+its cooldown, while a healthy account remains refreshable and the owner can see
+when the unavailable account may retry.
 
 ## Ownership and boundaries
 The implementing agent owns routing, tracker UI, quota adapter corrections,
