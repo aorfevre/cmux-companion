@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 
 const CACHE_MS = 60_000;
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
+const PLAN_CACHE_MS = 15 * 60_000;
 const CLAUDE_OAUTH_BETA = "oauth-2025-04-20";
 const PROVIDERS = [
   { id: "claude", label: "Claude Code" },
@@ -13,8 +15,9 @@ const PROVIDERS = [
 ];
 
 export class AccountUsage {
-  constructor({ sourceLoader = loadCcsSource, cacheMs = CACHE_MS } = {}) {
-    this.sourceLoader = sourceLoader;
+  constructor({ sourceLoader, cacheMs = CACHE_MS } = {}) {
+    const planCache = new Map();
+    this.sourceLoader = sourceLoader ?? (() => loadCcsSource(planCache));
     this.cacheMs = cacheMs;
     this.cache = null;
     this.pending = null;
@@ -145,20 +148,28 @@ function normalizeAccount(provider, account, quota = null, providerAvailable = t
     id: opaqueAccountId(provider, account.id),
     label: cleanText(account.nickname) || cleanText(account.email) || cleanText(account.id) || "Account",
     email: cleanText(account.email) || cleanText(account.id) || null,
-    plan: cleanPlan(quota?.planType || account.tier),
+    plan: cleanPlan(quota?.planType) || cleanPlan(account.tier),
     isDefault: Boolean(account.isDefault),
     paused: Boolean(account.paused),
     status,
     message: status === "reconnect"
       ? "Reconnect this account in CCS"
       : !providerAvailable || !quota?.success
-        ? "Quota is currently unavailable"
+        ? quotaFailureMessage(quota?.failureReason)
         : remaining.length === 0
           ? "Connected. Provider reported no active usage window."
           : null,
     updatedAt: safeDate(quota?.lastUpdated),
     windows,
   };
+}
+
+function quotaFailureMessage(reason) {
+  return ({
+    'rate-limited': 'Usage temporarily rate-limited by the provider. Try again later.',
+    'missing-credentials': 'No matching saved login found in CCS.',
+    'no-windows': 'Provider did not report usage limits.',
+  })[reason] || 'Quota is currently unavailable';
 }
 
 function opaqueAccountId(provider, accountId) {
@@ -209,8 +220,8 @@ function cleanText(value) {
 }
 
 function cleanPlan(value) {
-  const plan = cleanText(value);
-  return plan && plan !== "unknown" ? plan.toLowerCase() : null;
+  const plan = cleanText(value)?.toLowerCase();
+  return plan && plan !== "unknown" ? plan : null;
 }
 
 function safeDate(value) {
@@ -248,7 +259,7 @@ export function findCcsPackageRoot({ ccsBin = process.env.CCS_BIN, pathValue = p
   throw new Error("CCS is not installed");
 }
 
-async function loadCcsSource() {
+async function loadCcsSource(planCache) {
   const root = findCcsPackageRoot();
   const require = createRequire(import.meta.url);
   const accounts = require(join(root, "dist", "cliproxy", "accounts", "account-manager.js"));
@@ -263,7 +274,7 @@ async function loadCcsSource() {
     removeAccount: accounts.removeAccount,
     fetchAllClaudeQuotas: async () => Promise.all(accounts.getProviderAccounts("claude").map(async (account) => ({
       account: account.id,
-      quota: await fetchExactClaudeQuota(account.id, authDirs),
+      quota: await fetchExactClaudeQuota(account.id, authDirs, planCache),
     }))),
     fetchAllCodexQuotas: async () => Promise.all(accounts.getProviderAccounts("codex").map(async (account) => ({
       account: account.id,
@@ -330,12 +341,20 @@ function readClaudeAccessToken(accountId, authDirs) {
   return { token: null, expired };
 }
 
-async function fetchExactClaudeQuota(accountId, authDirs) {
+async function fetchExactClaudeQuota(accountId, authDirs, planCache) {
   const { token, expired } = readClaudeAccessToken(accountId, authDirs);
-  const unavailable = (needsReauth = false) => ({ success: false, windows: [], needsReauth, accountId });
   // Do not fall back to CCS's account lookup: it accepts substring filename
   // matches and its normalized weekly window can lose the provider's meaning.
-  if (!token) return unavailable(expired);
+  if (!token) return { success: false, windows: [], needsReauth: expired, failureReason: 'missing-credentials', accountId };
+  const [quota, planType] = await Promise.all([
+    fetchClaudeUsage(accountId, token),
+    fetchClaudePlan(accountId, token, planCache),
+  ]);
+  return { ...quota, planType };
+}
+
+async function fetchClaudeUsage(accountId, token) {
+  const unavailable = (needsReauth = false, failureReason = null) => ({ success: false, windows: [], needsReauth, failureReason, accountId });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
@@ -347,16 +366,47 @@ async function fetchExactClaudeQuota(accountId, authDirs) {
         "Content-Type": "application/json",
       },
     });
-    if (!response.ok) return unavailable(response.status === 401);
+    if (!response.ok) return unavailable(response.status === 401, response.status === 429 ? 'rate-limited' : null);
     const payload = await response.json();
     const windows = exactClaudeWindows(payload);
-    if (windows.length === 0) return unavailable();
+    if (windows.length === 0) return unavailable(false, 'no-windows');
     return { success: true, windows, lastUpdated: Date.now(), accountId };
   } catch {
     return unavailable();
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchClaudePlan(accountId, token, cache) {
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  const cached = cache.get(accountId);
+  if (cached?.tokenHash === tokenHash && cached.expiresAt > Date.now()) return cached.plan;
+  let plan = null;
+  try {
+    const response = await fetch(CLAUDE_PROFILE_URL, {
+      signal: AbortSignal.timeout(12_000),
+      headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': CLAUDE_OAUTH_BETA },
+    });
+    if (response.ok) {
+      const profile = await response.json();
+      if (!profile?.account?.email || profile.account.email === accountId) plan = claudePlan(profile);
+    }
+  } catch { /* Profile availability must not affect quota readings. */ }
+  cache.set(accountId, { tokenHash, plan, expiresAt: Date.now() + (plan ? PLAN_CACHE_MS : CACHE_MS) });
+  return plan;
+}
+
+export function claudePlan(profile) {
+  const type = profile?.organization?.organization_type;
+  const plan = ({ claude_team: 'team', claude_enterprise: 'enterprise', claude_max: 'max', claude_pro: 'pro', claude_free: 'free' })[type]
+    || (profile?.account?.has_claude_max === true ? 'max' : profile?.account?.has_claude_pro === true ? 'pro' : null);
+  if (plan === 'max') {
+    const tier = profile?.organization?.rate_limit_tier;
+    if (tier === 'default_claude_max_5x') return 'max_5x';
+    if (tier === 'default_claude_max_20x') return 'max_20x';
+  }
+  return plan;
 }
 
 const CLAUDE_WEEKLY_LABELS = {
