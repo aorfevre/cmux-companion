@@ -17,8 +17,11 @@ Daily, monthly, 5-hour and named model/code-review windows never compete for que
 position or either summary. Missing overall weekly data never falls back to a
 shorter window or a model-specific weekly limit.
 
-Next weekly reset identifies the earliest reported future weekly reset, even when
-fully used or paused. Weekly capacity to use before reset identifies the earliest
+Next weekly reset identifies the earliest reported future weekly reset with
+positive remaining weekly quota. Fully used weekly limits remain in the queue but
+cannot receive this summary or its matching account highlight. Paused accounts
+and accounts blocked by a secondary limit still qualify when weekly quota remains,
+with their constraints displayed. Weekly capacity to use before reset identifies the earliest
 weekly reset with positive capacity on an unpaused account with no exhausted or
 elapsed reported overall limit. Usable now applies the same safety rule without
 changing weekly ordering. Paused/exhausted limitations remain explicit; secondary
@@ -42,7 +45,16 @@ Links focus the matching account without changing Setup's category hash.
 All accounts remains below the queue with weekly remaining and used capacity
 first, a smaller secondary 5-hour reading for Claude only, reconnect and Details
 for additional limits, reading times and
-confirmed deletion. Every percentage identifies remaining/unused or used quota.
+confirmed deletion. Account rows explicitly label their subscription plan (including
+Claude Team, Pro, Max and Max multipliers when reported); missing metadata says
+Plan not reported. Plan metadata is independent of quota availability. Claude
+plans come from the exact account's OAuth profile, cached for 15 minutes after a
+successful reading; failed profile requests are bounded and briefly cached, never
+erase usage, and never expose raw profile data. Codex retains its reported plan.
+Unavailable accounts stay visible with a concise reason, including provider rate
+limiting, missing credentials, rejected credentials and missing usage windows.
+Accounts without a reliable future weekly reset stay outside the reset queue;
+the queue explains this requirement. Every percentage identifies remaining/unused or used quota.
 Visible pages refresh every minute and on returning to the tab. Durations use
 explicit day/hour/minute units. Desktop content is capped at 920 pixels and mobile
 wraps without horizontal overflow. Existing Setup and session/goal links work.
@@ -60,6 +72,9 @@ fixture verification must not be represented as a live account reconciliation.
 | A new device pairs before seeing protected usage. | Cypress home pairing journey. |
 | Anthropic/OpenAI logos precede provider names in queue links and both summary cards; decorative icons retain the provider/account text as the accessible link label. | Account usage Cypress home journey checks provider-specific visible icons and existing named-link navigation. |
 | Weekly reset ordering and both summaries ignore earlier 5-hour/daily/monthly resets; missing weekly data never substitutes another window. | Deterministic weekly selection UI tests. |
+| Next weekly reset and its account highlight skip zero weekly quota, including when every weekly limit is fully used. | UI regression with an earlier saturated account and later positive weekly quota. |
+| Claude plans are read with the same exact-account credential as usage, cached, normalized and retained when usage fails; profile failure cannot erase usage or leak raw profile data. | Backend profile fixtures for plan types, cache expiry, failure and credential isolation. |
+| Visible account rows show readable plan labels and specific unavailable reasons; the queue explains missing weekly readings. | Account usage Cypress journey at desktop and mobile widths. |
 | Claude 5-hour quota/reset appears only as secondary context, with Not reported/Awaiting refresh fallback states; OpenAI has no session placeholder. | Parameterized session-context UI tests plus provider-specific account rendering test. |
 | Claude overall weekly usage is never replaced by a model-specific limit. | Backend payload regression test. |
 | Missing/malformed percentages are unknown, and token lookup cannot select a different named account. | Backend normalization and token-selection tests. |
@@ -70,15 +85,15 @@ fixture verification must not be represented as a live account reconciliation.
 | The queue sorts resets across providers and distinguishes fresh quota from usable unused capacity; paused/exhausted states and invalid, stale or elapsed readings cannot become usage suggestions. | Deterministic account usage UI selection tests. |
 
 ## Success measure
-In the five-account fixture, all five weekly reset entries are visible at 1280×900,
-and the owner can distinguish the paused 5%-remaining imminent weekly reset from
-the active account with 55% weekly capacity and secondary 82% session capacity; Details retains
-every reported window under its original meaning.
+In the account-availability fixture, the owner can identify the earliest reset
+with weekly capacity, distinguish it from an earlier fully used account, and see
+the plan and reason for a rate-limited account without opening Details; the
+five-account queue still fits at 1280×900 and retains every reported limit's meaning.
 
 ## Ownership and boundaries
 The implementing agent owns routing, tracker UI, quota adapter corrections,
 regression checks and cleanup. The existing authenticated API/cache remains the
 boundary; there is no storage migration or background service. External quota
-requests continue through the existing provider integration and are mocked in
-tests. No plan is introduced; any future implementation plan requires a person's
+requests continue through the existing provider integration, adding a read-only
+Claude OAuth profile request, and are mocked in tests. No plan is introduced; any future implementation plan requires a person's
 review of this committed spec first.
