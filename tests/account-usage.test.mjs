@@ -3,6 +3,7 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from 'node:module';
 import { AccountUsage, cadenceFromDuration, claudePlan, exactClaudeWindows, exactCodexWindows, findCcsPackageRoot } from "../server/account-usage.mjs";
 
 function source({ delay = 0 } = {}) {
@@ -204,17 +205,100 @@ function stubFetch(t, handler, profileHandler = () => ({ ok: false, status: 503,
   globalThis.fetch = async (url, options = {}) => {
     if (String(url).endsWith('/oauth/profile')) {
       const result = await profileHandler(String(url), options);
-      return { ok: result.ok ?? true, status: result.status ?? 200, json: async () => result.body };
+      return { ok: result.ok ?? true, status: result.status ?? 200, headers: new Headers(result.headers), json: async () => result.body };
     }
     requests.push({ url: String(url), options });
     const result = await handler(String(url), options);
-    return { ok: result.ok ?? true, status: result.status ?? 200, json: async () => result.body };
+    return { ok: result.ok ?? true, status: result.status ?? 200, headers: new Headers(result.headers), json: async () => result.body };
   };
   t.after(() => { globalThis.fetch = original; });
   return requests;
 }
 
 function claudeAccount(id, extra = {}) { return { id, email: id, nickname: id.split("@")[0], ...extra }; }
+
+test('forced snapshots, invalidation and credential rotation cannot exceed one usage request per minute', async t => {
+  const authDir = mkdtempSync(join(tmpdir(), 'ccs-poll-budget-'));
+  t.after(() => rmSync(authDir, { recursive: true, force: true }));
+  const writeToken = token => writeFileSync(join(authDir, 'claude-owner.json'), JSON.stringify({ email: 'owner@example.test', access_token: token }));
+  writeToken('first-token');
+  installFakeCcs(t, { authDir, claudeAccounts: [claudeAccount('owner@example.test')],
+    codexAccounts: [{ id: 'owner@example.test' }], codexAuth: { accessToken: 'codex-token', accountId: 'acct', isExpired: false } });
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
+  const requests = stubFetch(t, url => ({ body: url.includes('anthropic')
+    ? { seven_day: { utilization: 12 } }
+    : { rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 604800 } } } }));
+  const usage = new AccountUsage();
+  const first = await usage.snapshot({ refresh: true });
+  for (let i = 0; i < 5; i++) {
+    usage.invalidate();
+    await Promise.all([usage.snapshot({ refresh: true }), usage.snapshot({ refresh: true })]);
+  }
+  writeToken('rotated-token'); now += 59_999;
+  const cached = await usage.snapshot({ refresh: true });
+  assert.equal(requests.length, 2);
+  assert.deepEqual(cached.providers.map(p => p.accounts[0].updatedAt), first.providers.map(p => p.accounts[0].updatedAt));
+  now++;
+  await usage.snapshot({ refresh: true });
+  assert.equal(requests.length, 4);
+  assert.equal(requests[2].options.headers.Authorization, 'Bearer rotated-token');
+});
+
+test('429 waits apply to both providers while healthy accounts keep refreshing, without Codex fallback', async t => {
+  const authDir = mkdtempSync(join(tmpdir(), 'ccs-poll-cooldown-'));
+  t.after(() => rmSync(authDir, { recursive: true, force: true }));
+  for (const name of ['limited', 'healthy']) writeFileSync(join(authDir, `claude-${name}.json`), JSON.stringify({ email: `${name}@example.test`, access_token: `${name}-token` }));
+  const root = installFakeCcs(t, { authDir, claudeAccounts: ['limited', 'healthy'].map(name => claudeAccount(`${name}@example.test`)),
+    codexAccounts: [{ id: 'limited@example.test' }], codexAuth: { accessToken: 'codex-token', accountId: 'acct', isExpired: false } });
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
+  const deadline = now + 5 * 60_000;
+  let recovered = false;
+  const requests = stubFetch(t, (url, options) => options.headers.Authorization === 'Bearer healthy-token' || recovered
+    ? { body: url.includes('anthropic') ? { seven_day: { utilization: 10 } } : { rate_limit: { primary_window: { used_percent: 20, limit_window_seconds: 604800 } } } }
+    : { ok: false, status: 429, headers: { 'Retry-After': '300' }, body: { error: 'private-error' } });
+  const usage = new AccountUsage();
+  const first = await usage.snapshot({ refresh: true });
+  for (const account of [first.providers[0].accounts[0], first.providers[1].accounts[0]]) {
+    assert.equal(account.status, 'unavailable'); assert.equal(Date.parse(account.retryAt), deadline);
+    assert.match(account.message, /rate-limited/); assert.deepEqual(account.windows, []);
+  }
+  now += 60_000;
+  await usage.snapshot({ refresh: true });
+  assert.equal(requests.length, 4); // Three initial accounts, then only healthy Claude.
+  now = deadline - 1;
+  usage.invalidate(); await usage.snapshot({ refresh: true });
+  assert.equal(requests.length, 5);
+  now++; recovered = true;
+  const last = await usage.snapshot({ refresh: true });
+  assert.equal(requests.length, 7);
+  assert.equal(last.providers[0].accounts[0].status, 'ready');
+  assert.equal(last.providers[1].accounts[0].status, 'ready');
+  assert.equal(last.providers[0].accounts[0].retryAt, null);
+  assert.deepEqual(createRequire(import.meta.url)(join(root, 'dist/cliproxy/quota/quota-fetcher-codex.js')).calls, []);
+  assert.doesNotMatch(JSON.stringify(first), /private-error|limited-token|codex-token/);
+});
+
+test('profile 429 respects its own Retry-After without suppressing successful usage', async t => {
+  const authDir = mkdtempSync(join(tmpdir(), 'ccs-profile-cooldown-'));
+  t.after(() => rmSync(authDir, { recursive: true, force: true }));
+  writeFileSync(join(authDir, 'claude-owner.json'), JSON.stringify({ email: 'owner@example.test', access_token: 'token' }));
+  installFakeCcs(t, { authDir, claudeAccounts: [claudeAccount('owner@example.test')] });
+  let now = Date.now(), profiles = 0; t.mock.method(Date, 'now', () => now);
+  const retry = new Date(now + 600_000).toUTCString();
+  const requests = stubFetch(t, () => ({ body: { seven_day: { utilization: 12 } } }), () => {
+    profiles++;
+    return { ok: false, status: 429, headers: { 'Retry-After': retry }, body: {} };
+  });
+  const usage = new AccountUsage();
+  await usage.snapshot({ refresh: true });
+  now += 60_000;
+  const value = await usage.snapshot({ refresh: true });
+  assert.equal(profiles, 1); assert.equal(requests.length, 2);
+  assert.equal(value.providers[0].accounts[0].status, 'ready');
+  now += 600_000;
+  await usage.snapshot({ refresh: true });
+  assert.equal(profiles, 2);
+});
 
 test('recognizes reported Claude subscriptions without inferring a plan from quota', () => {
   for (const [organization, account, expected] of [
@@ -261,6 +345,8 @@ test('reads plans with exact-account credentials even when usage is rate-limited
   now += 15 * 60_000;
   await usage.snapshot({ refresh: true }); assert.equal(profiles.length, 4);
   writeToken('max', 'max-rotated');
+  await usage.snapshot({ refresh: true }); assert.equal(profiles.length, 4);
+  now += 60_000;
   await usage.snapshot({ refresh: true }); assert.equal(profiles.length, 5);
   assert.equal(profiles.at(-1), 'Bearer max-rotated');
 });
@@ -460,7 +546,7 @@ test("fetches exact Codex usage with the stored account credentials", async (t) 
   assert.doesNotMatch(JSON.stringify(value), /codex-token|acct_123/);
 });
 
-test("falls back to the CCS Codex fetcher without credentials or when the usage request fails", async (t) => {
+test("keeps Codex usage unknown without a second request when credentials or the exact request fail", async (t) => {
   installFakeCcs(t, { codexAccounts: [{ id: "codex@example.test", email: "codex@example.test" }], codexAuth: { accessToken: "t", accountId: "acct", isExpired: false } });
   stubFetch(t, () => ({ ok: false, body: {} }));
   let value = await new AccountUsage().snapshot({ refresh: true });
@@ -474,7 +560,7 @@ test("falls back to the CCS Codex fetcher without credentials or when the usage 
   installFakeCcs(t, { codexAccounts: [{ id: "codex@example.test", email: "codex@example.test" }], codexAuth: { accessToken: "t", accountId: "acct", isExpired: true } });
   const requests = stubFetch(t, () => ({ body: {} }));
   value = await new AccountUsage().snapshot({ refresh: true });
-  assert.equal(value.providers.find((provider) => provider.id === "codex").accounts[0].status, "unavailable");
+  assert.equal(value.providers.find((provider) => provider.id === "codex").accounts[0].status, "reconnect");
   assert.equal(requests.length, 0);
 });
 

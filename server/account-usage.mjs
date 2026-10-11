@@ -3,6 +3,7 @@ import { accessSync, constants, existsSync, readFileSync, readdirSync, realpathS
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
+import { AccountPollCache, retryAfterAt } from './account-poll-cache.mjs';
 
 const CACHE_MS = 60_000;
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -16,8 +17,8 @@ const PROVIDERS = [
 
 export class AccountUsage {
   constructor({ sourceLoader, cacheMs = CACHE_MS } = {}) {
-    const planCache = new Map();
-    this.sourceLoader = sourceLoader ?? (() => loadCcsSource(planCache));
+    const polls = new AccountPollCache();
+    this.sourceLoader = sourceLoader ?? (() => loadCcsSource(polls));
     this.cacheMs = cacheMs;
     this.cache = null;
     this.pending = null;
@@ -160,6 +161,7 @@ function normalizeAccount(provider, account, quota = null, providerAvailable = t
           ? "Connected. Provider reported no active usage window."
           : null,
     updatedAt: safeDate(quota?.lastUpdated),
+    retryAt: safeDate(quota?.retryAt),
     windows,
   };
 }
@@ -259,7 +261,7 @@ export function findCcsPackageRoot({ ccsBin = process.env.CCS_BIN, pathValue = p
   throw new Error("CCS is not installed");
 }
 
-async function loadCcsSource(planCache) {
+async function loadCcsSource(polls) {
   const root = findCcsPackageRoot();
   const require = createRequire(import.meta.url);
   const accounts = require(join(root, "dist", "cliproxy", "accounts", "account-manager.js"));
@@ -274,11 +276,11 @@ async function loadCcsSource(planCache) {
     removeAccount: accounts.removeAccount,
     fetchAllClaudeQuotas: async () => Promise.all(accounts.getProviderAccounts("claude").map(async (account) => ({
       account: account.id,
-      quota: await fetchExactClaudeQuota(account.id, authDirs, planCache),
+      quota: await fetchExactClaudeQuota(account.id, authDirs, polls),
     }))),
     fetchAllCodexQuotas: async () => Promise.all(accounts.getProviderAccounts("codex").map(async (account) => ({
       account: account.id,
-      quota: await fetchExactCodexQuota(account.id, codex),
+      quota: await polls.read(`codex:usage:${account.id}`, () => fetchExactCodexQuota(account.id, codex)),
     }))),
   };
 }
@@ -341,14 +343,14 @@ function readClaudeAccessToken(accountId, authDirs) {
   return { token: null, expired };
 }
 
-async function fetchExactClaudeQuota(accountId, authDirs, planCache) {
+async function fetchExactClaudeQuota(accountId, authDirs, polls) {
   const { token, expired } = readClaudeAccessToken(accountId, authDirs);
   // Do not fall back to CCS's account lookup: it accepts substring filename
   // matches and its normalized weekly window can lose the provider's meaning.
   if (!token) return { success: false, windows: [], needsReauth: expired, failureReason: 'missing-credentials', accountId };
   const [quota, planType] = await Promise.all([
-    fetchClaudeUsage(accountId, token),
-    fetchClaudePlan(accountId, token, planCache),
+    polls.read(`claude:usage:${accountId}`, () => fetchClaudeUsage(accountId, token)),
+    fetchClaudePlan(accountId, token, polls),
   ]);
   return { ...quota, planType };
 }
@@ -366,7 +368,7 @@ async function fetchClaudeUsage(accountId, token) {
         "Content-Type": "application/json",
       },
     });
-    if (!response.ok) return unavailable(response.status === 401, response.status === 429 ? 'rate-limited' : null);
+    if (!response.ok) return { ...unavailable(response.status === 401), ...rateLimitFailure(response) };
     const payload = await response.json();
     const windows = exactClaudeWindows(payload);
     if (windows.length === 0) return unavailable(false, 'no-windows');
@@ -378,23 +380,23 @@ async function fetchClaudeUsage(accountId, token) {
   }
 }
 
-async function fetchClaudePlan(accountId, token, cache) {
+function rateLimitFailure(response) {
+  return response.status === 429 ? { failureReason: 'rate-limited', retryAfterAt: retryAfterAt(response.headers?.get('retry-after')) } : {};
+}
+
+async function fetchClaudePlan(accountId, token, polls) {
   const tokenHash = createHash('sha256').update(token).digest('hex');
-  const cached = cache.get(accountId);
-  if (cached?.tokenHash === tokenHash && cached.expiresAt > Date.now()) return cached.plan;
-  let plan = null;
-  try {
+  const result = await polls.read(`claude:profile:${accountId}`, async () => {
     const response = await fetch(CLAUDE_PROFILE_URL, {
       signal: AbortSignal.timeout(12_000),
       headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': CLAUDE_OAUTH_BETA },
     });
-    if (response.ok) {
-      const profile = await response.json();
-      if (!profile?.account?.email || profile.account.email === accountId) plan = claudePlan(profile);
-    }
-  } catch { /* Profile availability must not affect quota readings. */ }
-  cache.set(accountId, { tokenHash, plan, expiresAt: Date.now() + (plan ? PLAN_CACHE_MS : CACHE_MS) });
-  return plan;
+    if (!response.ok) return { success: false, ...rateLimitFailure(response) };
+    const profile = await response.json();
+    const plan = !profile?.account?.email || profile.account.email === accountId ? claudePlan(profile) : null;
+    return { success: Boolean(plan), plan };
+  }, { identity: tokenHash, cacheMs: PLAN_CACHE_MS });
+  return result.plan ?? null;
 }
 
 export function claudePlan(profile) {
@@ -440,8 +442,9 @@ function claudeWindow(raw, cadence, category, label) {
 }
 
 async function fetchExactCodexQuota(accountId, codex) {
+  const unavailable = (needsReauth = false) => ({ success: false, windows: [], needsReauth, accountId });
   const auth = codex.readCodexAuthData(accountId);
-  if (!auth || auth.isExpired || !auth.accountId) return codex.fetchCodexQuota(accountId, false);
+  if (!auth || auth.isExpired || !auth.accountId || !bearerToken(auth.accessToken)) return unavailable(Boolean(auth?.isExpired));
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
@@ -453,7 +456,7 @@ async function fetchExactCodexQuota(accountId, codex) {
         "User-Agent": "codex_cli_rs/0.76.0 cmux-companion",
       },
     });
-    if (!response.ok) return codex.fetchCodexQuota(accountId, false);
+    if (!response.ok) return { ...unavailable(response.status === 401), ...rateLimitFailure(response) };
     const payload = await response.json();
     return {
       success: true,
@@ -463,7 +466,7 @@ async function fetchExactCodexQuota(accountId, codex) {
       accountId,
     };
   } catch {
-    return codex.fetchCodexQuota(accountId, false);
+    return unavailable();
   } finally {
     clearTimeout(timeout);
   }

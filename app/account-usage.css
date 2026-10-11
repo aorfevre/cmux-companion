@@ -131,4 +131,4 @@
 .account-usage-page .session-context { color:var(--muted); }
 .account-usage-page .reset-eligibility { margin:8px 0 0; color:var(--muted); font-size:11px; }
 .account-usage-page .usage-account .account-plan { text-transform:none; }
-.account-usage-page .account-unavailable-reason { margin:5px 0 0; color:var(--muted); font-size:11px; }
+.account-usage-page .account-unavailable-reason,.account-usage-page .account-retry { margin:5px 0 0; color:var(--muted); font-size:11px; }
