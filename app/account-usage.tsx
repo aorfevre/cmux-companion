@@ -4,19 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { request } from "./api-request";
 import { ProviderLogo } from "./provider-logo";
 import './account-usage.css';
+import { AccountCard } from './account-usage-account';
+import { freshReading, limitLabel, relativeUpdated, resetConstraint, resetText, upcomingResets, usableBeforeReset, type UpcomingReset, type UsageAccount, type UsageProvider, type UsageResponse } from './account-usage-model';
+export { nextUnusedReset, resetText, upcomingResets, usableBeforeReset } from './account-usage-model';
 
-type Cadence = "5h" | "daily" | "weekly" | "monthly" | "other";
-type UsageWindow = { id: string; cadence: Cadence; label: string; model?: string | null; category: "usage" | "additional" | "code-review"; remainingPercent: number; resetAt: string | null; reported: true };
-type ResetInventory = { availableCount: number; updatedAt: string; grants: Array<{ count: number; expiresAt: string | null; usableNow: boolean | null }> | null };
-type UsageAccount = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; retryAt?: string | null; windows: UsageWindow[]; redeemableResets?: ResetInventory | null };
-type UsageProvider = { id: "claude" | "codex"; label: string; available: boolean; accounts: UsageAccount[] };
-type UsageResponse = { generatedAt: string; source: "CCS"; available: boolean; summary: Record<UsageAccount["status"], number>; providers: UsageProvider[] };
 type ReconnectSession = { sessionId: string; provider: UsageProvider["id"]; status: "waiting" | "processing" | "success" | "error" | "expired" | "cancelled"; message: string; authUrl: string | null; expiresAt: string };
-
-const CORE_WINDOWS: Array<{ cadence: Exclude<Cadence, "other">; label: string }> = [
-  { cadence: "weekly", label: "Weekly" },
-  { cadence: "5h", label: "5 hours" },
-];
 
 export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => void; embedded?: boolean }) {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
@@ -95,43 +87,12 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
   </section>;
 }
 
-function freshReading(value: string | null, now: number) { const stamp = Date.parse(value ?? ''); return Number.isFinite(stamp) && stamp <= now && now - stamp <= 15 * 60_000; }
-
-type UpcomingReset = { provider: UsageProvider; account: UsageAccount; window: UsageWindow; reset: number };
-export function upcomingResets(usage: UsageResponse | null, now: number): UpcomingReset[] {
-  if (!usage?.available || !freshReading(usage.generatedAt, now)) return [];
-  const resets: UpcomingReset[] = [];
-  for (const provider of usage.providers) {
-    if (!provider.available) continue;
-    for (const account of provider.accounts) {
-      if (!freshReading(account.updatedAt, now) || !['ready', 'low', 'exhausted'].includes(account.status)) continue;
-      const window = account.windows.find(window => window.category === 'usage' && window.cadence === 'weekly');
-      if (!window) continue;
-      const reset = Date.parse(window.resetAt ?? '');
-      if (!Number.isFinite(window.remainingPercent) || window.remainingPercent < 0 || window.remainingPercent > 100 || !Number.isFinite(reset) || reset <= now) continue;
-      resets.push({ provider, account, window, reset });
-    }
-  }
-  return resets.sort((a, b) => a.reset - b.reset || b.window.remainingPercent - a.window.remainingPercent);
-}
-export function nextUnusedReset(usage: UsageResponse | null, now: number): UpcomingReset | null {
-  return upcomingResets(usage, now).find(reset => reset.window.remainingPercent > 0) ?? null;
-}
-export function usableBeforeReset({ account, window }: UpcomingReset, now: number) {
-  return !account.paused && account.status !== 'exhausted' && window.remainingPercent > 0
-    && account.windows.filter(item => item.category === 'usage').every(item =>
-      Number.isFinite(item.remainingPercent) && item.remainingPercent > 0 && item.remainingPercent <= 100
-      && (item.resetAt === null || Number.isFinite(Date.parse(item.resetAt)) && Date.parse(item.resetAt) > now));
-}
 function AccountResetLink({ reset }: { reset: UpcomingReset }) {
   return <a href={`#usage-account-${encodeURIComponent(reset.account.id)}`} onClick={event => {
     event.preventDefault();
     const row = document.getElementById(`usage-account-${reset.account.id}`);
     row?.scrollIntoView({ block: 'nearest' }); row?.focus({ preventScroll: true });
   }}><ProviderLogo provider={reset.provider.id} />{reset.provider.label} · {reset.account.email || reset.account.label}</a>;
-}
-function resetConstraint({ account }: UpcomingReset) {
-  return [account.paused ? 'Paused in CCS' : '', account.status === 'exhausted' || account.windows.some(item => item.category === 'usage' && item.remainingPercent === 0) ? 'Usage limit exhausted' : ''].filter(Boolean).join(' · ');
 }
 function ResetCountdown({ reset, now }: { reset: UpcomingReset; now: number }) {
   return <time dateTime={reset.window.resetAt!} title={new Date(reset.reset).toLocaleString()}><strong>{resetText(reset.window.resetAt, now).replace('Resets in ', '')}</strong><span>until reset</span></time>;
@@ -175,13 +136,6 @@ function ResetOverview({ resets, now }: { resets: UpcomingReset[]; now: number }
     <p className="reset-eligibility">Only fresh, reported weekly reset times appear here. See All accounts for missing readings.</p>
   </section>;
 }
-function limitLabel(window: UsageWindow) { return ({ '5h': '5-hour limit', weekly: 'Weekly limit', daily: 'Daily limit', monthly: 'Monthly limit', other: window.label })[window.cadence]; }
-
-function planLabel(plan: string | null) {
-  if (!plan || plan.toLowerCase() === 'unknown') return 'Plan not reported';
-  const known: Record<string, string> = { max_5x: 'Max 5×', max_20x: 'Max 20×', pro_lite: 'Pro Lite', prolite: 'Pro Lite' };
-  return `Plan: ${known[plan.toLowerCase()] || plan.replaceAll('_', ' ').replace(/\b\w/g, letter => letter.toUpperCase())}`;
-}
 
 function ProviderSection({ provider, now, onReconnect, onDeleted, snapshotFresh, nextReset }: { nextReset: UpcomingReset | null; onDeleted: (id: string) => Promise<void>; provider: UsageProvider; now: number; snapshotFresh: boolean; onReconnect: (account: UsageAccount) => void }) {
   return <section className="usage-provider"><header><div className={`provider-mark ${provider.id}`}>{provider.id === "claude" ? "C" : "O"}</div><div><h2>{provider.label}</h2><span>{provider.accounts.length} connected account{provider.accounts.length === 1 ? "" : "s"}</span></div></header>
@@ -190,73 +144,6 @@ function ProviderSection({ provider, now, onReconnect, onDeleted, snapshotFresh,
     {provider.available && provider.accounts.length === 0 && <p className="provider-empty">No CCS account connected.</p>}
     <div className="usage-account-list">{provider.accounts.map((account) => <AccountCard nextWindowId={nextReset?.provider.id === provider.id && nextReset.account.id === account.id ? nextReset.window.id : undefined} snapshotFresh={snapshotFresh && provider.available} account={account} now={now} providerId={provider.id} providerLabel={provider.label} onDeleted={() => onDeleted(account.id)} onReconnect={() => onReconnect(account)} key={account.id} />)}</div>
   </section>;
-}
-
-function AccountCard({ providerId, account, now, onReconnect, onDeleted, providerLabel, snapshotFresh, nextWindowId }: { providerId: UsageProvider["id"]; nextWindowId?: string; onDeleted: () => Promise<void>; providerLabel: string; account: UsageAccount; now: number; snapshotFresh: boolean; onReconnect: () => void }) {
-  const [confirming, setConfirming] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState("");
-  const removing = useRef(false);
-  const remove = async () => {
-    if (removing.current) return;
-    removing.current = true;
-    setDeleting(true); setDeleteError("");
-    try {
-      const response = await fetch(`/api/account-usage/${encodeURIComponent(account.id)}`, { method: "DELETE" });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || "Could not delete connection");
-      await onDeleted();
-      setConfirming(false);
-    } catch (cause) {
-      setDeleteError(cause instanceof Error ? cause.message : "Could not delete connection");
-    } finally { removing.current = false; setDeleting(false); }
-  };
-  const capacityKnown = snapshotFresh && freshReading(account.updatedAt, now) && ['ready', 'low', 'exhausted'].includes(account.status);
-  const windows = capacityKnown ? account.windows.filter(window => Number.isFinite(window.remainingPercent) && window.remainingPercent >= 0 && window.remainingPercent <= 100) : [];
-  const coreWindows = CORE_WINDOWS.filter(window => window.cadence === 'weekly' || providerId === 'claude');
-  const core = coreWindows.map(({ cadence }) => windows.find(window => window.category === 'usage' && window.cadence === cadence));
-  const fable = providerId === 'claude' ? windows.find(window => window.cadence === 'weekly' && window.category === 'additional' && (window.model?.toLowerCase() === 'fable' || window.label.toLowerCase() === 'fable weekly limit')) : undefined;
-  if (fable) core.push(fable);
-  const extras = windows.filter(window => !core.includes(window));
-  const displayStatus = !capacityKnown && account.status !== 'reconnect' ? 'unavailable' : account.status;
-  return <article id={`usage-account-${account.id}`} tabIndex={-1} className={`usage-account ${displayStatus}${nextWindowId ? ' next-reset-account' : ''}`}><header><div><strong>{account.email || account.label}</strong><span className="account-plan">{planLabel(account.plan)}</span><span>{[account.isDefault ? "Default" : null, account.paused ? "Paused" : null].filter(Boolean).join(" · ")}</span></div><span className={`usage-status ${displayStatus}`}>{!capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{nextWindowId && <span className="next-reset-tag">Next reset</span>}
-    {snapshotFresh && account.status === 'unavailable' && account.message && <p className="account-unavailable-reason">{account.message}</p>}
-    {snapshotFresh && account.status === 'unavailable' && account.retryAt && Number.isFinite(Date.parse(account.retryAt)) && <p className="account-retry"><time dateTime={account.retryAt} title={new Date(account.retryAt).toLocaleString()}>{Date.parse(account.retryAt) <= now ? 'Ready to retry usage' : resetText(account.retryAt, now).replace('Resets in ', 'Retry in ')}</time></p>}
-    {!confirming && account.status === "reconnect" && <button className="account-reconnect" onClick={onReconnect}>Reconnect account</button>}</header>
-    <div className={`core-window-grid${providerId === 'codex' ? ' weekly-only' : ' with-fable'}`}>
-      <CoreWindow label="Weekly" window={core[0]} now={now} />
-      {providerId === 'claude' && <><CoreWindow label="Fable weekly" window={fable} now={now} /><CoreWindow label="5 hours" window={core[1]} now={now} /></>}
-    </div>
-    <details className="usage-account-details"><summary>Details{extras.length > 0 && <span className="sr-only"> · {extras.length} additional limits</span>}</summary><div className="account-detail-content">
-    <p className="account-reading">{account.updatedAt ? relativeUpdated(account.updatedAt, now) : 'Reading time unavailable'}</p>
-    {!capacityKnown && <p className="account-message">Capacity unknown: the reading is unavailable, failed or older than 15 minutes.</p>}
-    {account.message && <p className={`account-message ${account.status}`}>{account.message}</p>}
-    {extras.length > 0 && <div className="extra-windows"><p>Additional limits</p>{extras.map((window) => <ExtraWindow window={window} now={now} key={window.id} />)}</div>}
-    {confirming ? <div className="connection-confirmation" role="group" aria-label="Delete connection confirmation">
-      <p>Delete the {providerLabel} connection for <strong>{account.email || account.label}</strong>?</p>
-      <p>This removes its saved login from CCS on this Mac. You’ll need to sign in again to use it. Your provider account and subscription remain active.</p>
-      {account.isDefault && <p>CCS will choose another default account if one remains.</p>}
-      {deleteError && <p role="alert">{deleteError}</p>}
-      <div><button disabled={deleting} onClick={() => { setConfirming(false); setDeleteError(""); }}>Cancel</button><button className="connection-delete" disabled={deleting} onClick={() => void remove()}>{deleting ? "Deleting…" : "Confirm delete"}</button></div>
-    </div> : <button className="connection-delete" onClick={() => setConfirming(true)}>Delete connection</button>}
-    </div></details>
-    <RedeemableResets inventory={account.redeemableResets} fresh={snapshotFresh && account.status !== 'reconnect' && freshReading(account.updatedAt, now)} providerId={providerId} now={now} />
-  </article>;
-}
-
-function RedeemableResets({ inventory, fresh, providerId, now }: { inventory?: ResetInventory | null; fresh: boolean; providerId: UsageProvider['id']; now: number }) {
-  const known = fresh && inventory && freshReading(inventory.updatedAt, now);
-  const grants = known ? inventory.grants ?? [] : [];
-  const expired = grants.filter(grant => grant.expiresAt !== null && Date.parse(grant.expiresAt) <= now).reduce((sum, grant) => sum + grant.count, 0);
-  const count = known ? Math.max(0, inventory.availableCount - expired) : null;
-  const live = grants.filter(grant => grant.count > 0 && (grant.expiresAt === null || Date.parse(grant.expiresAt) > now));
-  const expiry = live.map(grant => grant.expiresAt).filter((value): value is string => value !== null).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
-  const partial = known && (inventory.grants === null || grants.reduce((sum, grant) => sum + grant.count, 0) < inventory.availableCount);
-  return <div className={`redeemable-resets${count && count > 0 ? ' has-resets' : ''}`}>
-    <div><strong>Redeemable resets</strong><span>{count === null ? inventory ? 'Awaiting refresh' : 'Not reported' : count === 0 ? 'None reported' : `${count} saved reset${count === 1 ? '' : 's'}`}</span></div>
-    {count !== null && count > 0 && <p>{expiry ? <><time dateTime={expiry} title={new Date(expiry).toLocaleString()}>{partial ? 'Next reported expiry' : 'Next expiry'}: {new Date(expiry).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · {resetText(expiry, now).replace('Resets in ', 'in ')}</time>{partial && ' · Some expiry details not reported'}</> : 'Expiry not reported'}{live.some(grant => grant.usableNow === false) && ' · Some resets cannot be used yet'}</p>}
-    <a href={providerId === 'claude' ? 'https://claude.ai/settings/usage' : 'https://chatgpt.com/codex/settings/usage'} target="_blank" rel="noreferrer">Check {providerId === 'claude' ? 'Claude' : 'ChatGPT'} resets ↗</a>
-  </div>;
 }
 
 function ReconnectSheet({ provider, account, onClose, onSuccess }: { provider: UsageProvider; account: UsageAccount; onClose: () => void; onSuccess: () => Promise<void> }) {
@@ -357,35 +244,3 @@ function ReconnectSheet({ provider, account, onClose, onSuccess }: { provider: U
   </section></>;
 }
 
-function CoreWindow({ label, window, now }: { label: string; window?: UsageWindow; now: number }) {
-  const tone = window ? percentTone(window.remainingPercent) : "missing";
-  return <div className={`core-window ${tone}${window?.cadence === '5h' || label === '5 hours' ? ' secondary-session' : ''}`}><div><span>{label}</span>{window ? <strong>{window.remainingPercent}% <em>remaining</em></strong> : <strong>—</strong>}</div>{window ? <><small className="quota-used">{100 - window.remainingPercent}% used</small><div className="quota-track"><i style={{ width: `${window.remainingPercent}%` }} /></div><ResetTime value={window.resetAt} now={now} /></> : <small>Not reported</small>}</div>;
-}
-
-function ExtraWindow({ window, now }: { window: UsageWindow; now: number }) {
-  return <div className={`extra-window ${percentTone(window.remainingPercent)}`}><div><strong>{displayLabel(window.label)}</strong><span>{window.cadence} · {100 - window.remainingPercent}% used</span></div><b>{window.remainingPercent}% remaining</b><ResetTime value={window.resetAt} now={now} /></div>;
-}
-
-function ResetTime({ value, now }: { value: string | null; now: number }) {
-  const reset = value ? new Date(value) : null;
-  if (!reset || !Number.isFinite(reset.getTime())) return <small>Reset unknown</small>;
-  return <small><time dateTime={reset.toISOString()} title={reset.toLocaleString()}>{resetText(value, now)}</time></small>;
-}
-
-function percentTone(percent: number) { return percent <= 0 ? "exhausted" : percent <= 20 ? "low" : "ready"; }
-function statusLabel(status: UsageAccount["status"], windowCount = 1) { return status === "ready" && windowCount === 0 ? "Connected" : ({ ready: "Available", low: "Low", exhausted: "Exhausted", reconnect: "Reconnect", unavailable: "Unavailable" })[status]; }
-function displayLabel(label: string) { return label.replaceAll("-", " ").replace(/\bGpt\b/i, "GPT"); }
-function relativeUpdated(value: string, now: number) { const seconds = Math.round((now - new Date(value).getTime()) / 1000); if (!Number.isFinite(seconds) || seconds < 0) return 'Reading time unavailable'; return seconds < 15 ? "Updated now" : seconds < 60 ? `Updated ${seconds}s ago` : `Updated ${Math.floor(seconds / 60)}m ago`; }
-// The one countdown in the app. The goals board reuses it so a quota reset
-// never reads two different ways on two screens.
-export function resetText(value: string | null, now: number) {
-  if (!value) return "Reset unknown";
-  const reset = new Date(value);
-  const milliseconds = reset.getTime() - now;
-  if (!Number.isFinite(milliseconds)) return "Reset unknown";
-  if (milliseconds <= 0) return "Reset due";
-  const minutes = Math.ceil(milliseconds / 60_000);
-  const days = Math.floor(minutes / 1_440);
-  const hours = Math.floor((minutes % 1_440) / 60);
-  return `Resets in ${days ? `${days}d ` : ''}${hours ? `${hours}h ` : ''}${minutes % 60}m`;
-}

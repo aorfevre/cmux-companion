@@ -21,7 +21,7 @@
 | `app/account-usage-table.tsx` (create) | `AccountTable`: sorted rows, gauge cells, queue state cell, redeemable cell, expand-in-place panel. |
 | `app/account-usage.tsx` (modify) | `AccountUsageView`, `ResetOverview`, `ReconnectSheet`, the view selector, the narrow-viewport hook. Re-exports the model helpers the tests import. |
 | `app/account-usage.css` (modify) | Selector, table and row-view width rules. |
-| `tests/ui-account-usage-model.test.ts` (create) | Unit tests for `redeemableSummary`, `accountRows`, `coreReadings`, `readUsageView`. |
+| `tests/ui-account-usage-model.test.tsx` (create) | Unit tests for `redeemableSummary`, `accountRows`, `coreReadings`, `readUsageView`. |
 | `tests/ui-account-usage.test.tsx` (modify) | Card tests select Card view in setup. New Row view tests. |
 | `cypress/e2e/account-usage.cy.ts` (modify) | Card journeys select Card view. New Row view journeys. |
 
@@ -36,11 +36,11 @@ Rules that apply to every task: run `npm run typecheck` and `npm run lint` befor
 **Files:**
 - Create: `app/account-usage-model.ts`
 - Modify: `app/account-usage.tsx` (lines 1-20 types, 98-136 helpers, 178-185 labels, 360-391 helpers)
-- Test: `tests/ui-account-usage-model.test.ts`
+- Test: `tests/ui-account-usage-model.test.tsx`
 
 - [ ] **Step 1: Write the failing model tests**
 
-Create `tests/ui-account-usage-model.test.ts`:
+Create `tests/ui-account-usage-model.test.tsx`:
 
 ```ts
 import { afterEach, expect, test } from 'vitest';
@@ -130,7 +130,7 @@ test('readUsageView defaults to row and remembers card', () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `npx vitest run tests/ui-account-usage-model.test.ts`
+Run: `npx vitest run tests/ui-account-usage-model.test.tsx`
 Expected: FAIL. The module `../app/account-usage-model` does not exist.
 
 - [ ] **Step 3: Create `app/account-usage-model.ts`**
@@ -316,7 +316,7 @@ and replace the core window grid with:
 
 - [ ] **Step 5: Run the tests and checks**
 
-Run: `npx vitest run tests/ui-account-usage-model.test.ts tests/ui-account-usage.test.tsx && npm run typecheck && npm run lint`
+Run: `npx vitest run tests/ui-account-usage-model.test.tsx tests/ui-account-usage.test.tsx && npm run typecheck && npm run lint`
 Expected: all pass. The existing card tests must not change in this task.
 
 - [ ] **Step 6: Commit**
@@ -350,10 +350,10 @@ export function AccountStatusNotes({ account, snapshotFresh, now }: { account: U
   </>;
 }
 
-export type AccountDetailProps = { providerId: UsageProvider["id"]; providerLabel: string; account: UsageAccount; now: number; capacityKnown: boolean; extras: UsageWindow[]; onDeleted: () => Promise<void>; onReconnect?: () => void };
+export type AccountDetailProps = { providerLabel: string; account: UsageAccount; now: number; capacityKnown: boolean; extras: UsageWindow[]; onDeleted: () => Promise<void>; onReconnect?: () => void };
 // Reading time, messages, extra limits and confirmed deletion. The card shows
 // it under Details; the table shows it in the expanded row.
-export function AccountDetailContent({ providerId, providerLabel, account, now, capacityKnown, extras, onDeleted, onReconnect }: AccountDetailProps) {
+export function AccountDetailContent({ providerLabel, account, now, capacityKnown, extras, onDeleted, onReconnect }: AccountDetailProps) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -398,7 +398,7 @@ export function AccountCard({ providerId, account, now, onReconnect, onDeleted, 
       {providerId === 'claude' && <><CoreWindow label="Fable weekly" window={fable} now={now} /><CoreWindow label="5 hours" window={session} now={now} /></>}
     </div>
     <details className="usage-account-details"><summary>Details{extras.length > 0 && <span className="sr-only"> · {extras.length} additional limits</span>}</summary>
-      <AccountDetailContent providerId={providerId} providerLabel={providerLabel} account={account} now={now} capacityKnown={capacityKnown} extras={extras} onDeleted={onDeleted} />
+      <AccountDetailContent providerLabel={providerLabel} account={account} now={now} capacityKnown={capacityKnown} extras={extras} onDeleted={onDeleted} />
     </details>
     <RedeemableResets inventory={account.redeemableResets} fresh={snapshotFresh && account.status !== 'reconnect' && freshReading(account.updatedAt, now)} providerId={providerId} now={now} />
   </article>;
@@ -445,7 +445,7 @@ Trim the model import line to the names still used in `account-usage.tsx` (`Prov
 
 - [ ] **Step 3: Run the tests and checks**
 
-Run: `npx vitest run tests/ui-account-usage.test.tsx tests/ui-account-usage-model.test.ts && npm run typecheck && npm run lint`
+Run: `npx vitest run tests/ui-account-usage.test.tsx tests/ui-account-usage-model.test.tsx && npm run typecheck && npm run lint`
 Expected: all pass.
 
 - [ ] **Step 4: Commit**
@@ -721,7 +721,7 @@ export function AccountTable({ rows, usableOnly, now, snapshotFresh, nextReset, 
             <td className="usage-expand"><button type="button" aria-expanded={open} aria-controls={`usage-row-detail-${account.id}`} aria-label={`${open ? 'Hide' : 'Show'} details for ${name}`} onClick={() => toggle(account.id)}>{open ? '⌃' : '⌄'}</button></td>
           </tr>
           {open && <tr id={`usage-row-detail-${account.id}`} className="usage-row-detail"><td colSpan={COLUMNS}>
-            <AccountDetailContent providerId={provider.id} providerLabel={provider.label} account={account} now={now} capacityKnown={readings.capacityKnown} extras={readings.extras} onDeleted={() => onDeleted(account.id)} onReconnect={() => onReconnect(provider, account)} />
+            <AccountDetailContent providerLabel={provider.label} account={account} now={now} capacityKnown={readings.capacityKnown} extras={readings.extras} onDeleted={() => onDeleted(account.id)} onReconnect={() => onReconnect(provider, account)} />
             <RedeemableResets inventory={account.redeemableResets} fresh={fresh && account.status !== 'reconnect' && freshReading(account.updatedAt, now)} providerId={provider.id} now={now} />
           </td></tr>}
         </Fragment>;
@@ -783,7 +783,7 @@ Append to `app/account-usage.css`:
 
 - [ ] **Step 4: Run the tests and checks**
 
-Run: `npx vitest run tests/ui-account-usage.test.tsx tests/ui-account-usage-model.test.ts && npm run typecheck && npm run lint`
+Run: `npx vitest run tests/ui-account-usage.test.tsx tests/ui-account-usage-model.test.tsx && npm run typecheck && npm run lint`
 Expected: all pass. If the `.redeemable-resets` card CSS in the existing stylesheet relies on a rule that is missing in the expanded panel, add a `.usage-row-detail .redeemable-resets` override rather than touching the card rule.
 
 - [ ] **Step 5: Run the whole UI suite**
