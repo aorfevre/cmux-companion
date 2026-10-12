@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import Home from "../app/page";
 import { AccountUsageView } from "../app/account-usage";
 
@@ -31,7 +31,9 @@ function installHome(handler: (url: string, init?: RequestInit) => Promise<Respo
   return fetch;
 }
 
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+// These checks cover the account card layout; Row view has its own tests.
+beforeEach(() => { localStorage.setItem('cmux-companion-usage-view', 'card'); });
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers();  localStorage.clear(); });
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

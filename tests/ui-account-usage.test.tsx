@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, expect, test, vi } from 'vitest';
 import { AccountUsageView, nextUnusedReset, resetText, upcomingResets, usableBeforeReset } from '../app/account-usage';
 
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); localStorage.clear(); });
 const instant = '2026-10-07T07:55:00Z';
 type Snapshot = NonNullable<Parameters<typeof nextUnusedReset>[0]>;
 function fixture(): Snapshot {
@@ -15,8 +15,9 @@ function fixture(): Snapshot {
     ],
   }] }] };
 }
-async function setup(handler = async () => new Response(JSON.stringify(fixture()))) {
+async function setup(handler: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = async () => new Response(JSON.stringify(fixture())), view: 'card' | 'row' = 'card') {
   vi.useFakeTimers(); vi.setSystemTime(new Date(instant));
+  localStorage.setItem('cmux-companion-usage-view', view);
   const fetch = vi.fn(handler); vi.stubGlobal('fetch', fetch);
   render(<AccountUsageView />);
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
@@ -402,4 +403,146 @@ test('fresh saved resets remain visible when quota windows are missing without c
   expect(screen.getByText('Fable weekly').closest('.core-window')?.textContent).toContain('Not reported');
   expect(screen.queryByText('Available')).toBeNull();
   expect(document.querySelector('.reset-queue-row')).toBeNull();
+});
+
+test('defaults to Row view, remembers Card view and lifts the width cap only in Row view', async () => {
+  localStorage.clear();
+  vi.useFakeTimers(); vi.setSystemTime(new Date(instant));
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(fixture()))));
+  render(<AccountUsageView />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  const selector = screen.getByRole('group', { name: 'Account layout' });
+  expect(within(selector).getByRole('button', { name: 'Row' }).getAttribute('aria-pressed')).toBe('true');
+  expect(document.querySelector('.account-usage-page')?.classList.contains('row-view')).toBe(true);
+  expect(screen.queryByRole('list', { name: 'Weekly reset queue' })).toBeNull();
+  expect(screen.getByRole('table', { name: 'All accounts' })).toBeTruthy();
+  fireEvent.click(within(selector).getByRole('button', { name: 'Card' }));
+  expect(localStorage.getItem('cmux-companion-usage-view')).toBe('card');
+  expect(document.querySelector('.account-usage-page')?.classList.contains('row-view')).toBe(false);
+  expect(screen.getByRole('list', { name: 'Weekly reset queue' })).toBeTruthy();
+  expect(screen.queryByRole('table', { name: 'All accounts' })).toBeNull();
+  expect(screen.getByText('Fable weekly')).toBeTruthy();
+});
+
+test('forces Card view on a narrow viewport without changing the stored choice', async () => {
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(max-width: 760px)', addEventListener: () => {}, removeEventListener: () => {} }));
+  await setup(undefined, 'row');
+  expect(screen.queryByRole('group', { name: 'Account layout' })).toBeNull();
+  expect(screen.queryByRole('table', { name: 'All accounts' })).toBeNull();
+  expect(screen.getByText('Fable weekly')).toBeTruthy();
+  expect(localStorage.getItem('cmux-companion-usage-view')).toBe('row');
+});
+
+function rowFixture(): Snapshot {
+  const base = fixture();
+  const sample = base.providers[0].accounts[0];
+  const soon = { ...sample, id: 'soon', email: 'soon@example.test', paused: false, status: 'ready' as const, redeemableResets: { availableCount: 2, updatedAt: instant, grants: [{ count: 2, expiresAt: '2026-10-17T18:00:00Z', usableNow: true }] },
+    windows: [{ id: 'week', cadence: 'weekly' as const, category: 'usage' as const, label: 'Weekly limit', remainingPercent: 60, resetAt: '2026-10-07T09:00:00Z', reported: true as const }, { id: 'session', cadence: '5h' as const, category: 'usage' as const, label: 'Session limit', remainingPercent: 30, resetAt: '2026-10-07T10:00:00Z', reported: true as const }] };
+  const unknown = { ...sample, id: 'unknown', email: 'unknown@example.test', status: 'unavailable' as const, message: 'Usage temporarily rate-limited by the provider.', retryAt: '2026-10-07T08:05:00Z', windows: [], redeemableResets: null };
+  base.providers[0].accounts = [unknown, sample, soon];
+  base.providers.push({ id: 'codex', label: 'OpenAI Codex', available: true, accounts: [{ ...sample, id: 'codex-a', email: 'codex@example.test', paused: false, status: 'ready', redeemableResets: null,
+    windows: [{ id: 'week', cadence: 'weekly', category: 'usage', label: 'Weekly limit', remainingPercent: 80, resetAt: '2026-10-08T08:00:00Z', reported: true }] }] });
+  return base;
+}
+
+test('Row view lists every account sorted by weekly reset with queue state, gauges and redeemable resets', async () => {
+  await setup(async () => new Response(JSON.stringify(rowFixture())), 'row');
+  const table = screen.getByRole('table', { name: 'All accounts' });
+  const rows = within(table).getAllByRole('row').slice(1).filter(row => row.classList.contains('usage-row'));
+  expect(rows.map(row => row.id)).toEqual(['usage-account-sample', 'usage-account-soon', 'usage-account-codex-a', 'usage-account-unknown']);
+  expect(rows[0].textContent).toContain('Check account');
+  expect(rows[0].textContent).toContain('5% remaining');
+  expect(rows[0].textContent).toContain('4% remaining');
+  expect(rows[1].textContent).toContain('Use before reset');
+  expect(rows[1].textContent).toContain('2 saved resets');
+  expect(rows[1].textContent).toContain(new Date('2026-10-17T18:00:00Z').toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }));
+  expect(rows[1].querySelector('.usage-reset')?.textContent).toContain('1h 5m');
+  expect(rows[2].textContent).toContain('Upcoming');
+  expect(within(rows[2]).getAllByText('—')).toHaveLength(2);
+  expect(rows[3].textContent).toContain('Not in queue');
+  expect(rows[3].textContent).toContain('No reset reported');
+  expect(rows[3].textContent).toContain('temporarily rate-limited');
+  expect(rows[3].textContent).toContain('Retry in 10m');
+  expect(rows[3].textContent).toContain('Not reported');
+  fireEvent.click(screen.getByRole('button', { name: 'Usable now' }));
+  expect(within(table).getAllByRole('row').filter(row => row.classList.contains('usage-row')).map(row => row.id)).toEqual(['usage-account-soon', 'usage-account-codex-a']);
+});
+
+test('Row view expands a row in place with details, reconnect and delete', async () => {
+  let deleted = false;
+  const fetch = await setup(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === 'DELETE') { deleted = true; return new Response(JSON.stringify({ ok: true })); }
+    const usage = rowFixture();
+    if (deleted) usage.providers[0].accounts = usage.providers[0].accounts.filter(account => account.id !== 'sample');
+    return new Response(JSON.stringify(usage));
+  }, 'row');
+  const row = document.getElementById('usage-account-sample')!;
+  const expand = within(row).getByRole('button', { name: 'Show details for sample@example.test' });
+  expect(expand.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(expand);
+  expect(expand.getAttribute('aria-expanded')).toBe('true');
+  const panel = document.getElementById('usage-row-detail-sample')!;
+  expect(panel.textContent).toContain('Updated now');
+  expect(within(panel).getByRole('link', { name: 'Check Claude resets ↗' })).toBeTruthy();
+  fireEvent.click(within(panel).getByRole('button', { name: 'Delete connection' }));
+  fireEvent.click(within(panel).getByRole('button', { name: 'Confirm delete' }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith('/api/account-usage/sample') && (init as RequestInit)?.method === 'DELETE')).toBe(true);
+  expect(document.getElementById('usage-account-sample')).toBeNull();
+  expect(document.getElementById('usage-row-detail-sample')).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(document.getElementById('usage-account-sample')).toBeNull();
+  expect(document.querySelectorAll('.usage-row')).toHaveLength(3);
+});
+
+test('highlight links focus the matching table row', async () => {
+  await setup(async () => new Response(JSON.stringify(rowFixture())), 'row');
+  const link = within(screen.getByRole('complementary', { name: 'Next weekly reset' })).getByRole('link');
+  fireEvent.click(link);
+  expect(document.activeElement?.id).toBe('usage-account-sample');
+});
+
+test('Row view drops queue positions after a failed refresh, as the queue does', async () => {
+  let failed = false;
+  await setup(async () => failed ? new Response(JSON.stringify({ error: 'Provider unavailable' }), { status: 503 }) : new Response(JSON.stringify(rowFixture())), 'row');
+  expect(document.getElementById('usage-account-soon')?.textContent).toContain('Use before reset');
+  failed = true;
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  const rows = Array.from(document.querySelectorAll('.usage-row'));
+  expect(rows).toHaveLength(4);
+  for (const row of rows) {
+    expect(row.textContent).toContain('Not in queue');
+    expect(row.textContent).toContain('No reset reported');
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Usable now' }));
+  expect(document.querySelectorAll('.usage-row')).toHaveLength(0);
+  expect(document.querySelector('.usage-table-empty')?.textContent).toBe('No usable capacity with an upcoming weekly reset is reported.');
+});
+
+test('Row view names an unavailable provider above the table', async () => {
+  const usage = rowFixture();
+  usage.providers[1].available = false;
+  await setup(async () => new Response(JSON.stringify(usage)), 'row');
+  expect(screen.getByText('OpenAI Codex did not return usage.')).toBeTruthy();
+  expect(document.getElementById('usage-account-codex-a')?.textContent).toContain('Unknown');
+});
+
+test('a highlight link clears Usable now so its hidden row can take focus', async () => {
+  await setup(async () => new Response(JSON.stringify(rowFixture())), 'row');
+  fireEvent.click(screen.getByRole('button', { name: 'Usable now' }));
+  expect(document.getElementById('usage-account-sample')).toBeNull();
+  fireEvent.click(within(screen.getByRole('complementary', { name: 'Next weekly reset' })).getByRole('link'));
+  expect(screen.getByRole('button', { name: 'Next reset' }).getAttribute('aria-pressed')).toBe('true');
+  expect(document.activeElement?.id).toBe('usage-account-sample');
+});
+
+test('the card hides Reconnect while a deletion is being confirmed', async () => {
+  const usage = fixture();
+  Object.assign(usage.providers[0].accounts[0], { status: 'reconnect', message: 'Sign in again.' });
+  await setup(async () => new Response(JSON.stringify(usage)));
+  expect(screen.getByRole('button', { name: 'Reconnect account' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Delete connection' }));
+  expect(screen.queryByRole('button', { name: 'Reconnect account' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.getByRole('button', { name: 'Reconnect account' })).toBeTruthy();
 });

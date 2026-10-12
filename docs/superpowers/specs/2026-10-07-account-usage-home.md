@@ -117,6 +117,55 @@ quota readings. Detail results may be capped: the provider count remains
 authoritative, and partial expiry data is labelled. No new background polling,
 storage, account mutation, redemption endpoint or credential source is added.
 
+## Row and Card views
+
+All accounts offers a Row / Card view selector. Row is the default. The choice is
+stored only in the current browser under `cmux-companion-usage-view`; an absent
+or unrecognized value means Row. Below 760 pixels the selector is hidden and the
+Card view renders regardless of the stored choice, which is preserved.
+
+Card view is the existing layout: the Weekly reset queue above All accounts, one
+tall card per account grouped by provider, with the page capped at 920 pixels.
+
+Row view replaces the Weekly reset queue and the provider groups with one table
+of every account, so the owner sees all accounts in one screen. The page cap is
+lifted to the shell width. The two highlight summaries stay above the table, and
+their account links focus the matching table row. The queue's Next reset / Usable
+now filter stays above the table; Usable now hides rows without usable weekly
+capacity. Rows sort by the same weekly reset rule as the queue: soonest valid
+weekly reset first, ties prefer more unused weekly quota, then source order.
+Accounts without a qualifying weekly reset sort last in source order and show
+"No reset reported" instead of a countdown. Claude and OpenAI rows interleave.
+
+Columns: Account (provider logo, email or label, plan, Default/Paused, status),
+Weekly, Fable weekly, 5 hours, Resets in, Redeemable resets, Queue state, and an
+expand control. Gauge cells show the remaining percentage with a thin bar and
+the same Not reported / Reset unknown fallbacks as the cards; OpenAI rows show a
+dash for Fable weekly and 5 hours. Resets in shows the weekly countdown and local
+reset time. Redeemable resets shows the same count and nearest expiry text as the
+card row, computed once by a shared helper that both views use. Queue state shows
+the queue pill (Use before reset, Upcoming, Check account, Fully used) or "Not in
+queue". The expand control opens, below the row, the card's Details content,
+Reconnect when required, confirmed deletion and the Check resets link.
+Unavailable accounts keep their concise reason and retry countdown in the row.
+A failed refresh drops every queue position in the table, exactly as the queue
+empties: rows stay, show Not in queue and No reset reported, and Usable now hides
+them. A provider that did not return usage is named above the table. A highlight
+link clears Usable now before it focuses its row, so the row is always visible.
+In Row view the filter group is labelled Account filter. When the table is
+narrower than 1000 pixels, the Queue state column is hidden and the same pill
+appears in the account cell, so the table needs no horizontal scrollbar at
+1024 pixels.
+
+## Row view regression coverage
+
+The card-oriented UI and Cypress checks select Card view in their setup so their
+assertions keep covering the card layout. New checks cover Row view: the default,
+persistence after reload, the forced Card layout at 390 pixels, sort order and
+queue state per row, the Usable now filter, expand-in-place actions, highlight
+links focusing a row, nine fixture accounts fitting at 1440×900 without
+horizontal overflow, and no table scrollbar at 1024 and 1280 pixels.
+
 ## Non-goals
 Billing credits, monetary balances, provider subscription changes, authentication
 redesign, installed-service changes and orchestration admission changes are out of
@@ -147,6 +196,8 @@ fixture verification must not be represented as a live account reconciliation.
 | A rate-limited account displays its retry countdown and Refresh preserves its cooldown. | Account usage Cypress journey with a cooldown response. |
 | Compact desktop and mobile layouts retain reconnect and confirmed deletion. | Account usage Cypress at 390 and 1440 pixels. |
 | The five-account fixture’s five weekly reset entries fit at 1280×900 without horizontal overflow; account Details retains secondary information and connection actions. | Reset-queue viewport Cypress journey. |
+| Row view is the default, is remembered per browser, lists every account sorted by the queue rule with queue state and redeemable resets per row, and falls back to Card below 760 pixels. | Row view UI tests and Cypress journey at 390 and 1440 pixels. |
+| Card view remains unchanged when selected. | Existing card checks run with Card selected. |
 | The queue sorts resets across providers and distinguishes fresh quota from usable unused capacity; paused/exhausted states and invalid, stale or elapsed readings cannot become usage suggestions. | Deterministic account usage UI selection tests. |
 
 ## Success measure
