@@ -170,9 +170,30 @@ test('concurrent resumes atomically claim one PR request', async (t) => {
   const f = await fixture(t);
   const interrupted = new GitHubPublication({ ...f.options, failpoint: (point) => { if (point === 'push_returned') throw new Error('pause after push'); } });
   await assert.rejects(interrupted.publish(f.input), /pause after push/);
-  const outcomes = await Promise.all([new GitHubPublication(f.options).publish(f.input), new GitHubPublication(f.options).publish(f.input)]);
-  assert.ok(outcomes.every((result) => ['published', 'unknown'].includes(result.status)));
-  assert.equal(f.github.creates.length, 1);
+  // Both callers reach the create boundary before either claims it. Keep the
+  // winning draft unpromoted until the losing caller has observed it: pending
+  // is truthful here, not a second send or proof of completed publication.
+  const entered = Promise.withResolvers(), draftCreated = Promise.withResolvers(), promote = Promise.withResolvers();
+  const create = f.github.create.bind(f.github), ready = f.github.ready.bind(f.github);
+  let callers = 0;
+  f.github.create = async (input, options) => {
+    if (++callers === 2) entered.resolve();
+    await entered.promise;
+    let claimed = false;
+    await create(input, { beforeSend: () => { claimed = options.beforeSend(); return claimed; } });
+    if (claimed) draftCreated.resolve(); else await draftCreated.promise;
+  };
+  f.github.ready = async (...args) => { await promote.promise; return ready(...args); };
+  const attempts = [new GitHubPublication(f.options).publish(f.input), new GitHubPublication(f.options).publish(f.input)];
+  try {
+    const interim = await Promise.race(attempts);
+    assert.equal(interim.status, 'pending'); assert.equal(interim.pr, null);
+    assert.equal(f.github.creates.length, 1); assert.equal(f.github.pulls[0].draft, true);
+    assert.equal(f.github.promotions.length, 0);
+  } finally { promote.resolve(); }
+  const outcomes = await Promise.all(attempts);
+  assert.deepEqual(outcomes.map(result => result.status).sort(), ['pending', 'published']);
+  assert.equal(f.github.creates.length, 1); assert.equal(f.github.promotions.length, 1);
   assert.equal((await f.publisher.observe(f.input)).status, 'published');
 });
 

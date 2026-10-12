@@ -730,3 +730,21 @@ Applied these seven individual false-positive dispositions to GitHub alerts
 reference on each alert. GitHub confirmed state=dismissed for each. The first
 request was rejected because its comment exceeded GitHub's 280-character limit;
 shortened comments were then accepted. No scan configuration or query changed.
+
+## Concurrent draft observation regression — 2026-10-12
+
+CI 38253108333 passed macos but failed the publication concurrency test on Linux.
+The old assertion allowed only published/unknown; after introducing draft-first
+publication, a losing concurrent caller can truthfully observe pending while the
+winner is promoting its draft. The test now places both callers at the atomic
+create boundary, holds promotion until the loser observes the draft, and asserts
+exactly pending with no delivered PR, then published after releasing promotion.
+It also asserts exactly one create and one promotion. Production behavior is
+unchanged; this is a deterministic check of the intermediate state, not a retry
+or an unconditional acceptance of additional outcomes.
+
+The focused concurrency regression passed. Lint passed with the two existing
+settings-navigation warnings. CodeQL is now passing after the documented
+per-finding review; actual CodeRabbit approval and native acceptance remain
+outstanding.
+Full publication suite subsequently passed: 49 tests, no skips or failures.
