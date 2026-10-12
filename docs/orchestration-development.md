@@ -23,6 +23,27 @@ Keep the token private. Ctrl-C or SIGTERM joins owned work, closes storage and
 removes the fixture. A failed shutdown preserves resources for inspection. A
 SIGKILL cannot run cleanup; its printed manifest identifies the orphaned fixture.
 
+## Try the conversational Goals checkpoint
+
+Start the disposable service as above, point `CMUX_COMPANION_API` at its printed
+loopback address for `npm run dev`, open `/orchestration`, and pair with its
+private token. In **Start a goal**, select **Try conversational Goals (evaluation)**.
+The fixed supervisor asks whether to use the module fixture; answer in the
+composer. Send “Please revise the plan” to exercise another proposal, then
+approve it. Pause, send guidance, reload and resume to inspect delivery receipts.
+
+This checkpoint validates conversation through dispatch. Worker checks and
+automatic routine repair are still under implementation; the demo's later
+injected failures can require the existing recovery controls. It uses fake
+agents and fake GitHub, and does not validate your actual CCS launchers. See the
+[evidence ledger](ccs-goals-evaluation.md) for passed and unverified paths.
+
+Run the new browser journey with:
+
+```sh
+CMUX_COMPANION_CYPRESS_BROWSER=chrome npm run test:e2e:local -- --orchestration --spec cypress/e2e/orchestration-conversation.cy.ts
+```
+
 ## Drive the API
 
 The mobile frontend is available at `/orchestration`. The API can also

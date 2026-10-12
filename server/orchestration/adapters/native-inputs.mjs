@@ -10,7 +10,7 @@ const mcp = fileURLToPath(new URL('../agent-mcp.mjs', import.meta.url));
  * No goal/agent text is interpolated into that command. @param {string} value */
 const quote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
 
-/** @typedef {{ prompt: string; plannerName?: string; bridge?: { endpoint: string; credential: string }; activation?: import('./native-activation.mjs').NativeActivation }} NativeDescription */
+/** @typedef {{ prompt: string; supervisor?: boolean; plannerName?: string; bridge?: { endpoint: string; credential: string }; activation?: import('./native-activation.mjs').NativeActivation }} NativeDescription */
 
 /** Private inputs are outside native file-tool working directories. Their
  * lifecycle belongs to the process adapter; preparation never starts a worker.
@@ -35,7 +35,7 @@ export class NativeInputs {
     const description = await this.describe(request);
     requireValue(typeof description.prompt === 'string' && Buffer.byteLength(description.prompt) <= 1024 * 1024, 'Native role context exceeds limit');
     const { attempt, goalId, operationId } = request;
-    const binding = { goalId, operationId, attemptId: attempt.id, generation: attempt.generation, revision: attempt.revision, role: attempt.role, target: attempt.target };
+    const binding = { ...(description.supervisor ? { supervisor: true } : {}), goalId, operationId, attemptId: attempt.id, generation: attempt.generation, revision: attempt.revision, role: attempt.role, target: attempt.target };
     const contextPath = join(directory, 'context.txt'), settingsPath = join(directory, 'settings.json'), mcpPath = join(directory, 'mcp.json');
     const hookConfig = join(directory, 'hook.json'), bridgeConfig = join(directory, 'bridge.json');
     /** @param {string} path @param {string} value */
@@ -46,7 +46,7 @@ export class NativeInputs {
         requireValue(lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink() && readFileSync(path, 'utf8') === value, 'Native inputs changed for the recorded operation', 'IDEMPOTENCY_CONFLICT');
       }
     };
-    const nativeInstructions = attempt.role === 'planner'
+    const nativeInstructions = description.supervisor ? 'Keep the goal conversation active through companion.conversation and companion.wait_for_input. Follow the pinned supervisor protocol; do not submit a terminal planner result.' : attempt.role === 'planner'
       ? 'Call companion.submit_result with exactly {id,output:{contract}} to submit a plan, or {id,output:{question}} to ask a focused clarification and stop. The tool supplies the outer identity envelope; never put that envelope inside output. This receipt is not user approval. Native permission prompts remain interactive.'
       : attempt.role === 'reviewer' ? 'You have no mutating tools or command execution. Return only the required role envelope as raw JSON in your final answer, with no Markdown fences or surrounding commentary. Finding severity must be high, medium, low or note (never info).'
         : 'Edit only the assigned scope with native file tools. To commit, call companion.commit_candidate with a stable id, expectedHead (initially the recorded baseSha), and a commit message. The tool returns headSha. It cannot publish or accept your work. Repository checks run independently after integration; report checks you could not run. Return the required role envelope in your final answer.';
@@ -63,6 +63,6 @@ export class NativeInputs {
     this.installation?.assertCurrent();
     const argv = ccsCommand({ request, engine: this.engine, capabilities: this.capabilities, env: this.env, contextPath, settingsPath, mcpPath });
     argv[0] = this.profile;
-    return { plannerName: description.plannerName, argv: this.direct ? argv.slice(3) : argv, env: { ...this.env }, ...(description.activation ? { activation: description.activation } : {}) };
+    return { supervisor: Boolean(description.supervisor), plannerName: description.plannerName, argv: this.direct ? argv.slice(3) : argv, env: { ...this.env }, ...(description.activation ? { activation: description.activation } : {}) };
   }
 }

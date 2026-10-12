@@ -1,3 +1,5 @@
+import { createBridge } from '../server/orchestration/bridge.mjs';
+import { runScriptedSupervisor } from '../tests/helpers/orchestration/scripted-supervisor.mjs';
 import { DomainError, object } from '../server/orchestration/domain/contracts.mjs';
 import { existsSync, renameSync, realpathSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -36,10 +38,15 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
           };
         },
         prepareGoal: goal => fixtureRemote.fetchBase(goal.repositoryId, goal.baseBranch),
-        createAgents: ({ onResult }) => {
+        createAgents: ({ onResult, describe }) => {
           const agents = new ScriptedAgents({
-            script: async ({ goalId, attempt }, { signal }) => {
-              if (attempt.role === 'planner') return { contract: repo.contract };
+            script: async (request, { signal }) => {
+              const { goalId, attempt } = request;
+              if (attempt.role === 'planner') {
+                const description = describe(request);
+                if (description.supervisor) return runScriptedSupervisor({ bridge: createBridge(description.bridge), contract: repo.contract, signal });
+                return { contract: repo.contract };
+              }
               if (attempt.role === 'implementer') {
                 if (['A', 'B'].includes(attempt.taskId)) {
                   if (!shared.has(goalId)) shared.set(goalId, barrier());
@@ -135,7 +142,7 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
           };
           return new GitHubPublication({ directory: join(directory, 'publications'), remote, github: fixtureGithub });
         },
-        createReviewMerge: ({ repositories }) => new ReviewMerge({ repositories, remote: fixtureRemote }),
+        createReviewMerge: ({ repositories }) => new ReviewMerge({ repositories, remote: { fetchBase: (repositoryId, branch) => fixtureRemote.fetchBase(repositoryId, branch) } }),
       },
     };
   } });

@@ -23,8 +23,8 @@ export async function apiFixture(t, { resultIntake = false, readOnly = false, co
   registerOrchestrationRoutes(app, { service, token: TOKEN, bridgeAuth, results, readOnly, configuration, reconcile, cleanup, references });
   t.after(async () => { await app.close(); store.close(); if (directory) rmSync(directory, { recursive: true, force: true }); });
   await app.ready();
-  const planner = () => {
-    service.execute(create, { kind: 'user' });
+  const planner = (experienceVersion) => {
+    service.execute({ ...create, payload: { ...create.payload, ...(experienceVersion === undefined ? {} : { experienceVersion }) } }, { kind: 'user' });
     service.execute({ id: 'launch', goalId: 'goal', expectedVersion: 1, type: 'request_attempt', payload: { attemptId: 'planner', operationId: 'planner_operation', role: 'planner', conversationId: 'conversation' } }, { kind: 'system' });
     service.execute({ id: 'dispatch', goalId: 'goal', expectedVersion: 2, type: 'record_dispatch', payload: { attemptId: 'planner', identity: 'planner_process', worktree: '/tmp/private-context', branch: 'task' } }, { kind: 'system' });
     return bridgeAuth.issue('goal', 'planner');

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isSupervisor } from './domain/conversation.mjs';
 import { ownsWorker } from './domain/transitions.mjs';
 import { requireValue } from './domain/contracts.mjs';
 
@@ -46,7 +47,7 @@ export class Reconciler {
       }
       this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
     }
-    if (attempt.workerState !== 'unknown' && attempt.generation === goal.generation && !['aborted', 'merged'].includes(goal.status)) {
+    if (attempt.workerState !== 'unknown' && (isSupervisor(goal, attempt) || attempt.generation === goal.generation) && !['aborted', 'merged'].includes(goal.status)) {
       this.record(goalId, 'record_failure', { attemptId, uncertain: true, error: 'Worker identity is uncertain; reconcile before retrying' });
     }
   }
@@ -62,7 +63,7 @@ export class Reconciler {
       this.ownership.assertOwned();
       let goal = this.store.get(operation.goalId), attempt = goal?.attempts.find((entry) => entry.id === operation.attemptId);
       const current = () => goal && attempt && goal.generation === operation.generation && goal.revision === operation.revision
-        && goal.status !== 'aborted' && attempt.status === 'running' && attempt.workerState === 'running' && this.service.repositoryIds.has(goal.repositoryId);
+        && !['aborted', 'merged'].includes(goal.status) && !goal.conversation?.paused && attempt.status === 'running' && attempt.workerState === 'running' && this.service.repositoryIds.has(goal.repositoryId);
       if (!current() || attempt?.lastResume?.id === operation.id) { this.store.advanceOperation(operation.id, operation.status, 'completed'); continue; }
       this.store.advanceOperation(operation.id, 'pending', 'dispatching');
       let code = null;

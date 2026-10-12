@@ -21,7 +21,7 @@ async function waitFor(read, predicate, timeout = 5000) {
   while (Date.now() < deadline) { let value; try { value = await read(); } catch { /* Waiting for an atomic fixture receipt. */ } if (predicate(value)) return value; await delay(20); }
   assert.fail('Fixture did not reach its named terminal barrier');
 }
-async function fixture(t, codex = false, Driver = NativeTerminal) {
+async function fixture(t, codex = false, Driver = NativeTerminal, supervisor = false) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'orchestration-terminal-'))), worktree = join(root, 'worktree'); await mkdir(worktree);
   const releaseDirectory = join(root, 'releases', 'a'.repeat(40)); await mkdir(releaseDirectory, { recursive: true });
   const calls = join(root, 'native-calls'), bin = join(root, 'native-fixture');
@@ -43,7 +43,7 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
   const bridge = { endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-activation-credential-at-least-32-characters' };
   const installation = codex ? await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }) : undefined;
   const Inputs = codex ? CodexInputs : NativeInputs;
-  const inputs = new Inputs({ installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', plannerName: 'DICTEE Planning Onboarding', activation: bridge, bridge }) });
+  const inputs = new Inputs({ installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', supervisor, plannerName: 'DICTEE Planning Onboarding', activation: bridge, bridge }) });
   let child, creates = 0, starts = 0, opens = 0;
   const terminal = {
     async create(cwd, title) { assert.equal(cwd, worktree); assert.equal(title, 'DICTEE Planning Onboarding'); creates++; return { workspaceId }; },
@@ -268,4 +268,25 @@ test('stopped supervisor outbox is recovered by the replacement adapter after an
   await waitFor(() => outbox.entries()[0].value.status, value => value === 'accepted');
   assert.equal(deliveries, 1);
   await replacement.close();
+});
+
+for (const codex of [false, true]) test(`conversational ${codex ? 'Codex' : 'Claude'} inputs retain terminal handoff and scoped supervisor tools`, { timeout: 15000 }, async t => {
+  const f = await fixture(t, codex, NativeTerminal, true);
+  const launched = await f.driver.launch(f.request);
+  f.request.attempt.identity = launched.identity;
+  const records = await waitFor(f.records, entries => entries?.length === 1);
+  const config = JSON.parse(await readFile(join(f.root, 'native/operation/bridge.json'), 'utf8'));
+  assert.equal(config.handoffProtocol, 1);
+  assert.equal(config.binding.supervisor, true);
+  assert.equal(records.length, 1);
+  assert.equal((await f.driver.observe(f.request.operationId)).identity, launched.identity);
+  const context = await readFile(join(f.root, 'native/operation/context.txt'), 'utf8');
+  assert.match(context, /companion.conversation/);
+  assert.doesNotMatch(context, /Call companion.submit_result/);
+  f.input('exit\n'); await waitFor(f.session, session => session?.phase === 'paused');
+  await f.driver.resume({ ...f.request, resumeId: 'supervisor-resume' });
+  const resumed = await waitFor(f.records, entries => entries?.length === 2);
+  assert.equal(resumed[0].conversation, resumed[1].conversation);
+  assert.equal(resumed[1].fresh, false);
+  assert.deepEqual(f.counts(), { creates: 1, starts: 1, opens: 0 });
 });

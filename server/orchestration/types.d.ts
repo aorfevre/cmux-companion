@@ -57,7 +57,19 @@ export interface ReviewRound {
   posted?: string[]; unconfirmed?: string[]; resolved?: string[]; outcome?: ReviewRoundOutcome; error?: string | null; settledAt?: number;
 }
 export interface GoalReference { id: string; name: string; bytes: number; mimeType: 'text/plain' | 'image/png' | 'image/jpeg' | 'image/webp' }
+export interface GoalMessage {
+  id: string; sequence: number; author: 'user' | 'supervisor' | 'service';
+  kind: 'message' | 'question' | 'proposal' | 'decision' | 'progress' | 'result';
+  text: string; revision: number; delivery: 'queued' | 'delivered' | 'answered';
+  replyTo?: number;
+}
+export interface GoalConversation {
+  messages: GoalMessage[]; supervisorAttemptId: string | null;
+  wake: number; seenWake: number; waiting: boolean; paused: boolean;
+  dispatchApproved: boolean;
+}
 export interface Goal {
+  experienceVersion?: 2; conversation?: GoalConversation;
   teamConfiguration?: TeamConfiguration; team?: TeamProposal; teamHistory?: TeamProposal[];
   contractSchema?: 2;
   waveResults?: { waveId: string; generation: number; revision: number; headSha: string }[];

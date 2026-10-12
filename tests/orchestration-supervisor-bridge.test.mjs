@@ -1,0 +1,70 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { apiFixture, HEADERS } from './helpers/orchestration/api-fixture.mjs';
+import { contract } from './helpers/orchestration/domain-fixture.mjs';
+import { createBridge } from '../server/orchestration/bridge.mjs';
+import { agentMcpRequest } from '../server/orchestration/agent-mcp.mjs';
+import { rolePrompt } from '../server/orchestration/adapters/role-prompts.mjs';
+
+test('supervisor MCP carries exact receipts through questions, proposals and approval on the real API', async t => {
+  const { app, planner, store, service } = await apiFixture(t, { resultIntake: true });
+  const credential = planner(2), endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
+  const bridge = createBridge({ endpoint, credential });
+  const attempt = store.get('goal').attempts[0];
+  const binding = { ...attempt, goalId: 'goal', attemptId: attempt.id, supervisor: true };
+  const context = { bridge, binding };
+  const invoke = (name, args) => agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, context);
+  const send = (id, action, payload) => ({ id, action, payload, expectedVersion: store.get('goal').version });
+  const question = send('question', 'question', { message: 'Which module?', replyTo: 1 });
+  assert.equal((await invoke('conversation', question)).result.isError, undefined);
+  const answer = { id: 'answer', goalId: 'goal', expectedVersion: store.get('goal').version, type: 'send_goal_message', payload: { message: 'The first module.' } };
+  assert.equal((await app.inject({ method: 'POST', url: '/api/orchestration/commands', headers: HEADERS, payload: answer })).statusCode, 200);
+  await invoke('conversation', send('ack', 'ack', { through: 3 }));
+  await invoke('conversation', send('reply', 'reply', { message: 'Understood.', replyTo: 3 }));
+  const count = store.get('goal').conversation.messages.length;
+  assert.equal((await invoke('conversation', question)).result.isError, undefined, 'lost response replays its original envelope');
+  assert.equal(store.get('goal').conversation.messages.length, count);
+  assert.equal((await invoke('conversation', { ...question, expectedVersion: store.get('goal').version })).result.isError, true, 'changed envelope cannot reuse a receipt');
+  service.execute({ id: 'policy', goalId: 'goal', expectedVersion: store.get('goal').version, type: 'set_plan_review_policy', payload: { enabled: false } }, { kind: 'system' });
+  await invoke('conversation', send('proposal', 'propose', { contract: contract() }));
+  const goal = store.get('goal');
+  assert.equal(goal.revision, 1);
+  assert.equal(goal.attempts[0].workerState, 'running');
+  assert.match(rolePrompt(goal, goal.attempts[0]), /persistent goal supervisor/);
+  assert.equal((await invoke('submit_result', { id: 'legacy', output: { question: 'Replace me?' } })).result.isError, true);
+  await assert.rejects(bridge.submitResult({ id: 'legacy-route', raw: '{}' }), { code: 'FORBIDDEN' });
+  await assert.rejects(bridge.submit({ id: 'approve', goalId: 'goal', expectedVersion: goal.version, type: 'approve', payload: { revision: 1 } }), { code: 'FORBIDDEN' });
+  assert.equal(store.get('goal').approvedRevision, null);
+  assert.equal(store.get('goal').conversation.messages[2].delivery, 'answered');
+  assert.equal(store.operations().filter(op => op.kind === 'terminate').length, 0);
+  assert.ok(!JSON.stringify(await bridge.status()).includes(credential));
+});
+
+test('supervisor tools stay unavailable to legacy planners and cannot bypass pairing or origin checks', async t => {
+  const { app, planner, store } = await apiFixture(t);
+  const credential = planner();
+  const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
+  const bridge = createBridge({ endpoint, credential });
+  const command = { id: 'spoof', goalId: 'goal', expectedVersion: 3, type: 'supervisor_question', payload: { message: 'Spoof' } };
+  await assert.rejects(bridge.submit(command), { code: 'FORBIDDEN' });
+  const context = { bridge, binding: { role: 'planner' } };
+  const list = await agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, context);
+  assert.ok(!list.result.tools.some(tool => tool.name === 'conversation'));
+  const result = await app.inject({ method: 'POST', url: '/api/orchestration/agent/commands', headers: { authorization: `Bearer ${credential}`, origin: 'https://evil.example' }, payload: command });
+  assert.equal(result.statusCode, 403);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/orchestration/agent/commands', payload: command })).statusCode, 401);
+  assert.equal(store.get('goal').version, 3);
+});
+
+test('waiting stays inside one tool call across idle and paused observations', async () => {
+  const bridge = createBridge({ endpoint: 'http://127.0.0.1', credential: 'unused' });
+  let reads = 0;
+  bridge.status = async () => ({ experienceVersion: 2, conversation: { wake: reads++ < 1 ? 1 : 2, paused: reads === 2 } });
+  const result = await bridge.waitForInput(1);
+  assert.equal(reads, 3);
+  assert.equal(result.conversation.wake, 2);
+  await assert.rejects(bridge.waitForInput(-1), /Invalid conversation cursor/);
+  await assert.rejects(bridge.waitForInput(3), /ahead/);
+  bridge.status = async () => ({ experienceVersion: 1 });
+  await assert.rejects(bridge.waitForInput(1), /unavailable/);
+});

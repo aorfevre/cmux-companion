@@ -1,3 +1,4 @@
+import { isSupervisor } from './conversation.mjs';
 import { validateAssignmentOverride } from './teams.mjs';
 import { transition, planTarget } from './transitions.mjs';
 
@@ -11,6 +12,13 @@ export function actionView(goal) {
     try { transition(goal, { id: 'projection', goalId: goal.id, expectedVersion: goal.version, type, payload }, { kind: 'user' }); actions.push({ type, label, payload }); return null; }
     catch (error) { return error instanceof Error ? error.message : 'Action unavailable'; }
   };
+  if (goal.experienceVersion === 2) {
+    offer('send_goal_message', 'Send message', { message: 'Your message' });
+    offer(goal.conversation?.paused ? 'resume_goal' : 'pause_goal', goal.conversation?.paused ? 'Resume goal' : 'Pause goal', {});
+    const supervisor = goal.attempts.find(attempt => isSupervisor(goal, attempt));
+    if (supervisor?.status === 'running') offer('resume_planner', 'Resume supervisor', { attemptId: supervisor.id });
+    if (supervisor?.workerState === 'stopped') offer('retry_attempt', 'Restart supervisor from saved conversation', { attemptId: supervisor.id });
+  }
   offer('rename_goal', 'Edit title', { title: goal.title.slice(0, 120) });
   offer('answer_clarification', 'Send answer', { answer: 'Your answer' });
   const approvalBlocked = offer('approve', `Approve revision ${goal.revision}`, { revision: goal.revision });

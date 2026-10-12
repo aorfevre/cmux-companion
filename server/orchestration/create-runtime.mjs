@@ -102,7 +102,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
       const prompt = rolePrompt(goal, attempt);
       const credential = bridgeAuth.issueForDispatch(goal.id, attempt.id, request.operationId);
       const activation = { endpoint: `http://127.0.0.1:${address.port}`, credential };
-      return { prompt, plannerName: goal.plannerName, activation, bridge: activation };
+      return { prompt, supervisor: goal.experienceVersion === 2 && goal.conversation?.supervisorAttemptId === attempt.id, plannerName: goal.plannerName, activation, bridge: activation };
     };
     const ownedAgents = agents;
     let started = false, closed = false, shutdownRequested = false;

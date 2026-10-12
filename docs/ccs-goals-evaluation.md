@@ -37,13 +37,107 @@ and preserve CCS routing rather than treating alias resolution as runtime parity
   session binding, resume arguments, process/PTY identity and restricted tools
   with disposable fake providers. They do not establish live launcher parity or
   the proposed continuous Goals conversation.
-- Not run: new-experience implementation tests, full coverage, lint, typecheck,
-  build or Cypress.
+- Implementation verification is recorded in the checkpoint below.
 - Not run: native provider/cmux trials, GitHub publication, installation or update.
 
-No product implementation or acceptance criterion is claimed complete. A1–A16
-and the five-goal native success measure remain pending. The user approved the
+The full delivery contract and five-goal native success measure remain pending.
+The conversation foundation below is implemented; partial criterion evidence does
+not establish end-to-end native usability. The user approved the
 committed contract with “implement the goal. I approve it”; the human-review
 gate is satisfied before the implementation plan commit.
 
 The original checkout and its untracked burst-scan plan remain unchanged.
+
+
+## Conversation foundation checkpoint — 2026-10-12
+
+Implemented in the isolated worktree, with one owner and no changes to installed
+services:
+
+- Persisted opt-in experience version 2, ordered conversation messages and
+  queued/delivered/answered receipts. Existing goals keep their original flow.
+- One recorded planner acts as the supervisor across plan generations, using
+  scoped conversation commands. Questions retain the native attempt; supervisor
+  commands cannot approve, commit, invoke legacy planner publication or bypass
+  the user's publication decision.
+- Native Claude/Codex input preparation carries a supervisor binding through the
+  existing CCS adapter and terminal handoff. The transport waits without model
+  polling turns. Real native timeout/idle behavior is still unverified.
+- Pause gates pending launch/integration/verification/publication work. Abort
+  retains evidence and requests observed termination. Unknown supervisor
+  ownership blocks execution barriers; confirmed stop plus explicit recovery can
+  reconstruct a supervisor from saved context.
+- Conversation-first browser workspace, proposals, current workers, result
+  evidence and a persistent composer. Exact pending message envelopes are saved
+  per journal for reload/reconciliation. Technical records remain in details.
+- Account-free demo supervisor uses the real scoped HTTP API, not workflow store
+  writes. It asks a fixed question, acknowledges guidance, revises and dispatches.
+  It is deliberately scripted and proves no model intelligence or CCS routing.
+
+### Passed evidence
+
+- `npm run verify`: backend 1,052 passed / 1 intentionally skipped; UI 205 passed;
+  backend line coverage 97.40%, UI line coverage 95.02%; lint, types and build
+  passed. Lint retains two existing settings navigation warnings.
+- Follow-up UI coverage passed 208 tests at 95.04% line coverage; final lint,
+  typecheck and build passed after the conversation-control race correction.
+- Targeted UI tests subsequently passed 34 cases, including exact original
+  message-envelope replay after reload and isolation between journals.
+- Native terminal fixture suite: 13 passed, including both Claude-shaped and
+  Codex-shaped supervisor handoff/resume with the same native conversation ID.
+  These are disposable fake executables, not the user's actual launchers.
+- Conversation domain/API regressions: 11 passed, including unknown-worker
+  fencing, acknowledged input, exact receipt replay and self-approval denial.
+- Real-service conversation Cypress: one journey passed in Chrome, with checked
+  1440px desktop and 390px phone widths. It covers start, question/answer,
+  proposal revision, pause, queued steering, reload, resume, approval, dispatch
+  and abort. Exactly one supervisor launch is asserted across that journey.
+- Legacy real-service Cypress: three writable journeys passed, one read-only
+  branch intentionally pending in the writable run. Includes independent
+  reviews, failed checks, exact-head publication, review fixes and merge conflict
+  repair against the disposable remote and fake GitHub.
+- Added a real-Git development-composition regression for the review-merge remote
+  binding; passed after the fixture correction described below.
+
+### Interventions and limits
+
+- Initial new terminal-resume tests failed because the fixture did not copy its
+  launched identity into its resume request. Corrected the fixture, then all 13
+  terminal tests passed; the ownership guard was retained.
+- Initial legacy Cypress run failed with `REVIEW_FIX_FAILED` while preparing a
+  post-publication merge. The demo constructed ReviewMerge before createPublisher
+  initialized `fixtureRemote`. Replaced the eager undefined reference with a
+  deferred fixed fetch adapter, added a regression, and reran successfully.
+- A later conversation Cypress run exposed a version race: the supervisor's
+  wait receipt could commit between projecting and clicking Pause. The pause was
+  rejected and the user's following message was answered rather than queued.
+  Added bounded rebasing for definitive conflicts on message/pause/resume only;
+  approval and uncertain-response envelopes remain unchanged. Added a UI
+  regression, waited for the observed paused state in Cypress, and passed the
+  journey after that correction.
+- The first desktop capture was constrained to 1280px by Chrome's headless window.
+  The harness now uses a 1600px window and checks the actual 1440px document width.
+  Inspected both new screenshots; collapsed superseded proposals and verification
+  argv to keep the phone conversation readable.
+- Full verification preceded the final fixture-only remote-binding correction
+  and the conversation-control race correction; targeted regression, Cypress,
+  full UI coverage, lint, types and build validate those follow-ups. No coverage threshold was changed.
+
+### Remaining implementation and acceptance
+
+The approved worker edit–check–fix tool and bounded automatic routine recovery
+are **not implemented**. The new experience's full result/diff/review/publication
+journey, process-level service restart, readiness/policy disclosure for actual
+launchers, native waiting/capacity evidence and all five native representative
+goals remain outstanding. The current Cypress journey ends after dispatch/abort;
+it must not be described as complete A1 or native success. Result-card unit tests
+and unchanged legacy delivery tests are supporting evidence only.
+
+Actual `xclaude` / `xcodex` provider trials, live cmux and GitHub publication were
+not run. No installation, update, merge or deployment occurred. Keep the delivery
+in progress until the remaining contract and native evidence are resolved.
+
+
+Inspected conversation captures (scripted fixture only):
+[desktop at 1440px](evidence/ccs-goals/conversation-desktop.png) and
+[phone at 390px](evidence/ccs-goals/conversation-phone.png).

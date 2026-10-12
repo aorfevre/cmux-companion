@@ -1,3 +1,4 @@
+import { ownsExecution } from './conversation.mjs';
 import { currentReviews } from './review.mjs';
 
 export const PLAN_REVISION_LIMIT = 2;
@@ -10,7 +11,7 @@ export function revisablePlan(goal) {
     || goal.status !== 'awaiting_approval' || goal.approvedRevision !== null
     || goal.integration || goal.publication || !goal.hold
     || goal.clarification && goal.clarification.answer === undefined
-    || goal.attempts.some(attempt => attempt.workerState !== 'stopped')
+    || goal.attempts.some(attempt => ownsExecution(goal, attempt))
     || goal.results?.some(result => result.status === 'pending')
     || goal.verificationRuns?.some(run => run.workerState !== 'stopped')) return null;
   const review = currentReviews(goal).filter(entry => entry.kind === 'plan'
@@ -33,7 +34,7 @@ export function requiresPlanReview(goal) {
  * @param {import('../types.d.ts').Goal} goal */
 export function repairableReviews(goal) {
   if (goal.status !== 'building' || goal.approvedRevision !== goal.revision || !goal.hold?.reasons.length
-    || goal.attempts.some(attempt => attempt.workerState !== 'stopped')
+    || goal.attempts.some(attempt => ownsExecution(goal, attempt))
     || goal.results?.some(result => result.status === 'pending')
     || goal.verificationRuns?.some(run => run.workerState !== 'stopped')) return false;
   const reviews = currentReviews(goal);

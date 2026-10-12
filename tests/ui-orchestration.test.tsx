@@ -8,6 +8,7 @@ const config = { readOnly: false, terminal: false, limits: { global: 4, perGoal:
 let readOnly = false, paired = true;
 let stream: { onopen?: () => void; onerror?: () => void; close: ReturnType<typeof vi.fn>; listeners: Record<string, () => void> };
 beforeEach(() => {
+  localStorage.clear();
   readOnly = false; paired = true;
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
@@ -25,6 +26,42 @@ beforeEach(() => {
     if (options?.method === 'POST') return {};
     throw new Error(`Unexpected ${url}`);
   });
+});
+
+test('reload reconciles a saved conversation command using its exact original receipt envelope', async () => {
+  const command = { id: 'stable-message', goalId: 'saved-goal', expectedVersion: 7, type: 'send_goal_message', payload: { message: 'Preserve this input.' } };
+  localStorage.setItem('companion.goal-message.journal', JSON.stringify(command));
+  render(<GoalBoard />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry pending request' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('/api/orchestration/commands', { method: 'POST', body: JSON.stringify(command) }));
+  await waitFor(() => expect(localStorage.getItem('companion.goal-message.journal')).toBeNull());
+  expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull();
+});
+
+test('a pending conversation message from another journal cannot target the current service', async () => {
+  localStorage.setItem('companion.goal-message.other-journal', JSON.stringify({ id: 'other', type: 'send_goal_message' }));
+  render(<GoalBoard />);
+  await screen.findByRole('button', { name: 'Start a goal' });
+  expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull();
+});
+
+test('conversation message retries a definitive version conflict against fresh state without rebasing uncertain outcomes', async () => {
+  const command = { id: 'stale-message', goalId: 'saved-goal', expectedVersion: 7, type: 'send_goal_message', payload: { message: 'Preserve this input.' } };
+  localStorage.setItem('companion.goal-message.journal', JSON.stringify(command));
+  const original = api.getMockImplementation()!;
+  let submissions = 0;
+  api.mockImplementation(async (url, options) => {
+    if (url.endsWith('/commands') && submissions++ === 0) throw new ApiError('Goal version changed', 409, 'VERSION_CONFLICT');
+    if (url.endsWith('/goals/saved-goal')) return { version: 9 };
+    return original(url, options);
+  });
+  render(<GoalBoard />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry pending request' }));
+  await waitFor(() => expect(submissions).toBe(2));
+  const sent = api.mock.calls.filter(([url]) => url.endsWith('/commands')).map(([, options]) => JSON.parse(options!.body as string));
+  expect(sent[0]).toEqual(command);
+  expect(sent[1]).toEqual({ ...command, id: expect.any(String), expectedVersion: 9 });
+  expect(sent[1].id).not.toBe(command.id);
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); history.replaceState(null, '', '/'); });
 async function start() {

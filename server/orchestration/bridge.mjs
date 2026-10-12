@@ -1,4 +1,5 @@
 // Agent-side transport only. This executable has no workflow storage imports.
+import { setTimeout as delay } from 'node:timers/promises';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -20,6 +21,25 @@ export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
       const body = await response.json();
       if (!response.ok) throw Object.assign(new Error('Agent status rejected'), { code: body.code || 'REQUEST_FAILED' });
       return body;
+    },
+    /** Waiting happens inside the transport, never by repeatedly invoking the
+     * model. Each request has a deadline and authenticates ownership anew.
+     * @param {number} throughWake */
+    async waitForInput(throughWake) {
+      if (!Number.isSafeInteger(throughWake) || throughWake < 0) throw new Error('Invalid conversation cursor');
+      for (;;) {
+        let state;
+        try { state = await this.status(); }
+        catch (error) {
+          const code = /** @type {{code?: string}} */ (error).code;
+          if (code && !['REQUEST_FAILED', 'NOT_READY'].includes(code)) throw error;
+          await delay(1000); continue;
+        }
+        if (state.experienceVersion !== 2 || !state.conversation) throw new Error('Conversation unavailable');
+        if (throughWake > state.conversation.wake) throw new Error('Conversation cursor is ahead of saved state');
+        if (!state.conversation.paused && state.conversation.wake > throughWake) return state;
+        await delay(1000);
+      }
     },
     /** @param {string} id @param {number} [offset] */
     async reference(id, offset = 0) {

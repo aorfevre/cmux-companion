@@ -9,6 +9,15 @@ import { once } from 'node:events';
 import { startOrchestrationDemo } from '../scripts/run-orchestration-dev.mjs';
 import { fixtureGit } from './helpers/orchestration/fixture.mjs';
 
+test('disposable review merge fetches through the publisher remote after composition finishes', async t => {
+  const demo = await startOrchestrationDemo(); t.after(() => demo.close());
+  const prHeadSha = await fixtureGit(demo.manifest.repository, ['commit-tree', 'HEAD^{tree}', '-p', demo.manifest.baseSha, '-m', 'Disposable review head']);
+  const merged = await demo.runtime.scheduler.reviewFixes.reviewMerges.prepareReviewMerge({ goalId: 'g', repositoryId: 'repo', roundId: 'round', prHeadSha, baseBranch: 'main' });
+  assert.equal(merged.mergedBaseSha, demo.manifest.baseSha);
+  assert.match(merged.mergeCommitSha, /^[a-f0-9]{40}$/);
+  assert.deepEqual(merged.conflictPaths, []);
+});
+
 test('disposable development composition delivers through paired HTTP and real Git checks', { timeout: 60000 }, async (t) => {
   const demo = await startOrchestrationDemo(); t.after(() => demo.close());
   const { runtime, manifest } = demo;

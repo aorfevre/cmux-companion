@@ -1,3 +1,4 @@
+import { isSupervisor } from './domain/conversation.mjs';
 import { isAuthorized, isSafeOrigin, safeEqual, sessionCookie } from '../security.mjs';
 import { DomainError, identifier, integer, object, requireValue } from './domain/contracts.mjs';
 import { parseCommand, USER_COMMANDS, AGENT_COMMANDS } from './domain/commands.mjs';
@@ -108,7 +109,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     const input = object(request.body);
     requireValue(Object.keys(input).length === 2 && Number.isSafeInteger(input.expectedVersion) && input.expectedVersion === goal.version, 'Goal version changed', 'VERSION_CONFLICT');
     const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
-    requireValue(!['aborted', 'merged', 'delivered'].includes(goal.status) && attempt && ['running', 'succeeded'].includes(attempt.status) && attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.workerState === 'running', 'Owned agent terminal is unavailable', 'NOT_READY');
+    requireValue(!['aborted', 'merged'].includes(goal.status) && attempt && (isSupervisor(goal, attempt) || (goal.status !== 'delivered' && attempt.generation === goal.generation && attempt.revision === goal.revision)) && ['running', 'succeeded'].includes(attempt.status) && attempt.workerState === 'running', 'Owned agent terminal is unavailable', 'NOT_READY');
     requireValue(service.ownership && service.agents.open, 'Native terminal is unavailable', 'UNSUPPORTED_CAPABILITY');
     service.ownership.assertOwned(); await service.agents.open(attempt.operationId);
     return { opened: true };

@@ -1,3 +1,4 @@
+import { isSupervisor, ownsExecution } from './conversation.mjs';
 import { PLAN_REVISION_LIMIT } from './review-repairs.mjs';
 import { requireValue } from './contracts.mjs';
 
@@ -11,7 +12,7 @@ export function captureFailureHold(before, change, commandId) {
   if (goal.generation !== before.generation && goal.status !== 'addressing_review') return;
   /** @type {NonNullable<Goal['hold']>['reasons']} */ const reasons = [];
   for (const attempt of goal.attempts) {
-    if (attempt.generation !== goal.generation || attempt.revision !== goal.revision) continue;
+    if (!isSupervisor(goal, attempt) && (attempt.generation !== goal.generation || attempt.revision !== goal.revision)) continue;
     const prior = before.attempts.find(entry => entry.id === attempt.id);
     if ((['failed', 'uncertain', 'cancelled'].includes(attempt.status) && prior?.status !== attempt.status) || (attempt.workerState === 'unknown' && prior?.workerState !== 'unknown')) {
       reasons.push({ kind: 'attempt', target: attempt.id, message: `${attempt.role}${attempt.taskId ? ` for ${attempt.taskId}` : ''} did not finish successfully.` });
@@ -49,7 +50,7 @@ export function captureFailureHold(before, change, commandId) {
 export function recoverGoal(goal, holdId, commandId, mode = 'repair') {
   requireValue(['repair', 'retry_verification'].includes(String(mode)), 'Unknown recovery mode');
   requireValue(goal.hold && goal.hold.id === holdId, 'The failure hold changed', 'STALE_TARGET');
-  requireValue(!goal.attempts.some(attempt => attempt.workerState !== 'stopped' && !(attempt.workerState === 'pending' && attempt.status === 'queued' && !attempt.identity))
+  requireValue(!goal.attempts.some(attempt => ownsExecution(goal, attempt) && !(attempt.workerState === 'pending' && attempt.status === 'queued' && !attempt.identity))
     && !goal.verificationRuns?.some(run => run.workerState !== 'stopped'), 'Let active workers finish and reconcile uncertain ownership before recovery', 'OWNERSHIP_UNCERTAIN');
   requireValue(!goal.results?.some(result => result.status === 'pending' && !result.repair), 'Wait for submitted results to settle before recovery', 'NOT_READY');
   requireValue(goal.reviewRound?.state !== 'unknown', 'Confirm the fix push outcome before recovery', 'OWNERSHIP_UNCERTAIN');
@@ -60,7 +61,7 @@ export function recoverGoal(goal, holdId, commandId, mode = 'repair') {
     requireValue(!goal.reviews.some(review => review.kind === 'integration' && review.target === goal.integrationHead && review.disposition === 'request_changes'), 'Repair blocking review findings before retrying verification', 'NOT_READY');
     run.retryRequested = true; goal.verification = null;
   }
-  const latest = new Map(goal.attempts.filter(attempt => attempt.generation === goal.generation && attempt.revision === goal.revision)
+  const latest = new Map(goal.attempts.filter(attempt => isSupervisor(goal, attempt) || (attempt.generation === goal.generation && attempt.revision === goal.revision))
     .map(attempt => [JSON.stringify([attempt.role, attempt.taskId, attempt.target]), attempt]));
   for (const attempt of latest.values()) if (['planner', 'reviewer'].includes(attempt.role) && ['failed', 'cancelled'].includes(attempt.status)) attempt.retryRequested = true;
   for (const task of goal.tasks) {

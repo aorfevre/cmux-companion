@@ -76,7 +76,7 @@ export class CodexInputs extends NativeInputs {
     argv.push('--strict-config', '--dangerously-bypass-hook-trust');
     if (this.engine.model !== 'default') argv.push('--model', this.engine.model);
     if (request.attempt.mode === 'background') argv.push('exec', '--json');
-    argv.push('Follow the pinned role context. Read project files using the files MCP server. Use only the scoped role tools. ' + (request.attempt.role === 'planner'
+    argv.push('Follow the pinned role context. Read project files using the files MCP server. Use only the scoped role tools. ' + (prepared.supervisor ? 'Use companion.conversation and companion.wait_for_input to maintain the goal conversation. Follow the pinned supervisor protocol.' : request.attempt.role === 'planner'
       ? 'Call companion.submit_result with {id,output:{question}} or {id,output:{contract}}. The tool supplies the outer identity envelope; a final text response does not submit a result.'
       : 'Return the required JSON role envelope as your final answer.'));
     return { plannerName: prepared.plannerName, argv, env: { ...prepared.env, CODEX_HOME: home, ...(this.ccsxp ? { CCSXP_CODEX_HOME: home } : {}) }, ...(prepared.activation ? { activation: prepared.activation } : {}) };

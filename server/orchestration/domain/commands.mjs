@@ -1,3 +1,4 @@
+import { SUPERVISOR_COMMANDS } from './conversation.mjs';
 import { identifier, integer, object, requireValue, text } from './contracts.mjs';
 /** @param {unknown} value @returns {import('../types.d.ts').Command} */
 export function parseCommand(value) {
@@ -6,9 +7,10 @@ export function parseCommand(value) {
   return { id: identifier(input.id), goalId: identifier(input.goalId), expectedVersion: integer(input.expectedVersion), type: text(input.type, 80), payload: object(input.payload) };
 }
 export const USER_COMMANDS = new Set(['override_assignment', 'recover_goal', 'approve_publication', 'rename_goal', 'answer_clarification', 'retry_startup', 'create_goal', 'publish_contract', 'request_revision', 'approve', 'abort', 'authorize_repair', 'retry_task', 'retry_attempt', 'retry_verification', 'retry_integration', 'resume_planner', 'accept_moved_target', 'request_review_fix']);
+for (const type of ['send_goal_message', 'pause_goal', 'resume_goal']) USER_COMMANDS.add(type);
 /** @type {Readonly<Record<import('../types.d.ts').Role, ReadonlySet<string>>>} */
 export const AGENT_COMMANDS = Object.freeze({
-  planner: new Set(['publish_contract', 'request_clarification']), implementer: new Set(['submit_candidate']),
+  planner: new Set(['publish_contract', 'request_clarification', ...SUPERVISOR_COMMANDS]), implementer: new Set(['submit_candidate']),
   reviewer: new Set(['record_review']), integrator: new Set(['submit_integration_repair']),
   review_fixer: new Set([]),
 });

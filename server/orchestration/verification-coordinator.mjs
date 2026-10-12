@@ -59,7 +59,7 @@ export class VerificationCoordinator {
     }
     for (const snapshot of this.store.list()) {
       const goal = this.store.get(snapshot.id);
-      if (!goal || goal.hold || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
+      if (!goal || goal.hold || goal.conversation?.paused || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
       const prior = goal.verificationRuns?.some((run) => run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && run.waveId === verificationWaveId(goal) && !run.retryRequested);
       if (prior || !integratedWaveReady(goal)) continue;
       try { this.record(goal.id, 'request_verification', { operationId: this.id() }); }
@@ -85,7 +85,7 @@ export class VerificationCoordinator {
       if (!permitted) {
         this.record(goal.id, 'cancel_verification', { operationId: operation.id }); this.store.advanceOperation(operation.id, 'pending', 'completed'); continue;
       }
-      if (goal.hold) continue;
+      if (goal.hold || goal.conversation?.paused) continue;
       // One verification process at a time; implementation/review admission keeps
       // running in the ordinary scheduler while this job awaits its child.
       if (this.active.size

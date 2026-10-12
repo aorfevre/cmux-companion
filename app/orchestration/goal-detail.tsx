@@ -1,4 +1,5 @@
 "use client";
+import { GoalConversation } from './goal-conversation';
 import { useState } from 'react';
 import type { Contract } from '../../server/orchestration/types';
 import { GoalActivity } from './goal-activity';
@@ -8,7 +9,7 @@ import { WaveBoard } from './wave-board';
 import { attention } from './attention';
 import type { Action, Goal } from './goal-board';
 import { goalStage } from './goal-fleet';
-export function GoalDetail({ goal, disabled, terminal, act, control }: {
+function LegacyGoalDetail({ goal, disabled, terminal, act, control }: {
   goal: Goal & { contracts: { revision: number; contract: Contract }[] }; disabled: boolean; terminal: boolean;
   act(goal: Goal, action: Action): Promise<boolean>; control(goal: Goal, action: 'terminal' | 'reconcile', attemptId?: string): Promise<void>;
 }) {
@@ -40,7 +41,7 @@ export function GoalDetail({ goal, disabled, terminal, act, control }: {
       {goal.publication?.observation?.status === 'target_moved' && <p className="orch-banner">The target branch moved to <code>{goal.publication.observation.baseHeadSha?.slice(0, 12) ?? 'an unavailable commit'}</code>. Publishing keeps the reviewed and verified head above unchanged; it does not rebase or merge the target branch.</p>}
       {goal.status === 'awaiting_approval' && goal.team && <p>Approval includes this design, plan, verification and proposed team.</p>}
       {goal.status === 'awaiting_approval' && goal.approvalBlocked && <p className="orch-banner">{goal.approvalBlocked}</p>}
-      <div className="orch-actions">{goal.actions.filter(action => action.type !== 'request_revision' && action.type !== 'resume_planner' && action.type !== 'rename_goal' && action.type !== 'answer_clarification').map(action => <button key={`${action.type}:${JSON.stringify(action.payload)}`} disabled={disabled} onClick={() => void act(goal, action)}>{action.label}</button>)}</div>
+      <div className="orch-actions">{goal.actions.filter(action => action.type !== 'send_goal_message' && action.type !== 'request_revision' && action.type !== 'resume_planner' && action.type !== 'rename_goal' && action.type !== 'answer_clarification').map(action => <button key={`${action.type}:${JSON.stringify(action.payload)}`} disabled={disabled} onClick={() => void act(goal, action)}>{action.label}</button>)}</div>
     </section>
     {clarification && <form className="orch-card" onSubmit={event => { event.preventDefault(); void act(goal, { ...clarification, payload: { answer } }).then(saved => { if (saved) setAnswer(''); }); }}><h3>A question from your planner</h3><p>{goal.clarification?.question}</p><label>Your answer<textarea value={answer} onChange={event => setAnswer(event.target.value)} maxLength={8000} disabled={disabled} required /></label><button disabled={disabled || !answer.trim()}>Send answer</button></form>}
     <div className="mission-detail-tabs" role="tablist" aria-label="Goal sections">{tabs.map(name => <button key={name} id={`goal-tab-${tabs.indexOf(name)}`} role="tab" aria-selected={tab === name} aria-controls="goal-section" tabIndex={tab === name ? 0 : -1} onKeyDown={event => { const index = tabs.indexOf(name); const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null; if (next !== null) { event.preventDefault(); setTab(tabs[next]); document.getElementById(`goal-tab-${next}`)?.focus(); } }} onClick={() => setTab(name)}>{name}</button>)}</div>
@@ -66,4 +67,9 @@ export function GoalDetail({ goal, disabled, terminal, act, control }: {
     {tab === 'Overview' && !contract && <section className="orch-card"><h3>Planning the outcome</h3><p>The planner is preparing the design, acceptance criteria and execution plan.</p></section>}
     </div>
   </article>;
+}
+
+export function GoalDetail(props: Parameters<typeof LegacyGoalDetail>[0]) {
+  if (props.goal.experienceVersion !== 2) return <LegacyGoalDetail {...props} />;
+  return <><GoalConversation goal={props.goal} disabled={props.disabled} act={props.act} /><details className="orch-card"><summary>Technical details, team and full evidence</summary><LegacyGoalDetail {...props} /></details></>;
 }

@@ -16,7 +16,7 @@ export const NATIVE_TOOLS = Object.freeze({
   review_fixer: ['Read', 'Grep', 'Glob', 'Edit', 'Write'],
 });
 export const BRIDGE_TOOLS = Object.freeze({
-  planner: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__submit_result'],
+  planner: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__submit_result', 'mcp__companion__conversation', 'mcp__companion__wait_for_input'],
   reviewer: ['mcp__companion__read_reference', 'mcp__companion__get_status'],
   implementer: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__commit_candidate'],
   integrator: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__commit_candidate'],

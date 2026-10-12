@@ -9,9 +9,10 @@ import { currentReviews } from './review.mjs';
  * @param {import('../types.d.ts').Goal} goal @returns {ReadyWork[]}
  */
 export function readyWork(goal) {
+  if (goal.conversation?.paused) return [];
   if (goal.hold) return [];
   if (goal.startup && goal.startup.status !== 'ready') return [];
-  if (['aborted', 'merged', 'delivered', 'ready_to_publish'].includes(goal.status)) return [];
+  if (['aborted', 'merged'].includes(goal.status)) return [];
   /** @type {ReadyWork[]} */
   const result = [];
   /** @param {ReadyWork['role']} role @param {string | null} taskId @param {string} target */
@@ -22,6 +23,11 @@ export function readyWork(goal) {
     if (goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || (attempt.taskId === taskId && (role === 'implementer' || role === 'planner' || attempt.target === target))))) return;
     result.push({ key: role === 'implementer' ? `${role}:${taskId}` : `${role}:${taskId ?? ''}:${target}`, role, taskId, target });
   };
+  if (goal.experienceVersion === 2) {
+    const supervisor = goal.attempts.find(attempt => attempt.id === goal.conversation?.supervisorAttemptId);
+    if (!supervisor || (supervisor.workerState === 'stopped' && supervisor.retryRequested)) add('planner', null, planTarget(goal));
+  } else if (goal.status === 'discovering' && (!goal.clarification || goal.clarification.answer !== undefined)) add('planner', null, planTarget(goal));
+  if (['delivered', 'ready_to_publish'].includes(goal.status)) return result;
   if (goal.status === 'addressing_review') {
     const round = goal.reviewRound;
     if (round?.state === 'fixing' && (round.threads.length || round.conflictPaths?.length)
@@ -30,9 +36,9 @@ export function readyWork(goal) {
     }
     return result;
   }
-  if (goal.status === 'discovering' && (!goal.clarification || goal.clarification.answer !== undefined)) add('planner', null, planTarget(goal));
   if (goal.status === 'awaiting_approval' && requiresPlanReview(goal)) add('reviewer', null, planTarget(goal));
   if (goal.status !== 'building' || goal.approvedRevision !== goal.revision) return result;
+  if (goal.conversation && !goal.conversation.dispatchApproved) return result;
   for (const task of goal.tasks) if (task.status === 'in_review' && task.candidateSha) add('reviewer', task.id, task.candidateSha);
   for (const task of readyTasks(goal)) add('implementer', task.id, goal.integrationHead);
   if (goal.integration?.state === 'conflict') {
