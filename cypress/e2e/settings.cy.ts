@@ -26,7 +26,7 @@ for (const width of [390, 1200]) describe(`Setup at ${width}px`, () => {
     cy.findByLabelText(/Protect terminal input/).should('be.checked').uncheck();
     cy.reload(); cy.findByLabelText(/Protect terminal input/).should('not.be.checked').check();
     cy.findByRole('button', { name: 'Account usage' }).click(); cy.wait('@usage');
-    cy.contains('72%').should('be.visible'); cy.contains('33%').should('not.exist'); cy.contains('Capacity unknown:').should('be.visible');
+    cy.contains('72%').should('be.visible'); cy.contains('33%').should('not.exist'); cy.contains('Capacity unknown:').closest('details').find('summary').click(); cy.contains('Capacity unknown:').should('be.visible');
     cy.get('.local-settings-page').screenshot(`setup-capacity-${width}`);
     cy.findByRole('button', { name: 'Updates' }).click(); cy.contains('Update controls are unavailable. An installed bundled updater is required.').should('be.visible');
     cy.findByRole('button', { name: 'Notifications' }).should('be.visible'); cy.contains('Local apps and preview links').should('not.exist');

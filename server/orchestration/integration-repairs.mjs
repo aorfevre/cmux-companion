@@ -44,7 +44,7 @@ export class IntegrationRepairs {
         }
         continue;
       }
-      if (goal.hold) continue;
+      if (goal.hold || goal.conversation?.paused) continue;
       if (goal.integration?.state === 'failed' && goal.integration.retryRequested && provenPending) {
         this.record(goal.id, 'resume_integration', { operationId: input.integrationOperationId });
         goal = this.store.get(goal.id); requireValue(goal, 'Repair goal disappeared');

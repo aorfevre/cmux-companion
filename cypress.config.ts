@@ -14,6 +14,10 @@ export default defineConfig({
       if (process.env.CI || process.env.CMUX_COMPANION_LOCAL_E2E !== "1") {
         throw new Error("Cypress is local-only. Run npm run test:e2e:local outside CI.");
       }
+      on('before:browser:launch', (browser, launchOptions) => {
+        if (browser.family === 'chromium' && browser.isHeadless) launchOptions.args.push('--window-size=1600,1200', '--force-device-scale-factor=1');
+        return launchOptions;
+      });
       const manifestPath = process.env.CMUX_ORCHESTRATION_CYPRESS_MANIFEST;
       const settingsManifestPath = process.env.CMUX_SETTINGS_CYPRESS_MANIFEST;
       if (settingsManifestPath) {
@@ -62,7 +66,7 @@ export default defineConfig({
           orchestrationRelease(stage: string) {
             // A fault barrier is also cleared on its own, so one journey can
             // observe a failure and then the recovered path.
-            const stages = ['siblings', 'final', 'reject-plan', 'seed-threads', 'threads-offline', 'threads-uncapable', 'conflict'];
+            const stages = ['siblings', 'final', 'reject-plan', 'seed-threads', 'threads-offline', 'threads-uncapable', 'conflict', 'launch-transient'];
             const clear = stage.startsWith('clear-'), name = clear ? stage.slice(6) : stage;
             if (!stages.includes(name) && stage !== 'reset') throw new Error('Unknown fixture barrier');
             for (const entry of stage === 'reset' ? stages : [name]) {

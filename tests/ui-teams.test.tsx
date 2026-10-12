@@ -37,9 +37,9 @@ test('setup configures eligible role defaults and validates an additional launch
   fireEvent.click(screen.getByRole('checkbox', { name: 'Independent review' }));
   fireEvent.change(screen.getByLabelText('Preferred Independent review'), { target: { value: draft.launchProfiles![0].id } });
   expect(draft.teamDefaults?.reviewer).toBe(draft.launchProfiles![0].id);
-  vi.mocked(request).mockResolvedValueOnce({ ready: true });
+  vi.mocked(request).mockResolvedValueOnce({ ready: true, resolution: { message: 'Named CCS alias: managed permission-bypass flags are ignored.' } });
   fireEvent.click(screen.getByRole('button', { name: 'Validate claude' }));
-  await waitFor(() => expect(screen.getByText(/Provider command is ready/)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/Ready for new goals.*Named CCS alias/)).toBeTruthy());
   expect(request).toHaveBeenCalledWith('/api/settings/providers/validate', expect.objectContaining({ method: 'POST', body: JSON.stringify({ provider: 'claude', command: draft.launchProfiles![0].command }) }));
   fireEvent.click(screen.getByRole('checkbox', { name: 'Independent review' }));
   expect(draft.teamDefaults?.reviewer).toBeUndefined();

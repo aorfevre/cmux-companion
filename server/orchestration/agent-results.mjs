@@ -1,3 +1,4 @@
+import { isSupervisor } from './domain/conversation.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { DomainError, identifier, requireValue } from './domain/contracts.mjs';
 import { parseRoleResult, requireResultCapacity } from './domain/role-result.mjs';
@@ -44,6 +45,7 @@ export class AgentResults {
     identifier(resultId);
     const goal = this.store.get(authority.goalId), attempt = goal?.attempts.find((entry) => entry.id === authority.attemptId);
     requireValue(authority.kind === 'agent' && goal && attempt && attempt.role === authority.role && attempt.generation === authority.generation && attempt.revision === authority.revision, 'Result authority does not match its recorded attempt', 'FORBIDDEN');
+    requireValue(!isSupervisor(goal, attempt), 'Use scoped supervisor conversation commands', 'FORBIDDEN');
     requireValue(typeof raw === 'string', 'Result must be raw structured output');
     requireValue(Buffer.byteLength(raw) <= this.artifacts.maxBytes, 'Artifact too large');
     const digest = createHash('sha256').update(raw).digest('hex');

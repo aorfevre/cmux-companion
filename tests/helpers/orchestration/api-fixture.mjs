@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 export const TOKEN = 'disposable-test-pairing-token-at-least-32-characters';
 export const HEADERS = { host: 'localhost', origin: 'http://localhost', authorization: `Bearer ${TOKEN}` };
 export const create = { id: 'create', goalId: 'goal', expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: 'Goal', baseSha: BASE } };
-export async function apiFixture(t, { resultIntake = false, readOnly = false, configuration, reconcile, cleanup, references } = {}) {
+export async function apiFixture(t, { resultIntake = false, readOnly = false, configuration, reconcile, cleanup, references, changes } = {}) {
   const store = new OrchestrationStore({ path: ':memory:' });
   const service = new OrchestrationService({ store, repositoryIds: new Set(['repo']), agents: { capabilities: [{ role: 'planner', mode: 'interactive' }, { role: 'reviewer', mode: 'background' }] } });
   const bridgeAuth = new BridgeAuthority(store);
@@ -20,11 +20,11 @@ export async function apiFixture(t, { resultIntake = false, readOnly = false, co
   const directory = resultIntake ? mkdtempSync(join(tmpdir(), 'orchestration-api-results-')) : null;
   const artifacts = directory ? new ArtifactStore({ directory }) : null;
   const results = artifacts ? new AgentResults({ service, artifacts }) : undefined;
-  registerOrchestrationRoutes(app, { service, token: TOKEN, bridgeAuth, results, readOnly, configuration, reconcile, cleanup, references });
+  registerOrchestrationRoutes(app, { service, token: TOKEN, bridgeAuth, results, readOnly, configuration, reconcile, cleanup, references, changes });
   t.after(async () => { await app.close(); store.close(); if (directory) rmSync(directory, { recursive: true, force: true }); });
   await app.ready();
-  const planner = () => {
-    service.execute(create, { kind: 'user' });
+  const planner = (experienceVersion) => {
+    service.execute({ ...create, payload: { ...create.payload, ...(experienceVersion === undefined ? {} : { experienceVersion }) } }, { kind: 'user' });
     service.execute({ id: 'launch', goalId: 'goal', expectedVersion: 1, type: 'request_attempt', payload: { attemptId: 'planner', operationId: 'planner_operation', role: 'planner', conversationId: 'conversation' } }, { kind: 'system' });
     service.execute({ id: 'dispatch', goalId: 'goal', expectedVersion: 2, type: 'record_dispatch', payload: { attemptId: 'planner', identity: 'planner_process', worktree: '/tmp/private-context', branch: 'task' } }, { kind: 'system' });
     return bridgeAuth.issue('goal', 'planner');

@@ -40,7 +40,7 @@ export class VerificationRunner {
   }
   /** @param {Parameters<import('../types.d.ts').VerificationPort['run']>[0]} input */
   async run(input) {
-    const { operationId, goalId, repositoryId, headSha, checks, signal } = input;
+    const { operationId, goalId, repositoryId, headSha, checks, signal, attempt } = input;
     identifier(operationId); identifier(goalId); identifier(repositoryId); sha(headSha);
     requireValue(checks.length > 0 && checks.length <= 30 && new Set(checks.map((check) => check.id)).size === checks.length, 'Verification needs distinct required checks');
     for (const check of checks) {
@@ -49,7 +49,8 @@ export class VerificationRunner {
     }
     requireValue(!checks.some((check) => check.id === 'prepare'), 'The check id "prepare" is reserved for dependency preparation');
     const directory = this.runDirectory(operationId), requestPath = join(directory, 'request.json');
-    const request = { schemaVersion: 1, operationId, goalId, repositoryId, headSha, checks };
+    const checkout = attempt ? { operationId: attempt.operationId, attemptId: attempt.id, worktree: attempt.worktree, branch: attempt.branch, baseSha: attempt.baseSha } : undefined;
+    const request = { schemaVersion: 1, operationId, goalId, repositoryId, headSha, checks, ...(checkout ? { checkout } : {}) };
     if (pathExists(requestPath)) {
       const recordedRequest = this.read(requestPath); delete recordedRequest.bootId; delete recordedRequest.supervised;
       requireValue(JSON.stringify(recordedRequest) === JSON.stringify(request), 'Verification operation was reused', 'IDEMPOTENCY_CONFLICT');
@@ -60,8 +61,18 @@ export class VerificationRunner {
     requireValue(!pathExists(directory), 'Verification directory exists without a request', 'OWNERSHIP_UNCERTAIN');
     mkdirSync(directory, { mode: 0o700 }); this.save(requestPath, { ...request, bootId: this.boot(), supervised: true });
     this.failpoint('requested');
-    const resource = await this.repositories.provision({ operationId, repositoryId, branch: `companion/${goalId}/${operationId}`, baseSha: headSha });
-    const recorded = this.repositories.resource(operationId); requireValue(recorded, 'Verification checkout was not recorded');
+    if (!checkout) await this.repositories.provision({ operationId, repositoryId, branch: `companion/${goalId}/${operationId}`, baseSha: headSha });
+    const recorded = this.repositories.resource(checkout?.operationId ?? operationId); requireValue(recorded, 'Verification checkout was not recorded');
+    const resource = recorded;
+    const assertCheckout = async () => {
+      if (!checkout) return;
+      const repo = await this.repositories.repository(repositoryId);
+      const latest = this.repositories.resource(checkout.operationId);
+      requireValue(latest && JSON.stringify(latest) === JSON.stringify(recorded) && recorded.repositoryId === repositoryId && recorded.repository === repo.repository && recorded.common === repo.common && recorded.worktree === checkout.worktree && recorded.branch === checkout.branch && recorded.baseSha === checkout.baseSha, 'Check checkout does not match its recorded attempt', 'OWNERSHIP_UNCERTAIN');
+      requireValue(await this.repositories.ref(repo.repository, `refs/companion/resources/${checkout.operationId}`) === checkout.baseSha, 'Check resource ownership evidence changed', 'OWNERSHIP_UNCERTAIN');
+      await git(repo.repository, ['merge-base', '--is-ancestor', checkout.baseSha, headSha]);
+    };
+    await assertCheckout();
     const home = join(directory, 'home'), temp = join(directory, 'tmp');
     mkdirSync(home, { mode: 0o700 }); mkdirSync(temp, { mode: 0o700 }); mkdirSync(join(directory, 'workers'), { mode: 0o700 });
     /** @type {import('../types.d.ts').Verification['checks']} */ const outcomes = [];
@@ -87,6 +98,7 @@ export class VerificationRunner {
           requireValue(resolved.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Verification output budget exceeds supervisor transport limit', 'UNSUPPORTED_CAPABILITY');
           const env = { ...resolved.env, ...(this.cache?.environment() ?? {}), HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: join(home, 'cache'), TMPDIR: temp, CI: 'true' };
           environment = { id: resolved.environmentId, bin: resolved.bin, argv: resolved.argv, platform: process.platform, architecture: process.arch, nodeVersion: process.version, environmentHash: createHash('sha256').update(JSON.stringify(env)).digest('hex') };
+          await assertCheckout();
           requireValue(await this.repositories.checkCheckout(recorded, !prepare) === headSha, 'Verification target changed', 'STALE_TARGET');
           if (prepare) requireValue(!(await git(resource.worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=no'])), 'Worktree has uncommitted changes', 'DIRTY_WORKTREE');
           this.save(join(directory, `${check.id}.launch.json`), { checkId: check.id, headSha, environment });
@@ -98,6 +110,7 @@ export class VerificationRunner {
           workerState = outcome.workerState;
           code = outcome.cause?.code ?? '';
           if (workerState !== 'stopped') code ||= 'OWNERSHIP_UNCERTAIN';
+          await assertCheckout();
           requireValue(await this.repositories.checkCheckout(recorded, !prepare) === headSha, 'Verification changed its recorded checkout', 'STALE_TARGET');
           if (prepare) requireValue(!(await git(resource.worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=no'])), 'Check changed tracked files', 'DIRTY_WORKTREE');
         } catch (error) {
@@ -110,7 +123,7 @@ export class VerificationRunner {
       const passed = !code && outcome?.status === 'succeeded' && workerState === 'stopped';
       if (check.id === 'prepare' && !passed) prepareFailed = true;
       const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, checkId: check.id, headSha, argv: check.argv, environment, code, outcome }));
-      outcomes.push({ id: check.id, passed, artifactId: artifact.id });
+      outcomes.push({ id: check.id, passed, artifactId: artifact.id, ...(code ? { code } : {}) });
       this.save(join(directory, `${check.id}.result.json`), { ...outcomes.at(-1), workerState }); this.failpoint('check_recorded');
     }
     if (this.cache) { try { this.cache.prune(this.cacheCapBytes); } catch { /* Cache pruning never changes a verification result. */ } }
@@ -131,7 +144,7 @@ export class VerificationRunner {
       if (receipt.workerState === 'stopped') return receipt;
       if (!priorBoot) {
         if (!request.supervised) return receipt;
-        for (const check of request.checks) {
+        for (const check of [{ id: 'prepare' }, ...request.checks]) {
           if (!pathExists(join(directory, `${check.id}.launch.json`))) continue;
           const observed = await observeSupervisedProcess(join(directory, 'workers', check.id), this.boot);
           if (observed?.workerState !== 'stopped') return receipt;
@@ -152,7 +165,7 @@ export class VerificationRunner {
         const completed = this.read(resultPath), evidence = JSON.parse(this.repositories.artifacts.get(completed.artifactId).toString('utf8'));
         const recordedState = completed.workerState ?? evidence.outcome?.workerState ?? (pathExists(join(directory, `${check.id}.launch.json`)) ? 'unknown' : 'stopped');
         if (!priorBoot && recordedState !== 'stopped') workerState = 'unknown';
-        outcomes.push({ id: completed.id, passed: completed.passed, artifactId: completed.artifactId }); continue;
+        outcomes.push({ id: completed.id, passed: completed.passed, artifactId: completed.artifactId, ...(completed.code ? { code: completed.code } : {}) }); continue;
       }
       const launchPath = join(directory, `${check.id}.launch.json`);
       let outcome = null, environment = null, code = 'NOT_STARTED';
@@ -168,13 +181,14 @@ export class VerificationRunner {
         if (outcome.workerState !== 'stopped') workerState = 'unknown';
         code = outcome.cause?.code ?? '';
         if (workerState !== 'stopped') code ||= 'OWNERSHIP_UNCERTAIN';
-        const resource = this.repositories.resource(operationId);
+        const resource = this.repositories.resource(request.checkout?.operationId ?? operationId);
         try {
+          if (request.checkout) requireValue(resource && resource.worktree === request.checkout.worktree && resource.branch === request.checkout.branch && resource.baseSha === request.checkout.baseSha && await this.repositories.ref(resource.repository, `refs/companion/resources/${request.checkout.operationId}`) === request.checkout.baseSha, 'Worker check ownership changed', 'OWNERSHIP_UNCERTAIN');
           requireValue(resource && await this.repositories.checkCheckout(resource, !prepared) === request.headSha, 'Verification checkout changed', 'STALE_TARGET');
         } catch (error) { if (!(error instanceof DomainError)) throw error; code = error.code; }
       }
       const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, checkId: check.id, headSha: request.headSha, argv: check.argv, environment, code, outcome }));
-      outcomes.push({ id: check.id, passed: !code && outcome?.status === 'succeeded' && workerState === 'stopped', artifactId: artifact.id });
+      outcomes.push({ id: check.id, passed: !code && outcome?.status === 'succeeded' && workerState === 'stopped', artifactId: artifact.id, ...(code ? { code } : {}) });
     }
     const verification = { headSha: request.headSha, checks: outcomes };
     const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, goalId: request.goalId, repositoryId: request.repositoryId, verification, workerState }));
@@ -194,7 +208,7 @@ export class VerificationRunner {
     for (const check of result.verification.checks) {
       const evidence = JSON.parse(this.repositories.artifacts.get(check.artifactId).toString('utf8'));
       const expectedArgv = check.id === 'prepare' ? ['prepare'] : request.checks.find((entry) => entry.id === check.id)?.argv;
-      requireValue(evidence.operationId === operationId && evidence.checkId === check.id && evidence.headSha === request.headSha && JSON.stringify(evidence.argv) === JSON.stringify(expectedArgv), 'Verification check evidence changed', 'OWNERSHIP_UNCERTAIN');
+      requireValue(evidence.operationId === operationId && evidence.checkId === check.id && evidence.headSha === request.headSha && (check.code === undefined || check.code === evidence.code) && JSON.stringify(evidence.argv) === JSON.stringify(expectedArgv), 'Verification check evidence changed', 'OWNERSHIP_UNCERTAIN');
     }
     return result;
   }

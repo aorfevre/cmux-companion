@@ -39,11 +39,12 @@ import { requireValue } from './domain/contracts.mjs';
  * suspension?: () => string | null;
  * prepareGoal?: (goal: import('./types.d.ts').Goal) => Promise<string>;
  * beforeCommand?: (command: import('./types.d.ts').Command) => Promise<void>;
+ * supervisorChoices?: (refresh?: boolean) => Promise<import('./types.d.ts').SupervisorChoices>;
  * projectStatus?: (id: string) => { name?: string; error?: string | null; enabled?: boolean };
  * goalLimits?: (goalId: string) => { global: number; perGoal: number; planners: number };
  * }} options
  */
-export async function createRuntime({ storage, repositories: configured, token, readOnly = false, createAgents, resolveCheck, resolvePrepare, createPublisher, createReviewMerge, consumers = [], limits, logLevel, planReviewEnabled, suspension = () => null, prepareGoal, beforeCommand, projectStatus, goalLimits, onError = () => {} }) {
+export async function createRuntime({ storage, repositories: configured, token, readOnly = false, createAgents, resolveCheck, resolvePrepare, createPublisher, createReviewMerge, consumers = [], limits, logLevel, planReviewEnabled, suspension = () => null, prepareGoal, beforeCommand, projectStatus, supervisorChoices, goalLimits, onError = () => {} }) {
   requireValue(typeof token === 'string' && token.length >= 32, 'Explicit private pairing token required');
   requireValue(typeof readOnly === 'boolean' && new Set(consumers.map((consumer) => consumer.id)).size === consumers.length, 'Invalid runtime configuration');
   for (const path of Object.values(storage)) requireValue(typeof path === 'string' && path.length > 0, 'Explicit storage paths required');
@@ -75,7 +76,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
     const app = Fastify({ logger: logLevel ? { level: logLevel, redact: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-companion-push-device"]', 'res.headers["set-cookie"]'] } : false, bodyLimit: 2 * 1024 * 1024, ajv: { customOptions: { coerceTypes: false, removeAdditional: false } } });
     const cleanup = new ResourceCleanup({ service, repositories, assertOwned: () => scheduler.ownership.assertOwned() });
     const agentTools = new AgentTools({ service, commits: new AgentCommits({ repositories }) });
-    registerOrchestrationRoutes(app, { references, service, token, bridgeAuth, results, agentTools, stream, readOnly, suspension, cleanup, beforeCommand, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {
+    registerOrchestrationRoutes(app, { changes: goal => repositories.changes(goal), references, service, token, bridgeAuth, results, agentTools, stream, readOnly, suspension, cleanup, beforeCommand, supervisorChoices, reconcile: async () => { scheduler.ownership.assertOwned(); await scheduler.tick(); }, configuration: async () => Promise.all([...configured.keys()].map(async (id) => {
       try {
         const { repository } = await repositories.repository(id);
         let baseBranch;
@@ -102,7 +103,7 @@ export async function createRuntime({ storage, repositories: configured, token, 
       const prompt = rolePrompt(goal, attempt);
       const credential = bridgeAuth.issueForDispatch(goal.id, attempt.id, request.operationId);
       const activation = { endpoint: `http://127.0.0.1:${address.port}`, credential };
-      return { prompt, plannerName: goal.plannerName, activation, bridge: activation };
+      return { prompt, ...(goal.experienceVersion === 2 ? { experienceVersion: /** @type {const} */ (2) } : {}), supervisor: goal.experienceVersion === 2 && goal.conversation?.supervisorAttemptId === attempt.id, plannerName: goal.plannerName, activation, bridge: activation };
     };
     const ownedAgents = agents;
     let started = false, closed = false, shutdownRequested = false;

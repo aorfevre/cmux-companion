@@ -179,6 +179,23 @@ export class OrchestrationStore {
       FROM attempts WHERE worker_state != 'stopped' AND mode = ?`).get(goalId, mode);
     return { total: Number(row?.total ?? 0), goal: Number(row?.goal ?? 0) };
   }
+  /** Active conversational supervisors share execution capacity with background
+   * workers. Legacy planners retain their original separate pool. Unknown
+   * ownership never releases capacity, even if the last saved state was idle.
+   * Called within the admission write transaction. @param {string} goalId */
+  executionCapacity(goalId) {
+    let total = 0, goal = 0;
+    for (const saved of this.list()) for (const attempt of saved.attempts) {
+      if (attempt.workerState === 'stopped') continue;
+      if (attempt.mode === 'interactive') {
+        if (saved.experienceVersion !== 2) continue;
+        if (saved.conversation?.supervisorAttemptId === attempt.id && saved.conversation.capacityReleased
+          && attempt.workerState === 'running' && attempt.status === 'running') continue;
+      }
+      total++; if (saved.id === goalId) goal++;
+    }
+    return { total, goal };
+  }
   /** @returns {(import('../types.d.ts').Intent & { status: string })[]} */
   operations() { return this.db.prepare("SELECT body,status FROM operations WHERE status != 'completed' ORDER BY created_at,id").all().map((row) => ({ ...JSON.parse(String(row.body)), status: String(row.status) })); }
   /** Compare-and-set operation progress with its journal event. No external effect

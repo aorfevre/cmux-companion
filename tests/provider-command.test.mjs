@@ -12,6 +12,8 @@ test('simple aliases resolve known provider argv and report discarded permission
   const aliases = { xclaude: 'ccs claude --dangerously-skip-permissions', xcodex: 'ccsxp --yolo' };
   const options = { readAlias: async name => aliases[name], resolve: name => `/canonical/${name}` };
   const claude = await resolveProviderCommand('claude', command('xclaude'), options);
+  assert.match(claude.managedPolicy, /planners and reviewers read-only/);
+  assert.ok(claude.message.includes(claude.managedPolicy));
   assert.equal(claude.kind, 'ccs'); assert.deepEqual(claude.args, ['claude']);
   assert.deepEqual(claude.ignoredPermissionFlags, ['--dangerously-skip-permissions']); assert.match(claude.message, /Ignored.*Companion manages/);
   const codex = await resolveProviderCommand('codex', command('xcodex'), options);
@@ -35,7 +37,7 @@ test('CCSXP capabilities require its package-owned entry and never execute the w
   mkdirSync(join(root, 'dist', 'bin'), { recursive: true });
   const wrapper = join(root, 'dist', 'bin', 'ccsxp-runtime.js'), native = join(root, 'codex');
   writeFileSync(wrapper, `#!${process.execPath}\nthrow new Error('CCSXP must never execute in a metadata probe');`, { mode: 0o700 });
-  writeFileSync(native, `#!${process.execPath}\nprocess.stdout.write(process.argv.includes('--version') ? 'codex-cli 0.154.0' : '--config --sandbox --ask-for-approval --strict-config --dangerously-bypass-hook-trust');`, { mode: 0o700 });
+  writeFileSync(native, `#!${process.execPath}\nprocess.stdout.write(process.argv.includes('--version') ? 'codex-cli 0.154.0' : '--config --sandbox --ask-for-approval --strict-config --dangerously-bypass-hook-trust --json resume SESSION_ID');`, { mode: 0o700 });
   const packageFile = join(root, 'package.json');
   writeFileSync(packageFile, JSON.stringify({ name: '@kaitranntt/ccs', version: '8.10.0', bin: { ccsxp: 'dist/bin/ccsxp-runtime.js' } }));
   const installation = await probeNativeCapabilities({ ccsBin: wrapper, claudeBin: native, provider: 'codex', ccsxp: true });

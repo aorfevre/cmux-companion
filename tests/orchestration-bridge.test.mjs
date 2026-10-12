@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { apiFixture } from './helpers/orchestration/api-fixture.mjs';
 import { contract } from './helpers/orchestration/domain-fixture.mjs';
 import { createBridge } from '../server/orchestration/bridge.mjs';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 
 function submit(config, command) {
   return new Promise((resolve, reject) => {
@@ -40,6 +42,25 @@ test('bridge refuses off-machine endpoints and contains no workflow database dep
   for (const endpoint of ['https://127.0.0.1', 'http://example.com', 'http://user:pass@127.0.0.1']) assert.throws(() => createBridge({ endpoint, credential: 'secret' }));
   const source = readFileSync('server/orchestration/bridge.mjs', 'utf8');
   assert.doesNotMatch(source, /node:sqlite|storage\/|WorktreePlanStore/);
+});
+
+test('bridge credentials and persisted input never follow an HTTP redirect', async t => {
+  let received = 0;
+  const sink = createServer((_request, reply) => { received++; reply.end('{}'); });
+  const source = createServer((request, reply) => {
+    if (request.url === '/api/orchestration/agent/commands') { reply.setHeader('content-type', 'application/json'); reply.end('{}'); return; }
+    reply.writeHead(307, { location: `http://127.0.0.1:${sink.address().port}/capture` }); reply.end();
+  });
+  t.after(async () => { await Promise.all([source, sink].map(server => new Promise(resolve => server.close(resolve)))); });
+  sink.listen(0, '127.0.0.1'); await once(sink, 'listening');
+  source.listen(0, '127.0.0.1'); await once(source, 'listening');
+  const bridge = createBridge({ endpoint: `http://127.0.0.1:${source.address().port}`, credential: 'private-fixture-credential' });
+  for (const request of [() => bridge.status(), () => bridge.reference('a'.repeat(64)),
+    () => bridge.submitResult({ id: 'result', raw: 'private fixture output' }),
+    () => bridge.runCheck({ id: 'check', goalId: 'goal', expectedVersion: 1, type: 'request_worker_check', payload: {} }, 'operation')]) {
+    await assert.rejects(request, /fetch failed/);
+  }
+  assert.equal(received, 0, 'neither credentials nor request bodies reached the redirect target');
 });
 
 test('bridge subprocess submits durable structured output without claiming acceptance or exposing private evidence', async (t) => {

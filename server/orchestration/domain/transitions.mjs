@@ -1,11 +1,13 @@
+import { recordLaunchFailure } from './launch-recovery.mjs';
+import { isSupervisor, ownsExecution, SUPERVISOR_COMMANDS, CONVERSATION_COMMANDS, appendMessage, conversationCommand, wakeConversation } from './conversation.mjs';
 import { DomainError, identifier, identifiers, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
 import { ROLES, parseTeamConfiguration, proposeTeam, assignmentFor, overrideAssignment } from './teams.mjs';
 import { currentWave, verificationWaveId, integratedWaveReady, waveChecks, acceptWaveVerification } from './waves.mjs';
 import { parseGoalReferences } from './goal-references.mjs';
 import { revisablePlan, requiresPlanReview, repairableReviews } from './review-repairs.mjs';
-import { captureFailureHold, recoverGoal } from './recovery.mjs';
-import { parseContract, readyTasks } from './graph.mjs';
+import { captureFailureHold, recoverGoal, repairableChecks } from './recovery.mjs';
+import { parseContract, parseSupervisorProposal, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
 import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
 import { parseReviewThreads, parseReviewReplies, parseConflictPaths } from './review-round.mjs';
@@ -50,7 +52,7 @@ function taskById(goal, id) {
 /** @param {Goal} goal @param {unknown} id */
 function attemptById(goal, id) {
   const attempt = goal.attempts.find((entry) => entry.id === id);
-  requireValue(attempt && attempt.generation === goal.generation && attempt.revision === goal.revision, 'Attempt was replaced', 'STALE_ATTEMPT');
+  requireValue(attempt && (isSupervisor(goal, attempt) || (attempt.generation === goal.generation && attempt.revision === goal.revision)), 'Attempt was replaced', 'STALE_ATTEMPT');
   return attempt;
 }
 /** @param {Authority} authority @param {'user' | 'system'} kind */
@@ -58,6 +60,11 @@ function requireAuthority(authority, kind) { requireValue(authority.kind === kin
 /** @param {Goal} goal @param {Authority} authority @param {boolean} [allowReceipt] */
 export function validateAuthority(goal, authority, allowReceipt = false) {
   if (authority.kind !== 'agent') return;
+  const supervisor = goal.attempts.find(attempt => attempt.id === authority.attemptId);
+  if (isSupervisor(goal, supervisor)) {
+    requireValue(supervisor && authority.goalId === goal.id && authority.role === 'planner' && authority.generation === supervisor.generation && authority.revision === supervisor.revision && supervisor.status === 'running' && supervisor.workerState === 'running' && !['aborted', 'merged'].includes(goal.status), 'Supervisor authority was revoked', 'FORBIDDEN');
+    return;
+  }
   requireValue(authority.goalId === goal.id && authority.generation === goal.generation && authority.revision === goal.revision && !['aborted', 'merged'].includes(goal.status), 'Agent authority was revoked', 'FORBIDDEN');
   const attempt = attemptById(goal, authority.attemptId);
   requireValue(attempt.role === authority.role && (attempt.status === 'running' || (allowReceipt && attempt.status === 'succeeded')), 'Agent attempt is not active', 'FORBIDDEN');
@@ -88,16 +95,31 @@ export function transition(before, command, authority) {
       attempts: [], reviews: [], integrationHead: input.baseSha === undefined ? '' : sha(input.baseSha), verification: null,
       finalRepairCount: 0, finalRepairLimit: 2, pr: null, integration: null, publication: null,
     });
+    requireValue(input.experienceVersion === undefined || input.experienceVersion === 2, 'Unsupported goal experience');
+    if (input.experienceVersion === 2) {
+      goal.experienceVersion = 2;
+      goal.conversation = { messages: [], supervisorAttemptId: null, wake: 1, seenWake: 0, waiting: false, paused: false, dispatchApproved: false };
+      appendMessage(goal, command.id, 'user', 'message', goal.description ?? goal.title);
+    }
     proposeTeam(goal);
+    if (input.supervisorProfileId !== undefined) {
+      requireValue(goal.experienceVersion === 2, 'Supervisor selection requires conversational Goals', 'INVALID_COMMAND');
+      overrideAssignment(goal, 'planner:*', identifier(input.supervisorProfileId), command.id);
+    }
     return { goal, events: [{ kind: 'goal_created', payload: { repositoryId: goal.repositoryId } }], intents: [] };
   }
   requireValue(before && before.id === command.goalId, 'Goal not found', 'NOT_FOUND');
   validateAuthority(before, authority);
+  if (SUPERVISOR_COMMANDS.has(command.type)) requireValue(authority.kind === 'agent' && isSupervisor(before, before.attempts.find(attempt => attempt.id === authority.attemptId)), 'Supervisor authority required', 'FORBIDDEN');
+  if (authority.kind === 'agent' && isSupervisor(before, before.attempts.find(attempt => attempt.id === authority.attemptId))) {
+    requireValue(SUPERVISOR_COMMANDS.has(command.type), 'Use the scoped supervisor tools', 'FORBIDDEN');
+  }
+  requireValue(!before.conversation?.paused || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_worker_check', 'request_publication', 'approve_publication', 'supervisor_propose', 'supervisor_revise'].includes(command.type), 'Goal is paused', 'NOT_READY');
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
   requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_publication_observation', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'cancel_integration', 'settle_repair_result', 'cancel_repair_result', 'record_verification_result', 'cancel_verification', 'verification_uncertain', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
-  requireValue(!before.startup || before.startup.status === 'ready' || ['record_startup', 'fail_startup', 'retry_startup', 'rename_goal', 'abort'].includes(command.type), 'Fetch the goal base before planning', 'NOT_READY');
-  requireValue(!before.hold || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_publication', 'approve_publication', 'approve', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair'].includes(command.type), 'Goal is on hold; use manual recovery', 'NOT_READY');
-  requireValue(!before.hold || command.type !== 'publish_contract' || authority.kind === 'user', 'Request a revision before replacing the held plan', 'NOT_READY');
+  requireValue(!before.startup || before.startup.status === 'ready' || ['record_startup', 'fail_startup', 'retry_startup', 'rename_goal', 'abort', 'send_goal_message', 'pause_goal', 'resume_goal'].includes(command.type), 'Fetch the goal base before planning', 'NOT_READY');
+  requireValue(!before.hold || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_worker_check', 'request_publication', 'approve_publication', 'approve', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair'].includes(command.type), 'Goal is on hold; use manual recovery', 'NOT_READY');
+  requireValue(!before.hold || !['publish_contract', 'supervisor_propose'].includes(command.type) || authority.kind === 'user', 'Request a revision before replacing the held plan', 'NOT_READY');
   const goal = structuredClone(before);
   /** @type {Transition} */
   const result = { goal, events: [], intents: [] };
@@ -105,7 +127,8 @@ export function transition(before, command, authority) {
   const emit = (kind, payload = {}) => result.events.push({ kind, payload });
   /** @param {import('../types.d.ts').Intent['kind']} kind @param {string} id @param {string | null} attemptId @param {import('../types.d.ts').Json} payload */
   const intent = (kind, id, attemptId, payload) => result.intents.push({ id, kind, goalId: goal.id, generation: goal.generation, revision: goal.revision, attemptId, payload });
-  switch (command.type) {
+  if (CONVERSATION_COMMANDS.has(command.type)) result.events.push(conversationCommand(goal, command, authority));
+  else switch (command.type) {
     case 'set_plan_review_policy': {
       requireAuthority(authority, 'system');
       requireValue(['discovering', 'awaiting_approval'].includes(goal.status) && typeof input.enabled === 'boolean', 'Plan review policy cannot change here', 'NOT_READY');
@@ -118,6 +141,14 @@ export function transition(before, command, authority) {
       (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold });
       goal.hold = null;
       emit('review_repair_requested', { holdId: String(input.holdId) }); break;
+    }
+    case 'repair_failed_checks': {
+      requireAuthority(authority, 'system');
+      requireValue(goal.hold && goal.hold.id === input.holdId && repairableChecks(goal), 'Check failure is not eligible for automatic repair', 'NOT_READY');
+      (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold });
+      goal.hold = null;
+      if (goal.conversation) appendMessage(goal, command.id, 'service', 'progress', `Required checks failed; starting repair ${goal.finalRepairCount + 1} of ${goal.finalRepairLimit} with the saved evidence.`);
+      emit('check_repair_requested', { holdId: String(input.holdId), headSha: goal.integrationHead }); break;
     }
     case 'recover_goal': {
       requireAuthority(authority, 'user');
@@ -214,6 +245,7 @@ export function transition(before, command, authority) {
       const submission = goal.results?.find((entry) => entry.id === input.resultId);
       requireValue(submission?.status === 'pending' && !submission.repair, 'Repair result is not pending', 'STALE_ATTEMPT');
       const attempt = attemptById(goal, submission.attemptId); ownsResult(authority, attempt);
+      requireValue(!goal.verificationRuns?.some(run => run.attemptId === attempt.id && run.workerState !== 'stopped'), 'Worker check is not settled', 'OWNERSHIP_UNCERTAIN');
       const parsed = parseRoleResult(input.result, { goalId: goal.id, attempt });
       requireValue(parsed.role === 'integrator' && goal.status === 'building' && goal.approvedRevision === goal.revision, 'Integration repair is not approved', 'FORBIDDEN');
       requireValue(goal.integrationHead === attempt.target && parsed.output.headSha !== attempt.target, 'Repair target changed', 'STALE_TARGET');
@@ -272,10 +304,14 @@ export function transition(before, command, authority) {
       }
       emit('agent_result_rejected', { resultId: submission.id, attemptId: submission.attemptId, artifactId: submission.artifactId, code: submission.code }); break;
     }
+    case 'supervisor_revise':
     case 'revise_rejected_plan':
     case 'request_revision': {
       const automatic = command.type === 'revise_rejected_plan';
-      requireAuthority(authority, automatic ? 'system' : 'user');
+      // Supervisor identity and role were validated before command dispatch.
+      // Every revision entry point still requires its own trusted authority.
+      const revisionAuthority = { supervisor_revise: 'agent', revise_rejected_plan: 'system', request_revision: 'user' };
+      requireValue(authority.kind === revisionAuthority[command.type], 'Revision authority required', 'FORBIDDEN');
       const rejected = automatic ? revisablePlan(goal) : null;
       if (automatic) requireValue(rejected && rejected.id === input.reviewId, 'Plan review is not eligible for automatic revision', 'NOT_READY');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
@@ -288,24 +324,26 @@ export function transition(before, command, authority) {
       if (automatic && goal.hold) {
         (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold }); goal.hold = null;
       }
-      for (const attempt of goal.attempts.filter(ownsWorker)) {
+      for (const attempt of goal.attempts.filter(attempt => ownsExecution(goal, attempt))) {
         if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
         if (attempt.workerState === 'pending') attempt.workerState = 'unknown';
       }
       goal.generation++; goal.approvedRevision = null; goal.status = 'discovering';
       goal.planningRequest = { message, basedOnRevision: goal.revision };
+      if (goal.conversation) goal.conversation.dispatchApproved = false;
       proposeTeam(goal);
       goal.verification = null; goal.integration = null; goal.publication = null;
       emit('revision_requested', { basedOnRevision: goal.revision, automatic, count: goal.planRevisionCount }); break;
     }
+    case 'supervisor_propose':
     case 'publish_contract': {
       requireValue(authority.kind === 'user' || (authority.kind === 'agent' && authority.role === 'planner'), 'Planner or user authority required', 'FORBIDDEN');
       requireValue(goal.status !== 'delivered' && goal.status !== 'addressing_review', 'Delivered goals require a new goal', 'INVALID_STATE');
       requireValue(!goal.integration && (!goal.publication || !goal.publication.approval), 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
-      const contract = parseContract(input.contract);
+      const contract = command.type === 'supervisor_propose' ? parseSupervisorProposal(input.contract) : parseContract(input.contract);
       requireValue(!goal.contractSchema || contract.schemaVersion === goal.contractSchema, 'New goals require a version 2 plan with explicit waves');
-      for (const attempt of goal.attempts.filter(ownsWorker)) {
+      for (const attempt of goal.attempts.filter(attempt => ownsExecution(goal, attempt))) {
         if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
         // Revocation is immediate; uncertain physical termination still consumes capacity.
         if (attempt.workerState === 'pending') attempt.workerState = 'unknown';
@@ -313,16 +351,18 @@ export function transition(before, command, authority) {
       goal.generation++; goal.revision++; goal.approvedRevision = null;
       goal.contracts.push({ revision: goal.revision, contract });
       goal.tasks = contract.tasks.map((task) => ({ ...task, status: 'pending', candidateSha: null, candidateBase: null, integratedSha: null, repairCount: 0, repairLimit: 2 }));
+      if (goal.conversation) goal.conversation.dispatchApproved = false;
       proposeTeam(goal);
       goal.status = 'awaiting_approval'; goal.verification = null; goal.integration = null; goal.publication = null;
       goal.finalRepairCount = 0; goal.finalRepairLimit = 2;
+      if (goal.conversation) appendMessage(goal, command.id, 'supervisor', 'proposal', contract.outcome);
       emit('contract_published', { revision: goal.revision }); break;
     }
     case 'approve': {
       requireAuthority(authority, 'user');
       requireValue(goal.status === 'awaiting_approval' && integer(input.revision, 1) === goal.revision, 'Approval target changed', 'STALE_TARGET');
       requireValue(!requiresPlanReview(goal) || acceptedReview(goal, planTarget(goal), 'plan'), 'Independent plan review must accept this revision', 'REVIEW_REQUIRED');
-      requireValue(!goal.attempts.some((attempt) => attempt.generation !== goal.generation && ownsWorker(attempt)), 'Replaced workers need reconciliation', 'OWNERSHIP_UNCERTAIN');
+      requireValue(!goal.attempts.some((attempt) => attempt.generation !== goal.generation && ownsExecution(goal, attempt)), 'Replaced workers need reconciliation', 'OWNERSHIP_UNCERTAIN');
       if (goal.team) { requireValue(goal.team.revision === goal.revision && goal.team.assignments.every(assignment => assignment.profileId), 'Choose the proposed team before approval', 'NOT_READY'); goal.team.approved = true; }
       goal.approvedRevision = goal.revision; goal.status = 'building'; emit('goal_approved', { revision: goal.revision }); break;
     }
@@ -339,8 +379,9 @@ export function transition(before, command, authority) {
       requireValue(role !== 'planner' || !goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       const mode = role === 'planner' ? 'interactive' : 'background';
       let target = planTarget(goal), taskId = null;
-      if (role === 'planner') requireValue(goal.status === 'discovering' || goal.status === 'awaiting_approval', 'Planning is not available');
+      if (role === 'planner') requireValue(goal.experienceVersion === 2 || goal.status === 'discovering' || goal.status === 'awaiting_approval', 'Planning is not available');
       if (role === 'implementer') {
+        requireValue(!goal.conversation || goal.conversation.dispatchApproved, 'Supervisor has not admitted the approved work', 'NOT_READY');
         const task = taskById(goal, input.taskId);
         requireValue(readyTasks(goal).some((entry) => entry.id === task.id), 'Task dependencies or repair budget block dispatch', 'NOT_READY');
         if (task.status === 'repair_required') task.repairCount++;
@@ -383,7 +424,7 @@ export function transition(before, command, authority) {
       }
       requireValue(!goal.attempts.some((attempt) => ownsWorker(attempt) && attempt.role === role && (role === 'integrator' || role === 'review_fixer' || (attempt.taskId === taskId && (role === 'implementer' || role === 'planner' || attempt.target === target)))), 'Attempt already active', 'ALREADY_RUNNING');
       if (role === 'planner' || role === 'reviewer') {
-        const previous = goal.attempts.filter((attempt) => attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.role === role && attempt.taskId === taskId && attempt.target === target).at(-1);
+        const previous = role === 'planner' && goal.experienceVersion === 2 ? goal.attempts.find(attempt => isSupervisor(goal, attempt)) : goal.attempts.filter((attempt) => attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.role === role && attempt.taskId === taskId && attempt.target === target).at(-1);
         requireValue(!previous || previous.retryRequested, 'Explicit retry is required for this attempt', 'RETRY_REQUIRED');
       }
       const conversationId = identifier(input.conversationId);
@@ -392,14 +433,20 @@ export function transition(before, command, authority) {
       const attempt = { id, operationId, role, mode, taskId, target, generation: goal.generation, revision: goal.revision, status: 'queued', workerState: 'pending', identity: null, baseSha: (role === 'reviewer' && !target.startsWith('contract:')) || role === 'review_fixer' ? target : goal.integrationHead, worktree: null, branch: null, conversationId, error: null };
       const assignment = assignmentFor(goal, role, taskId); if (assignment) attempt.assignment = assignment;
       goal.attempts.push(attempt);
+      if (role === 'planner' && goal.conversation) {
+        if (goal.conversation.supervisorAttemptId) appendMessage(goal, command.id, 'service', 'progress', 'Restarting supervision from the saved conversation after confirmed termination and recovery authorization. The previous native session remains in the attempt history.');
+        goal.conversation.supervisorAttemptId = attempt.id;
+        goal.conversation.capacityReleased = false;
+      }
       if (role === 'review_fixer' && goal.reviewRound) goal.reviewRound.attemptId = id;
       intent('launch', operationId, id, { role, mode, target, taskId }); emit('attempt_queued', { attemptId: id, role }); break;
     }
     case 'resume_planner': {
       requireAuthority(authority, 'user');
+      requireValue(!goal.conversation?.turnManaged, 'This supervisor resumes automatically on saved goal events', 'NOT_READY');
       const attempt = attemptById(goal, input.attemptId);
       requireValue(attempt.role === 'planner' && attempt.mode === 'interactive' && attempt.status === 'running' && attempt.workerState === 'running' && attempt.identity
-        && ['discovering', 'awaiting_approval'].includes(goal.status), 'No current owned planner conversation', 'NOT_READY');
+        && (isSupervisor(goal, attempt) || ['discovering', 'awaiting_approval'].includes(goal.status)), 'No current owned planner conversation', 'NOT_READY');
       intent('resume', command.id, attempt.id, { identity: attempt.identity });
       emit('planner_resume_requested', { attemptId: attempt.id }); break;
     }
@@ -427,7 +474,7 @@ export function transition(before, command, authority) {
       attempt.identity = text(input.identity, 1000); attempt.worktree = text(input.worktree, 2000); attempt.branch = text(input.branch, 500);
       if (attempt.status !== 'succeeded') attempt.status = 'running';
       attempt.workerState = 'running';
-      if (attempt.generation !== goal.generation || ['aborted', 'merged'].includes(goal.status)) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
+      if ((!isSupervisor(goal, attempt) && attempt.generation !== goal.generation) || ['aborted', 'merged'].includes(goal.status)) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
       emit('attempt_running', { attemptId: attempt.id }); break;
     }
     case 'record_failure': {
@@ -441,6 +488,7 @@ export function transition(before, command, authority) {
         const task = taskById(goal, attempt.taskId);
         if (task.status === 'running') task.status = 'failed';
       }
+      if (input.launchFailure !== undefined) recordLaunchFailure(goal, attempt, input.launchFailure, command.id);
       emit('attempt_failed', { attemptId: attempt.id, uncertain: attempt.status === 'uncertain' }); break;
     }
     case 'record_stopped': {
@@ -461,6 +509,7 @@ export function transition(before, command, authority) {
     case 'confirm_candidate': {
       // This command is internal: the service verifies Git evidence before issuing it.
       requireAuthority(authority, 'system'); const attempt = attemptById(goal, input.attemptId);
+      requireValue(!goal.verificationRuns?.some(run => run.attemptId === attempt.id && run.workerState !== 'stopped'), 'Worker check is not settled', 'OWNERSHIP_UNCERTAIN');
       ownsResult(authority, attempt); requireValue(attempt.role === 'implementer' && attempt.taskId, 'Not an implementer');
       const task = taskById(goal, attempt.taskId); requireValue(task.status === 'running', 'Task is not running');
       task.candidateSha = sha(input.headSha); task.candidateBase = attempt.baseSha; task.status = 'in_review';
@@ -495,7 +544,7 @@ export function transition(before, command, authority) {
       requireValue(['planner', 'reviewer'].includes(attempt.role) && ['failed', 'cancelled'].includes(attempt.status) && !ownsWorker(attempt), 'Confirm worker termination before retrying', 'NOT_READY');
       const latest = goal.attempts.filter((entry) => entry.generation === goal.generation && entry.revision === goal.revision && entry.role === attempt.role && entry.taskId === attempt.taskId && entry.target === attempt.target).at(-1);
       const target = attempt.role === 'planner' || goal.status === 'awaiting_approval' ? planTarget(goal) : attempt.taskId ? taskById(goal, attempt.taskId).candidateSha : goal.integrationHead;
-      requireValue(latest?.id === attempt.id && target === attempt.target && !attempt.retryRequested, 'Retry target changed or retry is already requested', 'STALE_TARGET');
+      requireValue((isSupervisor(goal, attempt) || (latest?.id === attempt.id && target === attempt.target)) && !attempt.retryRequested, 'Retry target changed or retry is already requested', 'STALE_TARGET');
       attempt.retryRequested = true; emit('attempt_retry_authorized', { attemptId: attempt.id }); break;
     }
     case 'retry_task': {
@@ -558,6 +607,7 @@ export function transition(before, command, authority) {
     case 'confirm_integration_repair': {
       requireAuthority(authority, 'system'); const attempt = attemptById(goal, input.attemptId);
       ownsResult(authority, attempt);
+      requireValue(!goal.verificationRuns?.some(run => run.attemptId === attempt.id && run.workerState !== 'stopped'), 'Worker check is not settled', 'OWNERSHIP_UNCERTAIN');
       requireValue(attempt.role === 'integrator' && attempt.target === goal.integrationHead, 'Integration repair target changed', 'STALE_TARGET');
       const head = sha(input.headSha);
       requireValue(head !== goal.integrationHead, 'Repair must produce a new commit');
@@ -570,11 +620,29 @@ export function transition(before, command, authority) {
       goal.integrationHead = head; goal.verification = null; attempt.status = 'succeeded';
       emit('integration_repaired', { headSha: head, attemptId: attempt.id }); break;
     }
+    case 'request_worker_check': {
+      requireValue(authority.kind === 'agent' && ['implementer', 'integrator'].includes(authority.role), 'Worker authority required', 'FORBIDDEN');
+      const attempt = attemptById(goal, authority.attemptId);
+      requireValue(goal.experienceVersion === 2 && goal.status === 'building' && goal.approvedRevision === goal.revision && attempt.workerState === 'running' && attempt.worktree && attempt.branch, 'Worker checks require the approved active checkout', 'NOT_READY');
+      requireValue(!goal.verificationRuns?.some(run => run.attemptId === attempt.id && run.workerState !== 'stopped'), 'A check still owns this checkout', 'OWNERSHIP_UNCERTAIN');
+      requireValue(Object.keys(input).length === 3 && ['operationId', 'headSha', 'checkId'].every(key => Object.hasOwn(input, key)), 'Expected check id, head and operation');
+      const operationId = identifier(input.operationId), headSha = sha(input.headSha), checkId = identifier(input.checkId);
+      requireValue(checkId !== 'prepare', 'The check id "prepare" is reserved for dependency preparation');
+      const check = currentContract(goal).verification.find(check => check.id === checkId);
+      requireValue(check, 'Check is outside the approved contract', 'FORBIDDEN');
+      const prior = goal.verificationRuns?.filter(run => run.attemptId === attempt.id && run.checkIds?.includes(checkId)) ?? [];
+      requireValue(prior.length < 3, 'This check exhausted its three-run budget; request recovery', 'REPAIR_BUDGET_EXHAUSTED');
+      requireValue(prior.filter(run => run.headSha === headSha && run.result?.verification.checks.some(check => !check.passed)).length < 2, 'Repeated unchanged failure requires recovery', 'REPAIR_BUDGET_EXHAUSTED');
+      requireValue(!goal.verificationRuns?.some(run => run.operationId === operationId), 'Check operation is already recorded', 'IDEMPOTENCY_CONFLICT');
+      (goal.verificationRuns ??= []).push({ operationId, attemptId: attempt.id, budgetLimit: 3, checkIds: [checkId], generation: goal.generation, revision: goal.revision, headSha, status: 'pending', workerState: 'pending' });
+      intent('verify', operationId, attempt.id, { headSha, checks: [{ id: check.id, argv: check.argv }] });
+      emit('worker_check_requested', { operationId, attemptId: attempt.id, checkId, headSha }); break;
+    }
     case 'request_verification': {
       requireAuthority(authority, 'system');
       requireValue(goal.status === 'building' && goal.approvedRevision === goal.revision && integratedWaveReady(goal), 'Verification is not ready', 'NOT_READY');
       requireValue(!goal.attempts.some((attempt) => attempt.role === 'integrator' && ownsWorker(attempt)) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification ownership is occupied', 'NOT_READY');
-      const previous = goal.verificationRuns?.filter((run) => run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && run.waveId === verificationWaveId(goal)).at(-1);
+      const previous = goal.verificationRuns?.filter((run) => !run.attemptId && run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && run.waveId === verificationWaveId(goal)).at(-1);
       requireValue(!previous || previous.retryRequested, 'Explicit verification retry required', 'RETRY_REQUIRED');
       const operationId = identifier(input.operationId), waveId = verificationWaveId(goal), checks = waveChecks(goal);
       (goal.verificationRuns ??= []).push({ operationId, ...(waveId ? { waveId, checkIds: checks.map(check => check.id) } : {}), generation: goal.generation, revision: goal.revision, headSha: goal.integrationHead, status: 'pending', workerState: 'pending' });
@@ -583,7 +651,7 @@ export function transition(before, command, authority) {
     }
     case 'retry_verification': {
       requireAuthority(authority, 'user');
-      const run = goal.verificationRuns?.filter((entry) => entry.generation === goal.generation && entry.revision === goal.revision && entry.headSha === goal.integrationHead).at(-1);
+      const run = goal.verificationRuns?.filter((entry) => !entry.attemptId && entry.generation === goal.generation && entry.revision === goal.revision && entry.headSha === goal.integrationHead).at(-1);
       requireValue(goal.status === 'building' && run?.status === 'complete' && run.result?.verification.checks.some((check) => !check.passed) && !goal.verificationRuns?.some((entry) => entry.workerState !== 'stopped'), 'Verification cannot be retried while ownership is unresolved', 'NOT_READY');
       run.retryRequested = true; goal.verification = null; emit('verification_retry_requested', { operationId: run.operationId }); break;
     }
@@ -606,7 +674,7 @@ export function transition(before, command, authority) {
       const received = object(input.result), verification = object(received.verification);
       requireValue(verification.headSha === run.headSha && ['stopped', 'unknown'].includes(String(received.workerState)), 'Verification receipt target changed', 'STALE_TARGET');
       const artifactId = text(received.artifactId, 64); requireValue(/^[a-f0-9]{64}$/.test(artifactId), 'Invalid verification evidence');
-      const checks = array(verification.checks, 30).map((entry) => { const check = object(entry); requireValue(typeof check.passed === 'boolean', 'Missing check outcome'); return { id: identifier(check.id), passed: check.passed, artifactId: identifier(check.artifactId) }; });
+      const checks = array(verification.checks, 30).map((entry) => { const check = object(entry); requireValue(typeof check.passed === 'boolean', 'Missing check outcome'); return { id: identifier(check.id), passed: check.passed, artifactId: identifier(check.artifactId), ...(check.code === undefined ? {} : { code: text(check.code, 100) }) }; });
       const contract = goal.contracts.find((entry) => entry.revision === run.revision)?.contract;
       const required = contract?.verification.filter(check => !run.checkIds || run.checkIds.includes(check.id));
       // A leading `prepare` entry is user-approved dependency installation, not a planned check.
@@ -616,7 +684,7 @@ export function transition(before, command, authority) {
       requireValue(!run.result || JSON.stringify(run.result.verification) === JSON.stringify({ headSha: run.headSha, checks }), 'Completed check evidence cannot change during observation', 'STALE_TARGET');
       run.workerState = received.workerState === 'stopped' ? 'stopped' : 'unknown'; run.status = run.workerState === 'stopped' ? 'complete' : 'uncertain';
       run.result = { verification: { headSha: run.headSha, checks }, workerState: run.workerState, artifactId };
-      if (goal.status === 'building' && run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead) { goal.verification = run.result.verification; if (run.workerState === 'stopped') acceptWaveVerification(goal, run.waveId); }
+      if (!run.attemptId && goal.status === 'building' && run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead) { goal.verification = run.result.verification; if (run.workerState === 'stopped') acceptWaveVerification(goal, run.waveId); }
       emit('verification_result_recorded', { operationId: run.operationId, headSha: run.headSha, artifactId, workerState: run.workerState }); break;
     }
     case 'record_verification': {
@@ -634,7 +702,7 @@ export function transition(before, command, authority) {
     case 'request_publication': {
       requireAuthority(authority, 'system');
       requireValue(goal.status === 'building' && !goal.integration && goal.tasks.every(task => task.status === 'integrated') && goal.verification?.headSha === goal.integrationHead && goal.verification.checks.every((check) => check.passed) && acceptedReview(goal, goal.integrationHead, 'integration'), 'Final evidence is missing or stale', 'NOT_READY');
-      requireValue(!goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && !goal.attempts.some(ownsWorker), 'Workers still active', 'NOT_READY');
+      requireValue(!goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && !goal.attempts.some(attempt => ownsExecution(goal, attempt)), 'Workers still active', 'NOT_READY');
       const plan = { operationId: identifier(input.operationId), goalId: goal.id, repositoryId: goal.repositoryId, headSha: goal.integrationHead, branch: `companion-goals/${goal.id}`, baseBranch: goal.baseBranch, baseSha: goal.baseSha, marker: `<!-- companion-goal:${goal.id} -->` };
       goal.publication = { operationId: plan.operationId, headSha: goal.integrationHead, generation: goal.generation, revision: goal.revision, plan };
       goal.status = 'ready_to_publish'; emit('publication_approval_requested', { headSha: goal.integrationHead }); break;
@@ -649,7 +717,7 @@ export function transition(before, command, authority) {
         && !goal.integration && goal.tasks.every(task => task.status === 'integrated')
         && goal.verification?.headSha === goal.integrationHead && goal.verification.checks.every(check => check.passed)
         && acceptedReview(goal, goal.integrationHead, 'integration'), 'Publication evidence changed', 'STALE_TARGET');
-      requireValue(!goal.verificationRuns?.some(run => run.workerState !== 'stopped') && !goal.attempts.some(ownsWorker), 'Workers still active', 'NOT_READY');
+      requireValue(!goal.verificationRuns?.some(run => run.workerState !== 'stopped') && !goal.attempts.some(attempt => ownsExecution(goal, attempt)), 'Workers still active', 'NOT_READY');
       publication.approval = { commandId: command.id, headSha: goal.integrationHead };
       intent('publish', publication.operationId, null, { ...publication.plan });
       emit('publication_approved', { headSha: goal.integrationHead }); break;
@@ -713,7 +781,7 @@ export function transition(before, command, authority) {
       requireValue(goal.status === 'delivered' && goal.pr && goal.publication, 'Only a delivered goal with a pull request can address review comments', 'NOT_READY');
       requireValue(goal.mergeSync?.state !== 'closed', 'The pull request is closed on GitHub', 'NOT_READY');
       requireValue(!goal.reviewRound, 'A review round is already active', 'NOT_READY');
-      requireValue(!goal.attempts.some(ownsWorker) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && !goal.results?.some((result) => result.status === 'pending'), 'Workers still active', 'NOT_READY');
+      requireValue(!goal.attempts.some(attempt => ownsExecution(goal, attempt)) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped') && !goal.results?.some((result) => result.status === 'pending'), 'Workers still active', 'NOT_READY');
       // One automatic round per pull request head. A push moves that head, so a
       // conflict that survives a round waits for a press, never an endless retry.
       if (automatic) {
@@ -784,7 +852,7 @@ export function transition(before, command, authority) {
       requireAuthority(authority, 'system');
       const round = activeRound(goal, input.roundId);
       requireValue(round.state === 'verifying' && round.fixHeadSha && !round.verificationOperationId, 'Fix verification is not awaited', 'NOT_READY');
-      requireValue(!goal.attempts.some(ownsWorker) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification ownership is occupied', 'NOT_READY');
+      requireValue(!goal.attempts.some(attempt => ownsExecution(goal, attempt)) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification ownership is occupied', 'NOT_READY');
       const operationId = identifier(input.operationId), checks = currentContract(goal).verification;
       round.verificationOperationId = operationId;
       (goal.verificationRuns ??= []).push({ operationId, generation: goal.generation, revision: goal.revision, headSha: round.fixHeadSha, status: 'pending', workerState: 'pending' });
@@ -862,10 +930,16 @@ export function transition(before, command, authority) {
     }
     default: throw new DomainError('UNKNOWN_COMMAND', 'Unknown orchestration command');
   }
-  if (goal.generation !== before.generation && authority.kind === 'user' && goal.hold) {
+  if (goal.generation !== before.generation && (authority.kind === 'user' || command.type === 'supervisor_revise') && goal.hold) {
     (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold }); goal.hold = null;
   }
+  if (goal.status === 'merged' && before.status !== 'merged') {
+    for (const attempt of goal.attempts.filter(ownsWorker)) {
+      if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });
+    }
+  }
   captureFailureHold(before, result, command.id);
+  wakeConversation(goal, result.events);
   goal.version++;
   return result;
 }

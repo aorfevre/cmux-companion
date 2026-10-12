@@ -48,13 +48,15 @@ export async function createProductionRuntime({ config, token, sessions, monitor
     await assertCutover(config.cutover, { sessions }); ownership.assertOwned();
     const installation = await probe(config.native);
     const configured = new Map(config.repositories.map(repo => [repo.id, repo]));
+    const configuredTeam = /** @type {import('./types.d.ts').TeamConfiguration} */ ({
+      capturedAt: new Date().toISOString(), defaults: { planner: 'configured', implementer: 'configured', reviewer: 'configured', integrator: 'configured' },
+      profiles: [{ id: 'configured', label: config.native.engine.provider, provider: 'claude', model: config.native.engine.model, roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: 'Validated production adapter', capacity: { remainingPercent: null, source: 'Production configuration', checkedAt: null, reason: 'Capacity is unknown for this fixed production profile.' } }],
+    });
     runtime = await createRuntime({ storage: config.storage, repositories, token, readOnly: config.readOnly, limits: config.limits,
+      supervisorChoices: async () => ({ ...configuredTeam, recommendedId: 'configured' }),
       beforeCommand: async command => {
         if (command.type !== 'create_goal') return;
-        object(command.payload).teamConfiguration = runtime?.store.get(command.goalId)?.teamConfiguration ?? {
-          capturedAt: new Date().toISOString(), defaults: { planner: 'configured', implementer: 'configured', reviewer: 'configured', integrator: 'configured' },
-          profiles: [{ id: 'configured', label: config.native.engine.provider, provider: 'claude', model: config.native.engine.model, roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: 'Validated production adapter', capacity: { remainingPercent: null, source: 'Production configuration', checkedAt: null, reason: 'Capacity is unknown for this fixed production profile.' } }],
-        };
+        object(command.payload).teamConfiguration = runtime?.store.get(command.goalId)?.teamConfiguration ?? configuredTeam;
       },
       createAgents: context => agents({ ...config.native, installation, policy: config.policy }, { ...context, describe: request => {
         requireValue(!request.attempt.assignment || (request.attempt.assignment.model === config.native.engine.model && request.attempt.assignment.label === config.native.engine.provider), 'Restore this goal’s saved production profile and model before launching another attempt', 'NOT_READY');

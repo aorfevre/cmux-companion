@@ -4,10 +4,25 @@ import { fixture } from '../../tests/helpers/orchestration/domain-fixture.mjs';
 describe('Mission Control navigation', () => {
   const base = goalView(fixture().goal);
   const goals = [
-    { ...base, id: 'design', title: 'Design ingestion', status: 'awaiting_approval', contracts: [] },
+    { ...base, id: 'design', title: 'Design ingestion', status: 'awaiting_approval', planReviewPending: false, contracts: [] },
     { ...base, id: 'waiting', title: 'Publish dashboard', status: 'delivered', contracts: [], pr: { number: 7, url: 'https://github.com/example/project/pull/7', headSha: base.baseSha }, mergeSync: { checkedAt: 1789470000000, state: 'open', error: null } },
     { ...base, id: 'complete', title: 'Improve search', status: 'merged', contracts: [] },
   ];
+  for (const width of [1440, 390]) it(`only requests attention after independent plan review at ${width}px`, () => {
+    const failed = { ...base, id: 'failed', title: 'Original failed goal', startup: { status: 'failed', error: 'Repository is owned by another service.' } };
+    const reviewing = { ...base, id: 'reviewing', title: 'Isolated test goal', status: 'awaiting_approval', planReviewPending: true, approvalBlocked: 'Independent plan review must accept this revision.' };
+    cy.intercept('GET', '/api/orchestration/snapshot', { goals: [failed, reviewing], cursor: 0, journalId: 'fixture', readOnly: true });
+    cy.viewport(width, 900); cy.visit('/orchestration?view=needs');
+    cy.findByRole('button', { name: 'Original failed goal' }).should('be.visible');
+    cy.contains('Repository is owned by another service.').should('be.visible');
+    cy.findByRole('button', { name: 'Isolated test goal' }).should('not.exist');
+    cy.visit('/orchestration');
+    cy.findByRole('button', { name: 'Running' }).click();
+    cy.findByRole('button', { name: 'Isolated test goal' }).should('contain.text', 'Plan review').and('contain.text', 'Independent plan review is in progress.');
+    cy.intercept('GET', '/api/orchestration/snapshot', { goals: [failed, { ...reviewing, planReviewPending: false, approvalBlocked: null }], cursor: 1, journalId: 'fixture', readOnly: true });
+    cy.visit('/orchestration?view=needs');
+    cy.findByRole('button', { name: 'Isolated test goal' }).should('contain.text', 'Your plan is ready to approve.');
+  });
   beforeEach(() => {
     cy.intercept('GET', '/api/orchestration/snapshot', { goals, cursor: 0, journalId: 'fixture', readOnly: true });
     cy.intercept('GET', '/api/orchestration/configuration', { readOnly: true, terminal: false, limits: { global: 4, perGoal: 4, planners: 2 }, capabilities: [], repositories: [] });

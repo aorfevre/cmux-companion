@@ -110,3 +110,15 @@
 
 .mission-control.orchestration { max-width:none; margin:0; padding:0; }
 .orchestration .orch-detail h1 { font-size:28px; line-height:1.25; margin:8px 0 16px; }
+
+.goal-conversation { max-width:860px; margin:0 auto; min-width:0; }
+.goal-thread { display:flex; flex-direction:column; gap:12px; padding:12px 0; }
+.goal-thread .goal-message { margin:0; max-width:100%; box-sizing:border-box; }
+.goal-message-user { margin-left:clamp(12px,5vw,64px)!important; background:var(--panel-raised); }
+.goal-message-text { white-space:pre-wrap; }
+.goal-composer { position:sticky; bottom:12px; z-index:2; box-shadow:0 8px 24px #0002; }
+.goal-composer textarea { resize:vertical; max-height:220px; }
+.orchestration input[type=checkbox] { display:inline-block; width:auto; margin:0 8px 0 0; }
+@media(max-width:600px) { .goal-composer { bottom:4px; padding:14px; } .goal-message-user { margin-left:12px!important; } }
+
+.goal-message summary h2 { display:inline; font-size:20px; }

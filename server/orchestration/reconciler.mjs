@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isSupervisor } from './domain/conversation.mjs';
 import { ownsWorker } from './domain/transitions.mjs';
 import { requireValue } from './domain/contracts.mjs';
 
@@ -29,6 +30,14 @@ export class Reconciler {
     if (observation.pendingOutbox) return;
     if (observation.status === 'stopped') {
       const pending = goal.results?.some((entry) => entry.attemptId === attemptId && entry.status === 'pending');
+      if (!pending && ['SUPERVISOR_TURN_TIMEOUT', 'SUPERVISOR_PROTOCOL_FAILED', 'SUPERVISOR_TURN_UNSETTLED'].includes(observation.failureCode ?? '') && observation.identity === attempt.identity && attempt.status !== 'succeeded') {
+        this.record(goalId, 'record_failure', { attemptId, confirmedStopped: true, error: `Supervisor turn stopped (${observation.failureCode}). Review the saved conversation before recovery.` });
+        this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
+      }
+      if (!pending && observation.launchFailure && observation.identity && (!attempt.identity || attempt.identity === observation.identity) && attempt.status !== 'succeeded') {
+        this.record(goalId, 'record_failure', { attemptId, confirmedStopped: true, launchFailure: observation.launchFailure, error: `Provider could not start (${observation.launchFailure}).` });
+        this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
+      }
       if (pending && ['queued', 'uncertain'].includes(attempt.status)) {
         if (!observation.identity || !attempt.worktree || !attempt.branch || (attempt.identity && attempt.identity !== observation.identity)) {
           if (attempt.workerState !== 'unknown') this.record(goalId, 'record_failure', { attemptId, uncertain: true, error: 'Result awaits correlation with its recorded worker identity' });
@@ -46,7 +55,7 @@ export class Reconciler {
       }
       this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
     }
-    if (attempt.workerState !== 'unknown' && attempt.generation === goal.generation && !['aborted', 'merged'].includes(goal.status)) {
+    if (attempt.workerState !== 'unknown' && (isSupervisor(goal, attempt) || attempt.generation === goal.generation) && !['aborted', 'merged'].includes(goal.status)) {
       this.record(goalId, 'record_failure', { attemptId, uncertain: true, error: 'Worker identity is uncertain; reconcile before retrying' });
     }
   }
@@ -62,7 +71,7 @@ export class Reconciler {
       this.ownership.assertOwned();
       let goal = this.store.get(operation.goalId), attempt = goal?.attempts.find((entry) => entry.id === operation.attemptId);
       const current = () => goal && attempt && goal.generation === operation.generation && goal.revision === operation.revision
-        && goal.status !== 'aborted' && attempt.status === 'running' && attempt.workerState === 'running' && this.service.repositoryIds.has(goal.repositoryId);
+        && !['aborted', 'merged'].includes(goal.status) && !goal.conversation?.paused && attempt.status === 'running' && attempt.workerState === 'running' && this.service.repositoryIds.has(goal.repositoryId);
       if (!current() || attempt?.lastResume?.id === operation.id) { this.store.advanceOperation(operation.id, operation.status, 'completed'); continue; }
       this.store.advanceOperation(operation.id, 'pending', 'dispatching');
       let code = null;

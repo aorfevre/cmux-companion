@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { resolveNativeExecutable } from '../server/provider-runtime.mjs';
+for (const provider of ['claude', 'codex']) test(`${provider} metadata selects the installed CLI behind a recognized cmux shim`, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'provider-resolution-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const shim = join(directory, 'cmux-cli-shims', 'session'), actual = join(directory, 'bin');
+  await mkdir(shim, { recursive: true }); await mkdir(actual);
+  const marker = `CMUX_${provider.toUpperCase()}_WRAPPER_SHIM`;
+  await writeFile(join(shim, provider), `#!/bin/sh\nexport ${marker}=fixture\nexit 1\n`, { mode: 0o700 });
+  await writeFile(join(actual, provider), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const { realpath } = await import('node:fs/promises');
+  assert.equal(resolveNativeExecutable(provider, `${shim}:${actual}`), await realpath(join(actual, provider)));
+  assert.equal(resolveNativeExecutable(provider, shim), null);
+  await writeFile(join(shim, provider), '#!/bin/sh\n# unrelated wrapper\nexit 1\n');
+  assert.equal(resolveNativeExecutable(provider, `${shim}:${actual}`), await realpath(join(shim, provider)));
+  assert.equal(resolveNativeExecutable(provider, actual), await realpath(join(actual, provider)));
+});

@@ -3,10 +3,10 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const readers = ['mcp__files__list_files', 'mcp__files__read_file'];
 const bridge = {
-  planner: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__submit_result', 'request_user_input'],
+  planner: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__submit_result', 'mcp__companion__conversation', 'mcp__companion__wait_for_input', 'request_user_input'],
   reviewer: ['mcp__companion__read_reference', 'mcp__companion__get_status'],
-  implementer: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__commit_candidate', 'mcp__files__write_file'],
-  integrator: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__commit_candidate', 'mcp__files__write_file'],
+  implementer: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__commit_candidate', 'mcp__companion__run_check', 'mcp__files__write_file'],
+  integrator: ['mcp__companion__read_reference', 'mcp__companion__get_status', 'mcp__companion__commit_candidate', 'mcp__companion__run_check', 'mcp__files__write_file'],
 };
 export function codexToolHook(event, role) {
   const allowed = Object.hasOwn(bridge, role) ? [...readers, ...bridge[role]] : [];

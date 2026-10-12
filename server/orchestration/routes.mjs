@@ -1,5 +1,6 @@
+import { isSupervisor } from './domain/conversation.mjs';
 import { isAuthorized, isSafeOrigin, safeEqual, sessionCookie } from '../security.mjs';
-import { DomainError, identifier, integer, object, requireValue } from './domain/contracts.mjs';
+import { DomainError, identifier, integer, object, requireValue, sha } from './domain/contracts.mjs';
 import { parseCommand, USER_COMMANDS, AGENT_COMMANDS } from './domain/commands.mjs';
 import { eventView } from './domain/event-view.mjs';
 import { goalView } from './domain/state-view.mjs';
@@ -8,12 +9,14 @@ import { REFERENCE_BODY_BYTES } from './domain/goal-references.mjs';
 
 const PREFIX = '/api/orchestration';
 /** @param {import('fastify').FastifyInstance} app
- * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; references?: import('./goal-references.mjs').GoalReferences; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; suspension?: () => string | null; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup; beforeCommand?: (command: import('./types.d.ts').Command) => Promise<void> }} options
+ * @param {{ service: import('./service.mjs').OrchestrationService; changes?: (goal: import('./types.d.ts').Goal) => Promise<import('./types.d.ts').GoalChanges>; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; references?: import('./goal-references.mjs').GoalReferences; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; suspension?: () => string | null; configuration?: () => Promise<unknown>; supervisorChoices?: (refresh?: boolean) => Promise<import('./types.d.ts').SupervisorChoices>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup; beforeCommand?: (command: import('./types.d.ts').Command) => Promise<void> }} options
  */
-export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, references, results, agentTools, stream, readOnly = false, suspension = () => null, configuration, reconcile, cleanup, beforeCommand }) {
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, references, results, agentTools, changes, stream, readOnly = false, suspension = () => null, configuration, supervisorChoices, reconcile, cleanup, beforeCommand }) {
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
+  /** @type {Map<string, { count: number; until: number }>} */
+  const invalidReceiptReads = new Map();
   app.addHook('onRequest', async (request, reply) => {
     // Fastify matches decoded paths. Security follows the registered route,
     // never the caller's raw spelling (for example /api/%6frchestration/...).
@@ -21,13 +24,13 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     if (!routePath?.startsWith(PREFIX)) return;
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff');
     if (request.method !== 'GET' && !isSafeOrigin(request)) return reply.code(403).send({ code: 'BAD_ORIGIN', error: 'Origin rejected' });
-    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/ready`, `${PREFIX}/agent/results`, `${PREFIX}/agent/commit`, `${PREFIX}/agent/references/:referenceId`].includes(routePath)) return;
+    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/ready`, `${PREFIX}/agent/results`, `${PREFIX}/agent/commit`, `${PREFIX}/agent/checks/:operationId`, `${PREFIX}/agent/references/:referenceId`].includes(routePath)) return;
     if (!isAuthorized(request, token)) return reply.code(401).send({ code: 'UNAUTHORIZED', error: 'Pair this device to continue' });
   });
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof DomainError) {
       const code = error.code;
-      const status = code === 'UNAUTHORIZED' ? 401 : code === 'FORBIDDEN' ? 403 : code === 'NOT_FOUND' ? 404
+      const status = code === 'RATE_LIMITED' ? 429 : code === 'UNAUTHORIZED' ? 401 : code === 'FORBIDDEN' ? 403 : code === 'NOT_FOUND' ? 404
         : /CONFLICT|STALE|UNCERTAIN|TERMINAL|NOT_READY|ALREADY_RUNNING|REVIEW_REQUIRED|RETRY_REQUIRED|CAPACITY_FULL|CURSOR_EXPIRED/.test(code) ? 409 : 400;
       return reply.code(status).send({ code, error: error.message });
     }
@@ -46,6 +49,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     return reply.header('Set-Cookie', sessionCookie(request, token)).send({ paired: true });
   });
   app.get(`${PREFIX}/configuration`, async () => ({ limits: service.limits, capabilities: service.agents.capabilities, terminal: Boolean(service.agents.open), readOnly: Boolean(readOnly || suspension()), suspensionReason: suspension(), repositories: configuration ? await configuration() : [] }));
+  app.get(`${PREFIX}/supervisors`, async request => supervisorChoices ? supervisorChoices(object(request.query).refresh === '1') : null);
   app.post(`${PREFIX}/goals/:id/reconcile`, async (request) => {
     requireValue(!(readOnly || suspension()) && reconcile, 'Reconciliation is unavailable', 'FORBIDDEN');
     const goal = service.store.get(/** @type {{id:string}} */ (request.params).id), input = object(request.body);
@@ -68,6 +72,19 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     const id = /** @type {{id: string}} */ (request.params).id;
     const goal = service.store.get(id); requireValue(goal, 'Goal not found', 'NOT_FOUND');
     return { ...goalView(goal), contracts: goal.contracts };
+  });
+  app.get(`${PREFIX}/goals/:id/changes`, async request => {
+    const id = /** @type {{id:string}} */ (request.params).id;
+    const expectedHead = sha(/** @type {{head?:string}} */ (request.query).head);
+    const goal = service.store.get(id);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Goal is unavailable', 'NOT_FOUND');
+    requireValue(goal.integrationHead === expectedHead, 'The integrated result changed; refresh before reviewing it', 'STALE_TARGET');
+    requireValue(changes, 'Changed-file evidence is unavailable', 'NOT_READY');
+    const evidence = await changes(goal), latest = service.store.get(id);
+    requireValue(latest && service.repositoryIds.has(latest.repositoryId) && latest.repositoryId === goal.repositoryId
+      && latest.baseSha === evidence.baseSha && latest.integrationHead === evidence.headSha && evidence.headSha === expectedHead,
+    'The integrated result changed; refresh before reviewing it', 'STALE_TARGET');
+    return evidence;
   });
   app.get(`${PREFIX}/goals/:id/activity`, async request => {
     const id = /** @type {{id:string}} */ (request.params).id;
@@ -108,7 +125,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     const input = object(request.body);
     requireValue(Object.keys(input).length === 2 && Number.isSafeInteger(input.expectedVersion) && input.expectedVersion === goal.version, 'Goal version changed', 'VERSION_CONFLICT');
     const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
-    requireValue(!['aborted', 'merged', 'delivered'].includes(goal.status) && attempt && ['running', 'succeeded'].includes(attempt.status) && attempt.generation === goal.generation && attempt.revision === goal.revision && attempt.workerState === 'running', 'Owned agent terminal is unavailable', 'NOT_READY');
+    requireValue(!['aborted', 'merged'].includes(goal.status) && attempt && (isSupervisor(goal, attempt) || (goal.status !== 'delivered' && attempt.generation === goal.generation && attempt.revision === goal.revision)) && ['running', 'succeeded'].includes(attempt.status) && attempt.workerState === 'running', 'Owned agent terminal is unavailable', 'NOT_READY');
     requireValue(service.ownership && service.agents.open, 'Native terminal is unavailable', 'UNSUPPORTED_CAPABILITY');
     service.ownership.assertOwned(); await service.agents.open(attempt.operationId);
     return { opened: true };
@@ -176,6 +193,42 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     requireValue(offset <= content.length, 'Reference offset is outside the text');
     const end = Math.min(offset + 16000, content.length);
     return { ...reference, text: content.slice(offset, end), offset, nextOffset: end < content.length ? end : null };
+  });
+  app.get(`${PREFIX}/agent/checks/:operationId`, async request => {
+    // A budget hold can stop the worker before its final poll; exact historical
+    // receipts remain readable without restoring mutation authority.
+    // Limit invalid authentication, not healthy worker polling on the same Mac.
+    const now = Date.now();
+    for (const [ip, entry] of invalidReceiptReads) if (entry.until <= now) invalidReceiptReads.delete(ip);
+    const rateLimit = invalidReceiptReads.get(request.ip) ?? { count: 0, until: now + 60_000 };
+    requireValue(rateLimit.count < 60, 'Too many invalid check receipt requests; retry shortly', 'RATE_LIMITED');
+    let authority;
+    try {
+      const header = request.headers.authorization ?? '';
+      requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
+      authority = bridgeAuth.receiptAuthority(header.slice(7));
+    } catch (error) {
+      if (error instanceof DomainError && ['UNAUTHORIZED', 'FORBIDDEN'].includes(error.code)) {
+        rateLimit.count++; invalidReceiptReads.set(request.ip, rateLimit);
+      }
+      throw error;
+    }
+    const goal = service.store.get(authority.goalId);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+    const operationId = identifier(/** @type {{operationId:string}} */ (request.params).operationId);
+    const run = goal.verificationRuns?.find(run => run.operationId === operationId && run.attemptId === authority.attemptId);
+    requireValue(run && ['implementer', 'integrator'].includes(authority.role), 'Check is not owned by this attempt', 'FORBIDDEN');
+    requireValue(results, 'Check evidence is unavailable', 'NOT_READY');
+    return { operationId, headSha: run.headSha, status: run.status, workerState: run.workerState, budgetLimit: run.budgetLimit,
+      runsUsed: goal.verificationRuns?.filter(entry => entry.attemptId === run.attemptId && entry.checkIds?.some(id => run.checkIds?.includes(id))).length,
+      checks: (run.result?.verification.checks ?? []).map(check => {
+        const evidence = JSON.parse(results.artifacts.get(check.artifactId).toString('utf8'));
+        requireValue(evidence.operationId === run.operationId && evidence.headSha === run.headSha && evidence.checkId === check.id, 'Check evidence target changed', 'STALE_TARGET');
+        const stdout = typeof evidence.outcome?.stdout === 'string' ? evidence.outcome.stdout : '';
+        const stderr = typeof evidence.outcome?.stderr === 'string' ? evidence.outcome.stderr : '';
+        return { id: check.id, passed: check.passed, artifactId: check.artifactId, code: typeof evidence.code === 'string' ? evidence.code : '',
+          stdout: stdout.slice(-16000), stderr: stderr.slice(-16000), truncated: stdout.length > 16000 || stderr.length > 16000 };
+      }) };
   });
   app.post(`${PREFIX}/agent/commit`, async (request) => {
     const authority = agentAuthority(request);

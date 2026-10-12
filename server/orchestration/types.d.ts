@@ -32,16 +32,18 @@ export interface Attempt {
   workerState: 'pending' | 'unknown' | 'running' | 'stopped'; identity: string | null; baseSha: string; worktree: string | null; branch: string | null;
   conversationId: string; error: string | null; retryRequested?: boolean;
   lastResume?: {id:string;code:string|null};
+  launchFailure?: {code:string; retry:number; limit:number; scheduled:boolean};
 }
 export interface Task extends TaskContract {
   status: TaskStatus; candidateSha: string | null; candidateBase: string | null;
   integratedSha: string | null; repairCount: number; repairLimit: number;
 }
 export interface Verification {
-  headSha: string; checks: { id: string; passed: boolean; artifactId: string }[];
+  headSha: string; checks: { id: string; passed: boolean; artifactId: string; code?: string }[];
 }
 export interface TeamProfile { id: string; label: string; provider: 'claude' | 'codex'; model: string; roles: TeamRole[]; ready: boolean; reason: string; capacity: { remainingPercent: number | null; source: string; checkedAt: string | null; reason: string } }
 export interface TeamConfiguration { profiles: TeamProfile[]; defaults: Record<TeamRole, string>; capturedAt: string }
+export interface SupervisorChoices { recommendedId: string | null; profiles: TeamProfile[]; capturedAt: string }
 export interface TeamAssignment { key: string; role: TeamRole; taskId: string | null; profileId: string | null; manual: boolean; reason: string }
 export interface TeamProposal { revision: number; approved: boolean; assignments: TeamAssignment[]; changes: { commandId: string; key: string; from: string | null; to: string }[] }
 export type MergeableVerdict = 'mergeable' | 'conflicting' | 'unknown';
@@ -57,7 +59,19 @@ export interface ReviewRound {
   posted?: string[]; unconfirmed?: string[]; resolved?: string[]; outcome?: ReviewRoundOutcome; error?: string | null; settledAt?: number;
 }
 export interface GoalReference { id: string; name: string; bytes: number; mimeType: 'text/plain' | 'image/png' | 'image/jpeg' | 'image/webp' }
+export interface GoalMessage {
+  id: string; sequence: number; author: 'user' | 'supervisor' | 'service';
+  kind: 'message' | 'question' | 'proposal' | 'decision' | 'progress' | 'result';
+  text: string; revision: number; delivery: 'queued' | 'delivered' | 'answered';
+  replyTo?: number;
+}
+export interface GoalConversation {
+  messages: GoalMessage[]; supervisorAttemptId: string | null;
+  wake: number; seenWake: number; waiting: boolean; paused: boolean;
+  dispatchApproved: boolean; capacityReleased?: boolean; turnManaged?: boolean; turnWake?: number;
+}
 export interface Goal {
+  experienceVersion?: 2; conversation?: GoalConversation;
   teamConfiguration?: TeamConfiguration; team?: TeamProposal; teamHistory?: TeamProposal[];
   contractSchema?: 2;
   waveResults?: { waveId: string; generation: number; revision: number; headSha: string }[];
@@ -79,7 +93,7 @@ export interface Goal {
   publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; approval?: { commandId: string; headSha: string }; observation?: PublicationResult } | null;
   planRevisionCount?: number; planReviewEnabled?: boolean;
   planningRequest?: { message: string; basedOnRevision: number } | null;
-  verificationRuns?: { waveId?: string; checkIds?: string[]; operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
+  verificationRuns?: { attemptId?: string; budgetLimit?: number; waveId?: string; checkIds?: string[]; operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
   integrationResults?: { operationId: string; taskId: string | null; headSha: string }[];
   results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; repair?: { effectId: string; integrationOperationId: string; headSha: string }; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
 }
@@ -109,7 +123,7 @@ export interface AgentPort {
   prepareHandoff?(request: LaunchRequest): Promise<HandoffIdentity>;
   capabilities: { role: Role; mode: Mode }[];
   launch(request: LaunchRequest): Promise<{ identity: string }>;
-  observe(operationId: string): Promise<{ status: 'running' | 'stopped' | 'unknown'; identity: string | null; pendingOutbox?: boolean }>;
+  observe(operationId: string): Promise<{ status: 'running' | 'stopped' | 'unknown'; identity: string | null; pendingOutbox?: boolean; launchFailure?: string; failureCode?: string }>;
   terminate(identity: string): Promise<void>;
   resume?(request: LaunchRequest): Promise<{identity:string}>;
   open?(operationId: string): Promise<void>;
@@ -145,7 +159,7 @@ export interface RepositoryPort {
   unresolvedPaths?(input: { repositoryId: string; headSha: string; conflictPaths: string[] }): Promise<string[]>;
 }
 export interface VerificationPort {
-  run(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; checks: Check[]; signal?: AbortSignal }): Promise<VerificationRunResult>;
+  run(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; checks: Check[]; attempt?: Attempt; signal?: AbortSignal }): Promise<VerificationRunResult>;
   observe(operationId: string): Promise<VerificationRunResult | null>;
 }
 
@@ -185,4 +199,10 @@ export interface PublicationPort {
   replyAndResolve?(input: PublicationInput, fix: { roundId: string; replies: ReviewReply[] }): Promise<{ posted: string[]; unconfirmed: string[]; resolved: string[] }>;
   publish(input: PublicationInput, options?: { signal?: AbortSignal }): Promise<PublicationResult>;
   observe(input: PublicationInput): Promise<PublicationResult>;
+}
+
+export interface GoalChanges {
+  baseSha: string; headSha: string; files: { path: string; status: string }[];
+  fileCount: number; filesTruncated: boolean; patch: string; patchTruncated: boolean;
+  patchUnavailable: boolean;
 }

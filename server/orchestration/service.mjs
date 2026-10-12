@@ -1,6 +1,7 @@
 import { integer, object, requireValue } from './domain/contracts.mjs';
 import { transition } from './domain/transitions.mjs';
 import { requireCapability } from './ports.mjs';
+import { SUPERVISOR_COMMANDS } from './domain/conversation.mjs';
 import { ROLES } from './domain/teams.mjs';
 
 export class OrchestrationService {
@@ -26,10 +27,21 @@ export class OrchestrationService {
         this.ownership?.assertOwned();
         const capacity = this.store.ownedCapacity(input.goalId, mode);
         const limits = this.goalLimits?.(input.goalId) ?? this.limits;
-        requireValue(capacity.total < (mode === 'interactive' ? limits.planners : limits.global), 'Global agent capacity is occupied', 'CAPACITY_FULL');
-        requireValue(mode === 'interactive' || capacity.goal < limits.perGoal, 'Goal agent capacity is occupied', 'CAPACITY_FULL');
+        if (mode === 'interactive') requireValue(capacity.total < limits.planners, 'Planner capacity is occupied', 'CAPACITY_FULL');
+        if (mode !== 'interactive' || goal?.experienceVersion === 2) {
+          const execution = this.store.executionCapacity(input.goalId);
+          requireValue(execution.total < limits.global, 'Global agent capacity is occupied', 'CAPACITY_FULL');
+          requireValue(execution.goal < limits.perGoal, 'Goal agent capacity is occupied', 'CAPACITY_FULL');
+        }
+      }
+      const activating = goal?.conversation?.capacityReleased && SUPERVISOR_COMMANDS.has(input.type) && !['supervisor_wait', 'supervisor_turn_idle', 'supervisor_turn_defer'].includes(input.type);
+      if (activating) {
+        this.ownership?.assertOwned();
+        const limits = this.goalLimits?.(input.goalId) ?? this.limits, execution = this.store.executionCapacity(input.goalId);
+        requireValue(execution.total < limits.global && execution.goal < limits.perGoal, 'Supervisor is waiting for execution capacity', 'CAPACITY_FULL');
       }
       const change = transition(goal, input, caller);
+      if (activating && change.goal.conversation) change.goal.conversation.capacityReleased = false;
       if (change.intents.some((intent) => intent.kind !== 'terminate')) {
         requireValue(this.repositoryIds.has(change.goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
       }

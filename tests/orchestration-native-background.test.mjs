@@ -295,3 +295,14 @@ for (const { role, closeTerminal = false } of [{ role: 'implementer' }, { role: 
   assert.equal((await readFile(f.launches, 'utf8')).trim(), 'launch');
   await reopened.close();
 });
+
+test('a provider spawn failure proves stopped ownership and preserves its safe OS classification', async t => {
+  const f = await fixture(t);
+  await rm(f.options.bin);
+  await f.driver.launch(f.request);
+  const receipt = JSON.parse(await waitFile(join(f.options.directory, 'operation', 'outcome.json')));
+  assert.equal(receipt.outcome.workerState, 'stopped');
+  assert.equal(receipt.outcome.cause.code, 'PROVIDER_SPAWN_ENOENT');
+  const observed = await f.driver.observe('operation');
+  assert.equal(observed.status, 'stopped'); assert.equal(observed.launchFailure, 'PROVIDER_SPAWN_ENOENT');
+});

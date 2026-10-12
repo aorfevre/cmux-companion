@@ -15,6 +15,7 @@ export class AgentTools {
     const authorize = () => {
       const goal = this.service.store.get(authority.goalId); requireValue(goal, 'Agent goal is unavailable', 'FORBIDDEN');
       validateAuthority(goal, authority);
+      requireValue(!goal.verificationRuns?.some(run => run.attemptId === authority.attemptId && run.workerState !== 'stopped'), 'A check still owns this checkout', 'OWNERSHIP_UNCERTAIN');
       const fixing = goal.status === 'addressing_review' && goal.reviewRound?.state === 'fixing' && authority.role === 'review_fixer';
       const building = goal.status === 'building' && goal.approvedRevision === goal.revision && ['implementer', 'integrator'].includes(authority.role);
       requireValue(this.service.repositoryIds.has(goal.repositoryId) && (fixing || building), 'This attempt cannot commit', 'FORBIDDEN');

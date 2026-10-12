@@ -20,7 +20,7 @@ export class BridgeAuthority {
     const attempt = goal?.attempts.find((entry) => entry.id === attemptId);
     requireValue(goal && attempt && attempt.status === 'running', 'No active attempt for credential');
     /** @type {import('./types.d.ts').Authority} */
-    const authority = { kind: 'agent', goalId, generation: goal.generation, revision: goal.revision, attemptId, role: attempt.role };
+    const authority = { kind: 'agent', goalId, generation: attempt.generation, revision: attempt.revision, attemptId, role: attempt.role };
     validateAuthority(goal, authority);
     return this.save(authority);
   }
@@ -41,7 +41,7 @@ export class BridgeAuthority {
    * @param {string} secret */
   ready(secret) {
     const authority = this.receiptAuthority(secret), goal = this.store.get(authority.goalId);
-    requireValue(goal && goal.generation === authority.generation && goal.revision === authority.revision, 'Dispatch authority was revoked', 'FORBIDDEN');
+    requireValue(goal, 'Dispatch authority was revoked', 'FORBIDDEN');
     const attempt = goal.attempts.find((entry) => entry.id === authority.attemptId);
     requireValue(attempt?.status !== 'queued', 'Dispatch identity has not committed', 'NOT_READY');
     validateAuthority(goal, authority);

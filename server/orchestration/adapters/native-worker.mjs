@@ -1,3 +1,4 @@
+import { StoppedSpawnError } from './spawn-failure.mjs';
 import { prepareCcsLaunch } from './ccs-managed-launcher.mjs';
 import { randomUUID } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
@@ -51,7 +52,7 @@ export async function runNativeWorker(configPath) {
     });
     save('outcome.json', { identity: config.identity, outcome: await handle.result });
   } catch (error) {
-    save('outcome.json', { identity: config.identity, outcome: { status: 'failed', workerState: sent ? 'unknown' : 'stopped', cause: { code: error instanceof DomainError ? error.code : 'NATIVE_WORKER_FAILED', exitCode: null, signal: null }, stdout: '', stderr: '' } });
+    save('outcome.json', { identity: config.identity, outcome: { status: 'failed', workerState: !sent || error instanceof StoppedSpawnError ? 'stopped' : 'unknown', cause: { code: error instanceof StoppedSpawnError ? error.failureCode : error instanceof DomainError ? error.code : 'NATIVE_WORKER_FAILED', exitCode: null, signal: null }, stdout: '', stderr: '' } });
   } finally { process.off('SIGTERM', stop); process.off('SIGINT', stop); }
 }
 

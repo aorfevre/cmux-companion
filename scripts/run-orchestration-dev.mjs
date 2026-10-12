@@ -1,3 +1,6 @@
+import { runScriptedWorkerChecks } from '../tests/helpers/orchestration/scripted-worker-checks.mjs';
+import { createBridge } from '../server/orchestration/bridge.mjs';
+import { runScriptedSupervisor } from '../tests/helpers/orchestration/scripted-supervisor.mjs';
 import { DomainError, object } from '../server/orchestration/domain/contracts.mjs';
 import { existsSync, renameSync, realpathSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -22,6 +25,10 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
     repo.contract.tasks = repo.contract.tasks.map(task => ({ ...task, resources: [] }));
     repo.contract.verification.unshift({ id: 'modules', argv: ['node', '--input-type=module', '-e', "import { a } from './src/a.mjs'; import { b } from './src/b.mjs'; if (a() !== 2 || b() !== 3) process.exit(1);"] });
     repo.contract.waves = [{ id: 'modules', title: 'Independent modules', taskIds: ['A', 'B'], checkIds: ['modules'] }, { id: 'composition', title: 'Compose verified outputs', taskIds: ['C'], checkIds: repo.contract.verification.map(check => check.id) }];
+    const fixtureTeam = {
+      capturedAt: '2026-09-15T10:00:00.000Z', defaults: { planner: 'claude', implementer: 'claude', reviewer: 'claude', integrator: 'claude' },
+      profiles: ['claude', 'codex'].map(provider => ({ id: provider, label: `${provider} fixture`, provider, model: 'fixture', roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: 'Disposable fake adapter', capacity: { remainingPercent: null, source: 'Fixture', checkedAt: null, reason: 'No live quota lookup in the disposable fixture.' } })),
+    };
     const siblings = new Map(), shared = new Map();
     return {
       dispose: () => repo.close(),
@@ -30,16 +37,19 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
         repositories: new Map([['repo', repo.repository]]), readOnly, limits: { global: 2, perGoal: 2 },
         beforeCommand: async command => {
           if (command.type !== 'create_goal') return;
-          object(command.payload).teamConfiguration = {
-            capturedAt: '2026-09-15T10:00:00.000Z', defaults: { planner: 'claude', implementer: 'claude', reviewer: 'claude', integrator: 'claude' },
-            profiles: ['claude', 'codex'].map(provider => ({ id: provider, label: `${provider} fixture`, provider, model: 'fixture', roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: 'Disposable fake adapter', capacity: { remainingPercent: null, source: 'Fixture', checkedAt: null, reason: 'No live quota lookup in the disposable fixture.' } })),
-          };
+          object(command.payload).teamConfiguration = fixtureTeam;
         },
+        supervisorChoices: async () => ({ ...fixtureTeam, recommendedId: 'claude' }),
         prepareGoal: goal => fixtureRemote.fetchBase(goal.repositoryId, goal.baseBranch),
-        createAgents: ({ onResult }) => {
+        createAgents: ({ onResult, describe }) => {
           const agents = new ScriptedAgents({
-            script: async ({ goalId, attempt }, { signal }) => {
-              if (attempt.role === 'planner') return { contract: repo.contract };
+            script: async (request, { signal }) => {
+              const { goalId, attempt } = request;
+              if (attempt.role === 'planner') {
+                const description = describe(request);
+                if (description.supervisor) return runScriptedSupervisor({ bridge: createBridge(description.bridge), contract: repo.contract, signal });
+                return { contract: repo.contract };
+              }
               if (attempt.role === 'implementer') {
                 if (['A', 'B'].includes(attempt.taskId)) {
                   if (!shared.has(goalId)) shared.set(goalId, barrier());
@@ -48,6 +58,10 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
                   if (siblings.get(goalId).size === 2) { overlaps.add(goalId); shared.get(goalId).release(); }
                   await waitForBarrier(shared.get(goalId).promise, signal);
                   if (browserHarness) await waitForRelease(join(directory, 'release-siblings'), signal);
+                }
+                if (attempt.taskId === 'C') {
+                  const description = describe(request);
+                  if (description.experienceVersion === 2) return runScriptedWorkerChecks({ bridge: createBridge(description.bridge), request, signal });
                 }
                 const prior = agents.launches.filter((entry) => entry.goalId === goalId && entry.attempt.taskId === 'C' && entry.attempt.role === 'implementer');
                 const headSha = await repo.implement(attempt.worktree, attempt.taskId, { failing: attempt.taskId === 'C' && prior.length === 1 });
@@ -78,6 +92,18 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
               onResult(request, JSON.stringify({ schemaVersion: 1, goalId, operationId, attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision, target: attempt.target, output }));
             },
           });
+          if (browserHarness) {
+            const launch = agents.launch.bind(agents), injected = new Set();
+            agents.launch = async request => {
+              if (request.attempt.role === 'implementer' && !injected.has(request.goalId) && existsSync(join(directory, 'release-launch-transient'))) {
+                injected.add(request.goalId);
+                const result = agents.beginLaunch(request);
+                agents.workers.set(request.operationId, { ...result, status: 'stopped', launchFailure: 'PROVIDER_SPAWN_EAGAIN' });
+                return result; // No script/model/process ran for this injected launch.
+              }
+              return launch(request);
+            };
+          }
           fixtureAgents = agents;
           agents.close = async () => { for (const controller of agents.controllers.values()) controller.abort(); await agents.drain(); };
           return agents;
@@ -135,7 +161,7 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
           };
           return new GitHubPublication({ directory: join(directory, 'publications'), remote, github: fixtureGithub });
         },
-        createReviewMerge: ({ repositories }) => new ReviewMerge({ repositories, remote: fixtureRemote }),
+        createReviewMerge: ({ repositories }) => new ReviewMerge({ repositories, remote: { fetchBase: (repositoryId, branch) => fixtureRemote.fetchBase(repositoryId, branch) } }),
       },
     };
   } });

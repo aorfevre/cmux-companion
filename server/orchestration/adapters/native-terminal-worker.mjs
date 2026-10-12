@@ -1,20 +1,35 @@
+import { readSupervisorTurn, supervisorTurnCommand } from './supervisor-turn.mjs';
+import { StoppedSpawnError, stoppedSpawnFailure } from './spawn-failure.mjs';
 import { prepareCcsLaunch } from './ccs-managed-launcher.mjs';
 import { ResultOutbox } from '../result-outbox.mjs';
 import { createBridge } from '../bridge.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { lstatSync, readFileSync, writeFileSync, renameSync, existsSync, realpathSync } from 'node:fs';
+import { constants, openSync, fstatSync, closeSync, lstatSync, readFileSync, writeFileSync, renameSync, existsSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { DomainError, requireValue } from '../domain/contracts.mjs';
+import { DomainError, integer, requireValue } from '../domain/contracts.mjs';
 import { awaitNativeActivation } from './native-activation.mjs';
 import { assertNativeInstallation } from './native-capabilities.mjs';
 import { nativeProcessStamp, nativeGroupState } from './native-process.mjs';
 
-/** A terminal-owned supervisor. Native I/O is inherited and user/permission waits
- * have no ceiling or idle timer. Only explicit termination has a cleanup deadline.
+/** Preserve display capabilities from the actual cmux terminal, not the service
+ * environment. Never inherit account settings, credentials or executable paths.
+ * @param {NodeJS.ProcessEnv} configured @param {NodeJS.ProcessEnv} terminal */
+export function terminalDisplayEnvironment(configured, terminal) {
+  const env = { ...configured };
+  for (const key of ['TERM', 'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'NO_COLOR', 'FORCE_COLOR']) {
+    const value = terminal[key];
+    if (typeof value === 'string' && value.length <= 128 && ![...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) env[key] = value;
+  }
+  return env;
+}
+
+/** A terminal-owned supervisor. Legacy native I/O is inherited. Managed native
+ * turns use bounded structured output and a per-turn ceiling, then wait in this
+ * runner without a provider process or native tool deadline.
  * A paused conversation retains its original operation and native conversation.
  * @param {string} configPath */
 export async function runNativeTerminal(configPath) {
@@ -25,6 +40,7 @@ export async function runNativeTerminal(configPath) {
   requireValue(config.identity === request.identity && request.binding.operationId === directory.split('/').at(-1)
     && request.binding.role === 'planner' && request.binding.mode === 'interactive' && config.command.cwd === request.binding.worktree
     && Number.isSafeInteger(config.killGraceMs) && config.killGraceMs > 0 && config.killGraceMs <= 30000, 'Terminal binding changed');
+  requireValue(!config.supervisorTurns || Number.isSafeInteger(config.turnTimeoutMs) && config.turnTimeoutMs > 0 && config.turnTimeoutMs <= 2147483647, 'Invalid supervisor turn deadline');
   writeFileSync(join(directory, 'runner-started.json'), JSON.stringify({ identity: config.identity }), { flag: 'wx', mode: 0o600 });
   const save = (/** @type {string} */ name, /** @type {unknown} */ value) => {
     const target = join(directory, name), temporary = `${target}.${randomUUID()}.tmp`;
@@ -43,20 +59,35 @@ export async function runNativeTerminal(configPath) {
   // The provider has a separate owned process group but inherits this terminal.
   // Forward terminal interruption without treating the native permission UI as dead.
   const interrupt = () => signalProvider('SIGINT');
+  const resize = () => signalProvider('SIGWINCH');
+  process.on('SIGWINCH', resize);
   process.on('SIGTERM', stop); process.on('SIGHUP', stop); process.on('SIGINT', interrupt);
   let code = 'ABORTED';
+  /** @type {ReturnType<typeof setTimeout> | undefined} */ let turnDeadline;
   /** @type {ReturnType<typeof setInterval> | undefined} */ let outboxTimer;
   /** @type {Promise<void> | null} */ let draining = null;
   try {
     save('identity.json', { identity: config.identity, pid: process.pid, stamp: await nativeProcessStamp(process.pid, directory), workspaceId: config.workspaceId });
     const bridgeConfig = JSON.parse(readFileSync(join(directory, 'bridge.json'), 'utf8'));
     requireValue(config.handoffProtocol === 1 && bridgeConfig.handoffProtocol === 1, 'Terminal handoff protocol is unavailable');
+    requireValue(!config.supervisorTurns || bridgeConfig.binding.supervisorTurns === true && bridgeConfig.binding.supervisor === true, 'Supervisor turn binding changed', 'OWNERSHIP_UNCERTAIN');
     const outbox = new ResultOutbox({ directory: join(directory, 'outbox'), binding: bridgeConfig.binding });
     const bridge = createBridge({ ...bridgeConfig, timeoutMs: 1000 });
     save('handoff.json', { version: 1, identity: config.identity });
     const drain = () => { if (!draining) draining = outbox.drain(bridge).catch(() => {}).finally(() => { draining = null; }); };
     outboxTimer = setInterval(drain, 500); drain();
     await awaitNativeActivation(config.activation, controller.signal);
+    const codexSession = () => {
+      const path = join(directory, 'codex-session.json');
+      const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const stat = fstatSync(descriptor);
+        requireValue(stat.isFile() && stat.size <= 4096, 'Invalid native session receipt', 'SUPERVISOR_PROTOCOL_FAILED');
+        const session = JSON.parse(readFileSync(descriptor, 'utf8'));
+        requireValue(session.conversationId === request.binding.conversationId && /^[A-Za-z0-9_-]{1,160}$/.test(session.sessionId), 'Codex session identity changed', 'SUPERVISOR_PROTOCOL_FAILED');
+        return session.sessionId;
+      } finally { closeSync(descriptor); }
+    };
     let runId = 'initial';
     while (!controller.signal.aborted) {
       if (config.installation) {
@@ -65,39 +96,58 @@ export async function runNativeTerminal(configPath) {
       }
       const argv = [...config.command.argv];
       if (runId !== 'initial') {
-        if (config.installation?.provider === 'codex') {
-          const session = JSON.parse(readFileSync(join(directory, 'codex-session.json'), 'utf8'));
-          requireValue(session.conversationId === request.binding.conversationId && /^[A-Za-z0-9_-]{1,160}$/.test(session.sessionId), 'Codex session identity changed');
+        if (config.supervisorProvider === 'codex' || config.installation?.provider === 'codex') {
+          const sessionId = codexSession();
           const prompt = argv.pop();
           requireValue(typeof prompt === 'string', 'Codex resume context is missing');
-          argv.push('resume', session.sessionId, prompt);
+          if (config.supervisorTurns) {
+            requireValue(argv.at(-2) === 'exec' && argv.at(-1) === '--json', 'Invalid Codex turn contract');
+            argv.splice(-2, 2, 'exec', 'resume', '--json', sessionId, prompt);
+          } else argv.push('resume', sessionId, prompt);
         } else {
         const index = argv.indexOf('--session-id');
-        requireValue(index >= 0 && argv[index + 1] === request.binding.conversationId && !argv.includes('--print'), 'Invalid native resume contract');
+        requireValue(index >= 0 && argv[index + 1] === request.binding.conversationId && (config.supervisorTurns || !argv.includes('--print')), 'Invalid native resume contract');
         argv[index] = '--resume';
         }
       }
+      if (config.supervisorTurns) await supervisorTurnCommand(bridge, 'supervisor_turn_start', controller.signal);
       // Resume is a durable idempotent command, not a new attempt or conversation.
       writeFileSync(join(directory, `run-${runId}.json`), JSON.stringify({ identity: config.identity }), { flag: 'wx', mode: 0o600 });
       if (controller.signal.aborted) break;
       const command = prepareCcsLaunch({ ...config.command, argv }, config.installation, directory, runId);
       providerSent = true; providerStopped = false;
       save('session.json', { phase: 'starting', runId });
-      const child = spawn(command.bin, command.argv, { cwd: command.cwd, env: command.env, stdio: 'inherit', detached: true });
+      const child = spawn(command.bin, command.argv, { cwd: command.cwd, env: terminalDisplayEnvironment(command.env, process.env), stdio: config.supervisorTurns ? ['ignore', 'pipe', 'inherit'] : 'inherit', detached: true });
+      if (config.supervisorTurns) {
+        turnDeadline = setTimeout(() => { code = 'SUPERVISOR_TURN_TIMEOUT'; stop(); }, config.turnTimeoutMs);
+      }
+      const turnOutput = config.supervisorTurns && child.stdout ? readSupervisorTurn(child.stdout, request.binding.conversationId, text => process.stdout.write(text), { provider: config.supervisorProvider ?? 'claude', sessionId: codexSession }) : null;
+      if (turnOutput) void turnOutput.catch(error => { if (!controller.signal.aborted) code = error instanceof DomainError ? error.code : 'SUPERVISOR_PROTOCOL_FAILED'; stop(); });
       const exited = once(child, 'exit'); void exited.catch(() => {});
-      try { await once(child, 'spawn'); } catch (error) { providerStopped = !child.pid; throw error; }
+      try { await once(child, 'spawn'); } catch (error) { providerStopped = !child.pid; throw providerStopped ? new StoppedSpawnError(stoppedSpawnFailure(error)) : error; }
       providerPid = child.pid ?? null;
       save('provider.json', { identity: config.identity, runId, pid: providerPid });
       save('session.json', { phase: 'running', runId });
       if (controller.signal.aborted) signalProvider('SIGTERM');
       const [exitCode, exitSignal] = await exited;
+      if (turnDeadline) { clearTimeout(turnDeadline); turnDeadline = undefined; }
       const deadline = Date.now() + config.killGraceMs * 2;
       while (providerPid && nativeGroupState(providerPid) !== 'dead' && Date.now() < deadline) await delay(20);
       providerStopped = providerPid !== null && nativeGroupState(providerPid) === 'dead';
       requireValue(providerStopped, 'Terminal provider descendants remain uncertain', 'OWNERSHIP_UNCERTAIN');
       providerPid = null;
+      if (turnOutput && !controller.signal.aborted) {
+        await turnOutput; requireValue(exitCode === 0 && exitSignal === null, 'Native supervisor turn exited unsuccessfully', 'SUPERVISOR_PROTOCOL_FAILED');
+      }
       if (controller.signal.aborted) break;
       save('session.json', { phase: 'paused', runId, exitCode, signal: exitSignal });
+      if (config.supervisorTurns) {
+        const idle = await supervisorTurnCommand(bridge, 'supervisor_turn_idle', controller.signal);
+        process.stdout.write('\nSupervisor idle · waiting for a saved goal event.\n');
+        const awakened = await bridge.waitForInput(idle.conversation.seenWake, controller.signal);
+        runId = `wake-${integer(awakened.conversation.wake, 1)}`;
+        continue;
+      }
       process.stdout.write('\nConversation paused. Resume it from Companion to continue.\n');
       while (!controller.signal.aborted) {
         const path = join(directory, 'resume.json');
@@ -110,9 +160,10 @@ export async function runNativeTerminal(configPath) {
         await delay(50, undefined, { signal: controller.signal }).catch(() => {});
       }
     }
-  } catch (error) { code = error instanceof DomainError ? error.code : 'NATIVE_TERMINAL_FAILED'; }
+  } catch (error) { code = error instanceof StoppedSpawnError ? error.failureCode : error instanceof DomainError ? error.code : 'NATIVE_TERMINAL_FAILED'; }
   finally {
     if (outboxTimer) clearInterval(outboxTimer);
+    if (turnDeadline) clearTimeout(turnDeadline);
     await draining;
     if (force) clearTimeout(force);
     if (!providerStopped && providerPid) {
@@ -120,6 +171,7 @@ export async function runNativeTerminal(configPath) {
       providerStopped = nativeGroupState(providerPid) === 'dead';
     }
     save('outcome.json', { identity: config.identity, workerState: !providerSent || providerStopped ? 'stopped' : 'unknown', code });
+    process.off('SIGWINCH', resize);
     process.off('SIGTERM', stop); process.off('SIGHUP', stop); process.off('SIGINT', interrupt);
   }
 }

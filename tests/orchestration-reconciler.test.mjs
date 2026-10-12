@@ -13,7 +13,7 @@ function fixture(t) {
   const repositories = { provision: async ({ operationId, branch, baseSha }) => ({ worktree: `/tmp/${operationId}`, branch, baseSha }) };
   const scheduler = new Scheduler({ service, repositories });
   t.after(async () => { await scheduler.stop(); store.close(); });
-  const create = (goalId) => service.execute({ id: `create_${goalId}`, goalId, expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: goalId, baseSha: BASE } }, { kind: 'user' });
+  const create = (goalId, experienceVersion) => service.execute({ id: `create_${goalId}`, goalId, expectedVersion: 0, type: 'create_goal', payload: { repositoryId: 'repo', title: goalId, baseSha: BASE, ...(experienceVersion ? { experienceVersion } : {}) } }, { kind: 'user' });
   const abort = (goalId) => service.execute({ id: `abort_${goalId}`, goalId, expectedVersion: store.get(goalId).version, type: 'abort', payload: {} }, { kind: 'user' });
   return { store, service, agents, repositories, scheduler, create, abort };
 }
@@ -137,3 +137,37 @@ test('failure after launch completion commit cannot mark a live worker stopped',
   await f.scheduler.stop(); await f.scheduler.start();
   assert.equal(f.agents.launches.length, 1);
 });
+
+for (const exhausted of [false, true]) test(`proven transient provider spawn retries once without human recovery; exhausted=${exhausted}`, async t => {
+  const f = fixture(t); f.create('g', 2);
+  const observe = f.agents.observe.bind(f.agents);
+  f.agents.observe = async operationId => {
+    const worker = await observe(operationId);
+    return exhausted || operationId === f.agents.launches[0]?.operationId
+      ? { ...worker, status: 'stopped', launchFailure: 'PROVIDER_SPAWN_EAGAIN' } : worker;
+  };
+  await f.scheduler.start(); await f.scheduler.tick(); await f.scheduler.tick();
+  const goal = f.store.get('g');
+  assert.equal(f.agents.launches.length, 2);
+  assert.equal(goal.attempts[0].workerState, 'stopped');
+  assert.equal(goal.attempts[0].launchFailure.scheduled, true);
+  assert.equal(goal.attempts[0].launchFailure.limit, 1);
+  assert.match(goal.conversation.messages.find(message => message.text.includes('retry 1 of 1')).text, /no provider process started/);
+  assert.notEqual(goal.attempts[0].operationId, goal.attempts[1].operationId);
+  assert.equal(Boolean(goal.hold), exhausted);
+  assert.equal(goal.attempts[1].status, exhausted ? 'failed' : 'running');
+  if (exhausted) assert.equal(goal.attempts[1].launchFailure.scheduled, false);
+  await f.scheduler.stop(); await f.scheduler.start(); await f.scheduler.tick();
+  assert.equal(f.agents.launches.length, 2, 'restart cannot reset the saved retry budget');
+});
+
+for (const [status, code, version] of [['stopped', 'PROVIDER_SPAWN_EACCES', 2], ['stopped', 'PROVIDER_SPAWN_ENOENT', 2], ['unknown', 'PROVIDER_SPAWN_EAGAIN', 2], ['stopped', 'PROVIDER_SPAWN_EAGAIN', undefined]]) {
+  test(`launch recovery retains decision for ${status}/${code}/experience=${version ?? 1}`, async t => {
+    const f = fixture(t); f.create('g', version);
+    const observe = f.agents.observe.bind(f.agents);
+    f.agents.observe = async operationId => ({ ...await observe(operationId), status, launchFailure: code });
+    await f.scheduler.start(); await f.scheduler.tick();
+    assert.equal(f.agents.launches.length, 1); assert.ok(f.store.get('g').hold);
+    assert.equal(f.store.get('g').attempts[0].workerState, status === 'unknown' ? 'unknown' : 'stopped');
+  });
+}

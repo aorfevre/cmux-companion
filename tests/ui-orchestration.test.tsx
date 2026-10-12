@@ -8,6 +8,7 @@ const config = { readOnly: false, terminal: false, limits: { global: 4, perGoal:
 let readOnly = false, paired = true;
 let stream: { onopen?: () => void; onerror?: () => void; close: ReturnType<typeof vi.fn>; listeners: Record<string, () => void> };
 beforeEach(() => {
+  localStorage.clear();
   readOnly = false; paired = true;
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
@@ -25,6 +26,42 @@ beforeEach(() => {
     if (options?.method === 'POST') return {};
     throw new Error(`Unexpected ${url}`);
   });
+});
+
+test('reload reconciles a saved conversation command using its exact original receipt envelope', async () => {
+  const command = { id: 'stable-message', goalId: 'saved-goal', expectedVersion: 7, type: 'send_goal_message', payload: { message: 'Preserve this input.' } };
+  localStorage.setItem('companion.goal-message.journal', JSON.stringify(command));
+  render(<GoalBoard />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry pending request' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('/api/orchestration/commands', { method: 'POST', body: JSON.stringify(command) }));
+  await waitFor(() => expect(localStorage.getItem('companion.goal-message.journal')).toBeNull());
+  expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull();
+});
+
+test('a pending conversation message from another journal cannot target the current service', async () => {
+  localStorage.setItem('companion.goal-message.other-journal', JSON.stringify({ id: 'other', type: 'send_goal_message' }));
+  render(<GoalBoard />);
+  await screen.findByRole('button', { name: 'Start a goal' });
+  expect(screen.queryByRole('button', { name: 'Retry pending request' })).toBeNull();
+});
+
+test('conversation message retries a definitive version conflict against fresh state without rebasing uncertain outcomes', async () => {
+  const command = { id: 'stale-message', goalId: 'saved-goal', expectedVersion: 7, type: 'send_goal_message', payload: { message: 'Preserve this input.' } };
+  localStorage.setItem('companion.goal-message.journal', JSON.stringify(command));
+  const original = api.getMockImplementation()!;
+  let submissions = 0;
+  api.mockImplementation(async (url, options) => {
+    if (url.endsWith('/commands') && submissions++ === 0) throw new ApiError('Goal version changed', 409, 'VERSION_CONFLICT');
+    if (url.endsWith('/goals/saved-goal')) return { version: 9 };
+    return original(url, options);
+  });
+  render(<GoalBoard />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry pending request' }));
+  await waitFor(() => expect(submissions).toBe(2));
+  const sent = api.mock.calls.filter(([url]) => url.endsWith('/commands')).map(([, options]) => JSON.parse(options!.body as string));
+  expect(sent[0]).toEqual(command);
+  expect(sent[1]).toEqual({ ...command, id: expect.any(String), expectedVersion: 9 });
+  expect(sent[1].id).not.toBe(command.id);
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); history.replaceState(null, '', '/'); });
 async function start() {
@@ -195,7 +232,7 @@ test('creation submits a full request from main without the current checkout SHA
   await start();
   expect(screen.getByText('Starts from freshly fetched main in an isolated worktree.')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
-  await screen.findByText('Goal saved. Its planning agent will start automatically.');
+  await screen.findByText('Goal saved. See its current startup status below.');
   const body = JSON.parse(String(api.mock.calls.find(([url]) => url.endsWith('/commands'))?.[1]?.body));
   expect(body.payload).toEqual({ description: 'A useful goal', repositoryId: 'repo', baseBranch: 'main' });
   expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();
@@ -441,4 +478,39 @@ test('a conflicted pull request with no active round needs attention', async () 
   f.command('record_merge_sync', { number: f.goal.pr.number, url: f.goal.pr.url, checkedAt: 1, state: 'open', mergeable: 'conflicting' }, f.system);
   const goal = { ...goalView(f.goal), contracts: [] };
   expect(attention(goal)).toBe('The PR conflicts with its target branch. A round starts automatically at the next merge check.');
+});
+
+
+test('abort retries a definitive supervisor version race without changing its target', async () => {
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const goal = { ...goalView(fixture().goal), contracts: [] };
+  const original = api.getMockImplementation()!;
+  let submissions = 0;
+  api.mockImplementation(async (url, options) => {
+    if (url.endsWith('/snapshot')) return { goals: [goal], cursor: 1, journalId: 'journal', readOnly: false };
+    if (url.endsWith(`/goals/${goal.id}`)) return { ...goal, version: submissions ? goal.version + 1 : goal.version };
+    if (url.endsWith('/commands')) { if (submissions++ === 0) throw new ApiError('Goal version changed', 409, 'VERSION_CONFLICT'); return {}; }
+    return original(url, options);
+  });
+  render(<GoalBoard />);
+  fireEvent.click(await screen.findByRole('button', { name: /Build modules/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
+  await waitFor(() => expect(submissions).toBe(2));
+  const sent = api.mock.calls.filter(([url]) => url.endsWith('/commands')).map(([, options]) => JSON.parse(options!.body as string));
+  expect(sent[0]).toMatchObject({ goalId: goal.id, type: 'abort', expectedVersion: goal.version });
+  expect(sent[1]).toEqual({ ...sent[0], id: expect.any(String), expectedVersion: goal.version + 1 });
+  expect(sent[1].id).not.toBe(sent[0].id);
+});
+
+test('an automatically retried launch stays out of Needs You until its retry budget is exhausted', async () => {
+  const { attention } = await import('../app/orchestration/attention');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const goal = goalView(fixture().goal);
+  goal.attempts = [{ id: 'launch', role: 'planner', taskId: null, assignment: null, current: true, mode: 'interactive', status: 'failed', workerState: 'stopped', target: 'contract:0', error: 'Temporary resource failure', launchFailure: { code: 'PROVIDER_SPAWN_EAGAIN', retry: 1, limit: 1, scheduled: true } }];
+  goal.status = 'discovering';
+  expect(attention(goal)).toBeNull();
+  goal.attempts[0].launchFailure!.scheduled = false;
+  expect(attention(goal)).toBe('Temporary resource failure');
 });

@@ -11,6 +11,27 @@ export function ownedArea(value) {
 /** @param {string} left @param {string} right */
 const overlaps = (left, right) => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 
+/** Conversational proposals may describe one implementation without inventing a
+ * graph. Normalize before approval so the durable contract and every downstream
+ * ownership/check boundary use the same validated task and wave representation.
+ * @param {unknown} value @returns {import('../types.d.ts').Contract} */
+export function parseSupervisorProposal(value) {
+  const input = object(value);
+  if (!Object.hasOwn(input, 'implementation')) return parseContract(input);
+  requireValue(input.schemaVersion === 2, 'Simple proposals require contract schema 2');
+  requireValue(!Object.hasOwn(input, 'tasks') && !Object.hasOwn(input, 'waves'), 'Choose one implementation or an explicit task graph');
+  const implementation = object(input.implementation);
+  requireValue(Object.keys(implementation).every(key => ['title', 'prompt', 'ownedAreas'].includes(key)), 'Unknown implementation field');
+  return parseContract({
+    ...input,
+    tasks: [{ id: 'implementation', title: implementation.title, prompt: implementation.prompt,
+      ownedAreas: implementation.ownedAreas, dependsOn: [], resources: [],
+      criterionIds: array(input.criteria).map(entry => object(entry).id) }],
+    waves: [{ id: 'implementation', title: 'Implementation', taskIds: ['implementation'],
+      checkIds: array(input.verification, 30).map(entry => object(entry).id) }],
+  });
+}
+
 /** @param {unknown} value @returns {import('../types.d.ts').Contract} */
 export function parseContract(value) {
   const input = object(value);

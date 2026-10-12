@@ -1,4 +1,5 @@
-import { PLAN_REVISION_LIMIT } from './review-repairs.mjs';
+import { isSupervisor, ownsExecution } from './conversation.mjs';
+import { PLAN_REVISION_LIMIT, repairableReviews } from './review-repairs.mjs';
 import { requireValue } from './contracts.mjs';
 
 /** @typedef {import('../types.d.ts').Goal} Goal */
@@ -11,8 +12,9 @@ export function captureFailureHold(before, change, commandId) {
   if (goal.generation !== before.generation && goal.status !== 'addressing_review') return;
   /** @type {NonNullable<Goal['hold']>['reasons']} */ const reasons = [];
   for (const attempt of goal.attempts) {
-    if (attempt.generation !== goal.generation || attempt.revision !== goal.revision) continue;
+    if (!isSupervisor(goal, attempt) && (attempt.generation !== goal.generation || attempt.revision !== goal.revision)) continue;
     const prior = before.attempts.find(entry => entry.id === attempt.id);
+    if (attempt.launchFailure?.scheduled && attempt.workerState === 'stopped') continue;
     if ((['failed', 'uncertain', 'cancelled'].includes(attempt.status) && prior?.status !== attempt.status) || (attempt.workerState === 'unknown' && prior?.workerState !== 'unknown')) {
       reasons.push({ kind: 'attempt', target: attempt.id, message: `${attempt.role}${attempt.taskId ? ` for ${attempt.taskId}` : ''} did not finish successfully.` });
     }
@@ -26,6 +28,17 @@ export function captureFailureHold(before, change, commandId) {
   if (goal.verification?.checks.some(check => !check.passed) && JSON.stringify(goal.verification) !== JSON.stringify(before.verification)) {
     const prepareFailed = goal.verification.checks.some(check => check.id === 'prepare' && !check.passed);
     reasons.push({ kind: 'verification', target: goal.verification.headSha, message: prepareFailed ? 'Dependencies did not install on the integrated head.' : 'Required verification failed on the integrated head.' });
+  }
+  for (const run of goal.verificationRuns ?? []) {
+    if (!run.attemptId || run.status !== 'complete' || !run.result?.verification.checks.some(check => !check.passed)
+      || before.verificationRuns?.find(entry => entry.operationId === run.operationId)?.status === 'complete') continue;
+    const history = goal.verificationRuns?.filter(entry => entry.attemptId === run.attemptId && entry.checkIds?.some(id => run.checkIds?.includes(id))) ?? [];
+    const unchanged = history.filter(entry => entry.headSha === run.headSha && entry.result?.verification.checks.some(check => !check.passed));
+    const needsDecision = run.result.verification.checks.some(check => !check.passed && (check.id === 'prepare' || check.code !== 'EXIT_FAILED'));
+    if (!needsDecision && history.length < (run.budgetLimit ?? 3) && unchanged.length < 2) continue;
+    reasons.push({ kind: 'verification', target: run.operationId, message: needsDecision ? 'Worker check setup or execution needs attention. Inspect the saved output before recovery.' : 'Worker check repair budget exhausted. Review its output and recover or revise the goal.' });
+    const attempt = goal.attempts.find(attempt => attempt.id === run.attemptId);
+    if (attempt?.identity && attempt.workerState !== 'stopped') change.intents.push({ id: `${commandId}_${attempt.id}`, kind: 'terminate', goalId: goal.id, generation: goal.generation, revision: goal.revision, attemptId: attempt.id, payload: { identity: attempt.identity } });
   }
   for (const run of goal.verificationRuns ?? []) if (run.status === 'uncertain' && run.generation === goal.generation && run.revision === goal.revision && before.verificationRuns?.find(entry => entry.operationId === run.operationId)?.status !== 'uncertain') {
     reasons.push({ kind: 'verification', target: run.operationId, message: 'Verification ownership needs reconciliation.' });
@@ -49,18 +62,18 @@ export function captureFailureHold(before, change, commandId) {
 export function recoverGoal(goal, holdId, commandId, mode = 'repair') {
   requireValue(['repair', 'retry_verification'].includes(String(mode)), 'Unknown recovery mode');
   requireValue(goal.hold && goal.hold.id === holdId, 'The failure hold changed', 'STALE_TARGET');
-  requireValue(!goal.attempts.some(attempt => attempt.workerState !== 'stopped' && !(attempt.workerState === 'pending' && attempt.status === 'queued' && !attempt.identity))
+  requireValue(!goal.attempts.some(attempt => ownsExecution(goal, attempt) && !(attempt.workerState === 'pending' && attempt.status === 'queued' && !attempt.identity))
     && !goal.verificationRuns?.some(run => run.workerState !== 'stopped'), 'Let active workers finish and reconcile uncertain ownership before recovery', 'OWNERSHIP_UNCERTAIN');
   requireValue(!goal.results?.some(result => result.status === 'pending' && !result.repair), 'Wait for submitted results to settle before recovery', 'NOT_READY');
   requireValue(goal.reviewRound?.state !== 'unknown', 'Confirm the fix push outcome before recovery', 'OWNERSHIP_UNCERTAIN');
   requireValue(!goal.hold.reasons.some(reason => reason.kind === 'review' && goal.reviews.some(review => review.id === reason.target && review.kind === 'plan')), 'Request a plan revision to address the blocking review', 'NOT_READY');
   if (mode === 'retry_verification') {
-    const run = goal.verificationRuns?.filter(entry => entry.generation === goal.generation && entry.revision === goal.revision && entry.headSha === goal.integrationHead).at(-1);
+    const run = goal.verificationRuns?.filter(entry => !entry.attemptId && entry.generation === goal.generation && entry.revision === goal.revision && entry.headSha === goal.integrationHead).at(-1);
     requireValue(run?.status === 'complete' && run.result?.verification.checks.some(check => !check.passed), 'No stopped failed verification to retry', 'NOT_READY');
     requireValue(!goal.reviews.some(review => review.kind === 'integration' && review.target === goal.integrationHead && review.disposition === 'request_changes'), 'Repair blocking review findings before retrying verification', 'NOT_READY');
     run.retryRequested = true; goal.verification = null;
   }
-  const latest = new Map(goal.attempts.filter(attempt => attempt.generation === goal.generation && attempt.revision === goal.revision)
+  const latest = new Map(goal.attempts.filter(attempt => isSupervisor(goal, attempt) || (attempt.generation === goal.generation && attempt.revision === goal.revision))
     .map(attempt => [JSON.stringify([attempt.role, attempt.taskId, attempt.target]), attempt]));
   for (const attempt of latest.values()) if (['planner', 'reviewer'].includes(attempt.role) && ['failed', 'cancelled'].includes(attempt.status)) attempt.retryRequested = true;
   for (const task of goal.tasks) {
@@ -78,4 +91,27 @@ export function recoverGoal(goal, holdId, commandId, mode = 'repair') {
   }
   (goal.recoveries ??= []).push({ commandId, hold: goal.hold });
   goal.hold = null;
+}
+
+/** Only ordinary, stopped check failures are safe automatic repair inputs.
+ * Preparation, permissions, cancellation, timeout and unknown ownership keep
+ * their decision hold. Existing goals retain their manual check recovery.
+ * @param {Goal} goal */
+export function repairableChecks(goal) {
+  if (goal.experienceVersion !== 2 || goal.conversation?.paused || goal.status !== 'building'
+    || goal.approvedRevision !== goal.revision || !goal.hold?.reasons.length
+    || goal.integration || goal.publication || goal.finalRepairCount >= goal.finalRepairLimit
+    || goal.attempts.some(attempt => ownsExecution(goal, attempt))
+    || goal.results?.some(result => result.status === 'pending')
+    || goal.verificationRuns?.some(run => run.workerState !== 'stopped')) return false;
+  const run = goal.verificationRuns?.filter(run => !run.attemptId && run.generation === goal.generation
+    && run.revision === goal.revision && run.headSha === goal.integrationHead).at(-1);
+  if (!run || run.status !== 'complete' || run.result?.workerState !== 'stopped'
+    || JSON.stringify(run.result.verification) !== JSON.stringify(goal.verification)) return false;
+  const failed = run.result.verification.checks.filter(check => !check.passed);
+  if (!failed.length || failed.some(check => check.id === 'prepare' || check.code !== 'EXIT_FAILED')) return false;
+  // Two repairs of an unchanged target are enough, even after manual budget expansion.
+  const unchanged = goal.recoveries?.filter(entry => entry.hold.reasons.some(reason => reason.kind === 'verification' && reason.target === run.headSha)).length ?? 0;
+  const otherReasons = goal.hold.reasons.filter(reason => reason.kind !== 'verification' || reason.target !== run.headSha);
+  return unchanged < 2 && (!otherReasons.length || repairableReviews({ ...goal, hold: { ...goal.hold, reasons: otherReasons } }));
 }

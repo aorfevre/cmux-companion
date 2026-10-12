@@ -51,7 +51,7 @@ export class CodexInputs extends NativeInputs {
     // Only our fixed, role-scoped MCP servers are preapproved. File/command
     // authority remains enforced by their implementations and the role hook.
     const config = [
-      `approval_policy = ${toml(request.attempt.mode === 'interactive' ? 'on-request' : 'never')}`,
+      `approval_policy = ${toml(request.attempt.mode === 'interactive' && !prepared.supervisorTurns ? 'on-request' : 'never')}`,
       'sandbox_mode = "read-only"', // All file writes go through the scoped MCP.
       'web_search = "disabled"', 'allow_login_shell = false',
       `model_instructions_file = ${toml(context)}`,
@@ -75,18 +75,18 @@ export class CodexInputs extends NativeInputs {
     const argv = this.direct || this.ccsxp ? [] : [this.profile, '--target', 'codex'];
     argv.push('--strict-config', '--dangerously-bypass-hook-trust');
     if (this.engine.model !== 'default') argv.push('--model', this.engine.model);
-    if (request.attempt.mode === 'background') argv.push('exec', '--json');
-    argv.push('Follow the pinned role context. Read project files using the files MCP server. Use only the scoped role tools. ' + (request.attempt.role === 'planner'
+    if (request.attempt.mode === 'background' || prepared.supervisorTurns) argv.push('exec', '--json');
+    argv.push('Follow the pinned role context. Read project files using the files MCP server. Use only the scoped role tools. ' + (prepared.supervisorTurns ? 'Handle saved events using companion.conversation. Record wait with the observed wake cursor, then finish this turn. Do not poll, sleep or call wait_for_input. Companion resumes this same native session when a saved event needs attention.' : prepared.supervisor ? 'Use companion.conversation and companion.wait_for_input to maintain the goal conversation. Follow the pinned supervisor protocol.' : request.attempt.role === 'planner'
       ? 'Call companion.submit_result with {id,output:{question}} or {id,output:{contract}}. The tool supplies the outer identity envelope; a final text response does not submit a result.'
       : 'Return the required JSON role envelope as your final answer.'));
-    return { plannerName: prepared.plannerName, argv, env: { ...prepared.env, CODEX_HOME: home, ...(this.ccsxp ? { CCSXP_CODEX_HOME: home } : {}) }, ...(prepared.activation ? { activation: prepared.activation } : {}) };
+    return { supervisor: prepared.supervisor, supervisorTurns: prepared.supervisorTurns, plannerName: prepared.plannerName, argv, env: { ...prepared.env, CODEX_HOME: home, ...(this.ccsxp ? { CCSXP_CODEX_HOME: home } : {}) }, ...(prepared.activation ? { activation: prepared.activation } : {}) };
   }
 }
 
 export function createCodexAgents({ directory, installation, direct, ccsxp, profile, engine, env, cmux, policy }, context) {
-  const inputs = new CodexInputs({ installation, direct, ccsxp, profile, engine, env, capabilities: installation.capabilities, describe: context.describe });
+  const inputs = new CodexInputs({ supervisorTurns: true, installation, direct, ccsxp, profile, engine, env, capabilities: installation.capabilities, describe: context.describe });
   const terminal = new CmuxTerminal(cmux);
-  const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal, killGraceMs: policy.killGraceMs });
+  const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal, killGraceMs: policy.killGraceMs, turnTimeoutMs: policy.ceilingMs });
   const background = new NativeBackground({ terminal, directory: join(directory, 'background'), bin: installation.bin, inputs, policy, onResult: context.onResult, parseResult: codexResult });
   const runtime = new AgentRuntime({ interactive, background, locate: context.locate });
   return Object.assign(runtime, {

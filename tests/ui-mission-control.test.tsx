@@ -10,7 +10,7 @@ function goals(): Goal[] {
   const base = goalView(fixture().goal);
   return [
     { ...base, id: 'planning', title: 'Design ingestion', status: 'discovering', clarification: null },
-    { ...base, id: 'decision', title: 'Approve dashboard', status: 'awaiting_approval' },
+    { ...base, id: 'decision', title: 'Approve dashboard', status: 'awaiting_approval', planReviewPending: false },
     { ...base, id: 'waiting', title: 'Published adapter', status: 'delivered' },
     { ...base, id: 'merged', title: 'Merged project', status: 'merged' },
     { ...base, id: 'aborted', title: 'Stopped project', status: 'aborted' },
@@ -102,4 +102,18 @@ test('aborted history has its own searchable filter and the entire row opens onc
   expect(screen.queryByRole('button', { name: 'Design ingestion' })).toBeNull();
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } });
   expect(screen.getByText('No matching goals')).toBeTruthy();
+});
+
+
+test('independent plan review stays in the fleet until there is a user decision', () => {
+  const goal = { ...goals()[1], planReviewPending: true, approvalBlocked: 'Independent plan review must accept this revision.' };
+  const view = render(<GoalFleet goals={[goal]} select={vi.fn()} projectName={() => 'Example'} needsOnly />);
+  expect(screen.getByText('No decisions pending')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: goal.title })).toBeNull();
+  view.rerender(<GoalFleet goals={[goal]} select={vi.fn()} projectName={() => 'Example'} />);
+  expect(screen.getByText('Plan review')).toBeTruthy();
+  expect(screen.getByText('Independent plan review is in progress.')).toBeTruthy();
+  view.rerender(<GoalFleet goals={[{ ...goal, planReviewPending: false, approvalBlocked: null }]} select={vi.fn()} projectName={() => 'Example'} needsOnly />);
+  expect(screen.getByRole('button', { name: goal.title })).toBeTruthy();
+  expect(screen.getByText('Your plan is ready to approve.')).toBeTruthy();
 });

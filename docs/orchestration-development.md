@@ -23,6 +23,46 @@ Keep the token private. Ctrl-C or SIGTERM joins owned work, closes storage and
 removes the fixture. A failed shutdown preserves resources for inspection. A
 SIGKILL cannot run cleanup; its printed manifest identifies the orphaned fixture.
 
+## Try the conversational Goals checkpoint
+
+Start the disposable service as above, point `CMUX_COMPANION_API` at its printed
+loopback address for `npm run dev`, open `/orchestration`, and pair with its
+private token. In **Start a goal**, select **Try conversational Goals (evaluation)**.
+The fixed supervisor asks whether to use the module fixture; answer in the
+composer. Send “Please revise the plan” to exercise another proposal, then
+approve it. Pause, send guidance, reload and resume to inspect delivery receipts.
+
+The browser journey covers worker check failure and repair, independent final
+verification, result diff inspection and explicit publication approval. It uses
+fake agents and fake GitHub, and does not validate your actual CCS launchers. See the
+[evidence ledger](ccs-goals-evaluation.md) for passed and unverified paths.
+
+Run the new browser journey with:
+
+```sh
+CMUX_COMPANION_CYPRESS_BROWSER=chrome npm run test:e2e:local -- --orchestration --spec cypress/e2e/orchestration-conversation.cy.ts
+```
+
+## Single-implementer proposals
+
+For new conversational goals, the supervisor's `conversation` tool accepts a
+`propose` payload with the usual contract fields (`schemaVersion: 2`, outcome,
+scope, exclusions, criteria and verification) plus:
+
+```json
+"implementation": {
+  "title": "Fix the requested behavior",
+  "prompt": "Implement and verify the approved outcome.",
+  "ownedAreas": ["src/feature.ts", "tests/feature.test.ts"]
+}
+```
+
+Omit `tasks` and `waves` in this form. Before saving the proposal, the service
+creates one task covering all criteria and one wave running all declared checks.
+The resulting scope, check commands and assignment still require exact-revision
+approval. Independent work can instead use the explicit task/wave graph; the
+service rejects mixed forms. Existing goals retain their original contract.
+
 ## Drive the API
 
 The mobile frontend is available at `/orchestration`. The API can also

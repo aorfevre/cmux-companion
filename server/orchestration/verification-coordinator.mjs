@@ -9,7 +9,7 @@ export class VerificationCoordinator {
   /** @param {{ service: import('./service.mjs').OrchestrationService; verifier: import('./types.d.ts').VerificationPort; ownership: { assertOwned(): void }; repositories?: Partial<Pick<import('./types.d.ts').RepositoryPort, 'removeVerificationWorktree'>> | null; id?: () => string; onError?: (error: unknown) => void }} options */
   constructor({ service, verifier, ownership, repositories = null, id = randomUUID, onError = () => {} }) {
     this.service = service; this.store = service.store; this.verifier = verifier; this.ownership = ownership; this.repositories = repositories; this.id = id; this.onError = onError;
-    /** @type {Map<string, { goalId: string; generation: number; revision: number; headSha: string; controller: AbortController; job: Promise<void> }>} */ this.active = new Map();
+    /** @type {Map<string, { goalId: string; generation: number; revision: number; headSha: string; attemptId?: string; controller: AbortController; job: Promise<void> }>} */ this.active = new Map();
     /** @type {Map<string, Promise<void>>} */ this.releasing = new Map();
     this.stopped = false;
   }
@@ -39,7 +39,9 @@ export class VerificationCoordinator {
       const goal = this.store.get(run.goalId);
       const building = goal?.status === 'building' && goal.integrationHead === run.headSha;
       const fixing = goal?.status === 'addressing_review' && goal.reviewRound?.verificationOperationId === operationId && goal.reviewRound.fixHeadSha === run.headSha;
-      if (!goal || !(building || fixing) || goal.generation !== run.generation || goal.revision !== run.revision || !this.service.repositoryIds.has(goal.repositoryId)) run.controller.abort();
+      const attempt = goal?.attempts.find(attempt => attempt.id === run.attemptId);
+      const working = run.attemptId && goal?.status === 'building' && attempt?.status === 'running' && attempt.workerState === 'running';
+      if (!goal || !(run.attemptId ? working : building || fixing) || goal.generation !== run.generation || goal.revision !== run.revision || !this.service.repositoryIds.has(goal.repositoryId)) run.controller.abort();
     }
   }
   async stop() {
@@ -55,12 +57,12 @@ export class VerificationCoordinator {
     // Sweep checkouts of runs whose stopped result is already recorded, so a
     // crash between the result and its removal cannot strand installed files.
     for (const snapshot of this.store.list()) for (const run of snapshot.verificationRuns ?? []) {
-      if (run.workerState === 'stopped' && run.result) await this.release(run.operationId);
+      if (!run.attemptId && run.workerState === 'stopped' && run.result) await this.release(run.operationId);
     }
     for (const snapshot of this.store.list()) {
       const goal = this.store.get(snapshot.id);
-      if (!goal || goal.hold || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
-      const prior = goal.verificationRuns?.some((run) => run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && run.waveId === verificationWaveId(goal) && !run.retryRequested);
+      if (!goal || goal.hold || goal.conversation?.paused || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
+      const prior = goal.verificationRuns?.some((run) => !run.attemptId && run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && run.waveId === verificationWaveId(goal) && !run.retryRequested);
       if (prior || !integratedWaveReady(goal)) continue;
       try { this.record(goal.id, 'request_verification', { operationId: this.id() }); }
       catch (error) { if (!(error instanceof DomainError) || !['NOT_READY', 'RETRY_REQUIRED', 'FORBIDDEN'].includes(error.code)) throw error; }
@@ -77,15 +79,17 @@ export class VerificationCoordinator {
         this.ownership.assertOwned();
         if (receipt && (!run.result || receipt.workerState !== run.workerState)) this.record(goal.id, 'record_verification_result', { operationId: operation.id, result: receipt });
         else if (!receipt && run.status !== 'uncertain') this.record(goal.id, 'verification_uncertain', { operationId: operation.id });
-        if (receipt?.workerState === 'stopped') { this.store.advanceOperation(operation.id, operation.status, 'completed'); await this.release(operation.id); }
+        if (receipt?.workerState === 'stopped') { this.store.advanceOperation(operation.id, operation.status, 'completed'); if (!run.attemptId) await this.release(operation.id); }
         continue;
       }
       const fixing = goal.status === 'addressing_review' && goal.reviewRound?.verificationOperationId === operation.id && goal.reviewRound.fixHeadSha === run.headSha;
-      const permitted = ((goal.status === 'building' && goal.integrationHead === run.headSha) || fixing) && goal.generation === operation.generation && goal.revision === operation.revision && this.service.repositoryIds.has(goal.repositoryId);
+      const attempt = run.attemptId ? goal.attempts.find(attempt => attempt.id === run.attemptId) : undefined;
+      const working = goal.status === 'building' && attempt?.status === 'running' && attempt.workerState === 'running';
+      const permitted = (run.attemptId ? working : (goal.status === 'building' && goal.integrationHead === run.headSha) || fixing) && goal.generation === operation.generation && goal.revision === operation.revision && this.service.repositoryIds.has(goal.repositoryId);
       if (!permitted) {
         this.record(goal.id, 'cancel_verification', { operationId: operation.id }); this.store.advanceOperation(operation.id, 'pending', 'completed'); continue;
       }
-      if (goal.hold) continue;
+      if (goal.hold || goal.conversation?.paused) continue;
       // One verification process at a time; implementation/review admission keeps
       // running in the ordinary scheduler while this job awaits its child.
       if (this.active.size
@@ -96,14 +100,14 @@ export class VerificationCoordinator {
       const job = Promise.resolve().then(async () => {
         let result;
         try {
-          result = await this.verifier.run({ operationId: operation.id, goalId: goal.id, repositoryId: goal.repositoryId, headSha: run.headSha, checks: /** @type {import('./types.d.ts').Check[]} */ (payload.checks), signal: controller.signal });
+          result = await this.verifier.run({ operationId: operation.id, goalId: goal.id, repositoryId: goal.repositoryId, headSha: run.headSha, ...(attempt ? { attempt } : {}), checks: /** @type {import('./types.d.ts').Check[]} */ (payload.checks), signal: controller.signal });
         } catch {
           this.record(goal.id, 'verification_uncertain', { operationId: operation.id }); return;
         }
         this.record(goal.id, 'record_verification_result', { operationId: operation.id, result });
-        if (result.workerState === 'stopped') { this.store.advanceOperation(operation.id, 'dispatching', 'completed'); await this.release(operation.id); }
+        if (result.workerState === 'stopped') { this.store.advanceOperation(operation.id, 'dispatching', 'completed'); if (!run.attemptId) await this.release(operation.id); }
       }).finally(() => { this.active.delete(operation.id); });
-      this.active.set(operation.id, { goalId: goal.id, generation: goal.generation, revision: goal.revision, headSha: run.headSha, controller, job });
+      this.active.set(operation.id, { goalId: goal.id, generation: goal.generation, revision: goal.revision, headSha: run.headSha, ...(run.attemptId ? { attemptId: run.attemptId } : {}), controller, job });
       void job.catch(this.onError);
     }
   }

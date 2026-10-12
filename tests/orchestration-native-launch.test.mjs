@@ -79,6 +79,8 @@ process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_err
     assert.equal((await fetch(`${description.activation.endpoint}/api/orchestration/agent/status`, { headers })).status, 403);
     await assert.rejects(access(started), { code: 'ENOENT' });
     const operationDirectory = join(f.directory, 'native', request.operationId);
+    const mcpConfig = JSON.parse(await readFile(join(operationDirectory, 'mcp.json'), 'utf8'));
+    assert.equal(mcpConfig.mcpServers.companion.alwaysLoad, true, 'the scoped bridge must load before the first model turn');
     await assert.rejects(access(join(operationDirectory, 'provider-sent.json')), { code: 'ENOENT' });
     if (abort) runtime.service.execute({ id: 'abort', goalId: 'goal', expectedVersion: runtime.store.get('goal').version, type: 'abort', payload: {} }, { kind: 'user' });
     release.release(); await listening;

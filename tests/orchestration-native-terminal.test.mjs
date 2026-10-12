@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { NativeInputs } from '../server/orchestration/adapters/native-inputs.mjs';
 import { CodexInputs } from '../server/codex-native.mjs';
 import { probeNativeCapabilities } from '../server/orchestration/adapters/native-capabilities.mjs';
+import { terminalDisplayEnvironment } from '../server/orchestration/adapters/native-terminal-worker.mjs';
 import { NativeTerminal } from '../server/orchestration/adapters/native-terminal.mjs';
 
 const capabilities = { restricted: true, manualPermissions: true, hooks: true, strictMcp: true, streamJson: true, permissionPromptsNone: true, terminal: true };
@@ -21,37 +22,40 @@ async function waitFor(read, predicate, timeout = 5000) {
   while (Date.now() < deadline) { let value; try { value = await read(); } catch { /* Waiting for an atomic fixture receipt. */ } if (predicate(value)) return value; await delay(20); }
   assert.fail('Fixture did not reach its named terminal barrier');
 }
-async function fixture(t, codex = false, Driver = NativeTerminal) {
+async function fixture(t, codex = false, Driver = NativeTerminal, supervisor = false, options = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'orchestration-terminal-'))), worktree = join(root, 'worktree'); await mkdir(worktree);
   const releaseDirectory = join(root, 'releases', 'a'.repeat(40)); await mkdir(releaseDirectory, { recursive: true });
   const calls = join(root, 'native-calls'), bin = join(root, 'native-fixture');
   await writeFile(bin, `#!${process.execPath}
 const fs = require('node:fs');
 if (${codex} && process.argv.includes('--version')) { console.log('codex-cli 0.154.0'); process.exit(0); }
-if (${codex} && process.argv.includes('--help')) { console.log('--config --sandbox --ask-for-approval --strict-config --dangerously-bypass-hook-trust'); process.exit(0); }
+if (${codex} && process.argv.includes('--help')) { console.log('--config --sandbox --ask-for-approval --strict-config --dangerously-bypass-hook-trust --json resume SESSION_ID'); process.exit(0); }
 if (${codex}) {
  const path = require('node:path'), directory = path.dirname(process.env.CODEX_HOME);
  const config = JSON.parse(fs.readFileSync(path.join(directory, 'codex-hook.json'), 'utf8'));
  fs.writeFileSync(path.join(directory, 'codex-session.json'), JSON.stringify({conversationId:config.conversationId,sessionId:'fixture-native-session'}));
 }
+fs.writeFileSync(process.env.FIXTURE_CALLS + '.display', JSON.stringify({ TERM: process.env.TERM, COLORTERM: process.env.COLORTERM }));
+process.on('SIGWINCH', () => fs.writeFileSync(process.env.FIXTURE_CALLS + '.resize', 'received'));
 const arg = name => process.argv[process.argv.indexOf(name) + 1];
 fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({ fresh: ${codex} ? !process.argv.includes('resume') : process.argv.includes('--session-id'), conversation: ${codex} ? (process.argv.includes('resume') ? arg('resume') : 'fixture-native-session') : arg(process.argv.includes('--resume') ? '--resume' : '--session-id'), tty: [process.stdin.isTTY,process.stdout.isTTY,process.stderr.isTTY] }) + '\\n');
 const readline = require('node:readline').createInterface({ input: process.stdin });
 readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); process.exit(0); } });
 `, { mode: 0o700 });
   const server = createServer((req, res) => { res.writeHead(204); res.end(); }); server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  const bridge = { endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-activation-credential-at-least-32-characters' };
-  const installation = codex ? await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }) : undefined;
+  const bridge = options.bridge ?? { endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-activation-credential-at-least-32-characters' };
+  const installation = codex && !options.supervisorTurns ? await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }) : undefined;
   const Inputs = codex ? CodexInputs : NativeInputs;
-  const inputs = new Inputs({ installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', plannerName: 'DICTEE Planning Onboarding', activation: bridge, bridge }) });
+  const inputs = new Inputs({ supervisorTurns: Boolean(options.supervisorTurns), installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', supervisor, plannerName: 'DICTEE Planning Onboarding', activation: bridge, bridge }) });
   let child, creates = 0, starts = 0, opens = 0;
   const terminal = {
     async create(cwd, title) { assert.equal(cwd, worktree); assert.equal(title, 'DICTEE Planning Onboarding'); creates++; return { workspaceId }; },
     async start(id, path) {
       assert.equal(id, workspaceId); starts++;
       const runner = fileURLToPath(new URL('../server/orchestration/adapters/native-terminal-worker.mjs', import.meta.url));
-      const args = process.platform === 'darwin' ? ['-q', '/dev/null', process.execPath, runner, path] : ['-q', '-c', `${process.execPath} ${runner} ${path}`, '/dev/null'];
-      child = spawn('/bin/sh', ['-c', '/bin/cat | exec "$@"', 'fixture-pty', '/usr/bin/script', ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, TERM: 'xterm' } });
+      const args = process.platform === 'darwin' ? ['-q', '/dev/null', process.execPath, runner, path] : ['-q', '-c', [process.execPath, runner, path].map(value => `'${value.replace(/'/g, `'\\''`)}'`).join(' '), '/dev/null'];
+      const relay = fileURLToPath(new URL('./helpers/orchestration/pty-relay.sh', import.meta.url));
+      child = spawn('/bin/sh', [relay, '/usr/bin/script', ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
       let output = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; }); child.on('exit', code => { if (code) process.stderr.write(`Fixture terminal exited ${code}: ${output}\n`); }); await once(child, 'spawn');
     },
     async open(id) { assert.equal(id, workspaceId); opens++; },
@@ -268,4 +272,124 @@ test('stopped supervisor outbox is recovered by the replacement adapter after an
   await waitFor(() => outbox.entries()[0].value.status, value => value === 'accepted');
   assert.equal(deliveries, 1);
   await replacement.close();
+});
+
+for (const codex of [false, true]) test(`conversational ${codex ? 'Codex' : 'Claude'} inputs retain terminal handoff and scoped supervisor tools`, { timeout: 15000 }, async t => {
+  const f = await fixture(t, codex, NativeTerminal, true);
+  const launched = await f.driver.launch(f.request);
+  f.request.attempt.identity = launched.identity;
+  const records = await waitFor(f.records, entries => entries?.length === 1);
+  const config = JSON.parse(await readFile(join(f.root, 'native/operation/bridge.json'), 'utf8'));
+  assert.equal(config.handoffProtocol, 1);
+  assert.equal(config.binding.supervisor, true);
+  assert.equal(records.length, 1);
+  assert.equal((await f.driver.observe(f.request.operationId)).identity, launched.identity);
+  const context = await readFile(join(f.root, 'native/operation/context.txt'), 'utf8');
+  assert.match(context, /companion.conversation/);
+  assert.doesNotMatch(context, /Call companion.submit_result/);
+  f.input('exit\n'); await waitFor(f.session, session => session?.phase === 'paused');
+  await f.driver.resume({ ...f.request, resumeId: 'supervisor-resume' });
+  const resumed = await waitFor(f.records, entries => entries?.length === 2);
+  assert.equal(resumed[0].conversation, resumed[1].conversation);
+  assert.equal(resumed[1].fresh, false);
+  assert.deepEqual(f.counts(), { creates: 1, starts: 1, opens: 0 });
+});
+
+
+test('terminal display capabilities preserve configured authority and reject control characters', () => {
+  const configured = { PATH: '/pinned', TOKEN: 'configured', TERM: 'fallback' };
+  assert.deepEqual(terminalDisplayEnvironment(configured, { PATH: '/untrusted', TOKEN: 'other', TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'ghostty', NO_COLOR: '', FORCE_COLOR: '1', COLUMNS: '80', TERM_PROGRAM_VERSION: 'bad\nvalue' }), { ...configured, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'ghostty', NO_COLOR: '', FORCE_COLOR: '1' });
+  assert.equal(terminalDisplayEnvironment(configured, { TERM: 'x'.repeat(129) }).TERM, 'fallback');
+});
+
+test('native provider receives the actual terminal color environment and forwarded resize signals', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  await f.driver.launch(f.request);
+  await waitFor(f.records, records => records?.length === 1);
+  assert.deepEqual(JSON.parse(await readFile(join(f.root, 'native-calls.display'), 'utf8')), { TERM: 'xterm-256color', COLORTERM: 'truecolor' });
+  const runner = JSON.parse(await readFile(join(f.root, 'native/operation/identity.json'), 'utf8'));
+  process.kill(runner.pid, 'SIGWINCH');
+  await waitFor(() => readFile(join(f.root, 'native-calls.resize'), 'utf8'), value => value === 'received');
+  assert.equal((await f.driver.observe('operation')).status, 'running');
+});
+
+test('terminal provider spawn failure preserves stopped proof and sanitized classification', async t => {
+  const f = await fixture(t);
+  await rm(f.driver.bin);
+  await f.driver.launch(f.request);
+  const observed = await waitFor(() => f.driver.observe('operation'), value => value?.status === 'stopped');
+  assert.equal(observed.launchFailure, 'PROVIDER_SPAWN_ENOENT');
+  assert.equal(observed.pendingOutbox, undefined);
+});
+
+for (const codex of [false, true]) test(`${codex ? 'Codex' : 'Claude'} managed supervisor turns keep one native conversation and owned terminal while idle launches no model process`, { timeout: 15000 }, async t => {
+  const { apiFixture } = await import('./helpers/orchestration/api-fixture.mjs');
+  const api = await apiFixture(t); api.service.ownership = { assertOwned() {} };
+  const bridge = { endpoint: await api.app.listen({ host: '127.0.0.1', port: 0 }), credential: 'pending-scoped-credential-at-least-32-characters' };
+  const f = await fixture(t, codex, NativeTerminal, true, { supervisorTurns: true, bridge });
+  f.driver.turnTimeoutMs = 2000;
+  let sequence = 0;
+  const command = (type, payload, kind = 'system') => api.service.execute({ id: `cmd-${++sequence}`, goalId: 'goal', expectedVersion: api.store.get('goal')?.version ?? 0, type, payload }, { kind });
+  command('create_goal', { repositoryId: 'repo', title: 'Native turns', baseSha: f.request.attempt.baseSha, experienceVersion: 2 }, 'user');
+  command('request_attempt', { attemptId: 'planner', operationId: 'operation', role: 'planner', conversationId });
+  command('record_provision', { attemptId: 'planner', worktree: f.request.attempt.worktree, branch: f.request.attempt.branch, baseSha: f.request.attempt.baseSha });
+  api.store.advanceOperation('operation', 'pending', 'dispatching');
+  bridge.credential = api.bridgeAuth.issueForDispatch('goal', 'planner', 'operation');
+  await writeFile(f.driver.bin, `#!${process.execPath}
+const fs = require('node:fs');
+(async () => {
+ const arg = name => process.argv[process.argv.indexOf(name) + 1];
+ const path = require('node:path');
+ const directory = ${codex} ? path.dirname(process.env.CODEX_HOME) : null;
+ const bridgePath = ${codex} ? path.join(directory, 'bridge.json') : JSON.parse(fs.readFileSync(arg('--mcp-config'), 'utf8')).mcpServers.companion.args.at(-1);
+ const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
+ const headers = { authorization: 'Bearer ' + bridge.credential, 'content-type': 'application/json' };
+ const fresh = ${codex} ? !process.argv.includes('resume') : process.argv.includes('--session-id');
+ const session = ${codex} ? (fresh ? 'fixture-native-session' : process.argv[process.argv.indexOf('resume') + 2]) : arg(fresh ? '--session-id' : '--resume');
+ if (${codex}) {
+   const { recordCodexSession } = await import(${JSON.stringify(new URL('../server/codex-role-hook.mjs', import.meta.url).href)});
+   recordCodexSession({hook_event_name:'SessionStart',session_id:session}, JSON.parse(fs.readFileSync(path.join(directory,'codex-hook.json'),'utf8')));
+   if (!process.argv.includes('exec') || !process.argv.includes('--json') || process.argv.includes('--ephemeral')) throw Error('Invalid Codex turn mode');
+   console.log(JSON.stringify({type:'thread.started',thread_id:session}));
+ }
+ const sessionPath = process.env.FIXTURE_CALLS + '.session';
+ if (!fresh && fs.readFileSync(sessionPath, 'utf8') !== session) throw Error('Lost native session');
+ if (!${codex} && (!process.argv.includes('--print') || process.argv.includes('--no-session-persistence'))) throw Error('Invalid turn mode');
+ fs.writeFileSync(sessionPath, session);
+ const state = await (await fetch(bridge.endpoint + '/api/orchestration/agent/status', { headers })).json();
+ fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({ fresh, conversation: session, wake: state.conversation.wake, pid: process.pid }) + '\\n');
+ const response = await fetch(bridge.endpoint + '/api/orchestration/agent/commands', { method: 'POST', headers, body: JSON.stringify({ id: 'wait-' + process.pid, goalId: state.id, expectedVersion: state.version, type: 'supervisor_wait', payload: { throughWake: state.conversation.wake } }) });
+ if (!response.ok) throw Error('Wait was rejected');
+ console.log(JSON.stringify(${codex} ? { type: 'item.completed', item: { type: 'agent_message', text: 'Recorded idle state.' } } : { type: 'assistant', message: { content: [{ type: 'text', text: 'Recorded idle state.' }] } }));
+ console.log(JSON.stringify(${codex} ? { type: 'turn.completed' } : { type: 'result', subtype: 'success', is_error: false, session_id: session }));
+})().catch(() => process.exit(2));
+`, { mode: 0o700 });
+  const launched = await f.driver.launch(f.request);
+  command('record_dispatch', { attemptId: 'planner', identity: launched.identity, worktree: f.request.attempt.worktree, branch: f.request.attempt.branch });
+  await waitFor(() => api.store.get('goal'), goal => goal?.conversation.capacityReleased === true);
+  const first = await f.records(); assert.equal(first.length, 1); assert.equal(first[0].fresh, true);
+  const runner = JSON.parse(await readFile(join(f.root, 'native/operation/identity.json'), 'utf8'));
+  assert.equal(api.store.executionCapacity('goal').total, 0);
+  await delay(1200); assert.equal((await f.records()).length, 1, 'idle has no provider/model polling');
+  command('pause_goal', {}, 'user');
+  command('send_goal_message', { message: 'Handle this saved event.' }, 'user');
+  await delay(1200); assert.equal((await f.records()).length, 1, 'paused messages cannot start a turn');
+  command('resume_goal', {}, 'user');
+  const second = await waitFor(f.records, calls => calls?.length === 2);
+  await waitFor(() => api.store.get('goal'), goal => goal?.conversation.capacityReleased === true);
+  assert.equal(second[1].fresh, false); assert.equal(second[1].conversation, first[0].conversation);
+  assert.notEqual(second[1].pid, first[0].pid);
+  assert.equal(JSON.parse(await readFile(join(f.root, 'native/operation/identity.json'), 'utf8')).pid, runner.pid);
+  assert.equal((await f.driver.observe('operation')).identity, launched.identity);
+  assert.deepEqual(f.counts(), { creates: 1, starts: 1, opens: 0 });
+  await assert.rejects(f.driver.resume({ ...f.request, attempt: { ...f.request.attempt, identity: launched.identity }, resumeId: 'manual' }), { code: 'NOT_READY' });
+  await writeFile(f.driver.bin, `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`, { mode: 0o700 });
+  command('send_goal_message', { message: 'Exercise a hung turn.' }, 'user');
+  const stopped = await waitFor(() => f.driver.observe('operation'), value => value?.status === 'stopped', 6000);
+  assert.equal(stopped.failureCode, 'SUPERVISOR_TURN_TIMEOUT');
+  const { Reconciler } = await import('../server/orchestration/reconciler.mjs');
+  api.service.agents.observe = operationId => f.driver.observe(operationId);
+  await new Reconciler({ service: api.service, ownership: api.service.ownership }).observe('goal', 'planner');
+  assert.match(api.store.get('goal').attempts[0].error, /SUPERVISOR_TURN_TIMEOUT/);
+  assert.ok(api.store.get('goal').hold);
 });

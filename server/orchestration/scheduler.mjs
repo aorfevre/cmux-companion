@@ -1,3 +1,4 @@
+import { repairableChecks } from './domain/recovery.mjs';
 import { AgentPreparationError } from './agent-preparation-error.mjs';
 import { randomUUID } from 'node:crypto';
 import { DomainError, integer, requireValue } from './domain/contracts.mjs';
@@ -89,7 +90,7 @@ export class Scheduler {
   revisePlans() {
     for (const snapshot of this.store.list()) {
       if (this.stopped || this.paused()) return;
-      if (!this.service.repositoryIds.has(snapshot.repositoryId)) continue;
+      if (snapshot.conversation?.paused || !this.service.repositoryIds.has(snapshot.repositoryId)) continue;
       let goal = snapshot;
       const enabled = this.planReviewEnabled();
       this.ownership.assertOwned();
@@ -103,6 +104,8 @@ export class Scheduler {
         type: 'revise_rejected_plan', payload: { reviewId: review.id } }, { kind: 'system' });
       else if (repairableReviews(goal)) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
         type: 'repair_review_findings', payload: { holdId: goal.hold?.id ?? '' } }, { kind: 'system' });
+      else if (repairableChecks(goal)) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
+        type: 'repair_failed_checks', payload: { holdId: goal.hold?.id ?? '' } }, { kind: 'system' });
     }
   }
   prepareGoals() {
@@ -158,7 +161,7 @@ export class Scheduler {
           } else if (observed.status === 'pending' && ['aborted', 'merged'].includes(goal.status)) {
             this.reconciler.record(goal.id, 'cancel_integration', { operationId: operation.id });
             this.store.advanceOperation(operation.id, operation.status, 'completed');
-          } else if (goal.integration.state === 'failed' && goal.integration.retryRequested && !goal.hold && goal.status === 'building' && this.service.repositoryIds.has(goal.repositoryId)) {
+          } else if (goal.integration.state === 'failed' && goal.integration.retryRequested && !goal.hold && !goal.conversation?.paused && goal.status === 'building' && this.service.repositoryIds.has(goal.repositoryId)) {
             this.reconciler.record(goal.id, observed.status === 'pending' ? 'resume_integration' : 'record_integration_failure', { operationId: operation.id, code: 'OWNERSHIP_UNCERTAIN' });
           } else if (observed.status === 'unknown' && goal.integration.state === 'applying') {
             this.reconciler.record(goal.id, 'record_integration_failure', { operationId: operation.id, code: 'OWNERSHIP_UNCERTAIN' });
@@ -176,7 +179,7 @@ export class Scheduler {
       if (this.stopped) return;
       this.ownership.assertOwned();
       let goal = this.store.get(snapshot.id);
-      if (!goal || goal.hold || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
+      if (!goal || goal.hold || goal.conversation?.paused || goal.status !== 'building' || !this.service.repositoryIds.has(goal.repositoryId)) continue;
       if (!goal.integration) {
         if (goal.attempts.some((attempt) => attempt.role === 'integrator' && attempt.workerState !== 'stopped')) continue;
         const task = goal.tasks.find((entry) => entry.status === 'accepted');
@@ -214,7 +217,7 @@ export class Scheduler {
       this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
       this.store.advanceOperation(operation.id, 'pending', 'completed'); return;
     }
-    if (goal.hold) return;
+    if (goal.hold || goal.conversation?.paused) return;
     let launchStarted = false;
     try {
       requireCapability(this.agents, attempt.role, attempt.mode);
@@ -234,7 +237,7 @@ export class Scheduler {
         if (attempt.workerState !== 'stopped') this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
         this.store.advanceOperation(operation.id, 'pending', 'completed'); return;
       }
-      if (goal.hold) return;
+      if (goal.hold || goal.conversation?.paused) return;
       if (!this.store.advanceOperation(operation.id, 'pending', 'dispatching')) return;
       // All durable intent/resource checks precede the first possible agent launch.
       launchStarted = true;

@@ -183,7 +183,7 @@ export class NativeBackground {
     if (pathExists(outcomePath)) {
       await this.deliver(operationId); const completed = this.read(outcomePath);
       requireValue(completed.identity === request.identity, 'Native outcome identity changed', 'OWNERSHIP_UNCERTAIN');
-      if (completed.outcome.workerState === 'stopped' || priorBoot) return { status: 'stopped', identity: request.identity };
+      if (completed.outcome.workerState === 'stopped' || priorBoot) return { status: 'stopped', identity: request.identity, ...(completed.outcome.workerState === 'stopped' && /^PROVIDER_SPAWN_(EAGAIN|EMFILE|ENFILE|ENOMEM|ENOENT|EACCES|EPERM|ENOEXEC|FAILED)$/.test(completed.outcome.cause?.code ?? '') ? { launchFailure: completed.outcome.cause.code } : {}) };
       // Escaped descendants can outlive the original group. Its disappearance
       // cannot override the executor's durable unknown-termination evidence.
       return { status: 'unknown', identity: request.identity };

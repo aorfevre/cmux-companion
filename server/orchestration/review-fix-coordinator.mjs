@@ -1,3 +1,4 @@
+import { ownsExecution } from './domain/conversation.mjs';
 import { randomUUID } from 'node:crypto';
 import { DomainError, requireValue } from './domain/contracts.mjs';
 
@@ -59,7 +60,7 @@ export class ReviewFixCoordinator {
     for (const goal of this.store.list()) {
       const round = goal.reviewRound;
       if (goal.status !== 'addressing_review' || !round || !goal.pr || !goal.publication
-        || this.active.has(goal.id) || !this.service.repositoryIds.has(goal.repositoryId)) continue;
+        || goal.conversation?.paused || this.active.has(goal.id) || !this.service.repositoryIds.has(goal.repositoryId)) continue;
       // A round whose fixer cannot be dispatched would otherwise stay in
       // fixing with no session, no error and nothing for the owner to act on.
       if (round.state === 'fixing' && round.threads.length && !this.agents.capabilities.some(capability => capability.role === 'review_fixer' && capability.mode === 'background')) {
@@ -97,7 +98,7 @@ export class ReviewFixCoordinator {
           if (this.current(goal.id, round.id)) this.record(goal.id, 'record_review_merge', { roundId: round.id, ...prepared });
         });
       } else if (round.state === 'verifying' && !round.verificationOperationId) {
-        if (goal.hold || goal.attempts.some((attempt) => attempt.workerState !== 'stopped')) continue;
+        if (goal.hold || goal.conversation?.paused || goal.attempts.some((attempt) => ownsExecution(goal, attempt))) continue;
         try { this.record(goal.id, 'request_review_fix_verification', { roundId: round.id, operationId: this.id() }); }
         catch (error) { if (!(error instanceof DomainError) || !['NOT_READY', 'RETRY_REQUIRED'].includes(error.code)) throw error; }
       } else if (round.state === 'verifying') {

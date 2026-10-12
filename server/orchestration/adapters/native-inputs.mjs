@@ -10,14 +10,15 @@ const mcp = fileURLToPath(new URL('../agent-mcp.mjs', import.meta.url));
  * No goal/agent text is interpolated into that command. @param {string} value */
 const quote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
 
-/** @typedef {{ prompt: string; plannerName?: string; bridge?: { endpoint: string; credential: string }; activation?: import('./native-activation.mjs').NativeActivation }} NativeDescription */
+/** @typedef {{ prompt: string; experienceVersion?: 2; supervisor?: boolean; plannerName?: string; bridge?: { endpoint: string; credential: string }; activation?: import('./native-activation.mjs').NativeActivation }} NativeDescription */
 
 /** Private inputs are outside native file-tool working directories. Their
  * lifecycle belongs to the process adapter; preparation never starts a worker.
  */
 export class NativeInputs {
-  /** @param {{ profile?: string; direct?: boolean; ccsxp?: boolean; engine: import('./ccs.mjs').Engine; capabilities: import('./ccs.mjs').NativeCapabilities; env: NodeJS.ProcessEnv; installation?: Awaited<ReturnType<typeof import('./native-capabilities.mjs').probeNativeCapabilities>>; describe: (request: import('../types.d.ts').LaunchRequest) => Promise<NativeDescription> | NativeDescription }} options */
-  constructor({ engine, capabilities, env, describe, installation, direct = false, profile, ccsxp = false }) {
+  /** @param {{ profile?: string; direct?: boolean; ccsxp?: boolean; supervisorTurns?: boolean; engine: import('./ccs.mjs').Engine; capabilities: import('./ccs.mjs').NativeCapabilities; env: NodeJS.ProcessEnv; installation?: Awaited<ReturnType<typeof import('./native-capabilities.mjs').probeNativeCapabilities>>; describe: (request: import('../types.d.ts').LaunchRequest) => Promise<NativeDescription> | NativeDescription }} options */
+  constructor({ engine, capabilities, env, describe, installation, direct = false, profile, ccsxp = false, supervisorTurns = false }) {
+    this.supervisorTurns = supervisorTurns;
     validateNativeEnvironment(env);
     installation?.assertCurrent();
     this.installation = installation; this.ccsxp = ccsxp; this.direct = direct; this.profile = profile ?? engine.provider;
@@ -33,9 +34,11 @@ export class NativeInputs {
     const fromWorktree = relative(realpathSync(request.attempt.worktree), directory);
     requireValue(fromWorktree === '..' || fromWorktree.startsWith(`..${sep}`) || isAbsolute(fromWorktree), 'Private native inputs must be outside the worktree', 'FORBIDDEN');
     const description = await this.describe(request);
+    requireValue(description.experienceVersion !== 2 || !this.direct, 'Conversational Goals require a CCS launcher; configure xclaude, xcodex or a CCS profile.', 'UNSUPPORTED_CAPABILITY');
     requireValue(typeof description.prompt === 'string' && Buffer.byteLength(description.prompt) <= 1024 * 1024, 'Native role context exceeds limit');
     const { attempt, goalId, operationId } = request;
-    const binding = { goalId, operationId, attemptId: attempt.id, generation: attempt.generation, revision: attempt.revision, role: attempt.role, target: attempt.target };
+    const supervisorTurns = Boolean(description.supervisor && this.supervisorTurns);
+    const binding = { ...(supervisorTurns ? { supervisorTurns: true } : {}), ...(description.experienceVersion === 2 ? { experienceVersion: 2 } : {}), ...(description.supervisor ? { supervisor: true } : {}), goalId, operationId, attemptId: attempt.id, generation: attempt.generation, revision: attempt.revision, role: attempt.role, target: attempt.target };
     const contextPath = join(directory, 'context.txt'), settingsPath = join(directory, 'settings.json'), mcpPath = join(directory, 'mcp.json');
     const hookConfig = join(directory, 'hook.json'), bridgeConfig = join(directory, 'bridge.json');
     /** @param {string} path @param {string} value */
@@ -46,11 +49,11 @@ export class NativeInputs {
         requireValue(lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink() && readFileSync(path, 'utf8') === value, 'Native inputs changed for the recorded operation', 'IDEMPOTENCY_CONFLICT');
       }
     };
-    const nativeInstructions = attempt.role === 'planner'
+    const nativeInstructions = supervisorTurns ? 'Handle actionable saved input through companion.conversation. After recording wait with the observed wake cursor, finish this native turn with a short final response. Do not call wait_for_input, sleep, poll or wait for the user inside this turn. Companion keeps the supervisor session and resumes this same native conversation on saved events. Never submit a terminal planner result.' : description.supervisor ? 'Keep the goal conversation active through companion.conversation and companion.wait_for_input. Follow the pinned supervisor protocol; do not submit a terminal planner result.' : attempt.role === 'planner'
       ? 'Call companion.submit_result with exactly {id,output:{contract}} to submit a plan, or {id,output:{question}} to ask a focused clarification and stop. The tool supplies the outer identity envelope; never put that envelope inside output. This receipt is not user approval. Native permission prompts remain interactive.'
       : attempt.role === 'reviewer' ? 'You have no mutating tools or command execution. Return only the required role envelope as raw JSON in your final answer, with no Markdown fences or surrounding commentary. Finding severity must be high, medium, low or note (never info).'
         : 'Edit only the assigned scope with native file tools. To commit, call companion.commit_candidate with a stable id, expectedHead (initially the recorded baseSha), and a commit message. The tool returns headSha. It cannot publish or accept your work. Repository checks run independently after integration; report checks you could not run. Return the required role envelope in your final answer.';
-    save(contextPath, `${description.prompt}\n\n${nativeInstructions}\n`);
+    save(contextPath, `${description.prompt}\n\n${nativeInstructions}\n\n${description.experienceVersion === 2 && ['implementer', 'integrator'].includes(attempt.role) ? 'Use companion.commit_candidate to save a checkpoint, then companion.get_status and companion.run_check for an applicable approved check. Read its failing output, fix within scope, checkpoint again and rerun with a new id/head. Limit: three runs of each check per attempt, at most two unchanged failures. Preserve the exact id, expectedVersion, expectedHead and checkId when delivery is uncertain. On definitive VERSION_CONFLICT read status before issuing a fresh command. Stop and explain permission/setup/ownership failures or exhausted budget. Independent integrated verification still runs after submission.' : ''}\n`);
     save(hookConfig, JSON.stringify({ role: attempt.role }));
     save(settingsPath, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: [process.execPath, hook, hookConfig].map(quote).join(' '), timeout: 10 }] }] } }));
     {
@@ -58,11 +61,12 @@ export class NativeInputs {
       const endpoint = new URL(description.bridge.endpoint);
       requireValue(endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1' && !endpoint.username && !endpoint.password, 'Native bridge must use loopback');
       save(bridgeConfig, JSON.stringify({ ...description.bridge, binding, ...(attempt.role === 'planner' ? { handoffProtocol: 1, outbox: join(directory, 'outbox') } : {}) }));
-      save(mcpPath, JSON.stringify({ mcpServers: { companion: { command: process.execPath, args: [mcp, bridgeConfig] } } }));
+      save(mcpPath, JSON.stringify({ mcpServers: { companion: { alwaysLoad: true, command: process.execPath, args: [mcp, bridgeConfig] } } }));
     }
     this.installation?.assertCurrent();
     const argv = ccsCommand({ request, engine: this.engine, capabilities: this.capabilities, env: this.env, contextPath, settingsPath, mcpPath });
+    if (supervisorTurns) argv.splice(argv.indexOf('--'), 0, '--print', '--permission-prompts', 'none', '--output-format', 'stream-json', '--verbose');
     argv[0] = this.profile;
-    return { plannerName: description.plannerName, argv: this.direct ? argv.slice(3) : argv, env: { ...this.env }, ...(description.activation ? { activation: description.activation } : {}) };
+    return { supervisorTurns, supervisor: Boolean(description.supervisor), plannerName: description.plannerName, argv: this.direct ? argv.slice(3) : argv, env: { ...this.env }, ...(description.activation ? { activation: description.activation } : {}) };
   }
 }

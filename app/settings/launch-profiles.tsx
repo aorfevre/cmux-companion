@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { request } from '../api-request';
-import { ProviderCommand } from './provider-command';
+import { ProviderCommand, providerValidationMessage, type ProviderValidation } from './provider-command';
 import type { Settings, LaunchProfile, Provider } from './settings-panel';
 const roles = { planner: 'Planner & designer', implementer: 'Implementation', reviewer: 'Independent review', integrator: 'Integration repair' } as const;
 export function LaunchProfiles({ draft, change, busy }: { draft: Settings; change(value: Settings): void; busy: boolean }) {
@@ -25,7 +25,7 @@ export function LaunchProfiles({ draft, change, busy }: { draft: Settings; chang
       <div role="group" aria-label="Eligible roles">{(Object.keys(roles) as (keyof typeof roles)[]).map(role => <label key={role}><input type="checkbox" checked={profile.roles.includes(role)} onChange={event => update(profile.id, { roles: event.target.checked ? [...profile.roles, role] : profile.roles.filter(entry => entry !== role) })} />{roles[role]}</label>)}</div>
       <ProviderCommand key={`${profile.id}:${profile.provider}`} provider={profile.provider} command={profile.command} change={command => update(profile.id, { command: { ...profile.command, ...command } })} validation={validation[profile.id]} validate={() => {
         setValidation(current => ({ ...current, [profile.id]: 'Checking the saved command…' }));
-        void request<{ ready: boolean; reason?: string }>('/api/settings/providers/validate', { method: 'POST', body: JSON.stringify({ provider: profile.provider, command: profile.command }) }).then(result => setValidation(current => ({ ...current, [profile.id]: result.ready ? 'Provider command is ready. Model availability is checked when it launches.' : result.reason || 'Provider is unavailable.' }))).catch(cause => setValidation(current => ({ ...current, [profile.id]: cause instanceof Error ? cause.message : 'Validation failed' })));
+        void request<ProviderValidation>('/api/settings/providers/validate', { method: 'POST', body: JSON.stringify({ provider: profile.provider, command: profile.command }) }).then(result => setValidation(current => ({ ...current, [profile.id]: providerValidationMessage(result) }))).catch(cause => setValidation(current => ({ ...current, [profile.id]: cause instanceof Error ? cause.message : 'Validation failed' })));
       }} />
       <button type="button" onClick={() => change({ ...draft, launchProfiles: profiles.filter(entry => entry.id !== profile.id), teamDefaults: Object.fromEntries(Object.entries(draft.teamDefaults ?? {}).filter(([, id]) => id !== profile.id)) })}>Remove {profile.label}</button>
     </fieldset>)}
