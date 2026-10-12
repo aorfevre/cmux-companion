@@ -98,7 +98,7 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
     {error && <div className="usage-error"><strong>Usage unavailable</strong><span>{error}</span><button onClick={() => load(true)}>Try again</button></div>}
     {usage && !usage.available && !error && <div className="usage-error"><strong>CCS usage is unavailable</strong><span>Check that CCS is installed on this Mac, then refresh.</span></div>}
     {usage && <ResetOverview resets={resets} now={now} usableOnly={usableOnly} onUsableOnly={setUsableOnly} showQueue={view === 'card'} />}
-    {usage && <div className="all-accounts-head"><h2 className="all-accounts-heading">All accounts</h2>{!narrow && <div className="usage-view-selector" role="group" aria-label="Account layout">
+    {usage && <div className="all-accounts-head"><h2 className="all-accounts-heading">All accounts</h2>{view === 'row' && <QueueFilter usableOnly={usableOnly} onUsableOnly={setUsableOnly} />}{!narrow && <div className="usage-view-selector" role="group" aria-label="Account layout">
       <button aria-pressed={view === 'row'} onClick={() => changeView('row')}>Row</button><button aria-pressed={view === 'card'} onClick={() => changeView('card')}>Card</button>
     </div>}</div>}
     {usage && view === 'row' && <AccountTable rows={accountRows(usage, now).filter(row => !usableOnly || row.usable)} usableOnly={usableOnly} now={now} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} nextReset={nextReset} onDeleted={connectionDeleted} onReconnect={(provider, account) => setReconnecting({ provider, account })} />}
@@ -128,6 +128,11 @@ function SessionContext({ reset, now }: { reset: UpcomingReset; now: number }) {
   }
   return <span className="session-context"> · 5h: {label}</span>;
 }
+function QueueFilter({ usableOnly, onUsableOnly }: { usableOnly: boolean; onUsableOnly: (value: boolean) => void }) {
+  return <div className="reset-filter" role="group" aria-label="Reset queue filter">
+    <button aria-pressed={!usableOnly} onClick={() => onUsableOnly(false)}>Next reset</button><button aria-pressed={usableOnly} onClick={() => onUsableOnly(true)}>Usable now</button>
+  </div>;
+}
 function ResetOverview({ resets, now, usableOnly, onUsableOnly, showQueue }: { resets: UpcomingReset[]; now: number; usableOnly: boolean; onUsableOnly: (value: boolean) => void; showQueue: boolean }) {
   const next = resets.find(reset => reset.window.remainingPercent > 0);
   const useNext = resets.find(reset => usableBeforeReset(reset, now));
@@ -145,9 +150,7 @@ function ResetOverview({ resets, now, usableOnly, onUsableOnly, showQueue }: { r
         <p>Based on reported limits<SessionContext reset={useNext} now={now} /></p>
       </> : <p>No usable capacity with an upcoming weekly reset is reported.</p>}</aside>
     </div>
-    <header className="reset-queue-head"><div><h2>{showQueue ? 'Weekly reset queue' : 'Account filter'}</h2><p>{showQueue ? 'Unused weekly quota · Soonest reset first' : 'Rows sort by soonest weekly reset'}</p></div><div className="reset-filter" role="group" aria-label="Reset queue filter">
-      <button aria-pressed={!usableOnly} onClick={() => onUsableOnly(false)}>Next reset</button><button aria-pressed={usableOnly} onClick={() => onUsableOnly(true)}>Usable now</button>
-    </div></header>
+    {showQueue && <header className="reset-queue-head"><div><h2>Weekly reset queue</h2><p>Unused weekly quota · Soonest reset first</p></div><QueueFilter usableOnly={usableOnly} onUsableOnly={onUsableOnly} /></header>}
     {showQueue && (visible.length ? <ol className="reset-queue" aria-label="Weekly reset queue">{visible.map(reset => <li className={`reset-queue-row${reset === useNext ? ' use-next' : ''}`} key={`${reset.provider.id}:${reset.account.id}:${reset.window.id}`}>
       <ResetCountdown reset={reset} now={now} />
       <div className="reset-queue-account"><AccountResetLink reset={reset} /><span className="reset-limit">{limitLabel(reset.window)}</span><div className="quota-track"><i style={{ width: `${reset.window.remainingPercent}%` }} /></div><small>{reset.window.remainingPercent}% unused<SessionContext reset={reset} now={now} />{resetConstraint(reset) ? ` · ${resetConstraint(reset)}` : ''}</small></div>

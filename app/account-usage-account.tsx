@@ -4,7 +4,7 @@ import { coreReadings, displayLabel, freshReading, percentTone, planLabel, redee
 
 export function AccountStatusNotes({ account, snapshotFresh, now }: { account: UsageAccount; snapshotFresh: boolean; now: number }) {
   return <>
-    {snapshotFresh && account.status === 'unavailable' && account.message && <p className="account-unavailable-reason">{account.message}</p>}
+    {snapshotFresh && account.status === 'unavailable' && account.message && <p className="account-unavailable-reason" title={account.message}>{account.message}</p>}
     {snapshotFresh && account.status === 'unavailable' && account.retryAt && Number.isFinite(Date.parse(account.retryAt)) && <p className="account-retry"><time dateTime={account.retryAt} title={new Date(account.retryAt).toLocaleString()}>{Date.parse(account.retryAt) <= now ? 'Ready to retry usage' : resetText(account.retryAt, now).replace('Resets in ', 'Retry in ')}</time></p>}
   </>;
 }

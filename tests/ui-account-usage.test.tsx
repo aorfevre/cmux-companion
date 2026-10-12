@@ -456,7 +456,7 @@ test('Row view lists every account sorted by weekly reset with queue state, gaug
   expect(rows[1].textContent).toContain('Use before reset');
   expect(rows[1].textContent).toContain('2 saved resets');
   expect(rows[1].textContent).toContain(new Date('2026-10-17T18:00:00Z').toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }));
-  expect(rows[1].textContent).toContain('Resets in 1h 5m');
+  expect(rows[1].querySelector('.usage-reset')?.textContent).toContain('1h 5m');
   expect(rows[2].textContent).toContain('Upcoming');
   expect(within(rows[2]).getAllByText('—')).toHaveLength(2);
   expect(rows[3].textContent).toContain('Not in queue');

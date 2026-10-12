@@ -18,7 +18,8 @@ function fixtures() {
     { id: 'codex', label: 'Codex', available: true, accounts: [{ id: 'stale', label: 'Stale account', email: null, plan: null, isDefault: false, paused: false, status: 'ready', message: null, updatedAt: '2020-01-01T00:00:00Z', windows: [{ id: 'weekly', cadence: 'weekly', category: 'usage', label: 'Weekly', remainingPercent: 33, reported: true, resetAt: null }] }] },
   ] }).as('usage');
 }
-function visitSettings() { cy.visit('/settings#general'); cy.wait('@bootstrap'); cy.findByRole('heading', { name: 'Setup' }).should('be.visible'); }
+// The embedded usage checks cover the card layout's Details content.
+function visitSettings() { cy.visit('/settings#general', { onBeforeLoad(win) { win.localStorage.setItem('cmux-companion-usage-view', 'card'); } }); cy.wait('@bootstrap'); cy.findByRole('heading', { name: 'Setup' }).should('be.visible'); }
 for (const width of [390, 1200]) describe(`Setup at ${width}px`, () => {
   beforeEach(() => { cy.viewport(width, 900); fixtures(); });
   it('preserves device input protection, shows capacity freshness and retains updater access', () => {

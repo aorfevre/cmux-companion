@@ -55,9 +55,12 @@ function fiveAccountFixture() {
   return usage;
 }
 
+// The older journeys cover the card layout; Row view journeys follow at the end.
+const cardView = { onBeforeLoad(win: Window) { win.localStorage.setItem('cmux-companion-usage-view', 'card'); } };
+
 function visitUsage() {
   cy.clock(frozenNow.getTime(), ["Date"]);
-  cy.visit("/?view=usage");
+  cy.visit("/?view=usage", cardView);
 }
 
 function account(name: string) { return cy.contains(".usage-account", name); }
@@ -76,7 +79,7 @@ describe("licence usage", () => {
         message: 'Usage temporarily rate-limited by the provider. Try again later.',
       });
       cy.intercept('GET', '**/api/account-usage*', usage).as('usage');
-      cy.clock(frozenNow.getTime(), ['Date']); cy.visit('/'); cy.wait('@usage');
+      cy.clock(frozenNow.getTime(), ['Date']); cy.visit('/', cardView); cy.wait('@usage');
       cy.findByRole('complementary', { name: 'Next weekly reset' }).should('contain.text', 'work@example.test').and('contain.text', '55% unused').and('not.contain.text', 'personal@example.test');
       cy.get('.next-reset-account').should('have.length', 1).and('contain.text', 'work@example.test');
       cy.get('.reset-queue-row').first().should('contain.text', 'personal@example.test').and('contain.text', '0% unused');
@@ -101,7 +104,7 @@ describe("licence usage", () => {
       scenario();
       cy.intercept('GET', '**/api/account-usage*', fiveAccountFixture()).as('usage');
       cy.clock(frozenNow.getTime(), ['Date']);
-      cy.visit('/');
+      cy.visit('/', cardView);
       cy.wait('@usage');
       cy.findByRole('heading', { name: 'Account usage' }).should('be.visible');
       cy.findByRole('link', { name: 'Account usage' }).should('have.attr', 'aria-current', 'page');
@@ -143,7 +146,7 @@ describe("licence usage", () => {
     cy.intercept('GET', '**/api/account-usage*', req => req.reply(paired ? usageFixture() : { statusCode: 401, body: { error: 'Pair this device' } })).as('usage');
     cy.intercept('POST', '**/api/auth/pair', req => { expect(req.body.token).to.eq('disposable-code'); paired = true; req.reply({ paired: true }); }).as('pair');
     cy.clock(frozenNow.getTime(), ['Date']);
-    cy.visit('/');
+    cy.visit('/', cardView);
     cy.wait('@usage');
     cy.get('.usage-account').should('not.exist');
     cy.findByLabelText('Pairing code').type('disposable-code');
@@ -166,7 +169,7 @@ describe("licence usage", () => {
       codex.redeemableResets = { availableCount: 2, updatedAt: iso(-1), grants: [{ count: 1, expiresAt: iso(180), usableNow: null }] };
       cy.intercept('GET', '**/api/account-usage*', usage).as('usage');
       cy.clock(frozenNow.getTime(), ['Date']);
-      cy.visit('/');
+      cy.visit('/', cardView);
       cy.wait('@usage');
       cy.get('.usage-account-details[open]').should('not.exist');
       account('work@example.test').within(() => {
@@ -296,7 +299,7 @@ describe("licence usage", () => {
     cy.findByRole("button", { name: "This device" }).click();
     cy.findByRole("heading", { name: /^Setup$/ }).should("be.visible");
     cy.location("pathname").should("eq", "/settings");
-    cy.visit("/settings#agents");
+    cy.visit("/settings#agents", cardView);
     cy.findByRole("button", { name: "View account usage" }).click();
     cy.findByRole("heading", { name: "Account usage" }).should("be.visible");
     cy.location("hash").should("eq", "#usage");
@@ -437,5 +440,51 @@ describe("licence usage", () => {
     });
     cy.findByRole("dialog", { name: "Reconnect OpenAI Codex" }).should("not.exist");
     account("codex@example.test").find(".usage-status").should("have.text", "Reconnect");
+  });
+
+  it('shows every account in one table by default at 1440px and keeps the choice after reload', () => {
+    cy.viewport(1440, 900);
+    scenario();
+    const usage = fiveAccountFixture();
+    usage.providers[0].accounts[0].redeemableResets = { availableCount: 1, updatedAt: iso(-5), grants: [{ count: 1, expiresAt: iso(10 * 24 * 60), usableNow: true }] };
+    usage.providers[0].accounts.push({ ...usage.providers[0].accounts[0], id: 'limited', email: 'limited@example.test', status: 'unavailable', updatedAt: null, retryAt: iso(4), windows: [], redeemableResets: undefined, message: 'Usage temporarily rate-limited by the provider. Try again later.' });
+    usage.providers[1].accounts.push(...[1, 2, 3].map(index => ({ ...usage.providers[1].accounts[0], id: `extra-${index}`, email: `extra-${index}@example.test` })));
+    cy.intercept('GET', '**/api/account-usage*', usage).as('usage');
+    cy.clock(frozenNow.getTime(), ['Date']); cy.visit('/'); cy.wait('@usage');
+    cy.findByRole('group', { name: 'Account layout' }).findByRole('button', { name: 'Row' }).should('have.attr', 'aria-pressed', 'true');
+    cy.get('.reset-queue').should('not.exist');
+    cy.get('.usage-account').should('not.exist');
+    cy.get('.usage-row').should('have.length', 9);
+    cy.get('.usage-row').first().should('contain.text', 'personal@example.test').and('contain.text', 'Check account');
+    cy.get('.usage-row').eq(1).should('contain.text', 'work@example.test').and('contain.text', 'Use before reset').and('contain.text', '55% remaining').and('contain.text', '82% remaining').and('contain.text', '1 saved reset');
+    cy.get('.usage-row').last().should('contain.text', 'limited@example.test').and('contain.text', 'Not in queue').and('contain.text', 'No reset reported').and('contain.text', 'Retry in 4m');
+    cy.get('.usage-row').each($row => expect($row[0].getBoundingClientRect().bottom).to.be.at.most(900));
+    cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(1440));
+    cy.findByRole('button', { name: 'Usable now' }).click();
+    cy.get('.usage-row').should('have.length', 7).first().should('contain.text', 'work@example.test');
+    cy.findByRole('button', { name: /^Next reset$/ }).click();
+    cy.findByRole('complementary', { name: 'Next weekly reset' }).findByRole('link').click();
+    cy.focused().should('have.id', 'usage-account-claude-personal');
+    cy.findByRole('button', { name: 'Show details for work@example.test' }).click();
+    cy.get('#usage-row-detail-claude-work').should('be.visible').and('contain.text', 'Monthly provider limit').and('contain.text', 'Delete connection').and('contain.text', 'Check Claude resets');
+    cy.screenshot('account-usage-rows-1440', { capture: 'fullPage', scale: true });
+    cy.findByRole('group', { name: 'Account layout' }).findByRole('button', { name: 'Card' }).click();
+    cy.get('.usage-account').should('have.length', 9);
+    cy.get('.reset-queue-row').should('have.length', 8);
+    cy.reload(); cy.wait('@usage');
+    cy.get('.usage-account').should('have.length', 9);
+    cy.findByRole('group', { name: 'Account layout' }).findByRole('button', { name: 'Card' }).should('have.attr', 'aria-pressed', 'true');
+  });
+
+  it('forces the card layout at 390px and hides the selector', () => {
+    cy.viewport(390, 900);
+    scenario();
+    cy.intercept('GET', '**/api/account-usage*', fiveAccountFixture()).as('usage');
+    cy.clock(frozenNow.getTime(), ['Date']); cy.visit('/'); cy.wait('@usage');
+    cy.findByRole('group', { name: 'Account layout' }).should('not.exist');
+    cy.get('.usage-table').should('not.exist');
+    cy.get('.usage-account').should('have.length', 5);
+    cy.get('.reset-queue-row').should('have.length', 5);
+    cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
   });
 });
