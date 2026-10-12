@@ -6,8 +6,9 @@ import { ProviderLogo } from "./provider-logo";
 import './account-usage.css';
 
 type Cadence = "5h" | "daily" | "weekly" | "monthly" | "other";
-type UsageWindow = { id: string; cadence: Cadence; label: string; category: "usage" | "additional" | "code-review"; remainingPercent: number; resetAt: string | null; reported: true };
-type UsageAccount = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; retryAt?: string | null; windows: UsageWindow[] };
+type UsageWindow = { id: string; cadence: Cadence; label: string; model?: string | null; category: "usage" | "additional" | "code-review"; remainingPercent: number; resetAt: string | null; reported: true };
+type ResetInventory = { availableCount: number; updatedAt: string; grants: Array<{ count: number; expiresAt: string | null; usableNow: boolean | null }> | null };
+type UsageAccount = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; retryAt?: string | null; windows: UsageWindow[]; redeemableResets?: ResetInventory | null };
 type UsageProvider = { id: "claude" | "codex"; label: string; available: boolean; accounts: UsageAccount[] };
 type UsageResponse = { generatedAt: string; source: "CCS"; available: boolean; summary: Record<UsageAccount["status"], number>; providers: UsageProvider[] };
 type ReconnectSession = { sessionId: string; provider: UsageProvider["id"]; status: "waiting" | "processing" | "success" | "error" | "expired" | "cancelled"; message: string; authUrl: string | null; expiresAt: string };
@@ -89,7 +90,7 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
     {usage && <ResetOverview resets={resets} now={now} />}
     {usage && <h2 className="all-accounts-heading">All accounts</h2>}
     <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection nextReset={nextReset} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} provider={provider} now={now} onDeleted={connectionDeleted} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
-    {usage?.available && <details className="usage-privacy"><summary>About these readings</summary><p>Provider usage for your CCS connections, not billing credits. Missing limits are not reported, never zero. OAuth credentials are used only on your Mac to contact the provider and are never sent to this browser. Usage is checked at most once per account per minute. Rate-limited accounts wait longer before retrying; Refresh respects that wait. The reset queue compares overall weekly limits; named model limits are in Details. Suggestions use reported limits and do not change account routing.</p></details>}
+    {usage?.available && <details className="usage-privacy"><summary>About these readings</summary><p>Provider usage for your CCS connections, not billing credits. Missing limits are not reported, never zero. OAuth credentials are used only on your Mac to contact the provider and are never sent to this browser. Usage is checked at most once per account per minute. Rate-limited accounts wait longer before retrying; Refresh respects that wait. The reset queue compares overall weekly limits; Fable is shown in each Claude account and other model limits are in Details. Redeemable resets are saved options to restore quota, separate from automatic resets; check the provider for eligibility and redemption. Suggestions use reported limits and do not change account routing.</p></details>}
     {reconnecting && <ReconnectSheet key={reconnecting.account.id} provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
   </section>;
 }
@@ -185,6 +186,7 @@ function planLabel(plan: string | null) {
 function ProviderSection({ provider, now, onReconnect, onDeleted, snapshotFresh, nextReset }: { nextReset: UpcomingReset | null; onDeleted: (id: string) => Promise<void>; provider: UsageProvider; now: number; snapshotFresh: boolean; onReconnect: (account: UsageAccount) => void }) {
   return <section className="usage-provider"><header><div className={`provider-mark ${provider.id}`}>{provider.id === "claude" ? "C" : "O"}</div><div><h2>{provider.label}</h2><span>{provider.accounts.length} connected account{provider.accounts.length === 1 ? "" : "s"}</span></div></header>
     {!provider.available && <p className="provider-warning">This provider did not return usage.</p>}
+    {provider.id === 'claude' && provider.accounts.length > 0 && <p className="fable-guidance">Allocating Fable work? Check Weekly, Fable weekly and 5 hours together: all reported limits apply.</p>}
     {provider.available && provider.accounts.length === 0 && <p className="provider-empty">No CCS account connected.</p>}
     <div className="usage-account-list">{provider.accounts.map((account) => <AccountCard nextWindowId={nextReset?.provider.id === provider.id && nextReset.account.id === account.id ? nextReset.window.id : undefined} snapshotFresh={snapshotFresh && provider.available} account={account} now={now} providerId={provider.id} providerLabel={provider.label} onDeleted={() => onDeleted(account.id)} onReconnect={() => onReconnect(account)} key={account.id} />)}</div>
   </section>;
@@ -213,13 +215,18 @@ function AccountCard({ providerId, account, now, onReconnect, onDeleted, provide
   const windows = capacityKnown ? account.windows.filter(window => Number.isFinite(window.remainingPercent) && window.remainingPercent >= 0 && window.remainingPercent <= 100) : [];
   const coreWindows = CORE_WINDOWS.filter(window => window.cadence === 'weekly' || providerId === 'claude');
   const core = coreWindows.map(({ cadence }) => windows.find(window => window.category === 'usage' && window.cadence === cadence));
+  const fable = providerId === 'claude' ? windows.find(window => window.cadence === 'weekly' && window.category === 'additional' && (window.model?.toLowerCase() === 'fable' || window.label.toLowerCase() === 'fable weekly limit')) : undefined;
+  if (fable) core.push(fable);
   const extras = windows.filter(window => !core.includes(window));
   const displayStatus = !capacityKnown && account.status !== 'reconnect' ? 'unavailable' : account.status;
   return <article id={`usage-account-${account.id}`} tabIndex={-1} className={`usage-account ${displayStatus}${nextWindowId ? ' next-reset-account' : ''}`}><header><div><strong>{account.email || account.label}</strong><span className="account-plan">{planLabel(account.plan)}</span><span>{[account.isDefault ? "Default" : null, account.paused ? "Paused" : null].filter(Boolean).join(" · ")}</span></div><span className={`usage-status ${displayStatus}`}>{!capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{nextWindowId && <span className="next-reset-tag">Next reset</span>}
     {snapshotFresh && account.status === 'unavailable' && account.message && <p className="account-unavailable-reason">{account.message}</p>}
     {snapshotFresh && account.status === 'unavailable' && account.retryAt && Number.isFinite(Date.parse(account.retryAt)) && <p className="account-retry"><time dateTime={account.retryAt} title={new Date(account.retryAt).toLocaleString()}>{Date.parse(account.retryAt) <= now ? 'Ready to retry usage' : resetText(account.retryAt, now).replace('Resets in ', 'Retry in ')}</time></p>}
     {!confirming && account.status === "reconnect" && <button className="account-reconnect" onClick={onReconnect}>Reconnect account</button>}</header>
-    <div className={`core-window-grid${providerId === 'codex' ? ' weekly-only' : ''}`}>{coreWindows.map(({ cadence, label }) => <CoreWindow label={label} window={windows.find((item) => item.category === "usage" && item.cadence === cadence)} now={now} key={cadence} />)}</div>
+    <div className={`core-window-grid${providerId === 'codex' ? ' weekly-only' : ' with-fable'}`}>
+      <CoreWindow label="Weekly" window={core[0]} now={now} />
+      {providerId === 'claude' && <><CoreWindow label="Fable weekly" window={fable} now={now} /><CoreWindow label="5 hours" window={core[1]} now={now} /></>}
+    </div>
     <details className="usage-account-details"><summary>Details{extras.length > 0 && <span className="sr-only"> · {extras.length} additional limits</span>}</summary><div className="account-detail-content">
     <p className="account-reading">{account.updatedAt ? relativeUpdated(account.updatedAt, now) : 'Reading time unavailable'}</p>
     {!capacityKnown && <p className="account-message">Capacity unknown: the reading is unavailable, failed or older than 15 minutes.</p>}
@@ -233,7 +240,23 @@ function AccountCard({ providerId, account, now, onReconnect, onDeleted, provide
       <div><button disabled={deleting} onClick={() => { setConfirming(false); setDeleteError(""); }}>Cancel</button><button className="connection-delete" disabled={deleting} onClick={() => void remove()}>{deleting ? "Deleting…" : "Confirm delete"}</button></div>
     </div> : <button className="connection-delete" onClick={() => setConfirming(true)}>Delete connection</button>}
     </div></details>
+    <RedeemableResets inventory={account.redeemableResets} fresh={capacityKnown} providerId={providerId} now={now} />
   </article>;
+}
+
+function RedeemableResets({ inventory, fresh, providerId, now }: { inventory?: ResetInventory | null; fresh: boolean; providerId: UsageProvider['id']; now: number }) {
+  const known = fresh && inventory && freshReading(inventory.updatedAt, now);
+  const grants = known ? inventory.grants ?? [] : [];
+  const expired = grants.filter(grant => grant.expiresAt !== null && Date.parse(grant.expiresAt) <= now).reduce((sum, grant) => sum + grant.count, 0);
+  const count = known ? Math.max(0, inventory.availableCount - expired) : null;
+  const live = grants.filter(grant => grant.count > 0 && (grant.expiresAt === null || Date.parse(grant.expiresAt) > now));
+  const expiry = live.map(grant => grant.expiresAt).filter((value): value is string => value !== null).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+  const partial = known && (inventory.grants === null || grants.reduce((sum, grant) => sum + grant.count, 0) < inventory.availableCount);
+  return <div className={`redeemable-resets${count && count > 0 ? ' has-resets' : ''}`}>
+    <div><strong>Redeemable resets</strong><span>{count === null ? inventory ? 'Awaiting refresh' : 'Not reported' : count === 0 ? 'None reported' : `${count} saved reset${count === 1 ? '' : 's'}`}</span></div>
+    {count !== null && count > 0 && <p>{expiry ? <><time dateTime={expiry} title={new Date(expiry).toLocaleString()}>{partial ? 'Next reported expiry' : 'Next expiry'}: {new Date(expiry).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · {resetText(expiry, now).replace('Resets in ', 'in ')}</time>{partial && ' · Some expiry details not reported'}</> : 'Expiry not reported'}{live.some(grant => grant.usableNow === false) && ' · Some resets cannot be used yet'}</p>}
+    <a href={providerId === 'claude' ? 'https://claude.ai/settings/usage' : 'https://chatgpt.com/codex/settings/usage'} target="_blank" rel="noreferrer">Check {providerId === 'claude' ? 'Claude' : 'ChatGPT'} resets ↗</a>
+  </div>;
 }
 
 function ReconnectSheet({ provider, account, onClose, onSuccess }: { provider: UsageProvider; account: UsageAccount; onClose: () => void; onSuccess: () => Promise<void> }) {

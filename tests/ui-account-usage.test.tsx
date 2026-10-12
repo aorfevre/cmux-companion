@@ -27,9 +27,9 @@ test('compares Claude used quota with remaining capacity and keeps Fable separat
   await setup();
   expect(screen.getByText('95% used')).toBeTruthy();
   expect(screen.getByText('0% used')).toBeTruthy();
-  expect(screen.getByText('weekly · 96% used')).toBeTruthy();
-  expect(screen.getByText('4% remaining')).toBeTruthy();
-  expect(screen.getByText('Fable weekly limit')).toBeTruthy();
+  expect(screen.getByText('96% used')).toBeTruthy();
+  expect(screen.getByText('Fable weekly').closest('.core-window')?.textContent).toContain('4% remaining');
+  expect(screen.getByText('Fable weekly')).toBeTruthy();
   expect(screen.getAllByText('Resets in 5m')).toHaveLength(2);
   expect(screen.getByRole('complementary', { name: 'Next weekly reset' }).textContent).toContain('5% unused');
   expect(screen.getByRole('complementary', { name: 'Next weekly reset' }).textContent).toContain('Paused in CCS');
@@ -311,4 +311,80 @@ test('shows provider cooldown through refresh and countdown expiry without claim
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
   expect(screen.getByText('Ready to retry usage')).toBeTruthy();
   expect(screen.getByText('Unknown')).toBeTruthy();
+});
+
+test('Fable is visible outside Details and is never inferred from overall weekly quota', async () => {
+  await setup();
+  const gauge = screen.getByText('Fable weekly').closest('.core-window')!;
+  expect(gauge.closest('details')).toBeNull();
+  expect(gauge.textContent).toContain('4% remaining');
+  expect(screen.getByText('Allocating Fable work? Check Weekly, Fable weekly and 5 hours together: all reported limits apply.')).toBeTruthy();
+  cleanup();
+  await setup(async () => {
+    const usage = fixture(); usage.providers[0].accounts[0].windows.pop();
+    return new Response(JSON.stringify(usage));
+  });
+  expect(screen.getByText('Fable weekly').closest('.core-window')?.textContent).toContain('Not reported');
+});
+
+test('saved resets stay visible outside Details with provider link, partial expiry and usage restrictions', async () => {
+  await setup(async () => {
+    const usage = fixture();
+    usage.providers[0].accounts[0].redeemableResets = { availableCount: 3, updatedAt: instant, grants: [{ count: 1, expiresAt: '2026-10-07T08:00:00Z', usableNow: false }] };
+    return new Response(JSON.stringify(usage));
+  });
+  const row = screen.getByText('Redeemable resets').closest('.redeemable-resets')!;
+  expect(row.closest('details')).toBeNull();
+  expect(row.textContent).toContain('3 saved resets');
+  expect(row.textContent).toContain('Next reported expiry');
+  expect(row.textContent).toContain('in 5m');
+  expect(row.textContent).toContain('Some expiry details not reported');
+  expect(row.textContent).toContain('Some resets cannot be used yet');
+  expect(within(row as HTMLElement).getByRole('link').getAttribute('href')).toBe('https://claude.ai/settings/usage');
+  expect(row.querySelector('time')?.getAttribute('dateTime')).toBe('2026-10-07T08:00:00Z');
+  await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
+  expect(row.textContent).toContain('2 saved resets');
+  expect(row.textContent).toContain('Expiry not reported');
+  expect(row.querySelector('time')).toBeNull();
+});
+
+test('expired saved grants disappear locally even while refresh is pending', async () => {
+  let calls = 0;
+  await setup(async () => {
+    if (++calls > 1) return new Promise<Response>(() => {});
+    const usage = fixture();
+    usage.providers[0].accounts[0].redeemableResets = { availableCount: 1, updatedAt: instant, grants: [{ count: 1, expiresAt: '2026-10-07T07:56:00Z', usableNow: true }] };
+    return new Response(JSON.stringify(usage));
+  });
+  expect(screen.getByText('1 saved reset')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  expect(screen.queryByText('1 saved reset')).toBeNull();
+  expect(screen.getByText('None reported')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(15 * 60000); });
+  expect(screen.getByText('Awaiting refresh')).toBeTruthy();
+  expect(screen.queryByText('None reported')).toBeNull();
+});
+
+test.each(['unknown', 'count-only', 'no-expiry', 'empty', 'stale', 'provider-failed', 'failed-refresh'] as const)('saved-reset %s readings do not invent counts or expiry', async kind => {
+  let calls = 0;
+  await setup(async () => {
+    if (++calls > 1 && kind === 'failed-refresh') return new Response('{}', { status: 503 });
+    const usage = fixture();
+    const provider = usage.providers[0]; provider.id = 'codex'; provider.label = 'OpenAI Codex';
+    if (kind === 'provider-failed') provider.available = false;
+    if (kind !== 'unknown') provider.accounts[0].redeemableResets = {
+      availableCount: kind === 'empty' ? 0 : 2,
+      updatedAt: kind === 'stale' ? '2026-10-07T07:00:00Z' : instant,
+      grants: kind === 'no-expiry' ? [{ count: 2, expiresAt: null, usableNow: null }] : kind === 'empty' ? [] : null,
+    };
+    return new Response(JSON.stringify(usage));
+  });
+  if (kind === 'failed-refresh') await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  const row = screen.getByText('Redeemable resets').closest('.redeemable-resets')!;
+  const expected = kind === 'unknown' ? 'Not reported' : kind === 'empty' ? 'None reported' : ['stale', 'provider-failed', 'failed-refresh'].includes(kind) ? 'Awaiting refresh' : '2 saved resets';
+  expect(row.textContent).toContain(expected);
+  if (expected === '2 saved resets') expect(row.textContent).toContain('Expiry not reported');
+  expect(within(row as HTMLElement).getByRole('link').getAttribute('href')).toBe('https://chatgpt.com/codex/settings/usage');
+  expect(row.querySelector('time')).toBeNull();
+  expect(screen.queryByText('Fable weekly')).toBeNull();
 });

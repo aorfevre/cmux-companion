@@ -460,7 +460,7 @@ test("reads a fresh Claude token from disk and fetches the exact usage payload",
     claudeAccounts: [claudeAccount("active@example.test"), claudeAccount("stale@example.test"), claudeAccount("nested@example.test")],
   });
   const requests = stubFetch(t, (url, options) => {
-    assert.equal(url, "https://api.anthropic.com/api/oauth/usage");
+    assert.equal(url, "https://api.anthropic.com/api/oauth/usage?cedar_ember=1");
     assert.equal(options.headers["anthropic-beta"], "oauth-2025-04-20");
     if (options.headers.Authorization === "Bearer nested-token") return { body: { five_hour: null } };
     return { body: { five_hour: { utilization: 30, resets_at: "2026-09-08T12:00:00.000Z" }, seven_day: { utilization: 85 } } };
@@ -623,4 +623,84 @@ test('production source forwards deletion to CCS without using quota results as 
   const id = before.providers[1].accounts[0].id;
   assert.deepEqual(await usage.removeConnection(id), { removed: true });
   assert.equal((await usage.snapshot()).providers[1].accounts.length, 0);
+});
+
+test('reads current scoped Fable limits, deduplicates legacy values and preserves overall weekly meaning', () => {
+  const scoped = { kind: 'weekly_scoped', percent: 69, resets_at: '2026-10-14T07:59:59Z', scope: { model: { id: null, display_name: 'Fable' }, surface: null }, is_active: true };
+  const windows = exactClaudeWindows({ seven_day: { utilization: 48 }, seven_day_fable: { utilization: 50 }, limits: [scoped, scoped,
+    { ...scoped, scope: { model: { display_name: 'All models' } } }, { ...scoped, scope: null },
+    { ...scoped, percent: true }, { ...scoped, kind: 'weekly_all' }, { ...scoped, scope: { ...scoped.scope, surface: 'cowork' } }] });
+  assert.deepEqual(windows.map(w => [w.label, w.remainingPercent]), [['Weekly limit', 52], ['Fable weekly limit', 31]]);
+  assert.equal(windows[1].category, 'additional'); assert.equal(windows[1].model, 'Fable');
+  assert.equal(exactClaudeWindows({ limits: [scoped] })[0].category, 'additional');
+  assert.deepEqual(exactClaudeWindows({ limits: {} }), []);
+});
+
+test('Claude requests reset inventory with its compatibility identity and safely exposes inventory without quota windows', async t => {
+  const authDir = mkdtempSync(join(tmpdir(), 'ccs-resets-'));
+  t.after(() => rmSync(authDir, { recursive: true, force: true }));
+  writeFileSync(join(authDir, 'claude-owner.json'), JSON.stringify({ email: 'owner@example.test', access_token: 'private-token' }));
+  installFakeCcs(t, { authDir, claudeAccounts: [claudeAccount('owner@example.test')] });
+  const requests = stubFetch(t, (url, options) => {
+    assert.equal(new URL(url).searchParams.get('cedar_ember'), '1');
+    assert.equal(options.headers['User-Agent'], 'claude-cli/2.1.296 (external, cli)');
+    return { body: { cedar_ember: { eligible: true, grants: [{ id: 'private-grant', resets_left: 1, paused: false, ends_at: new Date(Date.now() + 86400000).toISOString() }] } } };
+  });
+  const usage = new AccountUsage();
+  const value = await usage.snapshot();
+  assert.equal(value.providers[0].accounts[0].redeemableResets.availableCount, 1);
+  assert.equal(value.providers[0].accounts[0].status, 'ready');
+  assert.doesNotMatch(JSON.stringify(value), /private-/);
+  usage.invalidate(); await usage.snapshot({ refresh: true });
+  assert.equal(requests.length, 1);
+});
+
+test('Codex expiry reads use exact-account auth and an independent cooldown without erasing fresh usage counts', async t => {
+  installFakeCcs(t, { codexAccounts: [{ id: 'owner@example.test' }], codexAuth: { accessToken: 'private-token', accountId: 'private-account', isExpired: false } });
+  let now = Date.now(), detailCalls = 0, fail = false;
+  t.mock.method(Date, 'now', () => now);
+  const expiry = new Date(now + 86400000).toISOString();
+  const requests = stubFetch(t, (url, options) => {
+    assert.equal(options.headers.Authorization, 'Bearer private-token');
+    assert.equal(options.headers['ChatGPT-Account-Id'], 'private-account');
+    if (url.endsWith('/rate-limit-reset-credits')) {
+      detailCalls++;
+      return fail ? { ok: false, status: 429, headers: { 'Retry-After': '300' } } : { body: { available_count: 2, credits: [{ id: 'private-grant', status: 'available', expires_at: expiry }] } };
+    }
+    return { body: { rate_limit: { primary_window: { used_percent: 5, limit_window_seconds: 604800 } }, rate_limit_reset_credits: { available_count: 2 } } };
+  });
+  const usage = new AccountUsage();
+  const read = async () => (await usage.snapshot({ refresh: true })).providers[1].accounts[0];
+  const first = await read();
+  assert.equal(first.redeemableResets.availableCount, 2);
+  assert.equal(first.redeemableResets.grants[0].expiresAt, expiry);
+  assert.doesNotMatch(JSON.stringify(first), /private-/);
+  usage.invalidate(); await Promise.all([read(), read()]);
+  assert.equal(requests.length, 2);
+  now += 60000; fail = true;
+  const failed = await read();
+  assert.equal(failed.status, 'ready');
+  assert.equal(failed.redeemableResets.availableCount, 2);
+  assert.equal(failed.redeemableResets.grants, null);
+  now += 60000; await read();
+  assert.equal(detailCalls, 2);
+  now += 240000; fail = false;
+  assert.equal((await read()).redeemableResets.grants[0].expiresAt, expiry);
+  assert.equal(detailCalls, 3);
+});
+
+test('Codex unavailable or zero counts skip expiry reads; network detail failures retain a count with unknown expiry', async t => {
+  installFakeCcs(t, { codexAccounts: [{ id: 'owner@example.test' }], codexAuth: { accessToken: 'token', accountId: 'acct', isExpired: false } });
+  let summary;
+  const requests = stubFetch(t, url => {
+    if (url.endsWith('/rate-limit-reset-credits')) throw new Error('private upstream failure');
+    return { body: { rate_limit_reset_credits: summary } };
+  });
+  for (const available of [undefined, 0, 1]) {
+    summary = available === undefined ? undefined : { available_count: available };
+    const account = (await new AccountUsage().snapshot()).providers[1].accounts[0];
+    assert.equal(account.redeemableResets?.availableCount, available);
+    if (available === 1) assert.equal(account.redeemableResets.grants, null);
+  }
+  assert.equal(requests.length, 4);
 });

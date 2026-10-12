@@ -4,9 +4,10 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { AccountPollCache, retryAfterAt } from './account-poll-cache.mjs';
+import { claudeResetInventory, codexResetInventory, normalizeResetInventory } from './reset-inventory.mjs';
 
 const CACHE_MS = 60_000;
-const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1";
 const CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const PLAN_CACHE_MS = 15 * 60_000;
 const CLAUDE_OAUTH_BETA = "oauth-2025-04-20";
@@ -162,6 +163,7 @@ function normalizeAccount(provider, account, quota = null, providerAvailable = t
           : null,
     updatedAt: safeDate(quota?.lastUpdated),
     retryAt: safeDate(quota?.retryAt),
+    redeemableResets: quota?.success ? normalizeResetInventory(quota.redeemableResets) : null,
     windows,
   };
 }
@@ -189,6 +191,7 @@ function normalizeWindows(provider, value) {
       id: `${category}-${cadence}-${index}`,
       cadence,
       label: cleanText(window?.featureLabel) || cleanText(window?.label) || cadenceLabel(cadence),
+      model: cleanText(window?.model),
       category,
       remainingPercent,
       resetAt: safeDate(window?.resetAt),
@@ -280,7 +283,7 @@ async function loadCcsSource(polls) {
     }))),
     fetchAllCodexQuotas: async () => Promise.all(accounts.getProviderAccounts("codex").map(async (account) => ({
       account: account.id,
-      quota: await polls.read(`codex:usage:${account.id}`, () => fetchExactCodexQuota(account.id, codex)),
+      quota: await polls.read(`codex:usage:${account.id}`, () => fetchExactCodexQuota(account.id, codex, polls)),
     }))),
   };
 }
@@ -366,13 +369,17 @@ async function fetchClaudeUsage(accountId, token) {
         Authorization: `Bearer ${token}`,
         "anthropic-beta": CLAUDE_OAUTH_BETA,
         "Content-Type": "application/json",
+        // Claude gates cedar_ember inventory on its CLI compatibility identity.
+        // A generic HTTP client can omit saved grants from the same account.
+        "User-Agent": "claude-cli/2.1.296 (external, cli)",
       },
     });
     if (!response.ok) return { ...unavailable(response.status === 401), ...rateLimitFailure(response) };
     const payload = await response.json();
     const windows = exactClaudeWindows(payload);
-    if (windows.length === 0) return unavailable(false, 'no-windows');
-    return { success: true, windows, lastUpdated: Date.now(), accountId };
+    const redeemableResets = claudeResetInventory(payload);
+    if (windows.length === 0 && !redeemableResets) return unavailable(false, 'no-windows');
+    return { success: true, windows, redeemableResets, lastUpdated: Date.now(), accountId };
   } catch {
     return unavailable();
   } finally {
@@ -428,7 +435,19 @@ export function exactClaudeWindows(payload) {
   for (const key of Object.keys(payload).filter(key => key === "seven_day" || key.startsWith("seven_day_"))) {
     const label = CLAUDE_WEEKLY_LABELS[key] || `${key.slice("seven_day_".length).replaceAll("_", " ")} weekly limit`;
     const window = claudeWindow(payload[key], "weekly", key === "seven_day" ? "usage" : "additional", label);
-    if (window) windows.push(window);
+    if (window) windows.push({ ...window, ...(key === 'seven_day_fable' ? { model: 'Fable' } : {}) });
+  }
+  // Current Claude usage places Fable in scoped limits instead of seven_day_fable.
+  for (const entry of Array.isArray(payload.limits) ? payload.limits : []) {
+    const model = cleanText(entry?.scope?.model?.display_name);
+    if (entry?.kind !== 'weekly_scoped' || !model || model.toLowerCase() === 'all models' || entry.scope.surface != null) continue;
+    const label = `${model} weekly limit`;
+    const window = claudeWindow({ utilization: entry.percent, resets_at: entry.resets_at }, 'weekly', 'additional', label);
+    if (!window) continue;
+    const existing = windows.findIndex(item => item.category === 'additional' && item.label.toLowerCase() === label.toLowerCase());
+    const scoped = { ...window, model };
+    if (existing >= 0) windows[existing] = scoped;
+    else windows.push(scoped);
   }
   return windows;
 }
@@ -441,7 +460,7 @@ function claudeWindow(raw, cadence, category, label) {
   return { label, featureLabel: label, category, cadence, remainingPercent, resetAt: safeDate(raw.resets_at) };
 }
 
-async function fetchExactCodexQuota(accountId, codex) {
+async function fetchExactCodexQuota(accountId, codex, polls) {
   const unavailable = (needsReauth = false) => ({ success: false, windows: [], needsReauth, accountId });
   const auth = codex.readCodexAuthData(accountId);
   if (!auth || auth.isExpired || !auth.accountId || !bearerToken(auth.accessToken)) return unavailable(Boolean(auth?.isExpired));
@@ -458,9 +477,23 @@ async function fetchExactCodexQuota(accountId, codex) {
     });
     if (!response.ok) return { ...unavailable(response.status === 401), ...rateLimitFailure(response) };
     const payload = await response.json();
+    let redeemableResets = codexResetInventory(payload.rate_limit_reset_credits);
+    if (redeemableResets?.availableCount > 0) {
+      const observedAt = Date.now();
+      const detail = await polls.read(`codex:resets:${accountId}`, async () => {
+        const response = await fetch('https://chatgpt.com/backend-api/wham/rate-limit-reset-credits', {
+          signal: AbortSignal.timeout(5_000),
+          headers: { Authorization: `Bearer ${auth.accessToken}`, 'ChatGPT-Account-Id': auth.accountId, 'User-Agent': 'codex_cli_rs/0.76.0 cmux-companion' },
+        });
+        if (!response.ok) return { success: false, ...rateLimitFailure(response) };
+        return { success: true, inventory: codexResetInventory(payload.rate_limit_reset_credits, await response.json()), observedAt: Date.now() };
+      });
+      if (detail.success && detail.observedAt >= observedAt) redeemableResets = detail.inventory;
+    }
     return {
       success: true,
       windows: exactCodexWindows(payload),
+      redeemableResets,
       planType: cleanPlan(payload?.plan_type || payload?.planType),
       lastUpdated: Date.now(),
       accountId,
