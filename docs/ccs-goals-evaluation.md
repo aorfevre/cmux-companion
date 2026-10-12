@@ -724,3 +724,9 @@ The former session-receipt TOCTOU and PTY shell findings (109 and 105) are
 reported fixed by GitHub, rather than dismissed. This trust-path review does not
 establish native policy enforcement or actual CCS account routing; A2 and the
 five native-goal success measure remain unverified.
+
+Applied these seven individual false-positive dispositions to GitHub alerts
+88, 89, 90, 104, 106, 107 and 108, with a boundary-specific reason and this review
+reference on each alert. GitHub confirmed state=dismissed for each. The first
+request was rejected because its comment exceeded GitHub's 280-character limit;
+shortened comments were then accepted. No scan configuration or query changed.
