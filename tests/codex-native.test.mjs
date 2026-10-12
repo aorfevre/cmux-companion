@@ -17,12 +17,12 @@ function fixture(t) {
   t.after(async () => { for (const close of closers) await close(); rmSync(root, { recursive: true, force: true }); });
   return { root, worktree, privatePath, closers };
 }
-test('Codex metadata probes only the pinned native executable and supports direct launch', async t => {
+for (const version of ['0.154.0', '0.162.1']) test(`Codex ${version} metadata probes only the pinned native executable and supports direct launch`, async t => {
   const { root } = fixture(t), bin = join(root, 'codex');
-  writeFileSync(bin, `#!${process.execPath}\nprocess.stdout.write(process.argv.includes('--version') ? 'codex-cli 0.154.0' : '--config --sandbox --ask-for-approval --strict-config --dangerously-bypass-hook-trust');`, { mode: 0o700 });
+  writeFileSync(bin, `#!${process.execPath}\nprocess.stdout.write(process.argv.includes('--version') ? 'codex-cli ${version}' : '--config --sandbox --ask-for-approval --strict-config --dangerously-bypass-hook-trust --json resume SESSION_ID');`, { mode: 0o700 });
   const installation = await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' });
   assert.equal(installation.identity.provider, 'codex'); assert.equal(installation.env.CCS_CODEX_PATH, bin);
-  assert.equal(installation.evidence.codexVersion, '0.154.0');
+  assert.equal(installation.evidence.codexVersion, version);
   writeFileSync(bin, '#!/bin/sh\necho unsupported\n');
   assert.throws(() => installation.assertCurrent(), { code: 'UNSUPPORTED_CAPABILITY' });
   await assert.rejects(probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }), { code: 'UNSUPPORTED_CAPABILITY' });
@@ -62,6 +62,26 @@ test('role hook denies all non-scoped tool paths including shell, native patch, 
     assert.equal(Boolean(codexToolHook({ hook_event_name: 'PreToolUse', tool_name: 'mcp__files__write_file' }, role).hookSpecificOutput), ['planner', 'reviewer'].includes(role));
   }
   assert.ok(codexToolHook({}, 'unknown').hookSpecificOutput);
+});
+
+test('conversational Codex inputs keep CCS routing and scoped policy in persisted exec turns', async t => {
+  const { root, worktree } = fixture(t);
+  const request = { goalId: 'goal', operationId: 'op', attempt: { id: 'attempt', generation: 0, revision: 0, role: 'planner', mode: 'interactive', conversationId: '00000000-0000-4000-8000-000000000002', worktree, target: null } };
+  for (const ccsxp of [false, true]) {
+    const directory = join(root, ccsxp ? 'ccsxp' : 'ccs'); mkdirSync(directory);
+    const inputs = new CodexInputs({ supervisorTurns: true, ccsxp, profile: 'selected-profile', capabilities: caps, engine: { provider: 'codex', model: 'selected-model' }, env: { HOME: root }, describe: () => ({ experienceVersion: 2, supervisor: true, prompt: 'Pinned supervisor', bridge: { endpoint: 'http://127.0.0.1:1234', credential: 'c'.repeat(48) } }) });
+    const prepared = await inputs.prepare(request, directory);
+    assert.equal(prepared.supervisorTurns, true);
+    assert.equal(prepared.supervisor, true);
+    assert.deepEqual(prepared.argv.slice(0, 3), ccsxp ? ['--strict-config', '--dangerously-bypass-hook-trust', '--model'] : ['selected-profile', '--target', 'codex']);
+    assert.equal(prepared.argv[prepared.argv.indexOf('--model') + 1], 'selected-model');
+    assert.deepEqual(prepared.argv.slice(-3, -1), ['exec', '--json']);
+    assert.ok(!prepared.argv.includes('--ephemeral'));
+    assert.match(prepared.argv.at(-1), /Record wait.*finish this turn/);
+    assert.equal(JSON.parse(readFileSync(join(directory, 'bridge.json'), 'utf8')).binding.supervisorTurns, true);
+    assert.match(readFileSync(join(prepared.env.CODEX_HOME, 'config.toml'), 'utf8'), /approval_policy = "never"/);
+    assert.deepEqual(await inputs.prepare(request, directory), prepared);
+  }
 });
 test('Codex results and resume bind to the native session recorded by the owned hook', t => {
   const { privatePath } = fixture(t);

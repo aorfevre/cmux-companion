@@ -529,3 +529,76 @@ and wake-up, and native end-to-end completion without intervention. Codex still
 requires a supported resumable-turn implementation. These checks do not establish
 A2 or the five-goal native success measure. The existing preview and installed
 production were not restarted or changed, and no additional paid trial was run.
+
+
+## Codex event-triggered supervisor turns — 2026-10-12
+
+Codex conversational supervisors now use persisted exec/JSON turns through the
+selected CCS profile or ccsxp launcher. Subsequent turns use explicit session-ID
+resume, never latest-session selection. The runner retains the owned terminal
+and operation, releases capacity only after observed provider termination, and
+waits without a provider process. The stream must contain one native thread and
+a successful turn completion matching the SessionStart hook's saved identity.
+Hook receipt validation occurs at completion to avoid racing thread creation.
+Private tool output is not displayed as assistant prose. Failed, incomplete or
+wrong-session streams cannot release the turn as successful.
+
+The Codex adapter now retains supervisor metadata (previously discarded when
+converting Claude preparation into Codex inputs), disables interactive approvals
+for managed turns, and preserves scoped hooks, files and bridge configuration.
+Legacy interactive goals keep their existing behavior. Both launchers share
+the service-controlled idle/wake and bounded timeout machinery.
+
+Metadata evidence: the installed Codex 0.162.1 --version, --help, exec --help and
+exec resume --help expose the required flags and explicit session resume. The
+capability probe now accepts 0.162.1 and checks exec/resume JSON support for both
+recognized Codex versions. The installed ccsxp/CCS 8.10.0 metadata probe passed;
+this is not a paid model run or proof of selected account identity.
+
+The official [non-interactive mode documentation](https://learn.chatgpt.com/docs/non-interactive-mode)
+describes JSONL turn events and explicit exec session resume. Generated managed
+configuration passed the current official
+[configuration schema](https://developers.openai.com/codex/config-schema.json).
+The installed CLI loaded that configuration in an isolated, account-free
+features-list metadata invocation. Its effective metadata reports hooks enabled,
+shell_tool/apps/multi_agent/computer_use/remote_plugin/memories/code_mode disabled,
+but unified_exec and code_mode_host enabled despite the former's explicit false
+setting. Scoped hook denial and read-only sandbox remain configured; metadata
+alone does not establish actual enforcement. Native policy validation remains
+required. The schema is current official evidence, not a version-pinned runtime
+execution test.
+
+Interventions/failures retained: the first metadata fixture and one new test
+used a non-UUID conversation ID and were corrected. Strict config is not supported
+by the features metadata subcommand, so it was not represented as a successful
+strict-runtime test. The schema validator initially rejected Rust numeric format
+names; explicit numeric validators were added to the disposable validation script.
+No project dependencies were added. The first browser command omitted the
+orchestration fixture flag and skipped its sole test; the corrected command
+ran and passed the journey in 40 seconds with owned-resource cleanup.
+
+Passed: 40 targeted native capability/input, process/API/PTY and protocol tests;
+the additional delayed SessionStart receipt assertion also passed. The Codex
+process fixture covers two turns with the same native session, no idle/paused
+provider launches, one terminal and runner, and a hung third turn producing an
+exact service timeout hold. Profile and model argv, managed approval policy,
+private configuration and preparation idempotency have regression coverage.
+The first full verification also exposed a stale CCSXP metadata fixture after
+the new resume capability probe; its advertised help was updated to include the
+required JSON/resume contract, and all four provider-command tests passed.
+Final npm run verify passed: 1,118 backend tests passed with one intentional
+skip and 97.61% lines; 216 UI tests passed with 94.88% lines; lint (two existing
+settings-navigation warnings), types and build passed. No thresholds changed.
+
+Still unverified: actual xclaude/xcodex model runs with the selected routing and
+account, tool enforcement, native resume/long idle and the five-goal success
+measure. Existing previews were not restarted and production state was not
+changed. The user has authorized merging the implementation to main once fixed;
+required full-contract verification and review still precede that merge.
+
+Merge-gate inspection of pushed head e7c49788: macos and verify checks passed,
+but CodeQL reports nine alerts (two high, seven medium), and SonarCloud reports
+two reliability issues (an implicit button type and a fixture authority default).
+CodeRabbit's green status explicitly says review skipped because the PR is a
+draft; there is no approval. These findings must be investigated/resolved before
+merge. They are not replaced by local deterministic verification.

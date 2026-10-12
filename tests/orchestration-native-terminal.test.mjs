@@ -29,7 +29,7 @@ async function fixture(t, codex = false, Driver = NativeTerminal, supervisor = f
   await writeFile(bin, `#!${process.execPath}
 const fs = require('node:fs');
 if (${codex} && process.argv.includes('--version')) { console.log('codex-cli 0.154.0'); process.exit(0); }
-if (${codex} && process.argv.includes('--help')) { console.log('--config --sandbox --ask-for-approval --strict-config --dangerously-bypass-hook-trust'); process.exit(0); }
+if (${codex} && process.argv.includes('--help')) { console.log('--config --sandbox --ask-for-approval --strict-config --dangerously-bypass-hook-trust --json resume SESSION_ID'); process.exit(0); }
 if (${codex}) {
  const path = require('node:path'), directory = path.dirname(process.env.CODEX_HOME);
  const config = JSON.parse(fs.readFileSync(path.join(directory, 'codex-hook.json'), 'utf8'));
@@ -44,7 +44,7 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
 `, { mode: 0o700 });
   const server = createServer((req, res) => { res.writeHead(204); res.end(); }); server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const bridge = options.bridge ?? { endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-activation-credential-at-least-32-characters' };
-  const installation = codex ? await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }) : undefined;
+  const installation = codex && !options.supervisorTurns ? await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }) : undefined;
   const Inputs = codex ? CodexInputs : NativeInputs;
   const inputs = new Inputs({ supervisorTurns: Boolean(options.supervisorTurns), installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', supervisor, plannerName: 'DICTEE Planning Onboarding', activation: bridge, bridge }) });
   let child, creates = 0, starts = 0, opens = 0;
@@ -321,11 +321,11 @@ test('terminal provider spawn failure preserves stopped proof and sanitized clas
   assert.equal(observed.pendingOutbox, undefined);
 });
 
-test('managed supervisor turns keep one native conversation and owned terminal while idle launches no model process', { timeout: 15000 }, async t => {
+for (const codex of [false, true]) test(`${codex ? 'Codex' : 'Claude'} managed supervisor turns keep one native conversation and owned terminal while idle launches no model process`, { timeout: 15000 }, async t => {
   const { apiFixture } = await import('./helpers/orchestration/api-fixture.mjs');
   const api = await apiFixture(t); api.service.ownership = { assertOwned() {} };
   const bridge = { endpoint: await api.app.listen({ host: '127.0.0.1', port: 0 }), credential: 'pending-scoped-credential-at-least-32-characters' };
-  const f = await fixture(t, false, NativeTerminal, true, { supervisorTurns: true, bridge });
+  const f = await fixture(t, codex, NativeTerminal, true, { supervisorTurns: true, bridge });
   f.driver.turnTimeoutMs = 2000;
   let sequence = 0;
   const command = (type, payload, kind = 'system') => api.service.execute({ id: `cmd-${++sequence}`, goalId: 'goal', expectedVersion: api.store.get('goal')?.version ?? 0, type, payload }, { kind });
@@ -338,20 +338,29 @@ test('managed supervisor turns keep one native conversation and owned terminal w
 const fs = require('node:fs');
 (async () => {
  const arg = name => process.argv[process.argv.indexOf(name) + 1];
- const mcp = JSON.parse(fs.readFileSync(arg('--mcp-config'), 'utf8')).mcpServers.companion;
- const bridge = JSON.parse(fs.readFileSync(mcp.args.at(-1), 'utf8'));
+ const path = require('node:path');
+ const directory = ${codex} ? path.dirname(process.env.CODEX_HOME) : null;
+ const bridgePath = ${codex} ? path.join(directory, 'bridge.json') : JSON.parse(fs.readFileSync(arg('--mcp-config'), 'utf8')).mcpServers.companion.args.at(-1);
+ const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
  const headers = { authorization: 'Bearer ' + bridge.credential, 'content-type': 'application/json' };
- const fresh = process.argv.includes('--session-id'), session = arg(fresh ? '--session-id' : '--resume');
+ const fresh = ${codex} ? !process.argv.includes('resume') : process.argv.includes('--session-id');
+ const session = ${codex} ? (fresh ? 'fixture-native-session' : process.argv[process.argv.indexOf('resume') + 2]) : arg(fresh ? '--session-id' : '--resume');
+ if (${codex}) {
+   const { recordCodexSession } = await import(${JSON.stringify(new URL('../server/codex-role-hook.mjs', import.meta.url).href)});
+   recordCodexSession({hook_event_name:'SessionStart',session_id:session}, JSON.parse(fs.readFileSync(path.join(directory,'codex-hook.json'),'utf8')));
+   if (!process.argv.includes('exec') || !process.argv.includes('--json') || process.argv.includes('--ephemeral')) throw Error('Invalid Codex turn mode');
+   console.log(JSON.stringify({type:'thread.started',thread_id:session}));
+ }
  const sessionPath = process.env.FIXTURE_CALLS + '.session';
  if (!fresh && fs.readFileSync(sessionPath, 'utf8') !== session) throw Error('Lost native session');
- if (!process.argv.includes('--print') || process.argv.includes('--no-session-persistence')) throw Error('Invalid turn mode');
+ if (!${codex} && (!process.argv.includes('--print') || process.argv.includes('--no-session-persistence'))) throw Error('Invalid turn mode');
  fs.writeFileSync(sessionPath, session);
  const state = await (await fetch(bridge.endpoint + '/api/orchestration/agent/status', { headers })).json();
  fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({ fresh, conversation: session, wake: state.conversation.wake, pid: process.pid }) + '\\n');
  const response = await fetch(bridge.endpoint + '/api/orchestration/agent/commands', { method: 'POST', headers, body: JSON.stringify({ id: 'wait-' + process.pid, goalId: state.id, expectedVersion: state.version, type: 'supervisor_wait', payload: { throughWake: state.conversation.wake } }) });
  if (!response.ok) throw Error('Wait was rejected');
- console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Recorded idle state.' }] } }));
- console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: session }));
+ console.log(JSON.stringify(${codex} ? { type: 'item.completed', item: { type: 'agent_message', text: 'Recorded idle state.' } } : { type: 'assistant', message: { content: [{ type: 'text', text: 'Recorded idle state.' }] } }));
+ console.log(JSON.stringify(${codex} ? { type: 'turn.completed' } : { type: 'result', subtype: 'success', is_error: false, session_id: session }));
 })().catch(() => process.exit(2));
 `, { mode: 0o700 });
   const launched = await f.driver.launch(f.request);

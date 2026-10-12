@@ -40,6 +40,27 @@ test('managed native supervisor cannot reopen an indefinitely waiting MCP call',
   assert.equal(JSON.parse(refused.result.content[0].text).code, 'FORBIDDEN');
 });
 
+test('Codex turns bind stream identity to the saved hook receipt and reject incomplete or failed streams', async () => {
+  const start = { type: 'thread.started', thread_id: 'saved-native-session' }, end = { type: 'turn.completed' };
+  const output = [];
+  const read = values => readSupervisorTurn(Readable.from([Buffer.from(frames(values))]), 'logical-session', text => output.push(text), { provider: 'codex', sessionId: () => 'saved-native-session' });
+  await read([start, { type: 'turn.started' }, { type: 'item.completed', item: { type: 'mcp_tool_call', result: 'private-tool-output' } }, { type: 'item.completed', item: { type: 'agent_message', text: 'Waiting for your approval.' } }, end]);
+  assert.deepEqual(output, ['Waiting for your approval.\n']);
+  for (const values of [[end], [start], [start, start, end], [{ ...start, thread_id: 'wrong-session' }, end], [start, { type: 'turn.failed' }], [start, { type: 'error' }, end], [start, end, end]]) {
+    await assert.rejects(read(values), { code: 'SUPERVISOR_PROTOCOL_FAILED' });
+  }
+  let receiptReady = false;
+  async function* delayedHook() {
+    yield Buffer.from(frames([start]));
+    receiptReady = true;
+    yield Buffer.from(frames([end]));
+  }
+  await readSupervisorTurn(delayedHook(), 'logical-session', () => {}, { provider: 'codex', sessionId: () => {
+    assert.ok(receiptReady, 'SessionStart receipt is required at completion, not at thread creation');
+    return 'saved-native-session';
+  } });
+});
+
 test('native turn controller defers paused capacity and replays uncertain start receipts without extra input', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const controller = new AbortController(); t.after(() => controller.abort());

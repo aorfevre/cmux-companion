@@ -7,9 +7,12 @@ import { requireValue } from '../domain/contracts.mjs';
  * Only assistant prose reaches the visible terminal; tool/config frames remain
  * private. A successful final frame must name the original native session.
  * @param {AsyncIterable<Buffer>} stream @param {string} conversationId
- * @param {(text:string)=>void} display */
-export async function readSupervisorTurn(stream, conversationId, display) {
-  const decoder = new StringDecoder('utf8'); let pending = '', complete = false, firstFrame = true;
+ * @param {(text:string)=>void} display
+ * @param {{provider?:'claude'|'codex'; sessionId?:()=>string}} [options] */
+export async function readSupervisorTurn(stream, conversationId, display, { provider = 'claude', sessionId } = {}) {
+  const decoder = new StringDecoder('utf8'); let pending = '', complete = false, firstFrame = true, started = false, nativeSession = '';
+  /** @param {string} text */
+  const prose = text => display([...text].filter(char => char === '\n' || char === '\t' || char.charCodeAt(0) >= 32 && char.charCodeAt(0) !== 127).join('') + '\n');
   /** @param {string} line */
   const frame = (line) => {
     if (!line.trim()) return;
@@ -17,8 +20,25 @@ export async function readSupervisorTurn(stream, conversationId, display) {
     if (initial && /^\[i\] Joined existing CLIProxy on port [0-9]{1,5} \(https?\)\r?$/.test(line)) return;
     const value = JSON.parse(line);
     requireValue(!complete, 'Native supervisor emitted data after its final result', 'SUPERVISOR_PROTOCOL_FAILED');
+    if (provider === 'codex') {
+      requireValue(value.type !== 'error' && value.type !== 'turn.failed', 'Native supervisor turn failed', 'SUPERVISOR_PROTOCOL_FAILED');
+      if (value.type === 'thread.started') {
+        requireValue(!started && typeof value.thread_id === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(value.thread_id), 'Native supervisor thread changed', 'SUPERVISOR_PROTOCOL_FAILED');
+        started = true; nativeSession = value.thread_id;
+      } else {
+        requireValue(started, 'Native supervisor thread is missing', 'SUPERVISOR_PROTOCOL_FAILED');
+        if (value.type === 'item.completed' && value.item?.type === 'agent_message' && typeof value.item.text === 'string') prose(value.item.text);
+        if (value.type === 'turn.completed') {
+          // SessionStart may finish after thread.started; validate its receipt
+          // at turn completion, before the runner can release or resume work.
+          requireValue(nativeSession === sessionId?.(), 'Native supervisor thread changed', 'SUPERVISOR_PROTOCOL_FAILED');
+          complete = true;
+        }
+      }
+      return;
+    }
     if (value.type === 'assistant') for (const part of value.message?.content ?? []) {
-      if (part.type === 'text' && typeof part.text === 'string') display([...part.text].filter(char => char === '\n' || char === '\t' || char.charCodeAt(0) >= 32 && char.charCodeAt(0) !== 127).join('') + '\n');
+      if (part.type === 'text' && typeof part.text === 'string') prose(part.text);
     }
     if (value.type === 'result') {
       requireValue(value.session_id === conversationId && value.subtype === 'success' && value.is_error !== true,

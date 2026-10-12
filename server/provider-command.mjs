@@ -4,7 +4,7 @@ import { basename, isAbsolute } from 'node:path';
 import { providerCommand, resolveExecutable } from './local-settings.mjs';
 import { DomainError, requireValue } from './orchestration/domain/contracts.mjs';
 const execute = promisify(execFile);
-export const MANAGED_GOAL_POLICY = 'Managed goals keep planners and reviewers read-only, limit worker edits to approved paths, and run approved checks through Companion. Companion controls hooks and MCP configuration; permission-bypass flags do not apply. Claude conversational supervisors use resumable turns in a visible workspace, with native permission prompts disabled. Plan and publication approval remain yours.';
+export const MANAGED_GOAL_POLICY = 'Managed goals keep planners and reviewers read-only, limit worker edits to approved paths, and run approved checks through Companion. Companion controls hooks and MCP configuration; permission-bypass flags do not apply. Conversational supervisors use resumable turns in a visible workspace, with native permission prompts disabled. Plan and publication approval remain yours.';
 export const CCS_REQUIRED = 'Conversational Goals require xclaude, xcodex or a CCS profile. Direct provider commands support the original Goals experience only.';
 const ignoredFlags = new Set(['--dangerously-skip-permissions', '--yolo', '--dangerously-bypass-approvals-and-sandbox']);
 const known = new Set(['claude', 'codex', 'ccs', 'ccsxp']);

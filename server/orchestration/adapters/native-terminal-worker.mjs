@@ -27,7 +27,7 @@ export function terminalDisplayEnvironment(configured, terminal) {
   return env;
 }
 
-/** A terminal-owned supervisor. Legacy native I/O is inherited. Managed Claude
+/** A terminal-owned supervisor. Legacy native I/O is inherited. Managed native
  * turns use bounded structured output and a per-turn ceiling, then wait in this
  * runner without a provider process or native tool deadline.
  * A paused conversation retains its original operation and native conversation.
@@ -77,6 +77,13 @@ export async function runNativeTerminal(configPath) {
     const drain = () => { if (!draining) draining = outbox.drain(bridge).catch(() => {}).finally(() => { draining = null; }); };
     outboxTimer = setInterval(drain, 500); drain();
     await awaitNativeActivation(config.activation, controller.signal);
+    const codexSession = () => {
+      const path = join(directory, 'codex-session.json');
+      requireValue(lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink() && lstatSync(path).size <= 4096, 'Invalid native session receipt', 'SUPERVISOR_PROTOCOL_FAILED');
+      const session = JSON.parse(readFileSync(path, 'utf8'));
+      requireValue(session.conversationId === request.binding.conversationId && /^[A-Za-z0-9_-]{1,160}$/.test(session.sessionId), 'Codex session identity changed', 'SUPERVISOR_PROTOCOL_FAILED');
+      return session.sessionId;
+    };
     let runId = 'initial';
     while (!controller.signal.aborted) {
       if (config.installation) {
@@ -85,12 +92,14 @@ export async function runNativeTerminal(configPath) {
       }
       const argv = [...config.command.argv];
       if (runId !== 'initial') {
-        if (config.installation?.provider === 'codex') {
-          const session = JSON.parse(readFileSync(join(directory, 'codex-session.json'), 'utf8'));
-          requireValue(session.conversationId === request.binding.conversationId && /^[A-Za-z0-9_-]{1,160}$/.test(session.sessionId), 'Codex session identity changed');
+        if (config.supervisorProvider === 'codex' || config.installation?.provider === 'codex') {
+          const sessionId = codexSession();
           const prompt = argv.pop();
           requireValue(typeof prompt === 'string', 'Codex resume context is missing');
-          argv.push('resume', session.sessionId, prompt);
+          if (config.supervisorTurns) {
+            requireValue(argv.at(-2) === 'exec' && argv.at(-1) === '--json', 'Invalid Codex turn contract');
+            argv.splice(-2, 2, 'exec', 'resume', '--json', sessionId, prompt);
+          } else argv.push('resume', sessionId, prompt);
         } else {
         const index = argv.indexOf('--session-id');
         requireValue(index >= 0 && argv[index + 1] === request.binding.conversationId && (config.supervisorTurns || !argv.includes('--print')), 'Invalid native resume contract');
@@ -108,7 +117,7 @@ export async function runNativeTerminal(configPath) {
       if (config.supervisorTurns) {
         turnDeadline = setTimeout(() => { code = 'SUPERVISOR_TURN_TIMEOUT'; stop(); }, config.turnTimeoutMs);
       }
-      const turnOutput = config.supervisorTurns && child.stdout ? readSupervisorTurn(child.stdout, request.binding.conversationId, text => process.stdout.write(text)) : null;
+      const turnOutput = config.supervisorTurns && child.stdout ? readSupervisorTurn(child.stdout, request.binding.conversationId, text => process.stdout.write(text), { provider: config.supervisorProvider ?? 'claude', sessionId: codexSession }) : null;
       if (turnOutput) void turnOutput.catch(error => { if (!controller.signal.aborted) code = error instanceof DomainError ? error.code : 'SUPERVISOR_PROTOCOL_FAILED'; stop(); });
       const exited = once(child, 'exit'); void exited.catch(() => {});
       try { await once(child, 'spawn'); } catch (error) { providerStopped = !child.pid; throw providerStopped ? new StoppedSpawnError(stoppedSpawnFailure(error)) : error; }

@@ -80,7 +80,7 @@ export class NativeTerminal {
       this.save(join(directory, 'workspace.json'), { identity, workspaceId: created.workspaceId });
       const configPath = join(directory, 'worker.json');
       const release = pinNativeRelease({ directory, identity, operationId: request.operationId }, this.releaseDirectory);
-      this.save(configPath, { supervisorTurns: Boolean(command.supervisorTurns), turnTimeoutMs: this.turnTimeoutMs, handoffProtocol: 1, release, identity, workspaceId: created.workspaceId, activation: command.activation, installation: this.inputs.installation?.identity,
+      this.save(configPath, { supervisorTurns: Boolean(command.supervisorTurns), supervisorProvider: this.inputs.engine.provider === 'codex' ? 'codex' : 'claude', turnTimeoutMs: this.turnTimeoutMs, handoffProtocol: 1, release, identity, workspaceId: created.workspaceId, activation: command.activation, installation: this.inputs.installation?.identity,
         command: { bin: this.bin, argv: command.argv, env: command.env, cwd: request.attempt.worktree }, killGraceMs: this.killGraceMs });
       requireValue(!this.stopping, 'Terminal runtime stopped before runner send', 'NOT_READY');
       writeFileSync(join(directory, 'runner-sent.json'), JSON.stringify({ identity }), { flag: 'wx', mode: 0o600 });

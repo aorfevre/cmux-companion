@@ -8,6 +8,7 @@ const execute = promisify(execFile);
 // Initial native contract versions. Extending this set requires the offline
 // argv/hook/result suite and explicit live-evidence gaps, not a model-name guess.
 const CLAUDE_VERSIONS = new Set(['2.1.268', '2.1.296']);
+const CODEX_VERSIONS = new Set(['0.154.0', '0.162.1']);
 const CCS_VERSIONS = new Set(['8.9.0', '8.10.0']);
 const FLAGS = ['--restricted', '--permission-mode', '--permission-prompts', '--setting-sources', '--strict-mcp-config', '--mcp-config', '--settings', '--tools', '--allowed-tools', '--disable-slash-commands', '--session-id', '--resume', '--print', '--output-format', '--verbose', '--no-session-persistence', '--model', '--effort'];
 
@@ -52,12 +53,21 @@ export async function probeNativeCapabilities({ ccsBin, claudeBin, direct = fals
     requireValue(versionResponse.status === 'fulfilled' && helpResponse.status === 'fulfilled', 'Native metadata probe failed', 'UNSUPPORTED_CAPABILITY');
     const version = versionResponse.value.stdout.trim().match(provider === 'codex' ? /^codex-cli (\d+\.\d+\.\d+)$/ : /^(\d+\.\d+\.\d+) \(Claude Code\)$/)?.[1];
     const help = helpResponse.value.stdout;
-    requireValue(provider === 'codex' ? version === '0.154.0' : version && CLAUDE_VERSIONS.has(version),
+    requireValue(provider === 'codex' ? version && CODEX_VERSIONS.has(version) : version && CLAUDE_VERSIONS.has(version),
       `Unsupported ${provider === 'codex' ? 'Codex' : 'Claude'} CLI version ${version ?? '(unrecognized)'}. Companion needs a validated adapter for this version.`, 'UNSUPPORTED_CAPABILITY');
     requireValue(provider === 'codex' ? ['--config', '--sandbox', '--ask-for-approval', '--strict-config', '--dangerously-bypass-hook-trust'].every(flag => help.includes(flag)) : FLAGS.every((flag) => help.includes(flag))
       && /["']manual["']/.test(help) && /["']none["']/.test(help) && help.includes('stream-json')
       && (help.includes('--append-system-prompt-file') || help.includes('--append-system-prompt[-file]')),
     'Native CLI lacks the supported restricted execution contract', 'UNSUPPORTED_CAPABILITY');
+    if (provider === 'codex') {
+      const [execHelp, resumeHelp] = await Promise.all([
+        execute(nativeBin, ['exec', '--help'], metadataOptions),
+        execute(nativeBin, ['exec', 'resume', '--help'], metadataOptions),
+      ]);
+      requireValue(execHelp.stdout.includes('--json') && execHelp.stdout.includes('resume')
+        && resumeHelp.stdout.includes('--json') && resumeHelp.stdout.includes('SESSION_ID'),
+      'Codex lacks the supported persisted turn/resume contract', 'UNSUPPORTED_CAPABILITY');
+    }
     const identity = Object.freeze({ bin, nativeBin, packagePath, nativeStamp, wrapperStamp, packageStamp, provider });
     const assertCurrent = () => assertNativeInstallation(identity);
     assertCurrent();
