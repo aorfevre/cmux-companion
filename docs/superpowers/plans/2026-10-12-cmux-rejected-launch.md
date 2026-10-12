@@ -22,25 +22,28 @@ free at once. A lost or unclear response stays uncertain, as today.
 | Condition | Exit | Output |
 | --- | --- | --- |
 | Wrong password | 1 | stderr `Error: ERROR: Invalid password` |
-| Password mode, none in Settings | not recorded | `Error: ERROR: Password mode is enabled but no socket password is configured in Settings.` (stream not recorded) |
-| No credential sent | not recorded | `Error: auth_required: Authentication required. Send auth <password> first.` (stream not recorded) |
+| Password mode, none in Settings | 1 | stderr `Error: ERROR: Password mode is enabled but no socket password is configured in Settings.` |
+| No credential sent | 1 | stderr `Error: auth_required: Authentication required. Send auth <password> first.` |
 | No socket | 1 | stderr `Error: Socket not found at <path>` |
 | Unknown method | 1 | stderr `Error: method_not_found: Unknown method` |
 
-The probes for rows 2 and 3 merged both streams and did not keep the exit code, so
-the classifier reads stderr and stdout, on any exit code. A refusal in this table
-proves that cmux created nothing. Every other failure
-(timeout, kill, unknown text, unparseable stdout) keeps `CMUX_UNAVAILABLE`.
+Code review confirmed rows 2 and 3 against a local fake socket: every refusal is the
+first stderr line of a failed exit. On a refused password the CLI stops before it
+sends the request. A refusal therefore counts only when it is the first stderr line
+and the process exited by itself with a failure status. Every other result keeps
+`CMUX_UNAVAILABLE`, including a successful exit, a timeout, a signal, refusal text
+on a later line, and output that is not JSON.
 
 ## Phase 1 — interactive planner (5 files)
 
-1. `server/orchestration/adapters/cmux.mjs`: `rpc()` classifies stderr and stdout on
-   a failed exit, and stdout when the exit is 0 but the output is not JSON. The
-   tokens `auth_required`, `Invalid password` and `no socket password is configured`
-   → `CMUX_AUTH_REJECTED`;
-   `Socket not found` → `CMUX_SOCKET_MISSING`. Messages stay fixed text; raw cmux
-   output never leaves the adapter. Export `CMUX_REFUSALS`.
-2. `server/orchestration/domain/launch-recovery.mjs`: export one predicate
+1. `server/orchestration/adapters/cmux.mjs`: `rpc()` classifies the first stderr
+   line of a failed exit only. The prefixes `Error: auth_required:`,
+   `Error: ERROR: Invalid password` and `Error: ERROR: Password mode is enabled but
+   no socket password is configured` → `CMUX_AUTH_REJECTED`;
+   `Error: Socket not found ` → `CMUX_SOCKET_MISSING`. Messages stay fixed text; raw
+   cmux output never leaves the adapter.
+2. `server/orchestration/domain/launch-recovery.mjs`: export `CMUX_REFUSALS`, the
+   domain owner of the refusal codes, and one predicate
    `isLaunchFailure(code)` for `PROVIDER_SPAWN_*` plus the two cmux codes, and
    `launchFailureMessage(code)` for the operator text. cmux codes are not
    transient: no automatic retry against a refused socket.
@@ -73,6 +76,9 @@ proves that cmux created nothing. Every other failure
 - The hold text "planner did not finish successfully" (product copy).
 - A refusal at `surface.send_text` after a workspace exists (orphan workspace).
 - Clearing a false hold after a slow `ps` check (separate fix 2).
+- A stale socket file after a cmux crash ("Failed to connect", not yet probed) and a
+  missing cmux binary (`ENOENT`). Both stay `CMUX_UNAVAILABLE` and still strand the
+  attempt; add them as refusal rows after a probe records their exact output.
 - Passing `CMUX_SOCKET_PASSWORD` to the orchestration environment: cmux rejects an
   env password when its own store is empty, so it would not prevent this failure.
 

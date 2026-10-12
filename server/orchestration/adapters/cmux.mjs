@@ -11,12 +11,15 @@ const quote = (/** @type {string} */ value) => `'${value.replace(/'/g, `'\\''`)}
 const target = (/** @type {string} */ id) => requireValue(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id), 'Invalid cmux identity');
 const unconfirmed = () => new DomainError('CMUX_UNAVAILABLE', 'The owned cmux operation could not be confirmed');
 /** cmux 0.65 rejects these before it handles the request, so the request made
- * no change. Any other output, including a timeout, stays unconfirmed. The
- * returned message is fixed: cmux output never leaves this adapter.
- * @param {string} output */
-function refusal(output) {
-  if (/^Error: (?:auth_required:|ERROR: Invalid password|ERROR: Password mode is enabled but no socket password is configured)/m.test(output)) return new DomainError('CMUX_AUTH_REJECTED', 'cmux refused the socket credential');
-  if (/^Error: Socket not found /m.test(output)) return new DomainError('CMUX_SOCKET_MISSING', 'The cmux socket is not available');
+ * no change. It reports them as the first stderr line of a failed exit; later
+ * lines can echo caller text and never count. Any other failure, including a
+ * timeout or signal, stays unconfirmed. The returned message is fixed: cmux
+ * output never leaves this adapter.
+ * @param {unknown} stderr */
+function refusal(stderr) {
+  const line = String(stderr ?? '').split('\n', 1)[0];
+  if (/^Error: (?:auth_required:|ERROR: Invalid password|ERROR: Password mode is enabled but no socket password is configured)/.test(line)) return new DomainError('CMUX_AUTH_REJECTED', 'cmux refused the socket credential');
+  if (/^Error: Socket not found /.test(line)) return new DomainError('CMUX_SOCKET_MISSING', 'The cmux socket is not available');
   return null;
 }
 
@@ -32,12 +35,13 @@ export class CmuxTerminal {
     try {
       result = await execute(this.bin, ['--json', 'rpc', method, JSON.stringify(input)], { env: this.env, timeout: 10000, maxBuffer: 1024 * 1024, encoding: 'utf8' });
     } catch (error) {
-      const failed = /** @type {{code?: unknown; killed?: boolean; stdout?: unknown; stderr?: unknown}} */ (error);
-      // Only a process that exited by itself reported a complete answer.
-      throw (typeof failed.code === 'number' && !failed.killed && refusal(`${failed.stdout ?? ''}\n${failed.stderr ?? ''}`)) || unconfirmed();
+      const failed = /** @type {{code?: unknown; killed?: boolean; stderr?: unknown}} */ (error);
+      // Only a process that exited by itself, with a failure status, reported a refusal.
+      throw (typeof failed.code === 'number' && !failed.killed && refusal(failed.stderr)) || unconfirmed();
     }
+    // A successful exit may have changed cmux state, so it is never a refusal.
     try { return JSON.parse(result.stdout); }
-    catch { throw refusal(`${result.stdout}\n${result.stderr}`) ?? unconfirmed(); }
+    catch { throw unconfirmed(); }
   }
   /** @param {string} cwd @param {string} [title] */
   async create(cwd, title = 'Companion planning') {

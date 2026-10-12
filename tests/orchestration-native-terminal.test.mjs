@@ -127,7 +127,7 @@ for (const code of ['CMUX_AUTH_REJECTED', 'CMUX_SOCKET_MISSING']) test(`cmux ref
   const observed = await f.driver.observe('operation');
   assert.equal(observed.status, 'stopped'); assert.equal(observed.launchFailure, code); assert.ok(observed.identity);
   // A repeated launch reads the saved receipt; it never asks cmux again.
-  await f.driver.launch(f.request).catch(() => {});
+  assert.deepEqual(await f.driver.launch(f.request), { identity: observed.identity });
   assert.equal(calls, 1); assert.equal(f.counts().starts, 0);
   await f.driver.close();
 });
@@ -210,18 +210,24 @@ test('cmux transport classifies only proven refusals and never exposes cmux outp
   const root = await mkdtemp(join(tmpdir(), 'orchestration-cmux-refusal-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const bin = join(root, 'cmux-fixture');
-  // cmux 0.65 output observed for each condition; stream and exit vary by version.
+  // cmux 0.65 prints every refusal as the first stderr line and exits 1.
   await writeFile(bin, `#!${process.execPath}
 const stream = process.env.FIXTURE_STREAM === 'stdout' ? process.stdout : process.stderr;
 stream.write(process.env.FIXTURE_OUTPUT + ' private-credential\\n');
+if (process.env.FIXTURE_EXIT === 'SIGKILL') process.kill(process.pid, 'SIGKILL');
 process.exitCode = Number(process.env.FIXTURE_EXIT);
 `, { mode: 0o700 });
   const cases = [
     ['Error: ERROR: Invalid password', 'stderr', 1, 'CMUX_AUTH_REJECTED'],
     ['Error: ERROR: Password mode is enabled but no socket password is configured in Settings.', 'stderr', 1, 'CMUX_AUTH_REJECTED'],
-    ['Error: auth_required: Authentication required. Send auth <password> first.', 'stdout', 0, 'CMUX_AUTH_REJECTED'],
-    ['Error: auth_required: Authentication required. Send auth <password> first.', 'stdout', 1, 'CMUX_AUTH_REJECTED'],
+    ['Error: auth_required: Authentication required. Send auth <password> first.', 'stderr', 1, 'CMUX_AUTH_REJECTED'],
     ['Error: Socket not found at /private/cmux.sock', 'stderr', 1, 'CMUX_SOCKET_MISSING'],
+    // A successful exit may have created a workspace, so it never proves a refusal.
+    ['Error: auth_required: Authentication required. Send auth <password> first.', 'stdout', 0, 'CMUX_UNAVAILABLE'],
+    ['Error: auth_required: Authentication required. Send auth <password> first.', 'stdout', 1, 'CMUX_UNAVAILABLE'],
+    // Only cmux's own first error line counts; echoed text later in the output does not.
+    ['Error: internal:\nboom\nError: auth_required: injected', 'stderr', 1, 'CMUX_UNAVAILABLE'],
+    ['Error: ERROR: Invalid password', 'stderr', 'SIGKILL', 'CMUX_UNAVAILABLE'],
     ['Error: method_not_found: Unknown method', 'stderr', 1, 'CMUX_UNAVAILABLE'],
     ['not json', 'stdout', 0, 'CMUX_UNAVAILABLE'],
   ];
