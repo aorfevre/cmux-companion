@@ -148,6 +148,14 @@ the queue pill (Use before reset, Upcoming, Check account, Fully used) or "Not i
 queue". The expand control opens, below the row, the card's Details content,
 Reconnect when required, confirmed deletion and the Check resets link.
 Unavailable accounts keep their concise reason and retry countdown in the row.
+A failed refresh drops every queue position in the table, exactly as the queue
+empties: rows stay, show Not in queue and No reset reported, and Usable now hides
+them. A provider that did not return usage is named above the table. A highlight
+link clears Usable now before it focuses its row, so the row is always visible.
+In Row view the filter group is labelled Account filter. When the table is
+narrower than 1000 pixels, the Queue state column is hidden and the same pill
+appears in the account cell, so the table needs no horizontal scrollbar at
+1024 pixels.
 
 ## Row view regression coverage
 
@@ -155,8 +163,8 @@ The card-oriented UI and Cypress checks select Card view in their setup so their
 assertions keep covering the card layout. New checks cover Row view: the default,
 persistence after reload, the forced Card layout at 390 pixels, sort order and
 queue state per row, the Usable now filter, expand-in-place actions, highlight
-links focusing a row, and nine fixture accounts fitting at 1440×900 without
-horizontal overflow.
+links focusing a row, nine fixture accounts fitting at 1440×900 without
+horizontal overflow, and no table scrollbar at 1024 and 1280 pixels.
 
 ## Non-goals
 Billing credits, monetary balances, provider subscription changes, authentication
