@@ -132,3 +132,13 @@
 .account-usage-page .reset-eligibility { margin:8px 0 0; color:var(--muted); font-size:11px; }
 .account-usage-page .usage-account .account-plan { text-transform:none; }
 .account-usage-page .account-unavailable-reason,.account-usage-page .account-retry { margin:5px 0 0; color:var(--muted); font-size:11px; }
+.mission-control .account-usage-page .core-window-grid.with-fable { grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+.account-usage-page .with-fable .core-window>div:first-child { display:block; }
+.account-usage-page .with-fable .core-window strong { display:block; margin-top:4px; }
+.account-usage-page .fable-guidance { font-size:11px; color:var(--muted); margin:0 0 10px; }
+.account-usage-page .redeemable-resets { grid-column:1/-1; padding-top:8px; border-top:1px solid var(--line); font-size:11px; color:var(--muted); display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; }
+.account-usage-page .redeemable-resets>div { display:flex; flex-wrap:wrap; gap:4px 10px; }
+.account-usage-page .redeemable-resets strong { font-size:11px; font-weight:550; color:var(--text); }
+.account-usage-page .redeemable-resets.has-resets>div>span { color:var(--accent); font-weight:650; }
+.account-usage-page .redeemable-resets p { margin:0; }
+.account-usage-page .redeemable-resets a { color:var(--accent); margin-left:auto; }

@@ -32,8 +32,8 @@ not change account routing.
 Claude Code’s 5-hour remaining percentage and reset are secondary text in its
 weekly row and summary cards. Missing/invalid session data says Not reported;
 elapsed/invalid session reset times say Awaiting refresh. OpenAI gets no 5-hour
-placeholder or secondary session display. Any additional limits actually reported
-by the provider remain accessible in Details without inventing a provider policy.
+placeholder or secondary session display. Fable weekly capacity is visible in each Claude account row alongside overall Weekly
+and 5 hours; other reported additional limits remain accessible in Details.
 
 Only successful fresh snapshot/provider/account readings (at most 15 minutes old),
 valid percentages from 0 to 100 and future reset timestamps qualify for the queue.
@@ -44,7 +44,7 @@ Links focus the matching account without changing Setup's category hash.
 
 All accounts remains below the queue with weekly remaining and used capacity
 first, a smaller secondary 5-hour reading for Claude only, reconnect and Details
-for additional limits, reading times and
+for other additional limits, reading times and
 confirmed deletion. Account rows explicitly label their subscription plan (including
 Claude Team, Pro, Max and Max multipliers when reported); missing metadata says
 Plan not reported. Plan metadata is independent of quota availability. Claude
@@ -78,6 +78,45 @@ Durations use
 explicit day/hour/minute units. Desktop content is capped at 920 pixels and mobile
 wraps without horizontal overflow. Existing Setup and session/goal links work.
 
+## Fable capacity and redeemable resets
+
+Claude model limits are also read from `limits[]` entries of kind `weekly_scoped`,
+using `scope.model.display_name`, `percent` and `resets_at`. These remain separate
+from the all-model weekly window. A valid scoped entry supersedes the same named
+legacy `seven_day_*` model window without duplication. Only an explicitly named
+Fable window supplies the visible Fable weekly gauge; missing data says Not
+reported. Comparing overall Weekly, Fable weekly and 5 hours supports manual
+resource allocation; no quota is promised beyond the limits actually reported.
+
+Every account has an uncollapsed Redeemable resets row with the reported count,
+nearest reported expiry (local date/time and countdown), and a link to the
+provider's usage page. Quota availability and reset inventory are independent: an account with fresh
+reset inventory but no usage windows remains unavailable for quota while its saved
+resets stay visible. Unknown, stale or failed inventory says Not reported or
+Awaiting refresh, never zero. Explicitly reported empty inventory says None
+reported. Saved resets are separate from automatic weekly/session resets and
+are never redeemed by this screen. Claude grants that are paused, future, spent
+or expired do not count; saved grants that are not currently usable still count
+with provider eligibility caveats. Expiry passage removes known expired grants
+from the displayed count without waiting for a network response. Missing expiry
+details are identified explicitly; null dates are not guessed.
+
+Claude inventory comes from the read-only OAuth usage query `cedar_ember=1`,
+with its existing exact-account credentials, rate budget and failure handling.
+The request uses the observed Claude CLI compatibility identity because the
+provider gates inventory on client identity; ineligible or absent blocks stay
+unknown instead of implying no saved resets.
+The observed `cedar_ember.grants` fields are parsed defensively; grant IDs and
+raw responses are never returned or persisted. No immediate fallback request
+bypasses the one-minute usage budget. Codex reads the available count from usage
+and, for a positive count, reads expiry details from the same account's
+`/wham/rate-limit-reset-credits` endpoint. This additional endpoint has an
+independent shared one-minute budget and 429 cooldown. Missing/failed details
+leave a fresh usage count visible with expiry unavailable; they cannot erase
+quota readings. Detail results may be capped: the provider count remains
+authoritative, and partial expiry data is labelled. No new background polling,
+storage, account mutation, redemption endpoint or credential source is added.
+
 ## Non-goals
 Billing credits, monetary balances, provider subscription changes, authentication
 redesign, installed-service changes and orchestration admission changes are out of
@@ -87,6 +126,10 @@ fixture verification must not be represented as a live account reconciliation.
 ## Acceptance criteria
 | Criterion | Verification |
 | --- | --- |
+| Scoped Fable data is preserved, deduplicated and never substituted for overall weekly capacity. | Backend provider-shaped scoped/legacy regression fixtures. |
+| Both providers expose only safe reset counts/expiry metadata; missing or malformed blocks remain unknown, failed details preserve quota, and refresh/cooldown cannot multiply requests. | Backend normalization and mocked endpoint request-count tests. |
+| Fable and redeemable reset rows remain visible with Details closed on desktop and mobile. | Account usage Cypress journey at 390 and 1440 pixels. |
+| Counts and expiry text respond to time passage, partial details, stale readings and refresh failures without promising redemption. | Fake-clock account usage UI regressions. |
 | Home opens account usage; existing explicit destinations remain reachable. | Navigation UI test. |
 | A new device pairs before seeing protected usage. | Cypress home pairing journey. |
 | Anthropic/OpenAI logos precede provider names in queue links and both summary cards; decorative icons retain the provider/account text as the accessible link label. | Account usage Cypress home journey checks provider-specific visible icons and existing named-link navigation. |
@@ -107,6 +150,8 @@ fixture verification must not be represented as a live account reconciliation.
 | The queue sorts resets across providers and distinguishes fresh quota from usable unused capacity; paused/exhausted states and invalid, stale or elapsed readings cannot become usage suggestions. | Deterministic account usage UI selection tests. |
 
 ## Success measure
+The owner can identify the fixture account with Fable headroom and its saved-reset
+expiry without opening Details; missing inventory never appears as zero.
 In the rate-limit fixture, repeated requests from multiple clients produce one
 usage call per account during the first minute and zero additional calls during
 its cooldown, while a healthy account remains refreshable and the owner can see

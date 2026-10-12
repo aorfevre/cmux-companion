@@ -52,8 +52,14 @@ describe("contextual mobile features", () => {
     assert.ok(sessionWindow);
     assert.ok(within(sessionWindow).getByText("82%", { exact: false }));
     assert.ok(within(reportedAccount).getByText("55%", { exact: false }));
-    assert.equal(within(reportedAccount).queryByText("Not reported"), null);
-    assert.equal(within(emptyAccount).getAllByText("Not reported").length, 1);
+    assert.equal(within(sessionWindow).queryByText("Not reported"), null);
+    const reportedWeekly = within(reportedAccount).getByText("Weekly").closest<HTMLElement>(".core-window");
+    const missingWeekly = within(emptyAccount).getByText("Weekly").closest<HTMLElement>(".core-window");
+    const missingFable = within(reportedAccount).getByText("Fable weekly").closest<HTMLElement>(".core-window");
+    assert.ok(reportedWeekly); assert.ok(missingWeekly); assert.ok(missingFable);
+    assert.equal(within(reportedWeekly).queryByText("Not reported"), null);
+    assert.ok(within(missingWeekly).getByText("Not reported"));
+    assert.ok(within(missingFable).getByText("Not reported"));
     assert.equal(screen.getAllByText("5 hours").length, 1);
     assert.equal(screen.getAllByText("Weekly").length, 2);
     assert.equal(screen.queryByText("Daily"), null);

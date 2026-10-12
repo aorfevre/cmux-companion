@@ -7,7 +7,7 @@ import { DEFAULT_MODEL_ROLES } from "../../server/model-options.mjs";
 const frozenNow = new Date("2026-09-08T12:00:00.000Z");
 const iso = (offsetMinutes: number) => new Date(frozenNow.getTime() + offsetMinutes * 60_000).toISOString();
 
-type Account = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; retryAt?: string | null; windows: Array<{ id: string; cadence: string; label: string; category: string; remainingPercent: number; resetAt: string | null; reported: true }> };
+type Account = { id: string; label: string; email: string | null; plan: string | null; isDefault: boolean; paused: boolean; status: "ready" | "low" | "exhausted" | "reconnect" | "unavailable"; message: string | null; updatedAt: string | null; retryAt?: string | null; redeemableResets?: { availableCount: number; updatedAt: string; grants: Array<{ count: number; expiresAt: string | null; usableNow: boolean | null }> | null }; windows: Array<{ id: string; cadence: string; label: string; category: string; remainingPercent: number; resetAt: string | null; reported: true }> };
 
 function usageFixture() {
   const work: Account = { id: "claude-work", label: "work", email: "work@example.test", plan: "max", isDefault: true, paused: false, status: "ready", message: null, updatedAt: iso(-5), windows: [
@@ -152,6 +152,37 @@ describe("licence usage", () => {
     account('work@example.test').should('be.visible');
     cy.findByLabelText('Pairing code').should('not.exist');
   });
+
+  for (const width of [390, 1280, 1440]) {
+    it(`shows Fable allocation capacity and redeemable resets without opening Details at ${width}px`, () => {
+      cy.viewport(width, 1000);
+      scenario();
+      const usage = usageFixture();
+      const work = usage.providers[0].accounts[0];
+      work.windows.push({ id: 'fable', cadence: 'weekly', category: 'additional', label: 'Fable weekly limit', remainingPercent: 31, resetAt: iso(120), reported: true });
+      work.redeemableResets = { availableCount: 1, updatedAt: iso(-1), grants: [{ count: 1, expiresAt: iso(120), usableNow: false }] };
+      const codex = usage.providers[1].accounts[1];
+      codex.status = 'unavailable'; codex.windows = []; codex.message = 'Provider did not report usage limits.';
+      codex.redeemableResets = { availableCount: 2, updatedAt: iso(-1), grants: [{ count: 1, expiresAt: iso(180), usableNow: null }] };
+      cy.intercept('GET', '**/api/account-usage*', usage).as('usage');
+      cy.clock(frozenNow.getTime(), ['Date']);
+      cy.visit('/');
+      cy.wait('@usage');
+      cy.get('.usage-account-details[open]').should('not.exist');
+      account('work@example.test').within(() => {
+        cy.contains('.core-window', 'Fable weekly').should('be.visible').and('contain.text', '31% remaining').and('contain.text', '69% used');
+        cy.get('.redeemable-resets').should('be.visible').and('contain.text', '1 saved reset').and('contain.text', 'Next expiry').and('contain.text', 'Some resets cannot be used yet');
+        cy.get('.redeemable-resets time').should('have.attr', 'datetime', iso(120));
+        cy.findByRole('link', { name: 'Check Claude resets ↗' }).should('have.attr', 'href', 'https://claude.ai/settings/usage');
+      });
+      account('daily@example.test').find('.usage-status').should('have.text', 'Unknown');
+      account('daily@example.test').find('.redeemable-resets').should('contain.text', '2 saved resets').and('contain.text', 'Next reported expiry').and('contain.text', 'Some expiry details not reported');
+      account('personal').find('.redeemable-resets').should('contain.text', 'Not reported');
+      cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
+      cy.get('.usage-account, .redeemable-resets').each($row => expect($row[0].getBoundingClientRect().right).to.be.at.most(width));
+      cy.screenshot(`fable-redeemable-resets-${width}`, { capture: 'fullPage', scale: true });
+    });
+  }
 
   for (const [width, height] of [[390, 844], [1440, 900]]) {
     it(`groups accounts by provider with every cadence and status readable at ${width}px`, () => {
