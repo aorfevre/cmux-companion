@@ -1,8 +1,8 @@
 # CCS-based conversational Goals
 
 Date: 2026-10-12
-Status: Draft for human review. Implementation is requested; this delivery
-contract still needs the repository-required review before its implementation plan.
+Status: Approved for implementation by the user's “implement the goal. I approve
+it”, after presentation of spec commit `aa8b19c4` and its human-review request.
 Owner: the implementing agent, accountable for the complete journey and cleanup.
 
 ## Outcome

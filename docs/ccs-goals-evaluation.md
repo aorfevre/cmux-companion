@@ -1,6 +1,6 @@
 # CCS Goals implementation and evaluation evidence
 
-Status: delivery contract committed; human review pending; implementation not started.
+Status: delivery contract approved; implementation in progress.
 
 Contract: [CCS-based conversational Goals](superpowers/specs/2026-10-12-ccs-goal-experience.md).
 Spec commit: `aa8b19c4`.
@@ -42,8 +42,8 @@ and preserve CCS routing rather than treating alias resolution as runtime parity
 - Not run: native provider/cmux trials, GitHub publication, installation or update.
 
 No product implementation or acceptance criterion is claimed complete. A1–A16
-and the five-goal native success measure remain pending. No implementation plan
-has been committed because AGENTS.md requires a human review after the spec
-commit and before the plan commit. The review request is pending in the thread.
+and the five-goal native success measure remain pending. The user approved the
+committed contract with “implement the goal. I approve it”; the human-review
+gate is satisfied before the implementation plan commit.
 
 The original checkout and its untracked burst-scan plan remain unchanged.
