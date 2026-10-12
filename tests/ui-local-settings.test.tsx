@@ -229,3 +229,11 @@ test('the repository editor shows the detected prepare command and lets the user
   assert.deepEqual(state.saved.settings.projects[0].prepare, { source: 'disabled' });
   await screen.findByText('Disabled · verification runs without installing dependencies');
 });
+
+test('provider validation distinguishes original-only commands and explains managed alias policy', async () => {
+  const { providerValidationMessage } = await import('../app/settings/provider-command');
+  assert.match(providerValidationMessage({ ready: true, conversationalReady: false, conversationReason: 'Select a CCS profile.', resolution: { message: 'Permission bypass is ignored.' } }), /Ready for original Goals only.*Select a CCS profile.*Permission bypass is ignored/);
+  assert.match(providerValidationMessage({ ready: true, conversationalReady: true }), /Ready for new goals/);
+  fixture(); render(<LocalSettingsPanel />); await screen.findByLabelText('claude connection');
+  assert.ok(screen.getAllByText(/Planners and reviewers are read-only/).length >= 1);
+});

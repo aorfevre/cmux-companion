@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createCodexAgents } from './codex-native.mjs';
-import { resolveProviderCommand, validateResolvedCommand } from './provider-command.mjs';
+import { resolveProviderCommand, validateResolvedCommand, CCS_REQUIRED } from './provider-command.mjs';
 import { resolveExecutable } from './local-settings.mjs';
 import { probeNativeCapabilities } from './orchestration/adapters/native-capabilities.mjs';
 import { createNativeAgents } from './orchestration/adapters/native-agents.mjs';
@@ -34,7 +34,8 @@ export async function probeProvider(provider, command, tools, frozen) {
     if (!resolveExecutable(tools.cmux)) return { ready: false, reason: 'cmux is missing. Configure its installed path in Tools.' };
     resolution = frozen ? validateResolvedCommand(provider, frozen) : await resolveProviderCommand(provider, command);
     await providerInstallation(provider, command, resolution);
-    return { ready: true, reason: null, resolution };
+    const conversationalReady = ['ccs', 'ccsxp'].includes(resolution.kind);
+    return { ready: true, reason: null, resolution, conversationalReady, conversationReason: conversationalReady ? null : CCS_REQUIRED };
   } catch (error) { return { ready: false, reason: error.code === 'UNSUPPORTED_CAPABILITY' ? error.message : 'Provider capability validation failed. Check the installed command.', ...(resolution ? { resolution } : {}) }; }
 }
 export async function createConfiguredAgents({ config, directory, context }) {

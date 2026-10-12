@@ -16,5 +16,10 @@ describe('Terminal provider commands', () => {
     cy.contains('Ready for new goals. Resolved xclaude to ccs claude. Permission bypass flags are ignored.').should('exist');
     cy.get('.settings-save').screenshot('terminal-command-save-failure');
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
+    cy.contains('Planners and reviewers are read-only').should('exist');
+    cy.intercept('POST', '**/api/settings/providers/validate', { ready: true, conversationalReady: false, conversationReason: 'Conversational Goals require a CCS profile.' }).as('directValidation');
+    cy.findByLabelText('claude connection').select('direct');
+    cy.findByRole('button', { name: 'Validate claude' }).click(); cy.wait('@directValidation');
+    cy.contains('Ready for original Goals only. Conversational Goals require a CCS profile.').should('be.visible');
   });
 });

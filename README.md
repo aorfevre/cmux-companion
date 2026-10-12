@@ -95,6 +95,14 @@ profiles, eligible roles and preferred profiles. Goal creation freezes validated
 commands, models and readiness so later settings changes cannot redirect saved
 work. Each attempt records its actual assignment, including across restart.
 
+Conversational Goals require a CCS profile or a CCS-backed alias such as `xclaude`
+or `xcodex` for every role. Creation refuses incompatible direct-provider profiles
+before saving a goal or launching an agent. Direct CLI settings remain available
+for the original experience. Validation distinguishes these readiness states.
+Setup explains the managed policy: planners/reviewers are read-only, worker edits
+stay within approved paths, and checks run through Companion. Alias permission
+bypass flags are ignored; the resolved command and policy are frozen with the goal.
+
 The **Team & models** tab explains the suggested planner/designer, implementation,
 review and integration assignments. Fresh CCS provider-pool capacity informs the
 initial suggestions; unavailable, failed or stale readings remain unknown, never
@@ -146,8 +154,8 @@ cmux. Open cmux to make its sessions available for monitoring and agent work.
 
 | Capability | Supported contract |
 | --- | --- |
-| Direct Claude planning/execution | Claude Code 2.1.268 |
-| Direct Codex planning/execution | Codex CLI 0.154.0 |
+| Native Claude CLI | Claude Code 2.1.268 or 2.1.296; direct launch is original-experience only |
+| Native Codex CLI | Codex CLI 0.154.0; direct launch is original-experience only |
 | CCS provider profiles | CCS 8.9.0 or 8.10.0, with the matching native CLI above |
 | `ccsxp` Codex wrapper | CCS 8.10.0 |
 | Monitoring/disposable development | Native provider accounts are not required |

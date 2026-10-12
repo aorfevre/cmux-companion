@@ -378,3 +378,27 @@ test('the saved-settings composition resolves the approved checks for a review r
   assert.deepEqual(resolver('project', plan.verification[0], 'round').argv, building.argv);
   assert.throws(() => resolver('project', { id: 'unit', argv: ['node', '--version'] }, 'round'), { code: 'UNSUPPORTED_CAPABILITY' });
 });
+
+test('conversational admission rejects direct profiles before saving or launching and freezes eligible CCS routing', async t => {
+  let useCcs = false, available = true;
+  const f = await fixture(t, { probeProvider: async (provider, command) => ({ ready: available, reason: available ? null : 'cmux is missing', resolution: { version: 1, provider, requested: command.executable, kind: useCcs && provider === 'claude' ? 'ccs' : provider, executable: '/fixture/launcher', args: useCcs && provider === 'claude' ? ['work'] : [], model: command.model, ignoredPermissionFlags: [], managedPolicy: 'Fixture managed policy' } }), prepareGoal: async () => execFileSync('git', ['-C', f.path, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() });
+  const value = defaultSettings(); value.projects.push({ id: 'project', name: 'Fixture', path: f.path, enabled: true, github: 'example/project', remote: 'git@github.com:example/project.git', checks: [] });
+  await f.settings.update(0, value); await f.runtime.settingsChanged();
+  const command = { id: 'create', goalId: 'ccs-goal', expectedVersion: 0, type: 'create_goal', payload: { title: 'Use the selected CCS profile', description: 'Keep the configured account routing.', repositoryId: 'project', baseBranch: 'main', experienceVersion: 2 } };
+  const denied = await f.runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: command });
+  assert.equal(denied.statusCode, 409, denied.body); assert.match(denied.body, /ready CCS profile/);
+  assert.equal(f.runtime.store.get('ccs-goal'), null);
+  assert.equal(f.settings.goalConfiguration('ccs-goal'), null);
+  assert.deepEqual(f.acquired, []); assert.deepEqual(f.launched, []);
+  available = false;
+  const missing = await f.runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: command });
+  assert.equal(missing.statusCode, 409); assert.match(missing.body, /cmux is missing/);
+  available = true; useCcs = true;
+  const created = await f.runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: command });
+  assert.equal(created.statusCode, 200, created.body);
+  const saved = f.settings.goalConfiguration('ccs-goal');
+  assert.equal(saved.providerResolution.kind, 'ccs'); assert.deepEqual(saved.providerResolution.args, ['work']);
+  assert.equal(saved.providerResolution.managedPolicy, 'Fixture managed policy');
+  assert.equal(saved.teamConfiguration.profiles.find(profile => profile.id === 'codex').ready, false);
+  assert.match(saved.teamConfiguration.profiles.find(profile => profile.id === 'codex').reason, /original Goals experience only/);
+});

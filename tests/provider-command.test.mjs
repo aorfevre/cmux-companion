@@ -12,6 +12,8 @@ test('simple aliases resolve known provider argv and report discarded permission
   const aliases = { xclaude: 'ccs claude --dangerously-skip-permissions', xcodex: 'ccsxp --yolo' };
   const options = { readAlias: async name => aliases[name], resolve: name => `/canonical/${name}` };
   const claude = await resolveProviderCommand('claude', command('xclaude'), options);
+  assert.match(claude.managedPolicy, /planners and reviewers read-only/);
+  assert.ok(claude.message.includes(claude.managedPolicy));
   assert.equal(claude.kind, 'ccs'); assert.deepEqual(claude.args, ['claude']);
   assert.deepEqual(claude.ignoredPermissionFlags, ['--dangerously-skip-permissions']); assert.match(claude.message, /Ignored.*Companion manages/);
   const codex = await resolveProviderCommand('codex', command('xcodex'), options);

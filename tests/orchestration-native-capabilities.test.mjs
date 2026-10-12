@@ -81,3 +81,14 @@ test('conversational goals reject direct provider execution before writing priva
   await assert.rejects(inputs.prepare({ operationId: 'operation', attempt: { role: 'planner', mode: 'interactive', worktree } }, directory), { code: 'UNSUPPORTED_CAPABILITY', message: 'Conversational Goals require a CCS launcher; configure xclaude, xcodex or a CCS profile.' });
   await assert.rejects(access(join(directory, 'context.txt')), { code: 'ENOENT' });
 });
+
+test('native metadata readiness distinguishes direct legacy commands from conversational CCS routing', async t => {
+  const { probeProvider } = await import('../server/provider-runtime.mjs');
+  const f = await fixture(t);
+  const direct = { version: 1, provider: 'claude', kind: 'claude', executable: f.claudeBin, args: [], model: 'default' };
+  const result = await probeProvider('claude', { executable: 'claude', args: [], model: 'default' }, { cmux: f.claudeBin }, direct);
+  assert.equal(result.ready, true, result.reason);
+  assert.equal(result.conversationalReady, false);
+  assert.match(result.conversationReason, /Direct provider commands support the original Goals experience only/);
+  assert.ok((await readFile(f.calls, 'utf8')).trim().split('\n').every(line => ['--version', '--help'].includes(JSON.parse(line).argv[0])));
+});

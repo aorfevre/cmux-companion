@@ -12,7 +12,7 @@ import { DeviceSettings } from './device-settings';
 import { ReleaseRetentionPanel } from '../release-retention';
 import { DeploymentHealth } from '../deployment-health';
 import { LaunchProfiles } from './launch-profiles';
-import { ProviderCommand } from './provider-command';
+import { ProviderCommand, providerValidationMessage, type ProviderValidation } from './provider-command';
 import { DevRepositories } from './dev-repositories';
 export type Provider = 'claude' | 'codex';
 export type Command = { executable: string; args: string[]; model: string };
@@ -97,8 +97,8 @@ export function LocalSettingsPanel({ onboarding = false }: { onboarding?: boolea
     } catch (cause) { fail(cause); return false; } finally { setBusy(false); }
   }
   async function checkProvider(provider: Provider, command: Command) {
-    const result = await request<{ ready: boolean; reason?: string; resolution?: { message?: string } }>('/api/settings/providers/validate', { method: 'POST', body: JSON.stringify({ provider, command }) });
-    setValidation(current => ({ ...current, [provider]: [result.ready ? 'Ready for new goals' : result.reason || 'Provider is not ready', result.resolution?.message].filter(Boolean).join('. ') }));
+    const result = await request<ProviderValidation>('/api/settings/providers/validate', { method: 'POST', body: JSON.stringify({ provider, command }) });
+    setValidation(current => ({ ...current, [provider]: providerValidationMessage(result) }));
     return result;
   }
   async function validate(provider: Provider) {

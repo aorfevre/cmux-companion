@@ -312,3 +312,36 @@ passed with the same two navigation warnings. The final strengthened observation
 ordering assertion also passed both new cases. This follow-up changes tests and
 reporting only; the preceding full verification remains the application-code
 baseline.
+
+## CCS admission and managed-policy disclosure — 2026-10-12
+
+Settings validation now distinguishes a supported direct command (original Goals
+only) from a CCS-backed command eligible for conversational Goals. The setup form
+and additional profile validation explain read-only planning/review, approved-path
+worker edits, service-run checks, managed hooks/MCP configuration and discarded
+permission bypass flags. Alias resolution records the same policy text alongside
+the frozen requested/resolved invocation and discarded flags.
+
+Before admitting a conversational goal, settings composition requires a ready
+CCS/CCSXP-backed profile for every role. Ineligible direct profiles cannot be
+selected for later workers. Failure preserves the browser draft and creates no
+goal snapshot, repository ownership claim or worker. The original experience
+retains its direct-provider contract. Specific installation failures are retained
+instead of being mislabeled as routing failures. Existing active goals retain
+their recorded snapshots; the running native preview was not restarted.
+
+Passed: 29 targeted settings/resolver/capability tests and 21 settings UI tests;
+full `npm run verify` passed 1,094 backend tests, one intentional skip, 97.53%
+backend lines; 214 UI tests, 94.88% UI lines; lint, types and build passed with the
+two existing navigation warnings. The subsequent diagnostic-preservation predicate
+passed all 18 settings-runtime cases and its strengthened admission regression.
+Chrome provider-terminal validation passed; all five Settings browser cases passed
+at phone/desktop widths after opening the existing collapsed account Details
+control before asserting its message. The initial Settings run failed on that
+hidden-message assertion. The initial admission test omitted an await on fixture
+settings persistence; corrected it before the successful checks.
+
+This closes direct-command admission and policy disclosure gaps, not native
+compatibility or account identity validation. Codex 0.162.1 support, long native
+wait behavior/capacity, bounded failed-launch recovery and intervention-free
+representative native delivery remain outstanding.

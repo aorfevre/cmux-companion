@@ -1,5 +1,6 @@
 import { launchProfiles, teamDefaults, teamConfiguration, boundedUsageSnapshot } from './launch-profiles.mjs';
-import { ROLES, roleMode, suggestAssignment } from './orchestration/domain/teams.mjs';
+import { CCS_REQUIRED } from './provider-command.mjs';
+import { ROLES, TEAM_ROLES, roleMode, suggestAssignment } from './orchestration/domain/teams.mjs';
 import { AgentPreparationError } from './orchestration/agent-preparation-error.mjs';
 import { projectCode } from './orchestration/domain/goal-presentation.mjs';
 import { repositoryReadiness } from './repository-readiness.mjs';
@@ -157,12 +158,17 @@ export async function createSettingsRuntime({ settings, directory, token, create
               const result = await probeProvider(profile.provider, profile.command, before.settings.tools);
               if (result.resolution) profile.providerResolution = result.resolution;
               else if (result.ready && resolveProviderCommand) profile.providerResolution = await resolveProviderCommand(profile.provider, profile.command);
-              readiness[profile.id] = result;
+              readiness[profile.id] = command.payload.experienceVersion === 2 && result.ready && !['ccs', 'ccsxp'].includes(profile.providerResolution?.kind)
+                ? { ...result, ready: false, reason: CCS_REQUIRED } : result;
             } catch { readiness[profile.id] = { ready: false, reason: 'Saved command could not be resolved. Correct Setup for a new goal.' }; }
           })),
         ]);
         requireValue(settings.read().revision === before.revision, 'Settings changed; review the current configuration and retry', 'VERSION_CONFLICT');
         const configuration = teamConfiguration(profiles, teamDefaults(before.settings, profiles), usage, readiness);
+        if (command.payload.experienceVersion === 2) {
+          const missing = TEAM_ROLES.filter(role => !configuration.profiles.some(profile => profile.ready && profile.roles.includes(role)));
+          requireValue(!missing.length, `Configure a ready CCS profile for ${missing.join(', ')} before starting a conversational goal. ${configuration.profiles.filter(profile => !profile.ready).map(profile => `${profile.label}: ${profile.reason}`).join(' ')}`, 'NOT_READY');
+        }
         command.payload.teamConfiguration = configuration;
         const planner = profiles.find(profile => profile.id === suggestAssignment(configuration, 'planner', null).profileId);
         const snapshot = settings.snapshotGoal(command.goalId, project.id, undefined, { profiles, configuration, planner });
