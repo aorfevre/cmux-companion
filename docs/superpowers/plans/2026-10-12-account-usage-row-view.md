@@ -118,6 +118,11 @@ test('accountRows sorts queue members first by reset, then the rest in source or
   expect(rows[3].reset).toBeNull();
 });
 
+test('accountRows without a known queue keeps every account out of the queue', () => {
+  const rows = accountRows(usage({ claude: [account({ id: 'one' })], codex: [account({ id: 'two' })] }), now, false);
+  expect(rows.map(row => [row.account.id, row.state, row.reset, row.usable])).toEqual([['one', 'Not in queue', null, false], ['two', 'Not in queue', null, false]]);
+});
+
 test('readUsageView defaults to row and remembers card', () => {
   expect(readUsageView()).toBe('row');
   localStorage.setItem('cmux-companion-usage-view', 'nonsense');
@@ -212,9 +217,10 @@ export function queueState(reset: UpcomingReset, useNext: UpcomingReset | null):
 
 export type AccountRow = { provider: UsageProvider; account: UsageAccount; reset: UpcomingReset | null; state: QueueState | 'Not in queue'; usable: boolean };
 // Every account once: queue members in queue order, then the rest in source order.
-export function accountRows(usage: UsageResponse | null, now: number): AccountRow[] {
+// A failed refresh keeps the accounts but drops queue positions, as the queue does.
+export function accountRows(usage: UsageResponse | null, now: number, queueKnown = true): AccountRow[] {
   if (!usage) return [];
-  const resets = upcomingResets(usage, now);
+  const resets = queueKnown ? upcomingResets(usage, now) : [];
   const useNext = resets.find(reset => usableBeforeReset(reset, now)) ?? null;
   const queued = resets.map(reset => ({ provider: reset.provider, account: reset.account, reset, state: queueState(reset, useNext), usable: usableBeforeReset(reset, now) }));
   const seen = new Set(queued.map(row => row.account.id));
@@ -566,7 +572,7 @@ function useNarrowViewport() {
     {usage && <div className="all-accounts-head"><h2 className="all-accounts-heading">All accounts</h2>{!narrow && <div className="usage-view-selector" role="group" aria-label="Account layout">
       <button aria-pressed={view === 'row'} onClick={() => changeView('row')}>Row</button><button aria-pressed={view === 'card'} onClick={() => changeView('card')}>Card</button>
     </div>}</div>}
-    {usage && view === 'row' && <AccountTable rows={accountRows(usage, now).filter(row => !usableOnly || row.usable)} usableOnly={usableOnly} now={now} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} nextReset={nextReset} onDeleted={connectionDeleted} onReconnect={(provider, account) => setReconnecting({ provider, account })} />}
+    {usage && view === 'row' && <AccountTable rows={accountRows(usage, now, !error).filter(row => !usableOnly || row.usable)} usableOnly={usableOnly} now={now} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} nextReset={nextReset} onDeleted={connectionDeleted} onReconnect={(provider, account) => setReconnecting({ provider, account })} />}
     {view === 'card' && <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection nextReset={nextReset} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} provider={provider} now={now} onDeleted={connectionDeleted} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>}
 ```
 

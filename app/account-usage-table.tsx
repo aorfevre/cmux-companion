@@ -23,7 +23,7 @@ export function AccountTable({ rows, usableOnly, now, snapshotFresh, nextReset, 
           <tr id={`usage-account-${account.id}`} tabIndex={-1} className={`usage-row ${readings.displayStatus}${isNext ? ' next-reset-account' : ''}`}>
             <th scope="row"><div className="usage-row-account">
               <span className="usage-row-name"><ProviderLogo provider={provider.id} /><strong title={name}>{name}</strong></span>
-              <span className="usage-row-meta"><small className="account-plan">{planLabel(account.plan).replace('Plan: ', '')}</small>{account.isDefault && <small>Default</small>}{account.paused && <small>Paused</small>}<span className={`usage-status ${readings.displayStatus}`}>{!readings.capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{isNext && <span className="next-reset-tag">Next reset</span>}<span className={`queue-pill queue-pill-inline ${pillClass(state)}`} aria-hidden="true">{state}</span></span>
+              <span className="usage-row-meta"><small className="account-plan">{planLabel(account.plan).replace('Plan: ', '')}</small>{account.isDefault && <small>Default</small>}{account.paused && <small>Paused</small>}<span className={`usage-status ${readings.displayStatus}`}>{!readings.capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{isNext && <span className="next-reset-tag">Next reset</span>}<span className={`queue-pill queue-pill-inline ${pillClass(state)}`}>{state}</span></span>
               <AccountStatusNotes account={account} snapshotFresh={fresh} now={now} />
             </div></th>
             <GaugeCell window={readings.weekly} now={now} />

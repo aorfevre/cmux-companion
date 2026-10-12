@@ -469,9 +469,12 @@ test('Row view lists every account sorted by weekly reset with queue state, gaug
 });
 
 test('Row view expands a row in place with details, reconnect and delete', async () => {
+  let deleted = false;
   const fetch = await setup(async (_input: RequestInfo | URL, init?: RequestInit) => {
-    if (init?.method === 'DELETE') return new Response(JSON.stringify({ ok: true }));
-    return new Response(JSON.stringify(rowFixture()));
+    if (init?.method === 'DELETE') { deleted = true; return new Response(JSON.stringify({ ok: true })); }
+    const usage = rowFixture();
+    if (deleted) usage.providers[0].accounts = usage.providers[0].accounts.filter(account => account.id !== 'sample');
+    return new Response(JSON.stringify(usage));
   }, 'row');
   const row = document.getElementById('usage-account-sample')!;
   const expand = within(row).getByRole('button', { name: 'Show details for sample@example.test' });
@@ -485,6 +488,11 @@ test('Row view expands a row in place with details, reconnect and delete', async
   fireEvent.click(within(panel).getByRole('button', { name: 'Confirm delete' }));
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith('/api/account-usage/sample') && (init as RequestInit)?.method === 'DELETE')).toBe(true);
+  expect(document.getElementById('usage-account-sample')).toBeNull();
+  expect(document.getElementById('usage-row-detail-sample')).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(document.getElementById('usage-account-sample')).toBeNull();
+  expect(document.querySelectorAll('.usage-row')).toHaveLength(3);
 });
 
 test('highlight links focus the matching table row', async () => {
