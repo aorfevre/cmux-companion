@@ -26,7 +26,7 @@ export function codexResetInventory(summary, details = null, now = Date.now()) {
   let grants = summary.available_count === 0 ? [] : null;
   // A detail response can be capped, or race with redemption in another client.
   // Preserve the current usage count when details cannot describe that reading.
-  if (details?.available_count === summary.available_count && Array.isArray(details.credits) && details.credits.length <= 200) {
+  if (details && details.available_count === summary.available_count && Array.isArray(details.credits) && details.credits.length <= 200) {
     const available = details.credits.filter(credit => credit?.status === 'available');
     if (available.every(credit => bound(credit.expires_at)) && available.length <= summary.available_count) {
       grants = available.map(credit => ({ count: 1, expiresAt: date(credit.expires_at), usableNow: null }));

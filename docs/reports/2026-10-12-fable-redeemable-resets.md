@@ -131,3 +131,19 @@ were not run as part of local verification. No merge, deployment, updater run,
 installed-service change or reset redemption occurred. Dependency installation
 retained the lockfile and reported the existing 16 audit findings (2 moderate,
 14 high); dependency remediation is outside this change.
+
+## SonarCloud follow-up
+
+PR #188's initial automatic SonarCloud analysis rejected the new-code reliability
+rating because the Codex detail parser accessed `details.credits` after an
+optional-chain equality test. Replaced that test with an explicit `details &&`
+null guard; no suppression, quality-gate change or behavior change was added.
+Existing malformed/missing-detail regressions cover the fallback path.
+
+The follow-up `npm run verify` completed successfully: 1,059 backend tests passed
+with the same one platform skip (97.42% line coverage), 212 UI tests passed
+(95.28% line coverage), lint passed with the same two existing warnings, and
+both typecheck and build passed. Focused account/reset backend tests: 40 passed.
+The previous 19 browser checks still cover the unchanged UI; they were not
+repeated for this null-guard-only change. Remote reanalysis and review are recorded
+on the PR, and are separate from these local results.
