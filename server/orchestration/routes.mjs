@@ -1,6 +1,6 @@
 import { isSupervisor } from './domain/conversation.mjs';
 import { isAuthorized, isSafeOrigin, safeEqual, sessionCookie } from '../security.mjs';
-import { DomainError, identifier, integer, object, requireValue } from './domain/contracts.mjs';
+import { DomainError, identifier, integer, object, requireValue, sha } from './domain/contracts.mjs';
 import { parseCommand, USER_COMMANDS, AGENT_COMMANDS } from './domain/commands.mjs';
 import { eventView } from './domain/event-view.mjs';
 import { goalView } from './domain/state-view.mjs';
@@ -9,9 +9,9 @@ import { REFERENCE_BODY_BYTES } from './domain/goal-references.mjs';
 
 const PREFIX = '/api/orchestration';
 /** @param {import('fastify').FastifyInstance} app
- * @param {{ service: import('./service.mjs').OrchestrationService; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; references?: import('./goal-references.mjs').GoalReferences; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; suspension?: () => string | null; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup; beforeCommand?: (command: import('./types.d.ts').Command) => Promise<void> }} options
+ * @param {{ service: import('./service.mjs').OrchestrationService; changes?: (goal: import('./types.d.ts').Goal) => Promise<import('./types.d.ts').GoalChanges>; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; references?: import('./goal-references.mjs').GoalReferences; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; suspension?: () => string | null; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup; beforeCommand?: (command: import('./types.d.ts').Command) => Promise<void> }} options
  */
-export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, references, results, agentTools, stream, readOnly = false, suspension = () => null, configuration, reconcile, cleanup, beforeCommand }) {
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, references, results, agentTools, changes, stream, readOnly = false, suspension = () => null, configuration, reconcile, cleanup, beforeCommand }) {
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
@@ -69,6 +69,19 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     const id = /** @type {{id: string}} */ (request.params).id;
     const goal = service.store.get(id); requireValue(goal, 'Goal not found', 'NOT_FOUND');
     return { ...goalView(goal), contracts: goal.contracts };
+  });
+  app.get(`${PREFIX}/goals/:id/changes`, async request => {
+    const id = /** @type {{id:string}} */ (request.params).id;
+    const expectedHead = sha(/** @type {{head?:string}} */ (request.query).head);
+    const goal = service.store.get(id);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Goal is unavailable', 'NOT_FOUND');
+    requireValue(goal.integrationHead === expectedHead, 'The integrated result changed; refresh before reviewing it', 'STALE_TARGET');
+    requireValue(changes, 'Changed-file evidence is unavailable', 'NOT_READY');
+    const evidence = await changes(goal), latest = service.store.get(id);
+    requireValue(latest && service.repositoryIds.has(latest.repositoryId) && latest.repositoryId === goal.repositoryId
+      && latest.baseSha === evidence.baseSha && latest.integrationHead === evidence.headSha && evidence.headSha === expectedHead,
+    'The integrated result changed; refresh before reviewing it', 'STALE_TARGET');
+    return evidence;
   });
   app.get(`${PREFIX}/goals/:id/activity`, async request => {
     const id = /** @type {{id:string}} */ (request.params).id;

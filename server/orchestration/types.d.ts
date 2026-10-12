@@ -198,3 +198,9 @@ export interface PublicationPort {
   publish(input: PublicationInput, options?: { signal?: AbortSignal }): Promise<PublicationResult>;
   observe(input: PublicationInput): Promise<PublicationResult>;
 }
+
+export interface GoalChanges {
+  baseSha: string; headSha: string; files: { path: string; status: string }[];
+  fileCount: number; filesTruncated: boolean; patch: string; patchTruncated: boolean;
+  patchUnavailable: boolean;
+}

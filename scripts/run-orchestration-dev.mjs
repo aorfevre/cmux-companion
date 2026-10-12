@@ -1,3 +1,4 @@
+import { runScriptedWorkerChecks } from '../tests/helpers/orchestration/scripted-worker-checks.mjs';
 import { createBridge } from '../server/orchestration/bridge.mjs';
 import { runScriptedSupervisor } from '../tests/helpers/orchestration/scripted-supervisor.mjs';
 import { DomainError, object } from '../server/orchestration/domain/contracts.mjs';
@@ -55,6 +56,10 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
                   if (siblings.get(goalId).size === 2) { overlaps.add(goalId); shared.get(goalId).release(); }
                   await waitForBarrier(shared.get(goalId).promise, signal);
                   if (browserHarness) await waitForRelease(join(directory, 'release-siblings'), signal);
+                }
+                if (attempt.taskId === 'C') {
+                  const description = describe(request);
+                  if (description.experienceVersion === 2) return runScriptedWorkerChecks({ bridge: createBridge(description.bridge), request, signal });
                 }
                 const prior = agents.launches.filter((entry) => entry.goalId === goalId && entry.attempt.taskId === 'C' && entry.attempt.role === 'implementer');
                 const headSha = await repo.implement(attempt.worktree, attempt.taskId, { failing: attempt.taskId === 'C' && prior.length === 1 });

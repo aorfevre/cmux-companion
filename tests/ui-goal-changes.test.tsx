@@ -1,0 +1,40 @@
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { GoalChanges } from '../app/orchestration/goal-changes';
+import { request } from '../app/api-request';
+vi.mock('../app/api-request', () => ({ request: vi.fn() }));
+const api = vi.mocked(request), head = 'b'.repeat(40);
+const evidence = { baseSha: 'a'.repeat(40), headSha: head, fileCount: 1, files: [{ path: 'src/a.mjs', status: 'M' }], filesTruncated: false, patch: '+return 2;', patchTruncated: false, patchUnavailable: false };
+beforeEach(() => api.mockReset());
+afterEach(cleanup);
+test('changes load on deliberate inspection and show commit-specific files and patch', async () => {
+  api.mockResolvedValue(evidence);
+  render(<GoalChanges goalId="goal" headSha={head} />);
+  expect(api).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect changes' }));
+  expect(await screen.findByText('src/a.mjs')).toBeTruthy();
+  expect(screen.getByLabelText('Integrated diff').textContent).toBe('+return 2;');
+  expect(api).toHaveBeenCalledWith(`/api/orchestration/goals/goal/changes?head=${head}`, { method: 'GET' });
+  fireEvent.click(screen.getByRole('button', { name: 'Hide changes' }));
+  expect(screen.queryByLabelText('Integrated diff')).toBeNull();
+});
+test('a newer integrated commit cannot display a late patch from the old request', async () => {
+  let finish!: (value: unknown) => void;
+  api.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValue({ ...evidence, headSha: 'c'.repeat(40), patch: '+new head' });
+  const view = render(<GoalChanges goalId="goal" headSha={head} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect changes' }));
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  view.rerender(<GoalChanges goalId="goal" headSha={'c'.repeat(40)} />);
+  expect(await screen.findByText('+new head')).toBeTruthy();
+  finish(evidence);
+  await waitFor(() => expect(screen.getByLabelText('Integrated diff').textContent).toBe('+new head'));
+});
+test('failed reads can retry and partial evidence describes its limits', async () => {
+  api.mockRejectedValueOnce(new Error('The integrated result changed')).mockResolvedValue({ ...evidence, patchUnavailable: true, filesTruncated: true, patchTruncated: true });
+  render(<GoalChanges goalId="goal" headSha={head} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect changes' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry changes' }));
+  expect(await screen.findByText(/patch could not be loaded/)).toBeTruthy();
+  expect(screen.getByText(/first 1,000 files/)).toBeTruthy();
+  expect(screen.getByText(/Diff shortened/)).toBeTruthy();
+});

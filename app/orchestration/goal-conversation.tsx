@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import type { Contract } from '../../server/orchestration/types';
 import type { Action, Goal } from './goal-board';
+import { GoalChanges } from './goal-changes';
 import { CheckEvidence } from './check-evidence';
 
 export function GoalConversation({ goal, disabled, act }: {
@@ -58,6 +59,7 @@ export function GoalConversation({ goal, disabled, act }: {
     })}</details>}
     {['ready_to_publish', 'delivered', 'merged'].includes(goal.status) && <section className="orch-card" aria-label="Goal result"><h2>Result</h2>
       <p>Integrated commit <code>{goal.integrationHead}</code></p>
+      <GoalChanges goalId={goal.id} headSha={goal.integrationHead} />
       <ul>{goal.tasks.map(task => <li key={task.id}>{task.title} · {task.status}</li>)}</ul>
       {goal.reviews.filter(review => review.kind === 'integration' && review.target === goal.integrationHead).map(review => <p key={review.id}>Independent review: {review.disposition.replaceAll('_', ' ')}</p>)}
       {goal.verification?.headSha === goal.integrationHead && goal.verification.checks.map(check => <div key={check.id}><p>{check.id}: {check.passed ? 'Passed' : 'Failed'}</p><CheckEvidence goalId={goal.id} artifactId={check.artifactId} /></div>)}

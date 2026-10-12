@@ -52,6 +52,40 @@ suite('Conversational Goals with the real disposable service', () => {
       expect(goal.conversation!.messages.filter(message => message.text === 'Keep this guidance through reload.')).to.have.length(1);
       expect(evidence.launches.filter(launch => launch.goalId === goal.id && launch.attempt.role === 'planner')).to.have.length(1);
     });
+    cy.task('orchestrationRelease', 'siblings');
+    cy.task('orchestrationRelease', 'final');
+    cy.get('.goal-conversation').within(() => {
+      cy.findByRole('heading', { name: 'Result', timeout: 60000 }).should('be.visible');
+      cy.contains('summary', 'Worker checks and repair budgets').click();
+      cy.contains('unit · run 1 of 3').should('be.visible');
+      cy.contains('unit · run 2 of 3').should('be.visible');
+      cy.contains('unit: Failed').should('be.visible');
+      cy.contains('unit: Passed').should('be.visible');
+      cy.findByRole('button', { name: 'Inspect changes' }).click();
+      cy.findByLabelText('Integrated diff').should('contain.text', 'aSource() + bSource()');
+      cy.findByRole('button', { name: 'Approve & publish PR' }).should('be.enabled');
+    });
+    cy.task<{ goals: Goal[]; prCreates: unknown[] }>('orchestrationEvidence').then(evidence => {
+      const goal = evidence.goals.find(entry => entry.title === 'Conversation fixture')!;
+      expect(goal.verificationRuns!.filter(run => run.attemptId)).to.have.length(2);
+      expect(goal.finalRepairCount).to.equal(1);
+      expect(goal.hold).to.equal(null);
+      expect(evidence.prCreates).to.have.length(0);
+      expect(goal.verification!.headSha).to.equal(goal.integrationHead);
+      expect(goal.reviews.some(review => review.kind === 'integration' && review.target === goal.integrationHead && review.disposition === 'accept')).to.equal(true);
+      cy.wrap(goal.integrationHead).as('publishedHead');
+    });
+    cy.viewport(1440, 1000); cy.screenshot('conversation-result-desktop');
+    cy.viewport(390, 844); cy.screenshot('conversation-result-phone');
+    cy.get('.goal-conversation').findByRole('button', { name: 'Approve & publish PR' }).click();
+    cy.get('.goal-conversation').findByRole('link', { name: /Open pull request #/, timeout: 30000 }).should('be.visible');
+    cy.reload();
+    cy.get('.goal-conversation').findByRole('link', { name: /Open pull request #/, timeout: 10000 }).should('be.visible');
+    cy.task<{ goals: Goal[]; prCreates: { headSha?: string }[] }>('orchestrationEvidence').then(evidence => {
+      const goal = evidence.goals.find(entry => entry.title === 'Conversation fixture')!;
+      expect(evidence.prCreates).to.have.length(1);
+      cy.get('@publishedHead').then(head => expect(goal.pr!.headSha).to.equal(head));
+    });
     cy.get('.goal-conversation').findByRole('button', { name: 'Abort goal' }).click();
     cy.get('.goal-conversation').contains('Aborted · evidence retained').should('be.visible');
   });

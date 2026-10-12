@@ -155,6 +155,26 @@ export class GitRepository {
     requireValue(!filters, 'Repository filters/merge drivers require an explicit supported adapter policy', 'UNSUPPORTED_CAPABILITY');
     return { repository, common };
   }
+  /** Read only immutable commits named by the saved goal, never a working tree.
+   * External diff/text conversion is disabled and browser output is bounded.
+   * @param {Pick<import('../types.d.ts').Goal, 'repositoryId'|'baseSha'|'integrationHead'>} goal
+   * @returns {Promise<import('../types.d.ts').GoalChanges>} */
+  async changes(goal) {
+    const baseSha = sha(goal.baseSha), headSha = sha(goal.integrationHead);
+    const { repository } = await this.repository(goal.repositoryId);
+    await git(repository, ['merge-base', '--is-ancestor', baseSha, headSha]);
+    const names = (await gitBytes(repository, ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-status', '-z', baseSha, headSha, '--'])).toString('utf8').split('\0');
+    names.pop();
+    requireValue(names.length % 2 === 0, 'Invalid changed-file evidence', 'STALE_TARGET');
+    const fileCount = names.length / 2, files = [];
+    for (let index = 0; index < Math.min(names.length, 2000); index += 2) files.push({ status: names[index], path: names[index + 1] });
+    /** @type {Buffer} */ let patch = Buffer.alloc(0);
+    let patchUnavailable = false;
+    try { patch = await gitBytes(repository, ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color', '--unified=3', baseSha, headSha, '--']); }
+    catch (error) { if (!(error instanceof DomainError) || error.code !== 'GIT_OPERATION_FAILED') throw error; patchUnavailable = true; }
+    return { baseSha, headSha, files, fileCount, filesTruncated: fileCount > files.length,
+      patch: patch.subarray(0, 262144).toString('utf8'), patchTruncated: patch.length > 262144, patchUnavailable };
+  }
   /** @param {string} operationId @returns {Resource | null} */
   resource(operationId) {
     identifier(operationId); const path = join(this.manifests, `${operationId}.json`);
