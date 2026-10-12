@@ -1,3 +1,4 @@
+import { readSupervisorTurn, supervisorTurnCommand } from './supervisor-turn.mjs';
 import { StoppedSpawnError, stoppedSpawnFailure } from './spawn-failure.mjs';
 import { prepareCcsLaunch } from './ccs-managed-launcher.mjs';
 import { ResultOutbox } from '../result-outbox.mjs';
@@ -26,8 +27,9 @@ export function terminalDisplayEnvironment(configured, terminal) {
   return env;
 }
 
-/** A terminal-owned supervisor. Native I/O is inherited and user/permission waits
- * have no ceiling or idle timer. Only explicit termination has a cleanup deadline.
+/** A terminal-owned supervisor. Legacy native I/O is inherited. Managed Claude
+ * turns use bounded structured output and a per-turn ceiling, then wait in this
+ * runner without a provider process or native tool deadline.
  * A paused conversation retains its original operation and native conversation.
  * @param {string} configPath */
 export async function runNativeTerminal(configPath) {
@@ -38,6 +40,7 @@ export async function runNativeTerminal(configPath) {
   requireValue(config.identity === request.identity && request.binding.operationId === directory.split('/').at(-1)
     && request.binding.role === 'planner' && request.binding.mode === 'interactive' && config.command.cwd === request.binding.worktree
     && Number.isSafeInteger(config.killGraceMs) && config.killGraceMs > 0 && config.killGraceMs <= 30000, 'Terminal binding changed');
+  requireValue(!config.supervisorTurns || Number.isSafeInteger(config.turnTimeoutMs) && config.turnTimeoutMs > 0 && config.turnTimeoutMs <= 2147483647, 'Invalid supervisor turn deadline');
   writeFileSync(join(directory, 'runner-started.json'), JSON.stringify({ identity: config.identity }), { flag: 'wx', mode: 0o600 });
   const save = (/** @type {string} */ name, /** @type {unknown} */ value) => {
     const target = join(directory, name), temporary = `${target}.${randomUUID()}.tmp`;
@@ -60,12 +63,14 @@ export async function runNativeTerminal(configPath) {
   process.on('SIGWINCH', resize);
   process.on('SIGTERM', stop); process.on('SIGHUP', stop); process.on('SIGINT', interrupt);
   let code = 'ABORTED';
+  /** @type {ReturnType<typeof setTimeout> | undefined} */ let turnDeadline;
   /** @type {ReturnType<typeof setInterval> | undefined} */ let outboxTimer;
   /** @type {Promise<void> | null} */ let draining = null;
   try {
     save('identity.json', { identity: config.identity, pid: process.pid, stamp: await nativeProcessStamp(process.pid, directory), workspaceId: config.workspaceId });
     const bridgeConfig = JSON.parse(readFileSync(join(directory, 'bridge.json'), 'utf8'));
     requireValue(config.handoffProtocol === 1 && bridgeConfig.handoffProtocol === 1, 'Terminal handoff protocol is unavailable');
+    requireValue(!config.supervisorTurns || bridgeConfig.binding.supervisorTurns === true && bridgeConfig.binding.supervisor === true, 'Supervisor turn binding changed', 'OWNERSHIP_UNCERTAIN');
     const outbox = new ResultOutbox({ directory: join(directory, 'outbox'), binding: bridgeConfig.binding });
     const bridge = createBridge({ ...bridgeConfig, timeoutMs: 1000 });
     save('handoff.json', { version: 1, identity: config.identity });
@@ -88,17 +93,23 @@ export async function runNativeTerminal(configPath) {
           argv.push('resume', session.sessionId, prompt);
         } else {
         const index = argv.indexOf('--session-id');
-        requireValue(index >= 0 && argv[index + 1] === request.binding.conversationId && !argv.includes('--print'), 'Invalid native resume contract');
+        requireValue(index >= 0 && argv[index + 1] === request.binding.conversationId && (config.supervisorTurns || !argv.includes('--print')), 'Invalid native resume contract');
         argv[index] = '--resume';
         }
       }
+      if (config.supervisorTurns) await supervisorTurnCommand(bridge, 'supervisor_turn_start', controller.signal);
       // Resume is a durable idempotent command, not a new attempt or conversation.
       writeFileSync(join(directory, `run-${runId}.json`), JSON.stringify({ identity: config.identity }), { flag: 'wx', mode: 0o600 });
       if (controller.signal.aborted) break;
       const command = prepareCcsLaunch({ ...config.command, argv }, config.installation, directory, runId);
       providerSent = true; providerStopped = false;
       save('session.json', { phase: 'starting', runId });
-      const child = spawn(command.bin, command.argv, { cwd: command.cwd, env: terminalDisplayEnvironment(command.env, process.env), stdio: 'inherit', detached: true });
+      const child = spawn(command.bin, command.argv, { cwd: command.cwd, env: terminalDisplayEnvironment(command.env, process.env), stdio: config.supervisorTurns ? ['ignore', 'pipe', 'inherit'] : 'inherit', detached: true });
+      if (config.supervisorTurns) {
+        turnDeadline = setTimeout(() => { code = 'SUPERVISOR_TURN_TIMEOUT'; stop(); }, config.turnTimeoutMs);
+      }
+      const turnOutput = config.supervisorTurns && child.stdout ? readSupervisorTurn(child.stdout, request.binding.conversationId, text => process.stdout.write(text)) : null;
+      if (turnOutput) void turnOutput.catch(error => { if (!controller.signal.aborted) code = error instanceof DomainError ? error.code : 'SUPERVISOR_PROTOCOL_FAILED'; stop(); });
       const exited = once(child, 'exit'); void exited.catch(() => {});
       try { await once(child, 'spawn'); } catch (error) { providerStopped = !child.pid; throw providerStopped ? new StoppedSpawnError(stoppedSpawnFailure(error)) : error; }
       providerPid = child.pid ?? null;
@@ -106,13 +117,24 @@ export async function runNativeTerminal(configPath) {
       save('session.json', { phase: 'running', runId });
       if (controller.signal.aborted) signalProvider('SIGTERM');
       const [exitCode, exitSignal] = await exited;
+      if (turnDeadline) { clearTimeout(turnDeadline); turnDeadline = undefined; }
       const deadline = Date.now() + config.killGraceMs * 2;
       while (providerPid && nativeGroupState(providerPid) !== 'dead' && Date.now() < deadline) await delay(20);
       providerStopped = providerPid !== null && nativeGroupState(providerPid) === 'dead';
       requireValue(providerStopped, 'Terminal provider descendants remain uncertain', 'OWNERSHIP_UNCERTAIN');
       providerPid = null;
+      if (turnOutput && !controller.signal.aborted) {
+        await turnOutput; requireValue(exitCode === 0 && exitSignal === null, 'Native supervisor turn exited unsuccessfully', 'SUPERVISOR_PROTOCOL_FAILED');
+      }
       if (controller.signal.aborted) break;
       save('session.json', { phase: 'paused', runId, exitCode, signal: exitSignal });
+      if (config.supervisorTurns) {
+        const idle = await supervisorTurnCommand(bridge, 'supervisor_turn_idle', controller.signal);
+        process.stdout.write('\nSupervisor idle · waiting for a saved goal event.\n');
+        const awakened = await bridge.waitForInput(idle.conversation.seenWake, controller.signal);
+        runId = `wake-${awakened.conversation.wake}`;
+        continue;
+      }
       process.stdout.write('\nConversation paused. Resume it from Companion to continue.\n');
       while (!controller.signal.aborted) {
         const path = join(directory, 'resume.json');
@@ -128,6 +150,7 @@ export async function runNativeTerminal(configPath) {
   } catch (error) { code = error instanceof StoppedSpawnError ? error.failureCode : error instanceof DomainError ? error.code : 'NATIVE_TERMINAL_FAILED'; }
   finally {
     if (outboxTimer) clearInterval(outboxTimer);
+    if (turnDeadline) clearTimeout(turnDeadline);
     await draining;
     if (force) clearTimeout(force);
     if (!providerStopped && providerPid) {

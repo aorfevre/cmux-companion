@@ -15,12 +15,14 @@ import { nativeProcessStamp } from './native-process.mjs';
  * title. Only a verified runner receives termination; workspace cleanup is T13.
  */
 export class NativeTerminal {
-  /** @param {{directory:string; bin:string; inputs:import('./native-inputs.mjs').NativeInputs; terminal:Pick<import('./cmux.mjs').CmuxTerminal,'create'|'start'|'open'>; killGraceMs:number; releaseDirectory?:string}} options */
-  constructor({ directory, bin, inputs, terminal, killGraceMs, releaseDirectory }) {
+  /** @param {{directory:string; bin:string; inputs:import('./native-inputs.mjs').NativeInputs; terminal:Pick<import('./cmux.mjs').CmuxTerminal,'create'|'start'|'open'>; killGraceMs:number; turnTimeoutMs?:number; releaseDirectory?:string}} options */
+  constructor({ directory, bin, inputs, terminal, killGraceMs, turnTimeoutMs = 600000, releaseDirectory }) {
     requireValue(isAbsolute(bin) && !bin.includes('\0'), 'Explicit native executable required');
     requireNativeCapabilities(inputs.capabilities, 'planner', 'interactive');
     requireValue(!inputs.installation || inputs.installation.bin === bin, 'Terminal wrapper differs from the probed installation', 'UNSUPPORTED_CAPABILITY');
     requireValue(Number.isSafeInteger(killGraceMs) && killGraceMs > 0 && killGraceMs <= 30000, 'Invalid terminal cleanup limit');
+    requireValue(Number.isSafeInteger(turnTimeoutMs) && turnTimeoutMs > 0 && turnTimeoutMs <= 2147483647, 'Invalid supervisor turn timeout');
+    this.turnTimeoutMs = turnTimeoutMs;
     mkdirSync(directory, { recursive: true, mode: 0o700 }); this.directory = realpathSync(directory);
     requireValue(!lstatSync(directory).isSymbolicLink(), 'Terminal directory identity changed', 'OWNERSHIP_UNCERTAIN');
     this.bin = bin; this.inputs = inputs; this.terminal = terminal; this.killGraceMs = killGraceMs; this.stopping = false;
@@ -78,7 +80,7 @@ export class NativeTerminal {
       this.save(join(directory, 'workspace.json'), { identity, workspaceId: created.workspaceId });
       const configPath = join(directory, 'worker.json');
       const release = pinNativeRelease({ directory, identity, operationId: request.operationId }, this.releaseDirectory);
-      this.save(configPath, { handoffProtocol: 1, release, identity, workspaceId: created.workspaceId, activation: command.activation, installation: this.inputs.installation?.identity,
+      this.save(configPath, { supervisorTurns: Boolean(command.supervisorTurns), turnTimeoutMs: this.turnTimeoutMs, handoffProtocol: 1, release, identity, workspaceId: created.workspaceId, activation: command.activation, installation: this.inputs.installation?.identity,
         command: { bin: this.bin, argv: command.argv, env: command.env, cwd: request.attempt.worktree }, killGraceMs: this.killGraceMs });
       requireValue(!this.stopping, 'Terminal runtime stopped before runner send', 'NOT_READY');
       writeFileSync(join(directory, 'runner-sent.json'), JSON.stringify({ identity }), { flag: 'wx', mode: 0o600 });
@@ -94,7 +96,7 @@ export class NativeTerminal {
       throw error;
     }
   }
-  /** @param {string} operationId @returns {Promise<{status:'running'|'stopped'|'unknown';identity:string|null;pendingOutbox?:boolean}>} */
+  /** @param {string} operationId @returns {Promise<{status:'running'|'stopped'|'unknown';identity:string|null;pendingOutbox?:boolean;launchFailure?:string;failureCode?:string}>} */
   async observe(operationId) {
     const directory = this.path(operationId), path = join(directory, 'request.json');
     if (!existsSync(path)) return { status: 'unknown', identity: null };
@@ -103,7 +105,7 @@ export class NativeTerminal {
     if (existsSync(join(directory, 'outcome.json'))) {
       const result = this.read(join(directory, 'outcome.json')); requireValue(result.identity === saved.identity, 'Terminal result identity changed', 'OWNERSHIP_UNCERTAIN');
       const pendingOutbox = result.workerState === 'stopped' && await this.recoverOutbox(directory);
-      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity, ...(pendingOutbox ? { pendingOutbox: true } : {}), ...(result.workerState === 'stopped' && /^PROVIDER_SPAWN_(EAGAIN|EMFILE|ENFILE|ENOMEM|ENOENT|EACCES|EPERM|ENOEXEC|FAILED)$/.test(result.code ?? '') ? { launchFailure: result.code } : {}) };
+      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity, ...(pendingOutbox ? { pendingOutbox: true } : {}), ...(result.workerState === 'stopped' && ['SUPERVISOR_TURN_TIMEOUT', 'SUPERVISOR_PROTOCOL_FAILED', 'SUPERVISOR_TURN_UNSETTLED'].includes(result.code) ? { failureCode: result.code } : {}), ...(result.workerState === 'stopped' && /^PROVIDER_SPAWN_(EAGAIN|EMFILE|ENFILE|ENOMEM|ENOENT|EACCES|EPERM|ENOEXEC|FAILED)$/.test(result.code ?? '') ? { launchFailure: result.code } : {}) };
     }
     if (!existsSync(join(directory, 'identity.json'))) return { status: 'unknown', identity: null };
     const runner = this.read(join(directory, 'identity.json')), workspace = this.read(join(directory, 'workspace.json'));
@@ -144,6 +146,7 @@ export class NativeTerminal {
     const id = identifier(request.resumeId); requireValue(id !== 'initial', 'Reserved native resume identity');
     const directory = this.path(request.operationId), saved = this.read(join(directory, 'request.json'));
     requireValue(saved.identity === request.attempt.identity && JSON.stringify(saved.binding) === JSON.stringify(nativeBinding(request)), 'Resume identity changed', 'STALE_ATTEMPT');
+    requireValue(!this.read(join(directory, 'worker.json')).supervisorTurns, 'Supervisor resumes automatically on saved goal events', 'NOT_READY');
     const receipt = join(directory, `resume-${id}.json`);
     if (existsSync(receipt)) requireValue(this.read(receipt).identity === saved.identity, 'Resume receipt changed', 'IDEMPOTENCY_CONFLICT');
     if (existsSync(join(directory, `run-${id}.json`))) return { identity: saved.identity };

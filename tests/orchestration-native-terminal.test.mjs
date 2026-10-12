@@ -22,7 +22,7 @@ async function waitFor(read, predicate, timeout = 5000) {
   while (Date.now() < deadline) { let value; try { value = await read(); } catch { /* Waiting for an atomic fixture receipt. */ } if (predicate(value)) return value; await delay(20); }
   assert.fail('Fixture did not reach its named terminal barrier');
 }
-async function fixture(t, codex = false, Driver = NativeTerminal, supervisor = false) {
+async function fixture(t, codex = false, Driver = NativeTerminal, supervisor = false, options = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'orchestration-terminal-'))), worktree = join(root, 'worktree'); await mkdir(worktree);
   const releaseDirectory = join(root, 'releases', 'a'.repeat(40)); await mkdir(releaseDirectory, { recursive: true });
   const calls = join(root, 'native-calls'), bin = join(root, 'native-fixture');
@@ -43,10 +43,10 @@ const readline = require('node:readline').createInterface({ input: process.stdin
 readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); process.exit(0); } });
 `, { mode: 0o700 });
   const server = createServer((req, res) => { res.writeHead(204); res.end(); }); server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  const bridge = { endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-activation-credential-at-least-32-characters' };
+  const bridge = options.bridge ?? { endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-activation-credential-at-least-32-characters' };
   const installation = codex ? await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }) : undefined;
   const Inputs = codex ? CodexInputs : NativeInputs;
-  const inputs = new Inputs({ installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', supervisor, plannerName: 'DICTEE Planning Onboarding', activation: bridge, bridge }) });
+  const inputs = new Inputs({ supervisorTurns: Boolean(options.supervisorTurns), installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', supervisor, plannerName: 'DICTEE Planning Onboarding', activation: bridge, bridge }) });
   let child, creates = 0, starts = 0, opens = 0;
   const terminal = {
     async create(cwd, title) { assert.equal(cwd, worktree); assert.equal(title, 'DICTEE Planning Onboarding'); creates++; return { workspaceId }; },
@@ -319,4 +319,67 @@ test('terminal provider spawn failure preserves stopped proof and sanitized clas
   const observed = await waitFor(() => f.driver.observe('operation'), value => value?.status === 'stopped');
   assert.equal(observed.launchFailure, 'PROVIDER_SPAWN_ENOENT');
   assert.equal(observed.pendingOutbox, undefined);
+});
+
+test('managed supervisor turns keep one native conversation and owned terminal while idle launches no model process', { timeout: 15000 }, async t => {
+  const { apiFixture } = await import('./helpers/orchestration/api-fixture.mjs');
+  const api = await apiFixture(t); api.service.ownership = { assertOwned() {} };
+  const bridge = { endpoint: await api.app.listen({ host: '127.0.0.1', port: 0 }), credential: 'pending-scoped-credential-at-least-32-characters' };
+  const f = await fixture(t, false, NativeTerminal, true, { supervisorTurns: true, bridge });
+  f.driver.turnTimeoutMs = 2000;
+  let sequence = 0;
+  const command = (type, payload, kind = 'system') => api.service.execute({ id: `cmd-${++sequence}`, goalId: 'goal', expectedVersion: api.store.get('goal')?.version ?? 0, type, payload }, { kind });
+  command('create_goal', { repositoryId: 'repo', title: 'Native turns', baseSha: f.request.attempt.baseSha, experienceVersion: 2 }, 'user');
+  command('request_attempt', { attemptId: 'planner', operationId: 'operation', role: 'planner', conversationId });
+  command('record_provision', { attemptId: 'planner', worktree: f.request.attempt.worktree, branch: f.request.attempt.branch, baseSha: f.request.attempt.baseSha });
+  api.store.advanceOperation('operation', 'pending', 'dispatching');
+  bridge.credential = api.bridgeAuth.issueForDispatch('goal', 'planner', 'operation');
+  await writeFile(f.driver.bin, `#!${process.execPath}
+const fs = require('node:fs');
+(async () => {
+ const arg = name => process.argv[process.argv.indexOf(name) + 1];
+ const mcp = JSON.parse(fs.readFileSync(arg('--mcp-config'), 'utf8')).mcpServers.companion;
+ const bridge = JSON.parse(fs.readFileSync(mcp.args.at(-1), 'utf8'));
+ const headers = { authorization: 'Bearer ' + bridge.credential, 'content-type': 'application/json' };
+ const fresh = process.argv.includes('--session-id'), session = arg(fresh ? '--session-id' : '--resume');
+ const sessionPath = process.env.FIXTURE_CALLS + '.session';
+ if (!fresh && fs.readFileSync(sessionPath, 'utf8') !== session) throw Error('Lost native session');
+ if (!process.argv.includes('--print') || process.argv.includes('--no-session-persistence')) throw Error('Invalid turn mode');
+ fs.writeFileSync(sessionPath, session);
+ const state = await (await fetch(bridge.endpoint + '/api/orchestration/agent/status', { headers })).json();
+ fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({ fresh, conversation: session, wake: state.conversation.wake, pid: process.pid }) + '\\n');
+ const response = await fetch(bridge.endpoint + '/api/orchestration/agent/commands', { method: 'POST', headers, body: JSON.stringify({ id: 'wait-' + process.pid, goalId: state.id, expectedVersion: state.version, type: 'supervisor_wait', payload: { throughWake: state.conversation.wake } }) });
+ if (!response.ok) throw Error('Wait was rejected');
+ console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Recorded idle state.' }] } }));
+ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: session }));
+})().catch(() => process.exit(2));
+`, { mode: 0o700 });
+  const launched = await f.driver.launch(f.request);
+  command('record_dispatch', { attemptId: 'planner', identity: launched.identity, worktree: f.request.attempt.worktree, branch: f.request.attempt.branch });
+  await waitFor(() => api.store.get('goal'), goal => goal?.conversation.capacityReleased === true);
+  const first = await f.records(); assert.equal(first.length, 1); assert.equal(first[0].fresh, true);
+  const runner = JSON.parse(await readFile(join(f.root, 'native/operation/identity.json'), 'utf8'));
+  assert.equal(api.store.executionCapacity('goal').total, 0);
+  await delay(1200); assert.equal((await f.records()).length, 1, 'idle has no provider/model polling');
+  command('pause_goal', {}, 'user');
+  command('send_goal_message', { message: 'Handle this saved event.' }, 'user');
+  await delay(1200); assert.equal((await f.records()).length, 1, 'paused messages cannot start a turn');
+  command('resume_goal', {}, 'user');
+  const second = await waitFor(f.records, calls => calls?.length === 2);
+  await waitFor(() => api.store.get('goal'), goal => goal?.conversation.capacityReleased === true);
+  assert.equal(second[1].fresh, false); assert.equal(second[1].conversation, first[0].conversation);
+  assert.notEqual(second[1].pid, first[0].pid);
+  assert.equal(JSON.parse(await readFile(join(f.root, 'native/operation/identity.json'), 'utf8')).pid, runner.pid);
+  assert.equal((await f.driver.observe('operation')).identity, launched.identity);
+  assert.deepEqual(f.counts(), { creates: 1, starts: 1, opens: 0 });
+  await assert.rejects(f.driver.resume({ ...f.request, attempt: { ...f.request.attempt, identity: launched.identity }, resumeId: 'manual' }), { code: 'NOT_READY' });
+  await writeFile(f.driver.bin, `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`, { mode: 0o700 });
+  command('send_goal_message', { message: 'Exercise a hung turn.' }, 'user');
+  const stopped = await waitFor(() => f.driver.observe('operation'), value => value?.status === 'stopped', 6000);
+  assert.equal(stopped.failureCode, 'SUPERVISOR_TURN_TIMEOUT');
+  const { Reconciler } = await import('../server/orchestration/reconciler.mjs');
+  api.service.agents.observe = operationId => f.driver.observe(operationId);
+  await new Reconciler({ service: api.service, ownership: api.service.ownership }).observe('goal', 'planner');
+  assert.match(api.store.get('goal').attempts[0].error, /SUPERVISOR_TURN_TIMEOUT/);
+  assert.ok(api.store.get('goal').hold);
 });

@@ -493,3 +493,39 @@ the native tool path uses task execution. A request to the MCP documentation
 website timed out; the versioned task specification was retrieved from its
 GitHub source instead. No new native model run, user message, plan approval,
 production change or secret output was needed for these observations.
+
+
+## Event-triggered Claude supervisor turns — 2026-10-12
+
+Implemented the service-triggered transport for new conversational Claude
+supervisors through the selected CCS launcher. The owned cmux runner keeps the
+logical/native conversation and resumes the same native session for saved events.
+It waits without a provider process between turns, eliminating the dependency on
+a native MCP call surviving an indefinite idle period. Capacity is released only
+after the provider group is observed stopped; pause, uncertain command delivery
+and service downtime do not themselves produce model calls. A bounded hung turn
+is stopped and surfaces a specific hold rather than an unbounded retry. The
+managed permission behavior is disclosed. Legacy and Codex transport is unchanged.
+
+Passed process/API/PTY fixture evidence: two turns preserve one native session
+and workspace, idle and pause cause no provider launches, manual resume is refused,
+and a third hung turn reaches the service as SUPERVISOR_TURN_TIMEOUT. Protocol
+tests preserve Unicode, suppress private tool frames, require a matching final
+session result, and accept only CCS's exact initial CLIProxy preamble. Arbitrary
+diagnostics and repeated/midstream preambles remain failures.
+
+Full npm run verify passed before the final preamble compatibility addition:
+1,113 backend tests passed, one intentional skip, 97.60% backend lines; 216 UI
+tests passed, 94.88% UI lines; lint, types and build passed. Earlier lint and
+type failures were corrected (control-character regex and optional conversation
+access). After the preamble addition, all 21 native-terminal/protocol tests and
+lint passed; git diff --check passed. No coverage threshold was changed.
+The scripted real-service browser conversation/retry/delivery journey passed
+in 40 seconds. Cypress exercises scripted supervisors; the real process/API/PTY
+fixture exercises the new native transport with a fake executable.
+
+Unverified: actual CCS print/resume with the selected account, long native idle
+and wake-up, and native end-to-end completion without intervention. Codex still
+requires a supported resumable-turn implementation. These checks do not establish
+A2 or the five-goal native success measure. The existing preview and installed
+production were not restarted or changed, and no additional paid trial was run.

@@ -30,6 +30,10 @@ export class Reconciler {
     if (observation.pendingOutbox) return;
     if (observation.status === 'stopped') {
       const pending = goal.results?.some((entry) => entry.attemptId === attemptId && entry.status === 'pending');
+      if (!pending && ['SUPERVISOR_TURN_TIMEOUT', 'SUPERVISOR_PROTOCOL_FAILED', 'SUPERVISOR_TURN_UNSETTLED'].includes(observation.failureCode ?? '') && observation.identity === attempt.identity && attempt.status !== 'succeeded') {
+        this.record(goalId, 'record_failure', { attemptId, confirmedStopped: true, error: `Supervisor turn stopped (${observation.failureCode}). Review the saved conversation before recovery.` });
+        this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
+      }
       if (!pending && observation.launchFailure && observation.identity && (!attempt.identity || attempt.identity === observation.identity) && attempt.status !== 'succeeded') {
         this.record(goalId, 'record_failure', { attemptId, confirmedStopped: true, launchFailure: observation.launchFailure, error: `Provider could not start (${observation.launchFailure}).` });
         this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;

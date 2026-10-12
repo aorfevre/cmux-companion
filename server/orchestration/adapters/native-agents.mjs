@@ -12,9 +12,9 @@ import { CmuxTerminal } from './cmux.mjs';
  * @param {Parameters<Parameters<typeof import('../create-runtime.mjs').createRuntime>[0]['createAgents']>[0]} context */
 export function createNativeAgents({ directory, installation, engine, env, cmux, policy, direct = false, profile }, context) {
   installation.assertCurrent();
-  const inputs = new NativeInputs({ profile, direct, installation, engine, capabilities: installation.capabilities, env, describe: context.describe });
+  const inputs = new NativeInputs({ supervisorTurns: true, profile, direct, installation, engine, capabilities: installation.capabilities, env, describe: context.describe });
   const terminal = new CmuxTerminal(cmux);
-  const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal, killGraceMs: policy.killGraceMs });
+  const interactive = new NativeTerminal({ directory: join(directory, 'terminals'), bin: installation.bin, inputs, terminal, killGraceMs: policy.killGraceMs, turnTimeoutMs: policy.ceilingMs });
   const background = new NativeBackground({ terminal, directory: join(directory, 'background'), bin: installation.bin, inputs, policy, onResult: context.onResult });
   const runtime = new AgentRuntime({ interactive, background, locate: context.locate });
   return Object.assign(runtime, {

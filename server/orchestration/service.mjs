@@ -34,7 +34,7 @@ export class OrchestrationService {
           requireValue(execution.goal < limits.perGoal, 'Goal agent capacity is occupied', 'CAPACITY_FULL');
         }
       }
-      const activating = goal?.conversation?.capacityReleased && SUPERVISOR_COMMANDS.has(input.type) && input.type !== 'supervisor_wait';
+      const activating = goal?.conversation?.capacityReleased && SUPERVISOR_COMMANDS.has(input.type) && !['supervisor_wait', 'supervisor_turn_idle', 'supervisor_turn_defer'].includes(input.type);
       if (activating) {
         this.ownership?.assertOwned();
         const limits = this.goalLimits?.(input.goalId) ?? this.limits, execution = this.store.executionCapacity(input.goalId);

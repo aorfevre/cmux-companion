@@ -36,7 +36,7 @@ const plannerOutputSchema = {
   ],
 };
 
-/** @typedef {{ goalId: string; operationId: string; attemptId: string; generation: number; revision: number; role: import('./types.d.ts').Role; target: string; supervisor?: boolean; experienceVersion?: 2 }} Binding */
+/** @typedef {{ goalId: string; operationId: string; attemptId: string; generation: number; revision: number; role: import('./types.d.ts').Role; target: string; supervisor?: boolean; supervisorTurns?: boolean; experienceVersion?: 2 }} Binding */
 const definitions = {
   run_check: { name: 'run_check', description: 'Run one check from the approved contract in this worker checkout, including configured dependency preparation. Commit a checkpoint first. Returns bounded failing/passing output and durable evidence; does not replace independent verification. Three runs per check per attempt, at most two unchanged failures. Retry uncertain delivery with the identical arguments.', inputSchema: { type: 'object', required: ['id', 'expectedVersion', 'expectedHead', 'checkId'], additionalProperties: false, properties: { id: stringSchema, expectedVersion: { type: 'integer', minimum: 0 }, expectedHead: stringSchema, checkId: stringSchema } } },
   conversation: { name: 'conversation', description: 'Send a scoped supervisor command. Retry uncertain responses with the same id, expectedVersion, action and payload. Approval belongs to the user.', inputSchema: { type: 'object', required: ['id', 'expectedVersion', 'action', 'payload'], additionalProperties: false, properties: { id: stringSchema, expectedVersion: { type: 'integer', minimum: 0 }, action: { enum: ['reply', 'question', 'ack', 'wait', 'propose', 'revise', 'dispatch'] }, payload: { type: 'object', description: 'propose: {contract}; use implementation for ordinary single-worker work, tasks/waves only for an explicit graph. reply/question: {message,replyTo?}; ack: {through}; wait: {throughWake}; revise: {message}; dispatch: {}.', properties: { contract: { oneOf: [simpleContractSchema, contractSchema] } } } } } },
@@ -60,11 +60,11 @@ export async function agentMcpRequest(value, { binding, bridge, signal }) {
   const reply = (/** @type {unknown} */ result) => ({ jsonrpc: '2.0', id: request.id, result });
   if (request.method === 'initialize') return reply({ protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'companion', version: '1.0.0' } });
   if (request.method === 'ping') return reply({});
-  if (request.method === 'tools/list') return reply({ tools: roleTools(binding.role, binding.supervisor, binding.experienceVersion === 2).map((name) => definitions[/** @type {keyof typeof definitions} */ (name)]) });
+  if (request.method === 'tools/list') return reply({ tools: roleTools(binding.role, binding.supervisor, binding.experienceVersion === 2).filter(name => !binding.supervisorTurns || name !== 'wait_for_input').map((name) => definitions[/** @type {keyof typeof definitions} */ (name)]) });
   if (request.method !== 'tools/call') return { jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'Unsupported MCP method' } };
   try {
     const params = object(request.params), name = text(params.name, 80), rawArgs = params.arguments ?? {};
-    requireValue(roleTools(binding.role, binding.supervisor, binding.experienceVersion === 2).includes(name), 'Tool is outside this role', 'FORBIDDEN');
+    requireValue(roleTools(binding.role, binding.supervisor, binding.experienceVersion === 2).filter(name => !binding.supervisorTurns || name !== 'wait_for_input').includes(name), 'Tool is outside this role', 'FORBIDDEN');
     let result;
     if (name === 'get_status') { const args = object(rawArgs); requireValue(Object.keys(args).length === 0, 'Status takes no arguments'); result = await bridge.status(); }
     else if (name === 'conversation') {

@@ -17,9 +17,9 @@ export function isSupervisor(goal, attempt) {
 export const ownsExecution = (goal, attempt) => attempt.workerState !== 'stopped' && !(isSupervisor(goal, attempt) && attempt.workerState === 'running' && attempt.status === 'running');
 
 export const SUPERVISOR_COMMANDS = new Set(['supervisor_reply', 'supervisor_question',
-  'supervisor_ack', 'supervisor_activate', 'supervisor_wait', 'supervisor_propose', 'supervisor_revise', 'supervisor_dispatch']);
+  'supervisor_ack', 'supervisor_turn_start', 'supervisor_turn_idle', 'supervisor_turn_defer', 'supervisor_activate', 'supervisor_wait', 'supervisor_propose', 'supervisor_revise', 'supervisor_dispatch']);
 export const CONVERSATION_COMMANDS = new Set(['send_goal_message', 'pause_goal', 'resume_goal',
-  'supervisor_reply', 'supervisor_question', 'supervisor_ack', 'supervisor_activate', 'supervisor_wait', 'supervisor_dispatch']);
+  'supervisor_reply', 'supervisor_question', 'supervisor_ack', 'supervisor_turn_start', 'supervisor_turn_idle', 'supervisor_turn_defer', 'supervisor_activate', 'supervisor_wait', 'supervisor_dispatch']);
 
 /** @param {Goal} goal @param {string} id @param {import('../types.d.ts').GoalMessage['author']} author
  * @param {import('../types.d.ts').GoalMessage['kind']} kind @param {string} content @param {number} [replyTo] */
@@ -75,6 +75,16 @@ export function conversationCommand(goal, command, authority) {
       appendMessage(goal, command.id, 'supervisor', command.type === 'supervisor_question' ? 'question' : 'message', text(input.message, 8000), replyTo);
       kind = command.type === 'supervisor_question' ? 'supervisor_question_asked' : 'supervisor_replied'; break;
     }
+    case 'supervisor_turn_defer':
+      requireValue(conversation.paused, 'Only an unstarted paused native turn can defer', 'NOT_READY');
+      conversation.capacityReleased = true; kind = 'supervisor_turn_deferred'; break;
+    case 'supervisor_turn_start':
+      requireValue(!conversation.paused && integer(input.throughWake) === conversation.wake, 'Supervisor turn wake changed', 'NOT_READY');
+      conversation.turnManaged = true; conversation.turnWake = conversation.wake;
+      conversation.capacityReleased = false; kind = 'supervisor_turn_started'; break;
+    case 'supervisor_turn_idle':
+      requireValue(conversation.turnManaged && conversation.turnWake !== undefined && conversation.seenWake >= conversation.turnWake, 'Supervisor must record idle before finishing its native turn', 'SUPERVISOR_TURN_UNSETTLED');
+      conversation.capacityReleased = true; kind = 'supervisor_turn_idle'; break;
     case 'supervisor_activate':
       requireValue(!conversation.paused && integer(input.throughWake) === conversation.wake && conversation.wake > conversation.seenWake, 'No actionable wake is available', 'NOT_READY');
       conversation.capacityReleased = false;
@@ -83,7 +93,7 @@ export function conversationCommand(goal, command, authority) {
       const seen = integer(input.throughWake);
       requireValue(seen <= conversation.wake && seen >= conversation.seenWake, 'Conversation cursor changed', 'STALE_TARGET');
       conversation.seenWake = seen; conversation.waiting = seen === conversation.wake;
-      conversation.capacityReleased = true;
+      conversation.capacityReleased = !conversation.turnManaged;
       kind = 'supervisor_waiting'; break;
     }
     case 'supervisor_dispatch':

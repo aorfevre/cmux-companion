@@ -67,7 +67,7 @@ export interface GoalMessage {
 export interface GoalConversation {
   messages: GoalMessage[]; supervisorAttemptId: string | null;
   wake: number; seenWake: number; waiting: boolean; paused: boolean;
-  dispatchApproved: boolean; capacityReleased?: boolean;
+  dispatchApproved: boolean; capacityReleased?: boolean; turnManaged?: boolean; turnWake?: number;
 }
 export interface Goal {
   experienceVersion?: 2; conversation?: GoalConversation;
@@ -122,7 +122,7 @@ export interface AgentPort {
   prepareHandoff?(request: LaunchRequest): Promise<HandoffIdentity>;
   capabilities: { role: Role; mode: Mode }[];
   launch(request: LaunchRequest): Promise<{ identity: string }>;
-  observe(operationId: string): Promise<{ status: 'running' | 'stopped' | 'unknown'; identity: string | null; pendingOutbox?: boolean; launchFailure?: string }>;
+  observe(operationId: string): Promise<{ status: 'running' | 'stopped' | 'unknown'; identity: string | null; pendingOutbox?: boolean; launchFailure?: string; failureCode?: string }>;
   terminate(identity: string): Promise<void>;
   resume?(request: LaunchRequest): Promise<{identity:string}>;
   open?(operationId: string): Promise<void>;

@@ -437,6 +437,7 @@ export function transition(before, command, authority) {
     }
     case 'resume_planner': {
       requireAuthority(authority, 'user');
+      requireValue(!goal.conversation?.turnManaged, 'This supervisor resumes automatically on saved goal events', 'NOT_READY');
       const attempt = attemptById(goal, input.attemptId);
       requireValue(attempt.role === 'planner' && attempt.mode === 'interactive' && attempt.status === 'running' && attempt.workerState === 'running' && attempt.identity
         && (isSupervisor(goal, attempt) || ['discovering', 'awaiting_approval'].includes(goal.status)), 'No current owned planner conversation', 'NOT_READY');
