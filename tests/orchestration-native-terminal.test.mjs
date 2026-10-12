@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { NativeInputs } from '../server/orchestration/adapters/native-inputs.mjs';
 import { CodexInputs } from '../server/codex-native.mjs';
 import { probeNativeCapabilities } from '../server/orchestration/adapters/native-capabilities.mjs';
+import { terminalDisplayEnvironment } from '../server/orchestration/adapters/native-terminal-worker.mjs';
 import { NativeTerminal } from '../server/orchestration/adapters/native-terminal.mjs';
 
 const capabilities = { restricted: true, manualPermissions: true, hooks: true, strictMcp: true, streamJson: true, permissionPromptsNone: true, terminal: true };
@@ -34,6 +35,8 @@ if (${codex}) {
  const config = JSON.parse(fs.readFileSync(path.join(directory, 'codex-hook.json'), 'utf8'));
  fs.writeFileSync(path.join(directory, 'codex-session.json'), JSON.stringify({conversationId:config.conversationId,sessionId:'fixture-native-session'}));
 }
+fs.writeFileSync(process.env.FIXTURE_CALLS + '.display', JSON.stringify({ TERM: process.env.TERM, COLORTERM: process.env.COLORTERM }));
+process.on('SIGWINCH', () => fs.writeFileSync(process.env.FIXTURE_CALLS + '.resize', 'received'));
 const arg = name => process.argv[process.argv.indexOf(name) + 1];
 fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({ fresh: ${codex} ? !process.argv.includes('resume') : process.argv.includes('--session-id'), conversation: ${codex} ? (process.argv.includes('resume') ? arg('resume') : 'fixture-native-session') : arg(process.argv.includes('--resume') ? '--resume' : '--session-id'), tty: [process.stdin.isTTY,process.stdout.isTTY,process.stderr.isTTY] }) + '\\n');
 const readline = require('node:readline').createInterface({ input: process.stdin });
@@ -51,7 +54,7 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
       assert.equal(id, workspaceId); starts++;
       const runner = fileURLToPath(new URL('../server/orchestration/adapters/native-terminal-worker.mjs', import.meta.url));
       const args = process.platform === 'darwin' ? ['-q', '/dev/null', process.execPath, runner, path] : ['-q', '-c', `${process.execPath} ${runner} ${path}`, '/dev/null'];
-      child = spawn('/bin/sh', ['-c', '/bin/cat | exec "$@"', 'fixture-pty', '/usr/bin/script', ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, TERM: 'xterm' } });
+      child = spawn('/bin/sh', ['-c', '/bin/cat | exec "$@"', 'fixture-pty', '/usr/bin/script', ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
       let output = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; }); child.on('exit', code => { if (code) process.stderr.write(`Fixture terminal exited ${code}: ${output}\n`); }); await once(child, 'spawn');
     },
     async open(id) { assert.equal(id, workspaceId); opens++; },
@@ -289,4 +292,22 @@ for (const codex of [false, true]) test(`conversational ${codex ? 'Codex' : 'Cla
   assert.equal(resumed[0].conversation, resumed[1].conversation);
   assert.equal(resumed[1].fresh, false);
   assert.deepEqual(f.counts(), { creates: 1, starts: 1, opens: 0 });
+});
+
+
+test('terminal display capabilities preserve configured authority and reject control characters', () => {
+  const configured = { PATH: '/pinned', TOKEN: 'configured', TERM: 'fallback' };
+  assert.deepEqual(terminalDisplayEnvironment(configured, { PATH: '/untrusted', TOKEN: 'other', TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'ghostty', NO_COLOR: '', FORCE_COLOR: '1', COLUMNS: '80', TERM_PROGRAM_VERSION: 'bad\nvalue' }), { ...configured, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'ghostty', NO_COLOR: '', FORCE_COLOR: '1' });
+  assert.equal(terminalDisplayEnvironment(configured, { TERM: 'x'.repeat(129) }).TERM, 'fallback');
+});
+
+test('native provider receives the actual terminal color environment and forwarded resize signals', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  await f.driver.launch(f.request);
+  await waitFor(f.records, records => records?.length === 1);
+  assert.deepEqual(JSON.parse(await readFile(join(f.root, 'native-calls.display'), 'utf8')), { TERM: 'xterm-256color', COLORTERM: 'truecolor' });
+  const runner = JSON.parse(await readFile(join(f.root, 'native/operation/identity.json'), 'utf8'));
+  process.kill(runner.pid, 'SIGWINCH');
+  await waitFor(() => readFile(join(f.root, 'native-calls.resize'), 'utf8'), value => value === 'received');
+  assert.equal((await f.driver.observe('operation')).status, 'running');
 });

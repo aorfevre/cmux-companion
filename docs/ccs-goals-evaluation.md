@@ -258,3 +258,34 @@ lint on an unused fixture variable. Removed that variable; follow-up lint,
 typecheck and build passed, with the two existing navigation warnings. The MCP
 schema addition was separately exercised by the supervisor bridge tests after
 the broad backend run. No coverage threshold changed.
+
+## Native display and decision queue correction — 2026-10-12
+
+The user's screenshots exposed two independent defects. Interactive launch
+configuration omitted terminal display capabilities, and the detached provider
+group did not receive terminal resize signals. The native terminal worker now
+inherits only bounded display values (TERM, COLORTERM, TERM_PROGRAM/version and
+color preferences) from its actual cmux host and forwards SIGWINCH to its owned
+provider group. Executable paths, credentials and authority remain pinned.
+Real-PTY regression proves color propagation and resize receipt without stopping
+the provider. Applied one SIGWINCH to the observed live CCS group: its rendered
+separator expanded from 99 to 156 columns. The running session was not restarted;
+its initial monochrome environment cannot be replaced in place. Fresh native
+color rendering remains to be inspected.
+
+The two same-titled rows were the preserved original startup failure and the
+new isolated goal, not duplicate launches. Independent plan review was incorrectly
+classified as a user decision. It now appears as Plan review in the fleet/Running
+filter and enters Needs You when review permits approval. Actual failure/ownership
+holds still take priority, and startup errors precede misleading missing-profile
+messages. No goal history was deleted or aborted for display cleanup.
+
+Passed: all 15 native-terminal cases; eight Mission Control UI cases; eight
+Mission Control Cypress cases, including pending-review/approval transitions at
+1440px and 390px; and the goal-workspace Cypress journey. Its initial run failed
+on an existing four-navigation-link assertion; corrected it to the actual five
+links and reran successfully. Full `npm run verify` then passed: 1,090 backend
+tests, one intentional skip, 97.42% backend lines; 213 UI tests, 94.87% UI lines;
+lint, typecheck and build passed with the same two existing navigation warnings.
+The five native-goal success measure and other recorded acceptance gaps remain
+open; these fixes do not establish full native delivery.

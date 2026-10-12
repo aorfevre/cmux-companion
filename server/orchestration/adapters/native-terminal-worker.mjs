@@ -13,6 +13,18 @@ import { awaitNativeActivation } from './native-activation.mjs';
 import { assertNativeInstallation } from './native-capabilities.mjs';
 import { nativeProcessStamp, nativeGroupState } from './native-process.mjs';
 
+/** Preserve display capabilities from the actual cmux terminal, not the service
+ * environment. Never inherit account settings, credentials or executable paths.
+ * @param {NodeJS.ProcessEnv} configured @param {NodeJS.ProcessEnv} terminal */
+export function terminalDisplayEnvironment(configured, terminal) {
+  const env = { ...configured };
+  for (const key of ['TERM', 'COLORTERM', 'TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'NO_COLOR', 'FORCE_COLOR']) {
+    const value = terminal[key];
+    if (typeof value === 'string' && value.length <= 128 && ![...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) env[key] = value;
+  }
+  return env;
+}
+
 /** A terminal-owned supervisor. Native I/O is inherited and user/permission waits
  * have no ceiling or idle timer. Only explicit termination has a cleanup deadline.
  * A paused conversation retains its original operation and native conversation.
@@ -43,6 +55,8 @@ export async function runNativeTerminal(configPath) {
   // The provider has a separate owned process group but inherits this terminal.
   // Forward terminal interruption without treating the native permission UI as dead.
   const interrupt = () => signalProvider('SIGINT');
+  const resize = () => signalProvider('SIGWINCH');
+  process.on('SIGWINCH', resize);
   process.on('SIGTERM', stop); process.on('SIGHUP', stop); process.on('SIGINT', interrupt);
   let code = 'ABORTED';
   /** @type {ReturnType<typeof setInterval> | undefined} */ let outboxTimer;
@@ -83,7 +97,7 @@ export async function runNativeTerminal(configPath) {
       const command = prepareCcsLaunch({ ...config.command, argv }, config.installation, directory, runId);
       providerSent = true; providerStopped = false;
       save('session.json', { phase: 'starting', runId });
-      const child = spawn(command.bin, command.argv, { cwd: command.cwd, env: command.env, stdio: 'inherit', detached: true });
+      const child = spawn(command.bin, command.argv, { cwd: command.cwd, env: terminalDisplayEnvironment(command.env, process.env), stdio: 'inherit', detached: true });
       const exited = once(child, 'exit'); void exited.catch(() => {});
       try { await once(child, 'spawn'); } catch (error) { providerStopped = !child.pid; throw error; }
       providerPid = child.pid ?? null;
@@ -120,6 +134,7 @@ export async function runNativeTerminal(configPath) {
       providerStopped = nativeGroupState(providerPid) === 'dead';
     }
     save('outcome.json', { identity: config.identity, workerState: !providerSent || providerStopped ? 'stopped' : 'unknown', code });
+    process.off('SIGWINCH', resize);
     process.off('SIGTERM', stop); process.off('SIGHUP', stop); process.off('SIGINT', interrupt);
   }
 }
