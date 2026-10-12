@@ -37,13 +37,17 @@ async function fixture(t, { slow = false } = {}) {
   await runtime.scheduler.tick();
   const supervisor = runtime.store.get('g').attempts.find(attempt => attempt.role === 'planner');
   const authority = { kind: 'agent', goalId: 'g', generation: supervisor.generation, revision: supervisor.revision, role: 'planner', attemptId: supervisor.id };
-  execute('supervisor_propose', { contract }, authority);
+  const { tasks, ...proposal } = contract;
+  delete proposal.waves;
+  execute('supervisor_propose', { contract: { ...proposal, implementation: { title: tasks[0].title, prompt: tasks[0].prompt, ownedAreas: tasks[0].ownedAreas } } }, authority);
   await runtime.scheduler.tick();
   execute('approve', { revision: runtime.store.get('g').revision });
   execute('supervisor_dispatch', {}, authority);
   await runtime.scheduler.tick();
   const attempt = runtime.store.get('g').attempts.find(attempt => attempt.role === 'implementer');
   assert.equal(attempt.workerState, 'running');
+  assert.equal(attempt.taskId, 'implementation');
+  assert.equal(runtime.store.get('g').tasks.length, 1);
   const credential = runtime.bridgeAuth.issue('g', attempt.id), bridge = createBridge({ endpoint, credential });
   const binding = { goalId: 'g', attemptId: attempt.id, operationId: attempt.operationId, generation: attempt.generation, revision: attempt.revision, role: attempt.role, target: attempt.target, experienceVersion: 2 };
   const mcp = args => agentMcpRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run_check', arguments: args } }, { binding, bridge });

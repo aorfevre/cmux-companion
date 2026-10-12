@@ -238,3 +238,23 @@ worker delivery. The five representative native goals, Codex compatibility,
 process-level conversation restart, waiting/capacity behavior, failed-launch
 recovery and policy disclosure remain incomplete. No live PR publication, merge,
 installation or deployment occurred.
+
+
+## Single-implementer proposals — 2026-10-12
+
+Conversational supervisors can now propose one `implementation` (title, prompt
+and owned areas) without manufacturing tasks or waves. The service normalizes it
+before persistence/approval into one scoped task with all criteria and all
+checks. Explicit independent task graphs remain supported; mixed forms and
+unsafe paths fail validation. The MCP tool advertises both exact proposal forms.
+
+Passed: 15 conversation/real-Git worker-check cases and three supervisor MCP/API
+cases, including exact receipt replay, approval gating, revision invalidation,
+legacy rejection and the complete worker failing-check repair using the simple
+form. The Chrome conversation delivery journey passed in 43 seconds and cleaned
+up its disposable resources. Broad verification passed 1,088 backend tests
+(one intentional skip; 97.02% lines) and 212 UI tests (94.87% lines), then failed
+lint on an unused fixture variable. Removed that variable; follow-up lint,
+typecheck and build passed, with the two existing navigation warnings. The MCP
+schema addition was separately exercised by the supervisor bridge tests after
+the broad backend run. No coverage threshold changed.

@@ -6,7 +6,7 @@ import { currentWave, verificationWaveId, integratedWaveReady, waveChecks, accep
 import { parseGoalReferences } from './goal-references.mjs';
 import { revisablePlan, requiresPlanReview, repairableReviews } from './review-repairs.mjs';
 import { captureFailureHold, recoverGoal, repairableChecks } from './recovery.mjs';
-import { parseContract, readyTasks } from './graph.mjs';
+import { parseContract, parseSupervisorProposal, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
 import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
 import { parseReviewThreads, parseReviewReplies, parseConflictPaths } from './review-round.mjs';
@@ -334,7 +334,7 @@ export function transition(before, command, authority) {
       requireValue(goal.status !== 'delivered' && goal.status !== 'addressing_review', 'Delivered goals require a new goal', 'INVALID_STATE');
       requireValue(!goal.integration && (!goal.publication || !goal.publication.approval), 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
-      const contract = parseContract(input.contract);
+      const contract = command.type === 'supervisor_propose' ? parseSupervisorProposal(input.contract) : parseContract(input.contract);
       requireValue(!goal.contractSchema || contract.schemaVersion === goal.contractSchema, 'New goals require a version 2 plan with explicit waves');
       for (const attempt of goal.attempts.filter(attempt => ownsExecution(goal, attempt))) {
         if (attempt.identity) intent('terminate', `${command.id}_${attempt.id}`, attempt.id, { identity: attempt.identity });

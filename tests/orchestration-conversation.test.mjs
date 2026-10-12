@@ -145,3 +145,47 @@ test('user cannot impersonate supervisor proposal and unknown supervisor cannot 
   assert.equal(goalView(f.goal).actions.some(action => action.type === 'approve'), false);
   assert.throws(() => f.auth.ready(f.token), { code: 'FORBIDDEN' });
 });
+
+function simpleProposal() {
+  const { tasks, ...proposal } = contract();
+  return { ...proposal, schemaVersion: 2, implementation: { title: 'Implement the outcome', prompt: 'Build and check the modules within the approved scope.', ownedAreas: tasks.flatMap(task => task.ownedAreas) } };
+}
+
+test('ordinary proposals persist one owned implementation and all checks before exact revision approval', t => {
+  const f = fixture(t);
+  f.command('set_plan_review_policy', { enabled: false }, f.system);
+  const command = f.make('supervisor_propose', { contract: simpleProposal() });
+  const first = f.store.apply(command, f.authority);
+  assert.deepEqual(f.store.apply(command, f.authority), first, 'uncertain proposal replay is identical');
+  const saved = f.goal.contracts.at(-1).contract;
+  assert.equal(saved.tasks.length, 1);
+  assert.equal(saved.tasks[0].id, 'implementation');
+  assert.deepEqual(saved.tasks[0].criterionIds, ['works']);
+  assert.deepEqual(saved.tasks[0].ownedAreas, ['src/a.mjs', 'src/b.mjs', 'src/composition.mjs']);
+  assert.deepEqual(saved.waves[0].taskIds, ['implementation']);
+  assert.deepEqual(saved.waves[0].checkIds, ['unit']);
+  assert.deepEqual(readyWork(f.goal), []);
+  assert.throws(() => f.command('supervisor_dispatch', {}, f.authority), { code: 'NOT_READY' });
+  f.command('approve', { revision: 1 });
+  f.command('supervisor_dispatch', {}, f.authority);
+  assert.deepEqual(readyWork(f.goal).map(work => [work.role, work.taskId]), [['implementer', 'implementation']]);
+  f.command('supervisor_revise', { message: 'Change the requested outcome.' }, f.authority);
+  assert.equal(f.goal.approvedRevision, null);
+  assert.deepEqual(readyWork(f.goal), []);
+});
+
+test('simple proposals cannot hide a graph, unsafe ownership, missing checks or a legacy migration', t => {
+  const f = fixture(t);
+  for (const contract of [
+    { ...simpleProposal(), tasks: [] },
+    { ...simpleProposal(), waves: [] },
+    { ...simpleProposal(), implementation: { ...simpleProposal().implementation, ownedAreas: ['../other'] } },
+    { ...simpleProposal(), verification: [] },
+    { ...simpleProposal(), implementation: { ...simpleProposal().implementation, dependsOn: ['hidden'] } },
+    { ...simpleProposal(), schemaVersion: 1 },
+  ]) assert.throws(() => f.command('supervisor_propose', { contract }, f.authority));
+  assert.equal(f.goal.revision, 0);
+  const legacy = fixture(t, ':memory:', 0);
+  assert.throws(() => legacy.command('publish_contract', { contract: simpleProposal() }));
+  assert.equal(legacy.goal.revision, 0);
+});
