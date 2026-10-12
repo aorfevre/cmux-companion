@@ -162,6 +162,7 @@ describe("licence usage", () => {
       work.windows.push({ id: 'fable', cadence: 'weekly', category: 'additional', label: 'Fable weekly limit', remainingPercent: 31, resetAt: iso(120), reported: true });
       work.redeemableResets = { availableCount: 1, updatedAt: iso(-1), grants: [{ count: 1, expiresAt: iso(120), usableNow: false }] };
       const codex = usage.providers[1].accounts[1];
+      codex.status = 'unavailable'; codex.windows = []; codex.message = 'Provider did not report usage limits.';
       codex.redeemableResets = { availableCount: 2, updatedAt: iso(-1), grants: [{ count: 1, expiresAt: iso(180), usableNow: null }] };
       cy.intercept('GET', '**/api/account-usage*', usage).as('usage');
       cy.clock(frozenNow.getTime(), ['Date']);
@@ -174,6 +175,7 @@ describe("licence usage", () => {
         cy.get('.redeemable-resets time').should('have.attr', 'datetime', iso(120));
         cy.findByRole('link', { name: 'Check Claude resets ↗' }).should('have.attr', 'href', 'https://claude.ai/settings/usage');
       });
+      account('daily@example.test').find('.usage-status').should('have.text', 'Unknown');
       account('daily@example.test').find('.redeemable-resets').should('contain.text', '2 saved resets').and('contain.text', 'Next reported expiry').and('contain.text', 'Some expiry details not reported');
       account('personal').find('.redeemable-resets').should('contain.text', 'Not reported');
       cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));

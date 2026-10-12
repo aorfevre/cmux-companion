@@ -388,3 +388,18 @@ test.each(['unknown', 'count-only', 'no-expiry', 'empty', 'stale', 'provider-fai
   expect(row.querySelector('time')).toBeNull();
   expect(screen.queryByText('Fable weekly')).toBeNull();
 });
+
+test('fresh saved resets remain visible when quota windows are missing without claiming available capacity', async () => {
+  await setup(async () => {
+    const usage = fixture();
+    const account = usage.providers[0].accounts[0];
+    account.status = 'unavailable'; account.windows = []; account.message = 'Provider did not report usage limits.';
+    account.redeemableResets = { availableCount: 1, updatedAt: instant, grants: [{ count: 1, expiresAt: '2026-10-07T08:00:00Z', usableNow: true }] };
+    return new Response(JSON.stringify(usage));
+  });
+  expect(screen.getByText('Unknown')).toBeTruthy();
+  expect(screen.getByText('1 saved reset')).toBeTruthy();
+  expect(screen.getByText('Fable weekly').closest('.core-window')?.textContent).toContain('Not reported');
+  expect(screen.queryByText('Available')).toBeNull();
+  expect(document.querySelector('.reset-queue-row')).toBeNull();
+});

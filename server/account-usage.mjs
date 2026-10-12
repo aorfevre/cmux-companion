@@ -144,7 +144,7 @@ function normalizeAccount(provider, account, quota = null, providerAvailable = t
   if (quota?.needsReauth) status = "reconnect";
   else if (quota?.success && remaining.some((value) => value <= 0)) status = "exhausted";
   else if (quota?.success && remaining.some((value) => value <= 20)) status = "low";
-  else if (quota?.success) status = "ready";
+  else if (quota?.success && windows.length > 0) status = "ready";
 
   return {
     id: opaqueAccountId(provider, account.id),
@@ -158,9 +158,11 @@ function normalizeAccount(provider, account, quota = null, providerAvailable = t
       ? "Reconnect this account in CCS"
       : !providerAvailable || !quota?.success
         ? quotaFailureMessage(quota?.failureReason)
-        : remaining.length === 0
-          ? "Connected. Provider reported no active usage window."
-          : null,
+        : windows.length === 0
+          ? quotaFailureMessage('no-windows')
+          : remaining.length === 0
+            ? "Connected. Provider reported no active usage window."
+            : null,
     updatedAt: safeDate(quota?.lastUpdated),
     retryAt: safeDate(quota?.retryAt),
     redeemableResets: quota?.success ? normalizeResetInventory(quota.redeemableResets) : null,

@@ -240,7 +240,7 @@ function AccountCard({ providerId, account, now, onReconnect, onDeleted, provide
       <div><button disabled={deleting} onClick={() => { setConfirming(false); setDeleteError(""); }}>Cancel</button><button className="connection-delete" disabled={deleting} onClick={() => void remove()}>{deleting ? "Deleting…" : "Confirm delete"}</button></div>
     </div> : <button className="connection-delete" onClick={() => setConfirming(true)}>Delete connection</button>}
     </div></details>
-    <RedeemableResets inventory={account.redeemableResets} fresh={capacityKnown} providerId={providerId} now={now} />
+    <RedeemableResets inventory={account.redeemableResets} fresh={snapshotFresh && account.status !== 'reconnect' && freshReading(account.updatedAt, now)} providerId={providerId} now={now} />
   </article>;
 }
 

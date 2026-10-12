@@ -147,3 +147,20 @@ both typecheck and build passed. Focused account/reset backend tests: 40 passed.
 The previous 19 browser checks still cover the unchanged UI; they were not
 repeated for this null-guard-only change. Remote reanalysis and review are recorded
 on the PR, and are separate from these local results.
+
+## Review corrections before merge
+
+CodeRabbit identified two valid issues: the acceptance table delimiter was below
+its new rows, and reset-only provider responses could imply available quota.
+The spec table is repaired and explicitly separates quota status from inventory.
+Accounts with no usage windows now remain unavailable, while fresh saved-reset
+counts and expiries stay visible. Backend, UI and desktop/mobile Cypress tests
+cover this independent availability behavior.
+
+Final local checks: full verification passed (1,059 backend passes, one existing
+platform skip; 213 UI passes; lint, types and build passed), and account Cypress
+passed all 19 checks. A formatting edit made while backend coverage was running
+invalidated that run's source mapping, so backend coverage was rerun on unchanged
+files and passed at 97.43%; UI coverage remains 95.28%. Existing lint warnings
+remain unchanged. SonarCloud passed the explicit-null-guard commit; the latest
+review corrections require their own remote checks and approval before merge.

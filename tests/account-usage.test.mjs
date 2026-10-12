@@ -70,16 +70,16 @@ test("returns a safe unavailable response when CCS cannot be loaded", async () =
   assert.doesNotMatch(JSON.stringify(value), /private\/path|token/);
 });
 
-test("treats authenticated accounts without reported windows as connected", async () => {
+test("keeps authenticated accounts without reported windows unavailable", async () => {
   const empty = source();
   empty.fetchAllClaudeQuotas = async () => [{ account: "one@example.test", quota: { success: true, lastUpdated: 1_788_000_000_000, windows: [] } }];
   empty.getProviderAccounts = (provider) => provider === "claude" ? [{ id: "one@example.test", email: "one@example.test" }] : [];
   empty.fetchAllCodexQuotas = async () => [];
   const value = await new AccountUsage({ sourceLoader: async () => empty }).snapshot({ refresh: true });
   const account = value.providers[0].accounts[0];
-  assert.equal(account.status, "ready");
-  assert.equal(account.message, "Connected. Provider reported no active usage window.");
-  assert.equal(value.summary.unavailable, 0);
+  assert.equal(account.status, "unavailable");
+  assert.equal(account.message, "Provider did not report usage limits.");
+  assert.equal(value.summary.unavailable, 1);
 });
 
 test("discovers a symlinked CCS package without a hard-coded Node version", (t) => {
@@ -649,7 +649,8 @@ test('Claude requests reset inventory with its compatibility identity and safely
   const usage = new AccountUsage();
   const value = await usage.snapshot();
   assert.equal(value.providers[0].accounts[0].redeemableResets.availableCount, 1);
-  assert.equal(value.providers[0].accounts[0].status, 'ready');
+  assert.equal(value.providers[0].accounts[0].status, 'unavailable');
+  assert.equal(value.providers[0].accounts[0].message, 'Provider did not report usage limits.');
   assert.doesNotMatch(JSON.stringify(value), /private-/);
   usage.invalidate(); await usage.snapshot({ refresh: true });
   assert.equal(requests.length, 1);
