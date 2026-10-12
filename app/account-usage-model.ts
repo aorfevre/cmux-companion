@@ -72,9 +72,10 @@ export function queueState(reset: UpcomingReset, useNext: UpcomingReset | null):
 
 export type AccountRow = { provider: UsageProvider; account: UsageAccount; reset: UpcomingReset | null; state: QueueState | 'Not in queue'; usable: boolean };
 // Every account once: queue members in queue order, then the rest in source order.
-export function accountRows(usage: UsageResponse | null, now: number): AccountRow[] {
+// A failed refresh keeps the accounts but drops queue positions, as the queue does.
+export function accountRows(usage: UsageResponse | null, now: number, queueKnown = true): AccountRow[] {
   if (!usage) return [];
-  const resets = upcomingResets(usage, now);
+  const resets = queueKnown ? upcomingResets(usage, now) : [];
   const useNext = resets.find(reset => usableBeforeReset(reset, now)) ?? null;
   const queued = resets.map(reset => ({ provider: reset.provider, account: reset.account, reset, state: queueState(reset, useNext), usable: usableBeforeReset(reset, now) }));
   const seen = new Set(queued.map(row => row.account.id));

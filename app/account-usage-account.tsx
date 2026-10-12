@@ -9,11 +9,12 @@ export function AccountStatusNotes({ account, snapshotFresh, now }: { account: U
   </>;
 }
 
-export type AccountDetailProps = { providerLabel: string; account: UsageAccount; now: number; capacityKnown: boolean; extras: UsageWindow[]; onDeleted: () => Promise<void>; onReconnect?: () => void };
+export type AccountDetailProps = { onConfirming?: (confirming: boolean) => void; providerLabel: string; account: UsageAccount; now: number; capacityKnown: boolean; extras: UsageWindow[]; onDeleted: () => Promise<void>; onReconnect?: () => void };
 // Reading time, messages, extra limits and confirmed deletion. The card shows
 // it under Details; the table shows it in the expanded row.
-export function AccountDetailContent({ providerLabel, account, now, capacityKnown, extras, onDeleted, onReconnect }: AccountDetailProps) {
-  const [confirming, setConfirming] = useState(false);
+export function AccountDetailContent({ onConfirming, providerLabel, account, now, capacityKnown, extras, onDeleted, onReconnect }: AccountDetailProps) {
+  const [confirming, setConfirmingState] = useState(false);
+  const setConfirming = (value: boolean) => { setConfirmingState(value); onConfirming?.(value); };
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const removing = useRef(false);
@@ -49,15 +50,16 @@ export function AccountDetailContent({ providerLabel, account, now, capacityKnow
 
 export function AccountCard({ providerId, account, now, onReconnect, onDeleted, providerLabel, snapshotFresh, nextWindowId }: { providerId: UsageProvider["id"]; nextWindowId?: string; onDeleted: () => Promise<void>; providerLabel: string; account: UsageAccount; now: number; snapshotFresh: boolean; onReconnect: () => void }) {
   const { capacityKnown, displayStatus, weekly, fable, session, extras } = coreReadings(account, providerId, now, snapshotFresh);
+  const [confirming, setConfirming] = useState(false);
   return <article id={`usage-account-${account.id}`} tabIndex={-1} className={`usage-account ${displayStatus}${nextWindowId ? ' next-reset-account' : ''}`}><header><div><strong>{account.email || account.label}</strong><span className="account-plan">{planLabel(account.plan)}</span><span>{[account.isDefault ? "Default" : null, account.paused ? "Paused" : null].filter(Boolean).join(" · ")}</span></div><span className={`usage-status ${displayStatus}`}>{!capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{nextWindowId && <span className="next-reset-tag">Next reset</span>}
     <AccountStatusNotes account={account} snapshotFresh={snapshotFresh} now={now} />
-    {account.status === "reconnect" && <button className="account-reconnect" onClick={onReconnect}>Reconnect account</button>}</header>
+    {!confirming && account.status === "reconnect" && <button className="account-reconnect" onClick={onReconnect}>Reconnect account</button>}</header>
     <div className={`core-window-grid${providerId === 'codex' ? ' weekly-only' : ' with-fable'}`}>
       <CoreWindow label="Weekly" window={weekly} now={now} />
       {providerId === 'claude' && <><CoreWindow label="Fable weekly" window={fable} now={now} /><CoreWindow label="5 hours" window={session} now={now} /></>}
     </div>
     <details className="usage-account-details"><summary>Details{extras.length > 0 && <span className="sr-only"> · {extras.length} additional limits</span>}</summary>
-      <AccountDetailContent providerLabel={providerLabel} account={account} now={now} capacityKnown={capacityKnown} extras={extras} onDeleted={onDeleted} />
+      <AccountDetailContent onConfirming={setConfirming} providerLabel={providerLabel} account={account} now={now} capacityKnown={capacityKnown} extras={extras} onDeleted={onDeleted} />
     </details>
     <RedeemableResets inventory={account.redeemableResets} fresh={snapshotFresh && account.status !== 'reconnect' && freshReading(account.updatedAt, now)} providerId={providerId} now={now} />
   </article>;

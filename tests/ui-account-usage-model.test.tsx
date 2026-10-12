@@ -81,3 +81,8 @@ test('readUsageView defaults to row and remembers card', () => {
   expect(readUsageView()).toBe('card');
   expect(localStorage.getItem('cmux-companion-usage-view')).toBe('card');
 });
+
+test('accountRows without a known queue keeps every account out of the queue', () => {
+  const rows = accountRows(usage({ claude: [account({ id: 'one' })], codex: [account({ id: 'two' })] }), now, false);
+  expect(rows.map(row => [row.account.id, row.state, row.reset, row.usable])).toEqual([['one', 'Not in queue', null, false], ['two', 'Not in queue', null, false]]);
+});

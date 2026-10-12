@@ -462,8 +462,9 @@ describe("licence usage", () => {
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(1440));
     cy.findByRole('button', { name: 'Usable now' }).click();
     cy.get('.usage-row').should('have.length', 7).first().should('contain.text', 'work@example.test');
-    cy.findByRole('button', { name: /^Next reset$/ }).click();
+    cy.get('#usage-account-claude-personal').should('not.exist');
     cy.findByRole('complementary', { name: 'Next weekly reset' }).findByRole('link').click();
+    cy.findByRole('button', { name: /^Next reset$/ }).should('have.attr', 'aria-pressed', 'true');
     cy.focused().should('have.id', 'usage-account-claude-personal');
     cy.findByRole('button', { name: 'Show details for work@example.test' }).click();
     cy.get('#usage-row-detail-claude-work').should('be.visible').and('contain.text', 'Monthly provider limit').and('contain.text', 'Delete connection').and('contain.text', 'Check Claude resets');

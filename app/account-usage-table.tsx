@@ -32,7 +32,7 @@ export function AccountTable({ rows, usableOnly, now, snapshotFresh, nextReset, 
             <td className="usage-reset">{reset ? <><strong>{countdown(reset.window.resetAt, now)}</strong><small><time dateTime={reset.window.resetAt!}>{shortDate(reset.window.resetAt!)}</time></small></> : <small>No reset reported</small>}</td>
             <td className="usage-redeemable"><RedeemableResets compact inventory={account.redeemableResets} fresh={fresh && account.status !== 'reconnect' && freshReading(account.updatedAt, now)} providerId={provider.id} now={now} /></td>
             <td className="usage-queue-state"><span className={`queue-pill ${state.toLowerCase().replaceAll(' ', '-')}`}>{state}</span></td>
-            <td className="usage-expand"><button type="button" aria-expanded={open} aria-controls={`usage-row-detail-${account.id}`} aria-label={`${open ? 'Hide' : 'Show'} details for ${name}`} onClick={() => toggle(account.id)}>{open ? '⌃' : '⌄'}</button></td>
+            <td className="usage-expand"><button type="button" aria-expanded={open} aria-controls={open ? `usage-row-detail-${account.id}` : undefined} aria-label={`${open ? 'Hide' : 'Show'} details for ${name}`} onClick={() => toggle(account.id)}>{open ? '⌃' : '⌄'}</button></td>
           </tr>
           {open && <tr id={`usage-row-detail-${account.id}`} className="usage-row-detail"><td colSpan={COLUMNS}>
             <AccountDetailContent providerLabel={provider.label} account={account} now={now} capacityKnown={readings.capacityKnown} extras={readings.extras} onDeleted={() => onDeleted(account.id)} onReconnect={() => onReconnect(provider, account)} />

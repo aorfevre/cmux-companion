@@ -493,3 +493,48 @@ test('highlight links focus the matching table row', async () => {
   fireEvent.click(link);
   expect(document.activeElement?.id).toBe('usage-account-sample');
 });
+
+test('Row view drops queue positions after a failed refresh, as the queue does', async () => {
+  let failed = false;
+  await setup(async () => failed ? new Response(JSON.stringify({ error: 'Provider unavailable' }), { status: 503 }) : new Response(JSON.stringify(rowFixture())), 'row');
+  expect(document.getElementById('usage-account-soon')?.textContent).toContain('Use before reset');
+  failed = true;
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  const rows = Array.from(document.querySelectorAll('.usage-row'));
+  expect(rows).toHaveLength(4);
+  for (const row of rows) {
+    expect(row.textContent).toContain('Not in queue');
+    expect(row.textContent).toContain('No reset reported');
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Usable now' }));
+  expect(document.querySelectorAll('.usage-row')).toHaveLength(0);
+  expect(document.querySelector('.usage-table-empty')?.textContent).toBe('No usable capacity with an upcoming weekly reset is reported.');
+});
+
+test('Row view names an unavailable provider above the table', async () => {
+  const usage = rowFixture();
+  usage.providers[1].available = false;
+  await setup(async () => new Response(JSON.stringify(usage)), 'row');
+  expect(screen.getByText('OpenAI Codex did not return usage.')).toBeTruthy();
+  expect(document.getElementById('usage-account-codex-a')?.textContent).toContain('Unknown');
+});
+
+test('a highlight link clears Usable now so its hidden row can take focus', async () => {
+  await setup(async () => new Response(JSON.stringify(rowFixture())), 'row');
+  fireEvent.click(screen.getByRole('button', { name: 'Usable now' }));
+  expect(document.getElementById('usage-account-sample')).toBeNull();
+  fireEvent.click(within(screen.getByRole('complementary', { name: 'Next weekly reset' })).getByRole('link'));
+  expect(screen.getByRole('button', { name: 'Next reset' }).getAttribute('aria-pressed')).toBe('true');
+  expect(document.activeElement?.id).toBe('usage-account-sample');
+});
+
+test('the card hides Reconnect while a deletion is being confirmed', async () => {
+  const usage = fixture();
+  Object.assign(usage.providers[0].accounts[0], { status: 'reconnect', message: 'Sign in again.' });
+  await setup(async () => new Response(JSON.stringify(usage)));
+  expect(screen.getByRole('button', { name: 'Reconnect account' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Delete connection' }));
+  expect(screen.queryByRole('button', { name: 'Reconnect account' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.getByRole('button', { name: 'Reconnect account' })).toBeTruthy();
+});

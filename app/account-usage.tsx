@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 import { request } from "./api-request";
 import { ProviderLogo } from "./provider-logo";
 import './account-usage.css';
@@ -97,20 +98,23 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
     {loading && !usage && <div className="usage-loading"><i /><i /><i /></div>}
     {error && <div className="usage-error"><strong>Usage unavailable</strong><span>{error}</span><button onClick={() => load(true)}>Try again</button></div>}
     {usage && !usage.available && !error && <div className="usage-error"><strong>CCS usage is unavailable</strong><span>Check that CCS is installed on this Mac, then refresh.</span></div>}
-    {usage && <ResetOverview resets={resets} now={now} usableOnly={usableOnly} onUsableOnly={setUsableOnly} showQueue={view === 'card'} />}
-    {usage && <div className="all-accounts-head"><h2 className="all-accounts-heading">All accounts</h2>{view === 'row' && <QueueFilter usableOnly={usableOnly} onUsableOnly={setUsableOnly} />}{!narrow && <div className="usage-view-selector" role="group" aria-label="Account layout">
+    {usage && <ResetOverview resets={resets} now={now} usableOnly={usableOnly} onUsableOnly={setUsableOnly} showQueue={view === 'card'} onReveal={view === 'row' ? () => flushSync(() => setUsableOnly(false)) : undefined} />}
+    {usage && <div className="all-accounts-head"><h2 className="all-accounts-heading">All accounts</h2>{view === 'row' && <QueueFilter label="Account filter" usableOnly={usableOnly} onUsableOnly={setUsableOnly} />}{!narrow && <div className="usage-view-selector" role="group" aria-label="Account layout">
       <button aria-pressed={view === 'row'} onClick={() => changeView('row')}>Row</button><button aria-pressed={view === 'card'} onClick={() => changeView('card')}>Card</button>
     </div>}</div>}
-    {usage && view === 'row' && <AccountTable rows={accountRows(usage, now).filter(row => !usableOnly || row.usable)} usableOnly={usableOnly} now={now} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} nextReset={nextReset} onDeleted={connectionDeleted} onReconnect={(provider, account) => setReconnecting({ provider, account })} />}
+    {usage && view === 'row' && usage.providers.filter(provider => !provider.available).map(provider => <p className="provider-warning" key={provider.id}>{provider.label} did not return usage.</p>)}
+    {usage && view === 'row' && <AccountTable rows={accountRows(usage, now, !error).filter(row => !usableOnly || row.usable)} usableOnly={usableOnly} now={now} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} nextReset={nextReset} onDeleted={connectionDeleted} onReconnect={(provider, account) => setReconnecting({ provider, account })} />}
     {view === 'card' && <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection nextReset={nextReset} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} provider={provider} now={now} onDeleted={connectionDeleted} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>}
     {usage?.available && <details className="usage-privacy"><summary>About these readings</summary><p>Provider usage for your CCS connections, not billing credits. Missing limits are not reported, never zero. OAuth credentials are used only on your Mac to contact the provider and are never sent to this browser. Usage is checked at most once per account per minute. Rate-limited accounts wait longer before retrying; Refresh respects that wait. The reset queue compares overall weekly limits; Fable is shown in each Claude account and other model limits are in Details. Redeemable resets are saved options to restore quota, separate from automatic resets; check the provider for eligibility and redemption. Suggestions use reported limits and do not change account routing.</p></details>}
     {reconnecting && <ReconnectSheet key={reconnecting.account.id} provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
   </section>;
 }
 
-function AccountResetLink({ reset }: { reset: UpcomingReset }) {
+// onReveal makes the target visible first: Row view's filter can hide the row.
+function AccountResetLink({ reset, onReveal }: { reset: UpcomingReset; onReveal?: () => void }) {
   return <a href={`#usage-account-${encodeURIComponent(reset.account.id)}`} onClick={event => {
     event.preventDefault();
+    onReveal?.();
     const row = document.getElementById(`usage-account-${reset.account.id}`);
     row?.scrollIntoView({ block: 'nearest' }); row?.focus({ preventScroll: true });
   }}><ProviderLogo provider={reset.provider.id} />{reset.provider.label} · {reset.account.email || reset.account.label}</a>;
@@ -128,25 +132,25 @@ function SessionContext({ reset, now }: { reset: UpcomingReset; now: number }) {
   }
   return <span className="session-context"> · 5h: {label}</span>;
 }
-function QueueFilter({ usableOnly, onUsableOnly }: { usableOnly: boolean; onUsableOnly: (value: boolean) => void }) {
-  return <div className="reset-filter" role="group" aria-label="Reset queue filter">
+function QueueFilter({ label = 'Reset queue filter', usableOnly, onUsableOnly }: { label?: string; usableOnly: boolean; onUsableOnly: (value: boolean) => void }) {
+  return <div className="reset-filter" role="group" aria-label={label}>
     <button aria-pressed={!usableOnly} onClick={() => onUsableOnly(false)}>Next reset</button><button aria-pressed={usableOnly} onClick={() => onUsableOnly(true)}>Usable now</button>
   </div>;
 }
-function ResetOverview({ resets, now, usableOnly, onUsableOnly, showQueue }: { resets: UpcomingReset[]; now: number; usableOnly: boolean; onUsableOnly: (value: boolean) => void; showQueue: boolean }) {
+function ResetOverview({ resets, now, usableOnly, onUsableOnly, showQueue, onReveal }: { resets: UpcomingReset[]; now: number; usableOnly: boolean; onUsableOnly: (value: boolean) => void; showQueue: boolean; onReveal?: () => void }) {
   const next = resets.find(reset => reset.window.remainingPercent > 0);
   const useNext = resets.find(reset => usableBeforeReset(reset, now));
   const visible = usableOnly ? resets.filter(reset => usableBeforeReset(reset, now)) : resets;
   return <section className="reset-overview" aria-label="Capacity before reset">
     <div className="reset-highlights">
       <aside className="next-usage-reset" aria-label="Next weekly reset"><h2>Next weekly reset</h2>{next ? <>
-        <ResetCountdown reset={next} now={now} /><AccountResetLink reset={next} />
+        <ResetCountdown reset={next} now={now} /><AccountResetLink reset={next} onReveal={onReveal} />
         <p>{limitLabel(next.window)} · {next.window.remainingPercent}% unused<SessionContext reset={next} now={now} /></p>
         <p>{resetConstraint(next) || 'Earliest reset with weekly quota remaining'}</p><p><time dateTime={next.window.resetAt!}>{new Date(next.reset).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time></p>
       </> : <p>No upcoming weekly reset with unused quota is reported in fresh readings.</p>}</aside>
       <aside className="use-before-reset" aria-label="Weekly capacity to use before reset"><h2>Weekly capacity to use before reset</h2>{useNext ? <>
         <div className="capacity-amount"><strong>{useNext.window.remainingPercent}%</strong><span>unused</span></div>
-        <AccountResetLink reset={useNext} /><p>{limitLabel(useNext.window)} · {resetText(useNext.window.resetAt, now)}</p>
+        <AccountResetLink reset={useNext} onReveal={onReveal} /><p>{limitLabel(useNext.window)} · {resetText(useNext.window.resetAt, now)}</p>
         <p>Based on reported limits<SessionContext reset={useNext} now={now} /></p>
       </> : <p>No usable capacity with an upcoming weekly reset is reported.</p>}</aside>
     </div>
