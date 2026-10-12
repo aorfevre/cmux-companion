@@ -148,3 +148,32 @@ test('acquireLock treats a dead, stale spawn claim without an engine pid as an o
   await claim({ enginePid: process.pid }); await utimes(lock, new Date(now - 16 * 60_000), new Date(now - 16 * 60_000));
   assert.equal(await acquireLock(lock, { now }), null, 'a live engine keeps the claim');
 });
+
+test('acquireLock reclaims a stale lock whose owner file is missing, empty or pid-less, and protects a fresh one', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-orphan-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock'), owner = join(lock, 'owner.json');
+  const shapes = [
+    ['missing', null],
+    ['empty', ''],
+    ['pid-less', JSON.stringify({ createdAt: '2026-09-16T09:23:42.601Z', spawnClaim: true })],
+    ['zero pid', JSON.stringify({ pid: 0, createdAt: '2026-09-16T09:23:42.601Z' })],
+  ];
+  for (const [label, contents] of shapes) {
+    await rm(lock, { recursive: true, force: true }); await mkdir(lock, { mode: 0o700 });
+    if (contents !== null) await writeFile(owner, contents);
+    assert.equal(await acquireLock(lock, { now: Date.now() }), null, `${label}: a fresh lock stays protected`);
+    const release = await acquireLock(lock, { now: Date.now() + 16 * 60_000 });
+    assert.equal(typeof release, 'function', `${label}: a stale ownerless lock is an orphan`);
+    assert.equal((await readJson(owner)).pid, process.pid, `${label}: the reclaimer records itself`);
+    await release();
+  }
+});
+
+test('acquireLock removes the directory it created when the owner write fails', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-write-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock');
+  await assert.rejects(acquireLock(lock, { write: async () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); } }), { code: 'ENOSPC' });
+  await assert.rejects(readFile(join(lock, 'owner.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(lock), { code: 'ENOENT' });
+  const release = await acquireLock(lock); assert.equal(typeof release, 'function', 'the next claimant is not blocked'); await release();
+});
