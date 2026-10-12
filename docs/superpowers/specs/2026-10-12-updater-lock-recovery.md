@@ -26,8 +26,13 @@ the Setup page. The 2026-09-16 fix (commit 927d9d41) covered a claim with a dead
 3. A lock younger than 15 minutes is protected in every case, so a claim that is
    still being recorded is never stolen.
 4. The claimant that fails to record its owner must remove the directory it
-   created before it exits.
-5. A cycle that skips because the lock is held reports that fact once per state
+   created before it exits. If the write fails because the directory is gone,
+   another claimant reclaimed it; the loser yields and removes nothing.
+5. Reclamation is serialized: a claimant removes a stale lock only while it
+   holds an empty marker directory beside it, and it re-checks staleness under
+   that marker. A marker left by a crashed reclaimer is replaced only once it is
+   itself older than the stale window.
+6. A cycle that skips because the lock is held reports that fact once per state
    change in the updater log, not once per cycle.
 
 Legacy "unknown launch claims" (a lock with no readable owner) no longer exist:
@@ -70,6 +75,7 @@ claim the lock and logs one line until space returns.
 | Criterion | Verification |
 | --- | --- |
 | `acquireLock` reclaims a stale lock with a missing, empty or pid-less owner and protects a fresh one. | `updater/tests/unit.test.mjs` lock cases. |
+| Concurrent claimants of one stale lock produce exactly one owner, in both readers. | Parallel `acquireLock` calls and parallel bootstrap cycles. |
 | The bootstrap reclaims the same shapes and still protects fresh claims and live engines. | `tests/updater-native.test.mjs` bootstrap claim test. |
 | A bootstrap whose owner write fails removes the lock directory before exiting non-zero. | Bootstrap test with an unwritable owner path. |
 | A held lock produces exactly one log line per state change in the launcher. | Launcher unit test with a fake bootstrap exit code. |
