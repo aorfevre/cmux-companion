@@ -108,31 +108,66 @@ async function deadPid() {
   return child.pid;
 }
 
-test('bootstrap reclaims an orphaned spawn claim once its owner is dead and stale, but keeps a fresh or live one', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'updater-bootstrap-claim-')); t.after(() => rm(root, { recursive: true, force: true }));
+async function bootstrapFixture(t, prefix) {
+  const root = await mkdtemp(join(tmpdir(), prefix)); t.after(() => rm(root, { recursive: true, force: true }));
   const paths = defaultPaths(root), sha = 'a'.repeat(40), marker = join(root, 'executed');
   const scripts = join(paths.companionStore, 'releases', sha, 'updater/scripts'); await mkdir(scripts, { recursive: true });
   await writeFile(join(scripts, 'local-updater.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync(process.env.CMUX_TEST_MARKER, '${sha}');\n`);
   await mkdir(paths.stateRoot, { recursive: true }); await symlink(`releases/${sha}`, join(paths.companionStore, 'current'));
   const bootstrap = new URL('../updater/scripts/bootstrap.mjs', import.meta.url).pathname;
-  const options = { env: { HOME: root, CMUX_COMPANION_HOME: root, CMUX_TEST_MARKER: marker }, timeoutMs: 10000 };
-  const owner = join(paths.lock, 'owner.json'), pid = await deadPid(), stale = new Date(Date.now() - 16 * 60_000);
-  const claim = async (details, at) => {
-    await rm(paths.lock, { recursive: true, force: true }); await mkdir(paths.lock, { mode: 0o700 });
-    await writeFile(owner, JSON.stringify({ pid, createdAt: new Date().toISOString(), spawnClaim: true, ...details }));
-    if (at) await utimes(paths.lock, at, at);
+  const env = { HOME: root, CMUX_COMPANION_HOME: root, CMUX_TEST_MARKER: marker };
+  const cycle = (extraEnv = {}) => run(process.execPath, [bootstrap], { env: { ...env, ...extraEnv }, timeoutMs: 10000, allowFailure: true });
+  return { paths, sha, marker, cycle };
+}
+
+test('bootstrap reclaims dead or ownerless stale locks, keeps fresh or live ones, and exits 3 when held', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-claim-');
+  const owner = join(f.paths.lock, 'owner.json'), pid = await deadPid(), stale = new Date(Date.now() - 16 * 60_000);
+  const claim = async (contents, at) => {
+    await rm(f.paths.lock, { recursive: true, force: true }); await mkdir(f.paths.lock, { mode: 0o700 });
+    if (contents !== null) await writeFile(owner, typeof contents === 'string' ? contents : JSON.stringify({ pid, createdAt: new Date().toISOString(), spawnClaim: true, ...contents }));
+    if (at) await utimes(f.paths.lock, at, at);
   };
-  // A fresh claim with no engine pid protects an engine spawn that is still being recorded.
-  await claim({}); await run(process.execPath, [bootstrap], options);
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
-  // A stale claim whose owner is dead is an orphan; the bootstrap reclaims it and runs.
-  await claim({}, stale); await run(process.execPath, [bootstrap], options);
-  assert.equal(await readFile(marker, 'utf8'), sha);
-  // A stale claim with a live engine stays protected.
-  await rm(marker); await claim({ enginePid: process.pid }, stale); await run(process.execPath, [bootstrap], options);
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
-  await claim({ pid: process.pid }, stale); await run(process.execPath, [bootstrap], options);
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  const held = async label => { const result = await f.cycle(); assert.equal(result.code, 3, `${label}: exit 3 while held`); await assert.rejects(readFile(f.marker), { code: 'ENOENT' }, `${label}: engine not run`); };
+  const reclaimed = async label => { const result = await f.cycle(); assert.equal(result.code, 0, `${label}: exit 0`); assert.equal(await readFile(f.marker, 'utf8'), f.sha, `${label}: engine ran`); await rm(f.marker); };
+  // Fresh claims of every shape protect a spawn that is still being recorded.
+  await claim({}); await held('fresh dead pid');
+  await claim(null); await held('fresh missing owner');
+  await claim(''); await held('fresh empty owner');
+  // Stale claims without a live process are orphans.
+  await claim({}, stale); await reclaimed('stale dead pid');
+  await claim(null, stale); await reclaimed('stale missing owner');
+  await claim('', stale); await reclaimed('stale empty owner');
+  await claim({ pid: undefined, enginePid: undefined, spawnClaim: true }, stale); await reclaimed('stale pid-less owner');
+  // Live processes keep their lock however old it is.
+  await claim({ enginePid: process.pid }, stale); await held('stale live engine');
+  await claim({ pid: process.pid }, stale); await held('stale live owner');
+});
+
+test('bootstrap reports an engine that exits 3 or 4 as a plain failure', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-engine-exit-');
+  const engine = join(f.paths.companionStore, 'releases', f.sha, 'updater/scripts/local-updater.mjs');
+  await writeFile(engine, 'process.exit(3);\n');
+  assert.equal((await f.cycle()).code, 1, 'engine exit 3 is not reported as lock held');
+  await writeFile(engine, 'process.exit(4);\n');
+  assert.equal((await f.cycle()).code, 1, 'engine exit 4 is not reported as low disk');
+});
+
+test('bootstrap removes the lock directory when its owner write fails', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-write-');
+  const result = await f.cycle({ CMUX_COMPANION_UPDATER_FAILPOINT: 'owner-write' });
+  assert.equal(result.code, 1); assert.match(result.stderr, /ENOSPC/);
+  await assert.rejects(readFile(f.paths.lock), { code: 'ENOENT' }, 'no ownerless directory survives');
+  await assert.rejects(readFile(f.marker), { code: 'ENOENT' });
+  const next = await f.cycle(); assert.equal(next.code, 0, 'the next cycle is not blocked'); assert.equal(await readFile(f.marker, 'utf8'), f.sha);
+});
+
+test('bootstrap refuses to claim the lock below the free-space floor and exits 4', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-disk-');
+  const result = await f.cycle({ CMUX_COMPANION_UPDATER_MIN_FREE_BYTES: String(Number.MAX_SAFE_INTEGER) });
+  assert.equal(result.code, 4);
+  await assert.rejects(readFile(f.paths.lock), { code: 'ENOENT' }, 'no lock directory was created');
+  await assert.rejects(readFile(f.marker), { code: 'ENOENT' });
 });
 
 test('acquireLock treats a dead, stale spawn claim without an engine pid as an orphan', async t => {

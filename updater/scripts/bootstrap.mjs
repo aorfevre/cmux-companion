@@ -1,14 +1,22 @@
 #!/usr/bin/env node
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
+// This file runs from ~/.local/libexec and must stay standalone: it cannot import
+// updater/src. Keep the lock rule identical to updater/src/lock.mjs.
 const home = process.env.CMUX_COMPANION_HOME || process.env.HOME;
 const stateRoot = join(home, ".config", "cmux-companion", "updater");
 const lockPath = join(stateRoot, "lock");
 const transactionPath = join(stateRoot, "transaction.json");
 const currentEngine = join(home, ".local", "share", "cmux-companion", "current", "updater", "scripts", "local-updater.mjs");
+// Exit codes the launcher reports once per state change (updater/src/cycle-report.mjs).
+const EXIT_LOCK_HELD = 3;
+const EXIT_LOW_DISK = 4;
+const LOCK_STALE_MS = 15 * 60_000;
+const MIN_FREE_BYTES = Number(process.env.CMUX_COMPANION_UPDATER_MIN_FREE_BYTES) || 64 * 1024 * 1024;
+const failpoint = process.env.CMUX_COMPANION_UPDATER_FAILPOINT || null;
 let preserveLock = false;
 const digest = async (path) => createHash("sha256").update(await readFile(path)).digest("hex");
 async function readTransaction() {
@@ -16,34 +24,45 @@ async function readTransaction() {
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
 
+function processAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+}
+function ownerAlive(owner) {
+  return [owner?.pid, owner?.enginePid].some(pid => Number.isInteger(pid) && pid > 0 && processAlive(pid));
+}
+
 async function acquire() {
   try {
     await mkdir(lockPath, { mode: 0o700 });
   } catch (error) {
-    if (error.code === "EEXIST") {
-      const [owner, info] = await Promise.all([
-        readFile(join(lockPath, "owner.json"), "utf8").then(JSON.parse).catch(() => ({})),
-        stat(lockPath),
-      ]);
-      if (!Number.isInteger(owner.pid) || owner.pid <= 0) return false;
-      let alive = false;
-      if (Number.isInteger(owner.pid)) {
-        try { process.kill(owner.pid, 0); alive = true; } catch (pidError) { alive = pidError.code === "EPERM"; }
-      }
-      if (Number.isInteger(owner.enginePid)) {
-        try { process.kill(owner.enginePid, 0); alive = true; } catch (pidError) { if (pidError.code === 'EPERM') alive = true; }
-      }
-      // An in-progress spawn claim (no engine pid yet) is protected only while
-      // its owner lives or the claim is fresh; a crashed owner must not deadlock.
-      if (alive || Date.now() - info.mtimeMs <= 15 * 60_000) return false;
-      await rm(lockPath, { recursive: true });
-      await mkdir(lockPath, { mode: 0o700 });
-    } else {
-      throw error;
-    }
+    if (error.code !== "EEXIST") throw error;
+    const [owner, info] = await Promise.all([
+      readFile(join(lockPath, "owner.json"), "utf8").then(JSON.parse).catch(() => ({})),
+      stat(lockPath),
+    ]);
+    // Only a live owner or engine holds the lock. A dead pid, or an unreadable or
+    // pid-less owner left by a claimant that crashed between mkdir and the owner
+    // write, is an orphan once the directory is older than the stale window. A
+    // fresh directory is always protected so a claim being recorded is not stolen.
+    if (ownerAlive(owner) || Date.now() - info.mtimeMs <= LOCK_STALE_MS) return false;
+    await rm(lockPath, { recursive: true });
+    await mkdir(lockPath, { mode: 0o700 });
   }
-  await writeFile(join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }), { mode: 0o600 });
+  try {
+    if (failpoint === "owner-write") throw Object.assign(new Error("ENOSPC: injected owner write failure"), { code: "ENOSPC" });
+    await writeFile(join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }), { mode: 0o600 });
+  } catch (error) {
+    // Never leave an ownerless directory behind: it would read as held. Keep the
+    // original error even when the cleanup itself fails.
+    try { await rm(lockPath, { recursive: true, force: true }); } catch { /* reported by the original error */ }
+    throw error;
+  }
   return true;
+}
+
+async function freeBytes() {
+  const info = await statfs(stateRoot);
+  return Number(info.bavail) * Number(info.bsize);
 }
 
 async function saveOwner(details) {
@@ -65,7 +84,8 @@ async function execute(engine, transactionId) {
   });
 }
 
-if (!await acquire()) process.exit(0);
+if (await freeBytes() < MIN_FREE_BYTES) process.exit(EXIT_LOW_DISK);
+if (!await acquire()) process.exit(EXIT_LOCK_HELD);
 let exitCode = 0;
 try {
   const transaction = await readTransaction();
@@ -79,4 +99,5 @@ try {
 } finally {
   if (!preserveLock) await rm(lockPath, { recursive: true, force: true });
 }
-process.exitCode = exitCode;
+// Exit codes 3 and 4 belong to this bootstrap; an engine that exits with them is a plain failure.
+process.exitCode = [EXIT_LOCK_HELD, EXIT_LOW_DISK].includes(exitCode) ? 1 : exitCode;
