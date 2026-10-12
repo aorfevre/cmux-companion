@@ -102,8 +102,13 @@ test('restart preserves exact messages, acknowledgements and supervisor credenti
   const path = join(directory, 'journal.sqlite'), f = fixture(t, path);
   f.command('send_goal_message', { message: 'Continue after restart.' });
   f.command('supervisor_ack', { through: 2 }, f.authority);
+  f.command('supervisor_wait', { throughWake: f.goal.conversation.wake }, f.authority);
+  f.command('send_goal_message', { message: 'Wake after reopening.' });
   const reopened = new OrchestrationStore({ path }); t.after(() => reopened.close());
   assert.deepEqual(reopened.get('g'), f.goal);
+  assert.equal(reopened.get('g').conversation.capacityReleased, true);
+  assert.equal(reopened.executionCapacity('g').total, 0);
+  assert.equal(reopened.ownedCapacity('g', 'interactive').total, 1);
   assert.deepEqual(new BridgeAuthority(reopened).authenticate(f.token), f.authority);
   assert.deepEqual(readyWork(reopened.get('g')), [], 'restart does not replace an owned supervisor');
 });

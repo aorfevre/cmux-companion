@@ -376,3 +376,42 @@ navigation warnings remain. The initial targeted typecheck caught missing JSDoc
 and unsafe access to unknown request parameters; corrected both before full
 verification. All six supervisor-bridge regressions and the existing MCP output
 backpressure regressions passed. No coverage thresholds were changed.
+
+## Autonomous supervision: shared capacity admission — 2026-10-12
+
+Conversational supervisors now share global and per-goal execution admission with
+background workers. Recording an idle wait releases a persisted capacity
+reservation without releasing physical process ownership. A queued wake does not
+itself reserve another slot: the agent transport atomically requests supervisor
+activation before returning new input to the model. Capacity contention stays
+inside that same wait call. Unknown/pending ownership counts conservatively;
+replacement supervisors start with capacity reserved. Legacy planners retain their
+original separate planner pool, and the planner session limit still bounds idle
+native sessions.
+
+The saved reservation survives reopening the SQLite journal. Service admission
+also checks ordinary supervisor commands after an idle release, so skipping the
+activation command cannot bypass the shared limit. Existing pairing, scoped
+agent authority, exact command receipts, and human approval boundaries apply.
+The conversation displays a queued supervisor as waiting for execution capacity
+with no action needed, rather than incorrectly claiming it is working.
+
+Passed: 92 targeted scheduler/conversation/bridge tests, including global=1 and
+perGoal=1 dispatch, unknown-worker retention, supervisor reactivation, and legacy
+coexistence. A fake-clock test holds one idle tool call through five seconds of
+capacity contention, then verifies that uncertain activation delivery retries
+its exact command envelope. The first fake-clock run failed because a previously
+captured timer function bypassed Node's clock mock; changed timer access to the
+module property, added cancellation cleanup, and terminated only that identified
+stuck test process before rerunning successfully. Real-service API coverage also
+checks idle release and activation through the authenticated bridge.
+
+Full `npm run verify` passed: 1,100 backend tests plus one intentional skip,
+97.29% backend lines, lint, typecheck and build. Its 214-test UI pass preceded the
+new capacity status assertion; the final UI coverage run passed 215 tests at
+94.88% lines. The real-service Cypress conversation delivery journey passed in
+41 seconds. The new capacity label is directly covered by the UI test; the
+scripted browser journey does not force capacity contention. Existing navigation
+warnings remain; no thresholds changed. Native CCS idle-timeout compatibility
+and intervention-free end-to-end trials remain unverified; no live service or
+supervisor was restarted to load this change.

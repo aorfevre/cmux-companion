@@ -26,7 +26,7 @@ export function GoalConversation({ goal, disabled, act }: {
                 : goal.status === 'merged' ? 'Merged'
                   : goal.status === 'aborted' ? 'Aborted · evidence retained'
                     : active.length ? `${active.length} agent${active.length === 1 ? '' : 's'} working`
-                      : conversation.waiting ? 'Supervisor waiting for input or work results' : 'Supervisor working';
+                      : conversation.waiting ? 'Supervisor waiting for input or work results' : conversation.capacityReleased ? 'Supervisor waiting for execution capacity · no action needed' : 'Supervisor working';
   return <article className="goal-conversation" aria-label="Goal conversation">
     <header className="orch-card"><p className="orch-eyebrow">GOAL</p><h1>{goal.title}</h1><p role="status">{status}</p>
       <div className="orch-actions">{['pause_goal', 'resume_goal', 'retry_startup', 'recover_goal', 'retry_attempt', 'abort'].map(type => button(decision(type)))}</div>

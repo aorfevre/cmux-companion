@@ -66,7 +66,7 @@ export interface GoalMessage {
 export interface GoalConversation {
   messages: GoalMessage[]; supervisorAttemptId: string | null;
   wake: number; seenWake: number; waiting: boolean; paused: boolean;
-  dispatchApproved: boolean;
+  dispatchApproved: boolean; capacityReleased?: boolean;
 }
 export interface Goal {
   experienceVersion?: 2; conversation?: GoalConversation;

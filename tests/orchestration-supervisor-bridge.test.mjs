@@ -47,6 +47,13 @@ test('supervisor MCP carries exact receipts through questions, proposals and app
   assert.equal(store.get('goal').conversation.messages[2].delivery, 'answered');
   assert.equal(store.operations().filter(op => op.kind === 'terminate').length, 0);
   assert.ok(!JSON.stringify(await bridge.status()).includes(credential));
+  const cursor = store.get('goal').conversation.wake;
+  await invoke('conversation', send('idle', 'wait', { throughWake: cursor }));
+  assert.equal(store.executionCapacity('goal').total, 0);
+  service.execute({ id: 'wake', goalId: 'goal', expectedVersion: store.get('goal').version, type: 'send_goal_message', payload: { message: 'Continue within the proposed scope.' } }, { kind: 'user' });
+  const resumed = await bridge.waitForInput(cursor);
+  assert.equal(resumed.conversation.capacityReleased, false);
+  assert.equal(store.executionCapacity('goal').total, 1);
 });
 
 test('supervisor tools stay unavailable to legacy planners and cannot bypass pairing or origin checks', async t => {
@@ -142,4 +149,35 @@ test('idle cancellation aborts an in-flight authenticated status request', { tim
   assert.equal(request.url, '/api/orchestration/agent/status');
   assert.equal(request.headers.authorization, 'Bearer fixture-only');
   controller.abort(); await rejected;
+});
+
+test('one idle tool waits through capacity contention without another model turn and preserves uncertain activation receipts', { timeout: 5000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const bridge = createBridge({ endpoint: 'http://127.0.0.1', credential: 'unused' });
+  let occupied = true, released = true, uncertain = true, finished = false;
+  const submissions = [];
+  bridge.status = async () => ({ id: 'goal', version: 9, experienceVersion: 2, conversation: { wake: 2, seenWake: 1, paused: false, capacityReleased: released } });
+  bridge.submit = async command => {
+    submissions.push(structuredClone(command));
+    if (occupied) throw Object.assign(new Error('Occupied'), { code: 'CAPACITY_FULL' });
+    if (uncertain) { uncertain = false; throw new Error('Response unavailable'); }
+    released = false;
+  };
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const pending = bridge.waitForInput(1, controller.signal).then(result => { finished = true; return result; });
+  pending.catch(() => {});
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  await flush();
+  for (let second = 0; second < 5; second++) { t.mock.timers.tick(1000); await flush(); }
+  assert.equal(finished, false); assert.equal(submissions.length, 6);
+  occupied = false;
+  t.mock.timers.tick(1000); await flush();
+  const uncertainCommand = submissions.at(-1);
+  assert.equal(finished, false);
+  t.mock.timers.tick(1000); await flush();
+  const result = await pending;
+  assert.deepEqual(submissions.at(-1), uncertainCommand, 'uncertain activation retries its exact durable envelope');
+  assert.equal(result.conversation.capacityReleased, false);
+  assert.ok(submissions.every(command => command.type === 'supervisor_activate'));
 });

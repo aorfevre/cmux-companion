@@ -820,3 +820,48 @@ test('running verification settles without cancelling or releasing a blocking re
   assert.ok(!f.store.ready().some(work => work.role === 'integrator'));
   f.recover(); assert.ok(f.store.ready().some(work => work.role === 'integrator'));
 });
+
+test('a saved idle supervisor yields the last shared slot to approved work and reacquires it only after workers stop', t => {
+  const f = fixture(t, { global: 1, perGoal: 1, planners: 2 });
+  f.command('g', 'create_goal', { repositoryId: 'repo', title: 'Shared capacity', baseSha: BASE, experienceVersion: 2 }, 'user');
+  f.command('g', 'set_plan_review_policy', { enabled: false });
+  const supervisor = f.request('g', 'planner'); f.dispatch('g', supervisor);
+  const authority = { kind: 'agent', goalId: 'g', attemptId: supervisor, role: 'planner', generation: 1, revision: 0 };
+  let next = 0;
+  const agent = (type, payload = {}) => f.service.execute({ id: `supervisor-${++next}`, goalId: 'g', expectedVersion: f.store.get('g').version, type, payload }, authority);
+  agent('supervisor_propose', { contract: contract() });
+  f.command('g', 'approve', { revision: 1 }, 'user');
+  agent('supervisor_dispatch');
+  assert.equal(f.store.executionCapacity('g').total, 1);
+  assert.throws(() => f.request('g', 'implementer', 'A'), { code: 'CAPACITY_FULL' });
+  agent('supervisor_wait', { throughWake: f.store.get('g').conversation.wake });
+  assert.equal(f.store.executionCapacity('g').total, 0);
+  assert.equal(f.store.ownedCapacity('g', 'interactive').total, 1, 'idle still owns its native session');
+  const worker = f.request('g', 'implementer', 'A'); f.dispatch('g', worker);
+  f.command('g', 'send_goal_message', { message: 'Keep the approved scope.' }, 'user');
+  const wake = f.store.get('g').conversation.wake;
+  assert.equal(f.store.get('g').conversation.waiting, false, 'wake is queued without taking another slot');
+  assert.equal(f.store.get('g').conversation.capacityReleased, true);
+  assert.equal(f.store.executionCapacity('g').total, 1);
+  assert.throws(() => agent('supervisor_activate', { throughWake: wake }), { code: 'CAPACITY_FULL' });
+  assert.throws(() => agent('supervisor_reply', { message: 'Cannot bypass activation.' }), { code: 'CAPACITY_FULL' });
+  f.command('g', 'record_failure', { attemptId: worker, error: 'Uncertain ownership', uncertain: true });
+  assert.throws(() => agent('supervisor_activate', { throughWake: f.store.get('g').conversation.wake }), { code: 'CAPACITY_FULL' });
+  f.command('g', 'record_stopped', { attemptId: worker });
+  agent('supervisor_activate', { throughWake: f.store.get('g').conversation.wake });
+  assert.equal(f.store.get('g').conversation.capacityReleased, false);
+  assert.equal(f.store.executionCapacity('g').total, 1);
+  agent('supervisor_wait', { throughWake: f.store.get('g').conversation.wake });
+  f.command('g', 'record_failure', { attemptId: supervisor, error: 'Lost supervisor', uncertain: true });
+  assert.equal(f.store.executionCapacity('g').total, 1, 'unknown supervisor ownership cannot release capacity');
+});
+
+test('conversational planners share global admission while legacy planners retain their own pool', t => {
+  const f = fixture(t, { global: 1, perGoal: 1, planners: 3 });
+  f.create('legacy'); f.request('legacy', 'planner');
+  for (const id of ['a', 'b']) f.command(id, 'create_goal', { repositoryId: 'repo', title: id, baseSha: BASE, experienceVersion: 2 }, 'user');
+  f.request('a', 'planner');
+  assert.throws(() => f.request('b', 'planner'), { code: 'CAPACITY_FULL' });
+  assert.equal(f.store.executionCapacity('a').total, 1);
+  assert.equal(f.store.ownedCapacity('a', 'interactive').total, 2);
+});

@@ -55,3 +55,10 @@ test('result evidence and publication approval stay pinned to the integrated com
   expect(act).toHaveBeenCalledWith(value, value.actions[0]);
   expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(true);
 });
+
+test('a queued supervisor wake reports capacity waiting instead of working or needing approval', () => {
+  const value = goal(); value.status = 'discovering';
+  value.conversation!.capacityReleased = true; value.conversation!.waiting = false;
+  render(<GoalConversation goal={value} disabled={false} act={vi.fn()} />);
+  expect(screen.getByRole('status').textContent).toBe('Supervisor waiting for execution capacity · no action needed');
+});

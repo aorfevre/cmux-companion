@@ -429,6 +429,7 @@ export function transition(before, command, authority) {
       if (role === 'planner' && goal.conversation) {
         if (goal.conversation.supervisorAttemptId) appendMessage(goal, command.id, 'service', 'progress', 'Restarting supervision from the saved conversation after confirmed termination and recovery authorization. The previous native session remains in the attempt history.');
         goal.conversation.supervisorAttemptId = attempt.id;
+        goal.conversation.capacityReleased = false;
       }
       if (role === 'review_fixer' && goal.reviewRound) goal.reviewRound.attemptId = id;
       intent('launch', operationId, id, { role, mode, target, taskId }); emit('attempt_queued', { attemptId: id, role }); break;

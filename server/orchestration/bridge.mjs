@@ -1,5 +1,6 @@
 // Agent-side transport only. This executable has no workflow storage imports.
-import { setTimeout as delay } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
+import timers from 'node:timers/promises';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -28,6 +29,7 @@ export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
      * @param {number} throughWake @param {AbortSignal} [signal] */
     async waitForInput(throughWake, signal) {
       if (!Number.isSafeInteger(throughWake) || throughWake < 0) throw new Error('Invalid conversation cursor');
+      /** @type {import('./types.d.ts').Command | null} */ let activation = null;
       for (;;) {
         let state;
         try { signal?.throwIfAborted(); state = await this.status(signal); }
@@ -35,12 +37,22 @@ export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
           signal?.throwIfAborted();
           const code = /** @type {{code?: string}} */ (error).code;
           if (code && !['REQUEST_FAILED', 'NOT_READY'].includes(code)) throw error;
-          await delay(1000, undefined, { signal }); continue;
+          await timers.setTimeout(1000, undefined, { signal }); continue;
         }
         if (state.experienceVersion !== 2 || !state.conversation) throw new Error('Conversation unavailable');
         if (throughWake > state.conversation.wake) throw new Error('Conversation cursor is ahead of saved state');
-        if (!state.conversation.paused && state.conversation.wake > throughWake) return state;
-        await delay(1000, undefined, { signal });
+        if (!state.conversation.paused && state.conversation.wake > throughWake) {
+          if (!state.conversation.capacityReleased) return state;
+          activation ??= { id: randomUUID(), goalId: state.id, expectedVersion: state.version, type: 'supervisor_activate', payload: { throughWake: state.conversation.wake } };
+          try { await this.submit(activation); activation = null; continue; }
+          catch (error) {
+            signal?.throwIfAborted();
+            const code = /** @type {{code?: string}} */ (error).code;
+            if (['CAPACITY_FULL', 'VERSION_CONFLICT', 'NOT_READY'].includes(code ?? '')) activation = null;
+            else if (code && code !== 'REQUEST_FAILED') throw error;
+          }
+        }
+        await timers.setTimeout(1000, undefined, { signal });
       }
     },
     /** The accepted command and check receipt remain separate: retrying the same
@@ -53,7 +65,7 @@ export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
         const body = await response.json();
         if (!response.ok) throw Object.assign(new Error('Worker check rejected'), { code: body.code || 'REQUEST_FAILED' });
         if (body.status !== 'pending') return body;
-        await delay(250);
+        await timers.setTimeout(250);
       }
     },
     /** @param {string} id @param {number} [offset] */
