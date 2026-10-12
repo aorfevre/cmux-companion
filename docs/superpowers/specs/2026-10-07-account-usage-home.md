@@ -101,6 +101,9 @@ details are identified explicitly; null dates are not guessed.
 
 Claude inventory comes from the read-only OAuth usage query `cedar_ember=1`,
 with its existing exact-account credentials, rate budget and failure handling.
+The request uses the observed Claude CLI compatibility identity because the
+provider gates inventory on client identity; ineligible or absent blocks stay
+unknown instead of implying no saved resets.
 The observed `cedar_ember.grants` fields are parsed defensively; grant IDs and
 raw responses are never returned or persisted. No immediate fallback request
 bypasses the one-minute usage budget. Codex reads the available count from usage
