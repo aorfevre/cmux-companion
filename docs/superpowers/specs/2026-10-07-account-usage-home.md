@@ -90,7 +90,9 @@ resource allocation; no quota is promised beyond the limits actually reported.
 
 Every account has an uncollapsed Redeemable resets row with the reported count,
 nearest reported expiry (local date/time and countdown), and a link to the
-provider's usage page. Unknown, stale or failed inventory says Not reported or
+provider's usage page. Quota availability and reset inventory are independent: an account with fresh
+reset inventory but no usage windows remains unavailable for quota while its saved
+resets stay visible. Unknown, stale or failed inventory says Not reported or
 Awaiting refresh, never zero. Explicitly reported empty inventory says None
 reported. Saved resets are separate from automatic weekly/session resets and
 are never redeemed by this screen. Claude grants that are paused, future, spent
@@ -123,11 +125,11 @@ fixture verification must not be represented as a live account reconciliation.
 
 ## Acceptance criteria
 | Criterion | Verification |
+| --- | --- |
 | Scoped Fable data is preserved, deduplicated and never substituted for overall weekly capacity. | Backend provider-shaped scoped/legacy regression fixtures. |
 | Both providers expose only safe reset counts/expiry metadata; missing or malformed blocks remain unknown, failed details preserve quota, and refresh/cooldown cannot multiply requests. | Backend normalization and mocked endpoint request-count tests. |
 | Fable and redeemable reset rows remain visible with Details closed on desktop and mobile. | Account usage Cypress journey at 390 and 1440 pixels. |
 | Counts and expiry text respond to time passage, partial details, stale readings and refresh failures without promising redemption. | Fake-clock account usage UI regressions. |
-| --- | --- |
 | Home opens account usage; existing explicit destinations remain reachable. | Navigation UI test. |
 | A new device pairs before seeing protected usage. | Cypress home pairing journey. |
 | Anthropic/OpenAI logos precede provider names in queue links and both summary cards; decorative icons retain the provider/account text as the accessible link label. | Account usage Cypress home journey checks provider-specific visible icons and existing named-link navigation. |
