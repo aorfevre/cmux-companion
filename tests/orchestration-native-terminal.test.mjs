@@ -53,7 +53,7 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
     async start(id, path) {
       assert.equal(id, workspaceId); starts++;
       const runner = fileURLToPath(new URL('../server/orchestration/adapters/native-terminal-worker.mjs', import.meta.url));
-      const args = process.platform === 'darwin' ? ['-q', '/dev/null', process.execPath, runner, path] : ['-q', '-c', `${process.execPath} ${runner} ${path}`, '/dev/null'];
+      const args = process.platform === 'darwin' ? ['-q', '/dev/null', process.execPath, runner, path] : ['-q', '-c', [process.execPath, runner, path].map(value => `'${value.replace(/'/g, `'\\''`)}'`).join(' '), '/dev/null'];
       child = spawn('/bin/sh', ['-c', '/bin/cat | exec "$@"', 'fixture-pty', '/usr/bin/script', ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
       let output = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; }); child.on('exit', code => { if (code) process.stderr.write(`Fixture terminal exited ${code}: ${output}\n`); }); await once(child, 'spawn');
     },

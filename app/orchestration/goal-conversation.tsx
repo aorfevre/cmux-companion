@@ -68,7 +68,7 @@ export function GoalConversation({ goal, disabled, act }: {
     </section>}
     <form className="orch-card goal-composer" onSubmit={event => { event.preventDefault(); if (send && message.trim() && !disabled) void act(goal, { ...send, payload: { message: message.trim() } }).then(saved => { if (saved) setMessage(''); }); }}>
       <label htmlFor="goal-message">Message your supervisor</label><textarea id="goal-message" rows={3} maxLength={8000} value={message} onChange={event => setMessage(event.target.value)} disabled={disabled || !send} placeholder="Answer a question, clarify scope, or request changes…" />
-      <button className="primary-button" disabled={disabled || !send || !message.trim()}>Send message</button>
+      <button type="submit" className="primary-button" disabled={disabled || !send || !message.trim()}>Send message</button>
       {conversation.paused && <small>Messages remain saved while the goal is paused.</small>}
     </form>
   </article>;

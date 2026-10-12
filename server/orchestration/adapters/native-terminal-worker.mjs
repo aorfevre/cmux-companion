@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { DomainError, requireValue } from '../domain/contracts.mjs';
+import { DomainError, integer, requireValue } from '../domain/contracts.mjs';
 import { awaitNativeActivation } from './native-activation.mjs';
 import { assertNativeInstallation } from './native-capabilities.mjs';
 import { nativeProcessStamp, nativeGroupState } from './native-process.mjs';
@@ -141,7 +141,7 @@ export async function runNativeTerminal(configPath) {
         const idle = await supervisorTurnCommand(bridge, 'supervisor_turn_idle', controller.signal);
         process.stdout.write('\nSupervisor idle · waiting for a saved goal event.\n');
         const awakened = await bridge.waitForInput(idle.conversation.seenWake, controller.signal);
-        runId = `wake-${awakened.conversation.wake}`;
+        runId = `wake-${integer(awakened.conversation.wake, 1)}`;
         continue;
       }
       process.stdout.write('\nConversation paused. Resume it from Companion to continue.\n');

@@ -304,8 +304,10 @@ export function transition(before, command, authority) {
     case 'revise_rejected_plan':
     case 'request_revision': {
       const automatic = command.type === 'revise_rejected_plan';
-      if (command.type === 'supervisor_revise') requireValue(authority.kind === 'agent' && authority.role === 'planner' && goal.experienceVersion === 2, 'Supervisor authority required', 'FORBIDDEN');
-      else requireAuthority(authority, automatic ? 'system' : 'user');
+      // Supervisor identity and role were validated before command dispatch.
+      // Every revision entry point still requires its own trusted authority.
+      const revisionAuthority = { supervisor_revise: 'agent', revise_rejected_plan: 'system', request_revision: 'user' };
+      requireValue(authority.kind === revisionAuthority[command.type], 'Revision authority required', 'FORBIDDEN');
       const rejected = automatic ? revisablePlan(goal) : null;
       if (automatic) requireValue(rejected && rejected.id === input.reviewId, 'Plan review is not eligible for automatic revision', 'NOT_READY');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');

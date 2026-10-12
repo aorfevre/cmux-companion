@@ -70,6 +70,13 @@ test('only the recorded supervisor can use conversation tools; abort revokes it'
   assert.throws(() => f.command('supervisor_reply', { message: 'Spoofed' }), { code: 'FORBIDDEN' });
   assert.throws(() => f.command('supervisor_question', { message: 'Spoofed' }, { ...f.authority, generation: 2 }), { code: 'FORBIDDEN' });
   assert.throws(() => f.command('send_goal_message', { message: 'Spoofed user' }, f.authority), { code: 'FORBIDDEN' });
+  for (const type of ['request_revision', 'revise_rejected_plan']) {
+    assert.throws(() => f.command(type, { message: 'Spoofed revision' }, f.authority), { code: 'FORBIDDEN' });
+  }
+  for (const authority of [f.user, f.system]) {
+    assert.throws(() => f.command('supervisor_revise', { message: 'Spoofed revision' }, authority), { code: 'FORBIDDEN' });
+  }
+  assert.throws(() => f.command('supervisor_revise', { message: 'Spoofed revision' }, { ...f.authority, attemptId: 'not-the-supervisor' }), { code: 'STALE_ATTEMPT' });
   assert.throws(() => f.command('supervisor_reply', { message: 'Answer', replyTo: 99 }, f.authority));
   f.command('abort');
   assert.equal(f.store.operations().filter(op => op.kind === 'terminate').length, 1);

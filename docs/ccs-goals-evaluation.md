@@ -602,3 +602,31 @@ two reliability issues (an implicit button type and a fixture authority default)
 CodeRabbit's green status explicitly says review skipped because the PR is a
 draft; there is no approval. These findings must be investigated/resolved before
 merge. They are not replaced by local deterministic verification.
+
+
+## Review findings follow-up — 2026-10-12
+
+Changed revision authorization to an explicit action-to-authority mapping.
+Supervisor identity, planner role and running ownership are still enforced
+before command dispatch; neither user/system impersonation nor a different
+attempt can use supervisor revision. Added invalid-credential throttling to the
+check-receipt route (60 failures per address per minute); authenticated polling
+does not consume the failure budget, and expiration restores access. Wake values
+are checked as positive integers before becoming native receipt/recipe IDs.
+Linux script-command paths are now individually shell-quoted. The conversation
+send button explicitly submits its form, and the restart fixture no longer uses
+an object literal as a parameter default.
+
+Validation: the targeted API/conversation/restart/native-terminal/worker-check
+run passed 47 tests and exposed one incorrect assertion: an unknown attempt is
+rejected as STALE_ATTEMPT, not FORBIDDEN. After correcting that assertion, all
+10 conversation tests passed. Four conversation UI tests, lint (the same two
+existing warnings), types and diff checking passed. The Linux-specific script
+branch was inspected but is not exercised by the macOS PTY tests. Full final
+verification and fresh CodeQL/Sonar analysis are still pending for these edits.
+
+The remaining file/network alerts require review of their actual trust paths:
+Companion's scoped bridge deliberately exchanges persisted context and receipts
+with its authenticated loopback service, and the owned runner deliberately writes
+receipts/launch recipes. No alert has been dismissed or excluded; native policy
+and end-to-end acceptance remain separate outstanding evidence.

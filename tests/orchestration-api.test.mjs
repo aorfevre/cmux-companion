@@ -24,6 +24,20 @@ test('pairing sets a private cookie and invalid pairing is rate limited', async 
   assert.equal((await app.inject({ method: 'POST', url: '/api/orchestration/pair', payload: { token: 'wrong' } })).statusCode, 429);
 });
 
+test('check receipt authentication throttles invalid credentials without counting authenticated polling', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 100000 });
+  const { app, planner } = await apiFixture(t), token = planner();
+  const request = { url: '/api/orchestration/agent/checks/missing' };
+  for (let i = 0; i < 70; i++) {
+    const response = await app.inject({ ...request, headers: { authorization: `Bearer ${token}` } });
+    assert.equal(response.statusCode, 403, 'scope refusal after successful authentication is not a credential guess');
+  }
+  for (let i = 0; i < 60; i++) assert.equal((await app.inject(request)).statusCode, 401);
+  assert.equal((await app.inject(request)).statusCode, 429);
+  t.mock.timers.tick(60_001);
+  assert.equal((await app.inject(request)).statusCode, 401, 'expired rate limit releases the address');
+});
+
 test('repository allow-list and expected versions are enforced at the service boundary', async (t) => {
   const { app, service } = await apiFixture(t);
   const disallowed = { ...create, payload: { ...create.payload, repositoryId: 'not_allowed' } };

@@ -15,6 +15,8 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
+  /** @type {Map<string, { count: number; until: number }>} */
+  const invalidReceiptReads = new Map();
   app.addHook('onRequest', async (request, reply) => {
     // Fastify matches decoded paths. Security follows the registered route,
     // never the caller's raw spelling (for example /api/%6frchestration/...).
@@ -28,7 +30,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof DomainError) {
       const code = error.code;
-      const status = code === 'UNAUTHORIZED' ? 401 : code === 'FORBIDDEN' ? 403 : code === 'NOT_FOUND' ? 404
+      const status = code === 'RATE_LIMITED' ? 429 : code === 'UNAUTHORIZED' ? 401 : code === 'FORBIDDEN' ? 403 : code === 'NOT_FOUND' ? 404
         : /CONFLICT|STALE|UNCERTAIN|TERMINAL|NOT_READY|ALREADY_RUNNING|REVIEW_REQUIRED|RETRY_REQUIRED|CAPACITY_FULL|CURSOR_EXPIRED/.test(code) ? 409 : 400;
       return reply.code(status).send({ code, error: error.message });
     }
@@ -192,11 +194,25 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     return { ...reference, text: content.slice(offset, end), offset, nextOffset: end < content.length ? end : null };
   });
   app.get(`${PREFIX}/agent/checks/:operationId`, async request => {
-    const header = request.headers.authorization ?? '';
-    requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
     // A budget hold can stop the worker before its final poll; exact historical
     // receipts remain readable without restoring mutation authority.
-    const authority = bridgeAuth.receiptAuthority(header.slice(7)), goal = service.store.get(authority.goalId);
+    // Limit invalid authentication, not healthy worker polling on the same Mac.
+    const now = Date.now();
+    for (const [ip, entry] of invalidReceiptReads) if (entry.until <= now) invalidReceiptReads.delete(ip);
+    const rateLimit = invalidReceiptReads.get(request.ip) ?? { count: 0, until: now + 60_000 };
+    requireValue(rateLimit.count < 60, 'Too many invalid check receipt requests; retry shortly', 'RATE_LIMITED');
+    let authority;
+    try {
+      const header = request.headers.authorization ?? '';
+      requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
+      authority = bridgeAuth.receiptAuthority(header.slice(7));
+    } catch (error) {
+      if (error instanceof DomainError && ['UNAUTHORIZED', 'FORBIDDEN'].includes(error.code)) {
+        rateLimit.count++; invalidReceiptReads.set(request.ip, rateLimit);
+      }
+      throw error;
+    }
+    const goal = service.store.get(authority.goalId);
     requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
     const operationId = identifier(/** @type {{operationId:string}} */ (request.params).operationId);
     const run = goal.verificationRuns?.find(run => run.operationId === operationId && run.attemptId === authority.attemptId);

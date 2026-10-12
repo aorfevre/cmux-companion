@@ -29,7 +29,7 @@ const agents = {
   async terminate() { throw new Error('Conversation restart must not terminate its supervisor'); },
 };
 const service = new OrchestrationService({ store, agents, repositoryIds: new Set(['repo']) });
-const execute = (id, type, payload, authority = { kind: 'user' }) => service.execute({ id, goalId: 'g', expectedVersion: store.get('g')?.version ?? 0, type, payload }, authority);
+const execute = (id, type, payload, authority) => service.execute({ id, goalId: 'g', expectedVersion: store.get('g')?.version ?? 0, type, payload }, authority ?? { kind: 'user' });
 const scheduler = new Scheduler({ service, planReviewEnabled: () => false, repositories: {
   async provision({ branch, baseSha }) { return { worktree: path('checkout'), branch, baseSha }; },
 } });
