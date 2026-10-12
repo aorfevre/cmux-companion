@@ -622,11 +622,45 @@ run passed 47 tests and exposed one incorrect assertion: an unknown attempt is
 rejected as STALE_ATTEMPT, not FORBIDDEN. After correcting that assertion, all
 10 conversation tests passed. Four conversation UI tests, lint (the same two
 existing warnings), types and diff checking passed. The Linux-specific script
-branch was inspected but is not exercised by the macOS PTY tests. Full final
-verification and fresh CodeQL/Sonar analysis are still pending for these edits.
+branch was inspected but is not exercised by the macOS PTY tests. Full npm run
+verify then passed: 1,119 backend tests plus one intentional skip (97.61% lines), 216 UI tests (94.88% lines), lint, types and build.
+Fresh CodeQL/Sonar analysis is still pending for these edits.
 
 The remaining file/network alerts require review of their actual trust paths:
 Companion's scoped bridge deliberately exchanges persisted context and receipts
 with its authenticated loopback service, and the owned runner deliberately writes
 receipts/launch recipes. No alert has been dismissed or excluded; native policy
 and end-to-end acceptance remain separate outstanding evidence.
+
+
+## Linux CI and receipt race follow-up — 2026-10-12
+
+Fresh CI at 51f43d20 passed macos but failed verify: the check-cancellation
+fixture waited for command resolution, then edited a tracked file before the
+verification subprocess necessarily started. Linux detected the dirty checkout
+and revoked the worker before the intended commit-fence assertion. The fixture
+now waits for an explicit marker written by the actual supervised check process
+and requests a commit without first changing its checked files. This preserves
+the OWNERSHIP_UNCERTAIN assertion and subsequent abort/termination evidence; it
+does not accept the unrelated FORBIDDEN response as success.
+
+Fresh CodeQL removed the revision-authority alert but identified a receipt
+lstat/read race. Codex session receipts now open with O_NOFOLLOW, inspect the
+opened descriptor with fstat, and read that same descriptor before closing it.
+The PTY relay was moved into a fixed argv-only shell helper. Attempting to remove
+the relay failed reproducibly because macOS script rejects Node's stdin socket;
+that experimental run was interrupted, the direct-spawn change was discarded,
+and all 18 PTY tests passed with the fixed helper.
+
+Passed: 23 worker-check/native-terminal tests for the process barrier and receipt
+fix, all 18 terminal tests with the final relay, 24 bridge/managed-launcher/API
+boundary tests, types and lint (existing warnings). A new two-server loopback
+regression proves that status, references, result submission and check polling
+never relay their credential or persisted input to an HTTP redirect target.
+Full CI and fresh security analysis still need to validate this new head.
+
+CodeQL's remaining file-to-HTTP and HTTP-to-file traces describe the scoped
+loopback bridge and owned receipt/recipe persistence; their endpoint, redirect,
+identity, path and argv boundaries are under explicit review. The manual
+invalid-credential rate limiter passes exhaustion/expiration tests but remains
+unrecognized by the static query. No security alert has been dismissed.

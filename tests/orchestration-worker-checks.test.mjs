@@ -21,13 +21,14 @@ async function fixture(t, { slow = false } = {}) {
   const agents = new FakeAgents();
   agents.close = async () => { for (const worker of agents.workers.values()) worker.status = 'stopped'; };
   let launches = 0;
-  const argv = ['node', '--input-type=module', '-e', slow ? 'setInterval(() => {}, 1000)' : "import { a } from './src/a.mjs'; console.log('check cwd', process.cwd()); console.log('actual', a()); if (a() !== 2) process.exit(1)"];
+  const checkStarted = join(repo.directory, 'check-started');
+  const argv = ['node', '--input-type=module', '-e', slow ? "import { writeFileSync } from 'node:fs'; writeFileSync(process.env.CMUX_CHECK_STARTED, 'ready'); setInterval(() => {}, 1000)" : "import { a } from './src/a.mjs'; console.log('check cwd', process.cwd()); console.log('actual', a()); if (a() !== 2) process.exit(1)"];
   const contract = { ...repo.contract, schemaVersion: 2, tasks: [{ ...repo.contract.tasks[0], resources: [] }], verification: [{ id: 'unit', argv }], waves: [{ id: 'single', title: 'Fix module A', taskIds: ['A'], checkIds: ['unit'] }] };
   const errors = [];
   const runtime = await createRuntime({ storage: { database: join(repo.directory, 'state.sqlite'), artifacts: join(repo.directory, 'artifacts'), resources: join(repo.directory, 'resources') },
     repositories: new Map([['repo', repo.repository]]), token: 'disposable-worker-check-token-over-32-characters', createAgents: () => agents, planReviewEnabled: () => false,
     resolvePrepare: () => ({ bin: process.execPath, argv: ['-e', "require('node:fs').mkdirSync('node_modules', {recursive:true}); console.log('prepared')"], env: { PATH: process.env.PATH }, environmentId: 'fixture-prepare', policy: { ceilingMs: 10000, idleMs: 5000, maxOutputBytes: 8192, killGraceMs: 100 } }),
-    resolveCheck: (_repository, check) => { launches++; return { bin: process.execPath, argv: check.argv.slice(1), env: { PATH: process.env.PATH, NODE_OPTIONS: `--import=${new URL('./helpers/orchestration/await-verification-identity.mjs', import.meta.url).href}`, CMUX_COMPANION_FIXTURE_CHECK: check.id }, environmentId: 'fixture-node', policy: { ceilingMs: 10000, idleMs: 5000, maxOutputBytes: 8192, killGraceMs: 100 } }; },
+    resolveCheck: (_repository, check) => { launches++; return { bin: process.execPath, argv: check.argv.slice(1), env: { PATH: process.env.PATH, NODE_OPTIONS: `--import=${new URL('./helpers/orchestration/await-verification-identity.mjs', import.meta.url).href}`, CMUX_COMPANION_FIXTURE_CHECK: check.id, CMUX_CHECK_STARTED: checkStarted }, environmentId: 'fixture-node', policy: { ceilingMs: 10000, idleMs: 5000, maxOutputBytes: 8192, killGraceMs: 100 } }; },
     createPublisher: () => ({ publish: async () => { throw new Error('Publication must not run'); } }), onError: error => errors.push(error),
   });
   t.after(async () => { await runtime.close(); await repo.close(); });
@@ -56,7 +57,7 @@ async function fixture(t, { slow = false } = {}) {
     await writeFile(join(attempt.worktree, 'src/a.mjs'), `export function a() { return ${value}; }\n`);
     return bridge.commit({ id, expectedHead: head, message: `Set module A to ${value}` });
   };
-  return { repo, runtime, agents, errors, execute, attempt, bridge, binding, mcp, args, commit, launches: () => launches };
+  return { repo, runtime, agents, errors, execute, attempt, bridge, binding, mcp, args, commit, checkStarted, launches: () => launches };
 }
 
 test('worker checkpoints, sees a failing approved check, repairs and passes in its owned checkout before submission', { timeout: 30000 }, async t => {
@@ -101,8 +102,8 @@ test('check authority rejects added argv, unapproved ids, cross-attempt evidence
 test('a running check fences commits and abort cancels its owned process without releasing the checkout early', { timeout: 30000 }, async t => {
   const f = await fixture(t, { slow: true });
   const running = f.mcp(f.args('slow', f.attempt.baseSha));
-  await until(() => f.launches(), count => count === 1);
-  await assert.rejects(f.commit('while-checking', f.attempt.baseSha, 3), { code: 'OWNERSHIP_UNCERTAIN' });
+  await until(() => access(f.checkStarted).then(() => true, () => false), started => started);
+  await assert.rejects(f.bridge.commit({ id: 'while-checking', expectedHead: f.attempt.baseSha, message: 'Must not commit during a check' }), { code: 'OWNERSHIP_UNCERTAIN' });
   f.execute('abort');
   await running;
   const stopped = await until(() => f.runtime.store.get('g').verificationRuns[0], run => run.workerState === 'stopped');

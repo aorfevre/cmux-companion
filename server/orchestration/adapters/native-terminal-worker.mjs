@@ -5,7 +5,7 @@ import { ResultOutbox } from '../result-outbox.mjs';
 import { createBridge } from '../bridge.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { lstatSync, readFileSync, writeFileSync, renameSync, existsSync, realpathSync } from 'node:fs';
+import { constants, openSync, fstatSync, closeSync, lstatSync, readFileSync, writeFileSync, renameSync, existsSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -79,10 +79,14 @@ export async function runNativeTerminal(configPath) {
     await awaitNativeActivation(config.activation, controller.signal);
     const codexSession = () => {
       const path = join(directory, 'codex-session.json');
-      requireValue(lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink() && lstatSync(path).size <= 4096, 'Invalid native session receipt', 'SUPERVISOR_PROTOCOL_FAILED');
-      const session = JSON.parse(readFileSync(path, 'utf8'));
-      requireValue(session.conversationId === request.binding.conversationId && /^[A-Za-z0-9_-]{1,160}$/.test(session.sessionId), 'Codex session identity changed', 'SUPERVISOR_PROTOCOL_FAILED');
-      return session.sessionId;
+      const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const stat = fstatSync(descriptor);
+        requireValue(stat.isFile() && stat.size <= 4096, 'Invalid native session receipt', 'SUPERVISOR_PROTOCOL_FAILED');
+        const session = JSON.parse(readFileSync(descriptor, 'utf8'));
+        requireValue(session.conversationId === request.binding.conversationId && /^[A-Za-z0-9_-]{1,160}$/.test(session.sessionId), 'Codex session identity changed', 'SUPERVISOR_PROTOCOL_FAILED');
+        return session.sessionId;
+      } finally { closeSync(descriptor); }
     };
     let runId = 'initial';
     while (!controller.signal.aborted) {
