@@ -16,29 +16,31 @@ export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
       return body;
   };
   return {
-    async status() {
-      const response = await fetch(new URL('/api/orchestration/agent/status', url), { redirect: 'error', headers: { authorization: `Bearer ${credential}` }, signal: AbortSignal.timeout(timeoutMs) });
+    /** @param {AbortSignal} [signal] */
+    async status(signal) {
+      const response = await fetch(new URL('/api/orchestration/agent/status', url), { redirect: 'error', headers: { authorization: `Bearer ${credential}` }, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) });
       const body = await response.json();
       if (!response.ok) throw Object.assign(new Error('Agent status rejected'), { code: body.code || 'REQUEST_FAILED' });
       return body;
     },
     /** Waiting happens inside the transport, never by repeatedly invoking the
      * model. Each request has a deadline and authenticates ownership anew.
-     * @param {number} throughWake */
-    async waitForInput(throughWake) {
+     * @param {number} throughWake @param {AbortSignal} [signal] */
+    async waitForInput(throughWake, signal) {
       if (!Number.isSafeInteger(throughWake) || throughWake < 0) throw new Error('Invalid conversation cursor');
       for (;;) {
         let state;
-        try { state = await this.status(); }
+        try { signal?.throwIfAborted(); state = await this.status(signal); }
         catch (error) {
+          signal?.throwIfAborted();
           const code = /** @type {{code?: string}} */ (error).code;
           if (code && !['REQUEST_FAILED', 'NOT_READY'].includes(code)) throw error;
-          await delay(1000); continue;
+          await delay(1000, undefined, { signal }); continue;
         }
         if (state.experienceVersion !== 2 || !state.conversation) throw new Error('Conversation unavailable');
         if (throughWake > state.conversation.wake) throw new Error('Conversation cursor is ahead of saved state');
         if (!state.conversation.paused && state.conversation.wake > throughWake) return state;
-        await delay(1000);
+        await delay(1000, undefined, { signal });
       }
     },
     /** The accepted command and check receipt remain separate: retrying the same

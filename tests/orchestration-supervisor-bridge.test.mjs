@@ -77,3 +77,69 @@ test('waiting stays inside one tool call across idle and paused observations', a
   bridge.status = async () => ({ experienceVersion: 1 });
   await assert.rejects(bridge.waitForInput(1), /unavailable/);
 });
+
+test('idle MCP wait permits ping and status, bounds duplicate waits and cancels without another model turn', { timeout: 5000 }, async () => {
+  const { PassThrough, Writable } = await import('node:stream');
+  const { serveAgentMcp } = await import('../server/orchestration/agent-mcp.mjs');
+  const input = new PassThrough(), replies = [];
+  const output = new Writable({ write(chunk, encoding, done) { replies.push(JSON.parse(chunk.toString())); done(); } });
+  const bridge = createBridge({ endpoint: 'http://127.0.0.1', credential: 'unused' });
+  let reads = 0, waits = 0;
+  bridge.status = async () => { reads++; return { experienceVersion: 2, conversation: { wake: 1, paused: false } }; };
+  const wait = bridge.waitForInput.bind(bridge);
+  bridge.waitForInput = (...args) => { waits++; return wait(...args); };
+  const running = serveAgentMcp(input, output, { binding: { role: 'planner', supervisor: true }, bridge });
+  const send = value => input.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\n');
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  send({ id: 'wait', method: 'tools/call', params: { name: 'wait_for_input', arguments: { throughWake: 1 } } });
+  await flush();
+  send({ id: 'ping', method: 'ping' });
+  send({ id: 'status', method: 'tools/call', params: { name: 'get_status' } });
+  send({ id: 'duplicate', method: 'tools/call', params: { name: 'wait_for_input', arguments: { throughWake: 1 } } });
+  await flush();
+  assert.deepEqual(replies.map(reply => reply.id), ['ping', 'status', 'duplicate']);
+  assert.match(replies[2].error.message, /already active/);
+  assert.equal(waits, 1); assert.equal(reads, 2);
+  send({ method: 'notifications/cancelled', params: { requestId: 'unrelated' } });
+  await flush(); assert.equal(waits, 1);
+  send({ method: 'notifications/cancelled', params: { requestId: 'wait' } });
+  await flush();
+  bridge.status = async () => ({ experienceVersion: 2, conversation: { wake: 2, paused: false } });
+  send({ id: 'next', method: 'tools/call', params: { name: 'wait_for_input', arguments: { throughWake: 1 } } });
+  await flush();
+  assert.equal(replies.at(-1).id, 'next');
+  assert.equal(JSON.parse(replies.at(-1).result.content[0].text).conversation.wake, 2);
+  assert.ok(!replies.some(reply => reply.id === 'wait'));
+  input.end(); await running;
+});
+
+test('closing MCP input cancels an idle wait and its polling', { timeout: 5000 }, async () => {
+  const { PassThrough, Writable } = await import('node:stream');
+  const { serveAgentMcp } = await import('../server/orchestration/agent-mcp.mjs');
+  const input = new PassThrough(), replies = [];
+  const output = new Writable({ write(chunk, encoding, done) { replies.push(chunk); done(); } });
+  const bridge = createBridge({ endpoint: 'http://127.0.0.1', credential: 'unused' });
+  let reads = 0;
+  bridge.status = async () => { reads++; return { experienceVersion: 2, conversation: { wake: 1, paused: true } }; };
+  const running = serveAgentMcp(input, output, { binding: { role: 'planner', supervisor: true }, bridge });
+  input.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'wait_for_input', arguments: { throughWake: 1 } } }) + '\n');
+  await new Promise(resolve => setImmediate(resolve));
+  input.end(); await running;
+  assert.equal(reads, 1); assert.deepEqual(replies, []);
+});
+
+test('idle cancellation aborts an in-flight authenticated status request', { timeout: 5000 }, async t => {
+  const { createServer } = await import('node:http');
+  const { once } = await import('node:events');
+  const server = createServer();
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const bridge = createBridge({ endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-only', timeoutMs: 15000 });
+  const controller = new AbortController(), requested = once(server, 'request');
+  const pending = bridge.waitForInput(0, controller.signal);
+  const rejected = assert.rejects(pending, { name: 'AbortError' });
+  const [request] = await requested;
+  assert.equal(request.url, '/api/orchestration/agent/status');
+  assert.equal(request.headers.authorization, 'Bearer fixture-only');
+  controller.abort(); await rejected;
+});

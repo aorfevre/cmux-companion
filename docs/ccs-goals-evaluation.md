@@ -345,3 +345,34 @@ This closes direct-command admission and policy disclosure gaps, not native
 compatibility or account identity validation. Codex 0.162.1 support, long native
 wait behavior/capacity, bounded failed-launch recovery and intervention-free
 representative native delivery remain outstanding.
+
+## Autonomous supervision: responsive idle transport — 2026-10-12
+
+The user clarified that the acceptance target is the autonomous end-to-end Goals
+process with minimal human intervention, not implementation of the example goal.
+The existing native MCP stdin loop awaited `wait_for_input` before reading its
+next frame. While waiting for a goal event, it could not answer client pings,
+status requests or cancellation notifications. This is a concrete control-channel
+stall independent of the user approval gates.
+
+The transport now keeps at most one idle wait in flight while processing other
+requests serially. Duplicate waits are refused; matching MCP cancellation and
+stdin closure abort the wait, including its authenticated HTTP request and timer.
+Cancelled calls emit no late reply. Response sizes and output drain deadlines
+remain enforced, with at most two responses in flight. The change does not start
+agents, change persisted authorization, or remove human plan/publication approval.
+
+Regression evidence covers ping and status responses during an active idle wait,
+duplicate rejection, cancellation identity, a subsequent wake response, input
+closure, and cancellation of an actual in-flight loopback HTTP request. The
+scripted real-service browser delivery journey passed (41 seconds). This is not
+proof of indefinite native client tool-timeout compatibility or shared capacity;
+those acceptance gaps remain open. The user's existing CCS session was not
+restarted and no further paid native goal was launched.
+
+Checks: full `npm run verify` passed with 1,097 backend tests and one intentional
+skip (97.58% lines), 214 UI tests (94.88% lines), lint, typecheck and build; existing
+navigation warnings remain. The initial targeted typecheck caught missing JSDoc
+and unsafe access to unknown request parameters; corrected both before full
+verification. All six supervisor-bridge regressions and the existing MCP output
+backpressure regressions passed. No coverage thresholds were changed.

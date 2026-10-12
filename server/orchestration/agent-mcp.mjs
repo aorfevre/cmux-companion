@@ -51,8 +51,8 @@ const roleTools = (role, supervisor = false, workerChecks = false) => role === '
 
 /** Stateless bridge protocol. The credential's server-side binding remains
  * authoritative even if an agent tampers with its local MCP request/config.
- * @param {unknown} value @param {{ binding: Binding; bridge: ReturnType<typeof createBridge> }} context */
-export async function agentMcpRequest(value, { binding, bridge }) {
+ * @param {unknown} value @param {{ binding: Binding; bridge: ReturnType<typeof createBridge>; signal?: AbortSignal }} context */
+export async function agentMcpRequest(value, { binding, bridge, signal }) {
   const request = object(value);
   requireValue(request.jsonrpc === '2.0' && typeof request.method === 'string', 'Invalid MCP request');
   if (!Object.hasOwn(request, 'id')) return null;
@@ -76,7 +76,7 @@ export async function agentMcpRequest(value, { binding, bridge }) {
     else if (name === 'wait_for_input') {
       const args = object(rawArgs);
       requireValue(Object.keys(args).length === 1 && Object.hasOwn(args, 'throughWake'), 'Expected saved wake cursor');
-      result = await bridge.waitForInput(integer(args.throughWake));
+      result = await bridge.waitForInput(integer(args.throughWake), signal);
     }
     else if (name === 'read_reference') {
       const args = object(rawArgs), id = text(args.id, 64);
@@ -128,6 +128,61 @@ export async function writeMcpResponse(value, output, drainMs = 15000) {
   });
 }
 
+/** Keep one idle wait in flight while servicing control traffic. Other calls
+ * remain serial and output stays bounded to at most two responses in flight.
+ * @param {import('node:stream').Readable} input
+ * @param {import('node:stream').Writable} output
+ * @param {{ binding: Binding; bridge: ReturnType<typeof createBridge> }} context
+ * @param {number} [drainMs] */
+export async function serveAgentMcp(input, output, context, drainMs = 15000) {
+  /** @type {{ id: string | number; controller: AbortController; done: Promise<void> } | null} */
+  let waiting = null;
+  /** @type {Error | null} */ let failure = null;
+  /** @type {Buffer[]} */ let pending = []; let bytes = 0;
+  /** @param {unknown} value */
+  const respond = async (value) => { if (value) await writeMcpResponse(value, output, drainMs); };
+  try {
+    for await (const chunk of input) {
+      const buffer = Buffer.from(chunk);
+      for (let start = 0; start < buffer.length;) {
+        const newline = buffer.indexOf(10, start), end = newline < 0 ? buffer.length : newline;
+        const part = buffer.subarray(start, end); bytes += part.length;
+        requireValue(bytes <= 2 * 1024 * 1024, 'MCP input exceeds limit'); pending.push(part);
+        if (newline >= 0) {
+          const raw = Buffer.concat(pending).toString('utf8'); pending = []; bytes = 0;
+          let request;
+          try { request = object(JSON.parse(raw)); }
+          catch { await respond({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Invalid MCP request' } }); start = end + 1; continue; }
+          const params = request.params && typeof request.params === 'object' && !Array.isArray(request.params) ? /** @type {Record<string, unknown>} */ (request.params) : {};
+          if (request.jsonrpc === '2.0' && request.method === 'notifications/cancelled' && !Object.hasOwn(request, 'id')) {
+            if (waiting && params.requestId === waiting.id) waiting.controller.abort();
+          } else if (request.jsonrpc === '2.0' && request.method === 'tools/call' && params.name === 'wait_for_input' && (typeof request.id === 'string' || typeof request.id === 'number')) {
+            if (waiting) await respond({ jsonrpc: '2.0', id: request.id, error: { code: -32600, message: 'An input wait is already active' } });
+            else {
+              const controller = new AbortController();
+              const entry = { id: request.id, controller, done: Promise.resolve() };
+              waiting = entry;
+              entry.done = agentMcpRequest(request, { ...context, signal: controller.signal })
+                .then(result => controller.signal.aborted ? undefined : respond(result))
+                .catch(error => { failure = error; input.destroy(error); })
+                .finally(() => { if (waiting === entry) waiting = null; });
+            }
+          } else {
+            let result;
+            try { result = await agentMcpRequest(request, context); }
+            catch { result = { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Invalid MCP request' } }; }
+            await respond(result);
+          }
+        }
+        start = end + 1;
+      }
+    }
+  } finally {
+    if (waiting) { waiting.controller.abort(); await waiting.done; }
+  }
+  if (failure) throw failure;
+}
+
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   // Pipe errors are protocol failures, never unhandled errors printing context.
   process.stdout.on('error', () => { process.exitCode = 2; });
@@ -139,25 +194,9 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       bridge.submitResult = async input => outbox.enqueue(input);
     }
     const context = { binding: config.binding, bridge };
-    /** @type {Buffer[]} */ let pending = []; let bytes = 0;
-    for await (const chunk of process.stdin) {
-      const buffer = Buffer.from(chunk);
-      for (let start = 0; start < buffer.length;) {
-        const newline = buffer.indexOf(10, start), end = newline < 0 ? buffer.length : newline;
-        const part = buffer.subarray(start, end); bytes += part.length;
-        requireValue(bytes <= 2 * 1024 * 1024, 'MCP input exceeds limit'); pending.push(part);
-        if (newline >= 0) {
-          const raw = Buffer.concat(pending).toString('utf8'); pending = []; bytes = 0;
-          let result;
-          try { result = await agentMcpRequest(JSON.parse(raw), context); }
-          catch { result = { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Invalid MCP request' } }; }
-          if (result) await writeMcpResponse(result, process.stdout, config.outputDrainMs ?? 15000);
-        }
-        start = end + 1;
-      }
-    }
+    await serveAgentMcp(process.stdin, process.stdout, context, config.outputDrainMs ?? 15000);
   } catch {
-    // This stateless bridge has no in-flight tool call here. Exit immediately:
+    // In-flight idle waits have been cancelled. Exit immediately:
     // waiting for Node to flush a stalled stdout pipe would defeat the deadline.
     process.stdin.destroy(); process.stdout.destroy(); process.exit(2);
   }
