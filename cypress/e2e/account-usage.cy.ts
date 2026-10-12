@@ -477,6 +477,21 @@ describe("licence usage", () => {
     cy.findByRole('group', { name: 'Account layout' }).findByRole('button', { name: 'Card' }).should('have.attr', 'aria-pressed', 'true');
   });
 
+  for (const width of [1024, 1280]) {
+    it(`fits every Row view column without an inner scrollbar at ${width}px`, () => {
+      cy.viewport(width, 900);
+      scenario();
+      const usage = fiveAccountFixture();
+      usage.providers[0].accounts[0].redeemableResets = { availableCount: 1, updatedAt: iso(-5), grants: [{ count: 1, expiresAt: iso(10 * 24 * 60), usableNow: true }] };
+      cy.intercept('GET', '**/api/account-usage*', usage).as('usage');
+      cy.clock(frozenNow.getTime(), ['Date']); cy.visit('/'); cy.wait('@usage');
+      cy.get('.usage-row').should('have.length', 5);
+      cy.get('.usage-table-wrap').should($wrap => expect($wrap[0].scrollWidth).to.be.at.most($wrap[0].clientWidth));
+      cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
+      cy.screenshot(`account-usage-rows-${width}`, { capture: 'viewport' });
+    });
+  }
+
   it('forces the card layout at 390px and hides the selector', () => {
     cy.viewport(390, 900);
     scenario();

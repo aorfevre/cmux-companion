@@ -11,7 +11,7 @@ export function AccountTable({ rows, usableOnly, now, snapshotFresh, nextReset, 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const toggle = (id: string) => setExpanded(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   return <div className="usage-table-wrap"><table className="usage-table" aria-label="All accounts">
-    <thead><tr><th scope="col">Account</th><th scope="col">Weekly</th><th scope="col">Fable weekly</th><th scope="col">5 hours</th><th scope="col">Resets in</th><th scope="col">Redeemable resets</th><th scope="col">Queue state</th><th scope="col"><span className="sr-only">Details</span></th></tr></thead>
+    <thead><tr><th scope="col">Account</th><th scope="col">Weekly</th><th scope="col">Fable weekly</th><th scope="col">5 hours</th><th scope="col">Resets in</th><th scope="col">Redeemable resets</th><th scope="col" className="usage-queue-col">Queue state</th><th scope="col"><span className="sr-only">Details</span></th></tr></thead>
     <tbody>
       {rows.map(({ provider, account, reset, state }) => {
         const fresh = snapshotFresh && provider.available;
@@ -23,7 +23,7 @@ export function AccountTable({ rows, usableOnly, now, snapshotFresh, nextReset, 
           <tr id={`usage-account-${account.id}`} tabIndex={-1} className={`usage-row ${readings.displayStatus}${isNext ? ' next-reset-account' : ''}`}>
             <th scope="row"><div className="usage-row-account">
               <span className="usage-row-name"><ProviderLogo provider={provider.id} /><strong title={name}>{name}</strong></span>
-              <span className="usage-row-meta"><small className="account-plan">{planLabel(account.plan).replace('Plan: ', '')}</small>{account.isDefault && <small>Default</small>}{account.paused && <small>Paused</small>}<span className={`usage-status ${readings.displayStatus}`}>{!readings.capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{isNext && <span className="next-reset-tag">Next reset</span>}</span>
+              <span className="usage-row-meta"><small className="account-plan">{planLabel(account.plan).replace('Plan: ', '')}</small>{account.isDefault && <small>Default</small>}{account.paused && <small>Paused</small>}<span className={`usage-status ${readings.displayStatus}`}>{!readings.capacityKnown && account.status !== 'reconnect' ? 'Unknown' : statusLabel(account.status, account.windows.length)}</span>{isNext && <span className="next-reset-tag">Next reset</span>}<span className={`queue-pill queue-pill-inline ${pillClass(state)}`} aria-hidden="true">{state}</span></span>
               <AccountStatusNotes account={account} snapshotFresh={fresh} now={now} />
             </div></th>
             <GaugeCell window={readings.weekly} now={now} />
@@ -31,7 +31,7 @@ export function AccountTable({ rows, usableOnly, now, snapshotFresh, nextReset, 
             {provider.id === 'claude' ? <GaugeCell window={readings.session} now={now} /> : <td className="usage-na">—</td>}
             <td className="usage-reset">{reset ? <><strong>{countdown(reset.window.resetAt, now)}</strong><small><time dateTime={reset.window.resetAt!}>{shortDate(reset.window.resetAt!)}</time></small></> : <small>No reset reported</small>}</td>
             <td className="usage-redeemable"><RedeemableResets compact inventory={account.redeemableResets} fresh={fresh && account.status !== 'reconnect' && freshReading(account.updatedAt, now)} providerId={provider.id} now={now} /></td>
-            <td className="usage-queue-state"><span className={`queue-pill ${state.toLowerCase().replaceAll(' ', '-')}`}>{state}</span></td>
+            <td className="usage-queue-state usage-queue-col"><span className={`queue-pill ${pillClass(state)}`}>{state}</span></td>
             <td className="usage-expand"><button type="button" aria-expanded={open} aria-controls={open ? `usage-row-detail-${account.id}` : undefined} aria-label={`${open ? 'Hide' : 'Show'} details for ${name}`} onClick={() => toggle(account.id)}>{open ? '⌃' : '⌄'}</button></td>
           </tr>
           {open && <tr id={`usage-row-detail-${account.id}`} className="usage-row-detail"><td colSpan={COLUMNS}>
@@ -44,6 +44,8 @@ export function AccountTable({ rows, usableOnly, now, snapshotFresh, nextReset, 
     </tbody>
   </table></div>;
 }
+
+function pillClass(state: string) { return state.toLowerCase().replaceAll(' ', '-'); }
 
 // Column headers already say what resets, so cells drop the "Resets in" prefix.
 function countdown(value: string | null, now: number) { return resetText(value, now).replace('Resets in ', ''); }
