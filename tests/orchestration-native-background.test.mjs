@@ -306,3 +306,29 @@ test('a provider spawn failure proves stopped ownership and preserves its safe O
   const observed = await f.driver.observe('operation');
   assert.equal(observed.status, 'stopped'); assert.equal(observed.launchFailure, 'PROVIDER_SPAWN_ENOENT');
 });
+
+for (const code of ['CMUX_AUTH_REJECTED', 'CMUX_SOCKET_MISSING']) test(`cmux refusal ${code} proves a background worker never started`, async t => {
+  const { DomainError } = await import('../server/orchestration/domain/contracts.mjs');
+  const f = await fixture(t); let creates = 0, starts = 0;
+  f.driver.terminal = {
+    async create() { creates++; throw new DomainError(code, 'cmux refused the request'); },
+    async startManaged() { starts++; },
+    async open() {},
+  };
+  await assert.rejects(f.driver.launch(f.request), { code });
+  const observed = await f.driver.observe('operation');
+  assert.equal(observed.status, 'stopped'); assert.equal(observed.launchFailure, code); assert.ok(observed.identity);
+  await f.driver.launch(f.request).catch(() => {});
+  assert.deepEqual([creates, starts], [1, 0]);
+  await assert.rejects(access(f.launches), { code: 'ENOENT' });
+  await f.driver.close();
+});
+
+test('an unclassified cmux creation failure keeps background ownership uncertain', async t => {
+  const f = await fixture(t);
+  f.driver.terminal = { async create() { throw new Error('lost response'); }, async startManaged() {}, async open() {} };
+  await assert.rejects(f.driver.launch(f.request), { code: 'OWNERSHIP_UNCERTAIN' });
+  assert.deepEqual(await f.driver.observe('operation'), { status: 'unknown', identity: null });
+  // Only this fixture knows that its fake create made nothing.
+  f.driver.managed.clear();
+});
