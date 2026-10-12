@@ -193,6 +193,21 @@ Follow the update through four stages:
    succeeded request with source `automatic` and a matching running SHA through
    the authenticated updater and health APIs.
 
+**Updater lock.** The bootstrap and engine share one lock directory,
+`~/.config/cmux-companion/updater/lock`. A lock is held only while the process in
+its `owner.json` (`pid` or `enginePid`) is alive. A lock whose owner is dead,
+or whose owner file is missing or unreadable, is reclaimed automatically once the
+directory is older than 15 minutes. While the lock is held the updater log
+(`~/Library/Logs/cmux-companion-updater.error.log`) reports it once, and reports
+recovery once; a cycle that exits 3 was skipped for the lock and a cycle that
+exits 4 refused to run because free disk space is below 64 MB. Installations whose
+bootstrap predates this rule do not self-heal from an ownerless lock: confirm that
+no `cmux-companion-updater` or `local-updater.mjs` process is running, then remove
+the lock directory by hand once; the next successful update installs the new
+bootstrap. The launcher process is bound to the release it started from, so the
+once-per-state-change log lines appear only after the updater LaunchAgent
+restarts (login, reboot or `launchctl kickstart -k gui/$(id -u)/org.cmux-companion.updater`).
+
 “This update requires a supported data migration. The running version was
 preserved.” identifies a compatibility refusal. Do not edit contract versions or
 remove safety state to force acceptance. Older updater engines can report the
