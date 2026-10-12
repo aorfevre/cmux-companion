@@ -289,3 +289,26 @@ tests, one intentional skip, 97.42% backend lines; 213 UI tests, 94.87% UI lines
 lint, typecheck and build passed with the same two existing navigation warnings.
 The five native-goal success measure and other recorded acceptance gaps remain
 open; these fixes do not establish full native delivery.
+
+## Process-level conversation recovery — 2026-10-12
+
+Added a child-process regression against one persistent disposable SQLite journal.
+The service is killed with SIGKILL after committing a queued steering message,
+with a saved question/answer, proposal, exact-revision approval, paused supervisor
+and pending worker launch. Two new service processes restore the unchanged goal,
+replay the lost-response command without duplicate input and preserve the original
+supervisor/native conversation identity. After resume, the service observes the
+supervisor in that process before admitting exactly one worker; the same
+supervisor acknowledges and answers the queued message. Another restart creates
+neither a new supervisor nor a duplicate worker.
+
+A separate case returns unknown supervisor ownership on restart and proves that
+queued input is retained, the goal is held and pending work is not launched.
+These tests use a persistent fake provider inventory outside the journal; they
+prove process-level service recovery (A10), not actual CCS resume or idle-tool
+compatibility. No installed service was restarted. Both new cases and the
+existing process recovery/supervisor bridge suite passed (17 total), and lint
+passed with the same two navigation warnings. The final strengthened observation
+ordering assertion also passed both new cases. This follow-up changes tests and
+reporting only; the preceding full verification remains the application-code
+baseline.
