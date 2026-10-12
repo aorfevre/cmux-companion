@@ -29,7 +29,16 @@ and preserve CCS routing rather than treating alias resolution as runtime parity
 - Passed: fresh remote main fetched and an isolated worktree created.
 - Passed: spec commit whitespace check (`git show --check HEAD`).
 - Passed: read-only alias lookup and existing resolver for both launchers.
-- Not run: implementation tests, coverage, lint, typecheck, build or Cypress.
+- Passed: `npm ci --no-audit --no-fund` on Node 22.23.1 in the isolated
+  worktree (856 packages installed; checked-in lockfile unchanged).
+- Passed: existing adapter baseline, 18 tests, zero failures/skips:
+  `node --test --test-concurrency=4 tests/provider-command.test.mjs tests/orchestration-ccs-managed-launcher.test.mjs tests/codex-native.test.mjs`.
+  These tests cover alias resolution, fixed CCS invocation/routing, native
+  session binding, resume arguments, process/PTY identity and restricted tools
+  with disposable fake providers. They do not establish live launcher parity or
+  the proposed continuous Goals conversation.
+- Not run: new-experience implementation tests, full coverage, lint, typecheck,
+  build or Cypress.
 - Not run: native provider/cmux trials, GitHub publication, installation or update.
 
 No product implementation or acceptance criterion is claimed complete. A1–A16
