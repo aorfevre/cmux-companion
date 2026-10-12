@@ -165,6 +165,11 @@ test('new goal persists once before provider checks and exposes a retryable star
   await reopened.listen({ port: 0 });
   assert.equal(reopened.store.get('new-goal').startup.status, 'failed');
   assert.match(reopened.store.get('new-goal').startup.error, /Sign into/);
+  assert.deepEqual(f.acquired, [], 'preparation failures do not acquire a repository merely to reopen history');
+  await reopened.close();
+  const history = await createSettingsRuntime({ ...f.options, own: async () => { throw new Error('Another service owns the repository'); } });
+  f.extraRuntimes.push(history);
+  assert.equal(history.store.get('new-goal').startup.status, 'failed');
   assert.deepEqual(f.launched, []);
 });
 

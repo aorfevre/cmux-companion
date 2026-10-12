@@ -207,6 +207,9 @@ export async function createSettingsRuntime({ settings, directory, token, create
       const config = settings.goalConfiguration(goal.id);
       if (config) {
         repositories.set(config.project.id, config.project.path);
+        // A goal that failed before preparation owns no repository resources.
+        // Keep its history available; a retry must acquire ownership normally.
+        if (goal.startup && goal.startup.status !== 'ready' && !goal.attempts.length) continue;
         try { await ownership(config.project); }
         catch (error) {
           if (error.code !== 'ENOENT') throw error;

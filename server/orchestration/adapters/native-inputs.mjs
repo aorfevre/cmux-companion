@@ -33,6 +33,7 @@ export class NativeInputs {
     const fromWorktree = relative(realpathSync(request.attempt.worktree), directory);
     requireValue(fromWorktree === '..' || fromWorktree.startsWith(`..${sep}`) || isAbsolute(fromWorktree), 'Private native inputs must be outside the worktree', 'FORBIDDEN');
     const description = await this.describe(request);
+    requireValue(description.experienceVersion !== 2 || !this.direct, 'Conversational Goals require a CCS launcher; configure xclaude, xcodex or a CCS profile.', 'UNSUPPORTED_CAPABILITY');
     requireValue(typeof description.prompt === 'string' && Buffer.byteLength(description.prompt) <= 1024 * 1024, 'Native role context exceeds limit');
     const { attempt, goalId, operationId } = request;
     const binding = { ...(description.experienceVersion === 2 ? { experienceVersion: 2 } : {}), ...(description.supervisor ? { supervisor: true } : {}), goalId, operationId, attemptId: attempt.id, generation: attempt.generation, revision: attempt.revision, role: attempt.role, target: attempt.target };
@@ -58,7 +59,7 @@ export class NativeInputs {
       const endpoint = new URL(description.bridge.endpoint);
       requireValue(endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1' && !endpoint.username && !endpoint.password, 'Native bridge must use loopback');
       save(bridgeConfig, JSON.stringify({ ...description.bridge, binding, ...(attempt.role === 'planner' ? { handoffProtocol: 1, outbox: join(directory, 'outbox') } : {}) }));
-      save(mcpPath, JSON.stringify({ mcpServers: { companion: { command: process.execPath, args: [mcp, bridgeConfig] } } }));
+      save(mcpPath, JSON.stringify({ mcpServers: { companion: { alwaysLoad: true, command: process.execPath, args: [mcp, bridgeConfig] } } }));
     }
     this.installation?.assertCurrent();
     const argv = ccsCommand({ request, engine: this.engine, capabilities: this.capabilities, env: this.env, contextPath, settingsPath, mcpPath });

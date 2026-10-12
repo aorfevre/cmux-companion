@@ -232,7 +232,7 @@ test('creation submits a full request from main without the current checkout SHA
   await start();
   expect(screen.getByText('Starts from freshly fetched main in an isolated worktree.')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
-  await screen.findByText('Goal saved. Its planning agent will start automatically.');
+  await screen.findByText('Goal saved. See its current startup status below.');
   const body = JSON.parse(String(api.mock.calls.find(([url]) => url.endsWith('/commands'))?.[1]?.body));
   expect(body.payload).toEqual({ description: 'A useful goal', repositoryId: 'repo', baseBranch: 'main' });
   expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();

@@ -116,7 +116,7 @@ export function GoalBoard() {
       }
       if (command.type === 'send_goal_message' && snapshot?.journalId) localStorage.removeItem(pendingKey(snapshot.journalId));
       setPending(null); setNotice('Saved. Showing the service’s current state.');
-      if (command.type === 'create_goal') { setSelected(command.payload.experienceVersion === 2 ? command.goalId : null); if (command.payload.experienceVersion === 2) { const url = new URL(location.href); url.searchParams.set('goal', command.goalId); history.replaceState(null, '', url); } setTitle(''); setBrief(''); setAttachments([]); closeCreation(); setNotice('Goal saved. Its planning agent will start automatically.'); }
+      if (command.type === 'create_goal') { setSelected(command.payload.experienceVersion === 2 ? command.goalId : null); if (command.payload.experienceVersion === 2) { const url = new URL(location.href); url.searchParams.set('goal', command.goalId); history.replaceState(null, '', url); } setTitle(''); setBrief(''); setAttachments([]); closeCreation(); setNotice('Goal saved. See its current startup status below.'); }
       await refresh();
       return true;
     } catch (cause) {

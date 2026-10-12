@@ -7,7 +7,7 @@ import { DomainError, requireValue } from '../domain/contracts.mjs';
 const execute = promisify(execFile);
 // Initial native contract versions. Extending this set requires the offline
 // argv/hook/result suite and explicit live-evidence gaps, not a model-name guess.
-const CLAUDE_VERSIONS = new Set(['2.1.268']);
+const CLAUDE_VERSIONS = new Set(['2.1.268', '2.1.296']);
 const CCS_VERSIONS = new Set(['8.9.0', '8.10.0']);
 const FLAGS = ['--restricted', '--permission-mode', '--permission-prompts', '--setting-sources', '--strict-mcp-config', '--mcp-config', '--settings', '--tools', '--allowed-tools', '--disable-slash-commands', '--session-id', '--resume', '--print', '--output-format', '--verbose', '--no-session-persistence', '--model', '--effort'];
 
@@ -52,7 +52,9 @@ export async function probeNativeCapabilities({ ccsBin, claudeBin, direct = fals
     requireValue(versionResponse.status === 'fulfilled' && helpResponse.status === 'fulfilled', 'Native metadata probe failed', 'UNSUPPORTED_CAPABILITY');
     const version = versionResponse.value.stdout.trim().match(provider === 'codex' ? /^codex-cli (\d+\.\d+\.\d+)$/ : /^(\d+\.\d+\.\d+) \(Claude Code\)$/)?.[1];
     const help = helpResponse.value.stdout;
-    requireValue(provider === 'codex' ? version === '0.154.0' && ['--config', '--sandbox', '--ask-for-approval', '--strict-config', '--dangerously-bypass-hook-trust'].every(flag => help.includes(flag)) : version && CLAUDE_VERSIONS.has(version) && FLAGS.every((flag) => help.includes(flag))
+    requireValue(provider === 'codex' ? version === '0.154.0' : version && CLAUDE_VERSIONS.has(version),
+      `Unsupported ${provider === 'codex' ? 'Codex' : 'Claude'} CLI version ${version ?? '(unrecognized)'}. Companion needs a validated adapter for this version.`, 'UNSUPPORTED_CAPABILITY');
+    requireValue(provider === 'codex' ? ['--config', '--sandbox', '--ask-for-approval', '--strict-config', '--dangerously-bypass-hook-trust'].every(flag => help.includes(flag)) : FLAGS.every((flag) => help.includes(flag))
       && /["']manual["']/.test(help) && /["']none["']/.test(help) && help.includes('stream-json')
       && (help.includes('--append-system-prompt-file') || help.includes('--append-system-prompt[-file]')),
     'Native CLI lacks the supported restricted execution contract', 'UNSUPPORTED_CAPABILITY');
@@ -67,7 +69,10 @@ export async function probeNativeCapabilities({ ccsBin, claudeBin, direct = fals
       env: Object.freeze(provider === 'codex' ? { CCS_CODEX_PATH: nativeBin } : { CCS_CLAUDE_PATH: nativeBin }),
       capabilities: Object.freeze({ restricted: true, manualPermissions: true, hooks: true, strictMcp: true, streamJson: true, permissionPromptsNone: true, terminal: true }),
     });
-  } catch { throw new DomainError('UNSUPPORTED_CAPABILITY', 'Native installation does not satisfy the supported capability contract'); }
+  } catch (error) {
+    if (error instanceof DomainError && error.code === 'UNSUPPORTED_CAPABILITY') throw error;
+    throw new DomainError('UNSUPPORTED_CAPABILITY', 'Native installation metadata could not be read. Check the configured CCS and provider executable paths.');
+  }
 }
 
 

@@ -192,3 +192,49 @@ dispatch/abort and does not cover worker-check rendering or full delivery; those
 remain part of the next browser-fixture extension. Native provider evidence is
 still outstanding. Full verification preceded only this UI Abort fix; follow-up
 build validation passed.
+
+
+## Result delivery and real CCS preview — 2026-10-12
+
+The scripted conversation now reaches independently reviewed, verified results,
+shows worker check failure/fix receipts and a bounded exact-head Git diff, and
+publishes to the fake GitHub adapter only after explicit approval. Chrome Cypress
+passed the complete 41-second journey. Inspected result captures at
+[1440px](evidence/ccs-goals/conversation-result-desktop.png) and
+[390px](evidence/ccs-goals/conversation-result-phone.png); the result, diff and
+publication action remain within the conversation column. This supersedes the
+previous dispatch-only fixture limitation, but proves no native delivery.
+
+Full `npm run verify` passed: 1,086 backend tests, one intentional skip,
+97.17% backend line coverage; 212 UI tests, 94.87% UI line coverage; lint,
+typecheck and build passed. The first broad run failed on the old goal-creation
+notice assertion; corrected it to match the startup-status wording. The bridge
+loading follow-up below was added during verification and separately passed all
+10 native-launch/capability regressions. No coverage threshold was changed.
+
+User authorized an isolated clone and recreation of their mobile Sessions Explorer
+goal using copied local configuration. Production owns the original repository,
+so the preview uses its own clone, journal, token and worktrees. Production
+ownership was preserved. Failed pre-preparation goals no longer prevent reopening
+the preview; retries still require repository ownership.
+
+Actual xclaude resolves through CCS 8.10.0 to Claude 2.1.296, displaying Fable 5.1.
+The native metadata resolver now skips recognized cmux decoration shims and pins
+the actual CLI while preserving CCS as launcher. New conversational goals reject
+direct-provider execution. Installed Codex 0.162.1 remains unsupported/unverified.
+
+Live interventions: accepted the trust prompt only for this authorized isolated
+worktree. Claude initially began without companion tools because MCP loading was
+asynchronous. Interrupted that investigation, confirmed the bridge independently
+returned its four supervisor tools, then asked the same session to check again.
+The tools became available; get_status delivered the saved user message and the
+same CCS session resumed investigation. Added `alwaysLoad: true` to the explicit
+companion MCP configuration so future sessions await bridge startup, with a
+regression assertion. A fresh native launch proving that correction remains
+unverified. Workspace trust still needs a visible product startup decision.
+
+This is real launcher/model activity, not successful native plan approval or
+worker delivery. The five representative native goals, Codex compatibility,
+process-level conversation restart, waiting/capacity behavior, failed-launch
+recovery and policy disclosure remain incomplete. No live PR publication, merge,
+installation or deployment occurred.

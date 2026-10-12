@@ -63,3 +63,21 @@ test('native driver refuses an unprobed wrapper before creating runtime state', 
   assert.throws(() => new NativeBackground({ directory, bin: '/other/wrapper', inputs, policy: { ceilingMs: 1000, idleMs: 500, maxOutputBytes: 1000, killGraceMs: 50 }, onResult() {} }), { code: 'UNSUPPORTED_CAPABILITY' });
   await assert.rejects(access(directory), { code: 'ENOENT' });
 });
+
+test('Claude 2.1.296 keeps restricted metadata requirements and reports actionable version failures', async t => {
+  const f = await fixture(t, { version: '2.1.296' });
+  assert.equal((await probeNativeCapabilities(f)).evidence.claudeVersion, '2.1.296');
+  const missing = await fixture(t, { version: '2.1.296', cliHelp: help.replace('--restricted', '') });
+  await assert.rejects(probeNativeCapabilities(missing), /restricted execution contract/);
+  const newer = await fixture(t, { version: '2.1.999' });
+  await assert.rejects(probeNativeCapabilities(newer), /Unsupported Claude CLI version 2.1.999/);
+});
+
+test('conversational goals reject direct provider execution before writing private inputs', async t => {
+  const f = await fixture(t), installation = await probeNativeCapabilities(f);
+  const directory = join(f.root, 'private'), worktree = join(f.root, 'worktree');
+  await mkdir(directory); await mkdir(worktree);
+  const inputs = new NativeInputs({ direct: true, engine: { provider: 'default', model: 'fixture' }, capabilities: installation.capabilities, env: {}, describe: () => ({ experienceVersion: 2, prompt: 'fixture' }) });
+  await assert.rejects(inputs.prepare({ operationId: 'operation', attempt: { role: 'planner', mode: 'interactive', worktree } }, directory), { code: 'UNSUPPORTED_CAPABILITY', message: 'Conversational Goals require a CCS launcher; configure xclaude, xcodex or a CCS profile.' });
+  await assert.rejects(access(join(directory, 'context.txt')), { code: 'ENOENT' });
+});
