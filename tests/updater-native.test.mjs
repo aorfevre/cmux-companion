@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, writeFile, readFile, rm, symlink, utimes } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -261,4 +261,17 @@ test('bootstrap serializes stale reclamation across concurrent cycles and respec
   await mkdir(f.paths.lock, { mode: 0o700 }); await utimes(f.paths.lock, stale, stale); await mkdir(`${f.paths.lock}.reclaim`, { mode: 0o700 });
   assert.equal((await f.cycle()).code, 3, 'a fresh reclaim marker means another reclaimer is working');
   await rm(`${f.paths.lock}.reclaim`, { recursive: true, force: true });
+});
+
+test('acquireLock lets exactly one of many concurrent claimants replace a stale reclaim marker', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-marker-race-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock'), marker = `${lock}.reclaim`; await mkdir(lock, { mode: 0o700 }); await mkdir(marker, { mode: 0o700 });
+  const stale = new Date(Date.now() - 16 * 60_000); await utimes(lock, stale, stale); await utimes(marker, stale, stale);
+  const results = await Promise.all(Array.from({ length: 12 }, () => acquireLock(lock, { now: Date.now() })));
+  const winners = results.filter(result => typeof result === 'function');
+  assert.equal(winners.length, 1, 'a crashed reclaimer marker plus concurrent claimants still yields one owner');
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  const leftovers = (await readdir(root)).filter(name => name.startsWith('lock.reclaim.'));
+  assert.deepEqual(leftovers, [], 'no aside markers remain');
+  await winners[0]();
 });

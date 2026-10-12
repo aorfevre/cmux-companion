@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 
 export const LOCK_STALE_MS = 15 * 60_000;
 
@@ -40,8 +40,12 @@ async function reclaimStale(path, now, staleMs) {
     let info;
     try { info = await stat(marker); } catch (statError) { if (statError.code === "ENOENT") return false; throw statError; }
     if (now - info.mtimeMs <= staleMs) return false;
-    try { await rmdir(marker); } catch (rmError) { if (rmError.code !== "ENOENT") return false; }
-    try { await mkdir(marker, { mode: 0o700 }); } catch (mkError) { if (mkError.code === "EEXIST") return false; throw mkError; }
+    // Rename is atomic: exactly one claimant moves the stale marker aside, so two
+    // claimants can never both replace it and both proceed to remove the lock.
+    const aside = `${marker}.${process.pid}.${now}`;
+    try { await rename(marker, aside); } catch (renameError) { if (renameError.code === "ENOENT") return false; throw renameError; }
+    try { await mkdir(marker, { mode: 0o700 }); } catch (mkError) { try { await rmdir(aside); } catch { /* best effort */ } if (mkError.code === "EEXIST") return false; throw mkError; }
+    try { await rmdir(aside); } catch { /* best effort */ }
   }
   try {
     if (!await isStale(path, now, staleMs)) return false;

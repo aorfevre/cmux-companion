@@ -60,8 +60,12 @@ async function reclaimStale() {
     let info;
     try { info = await stat(marker); } catch (statError) { if (statError.code === "ENOENT") return false; throw statError; }
     if (Date.now() - info.mtimeMs <= LOCK_STALE_MS) return false;
-    try { await rmdir(marker); } catch (rmError) { if (rmError.code !== "ENOENT") return false; }
-    try { await mkdir(marker, { mode: 0o700 }); } catch (mkError) { if (mkError.code === "EEXIST") return false; throw mkError; }
+    // Rename is atomic: exactly one claimant moves the stale marker aside, so two
+    // claimants can never both replace it and both proceed to remove the lock.
+    const aside = `${marker}.${process.pid}.${Date.now()}`;
+    try { await rename(marker, aside); } catch (renameError) { if (renameError.code === "ENOENT") return false; throw renameError; }
+    try { await mkdir(marker, { mode: 0o700 }); } catch (mkError) { try { await rmdir(aside); } catch { /* best effort */ } if (mkError.code === "EEXIST") return false; throw mkError; }
+    try { await rmdir(aside); } catch { /* best effort */ }
   }
   try {
     if (!await isStale()) return false;
