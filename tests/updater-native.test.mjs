@@ -212,3 +212,53 @@ test('acquireLock removes the directory it created when the owner write fails', 
   await assert.rejects(readFile(lock), { code: 'ENOENT' });
   const release = await acquireLock(lock); assert.equal(typeof release, 'function', 'the next claimant is not blocked'); await release();
 });
+
+test('acquireLock serializes stale reclamation so concurrent claimants cannot replace each other', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-race-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock'); await mkdir(lock, { mode: 0o700 });
+  const stale = new Date(Date.now() - 16 * 60_000); await utimes(lock, stale, stale);
+  // Many claimants inspect the same stale directory at once; exactly one wins.
+  const results = await Promise.all(Array.from({ length: 12 }, () => acquireLock(lock, { now: Date.now() })));
+  const winners = results.filter(result => typeof result === 'function');
+  assert.equal(winners.length, 1, 'exactly one claimant owns the reclaimed lock');
+  assert.equal((await readJson(join(lock, 'owner.json'))).pid, process.pid);
+  await assert.rejects(readFile(`${lock}.reclaim`), { code: 'ENOENT' }, 'the reclaim marker is released');
+  await winners[0]();
+  await assert.rejects(readFile(lock), { code: 'ENOENT' });
+});
+
+test('acquireLock yields without deleting when its owner write finds the directory gone', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-enoent-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock');
+  // Simulate a reclaimer that replaced the directory with another claimant's lock
+  // between this claimant's mkdir and its owner write.
+  const write = async () => { await rm(lock, { recursive: true, force: true }); await mkdir(lock); await writeFile(join(lock, 'owner.json'), JSON.stringify({ pid: process.pid })); throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
+  assert.equal(await acquireLock(lock, { write }), null, 'ownership is lost');
+  assert.equal((await readJson(join(lock, 'owner.json'))).pid, process.pid, 'the other claim survives');
+});
+
+test('acquireLock reclaims a stale lock behind a stale reclaim marker and respects a fresh one', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-marker-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock'), marker = `${lock}.reclaim`; await mkdir(lock, { mode: 0o700 }); await mkdir(marker, { mode: 0o700 });
+  const stale = new Date(Date.now() - 16 * 60_000); await utimes(lock, stale, stale);
+  assert.equal(await acquireLock(lock, { now: Date.now() }), null, 'a fresh marker means another reclaimer is working');
+  await utimes(marker, stale, stale);
+  const release = await acquireLock(lock, { now: Date.now() });
+  assert.equal(typeof release, 'function', 'a stale marker from a crashed reclaimer is replaced'); await release();
+});
+
+test('bootstrap serializes stale reclamation across concurrent cycles and respects a fresh reclaim marker', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-race-');
+  const stale = new Date(Date.now() - 16 * 60_000);
+  await mkdir(f.paths.lock, { mode: 0o700 }); await utimes(f.paths.lock, stale, stale);
+  const results = await Promise.all(Array.from({ length: 6 }, () => f.cycle()));
+  const ran = results.filter(result => result.code === 0).length;
+  assert.equal(ran, 1, 'exactly one concurrent cycle reclaims and runs the engine');
+  assert.ok(results.every(result => [0, 3].includes(result.code)), 'the others report the lock as held');
+  assert.equal(await readFile(f.marker, 'utf8'), f.sha);
+  await assert.rejects(readFile(`${f.paths.lock}.reclaim`), { code: 'ENOENT' }, 'the reclaim marker is released');
+  await rm(f.marker);
+  await mkdir(f.paths.lock, { mode: 0o700 }); await utimes(f.paths.lock, stale, stale); await mkdir(`${f.paths.lock}.reclaim`, { mode: 0o700 });
+  assert.equal((await f.cycle()).code, 3, 'a fresh reclaim marker means another reclaimer is working');
+  await rm(`${f.paths.lock}.reclaim`, { recursive: true, force: true });
+});

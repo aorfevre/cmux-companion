@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, readFile, realpath, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -31,29 +31,66 @@ function ownerAlive(owner) {
   return [owner?.pid, owner?.enginePid].some(pid => Number.isInteger(pid) && pid > 0 && processAlive(pid));
 }
 
+async function isStale() {
+  let owner, info;
+  try {
+    [owner, info] = await Promise.all([
+      readFile(join(lockPath, "owner.json"), "utf8").then(JSON.parse).catch(() => ({})),
+      stat(lockPath),
+    ]);
+  } catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  // Only a live owner or engine holds the lock. A dead pid, or an unreadable or
+  // pid-less owner left by a claimant that crashed between mkdir and the owner
+  // write, is an orphan once the directory is older than the stale window. A
+  // fresh directory is always protected so a claim being recorded is not stolen.
+  return !ownerAlive(owner) && Date.now() - info.mtimeMs > LOCK_STALE_MS;
+}
+
+// Reclamation is serialized by an empty marker directory, so only one process
+// ever removes and recreates a stale lock, and it re-checks staleness while it
+// holds the marker. A claimant that does not hold the marker never deletes
+// anything. A marker left by a crashed reclaimer is removed only once it is
+// itself older than the stale window; rmdir is atomic and removes nothing else.
+async function reclaimStale() {
+  const marker = `${lockPath}.reclaim`;
+  try {
+    await mkdir(marker, { mode: 0o700 });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    let info;
+    try { info = await stat(marker); } catch (statError) { if (statError.code === "ENOENT") return false; throw statError; }
+    if (Date.now() - info.mtimeMs <= LOCK_STALE_MS) return false;
+    try { await rmdir(marker); } catch (rmError) { if (rmError.code !== "ENOENT") return false; }
+    try { await mkdir(marker, { mode: 0o700 }); } catch (mkError) { if (mkError.code === "EEXIST") return false; throw mkError; }
+  }
+  try {
+    if (!await isStale()) return false;
+    await rm(lockPath, { recursive: true, force: true });
+    try { await mkdir(lockPath, { mode: 0o700 }); } catch (error) { if (error.code === "EEXIST") return false; throw error; }
+    return true;
+  } finally {
+    try { await rmdir(marker); } catch { /* already removed */ }
+  }
+}
+
 async function acquire() {
   try {
     await mkdir(lockPath, { mode: 0o700 });
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
-    const [owner, info] = await Promise.all([
-      readFile(join(lockPath, "owner.json"), "utf8").then(JSON.parse).catch(() => ({})),
-      stat(lockPath),
-    ]);
-    // Only a live owner or engine holds the lock. A dead pid, or an unreadable or
-    // pid-less owner left by a claimant that crashed between mkdir and the owner
-    // write, is an orphan once the directory is older than the stale window. A
-    // fresh directory is always protected so a claim being recorded is not stolen.
-    if (ownerAlive(owner) || Date.now() - info.mtimeMs <= LOCK_STALE_MS) return false;
-    await rm(lockPath, { recursive: true });
-    await mkdir(lockPath, { mode: 0o700 });
+    if (!await isStale()) return false;
+    if (!await reclaimStale()) return false;
   }
   try {
     if (failpoint === "owner-write") throw Object.assign(new Error("ENOSPC: injected owner write failure"), { code: "ENOSPC" });
     await writeFile(join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }), { mode: 0o600 });
   } catch (error) {
-    // Never leave an ownerless directory behind: it would read as held. Keep the
-    // original error even when the cleanup itself fails.
+    // ENOENT means a reclaimer removed the directory: ownership is lost and the
+    // path may already belong to another claimant, so leave it untouched.
+    if (error.code === "ENOENT") return false;
+    // Any other failure leaves a fresh directory that only this claimant owns
+    // (reclaimers protect it for the stale window). Never leave it ownerless:
+    // it would read as held. Keep the original error if the cleanup fails too.
     try { await rm(lockPath, { recursive: true, force: true }); } catch { /* reported by the original error */ }
     throw error;
   }
