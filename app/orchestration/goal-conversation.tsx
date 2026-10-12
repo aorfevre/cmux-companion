@@ -52,6 +52,10 @@ export function GoalConversation({ goal, disabled, act }: {
       })}
     </div>
     {active.length > 0 && <section className="orch-card" aria-label="Working agents"><h2>Working agents</h2><ul>{active.map(attempt => <li key={attempt.id}>{attempt.assignment?.label || attempt.role}{attempt.taskId ? ` · ${goal.tasks.find(task => task.id === attempt.taskId)?.title || attempt.taskId}` : ''} · {attempt.workerState === 'unknown' ? 'Ownership uncertain' : attempt.status}</li>)}</ul></section>}
+    {goal.verificationRuns.some(run => run.attemptId) && <details className="orch-card"><summary>Worker checks and repair budgets</summary>{goal.verificationRuns.filter(run => run.attemptId).map(run => {
+      const history = goal.verificationRuns.filter(entry => entry.attemptId === run.attemptId && entry.checkIds?.some(id => run.checkIds?.includes(id)));
+      return <section key={run.operationId}><h3>{run.checkIds?.join(', ')} · run {history.findIndex(entry => entry.operationId === run.operationId) + 1} of {run.budgetLimit}</h3><p>{run.status} · <code>{run.headSha.slice(0, 12)}</code></p>{run.verification?.checks.map(check => <div key={check.id}><p>{check.id}: {check.passed ? 'Passed' : 'Failed'}</p><CheckEvidence goalId={goal.id} artifactId={check.artifactId} /></div>)}</section>;
+    })}</details>}
     {['ready_to_publish', 'delivered', 'merged'].includes(goal.status) && <section className="orch-card" aria-label="Goal result"><h2>Result</h2>
       <p>Integrated commit <code>{goal.integrationHead}</code></p>
       <ul>{goal.tasks.map(task => <li key={task.id}>{task.title} · {task.status}</li>)}</ul>

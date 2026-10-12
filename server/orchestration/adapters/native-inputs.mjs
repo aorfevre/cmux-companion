@@ -10,7 +10,7 @@ const mcp = fileURLToPath(new URL('../agent-mcp.mjs', import.meta.url));
  * No goal/agent text is interpolated into that command. @param {string} value */
 const quote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
 
-/** @typedef {{ prompt: string; supervisor?: boolean; plannerName?: string; bridge?: { endpoint: string; credential: string }; activation?: import('./native-activation.mjs').NativeActivation }} NativeDescription */
+/** @typedef {{ prompt: string; experienceVersion?: 2; supervisor?: boolean; plannerName?: string; bridge?: { endpoint: string; credential: string }; activation?: import('./native-activation.mjs').NativeActivation }} NativeDescription */
 
 /** Private inputs are outside native file-tool working directories. Their
  * lifecycle belongs to the process adapter; preparation never starts a worker.
@@ -35,7 +35,7 @@ export class NativeInputs {
     const description = await this.describe(request);
     requireValue(typeof description.prompt === 'string' && Buffer.byteLength(description.prompt) <= 1024 * 1024, 'Native role context exceeds limit');
     const { attempt, goalId, operationId } = request;
-    const binding = { ...(description.supervisor ? { supervisor: true } : {}), goalId, operationId, attemptId: attempt.id, generation: attempt.generation, revision: attempt.revision, role: attempt.role, target: attempt.target };
+    const binding = { ...(description.experienceVersion === 2 ? { experienceVersion: 2 } : {}), ...(description.supervisor ? { supervisor: true } : {}), goalId, operationId, attemptId: attempt.id, generation: attempt.generation, revision: attempt.revision, role: attempt.role, target: attempt.target };
     const contextPath = join(directory, 'context.txt'), settingsPath = join(directory, 'settings.json'), mcpPath = join(directory, 'mcp.json');
     const hookConfig = join(directory, 'hook.json'), bridgeConfig = join(directory, 'bridge.json');
     /** @param {string} path @param {string} value */
@@ -50,7 +50,7 @@ export class NativeInputs {
       ? 'Call companion.submit_result with exactly {id,output:{contract}} to submit a plan, or {id,output:{question}} to ask a focused clarification and stop. The tool supplies the outer identity envelope; never put that envelope inside output. This receipt is not user approval. Native permission prompts remain interactive.'
       : attempt.role === 'reviewer' ? 'You have no mutating tools or command execution. Return only the required role envelope as raw JSON in your final answer, with no Markdown fences or surrounding commentary. Finding severity must be high, medium, low or note (never info).'
         : 'Edit only the assigned scope with native file tools. To commit, call companion.commit_candidate with a stable id, expectedHead (initially the recorded baseSha), and a commit message. The tool returns headSha. It cannot publish or accept your work. Repository checks run independently after integration; report checks you could not run. Return the required role envelope in your final answer.';
-    save(contextPath, `${description.prompt}\n\n${nativeInstructions}\n`);
+    save(contextPath, `${description.prompt}\n\n${nativeInstructions}\n\n${description.experienceVersion === 2 && ['implementer', 'integrator'].includes(attempt.role) ? 'Use companion.commit_candidate to save a checkpoint, then companion.get_status and companion.run_check for an applicable approved check. Read its failing output, fix within scope, checkpoint again and rerun with a new id/head. Limit: three runs of each check per attempt, at most two unchanged failures. Preserve the exact id, expectedVersion, expectedHead and checkId when delivery is uncertain. On definitive VERSION_CONFLICT read status before issuing a fresh command. Stop and explain permission/setup/ownership failures or exhausted budget. Independent integrated verification still runs after submission.' : ''}\n`);
     save(hookConfig, JSON.stringify({ role: attempt.role }));
     save(settingsPath, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: [process.execPath, hook, hookConfig].map(quote).join(' '), timeout: 10 }] }] } }));
     {

@@ -41,6 +41,19 @@ export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
         await delay(1000);
       }
     },
+    /** The accepted command and check receipt remain separate: retrying the same
+     * command cannot start a second process. Polling stays inside this tool.
+     * @param {import('./types.d.ts').Command} command @param {string} operationId */
+    async runCheck(command, operationId) {
+      await this.submit(command);
+      for (;;) {
+        const response = await fetch(new URL(`/api/orchestration/agent/checks/${encodeURIComponent(operationId)}`, url), { redirect: 'error', headers: { authorization: `Bearer ${credential}` }, signal: AbortSignal.timeout(timeoutMs) });
+        const body = await response.json();
+        if (!response.ok) throw Object.assign(new Error('Worker check rejected'), { code: body.code || 'REQUEST_FAILED' });
+        if (body.status !== 'pending') return body;
+        await delay(250);
+      }
+    },
     /** @param {string} id @param {number} [offset] */
     async reference(id, offset = 0) {
       if (!/^[a-f0-9]{64}$/.test(id) || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid reference request');

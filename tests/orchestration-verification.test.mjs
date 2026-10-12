@@ -145,11 +145,11 @@ test('verification watchdog survives service SIGKILL and recovery never launches
   assert.deepEqual(await reopened.run(input), result);
 });
 
-for (const proof of ['boot', 'outcome']) test(`${proof} evidence proves uncertain verification stopped without rewriting completed checks`, async t => {
-  const f = await fixture(t), runner = new VerificationRunner({ ...f.options, boot: () => 'boot-a', failpoint: point => { if (point === 'before_launch') throw new Error('interrupted'); } });
+for (const checkId of ['unit', 'prepare']) for (const proof of ['boot', 'outcome']) test(`${checkId}: ${proof} evidence proves uncertain verification stopped without rewriting completed checks`, async t => {
+  const f = await fixture(t), runner = new VerificationRunner({ ...(checkId === 'prepare' ? prepareOptions(f, 'process.exit(0)') : f.options), boot: () => 'boot-a', failpoint: point => { if (point === 'before_launch') throw new Error('interrupted'); } });
   await assert.rejects(runner.run(f.input), /interrupted/);
   const { mkdirSync } = await import('node:fs');
-  const directory = join(runner.directory, f.input.operationId, 'workers', 'unit');
+  const directory = join(runner.directory, f.input.operationId, 'workers', checkId);
   mkdirSync(directory);
   writeFileSync(join(directory, 'request.json'), JSON.stringify({ identity: 'uncertain-fixture', startedAt: 0, bootId: 'boot-a' }));
   const unknown = await runner.observe(f.input.operationId);

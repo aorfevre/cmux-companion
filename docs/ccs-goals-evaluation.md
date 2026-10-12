@@ -125,8 +125,9 @@ services:
 
 ### Remaining implementation and acceptance
 
-The approved worker edit–check–fix tool and bounded automatic routine recovery
-are **not implemented**. The new experience's full result/diff/review/publication
+The approved worker edit–check–fix tool and bounded final-check recovery are
+implemented in the follow-up below. Automatic failed-launch recovery remains
+outstanding. The new experience's full result/diff/review/publication
 journey, process-level service restart, readiness/policy disclosure for actual
 launchers, native waiting/capacity evidence and all five native representative
 goals remain outstanding. The current Cypress journey ends after dispatch/abort;
@@ -141,3 +142,53 @@ in progress until the remaining contract and native evidence are resolved.
 Inspected conversation captures (scripted fixture only):
 [desktop at 1440px](evidence/ccs-goals/conversation-desktop.png) and
 [phone at 390px](evidence/ccs-goals/conversation-phone.png).
+
+
+## Worker checks and bounded repair checkpoint — 2026-10-12
+
+Implementation in progress, following the conversation foundation:
+
+- Version-2 implementers/integrators can checkpoint through the existing commit
+  tool and run a named approved check in their owned checkout. The tool accepts
+  no argv, uses existing dependency/environment policy and retains bounded output.
+- Durable operation receipts make exact retries idempotent. Active check ownership
+  fences commits and candidate submission. Abort cancels the physical check;
+  verification cleanup never removes a worker checkout. Worker receipts cannot
+  satisfy independent final verification, even for the same commit.
+- Each attempt has three runs per check and at most two unchanged failures.
+  Exhaustion holds the goal and requests worker termination. Preparation and
+  nonordinary process failures request attention on the first failed run.
+- Ordinary, proven-stopped final check failures can admit an integrator repair
+  within the existing persisted final repair budget. Mixed current review/check
+  findings can repair together. Legacy goals, unknown ownership, setup failures,
+  pending results, stale receipts and exhausted budgets retain their holds.
+- Dependency preparation participates in uncertain-process reconciliation; an
+  unknown preparation process cannot be declared stopped just because the main
+  check never launched.
+
+Targeted evidence: 29 worker/verification tests passed before adding automatic
+final-check repair, and typecheck passed. The expanded recovery suite initially
+had one fixture failure: its synthetic review omitted the owning attempt ID;
+adding the required identity made all 19 recovery cases pass. The additional
+three-checkpoint test exposed a real receipt race: the budget hold could stop
+the worker before its final poll. Exact owned check receipts now use historical
+credential binding, preserving reads after stop without mutation authority;
+explicit revocation, terminal goals and cross-attempt access remain denied.
+All five worker integration cases then passed.
+
+Full `npm run verify` passed on the final code: backend 1,079 passed, one
+intentional skip, 97.43% line coverage; UI 208 passed, 94.84% line coverage;
+lint, types and build passed, with the same two existing settings navigation
+warnings. The preceding broad run failed only on the receipt race above; it
+was investigated and fixed before the successful rerun. No threshold changed.
+The follow-up conversation Cypress run exposed an Abort version race with
+supervisor commits (HTTP 409). Abort now shares the bounded definitive-conflict
+retry of Pause/Resume; uncertain requests keep their original envelope and
+approval is never rebased. A new UI regression covers that race. Follow-up UI
+coverage passed 209 tests at 94.84% lines, lint and types passed, and the Chrome
+conversation journey passed at desktop/phone widths. The harness closed its
+owned service, frontend and disposable resources. This journey still stops at
+dispatch/abort and does not cover worker-check rendering or full delivery; those
+remain part of the next browser-fixture extension. Native provider evidence is
+still outstanding. Full verification preceded only this UI Abort fix; follow-up
+build validation passed.

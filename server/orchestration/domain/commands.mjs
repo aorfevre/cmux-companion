@@ -10,7 +10,7 @@ export const USER_COMMANDS = new Set(['override_assignment', 'recover_goal', 'ap
 for (const type of ['send_goal_message', 'pause_goal', 'resume_goal']) USER_COMMANDS.add(type);
 /** @type {Readonly<Record<import('../types.d.ts').Role, ReadonlySet<string>>>} */
 export const AGENT_COMMANDS = Object.freeze({
-  planner: new Set(['publish_contract', 'request_clarification', ...SUPERVISOR_COMMANDS]), implementer: new Set(['submit_candidate']),
-  reviewer: new Set(['record_review']), integrator: new Set(['submit_integration_repair']),
+  planner: new Set(['publish_contract', 'request_clarification', ...SUPERVISOR_COMMANDS]), implementer: new Set(['submit_candidate', 'request_worker_check']),
+  reviewer: new Set(['record_review']), integrator: new Set(['submit_integration_repair', 'request_worker_check']),
   review_fixer: new Set([]),
 });

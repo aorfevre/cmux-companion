@@ -38,7 +38,7 @@ export interface Task extends TaskContract {
   integratedSha: string | null; repairCount: number; repairLimit: number;
 }
 export interface Verification {
-  headSha: string; checks: { id: string; passed: boolean; artifactId: string }[];
+  headSha: string; checks: { id: string; passed: boolean; artifactId: string; code?: string }[];
 }
 export interface TeamProfile { id: string; label: string; provider: 'claude' | 'codex'; model: string; roles: TeamRole[]; ready: boolean; reason: string; capacity: { remainingPercent: number | null; source: string; checkedAt: string | null; reason: string } }
 export interface TeamConfiguration { profiles: TeamProfile[]; defaults: Record<TeamRole, string>; capturedAt: string }
@@ -91,7 +91,7 @@ export interface Goal {
   publication: { operationId: string; headSha: string; generation: number; revision: number; plan: PublicationInput; approval?: { commandId: string; headSha: string }; observation?: PublicationResult } | null;
   planRevisionCount?: number; planReviewEnabled?: boolean;
   planningRequest?: { message: string; basedOnRevision: number } | null;
-  verificationRuns?: { waveId?: string; checkIds?: string[]; operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
+  verificationRuns?: { attemptId?: string; budgetLimit?: number; waveId?: string; checkIds?: string[]; operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
   integrationResults?: { operationId: string; taskId: string | null; headSha: string }[];
   results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; repair?: { effectId: string; integrationOperationId: string; headSha: string }; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
 }
@@ -157,7 +157,7 @@ export interface RepositoryPort {
   unresolvedPaths?(input: { repositoryId: string; headSha: string; conflictPaths: string[] }): Promise<string[]>;
 }
 export interface VerificationPort {
-  run(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; checks: Check[]; signal?: AbortSignal }): Promise<VerificationRunResult>;
+  run(input: { operationId: string; goalId: string; repositoryId: string; headSha: string; checks: Check[]; attempt?: Attempt; signal?: AbortSignal }): Promise<VerificationRunResult>;
   observe(operationId: string): Promise<VerificationRunResult | null>;
 }
 

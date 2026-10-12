@@ -5,7 +5,7 @@ import { ROLES, parseTeamConfiguration, proposeTeam, assignmentFor, overrideAssi
 import { currentWave, verificationWaveId, integratedWaveReady, waveChecks, acceptWaveVerification } from './waves.mjs';
 import { parseGoalReferences } from './goal-references.mjs';
 import { revisablePlan, requiresPlanReview, repairableReviews } from './review-repairs.mjs';
-import { captureFailureHold, recoverGoal } from './recovery.mjs';
+import { captureFailureHold, recoverGoal, repairableChecks } from './recovery.mjs';
 import { parseContract, readyTasks } from './graph.mjs';
 import { acceptedReview, currentReviews, parseReview } from './review.mjs';
 import { parseRoleResult, requireResultCapacity } from './role-result.mjs';
@@ -109,11 +109,11 @@ export function transition(before, command, authority) {
   if (authority.kind === 'agent' && isSupervisor(before, before.attempts.find(attempt => attempt.id === authority.attemptId))) {
     requireValue(SUPERVISOR_COMMANDS.has(command.type), 'Use the scoped supervisor tools', 'FORBIDDEN');
   }
-  requireValue(!before.conversation?.paused || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_publication', 'approve_publication', 'supervisor_propose', 'supervisor_revise'].includes(command.type), 'Goal is paused', 'NOT_READY');
+  requireValue(!before.conversation?.paused || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_worker_check', 'request_publication', 'approve_publication', 'supervisor_propose', 'supervisor_revise'].includes(command.type), 'Goal is paused', 'NOT_READY');
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
   requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_publication_observation', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'cancel_integration', 'settle_repair_result', 'cancel_repair_result', 'record_verification_result', 'cancel_verification', 'verification_uncertain', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
   requireValue(!before.startup || before.startup.status === 'ready' || ['record_startup', 'fail_startup', 'retry_startup', 'rename_goal', 'abort', 'send_goal_message', 'pause_goal', 'resume_goal'].includes(command.type), 'Fetch the goal base before planning', 'NOT_READY');
-  requireValue(!before.hold || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_publication', 'approve_publication', 'approve', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair'].includes(command.type), 'Goal is on hold; use manual recovery', 'NOT_READY');
+  requireValue(!before.hold || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_worker_check', 'request_publication', 'approve_publication', 'approve', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair'].includes(command.type), 'Goal is on hold; use manual recovery', 'NOT_READY');
   requireValue(!before.hold || !['publish_contract', 'supervisor_propose'].includes(command.type) || authority.kind === 'user', 'Request a revision before replacing the held plan', 'NOT_READY');
   const goal = structuredClone(before);
   /** @type {Transition} */
@@ -136,6 +136,14 @@ export function transition(before, command, authority) {
       (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold });
       goal.hold = null;
       emit('review_repair_requested', { holdId: String(input.holdId) }); break;
+    }
+    case 'repair_failed_checks': {
+      requireAuthority(authority, 'system');
+      requireValue(goal.hold && goal.hold.id === input.holdId && repairableChecks(goal), 'Check failure is not eligible for automatic repair', 'NOT_READY');
+      (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold });
+      goal.hold = null;
+      if (goal.conversation) appendMessage(goal, command.id, 'service', 'progress', `Required checks failed; starting repair ${goal.finalRepairCount + 1} of ${goal.finalRepairLimit} with the saved evidence.`);
+      emit('check_repair_requested', { holdId: String(input.holdId), headSha: goal.integrationHead }); break;
     }
     case 'recover_goal': {
       requireAuthority(authority, 'user');
@@ -232,6 +240,7 @@ export function transition(before, command, authority) {
       const submission = goal.results?.find((entry) => entry.id === input.resultId);
       requireValue(submission?.status === 'pending' && !submission.repair, 'Repair result is not pending', 'STALE_ATTEMPT');
       const attempt = attemptById(goal, submission.attemptId); ownsResult(authority, attempt);
+      requireValue(!goal.verificationRuns?.some(run => run.attemptId === attempt.id && run.workerState !== 'stopped'), 'Worker check is not settled', 'OWNERSHIP_UNCERTAIN');
       const parsed = parseRoleResult(input.result, { goalId: goal.id, attempt });
       requireValue(parsed.role === 'integrator' && goal.status === 'building' && goal.approvedRevision === goal.revision, 'Integration repair is not approved', 'FORBIDDEN');
       requireValue(goal.integrationHead === attempt.target && parsed.output.headSha !== attempt.target, 'Repair target changed', 'STALE_TARGET');
@@ -490,6 +499,7 @@ export function transition(before, command, authority) {
     case 'confirm_candidate': {
       // This command is internal: the service verifies Git evidence before issuing it.
       requireAuthority(authority, 'system'); const attempt = attemptById(goal, input.attemptId);
+      requireValue(!goal.verificationRuns?.some(run => run.attemptId === attempt.id && run.workerState !== 'stopped'), 'Worker check is not settled', 'OWNERSHIP_UNCERTAIN');
       ownsResult(authority, attempt); requireValue(attempt.role === 'implementer' && attempt.taskId, 'Not an implementer');
       const task = taskById(goal, attempt.taskId); requireValue(task.status === 'running', 'Task is not running');
       task.candidateSha = sha(input.headSha); task.candidateBase = attempt.baseSha; task.status = 'in_review';
@@ -587,6 +597,7 @@ export function transition(before, command, authority) {
     case 'confirm_integration_repair': {
       requireAuthority(authority, 'system'); const attempt = attemptById(goal, input.attemptId);
       ownsResult(authority, attempt);
+      requireValue(!goal.verificationRuns?.some(run => run.attemptId === attempt.id && run.workerState !== 'stopped'), 'Worker check is not settled', 'OWNERSHIP_UNCERTAIN');
       requireValue(attempt.role === 'integrator' && attempt.target === goal.integrationHead, 'Integration repair target changed', 'STALE_TARGET');
       const head = sha(input.headSha);
       requireValue(head !== goal.integrationHead, 'Repair must produce a new commit');
@@ -599,11 +610,29 @@ export function transition(before, command, authority) {
       goal.integrationHead = head; goal.verification = null; attempt.status = 'succeeded';
       emit('integration_repaired', { headSha: head, attemptId: attempt.id }); break;
     }
+    case 'request_worker_check': {
+      requireValue(authority.kind === 'agent' && ['implementer', 'integrator'].includes(authority.role), 'Worker authority required', 'FORBIDDEN');
+      const attempt = attemptById(goal, authority.attemptId);
+      requireValue(goal.experienceVersion === 2 && goal.status === 'building' && goal.approvedRevision === goal.revision && attempt.workerState === 'running' && attempt.worktree && attempt.branch, 'Worker checks require the approved active checkout', 'NOT_READY');
+      requireValue(!goal.verificationRuns?.some(run => run.attemptId === attempt.id && run.workerState !== 'stopped'), 'A check still owns this checkout', 'OWNERSHIP_UNCERTAIN');
+      requireValue(Object.keys(input).length === 3 && ['operationId', 'headSha', 'checkId'].every(key => Object.hasOwn(input, key)), 'Expected check id, head and operation');
+      const operationId = identifier(input.operationId), headSha = sha(input.headSha), checkId = identifier(input.checkId);
+      requireValue(checkId !== 'prepare', 'The check id "prepare" is reserved for dependency preparation');
+      const check = currentContract(goal).verification.find(check => check.id === checkId);
+      requireValue(check, 'Check is outside the approved contract', 'FORBIDDEN');
+      const prior = goal.verificationRuns?.filter(run => run.attemptId === attempt.id && run.checkIds?.includes(checkId)) ?? [];
+      requireValue(prior.length < 3, 'This check exhausted its three-run budget; request recovery', 'REPAIR_BUDGET_EXHAUSTED');
+      requireValue(prior.filter(run => run.headSha === headSha && run.result?.verification.checks.some(check => !check.passed)).length < 2, 'Repeated unchanged failure requires recovery', 'REPAIR_BUDGET_EXHAUSTED');
+      requireValue(!goal.verificationRuns?.some(run => run.operationId === operationId), 'Check operation is already recorded', 'IDEMPOTENCY_CONFLICT');
+      (goal.verificationRuns ??= []).push({ operationId, attemptId: attempt.id, budgetLimit: 3, checkIds: [checkId], generation: goal.generation, revision: goal.revision, headSha, status: 'pending', workerState: 'pending' });
+      intent('verify', operationId, attempt.id, { headSha, checks: [{ id: check.id, argv: check.argv }] });
+      emit('worker_check_requested', { operationId, attemptId: attempt.id, checkId, headSha }); break;
+    }
     case 'request_verification': {
       requireAuthority(authority, 'system');
       requireValue(goal.status === 'building' && goal.approvedRevision === goal.revision && integratedWaveReady(goal), 'Verification is not ready', 'NOT_READY');
       requireValue(!goal.attempts.some((attempt) => attempt.role === 'integrator' && ownsWorker(attempt)) && !goal.verificationRuns?.some((run) => run.workerState !== 'stopped'), 'Verification ownership is occupied', 'NOT_READY');
-      const previous = goal.verificationRuns?.filter((run) => run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && run.waveId === verificationWaveId(goal)).at(-1);
+      const previous = goal.verificationRuns?.filter((run) => !run.attemptId && run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead && run.waveId === verificationWaveId(goal)).at(-1);
       requireValue(!previous || previous.retryRequested, 'Explicit verification retry required', 'RETRY_REQUIRED');
       const operationId = identifier(input.operationId), waveId = verificationWaveId(goal), checks = waveChecks(goal);
       (goal.verificationRuns ??= []).push({ operationId, ...(waveId ? { waveId, checkIds: checks.map(check => check.id) } : {}), generation: goal.generation, revision: goal.revision, headSha: goal.integrationHead, status: 'pending', workerState: 'pending' });
@@ -612,7 +641,7 @@ export function transition(before, command, authority) {
     }
     case 'retry_verification': {
       requireAuthority(authority, 'user');
-      const run = goal.verificationRuns?.filter((entry) => entry.generation === goal.generation && entry.revision === goal.revision && entry.headSha === goal.integrationHead).at(-1);
+      const run = goal.verificationRuns?.filter((entry) => !entry.attemptId && entry.generation === goal.generation && entry.revision === goal.revision && entry.headSha === goal.integrationHead).at(-1);
       requireValue(goal.status === 'building' && run?.status === 'complete' && run.result?.verification.checks.some((check) => !check.passed) && !goal.verificationRuns?.some((entry) => entry.workerState !== 'stopped'), 'Verification cannot be retried while ownership is unresolved', 'NOT_READY');
       run.retryRequested = true; goal.verification = null; emit('verification_retry_requested', { operationId: run.operationId }); break;
     }
@@ -635,7 +664,7 @@ export function transition(before, command, authority) {
       const received = object(input.result), verification = object(received.verification);
       requireValue(verification.headSha === run.headSha && ['stopped', 'unknown'].includes(String(received.workerState)), 'Verification receipt target changed', 'STALE_TARGET');
       const artifactId = text(received.artifactId, 64); requireValue(/^[a-f0-9]{64}$/.test(artifactId), 'Invalid verification evidence');
-      const checks = array(verification.checks, 30).map((entry) => { const check = object(entry); requireValue(typeof check.passed === 'boolean', 'Missing check outcome'); return { id: identifier(check.id), passed: check.passed, artifactId: identifier(check.artifactId) }; });
+      const checks = array(verification.checks, 30).map((entry) => { const check = object(entry); requireValue(typeof check.passed === 'boolean', 'Missing check outcome'); return { id: identifier(check.id), passed: check.passed, artifactId: identifier(check.artifactId), ...(check.code === undefined ? {} : { code: text(check.code, 100) }) }; });
       const contract = goal.contracts.find((entry) => entry.revision === run.revision)?.contract;
       const required = contract?.verification.filter(check => !run.checkIds || run.checkIds.includes(check.id));
       // A leading `prepare` entry is user-approved dependency installation, not a planned check.
@@ -645,7 +674,7 @@ export function transition(before, command, authority) {
       requireValue(!run.result || JSON.stringify(run.result.verification) === JSON.stringify({ headSha: run.headSha, checks }), 'Completed check evidence cannot change during observation', 'STALE_TARGET');
       run.workerState = received.workerState === 'stopped' ? 'stopped' : 'unknown'; run.status = run.workerState === 'stopped' ? 'complete' : 'uncertain';
       run.result = { verification: { headSha: run.headSha, checks }, workerState: run.workerState, artifactId };
-      if (goal.status === 'building' && run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead) { goal.verification = run.result.verification; if (run.workerState === 'stopped') acceptWaveVerification(goal, run.waveId); }
+      if (!run.attemptId && goal.status === 'building' && run.generation === goal.generation && run.revision === goal.revision && run.headSha === goal.integrationHead) { goal.verification = run.result.verification; if (run.workerState === 'stopped') acceptWaveVerification(goal, run.waveId); }
       emit('verification_result_recorded', { operationId: run.operationId, headSha: run.headSha, artifactId, workerState: run.workerState }); break;
     }
     case 'record_verification': {

@@ -106,9 +106,9 @@ export function GoalBoard() {
         try { await request(`${prefix}/commands`, { method: 'POST', body: JSON.stringify(command) }); break; }
         catch (cause) {
           // A definitive version conflict means this command was not accepted.
-          // Rebase only conversation controls, which carry no plan/head approval.
+          // Rebase only conversation/stop controls, which carry no plan/head approval.
           // Uncertain transport outcomes always retain the exact saved envelope.
-          if (!(cause instanceof ApiError) || cause.code !== 'VERSION_CONFLICT' || conflicts >= 3 || !['send_goal_message', 'pause_goal', 'resume_goal'].includes(command.type)) throw cause;
+          if (!(cause instanceof ApiError) || cause.code !== 'VERSION_CONFLICT' || conflicts >= 3 || !['send_goal_message', 'pause_goal', 'resume_goal', 'abort'].includes(command.type)) throw cause;
           const latest = await request<Goal>(`${prefix}/goals/${encodeURIComponent(command.goalId)}`);
           command = { ...command, id: crypto.randomUUID(), expectedVersion: latest.version };
           setPending(command);

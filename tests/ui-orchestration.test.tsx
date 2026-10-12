@@ -479,3 +479,26 @@ test('a conflicted pull request with no active round needs attention', async () 
   const goal = { ...goalView(f.goal), contracts: [] };
   expect(attention(goal)).toBe('The PR conflicts with its target branch. A round starts automatically at the next merge check.');
 });
+
+
+test('abort retries a definitive supervisor version race without changing its target', async () => {
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const goal = { ...goalView(fixture().goal), contracts: [] };
+  const original = api.getMockImplementation()!;
+  let submissions = 0;
+  api.mockImplementation(async (url, options) => {
+    if (url.endsWith('/snapshot')) return { goals: [goal], cursor: 1, journalId: 'journal', readOnly: false };
+    if (url.endsWith(`/goals/${goal.id}`)) return { ...goal, version: submissions ? goal.version + 1 : goal.version };
+    if (url.endsWith('/commands')) { if (submissions++ === 0) throw new ApiError('Goal version changed', 409, 'VERSION_CONFLICT'); return {}; }
+    return original(url, options);
+  });
+  render(<GoalBoard />);
+  fireEvent.click(await screen.findByRole('button', { name: /Build modules/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
+  await waitFor(() => expect(submissions).toBe(2));
+  const sent = api.mock.calls.filter(([url]) => url.endsWith('/commands')).map(([, options]) => JSON.parse(options!.body as string));
+  expect(sent[0]).toMatchObject({ goalId: goal.id, type: 'abort', expectedVersion: goal.version });
+  expect(sent[1]).toEqual({ ...sent[0], id: expect.any(String), expectedVersion: goal.version + 1 });
+  expect(sent[1].id).not.toBe(sent[0].id);
+});

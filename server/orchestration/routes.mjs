@@ -22,7 +22,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     if (!routePath?.startsWith(PREFIX)) return;
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff');
     if (request.method !== 'GET' && !isSafeOrigin(request)) return reply.code(403).send({ code: 'BAD_ORIGIN', error: 'Origin rejected' });
-    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/ready`, `${PREFIX}/agent/results`, `${PREFIX}/agent/commit`, `${PREFIX}/agent/references/:referenceId`].includes(routePath)) return;
+    if ([`${PREFIX}/pair`, `${PREFIX}/agent/commands`, `${PREFIX}/agent/status`, `${PREFIX}/agent/ready`, `${PREFIX}/agent/results`, `${PREFIX}/agent/commit`, `${PREFIX}/agent/checks/:operationId`, `${PREFIX}/agent/references/:referenceId`].includes(routePath)) return;
     if (!isAuthorized(request, token)) return reply.code(401).send({ code: 'UNAUTHORIZED', error: 'Pair this device to continue' });
   });
   app.setErrorHandler((error, _request, reply) => {
@@ -177,6 +177,28 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     requireValue(offset <= content.length, 'Reference offset is outside the text');
     const end = Math.min(offset + 16000, content.length);
     return { ...reference, text: content.slice(offset, end), offset, nextOffset: end < content.length ? end : null };
+  });
+  app.get(`${PREFIX}/agent/checks/:operationId`, async request => {
+    const header = request.headers.authorization ?? '';
+    requireValue(header.startsWith('Bearer '), 'Agent credential required', 'UNAUTHORIZED');
+    // A budget hold can stop the worker before its final poll; exact historical
+    // receipts remain readable without restoring mutation authority.
+    const authority = bridgeAuth.receiptAuthority(header.slice(7)), goal = service.store.get(authority.goalId);
+    requireValue(goal && service.repositoryIds.has(goal.repositoryId), 'Repository is no longer allowed', 'FORBIDDEN');
+    const operationId = identifier(/** @type {{operationId:string}} */ (request.params).operationId);
+    const run = goal.verificationRuns?.find(run => run.operationId === operationId && run.attemptId === authority.attemptId);
+    requireValue(run && ['implementer', 'integrator'].includes(authority.role), 'Check is not owned by this attempt', 'FORBIDDEN');
+    requireValue(results, 'Check evidence is unavailable', 'NOT_READY');
+    return { operationId, headSha: run.headSha, status: run.status, workerState: run.workerState, budgetLimit: run.budgetLimit,
+      runsUsed: goal.verificationRuns?.filter(entry => entry.attemptId === run.attemptId && entry.checkIds?.some(id => run.checkIds?.includes(id))).length,
+      checks: (run.result?.verification.checks ?? []).map(check => {
+        const evidence = JSON.parse(results.artifacts.get(check.artifactId).toString('utf8'));
+        requireValue(evidence.operationId === run.operationId && evidence.headSha === run.headSha && evidence.checkId === check.id, 'Check evidence target changed', 'STALE_TARGET');
+        const stdout = typeof evidence.outcome?.stdout === 'string' ? evidence.outcome.stdout : '';
+        const stderr = typeof evidence.outcome?.stderr === 'string' ? evidence.outcome.stderr : '';
+        return { id: check.id, passed: check.passed, artifactId: check.artifactId, code: typeof evidence.code === 'string' ? evidence.code : '',
+          stdout: stdout.slice(-16000), stderr: stderr.slice(-16000), truncated: stdout.length > 16000 || stderr.length > 16000 };
+      }) };
   });
   app.post(`${PREFIX}/agent/commit`, async (request) => {
     const authority = agentAuthority(request);

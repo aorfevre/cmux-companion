@@ -1,3 +1,4 @@
+import { repairableChecks } from './domain/recovery.mjs';
 import { AgentPreparationError } from './agent-preparation-error.mjs';
 import { randomUUID } from 'node:crypto';
 import { DomainError, integer, requireValue } from './domain/contracts.mjs';
@@ -103,6 +104,8 @@ export class Scheduler {
         type: 'revise_rejected_plan', payload: { reviewId: review.id } }, { kind: 'system' });
       else if (repairableReviews(goal)) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
         type: 'repair_review_findings', payload: { holdId: goal.hold?.id ?? '' } }, { kind: 'system' });
+      else if (repairableChecks(goal)) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
+        type: 'repair_failed_checks', payload: { holdId: goal.hold?.id ?? '' } }, { kind: 'system' });
     }
   }
   prepareGoals() {
