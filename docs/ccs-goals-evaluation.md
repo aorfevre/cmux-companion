@@ -705,3 +705,22 @@ command then stopped at a synchronous-effect-state lint error in the new picker.
 Loading/error reset now occurs in the refresh event handler; lint subsequently
 passed with the two pre-existing settings-navigation warnings, types and build
 passed, and both picker tests passed again. No coverage threshold was changed.
+
+## CodeQL trust-path review — 2026-10-12
+
+Reviewed all code flows in CodeQL analysis 1936281706 (PR merge tree
+54f86b66a8b56c1e2412293069ba714ea5c4ac49), against current source 216eb90a.
+The seven remaining traces have the following dispositions; no query or source
+path is excluded from scanning.
+
+| Alerts | Observed source and sink | Boundary and disposition |
+| --- | --- | --- |
+| 88, 89, 90, 104 | Private bridge configuration's credential enters the Authorization header of POST/status/check/reference requests. | Intentional scoped authentication. createBridge rejects anything except literal HTTP 127.0.0.1 without URL userinfo; paths are service-owned and fetch uses redirect:error. The two-server redirect regression proves credentials/body never reach the redirect target. These traces do not show arbitrary local file upload or an external destination. False positive for exfiltration. |
+| 106 | HTTP status response's conversation.wake enters runId, then the generated CCS shim text. | integer(wake, 1) requires a positive safe integer; prepareCcsLaunch additionally validates runId as an identifier. The service-owned private directory and fixed filename prefix bound the path. Shell operands are quoted, native executable and arguments are pinned, and the recipe is exclusive, immutable and digest checked. False positive for untrusted executable content/path injection. |
+| 107 | HTTP error code or validated runId enters JSON.stringify(value) written as a private receipt. | Receipt names are hard-coded call-site constants; response data is JSON content, never a filename or executable. Temporary files use exclusive creation and mode 0600, followed by rename into the same owned directory. Persisting service results is intentional. False positive for arbitrary file write. |
+| 108 | receiptAuthority runs in the check-poll route. | A custom per-address window rejects further authentication attempts after 60 invalid credentials in 60 seconds, before receiptAuthority. The API regression proves exhaustion, 429 and expiry. Valid scoped worker polling does not consume the guessing budget. The static rule does not model this limiter. False positive for missing authentication throttling; not a claim that all authenticated traffic is rate-limited. |
+
+The former session-receipt TOCTOU and PTY shell findings (109 and 105) are
+reported fixed by GitHub, rather than dismissed. This trust-path review does not
+establish native policy enforcement or actual CCS account routing; A2 and the
+five native-goal success measure remain unverified.
