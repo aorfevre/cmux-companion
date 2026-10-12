@@ -452,3 +452,44 @@ Full `npm run verify` passed: 1,109 backend tests plus one intentional skip
 (97.58% lines), 216 UI tests (94.88% lines), lint, types and build. The same two
 settings-navigation warnings remain. No coverage thresholds changed. No live
 preview restart, installed-state change or native provider execution was needed.
+
+## Native idle acceptance failure and transport direction — 2026-10-12
+
+Read-only inspection of the already-authorized isolated CCS trial establishes a
+native failure that the scripted wait tests cannot prove away. Claude 2.1.296
+backgrounded each pending MCP call after 120 seconds. The earlier waits completed
+on real review events, so those subsequent turns were legitimate. The final wait
+started at 11:06:38 UTC with the accepted plan awaiting user approval; at
+11:36:43 UTC the supervisor reported that the client had timed it out after
+30 minutes without a goal event. It issued get_status, which then also became a
+background task after 120 seconds. The old serial MCP process was still occupied
+by the earlier wait. The owned CCS/provider process handles were still live;
+none was restarted or terminated during this investigation.
+
+The installed native binary's tool-timeout schema explicitly describes a hard
+wall-clock limit that progress notifications cannot extend, and its call path
+supplies a maximum total timeout. The recent cancellable/concurrent MCP fix
+addresses the queued-status stall for future launches. It does not eliminate the
+native timeout or the resulting unsolicited model turn. A12 is therefore not
+satisfied by the fake-clock/service tests alone. Raising the deadline or sending
+heartbeats would postpone this failure, not meet the idle contract.
+
+The implementation direction is service-triggered structured native turns:
+record idle state, finish the model turn, and submit new native input only after
+an actionable saved event and capacity admission. Preserve the selected CCS
+launcher, logical and native conversation IDs, scoped tools, visible owned cmux
+workspace and exact wake receipts. Reconcile uncertain input delivery before
+sending anything again. The approved specification already allows structured
+native output and event-triggered waking; no approval gate or product requirement
+is being removed. Launcher compatibility must establish the supported input and
+resume protocol separately for both native clients before readiness is claimed.
+
+Metadata-only `--help` on the pinned Claude 2.1.296 executable confirms
+`--print`, `--input-format stream-json`, `--output-format stream-json`,
+`--replay-user-messages`, `--session-id` and `--resume`; this is CLI evidence,
+not proof of interactive turn continuity or selected account behavior. MCP task
+capabilities were also inspected, but bundled SDK code alone does not prove that
+the native tool path uses task execution. A request to the MCP documentation
+website timed out; the versioned task specification was retrieved from its
+GitHub source instead. No new native model run, user message, plan approval,
+production change or secret output was needed for these observations.
