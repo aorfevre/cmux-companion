@@ -31,7 +31,7 @@ export function readyWork(goal) {
   if (goal.status === 'addressing_review') {
     const round = goal.reviewRound;
     if (round?.state === 'fixing' && (round.threads.length || round.conflictPaths?.length)
-      && !goal.attempts.some((attempt) => attempt.role === 'review_fixer' && attempt.generation === goal.generation && attempt.revision === goal.revision)) {
+      && !goal.attempts.some((attempt) => attempt.role === 'review_fixer' && attempt.generation === goal.generation && attempt.revision === goal.revision && !attempt.launchFailure?.scheduled)) {
       add('review_fixer', null, round.mergeCommitSha ?? round.prHeadSha);
     }
     return result;

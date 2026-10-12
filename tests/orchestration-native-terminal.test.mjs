@@ -311,3 +311,12 @@ test('native provider receives the actual terminal color environment and forward
   await waitFor(() => readFile(join(f.root, 'native-calls.resize'), 'utf8'), value => value === 'received');
   assert.equal((await f.driver.observe('operation')).status, 'running');
 });
+
+test('terminal provider spawn failure preserves stopped proof and sanitized classification', async t => {
+  const f = await fixture(t);
+  await rm(f.driver.bin);
+  await f.driver.launch(f.request);
+  const observed = await waitFor(() => f.driver.observe('operation'), value => value?.status === 'stopped');
+  assert.equal(observed.launchFailure, 'PROVIDER_SPAWN_ENOENT');
+  assert.equal(observed.pendingOutbox, undefined);
+});

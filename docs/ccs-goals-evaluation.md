@@ -415,3 +415,40 @@ scripted browser journey does not force capacity contention. Existing navigation
 warnings remain; no thresholds changed. Native CCS idle-timeout compatibility
 and intervention-free end-to-end trials remain unverified; no live service or
 supervisor was restarted to load this change.
+
+## Autonomous supervision: bounded pre-process launch recovery — 2026-10-12
+
+Native spawn errors previously lost their OS classification. A background worker
+could retain unknown ownership even when Node proved no provider PID existed;
+observation of a stopped terminal could become a generic cancelled attempt. The
+native drivers now preserve a sanitized, explicitly pre-process failure code only
+when spawn failed before assigning a provider PID. Errors after process startup,
+identity persistence failures, and uncertain descendants do not gain that proof.
+
+Conversational goals admit one automatic replacement for a proven transient OS
+spawn error (EAGAIN, EMFILE, ENFILE or ENOMEM), keyed by saved generation, revision,
+role, task and target. The failed attempt, code, budget and retry decision remain
+in the journal. A second failure exhausts the budget and produces a visible
+conversation decision/hold. Permission errors, missing executables, unknown
+ownership, pending results, existing holds and legacy goals do not automatically
+retry. A spawn that never reached provider execution does not consume a code
+repair budget. Replacement launches retain the approved scope and use new durable
+operation identities; normal capacity admission still applies. Needs You excludes
+an already-authorized automatic retry but includes exhaustion and real blockers.
+
+Passed targeted evidence: 51 process/native-background/reconciler tests, 76
+scheduler tests and 16 native-terminal PTY tests. Actual missing-executable tests
+prove stopped classification through both native drivers without exposing paths
+or command errors. Scheduler tests cover one successful replacement, exhaustion
+surviving scheduler restart, permission/configuration/unknown-owner exclusions,
+legacy behavior and approved worker retry. The browser delivery journey now
+injects one transient implementer spawn failure before any script runs, observes
+exactly one replacement and its budget message, then completes worker checks,
+repair, independent review, final verification and human-approved fake
+publication (42 seconds). This is scripted fault injection, not an additional
+paid native CCS trial.
+
+Full `npm run verify` passed: 1,109 backend tests plus one intentional skip
+(97.58% lines), 216 UI tests (94.88% lines), lint, types and build. The same two
+settings-navigation warnings remain. No coverage thresholds changed. No live
+preview restart, installed-state change or native provider execution was needed.

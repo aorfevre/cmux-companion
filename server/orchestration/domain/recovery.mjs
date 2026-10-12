@@ -14,6 +14,7 @@ export function captureFailureHold(before, change, commandId) {
   for (const attempt of goal.attempts) {
     if (!isSupervisor(goal, attempt) && (attempt.generation !== goal.generation || attempt.revision !== goal.revision)) continue;
     const prior = before.attempts.find(entry => entry.id === attempt.id);
+    if (attempt.launchFailure?.scheduled && attempt.workerState === 'stopped') continue;
     if ((['failed', 'uncertain', 'cancelled'].includes(attempt.status) && prior?.status !== attempt.status) || (attempt.workerState === 'unknown' && prior?.workerState !== 'unknown')) {
       reasons.push({ kind: 'attempt', target: attempt.id, message: `${attempt.role}${attempt.taskId ? ` for ${attempt.taskId}` : ''} did not finish successfully.` });
     }

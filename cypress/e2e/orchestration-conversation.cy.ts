@@ -4,6 +4,7 @@ suite('Conversational Goals with the real disposable service', () => {
   it('keeps one supervisor through questions, revision, queued steering, reload and dispatch', () => {
     cy.viewport(1440, 1000);
     cy.task('orchestrationRelease', 'reset');
+    cy.task('orchestrationRelease', 'launch-transient');
     cy.visit('/orchestration');
     cy.task<string>('orchestrationPairing', null, { log: false }).then(token => {
       cy.findByLabelText('Pairing code').type(token, { log: false });
@@ -38,6 +39,7 @@ suite('Conversational Goals with the real disposable service', () => {
       cy.findByRole('button', { name: 'Resume goal' }).click();
       cy.contains('Keep this guidance through reload.').closest('section').contains('Answered', { timeout: 10000 });
       cy.findByRole('button', { name: 'Approve revision 2' }).click();
+      cy.contains('Automatic launch retry 1 of 1 is queued', { timeout: 20000 }).should('be.visible');
       cy.findByRole('heading', { name: 'Working agents', timeout: 20000 }).should('be.visible');
       cy.findByLabelText('Message your supervisor').focus().should('have.focus');
     });
@@ -49,6 +51,10 @@ suite('Conversational Goals with the real disposable service', () => {
     cy.task<{ goals: Goal[]; launches: LaunchRequest[] }>('orchestrationEvidence').then(evidence => {
       const goal = evidence.goals.find(entry => entry.title === 'Conversation fixture')!;
       expect(goal.experienceVersion).to.equal(2);
+      const retried = goal.attempts.filter(attempt => attempt.launchFailure?.scheduled);
+      expect(retried).to.have.length(1);
+      expect(retried[0].workerState).to.equal('stopped');
+      expect(goal.attempts.filter(attempt => attempt.role === 'implementer' && attempt.taskId === retried[0].taskId)).to.have.length(2);
       expect(goal.conversation!.messages.filter(message => message.text === 'Keep this guidance through reload.')).to.have.length(1);
       expect(evidence.launches.filter(launch => launch.goalId === goal.id && launch.attempt.role === 'planner')).to.have.length(1);
     });

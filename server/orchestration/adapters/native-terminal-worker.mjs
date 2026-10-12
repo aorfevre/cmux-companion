@@ -1,3 +1,4 @@
+import { StoppedSpawnError, stoppedSpawnFailure } from './spawn-failure.mjs';
 import { prepareCcsLaunch } from './ccs-managed-launcher.mjs';
 import { ResultOutbox } from '../result-outbox.mjs';
 import { createBridge } from '../bridge.mjs';
@@ -99,7 +100,7 @@ export async function runNativeTerminal(configPath) {
       save('session.json', { phase: 'starting', runId });
       const child = spawn(command.bin, command.argv, { cwd: command.cwd, env: terminalDisplayEnvironment(command.env, process.env), stdio: 'inherit', detached: true });
       const exited = once(child, 'exit'); void exited.catch(() => {});
-      try { await once(child, 'spawn'); } catch (error) { providerStopped = !child.pid; throw error; }
+      try { await once(child, 'spawn'); } catch (error) { providerStopped = !child.pid; throw providerStopped ? new StoppedSpawnError(stoppedSpawnFailure(error)) : error; }
       providerPid = child.pid ?? null;
       save('provider.json', { identity: config.identity, runId, pid: providerPid });
       save('session.json', { phase: 'running', runId });
@@ -124,7 +125,7 @@ export async function runNativeTerminal(configPath) {
         await delay(50, undefined, { signal: controller.signal }).catch(() => {});
       }
     }
-  } catch (error) { code = error instanceof DomainError ? error.code : 'NATIVE_TERMINAL_FAILED'; }
+  } catch (error) { code = error instanceof StoppedSpawnError ? error.failureCode : error instanceof DomainError ? error.code : 'NATIVE_TERMINAL_FAILED'; }
   finally {
     if (outboxTimer) clearInterval(outboxTimer);
     await draining;

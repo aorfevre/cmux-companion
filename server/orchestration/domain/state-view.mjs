@@ -21,7 +21,7 @@ export function goalView(goal) {
       ownedAreas: task.ownedAreas, criterionIds: task.criterionIds, resources: task.resources ?? [], status: task.status, candidateSha: task.candidateSha, integratedSha: task.integratedSha,
       repairCount: task.repairCount, repairLimit: task.repairLimit })),
     attempts: goal.attempts.map((attempt) => ({ id: attempt.id, role: attempt.role, taskId: attempt.taskId,
-      assignment: attempt.assignment ?? null, current: isSupervisor(goal, attempt) || (attempt.generation === goal.generation && attempt.revision === goal.revision), mode: attempt.mode, status: attempt.status, workerState: attempt.workerState, target: attempt.target, error: attempt.error })),
+      assignment: attempt.assignment ?? null, current: isSupervisor(goal, attempt) || (attempt.generation === goal.generation && attempt.revision === goal.revision), mode: attempt.mode, status: attempt.status, workerState: attempt.workerState, target: attempt.target, error: attempt.error, launchFailure: attempt.launchFailure ?? null })),
     reviews: goal.reviews.map((review) => ({ id: review.id, kind: review.kind, taskId: review.taskId,
       target: review.target, disposition: review.disposition, findings: review.findings })),
   };

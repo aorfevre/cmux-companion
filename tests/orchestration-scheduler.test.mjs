@@ -865,3 +865,24 @@ test('conversational planners share global admission while legacy planners retai
   assert.equal(f.store.executionCapacity('a').total, 1);
   assert.equal(f.store.ownedCapacity('a', 'interactive').total, 2);
 });
+
+test('a proven transient worker launch failure preserves approval and retries its task once', t => {
+  const f = fixture(t);
+  f.command('g', 'create_goal', { repositoryId: 'repo', title: 'Retry approved task', baseSha: BASE, experienceVersion: 2 }, 'user');
+  f.command('g', 'set_plan_review_policy', { enabled: false });
+  const supervisor = f.request('g', 'planner'); f.dispatch('g', supervisor);
+  const authority = { kind: 'agent', goalId: 'g', attemptId: supervisor, role: 'planner', generation: 1, revision: 0 };
+  let sequence = 0;
+  const agent = (type, payload) => f.service.execute({ id: `agent-${++sequence}`, goalId: 'g', expectedVersion: f.store.get('g').version, type, payload }, authority);
+  agent('supervisor_propose', { contract: contract() }); f.command('g', 'approve', { revision: 1 }, 'user'); agent('supervisor_dispatch', {});
+  const first = f.request('g', 'implementer', 'A'); f.dispatch('g', first);
+  const failure = attemptId => f.command('g', 'record_failure', { attemptId, confirmedStopped: true, launchFailure: 'PROVIDER_SPAWN_EMFILE', error: 'No provider process started.' });
+  failure(first);
+  assert.equal(f.store.get('g').tasks.find(task => task.id === 'A').status, 'pending');
+  assert.equal(f.store.get('g').approvedRevision, 1); assert.equal(f.store.get('g').hold, undefined);
+  const second = f.request('g', 'implementer', 'A'); f.dispatch('g', second); failure(second);
+  const goal = f.store.get('g');
+  assert.equal(goal.tasks.find(task => task.id === 'A').status, 'failed'); assert.ok(goal.hold);
+  assert.match(goal.attempts.at(-1).error, /budget exhausted/);
+  assert.equal(goal.attempts.at(-1).launchFailure.scheduled, false);
+});

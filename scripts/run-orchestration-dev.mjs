@@ -90,6 +90,18 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
               onResult(request, JSON.stringify({ schemaVersion: 1, goalId, operationId, attemptId: attempt.id, role: attempt.role, generation: attempt.generation, revision: attempt.revision, target: attempt.target, output }));
             },
           });
+          if (browserHarness) {
+            const launch = agents.launch.bind(agents), injected = new Set();
+            agents.launch = async request => {
+              if (request.attempt.role === 'implementer' && !injected.has(request.goalId) && existsSync(join(directory, 'release-launch-transient'))) {
+                injected.add(request.goalId);
+                const result = agents.beginLaunch(request);
+                agents.workers.set(request.operationId, { ...result, status: 'stopped', launchFailure: 'PROVIDER_SPAWN_EAGAIN' });
+                return result; // No script/model/process ran for this injected launch.
+              }
+              return launch(request);
+            };
+          }
           fixtureAgents = agents;
           agents.close = async () => { for (const controller of agents.controllers.values()) controller.abort(); await agents.drain(); };
           return agents;

@@ -1,3 +1,4 @@
+import { StoppedSpawnError, stoppedSpawnFailure } from './spawn-failure.mjs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
@@ -35,7 +36,7 @@ export function startBackgroundProcess(command, { policy: input, signal, clock: 
     const child = spawn(command.bin, command.argv, { cwd: command.cwd, env: command.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     /** @type {Buffer[]} */ const stdout = [];
     /** @type {Buffer[]} */ const stderr = [];
-    let bytes = 0, ended = false, reason = '', spawned = false, closed = false;
+    let bytes = 0, ended = false, reason = '', spawned = false, closed = false, spawnFailure = 'PROVIDER_SPAWN_FAILED';
     /** @type {number | null} */ let exitCode = null;
     /** @type {NodeJS.Signals | null} */ let closeSignal = null;
     /** @type {unknown} */ let ceiling = null;
@@ -58,7 +59,7 @@ export function startBackgroundProcess(command, { policy: input, signal, clock: 
         // only until the cleanup deadline, then retain uncertain ownership.
         child.stdout.destroy(); child.stderr.destroy(); child.unref();
       }
-      if (!spawned) reject(new DomainError('SPAWN_FAILED', 'Background process could not start'));
+      if (!spawned) reject(stopped && !child.pid ? new StoppedSpawnError(spawnFailure) : new DomainError('SPAWN_FAILED', 'Background process could not start'));
       const code = reason || (!stopped ? 'TERMINATION_UNCERTAIN' : closeSignal ? 'SIGNALLED' : exitCode === 0 ? '' : 'EXIT_FAILED');
       // Truncated/invalid UTF-8 must not expand the returned byte budget through
       // replacement characters. StringDecoder.write omits an incomplete suffix.
@@ -103,7 +104,7 @@ export function startBackgroundProcess(command, { policy: input, signal, clock: 
     };
     child.stdout.on('data', (chunk) => receive(stdout, chunk));
     child.stderr.on('data', (chunk) => receive(stderr, chunk));
-    child.once('error', () => { reason ||= 'SPAWN_FAILED'; });
+    child.once('error', error => { reason ||= 'SPAWN_FAILED'; if (!spawned && !child.pid) spawnFailure = stoppedSpawnFailure(error); });
     child.once('close', (code, signal) => {
       closed = true; exitCode = code; closeSignal = signal;
       if (groupStopped()) complete();

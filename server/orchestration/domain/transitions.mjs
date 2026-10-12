@@ -1,3 +1,4 @@
+import { recordLaunchFailure } from './launch-recovery.mjs';
 import { isSupervisor, ownsExecution, SUPERVISOR_COMMANDS, CONVERSATION_COMMANDS, appendMessage, conversationCommand, wakeConversation } from './conversation.mjs';
 import { DomainError, identifier, identifiers, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
@@ -480,6 +481,7 @@ export function transition(before, command, authority) {
         const task = taskById(goal, attempt.taskId);
         if (task.status === 'running') task.status = 'failed';
       }
+      if (input.launchFailure !== undefined) recordLaunchFailure(goal, attempt, input.launchFailure, command.id);
       emit('attempt_failed', { attemptId: attempt.id, uncertain: attempt.status === 'uncertain' }); break;
     }
     case 'record_stopped': {

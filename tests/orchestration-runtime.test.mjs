@@ -25,7 +25,7 @@ test('abort before spawn creates no process or identity callback', async () => {
 
 test('spawn failures retain a structured code without exposing command errors', async () => {
   const clock = new FakeClock();
-  await assert.rejects(startBackgroundProcess({ ...command(''), bin: '/nonexistent/private-agent-token' }, { policy, clock, onIdentity: () => assert.fail('must not persist absent process') }), (error) => error.code === 'SPAWN_FAILED' && !error.message.includes('private-agent-token'));
+  await assert.rejects(startBackgroundProcess({ ...command(''), bin: '/nonexistent/private-agent-token' }, { policy, clock, onIdentity: () => assert.fail('must not persist absent process') }), (error) => error.code === 'SPAWN_FAILED' && error.failureCode === 'PROVIDER_SPAWN_ENOENT' && !error.message.includes('private-agent-token'));
   assert.equal(clock.pending.size, 0);
 });
 

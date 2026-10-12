@@ -11,7 +11,7 @@ export function attention(goal: Goal) {
   if (goal.status === 'ready_to_publish' && !goal.publication?.approved) return 'Review the evidence and approve PR publication.';
   if (goal.clarification && !goal.clarification.answer) return goal.clarification.question;
   const latest = new Map(goal.attempts.filter(attempt => attempt.current).map(attempt => [JSON.stringify([attempt.role, attempt.taskId, attempt.target]), attempt]));
-  const failed = [...latest.values()].find(attempt => attempt.workerState === 'unknown' || attempt.status === 'failed');
+  const failed = [...latest.values()].find(attempt => attempt.workerState === 'unknown' || (attempt.status === 'failed' && !attempt.launchFailure?.scheduled));
   if (failed) return failed.error || (failed.workerState === 'unknown' ? 'Agent ownership needs reconciliation.' : 'An agent needs a retry.');
   if (goal.tasks.some(task => task.status === 'failed')) return 'A task needs attention.';
   if (goal.status === 'awaiting_approval' && !goal.planReviewPending) return goal.approvalBlocked || 'Your plan is ready to approve.';

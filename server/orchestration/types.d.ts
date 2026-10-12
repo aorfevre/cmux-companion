@@ -32,6 +32,7 @@ export interface Attempt {
   workerState: 'pending' | 'unknown' | 'running' | 'stopped'; identity: string | null; baseSha: string; worktree: string | null; branch: string | null;
   conversationId: string; error: string | null; retryRequested?: boolean;
   lastResume?: {id:string;code:string|null};
+  launchFailure?: {code:string; retry:number; limit:number; scheduled:boolean};
 }
 export interface Task extends TaskContract {
   status: TaskStatus; candidateSha: string | null; candidateBase: string | null;
@@ -121,7 +122,7 @@ export interface AgentPort {
   prepareHandoff?(request: LaunchRequest): Promise<HandoffIdentity>;
   capabilities: { role: Role; mode: Mode }[];
   launch(request: LaunchRequest): Promise<{ identity: string }>;
-  observe(operationId: string): Promise<{ status: 'running' | 'stopped' | 'unknown'; identity: string | null; pendingOutbox?: boolean }>;
+  observe(operationId: string): Promise<{ status: 'running' | 'stopped' | 'unknown'; identity: string | null; pendingOutbox?: boolean; launchFailure?: string }>;
   terminate(identity: string): Promise<void>;
   resume?(request: LaunchRequest): Promise<{identity:string}>;
   open?(operationId: string): Promise<void>;

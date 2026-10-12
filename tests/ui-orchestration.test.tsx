@@ -502,3 +502,15 @@ test('abort retries a definitive supervisor version race without changing its ta
   expect(sent[1]).toEqual({ ...sent[0], id: expect.any(String), expectedVersion: goal.version + 1 });
   expect(sent[1].id).not.toBe(sent[0].id);
 });
+
+test('an automatically retried launch stays out of Needs You until its retry budget is exhausted', async () => {
+  const { attention } = await import('../app/orchestration/attention');
+  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+  const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
+  const goal = goalView(fixture().goal);
+  goal.attempts = [{ id: 'launch', role: 'planner', taskId: null, assignment: null, current: true, mode: 'interactive', status: 'failed', workerState: 'stopped', target: 'contract:0', error: 'Temporary resource failure', launchFailure: { code: 'PROVIDER_SPAWN_EAGAIN', retry: 1, limit: 1, scheduled: true } }];
+  goal.status = 'discovering';
+  expect(attention(goal)).toBeNull();
+  goal.attempts[0].launchFailure!.scheduled = false;
+  expect(attention(goal)).toBe('Temporary resource failure');
+});

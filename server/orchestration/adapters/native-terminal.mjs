@@ -103,7 +103,7 @@ export class NativeTerminal {
     if (existsSync(join(directory, 'outcome.json'))) {
       const result = this.read(join(directory, 'outcome.json')); requireValue(result.identity === saved.identity, 'Terminal result identity changed', 'OWNERSHIP_UNCERTAIN');
       const pendingOutbox = result.workerState === 'stopped' && await this.recoverOutbox(directory);
-      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity, ...(pendingOutbox ? { pendingOutbox: true } : {}) };
+      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity, ...(pendingOutbox ? { pendingOutbox: true } : {}), ...(result.workerState === 'stopped' && /^PROVIDER_SPAWN_(EAGAIN|EMFILE|ENFILE|ENOMEM|ENOENT|EACCES|EPERM|ENOEXEC|FAILED)$/.test(result.code ?? '') ? { launchFailure: result.code } : {}) };
     }
     if (!existsSync(join(directory, 'identity.json'))) return { status: 'unknown', identity: null };
     const runner = this.read(join(directory, 'identity.json')), workspace = this.read(join(directory, 'workspace.json'));
