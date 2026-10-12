@@ -402,3 +402,39 @@ test('conversational admission rejects direct profiles before saving or launchin
   assert.equal(saved.teamConfiguration.profiles.find(profile => profile.id === 'codex').ready, false);
   assert.match(saved.teamConfiguration.profiles.find(profile => profile.id === 'codex').reason, /original Goals experience only/);
 });
+
+test('supervisor choices are authenticated, refreshable and preserve explicit CCS selection', async t => {
+  let probes = 0, codexReady = true;
+  const f = await fixture(t, { probeProvider: async (provider, command) => {
+    probes++;
+    return { ready: provider !== 'codex' || codexReady, reason: 'Fixture readiness', resolution: { version: 1, provider, requested: command.executable, kind: 'ccs', executable: '/fixture/ccs', args: [provider], model: command.model, ignoredPermissionFlags: [], managedPolicy: 'Fixture' } };
+  } });
+  const value = defaultSettings(); value.projects.push({ id: 'project', name: 'Fixture', path: f.path, enabled: true, github: 'example/project', remote: 'git@github.com:example/project.git', checks: [] });
+  await f.settings.update(0, value); await f.runtime.settingsChanged();
+  const choices = (refresh = '') => f.runtime.app.inject({ url: `/api/orchestration/supervisors${refresh}`, headers });
+  assert.equal((await f.runtime.app.inject({ url: '/api/orchestration/supervisors' })).statusCode, 401);
+  const reads = await Promise.all([choices(), choices()]);
+  assert.equal(reads[0].statusCode, 200, reads[0].body);
+  assert.equal(reads[0].json().recommendedId, 'claude');
+  assert.equal(probes, 2); assert.deepEqual(f.acquired, []); assert.deepEqual(f.launched, []);
+  await choices('?refresh=1'); assert.equal(probes, 4);
+  const command = { id: 'selected', goalId: 'selected', expectedVersion: 0, type: 'create_goal', payload: { description: 'Honor my supervisor choice', repositoryId: 'project', baseBranch: 'main', experienceVersion: 2, supervisorProfileId: 'codex' } };
+  codexReady = false;
+  const denied = await f.runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: command });
+  assert.equal(denied.statusCode, 403, denied.body);
+  assert.equal(f.settings.goalConfiguration('selected'), null);
+  codexReady = true;
+  const created = await f.runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: command });
+  assert.equal(created.statusCode, 200, created.body);
+  assert.equal(f.settings.goalConfiguration('selected').provider, 'codex');
+  assert.deepEqual(f.settings.goalConfiguration('selected').providerResolution.args, ['codex']);
+  const goal = f.runtime.store.get('selected');
+  assert.equal(goal.team.assignments.find(entry => entry.role === 'planner').manual, true);
+  assert.equal(goal.team.assignments.find(entry => entry.role === 'planner').profileId, 'codex');
+  assert.equal(goal.team.assignments.find(entry => entry.role === 'implementer').profileId, 'claude');
+  value.provider = 'codex'; await f.settings.update(1, value);
+  const before = probes; await choices(); assert.equal(probes, before + 2);
+  const replay = await f.runtime.app.inject({ method: 'POST', url: '/api/orchestration/commands', headers, payload: command });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(f.settings.goalConfiguration('selected').provider, 'codex');
+});

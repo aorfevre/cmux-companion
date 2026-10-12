@@ -7,6 +7,7 @@ import type { goalView } from '../../server/orchestration/domain/state-view.mjs'
 import type { Contract } from '../../server/orchestration/types';
 import { MissionShell } from '../mission-shell';
 import { ProjectPicker } from './project-picker';
+import { SupervisorPicker } from './supervisor-picker';
 import { GoalDetail } from './goal-detail';
 import { GoalFleet, type GoalFilter } from './goal-fleet';
 
@@ -36,6 +37,7 @@ export function GoalBoard() {
   const needsOnly = new URLSearchParams(search).get('view') === 'needs';
   const [brief, setBrief] = useState('');
   const [conversational, setConversational] = useState(false);
+  const [supervisorId, setSupervisorId] = useState(''), [supervisorReady, setSupervisorReady] = useState(false);
   const [attachments, setAttachments] = useState<{ name: string; data: string }[]>([]);
   const [readingFiles, setReadingFiles] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -152,11 +154,12 @@ export function GoalBoard() {
       {!selected && <details className="orch-capacity"><summary>Execution capacity</summary>{configuration?.limits.global} execution agents · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</details>}
       {Boolean(configuration?.repositories.length) && !configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Your planning agent is not ready. <a href="/settings#agents">Choose an agent</a> to start a goal.</p>}
       {!selected && <button ref={createButton} className="primary-button" aria-expanded={creating} aria-controls="goal-create" disabled={disabled} onClick={() => setCreating(true)}>Start a goal</button>}
-      {creating && (configuration?.repositories.length ? <form id="goal-create" className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo || disabled) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { ...(title.trim() ? { title: title.trim() } : {}), description: brief, ...(conversational ? { experienceVersion: 2 } : {}), ...(attachments.length ? { attachments } : {}), repositoryId: chosenRepo.id, baseBranch: baseBranch.trim() || 'main' } }); }}>
+      {creating && (configuration?.repositories.length ? <form id="goal-create" className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo || disabled || conversational && !supervisorReady) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { ...(title.trim() ? { title: title.trim() } : {}), description: brief, ...(conversational ? { experienceVersion: 2, supervisorProfileId: supervisorId } : {}), ...(attachments.length ? { attachments } : {}), repositoryId: chosenRepo.id, baseBranch: baseBranch.trim() || 'main' } }); }}>
         <h2 ref={createHeading} tabIndex={-1}>Start a goal</h2><p>The agent will inspect the project and propose a plan with suitable verification checks.</p><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<ProjectPicker repositories={configuration.repositories} selected={repository} onSelect={setRepository} disabled={disabled} />
         <p className="project-context">Starts from freshly fetched {baseBranch.trim() || 'main'} in an isolated worktree.</p><details><summary>Advanced</summary><label>Base branch<input value={baseBranch} onChange={event => setBaseBranch(event.target.value)} disabled={disabled} placeholder="main" /></label></details>
         {chosenRepo?.error && <p role="alert">{chosenRepo.error} <a href={`/settings?repository=${encodeURIComponent(chosenRepo.id)}#dev-repos`}>Configure repository</a></p>}
         <label><input type="checkbox" checked={conversational} onChange={event => setConversational(event.target.checked)} disabled={disabled} /> Try conversational Goals (evaluation)</label><p>Keep planning, questions and progress in one conversation with your configured CCS supervisor.</p>
+        {conversational && <SupervisorPicker selected={supervisorId} onSelect={setSupervisorId} onReady={setSupervisorReady} disabled={disabled} />}
         <label>Title (optional)<input value={title} maxLength={120} onChange={event => setTitle(event.target.value)} disabled={disabled} placeholder="A short name for this goal" /></label>
         <label>What should we accomplish?<textarea value={brief} maxLength={12000} onChange={event => setBrief(event.target.value)} disabled={disabled} required rows={3} /></label><p>Describe the outcome, constraints and relevant links.</p>
         <label>Reference files<input type="file" multiple disabled={disabled} onChange={async event => {
@@ -175,7 +178,7 @@ export function GoalBoard() {
         }} /></label><p>UTF-8 text/source files or PNG, JPEG and WebP images. Up to 8 files, 1 MiB each.</p>
         {readingFiles && <p role="status">Reading files…</p>}
         {attachments.length > 0 && <ul aria-label="Selected references">{attachments.map((file, index) => <li key={`${index}:${file.name}`}>{file.name} <button type="button" disabled={disabled} onClick={() => setAttachments(current => current.filter((_, position) => position !== index))}>Remove {file.name}</button></li>)}</ul>}
-        <button className="primary-button" disabled={disabled || !chosenRepo || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start goal</button> <button type="button" disabled={busy || Boolean(pending)} onClick={closeCreation}>Cancel</button>
+        <button type="submit" className="primary-button" disabled={disabled || (conversational && !supervisorReady) || !chosenRepo || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start goal</button> <button type="button" disabled={busy || Boolean(pending)} onClick={closeCreation}>Cancel</button>
       </form> : <section id="goal-create" className="orch-card"><h2 ref={createHeading} tabIndex={-1}>Start with your first goal</h2><p>Choose your repositories and an agent, then describe what you want done.</p><a className="primary-button" href="/onboarding">Set up goals</a> <button onClick={closeCreation}>Cancel</button></section>)}
       {!selected && <GoalFleet selectedFilter={fleetFilter} onFilterChange={setFleetFilter} goals={snapshot?.goals ?? []} needsOnly={needsOnly} select={id => { setSelected(id); setDetail(null); const url = new URL(location.href); url.searchParams.set('goal', id); history.replaceState(null, '', url); }} projectName={id => configuration?.repositories.find(repo => repo.id === id)?.name || id} />}
       {selected && <section className="mission-goal-workspace"><button onClick={() => { setSelected(null); setDetail(null); const url = new URL(location.href); url.searchParams.delete('goal'); history.replaceState(null, '', url); }}>← Back to {needsOnly ? 'Needs You' : 'Mission Control'}</button>{pendingRecovery}{error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}{detail ? <GoalDetail key={detail.id} goal={detail} disabled={disabled} terminal={Boolean(configuration?.terminal)} act={act} control={control} /> : <p>Loading goal…</p>}</section>}

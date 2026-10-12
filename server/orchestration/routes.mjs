@@ -9,9 +9,9 @@ import { REFERENCE_BODY_BYTES } from './domain/goal-references.mjs';
 
 const PREFIX = '/api/orchestration';
 /** @param {import('fastify').FastifyInstance} app
- * @param {{ service: import('./service.mjs').OrchestrationService; changes?: (goal: import('./types.d.ts').Goal) => Promise<import('./types.d.ts').GoalChanges>; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; references?: import('./goal-references.mjs').GoalReferences; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; suspension?: () => string | null; configuration?: () => Promise<unknown>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup; beforeCommand?: (command: import('./types.d.ts').Command) => Promise<void> }} options
+ * @param {{ service: import('./service.mjs').OrchestrationService; changes?: (goal: import('./types.d.ts').Goal) => Promise<import('./types.d.ts').GoalChanges>; token: string; bridgeAuth: import('./bridge-auth.mjs').BridgeAuthority; references?: import('./goal-references.mjs').GoalReferences; results?: import('./agent-results.mjs').AgentResults; agentTools?: import('./agent-tools.mjs').AgentTools; stream?: import('./event-stream.mjs').EventStream; readOnly?: boolean; suspension?: () => string | null; configuration?: () => Promise<unknown>; supervisorChoices?: (refresh?: boolean) => Promise<import('./types.d.ts').SupervisorChoices>; reconcile?: () => Promise<void>; cleanup?: import('./cleanup.mjs').ResourceCleanup; beforeCommand?: (command: import('./types.d.ts').Command) => Promise<void> }} options
  */
-export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, references, results, agentTools, changes, stream, readOnly = false, suspension = () => null, configuration, reconcile, cleanup, beforeCommand }) {
+export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, references, results, agentTools, changes, stream, readOnly = false, suspension = () => null, configuration, supervisorChoices, reconcile, cleanup, beforeCommand }) {
   requireValue(token.length >= 32, 'Pairing token must contain at least 32 characters');
   /** @type {Map<string, { count: number; until: number }>} */
   const pairingAttempts = new Map();
@@ -49,6 +49,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     return reply.header('Set-Cookie', sessionCookie(request, token)).send({ paired: true });
   });
   app.get(`${PREFIX}/configuration`, async () => ({ limits: service.limits, capabilities: service.agents.capabilities, terminal: Boolean(service.agents.open), readOnly: Boolean(readOnly || suspension()), suspensionReason: suspension(), repositories: configuration ? await configuration() : [] }));
+  app.get(`${PREFIX}/supervisors`, async request => supervisorChoices ? supervisorChoices(object(request.query).refresh === '1') : null);
   app.post(`${PREFIX}/goals/:id/reconcile`, async (request) => {
     requireValue(!(readOnly || suspension()) && reconcile, 'Reconciliation is unavailable', 'FORBIDDEN');
     const goal = service.store.get(/** @type {{id:string}} */ (request.params).id), input = object(request.body);

@@ -15,6 +15,7 @@ suite('Conversational Goals with the real disposable service', () => {
     cy.findByRole('button', { name: /Show all projects/ }).click();
     cy.get('.project-choice').first().click();
     cy.findByLabelText('Try conversational Goals (evaluation)').check();
+    cy.findByLabelText('Supervisor').should('be.enabled').select('codex');
     cy.findByLabelText('Title (optional)').type('Conversation fixture');
     cy.findByLabelText('What should we accomplish?').type('Build the disposable modules.');
     cy.findByRole('button', { name: 'Start goal' }).click();
@@ -51,6 +52,7 @@ suite('Conversational Goals with the real disposable service', () => {
     cy.task<{ goals: Goal[]; launches: LaunchRequest[] }>('orchestrationEvidence').then(evidence => {
       const goal = evidence.goals.find(entry => entry.title === 'Conversation fixture')!;
       expect(goal.experienceVersion).to.equal(2);
+      expect(goal.team?.assignments.find(entry => entry.role === 'planner')?.profileId).to.equal('codex');
       const retried = goal.attempts.filter(attempt => attempt.launchFailure?.scheduled);
       expect(retried).to.have.length(1);
       expect(retried[0].workerState).to.equal('stopped');

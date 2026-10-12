@@ -664,3 +664,44 @@ loopback bridge and owned receipt/recipe persistence; their endpoint, redirect,
 identity, path and argv boundaries are under explicit review. The manual
 invalid-credential rate limiter passes exhaustion/expiration tests but remains
 unrecognized by the static query. No security alert has been dismissed.
+
+## Explicit supervisor selection — 2026-10-12
+
+The new-goal composer now lists configured supervisor profiles and their CCS
+readiness before creation. Paired reads share a 30-second settings-revision cache;
+explicit refresh bypasses it. Creation always probes again, validates the selected
+profile, and saves it as the manual planner assignment and primary launch
+snapshot. It cannot silently select another provider when the requested profile
+is unavailable. Worker/reviewer preferences remain unchanged. Fixed production
+and disposable compositions expose choices from the same team configuration used
+for admission.
+
+Passed: 19 settings-runtime tests, including authenticated/coalesced readiness,
+forced refresh, settings revision invalidation, unavailable-selection rejection,
+selected CCS routing and idempotent replay; 33 UI tests; real-service conversational
+Cypress journey with explicit Codex selection through revised approval, transient
+launch recovery, worker checks, independent review and fixture publication.
+Desktop/phone conversation screenshots inspected: content and controls fit both
+widths. The first two new UI tests failed because this suite does not install
+jest-dom matchers; assertions were corrected to native DOM properties and passed.
+Full verification of this change is recorded separately once complete.
+
+CI for preceding commit 7457d618 passed macos and verify. CodeQL still reports
+seven findings: four scoped file-to-loopback transports, two response-to-owned-file
+persistence paths, and the manually rate-limited check receipt route. The earlier
+receipt race and PTY shell findings are absent from fresh annotations. None of
+the remaining findings has been dismissed or excluded. CodeRabbit continues to
+skip the draft PR; that status is not approval.
+
+No additional native provider trial, installed preview restart or production
+change was made. Five bounded native acceptance goals remain awaiting the
+previously requested authorization; scripted browser success does not establish
+actual CCS routing or native permission enforcement. Merge is authorized by the
+user but remains gated on native acceptance and completed review/security checks.
+
+Verification outcome: full backend coverage passed (1,121 passed, one intentional
+skip; 97.38% lines), full UI coverage passed (218 tests; 94.95% lines). The verify
+command then stopped at a synchronous-effect-state lint error in the new picker.
+Loading/error reset now occurs in the refresh event handler; lint subsequently
+passed with the two pre-existing settings-navigation warnings, types and build
+passed, and both picker tests passed again. No coverage threshold was changed.

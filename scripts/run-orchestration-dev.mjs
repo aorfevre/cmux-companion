@@ -25,6 +25,10 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
     repo.contract.tasks = repo.contract.tasks.map(task => ({ ...task, resources: [] }));
     repo.contract.verification.unshift({ id: 'modules', argv: ['node', '--input-type=module', '-e', "import { a } from './src/a.mjs'; import { b } from './src/b.mjs'; if (a() !== 2 || b() !== 3) process.exit(1);"] });
     repo.contract.waves = [{ id: 'modules', title: 'Independent modules', taskIds: ['A', 'B'], checkIds: ['modules'] }, { id: 'composition', title: 'Compose verified outputs', taskIds: ['C'], checkIds: repo.contract.verification.map(check => check.id) }];
+    const fixtureTeam = {
+      capturedAt: '2026-09-15T10:00:00.000Z', defaults: { planner: 'claude', implementer: 'claude', reviewer: 'claude', integrator: 'claude' },
+      profiles: ['claude', 'codex'].map(provider => ({ id: provider, label: `${provider} fixture`, provider, model: 'fixture', roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: 'Disposable fake adapter', capacity: { remainingPercent: null, source: 'Fixture', checkedAt: null, reason: 'No live quota lookup in the disposable fixture.' } })),
+    };
     const siblings = new Map(), shared = new Map();
     return {
       dispose: () => repo.close(),
@@ -33,11 +37,9 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
         repositories: new Map([['repo', repo.repository]]), readOnly, limits: { global: 2, perGoal: 2 },
         beforeCommand: async command => {
           if (command.type !== 'create_goal') return;
-          object(command.payload).teamConfiguration = {
-            capturedAt: '2026-09-15T10:00:00.000Z', defaults: { planner: 'claude', implementer: 'claude', reviewer: 'claude', integrator: 'claude' },
-            profiles: ['claude', 'codex'].map(provider => ({ id: provider, label: `${provider} fixture`, provider, model: 'fixture', roles: ['planner', 'implementer', 'reviewer', 'integrator'], ready: true, reason: 'Disposable fake adapter', capacity: { remainingPercent: null, source: 'Fixture', checkedAt: null, reason: 'No live quota lookup in the disposable fixture.' } })),
-          };
+          object(command.payload).teamConfiguration = fixtureTeam;
         },
+        supervisorChoices: async () => ({ ...fixtureTeam, recommendedId: 'claude' }),
         prepareGoal: goal => fixtureRemote.fetchBase(goal.repositoryId, goal.baseBranch),
         createAgents: ({ onResult, describe }) => {
           const agents = new ScriptedAgents({

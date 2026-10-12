@@ -102,6 +102,10 @@ export function transition(before, command, authority) {
       appendMessage(goal, command.id, 'user', 'message', goal.description ?? goal.title);
     }
     proposeTeam(goal);
+    if (input.supervisorProfileId !== undefined) {
+      requireValue(goal.experienceVersion === 2, 'Supervisor selection requires conversational Goals', 'INVALID_COMMAND');
+      overrideAssignment(goal, 'planner:*', identifier(input.supervisorProfileId), command.id);
+    }
     return { goal, events: [{ kind: 'goal_created', payload: { repositoryId: goal.repositoryId } }], intents: [] };
   }
   requireValue(before && before.id === command.goalId, 'Goal not found', 'NOT_FOUND');

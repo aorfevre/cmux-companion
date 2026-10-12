@@ -43,6 +43,7 @@ export interface Verification {
 }
 export interface TeamProfile { id: string; label: string; provider: 'claude' | 'codex'; model: string; roles: TeamRole[]; ready: boolean; reason: string; capacity: { remainingPercent: number | null; source: string; checkedAt: string | null; reason: string } }
 export interface TeamConfiguration { profiles: TeamProfile[]; defaults: Record<TeamRole, string>; capturedAt: string }
+export interface SupervisorChoices { recommendedId: string | null; profiles: TeamProfile[]; capturedAt: string }
 export interface TeamAssignment { key: string; role: TeamRole; taskId: string | null; profileId: string | null; manual: boolean; reason: string }
 export interface TeamProposal { revision: number; approved: boolean; assignments: TeamAssignment[]; changes: { commandId: string; key: string; from: string | null; to: string }[] }
 export type MergeableVerdict = 'mergeable' | 'conflicting' | 'unknown';

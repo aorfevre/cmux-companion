@@ -25,6 +25,35 @@ export async function createSettingsRuntime({ settings, directory, token, create
   const repositories = new Map(settings.read().settings.projects.map(project => [project.id, project.path]));
   const agents = new Map(), publications = new Map(), reviewMerges = new Map(), owners = new Map();
   let runtime, suspensionReason = null;
+  async function inspectProfiles(before, conversational) {
+    const profiles = launchProfiles(before.settings), readiness = {};
+    const [usage] = await Promise.all([
+      boundedUsageSnapshot(usageSnapshot),
+      Promise.all(profiles.filter(profile => profile.enabled).map(async profile => {
+        try {
+          const result = await probeProvider(profile.provider, profile.command, before.settings.tools);
+          if (result.resolution) profile.providerResolution = result.resolution;
+          else if (result.ready && resolveProviderCommand) profile.providerResolution = await resolveProviderCommand(profile.provider, profile.command);
+          readiness[profile.id] = conversational && result.ready && !['ccs', 'ccsxp'].includes(profile.providerResolution?.kind)
+            ? { ...result, ready: false, reason: CCS_REQUIRED } : result;
+        } catch { readiness[profile.id] = { ready: false, reason: 'Saved command could not be resolved. Correct Setup for a new goal.' }; }
+      })),
+    ]);
+    requireValue(settings.read().revision === before.revision, 'Settings changed; review the current configuration and retry', 'VERSION_CONFLICT');
+    const configuration = teamConfiguration(profiles, teamDefaults(before.settings, profiles), usage, readiness);
+    return { profiles, configuration };
+  }
+  let supervisorPreview;
+  async function supervisorChoices(refresh = false) {
+    const before = settings.read(), now = Date.now();
+    if (refresh || !supervisorPreview || supervisorPreview.revision !== before.revision || supervisorPreview.expires <= now) {
+      supervisorPreview = { revision: before.revision, expires: now + 30_000, pending: inspectProfiles(before, true) };
+    }
+    const { configuration } = await supervisorPreview.pending;
+    requireValue(settings.read().revision === before.revision, 'Settings changed; refresh supervisor choices', 'VERSION_CONFLICT');
+    return { capturedAt: configuration.capturedAt, recommendedId: suggestAssignment(configuration, 'planner', null).profileId,
+      profiles: configuration.profiles.filter(profile => profile.roles.includes('planner')) };
+  }
   const configured = goalId => {
     const value = settings.goalConfiguration(goalId);
     requireValue(value, 'Goal configuration is unavailable; import the existing installation before resuming', 'NOT_READY');
@@ -148,33 +177,21 @@ export async function createSettingsRuntime({ settings, directory, token, create
           await probeGit(); await ownership(project);
         }
         if (command.payload.description !== undefined) command.payload.projectCode = projectCode(project.name);
-        transition(null, command, { kind: 'user' });
+        transition(null, { ...command, payload: { ...command.payload, supervisorProfileId: undefined } }, { kind: 'user' });
         requireValue(settings.read().revision === before.revision, 'Settings changed; review the current configuration and retry', 'VERSION_CONFLICT');
-        const profiles = launchProfiles(before.settings), readiness = {};
-        const [usage] = await Promise.all([
-          boundedUsageSnapshot(usageSnapshot),
-          Promise.all(profiles.filter(profile => profile.enabled).map(async profile => {
-            try {
-              const result = await probeProvider(profile.provider, profile.command, before.settings.tools);
-              if (result.resolution) profile.providerResolution = result.resolution;
-              else if (result.ready && resolveProviderCommand) profile.providerResolution = await resolveProviderCommand(profile.provider, profile.command);
-              readiness[profile.id] = command.payload.experienceVersion === 2 && result.ready && !['ccs', 'ccsxp'].includes(profile.providerResolution?.kind)
-                ? { ...result, ready: false, reason: CCS_REQUIRED } : result;
-            } catch { readiness[profile.id] = { ready: false, reason: 'Saved command could not be resolved. Correct Setup for a new goal.' }; }
-          })),
-        ]);
-        requireValue(settings.read().revision === before.revision, 'Settings changed; review the current configuration and retry', 'VERSION_CONFLICT');
-        const configuration = teamConfiguration(profiles, teamDefaults(before.settings, profiles), usage, readiness);
+        const { profiles, configuration } = await inspectProfiles(before, command.payload.experienceVersion === 2);
         if (command.payload.experienceVersion === 2) {
           const missing = TEAM_ROLES.filter(role => !configuration.profiles.some(profile => profile.ready && profile.roles.includes(role)));
           requireValue(!missing.length, `Configure a ready CCS profile for ${missing.join(', ')} before starting a conversational goal. ${configuration.profiles.filter(profile => !profile.ready).map(profile => `${profile.label}: ${profile.reason}`).join(' ')}`, 'NOT_READY');
         }
         command.payload.teamConfiguration = configuration;
-        const planner = profiles.find(profile => profile.id === suggestAssignment(configuration, 'planner', null).profileId);
+        const initial = transition(null, command, { kind: 'user' }).goal;
+        const planner = profiles.find(profile => profile.id === initial.team.assignments.find(entry => entry.role === 'planner').profileId);
         const snapshot = settings.snapshotGoal(command.goalId, project.id, undefined, { profiles, configuration, planner });
         command.payload.teamConfiguration = snapshot.teamConfiguration ?? configuration;
         requireValue(snapshot.project.id === project.id, 'Goal identity was reused with another project', 'IDEMPOTENCY_CONFLICT');
       },
+      supervisorChoices,
       projectStatus: id => {
         const project = settings.read().settings.projects.find(entry => entry.id === id);
         const root = settings.read().settings.devRepos?.find(entry => entry.id === project?.devRepoId);
