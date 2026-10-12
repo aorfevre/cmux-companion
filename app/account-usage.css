@@ -142,3 +142,48 @@
 .account-usage-page .redeemable-resets.has-resets>div>span { color:var(--accent); font-weight:650; }
 .account-usage-page .redeemable-resets p { margin:0; }
 .account-usage-page .redeemable-resets a { color:var(--accent); margin-left:auto; }
+
+/* Row / Card selector. Row view lifts the page cap so nine accounts fit one screen. */
+.account-usage-page .all-accounts-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:24px 0 12px; }
+.account-usage-page .all-accounts-head .all-accounts-heading { margin:0; }
+.account-usage-page .usage-view-selector { display:flex; padding:3px; border:1px solid var(--line); border-radius:8px; }
+.mission-control .account-usage-page .usage-view-selector button { padding:6px 10px; font-size:11px; background:transparent; color:var(--muted); border:0; border-radius:5px; }
+.mission-control .account-usage-page .usage-view-selector button[aria-pressed=true] { background:var(--panel-raised); color:var(--text); }
+.mission-control .account-usage-page.row-view { max-width:none; }
+@media (max-width:760px) { .account-usage-page .usage-view-selector { display:none; } }
+
+/* Row view: one dense table of every account. Gauges keep the card tones. */
+.account-usage-page .usage-table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+.account-usage-page .usage-table { width:100%; border-collapse:collapse; font-size:12px; }
+.account-usage-page .usage-table th,.account-usage-page .usage-table td { padding:8px 10px; text-align:left; vertical-align:top; border-top:1px solid var(--line); }
+.account-usage-page .usage-table thead th { border-top:0; font-size:10px; font-weight:500; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); background:var(--panel-raised); position:sticky; top:0; }
+.account-usage-page .usage-row:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.mission-control .account-usage-page .usage-row.next-reset-account th { box-shadow:inset 3px 0 0 var(--accent); }
+.account-usage-page .usage-row-account { display:flex; flex-direction:column; gap:2px; min-width:160px; }
+.account-usage-page .usage-row-account strong { font-size:13px; overflow-wrap:anywhere; }
+.account-usage-page .usage-row-account small { color:var(--muted); font-size:11px; }
+.account-usage-page .usage-row-account .usage-status { align-self:flex-start; margin-top:3px; }
+.account-usage-page .usage-row-account .usage-provider-logo { margin:0 0 2px; }
+.account-usage-page .usage-gauge { min-width:110px; }
+.account-usage-page .usage-gauge strong { display:block; font-size:14px; }
+.account-usage-page .usage-gauge em { font-size:10px; font-style:normal; font-weight:400; color:var(--muted); }
+.account-usage-page .usage-gauge small,.account-usage-page .usage-reset small,.account-usage-page .usage-na { color:var(--muted); font-size:11px; }
+.account-usage-page .usage-gauge.missing strong { color:var(--muted); }
+.mission-control .account-usage-page .usage-gauge .quota-track { background:var(--line); height:4px; margin:4px 0; }
+.mission-control .account-usage-page .usage-gauge .quota-track i { background:var(--accent); display:block; height:100%; }
+.mission-control .account-usage-page .usage-gauge.low .quota-track i { background:#b97518; }
+.mission-control .account-usage-page .usage-gauge.exhausted .quota-track i { background:#a23e33; }
+.account-usage-page .usage-reset strong { display:block; font-size:13px; font-variant-numeric:tabular-nums; }
+.account-usage-page .redeemable-compact { display:flex; flex-direction:column; gap:2px; }
+.account-usage-page .redeemable-compact strong { font-weight:500; }
+.account-usage-page .redeemable-compact.has-resets strong { color:var(--accent); }
+.account-usage-page .redeemable-compact small { color:var(--muted); font-size:11px; }
+.account-usage-page .queue-pill { display:inline-block; padding:3px 7px; border:1px solid var(--line); border-radius:20px; white-space:nowrap; }
+.account-usage-page .queue-pill.use-before-reset { border-color:var(--accent); color:var(--accent); }
+.account-usage-page .queue-pill.check-account { color:#8a5100; border-color:#e6c48a; }
+.account-usage-page .queue-pill.not-in-queue { color:var(--muted); }
+.mission-control .account-usage-page .usage-expand button { width:28px; height:28px; padding:0; background:transparent; color:var(--muted); border:1px solid var(--line); border-radius:6px; }
+.account-usage-page .usage-row-detail td { background:var(--panel-raised); }
+.account-usage-page .usage-row-detail .account-detail-content { border-top:0; padding:0; }
+.account-usage-page .usage-row-detail .redeemable-resets { margin-top:8px; }
+.account-usage-page .usage-table-empty { color:var(--muted); text-align:center; padding:18px; }

@@ -1,14 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { request } from "./api-request";
 import { ProviderLogo } from "./provider-logo";
 import './account-usage.css';
 import { AccountCard } from './account-usage-account';
-import { freshReading, limitLabel, relativeUpdated, resetConstraint, resetText, upcomingResets, usableBeforeReset, type UpcomingReset, type UsageAccount, type UsageProvider, type UsageResponse } from './account-usage-model';
+import { AccountTable } from './account-usage-table';
+import { accountRows, freshReading, readUsageView, storeUsageView, type UsageView, limitLabel, relativeUpdated, resetConstraint, resetText, upcomingResets, usableBeforeReset, type UpcomingReset, type UsageAccount, type UsageProvider, type UsageResponse } from './account-usage-model';
 export { nextUnusedReset, resetText, upcomingResets, usableBeforeReset } from './account-usage-model';
 
 type ReconnectSession = { sessionId: string; provider: UsageProvider["id"]; status: "waiting" | "processing" | "success" | "error" | "expired" | "cancelled"; message: string; authUrl: string | null; expiresAt: string };
+
+const NARROW = '(max-width: 760px)';
+const subscribeNarrow = (changed: () => void) => {
+  if (typeof matchMedia !== 'function') return () => {};
+  const query = matchMedia(NARROW);
+  query.addEventListener('change', changed);
+  return () => query.removeEventListener('change', changed);
+};
+// Row view needs width; narrow screens always get the card layout.
+function useNarrowViewport() {
+  return useSyncExternalStore(subscribeNarrow, () => typeof matchMedia === 'function' && matchMedia(NARROW).matches, () => false);
+}
 
 export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => void; embedded?: boolean }) {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
@@ -19,6 +32,11 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
   const [pairing, setPairing] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [reconnecting, setReconnecting] = useState<{ provider: UsageProvider; account: UsageAccount } | null>(null);
+  const [storedView, setStoredView] = useState<UsageView>(() => typeof window === 'undefined' ? 'row' : readUsageView());
+  const narrow = useNarrowViewport();
+  const view: UsageView = narrow ? 'card' : storedView;
+  const changeView = (next: UsageView) => { setStoredView(next); storeUsageView(next); };
+  const [usableOnly, setUsableOnly] = useState(false);
   const loadSequence = useRef(0);
   const pendingRead = useRef(false);
   const load = useCallback(async (refresh = false) => {
@@ -66,7 +84,7 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
     await load(true);
   };
 
-  return <section className="account-usage-page">
+  return <section className={`account-usage-page${view === 'row' ? ' row-view' : ''}`}>
     <header className={`usage-page-head ${!embedded && onBack ? 'with-back' : ''}`}>{!embedded && onBack && <button onClick={onBack}>‹ Settings</button>}<div><p className="eyebrow">YOUR ACCOUNTS</p>{embedded ? <h2>Account usage</h2> : <h1>Account usage</h1>}</div><button className="usage-refresh" disabled={loading || unpaired} onClick={() => load(true)} aria-label="Refresh account usage">↻ <span>Refresh</span></button></header>
     <p className="usage-intro">Compare weekly quota and see which account’s week resets next. Percentages show remaining subscription quota.</p>
     {unpaired && <form className="usage-pairing" onSubmit={async event => {
@@ -79,9 +97,12 @@ export function AccountUsageView({ onBack, embedded = false }: { onBack?: () => 
     {loading && !usage && <div className="usage-loading"><i /><i /><i /></div>}
     {error && <div className="usage-error"><strong>Usage unavailable</strong><span>{error}</span><button onClick={() => load(true)}>Try again</button></div>}
     {usage && !usage.available && !error && <div className="usage-error"><strong>CCS usage is unavailable</strong><span>Check that CCS is installed on this Mac, then refresh.</span></div>}
-    {usage && <ResetOverview resets={resets} now={now} />}
-    {usage && <h2 className="all-accounts-heading">All accounts</h2>}
-    <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection nextReset={nextReset} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} provider={provider} now={now} onDeleted={connectionDeleted} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>
+    {usage && <ResetOverview resets={resets} now={now} usableOnly={usableOnly} onUsableOnly={setUsableOnly} showQueue={view === 'card'} />}
+    {usage && <div className="all-accounts-head"><h2 className="all-accounts-heading">All accounts</h2>{!narrow && <div className="usage-view-selector" role="group" aria-label="Account layout">
+      <button aria-pressed={view === 'row'} onClick={() => changeView('row')}>Row</button><button aria-pressed={view === 'card'} onClick={() => changeView('card')}>Card</button>
+    </div>}</div>}
+    {usage && view === 'row' && <AccountTable rows={accountRows(usage, now).filter(row => !usableOnly || row.usable)} usableOnly={usableOnly} now={now} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} nextReset={nextReset} onDeleted={connectionDeleted} onReconnect={(provider, account) => setReconnecting({ provider, account })} />}
+    {view === 'card' && <div className="usage-providers">{usage?.providers.map((provider) => <ProviderSection nextReset={nextReset} snapshotFresh={!error && usage.available && freshReading(usage.generatedAt, now)} provider={provider} now={now} onDeleted={connectionDeleted} onReconnect={(account) => setReconnecting({ provider, account })} key={provider.id} />)}</div>}
     {usage?.available && <details className="usage-privacy"><summary>About these readings</summary><p>Provider usage for your CCS connections, not billing credits. Missing limits are not reported, never zero. OAuth credentials are used only on your Mac to contact the provider and are never sent to this browser. Usage is checked at most once per account per minute. Rate-limited accounts wait longer before retrying; Refresh respects that wait. The reset queue compares overall weekly limits; Fable is shown in each Claude account and other model limits are in Details. Redeemable resets are saved options to restore quota, separate from automatic resets; check the provider for eligibility and redemption. Suggestions use reported limits and do not change account routing.</p></details>}
     {reconnecting && <ReconnectSheet key={reconnecting.account.id} provider={reconnecting.provider} account={reconnecting.account} onClose={() => setReconnecting(null)} onSuccess={reconnectSuccess} />}
   </section>;
@@ -107,8 +128,7 @@ function SessionContext({ reset, now }: { reset: UpcomingReset; now: number }) {
   }
   return <span className="session-context"> · 5h: {label}</span>;
 }
-function ResetOverview({ resets, now }: { resets: UpcomingReset[]; now: number }) {
-  const [usableOnly, setUsableOnly] = useState(false);
+function ResetOverview({ resets, now, usableOnly, onUsableOnly, showQueue }: { resets: UpcomingReset[]; now: number; usableOnly: boolean; onUsableOnly: (value: boolean) => void; showQueue: boolean }) {
   const next = resets.find(reset => reset.window.remainingPercent > 0);
   const useNext = resets.find(reset => usableBeforeReset(reset, now));
   const visible = usableOnly ? resets.filter(reset => usableBeforeReset(reset, now)) : resets;
@@ -125,15 +145,15 @@ function ResetOverview({ resets, now }: { resets: UpcomingReset[]; now: number }
         <p>Based on reported limits<SessionContext reset={useNext} now={now} /></p>
       </> : <p>No usable capacity with an upcoming weekly reset is reported.</p>}</aside>
     </div>
-    <header className="reset-queue-head"><div><h2>Weekly reset queue</h2><p>Unused weekly quota · Soonest reset first</p></div><div className="reset-filter" role="group" aria-label="Reset queue filter">
-      <button aria-pressed={!usableOnly} onClick={() => setUsableOnly(false)}>Next reset</button><button aria-pressed={usableOnly} onClick={() => setUsableOnly(true)}>Usable now</button>
+    <header className="reset-queue-head"><div><h2>{showQueue ? 'Weekly reset queue' : 'Account filter'}</h2><p>{showQueue ? 'Unused weekly quota · Soonest reset first' : 'Rows sort by soonest weekly reset'}</p></div><div className="reset-filter" role="group" aria-label="Reset queue filter">
+      <button aria-pressed={!usableOnly} onClick={() => onUsableOnly(false)}>Next reset</button><button aria-pressed={usableOnly} onClick={() => onUsableOnly(true)}>Usable now</button>
     </div></header>
-    {visible.length ? <ol className="reset-queue" aria-label="Weekly reset queue">{visible.map(reset => <li className={`reset-queue-row${reset === useNext ? ' use-next' : ''}`} key={`${reset.provider.id}:${reset.account.id}:${reset.window.id}`}>
+    {showQueue && (visible.length ? <ol className="reset-queue" aria-label="Weekly reset queue">{visible.map(reset => <li className={`reset-queue-row${reset === useNext ? ' use-next' : ''}`} key={`${reset.provider.id}:${reset.account.id}:${reset.window.id}`}>
       <ResetCountdown reset={reset} now={now} />
       <div className="reset-queue-account"><AccountResetLink reset={reset} /><span className="reset-limit">{limitLabel(reset.window)}</span><div className="quota-track"><i style={{ width: `${reset.window.remainingPercent}%` }} /></div><small>{reset.window.remainingPercent}% unused<SessionContext reset={reset} now={now} />{resetConstraint(reset) ? ` · ${resetConstraint(reset)}` : ''}</small></div>
       <div className="reset-queue-meta"><span>{resetConstraint(reset) ? 'Check account' : reset === useNext ? 'Use before reset' : reset.window.remainingPercent === 0 ? 'Fully used' : 'Upcoming'}</span><time dateTime={reset.window.resetAt!}>{new Date(reset.reset).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time></div>
-    </li>)}</ol> : <p className="reset-empty">{usableOnly ? 'No usable capacity with an upcoming weekly reset is reported.' : 'No upcoming weekly reset is reported in fresh readings.'}</p>}
-    <p className="reset-eligibility">Only fresh, reported weekly reset times appear here. See All accounts for missing readings.</p>
+    </li>)}</ol> : <p className="reset-empty">{usableOnly ? 'No usable capacity with an upcoming weekly reset is reported.' : 'No upcoming weekly reset is reported in fresh readings.'}</p>)}
+    {showQueue && <p className="reset-eligibility">Only fresh, reported weekly reset times appear here. See All accounts for missing readings.</p>}
   </section>;
 }
 

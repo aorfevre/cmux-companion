@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AccountUsageView } from "../app/account-usage";
 import { MarkdownViewer } from "../app/markdown-viewer";
 import { LastUpdateStamp, PullRequestBanner, TerminalPanel } from "../app/page";
@@ -11,7 +11,9 @@ import { TerminalGrid } from "../app/terminal-grid.tsx";
 import { DeploymentHealth } from "../app/deployment-health";
 
 
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+// These checks cover the account card layout; Row view has its own tests.
+beforeEach(() => { localStorage.setItem('cmux-companion-usage-view', 'card'); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals();  localStorage.clear(); });
 
 describe("contextual mobile features", () => {
   test("keeps permanent navigation focused on frequent mobile destinations", async () => {

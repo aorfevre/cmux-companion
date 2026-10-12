@@ -657,7 +657,7 @@ test('Row view lists every account sorted by weekly reset with queue state, gaug
 });
 
 test('Row view expands a row in place with details, reconnect and delete', async () => {
-  const fetch = await setup(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetch = await setup(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'DELETE') return new Response(JSON.stringify({ ok: true }));
     return new Response(JSON.stringify(rowFixture()));
   }, 'row');
@@ -667,7 +667,7 @@ test('Row view expands a row in place with details, reconnect and delete', async
   fireEvent.click(expand);
   expect(expand.getAttribute('aria-expanded')).toBe('true');
   const panel = document.getElementById('usage-row-detail-sample')!;
-  expect(panel.textContent).toContain('Updated 5m ago');
+  expect(panel.textContent).toContain('Updated now');
   expect(within(panel).getByRole('link', { name: 'Check Claude resets ↗' })).toBeTruthy();
   fireEvent.click(within(panel).getByRole('button', { name: 'Delete connection' }));
   fireEvent.click(within(panel).getByRole('button', { name: 'Confirm delete' }));
@@ -679,7 +679,7 @@ test('highlight links focus the matching table row', async () => {
   await setup(async () => new Response(JSON.stringify(rowFixture())), 'row');
   const link = within(screen.getByRole('complementary', { name: 'Next weekly reset' })).getByRole('link');
   fireEvent.click(link);
-  expect(document.activeElement?.id).toBe('usage-account-soon');
+  expect(document.activeElement?.id).toBe('usage-account-sample');
 });
 ```
 
