@@ -5,7 +5,8 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, realpathSync, lstatSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { identifier, requireValue } from '../domain/contracts.mjs';
+import { identifier, requireValue, DomainError } from '../domain/contracts.mjs';
+import { CMUX_REFUSALS, isLaunchFailure } from '../domain/launch-recovery.mjs';
 import { nativeBinding } from './native-background.mjs';
 import { requireNativeCapabilities } from './ccs.mjs';
 import { nativeProcessStamp } from './native-process.mjs';
@@ -76,7 +77,13 @@ export class NativeTerminal {
       const command = await this.inputs.prepare(request, directory);
       requireValue(command.activation && !this.stopping, 'Terminal activation is unavailable', 'NOT_READY');
       writeFileSync(join(directory, 'create-sent.json'), JSON.stringify({ identity }), { flag: 'wx', mode: 0o600 }); sent = true;
-      const created = await this.terminal.create(request.attempt.worktree ?? '', command.plannerName);
+      let created;
+      try { created = await this.terminal.create(request.attempt.worktree ?? '', command.plannerName); }
+      catch (error) {
+        // A refused socket created no workspace; anything else stays uncertain.
+        if (error instanceof DomainError && CMUX_REFUSALS.has(error.code)) this.save(join(directory, 'outcome.json'), { identity, workerState: 'stopped', code: error.code });
+        throw error;
+      }
       this.save(join(directory, 'workspace.json'), { identity, workspaceId: created.workspaceId });
       const configPath = join(directory, 'worker.json');
       const release = pinNativeRelease({ directory, identity, operationId: request.operationId }, this.releaseDirectory);
@@ -105,7 +112,7 @@ export class NativeTerminal {
     if (existsSync(join(directory, 'outcome.json'))) {
       const result = this.read(join(directory, 'outcome.json')); requireValue(result.identity === saved.identity, 'Terminal result identity changed', 'OWNERSHIP_UNCERTAIN');
       const pendingOutbox = result.workerState === 'stopped' && await this.recoverOutbox(directory);
-      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity, ...(pendingOutbox ? { pendingOutbox: true } : {}), ...(result.workerState === 'stopped' && ['SUPERVISOR_TURN_TIMEOUT', 'SUPERVISOR_PROTOCOL_FAILED', 'SUPERVISOR_TURN_UNSETTLED'].includes(result.code) ? { failureCode: result.code } : {}), ...(result.workerState === 'stopped' && /^PROVIDER_SPAWN_(EAGAIN|EMFILE|ENFILE|ENOMEM|ENOENT|EACCES|EPERM|ENOEXEC|FAILED)$/.test(result.code ?? '') ? { launchFailure: result.code } : {}) };
+      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity, ...(pendingOutbox ? { pendingOutbox: true } : {}), ...(result.workerState === 'stopped' && ['SUPERVISOR_TURN_TIMEOUT', 'SUPERVISOR_PROTOCOL_FAILED', 'SUPERVISOR_TURN_UNSETTLED'].includes(result.code) ? { failureCode: result.code } : {}), ...(result.workerState === 'stopped' && isLaunchFailure(result.code) ? { launchFailure: result.code } : {}) };
     }
     if (!existsSync(join(directory, 'identity.json'))) return { status: 'unknown', identity: null };
     const runner = this.read(join(directory, 'identity.json')), workspace = this.read(join(directory, 'workspace.json'));

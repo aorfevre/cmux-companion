@@ -171,3 +171,22 @@ for (const [status, code, version] of [['stopped', 'PROVIDER_SPAWN_EACCES', 2], 
     assert.equal(f.store.get('g').attempts[0].workerState, status === 'unknown' ? 'unknown' : 'stopped');
   });
 }
+
+for (const version of [2, undefined]) test(`a cmux refusal releases planner capacity and names the cmux setting; experience=${version ?? 1}`, async t => {
+  const f = fixture(t); f.create('g', version);
+  f.agents.launch = async request => {
+    f.agents.launches.push(structuredClone(request));
+    f.agents.workers.set(request.operationId, { identity: `worker_${request.operationId}`, status: 'stopped', launchFailure: 'CMUX_AUTH_REJECTED' });
+    throw new Error('cmux refused the request');
+  };
+  await f.scheduler.start(); await f.scheduler.tick();
+  const goal = f.store.get('g'), [attempt] = goal.attempts;
+  assert.equal(f.agents.launches.length, 1, 'a refused socket is not retried automatically');
+  assert.equal(attempt.status, 'failed'); assert.equal(attempt.workerState, 'stopped');
+  assert.deepEqual(attempt.launchFailure, { code: 'CMUX_AUTH_REJECTED', retry: 0, limit: 1, scheduled: false });
+  assert.match(attempt.error, /cmux refused the launch \(CMUX_AUTH_REJECTED\)/);
+  assert.match(attempt.error, /cmux → Settings → Automation/);
+  assert.doesNotMatch(attempt.error, /Provider could not start/);
+  assert.equal(f.store.ownedCapacity('g', 'interactive').total, 0);
+  assert.ok(goal.hold);
+});

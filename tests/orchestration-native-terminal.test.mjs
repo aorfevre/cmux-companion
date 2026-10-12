@@ -119,6 +119,19 @@ test('lost cmux creation response remains uncertain and cannot create another te
   f.driver.managed.clear();
 });
 
+for (const code of ['CMUX_AUTH_REJECTED', 'CMUX_SOCKET_MISSING']) test(`cmux refusal ${code} proves the planner terminal stopped before creation`, async (t) => {
+  const { DomainError } = await import('../server/orchestration/domain/contracts.mjs');
+  const f = await fixture(t); let calls = 0;
+  f.terminal.create = async () => { calls++; throw new DomainError(code, 'cmux refused the request'); };
+  await assert.rejects(f.driver.launch(f.request), { code });
+  const observed = await f.driver.observe('operation');
+  assert.equal(observed.status, 'stopped'); assert.equal(observed.launchFailure, code); assert.ok(observed.identity);
+  // A repeated launch reads the saved receipt; it never asks cmux again.
+  await f.driver.launch(f.request).catch(() => {});
+  assert.equal(calls, 1); assert.equal(f.counts().starts, 0);
+  await f.driver.close();
+});
+
 test('resume repairs its durable pointer after a response-loss boundary without duplicate provider runs', { timeout: 15000 }, async (t) => {
   const f = await fixture(t); const launched = await f.driver.launch(f.request); f.request.attempt.identity = launched.identity;
   await waitFor(f.records, records => records?.length === 1); f.input('exit\n'); await waitFor(f.session, session => session?.phase === 'paused');
@@ -190,6 +203,33 @@ process.stdout.write(JSON.stringify({ workspace_id: ${JSON.stringify(workspaceId
   await assert.rejects(terminal.startManaged(workspaceId, 'relative.json'));
   terminal.env.FIXTURE_FAIL = '1';
   await assert.rejects(terminal.open(workspaceId), error => error.code === 'CMUX_UNAVAILABLE' && !error.message.includes('private-credential'));
+});
+
+test('cmux transport classifies only proven refusals and never exposes cmux output', async (t) => {
+  const { CmuxTerminal } = await import('../server/orchestration/adapters/cmux.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'orchestration-cmux-refusal-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = join(root, 'cmux-fixture');
+  // cmux 0.65 output observed for each condition; stream and exit vary by version.
+  await writeFile(bin, `#!${process.execPath}
+const stream = process.env.FIXTURE_STREAM === 'stdout' ? process.stdout : process.stderr;
+stream.write(process.env.FIXTURE_OUTPUT + ' private-credential\\n');
+process.exitCode = Number(process.env.FIXTURE_EXIT);
+`, { mode: 0o700 });
+  const cases = [
+    ['Error: ERROR: Invalid password', 'stderr', 1, 'CMUX_AUTH_REJECTED'],
+    ['Error: ERROR: Password mode is enabled but no socket password is configured in Settings.', 'stderr', 1, 'CMUX_AUTH_REJECTED'],
+    ['Error: auth_required: Authentication required. Send auth <password> first.', 'stdout', 0, 'CMUX_AUTH_REJECTED'],
+    ['Error: auth_required: Authentication required. Send auth <password> first.', 'stdout', 1, 'CMUX_AUTH_REJECTED'],
+    ['Error: Socket not found at /private/cmux.sock', 'stderr', 1, 'CMUX_SOCKET_MISSING'],
+    ['Error: method_not_found: Unknown method', 'stderr', 1, 'CMUX_UNAVAILABLE'],
+    ['not json', 'stdout', 0, 'CMUX_UNAVAILABLE'],
+  ];
+  for (const [output, stream, exit, code] of cases) {
+    const terminal = new CmuxTerminal({ bin, env: { FIXTURE_OUTPUT: output, FIXTURE_STREAM: stream, FIXTURE_EXIT: String(exit) } });
+    await assert.rejects(terminal.create(root, 'DICTEE Planning Onboarding'), error => error.code === code
+      && !error.message.includes('private-credential') && !error.message.includes(output), `${output} on ${stream}/${exit}`);
+  }
 });
 
 
