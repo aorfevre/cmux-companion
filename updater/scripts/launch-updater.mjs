@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { defaultPaths } from "../src/constants.mjs";
+import { createCycleReporter } from "../src/cycle-report.mjs";
 
 const paths = defaultPaths(process.env.CMUX_COMPANION_HOME);
 let stopping = false;
 let child = null;
 let wake = null;
+const report = createCycleReporter((line) => console.error(line));
 
 function stop() {
   stopping = true;
@@ -25,9 +27,7 @@ function runBootstrap() {
       if (settled) return;
       settled = true;
       child = null;
-      if (!stopping && (error || code !== 0)) {
-        console.error(error?.message || `Updater cycle exited with ${signal || code}`);
-      }
+      if (!stopping) report(code, signal, error);
       resolve();
     };
     child = spawn(paths.bootstrap, [], { env: process.env, stdio: "inherit" });

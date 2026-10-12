@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, writeFile, readFile, rm, symlink, utimes } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -108,31 +108,66 @@ async function deadPid() {
   return child.pid;
 }
 
-test('bootstrap reclaims an orphaned spawn claim once its owner is dead and stale, but keeps a fresh or live one', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'updater-bootstrap-claim-')); t.after(() => rm(root, { recursive: true, force: true }));
+async function bootstrapFixture(t, prefix) {
+  const root = await mkdtemp(join(tmpdir(), prefix)); t.after(() => rm(root, { recursive: true, force: true }));
   const paths = defaultPaths(root), sha = 'a'.repeat(40), marker = join(root, 'executed');
   const scripts = join(paths.companionStore, 'releases', sha, 'updater/scripts'); await mkdir(scripts, { recursive: true });
   await writeFile(join(scripts, 'local-updater.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync(process.env.CMUX_TEST_MARKER, '${sha}');\n`);
   await mkdir(paths.stateRoot, { recursive: true }); await symlink(`releases/${sha}`, join(paths.companionStore, 'current'));
   const bootstrap = new URL('../updater/scripts/bootstrap.mjs', import.meta.url).pathname;
-  const options = { env: { HOME: root, CMUX_COMPANION_HOME: root, CMUX_TEST_MARKER: marker }, timeoutMs: 10000 };
-  const owner = join(paths.lock, 'owner.json'), pid = await deadPid(), stale = new Date(Date.now() - 16 * 60_000);
-  const claim = async (details, at) => {
-    await rm(paths.lock, { recursive: true, force: true }); await mkdir(paths.lock, { mode: 0o700 });
-    await writeFile(owner, JSON.stringify({ pid, createdAt: new Date().toISOString(), spawnClaim: true, ...details }));
-    if (at) await utimes(paths.lock, at, at);
+  const env = { HOME: root, CMUX_COMPANION_HOME: root, CMUX_TEST_MARKER: marker };
+  const cycle = (extraEnv = {}) => run(process.execPath, [bootstrap], { env: { ...env, ...extraEnv }, timeoutMs: 10000, allowFailure: true });
+  return { paths, sha, marker, cycle };
+}
+
+test('bootstrap reclaims dead or ownerless stale locks, keeps fresh or live ones, and exits 3 when held', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-claim-');
+  const owner = join(f.paths.lock, 'owner.json'), pid = await deadPid(), stale = new Date(Date.now() - 16 * 60_000);
+  const claim = async (contents, at) => {
+    await rm(f.paths.lock, { recursive: true, force: true }); await mkdir(f.paths.lock, { mode: 0o700 });
+    if (contents !== null) await writeFile(owner, typeof contents === 'string' ? contents : JSON.stringify({ pid, createdAt: new Date().toISOString(), spawnClaim: true, ...contents }));
+    if (at) await utimes(f.paths.lock, at, at);
   };
-  // A fresh claim with no engine pid protects an engine spawn that is still being recorded.
-  await claim({}); await run(process.execPath, [bootstrap], options);
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
-  // A stale claim whose owner is dead is an orphan; the bootstrap reclaims it and runs.
-  await claim({}, stale); await run(process.execPath, [bootstrap], options);
-  assert.equal(await readFile(marker, 'utf8'), sha);
-  // A stale claim with a live engine stays protected.
-  await rm(marker); await claim({ enginePid: process.pid }, stale); await run(process.execPath, [bootstrap], options);
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
-  await claim({ pid: process.pid }, stale); await run(process.execPath, [bootstrap], options);
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  const held = async label => { const result = await f.cycle(); assert.equal(result.code, 3, `${label}: exit 3 while held`); await assert.rejects(readFile(f.marker), { code: 'ENOENT' }, `${label}: engine not run`); };
+  const reclaimed = async label => { const result = await f.cycle(); assert.equal(result.code, 0, `${label}: exit 0`); assert.equal(await readFile(f.marker, 'utf8'), f.sha, `${label}: engine ran`); await rm(f.marker); };
+  // Fresh claims of every shape protect a spawn that is still being recorded.
+  await claim({}); await held('fresh dead pid');
+  await claim(null); await held('fresh missing owner');
+  await claim(''); await held('fresh empty owner');
+  // Stale claims without a live process are orphans.
+  await claim({}, stale); await reclaimed('stale dead pid');
+  await claim(null, stale); await reclaimed('stale missing owner');
+  await claim('', stale); await reclaimed('stale empty owner');
+  await claim({ pid: undefined, enginePid: undefined, spawnClaim: true }, stale); await reclaimed('stale pid-less owner');
+  // Live processes keep their lock however old it is.
+  await claim({ enginePid: process.pid }, stale); await held('stale live engine');
+  await claim({ pid: process.pid }, stale); await held('stale live owner');
+});
+
+test('bootstrap reports an engine that exits 3 or 4 as a plain failure', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-engine-exit-');
+  const engine = join(f.paths.companionStore, 'releases', f.sha, 'updater/scripts/local-updater.mjs');
+  await writeFile(engine, 'process.exit(3);\n');
+  assert.equal((await f.cycle()).code, 1, 'engine exit 3 is not reported as lock held');
+  await writeFile(engine, 'process.exit(4);\n');
+  assert.equal((await f.cycle()).code, 1, 'engine exit 4 is not reported as low disk');
+});
+
+test('bootstrap removes the lock directory when its owner write fails', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-write-');
+  const result = await f.cycle({ CMUX_COMPANION_UPDATER_FAILPOINT: 'owner-write' });
+  assert.equal(result.code, 1); assert.match(result.stderr, /ENOSPC/);
+  await assert.rejects(readFile(f.paths.lock), { code: 'ENOENT' }, 'no ownerless directory survives');
+  await assert.rejects(readFile(f.marker), { code: 'ENOENT' });
+  const next = await f.cycle(); assert.equal(next.code, 0, 'the next cycle is not blocked'); assert.equal(await readFile(f.marker, 'utf8'), f.sha);
+});
+
+test('bootstrap refuses to claim the lock below the free-space floor and exits 4', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-disk-');
+  const result = await f.cycle({ CMUX_COMPANION_UPDATER_MIN_FREE_BYTES: String(Number.MAX_SAFE_INTEGER) });
+  assert.equal(result.code, 4);
+  await assert.rejects(readFile(f.paths.lock), { code: 'ENOENT' }, 'no lock directory was created');
+  await assert.rejects(readFile(f.marker), { code: 'ENOENT' });
 });
 
 test('acquireLock treats a dead, stale spawn claim without an engine pid as an orphan', async t => {
@@ -147,4 +182,96 @@ test('acquireLock treats a dead, stale spawn claim without an engine pid as an o
   assert.equal(await acquireLock(lock, { now }), null, 'a live owner keeps the claim');
   await claim({ enginePid: process.pid }); await utimes(lock, new Date(now - 16 * 60_000), new Date(now - 16 * 60_000));
   assert.equal(await acquireLock(lock, { now }), null, 'a live engine keeps the claim');
+});
+
+test('acquireLock reclaims a stale lock whose owner file is missing, empty or pid-less, and protects a fresh one', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-orphan-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock'), owner = join(lock, 'owner.json');
+  const shapes = [
+    ['missing', null],
+    ['empty', ''],
+    ['pid-less', JSON.stringify({ createdAt: '2026-09-16T09:23:42.601Z', spawnClaim: true })],
+    ['zero pid', JSON.stringify({ pid: 0, createdAt: '2026-09-16T09:23:42.601Z' })],
+  ];
+  for (const [label, contents] of shapes) {
+    await rm(lock, { recursive: true, force: true }); await mkdir(lock, { mode: 0o700 });
+    if (contents !== null) await writeFile(owner, contents);
+    assert.equal(await acquireLock(lock, { now: Date.now() }), null, `${label}: a fresh lock stays protected`);
+    const release = await acquireLock(lock, { now: Date.now() + 16 * 60_000 });
+    assert.equal(typeof release, 'function', `${label}: a stale ownerless lock is an orphan`);
+    assert.equal((await readJson(owner)).pid, process.pid, `${label}: the reclaimer records itself`);
+    await release();
+  }
+});
+
+test('acquireLock removes the directory it created when the owner write fails', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-write-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock');
+  await assert.rejects(acquireLock(lock, { write: async () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); } }), { code: 'ENOSPC' });
+  await assert.rejects(readFile(join(lock, 'owner.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(lock), { code: 'ENOENT' });
+  const release = await acquireLock(lock); assert.equal(typeof release, 'function', 'the next claimant is not blocked'); await release();
+});
+
+test('acquireLock serializes stale reclamation so concurrent claimants cannot replace each other', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-race-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock'); await mkdir(lock, { mode: 0o700 });
+  const stale = new Date(Date.now() - 16 * 60_000); await utimes(lock, stale, stale);
+  // Many claimants inspect the same stale directory at once; exactly one wins.
+  const results = await Promise.all(Array.from({ length: 12 }, () => acquireLock(lock, { now: Date.now() })));
+  const winners = results.filter(result => typeof result === 'function');
+  assert.equal(winners.length, 1, 'exactly one claimant owns the reclaimed lock');
+  assert.equal((await readJson(join(lock, 'owner.json'))).pid, process.pid);
+  await assert.rejects(readFile(`${lock}.reclaim`), { code: 'ENOENT' }, 'the reclaim marker is released');
+  await winners[0]();
+  await assert.rejects(readFile(lock), { code: 'ENOENT' });
+});
+
+test('acquireLock yields without deleting when its owner write finds the directory gone', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-enoent-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock');
+  // Simulate a reclaimer that replaced the directory with another claimant's lock
+  // between this claimant's mkdir and its owner write.
+  const write = async () => { await rm(lock, { recursive: true, force: true }); await mkdir(lock); await writeFile(join(lock, 'owner.json'), JSON.stringify({ pid: process.pid })); throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
+  assert.equal(await acquireLock(lock, { write }), null, 'ownership is lost');
+  assert.equal((await readJson(join(lock, 'owner.json'))).pid, process.pid, 'the other claim survives');
+});
+
+test('acquireLock reclaims a stale lock behind a stale reclaim marker and respects a fresh one', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-marker-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock'), marker = `${lock}.reclaim`; await mkdir(lock, { mode: 0o700 }); await mkdir(marker, { mode: 0o700 });
+  const stale = new Date(Date.now() - 16 * 60_000); await utimes(lock, stale, stale);
+  assert.equal(await acquireLock(lock, { now: Date.now() }), null, 'a fresh marker means another reclaimer is working');
+  await utimes(marker, stale, stale);
+  const release = await acquireLock(lock, { now: Date.now() });
+  assert.equal(typeof release, 'function', 'a stale marker from a crashed reclaimer is replaced'); await release();
+});
+
+test('bootstrap serializes stale reclamation across concurrent cycles and respects a fresh reclaim marker', async t => {
+  const f = await bootstrapFixture(t, 'updater-bootstrap-race-');
+  const stale = new Date(Date.now() - 16 * 60_000);
+  await mkdir(f.paths.lock, { mode: 0o700 }); await utimes(f.paths.lock, stale, stale);
+  const results = await Promise.all(Array.from({ length: 6 }, () => f.cycle()));
+  const ran = results.filter(result => result.code === 0).length;
+  assert.equal(ran, 1, 'exactly one concurrent cycle reclaims and runs the engine');
+  assert.ok(results.every(result => [0, 3].includes(result.code)), 'the others report the lock as held');
+  assert.equal(await readFile(f.marker, 'utf8'), f.sha);
+  await assert.rejects(readFile(`${f.paths.lock}.reclaim`), { code: 'ENOENT' }, 'the reclaim marker is released');
+  await rm(f.marker);
+  await mkdir(f.paths.lock, { mode: 0o700 }); await utimes(f.paths.lock, stale, stale); await mkdir(`${f.paths.lock}.reclaim`, { mode: 0o700 });
+  assert.equal((await f.cycle()).code, 3, 'a fresh reclaim marker means another reclaimer is working');
+  await rm(`${f.paths.lock}.reclaim`, { recursive: true, force: true });
+});
+
+test('acquireLock lets exactly one of many concurrent claimants replace a stale reclaim marker', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'updater-lock-marker-race-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const lock = join(root, 'lock'), marker = `${lock}.reclaim`; await mkdir(lock, { mode: 0o700 }); await mkdir(marker, { mode: 0o700 });
+  const stale = new Date(Date.now() - 16 * 60_000); await utimes(lock, stale, stale); await utimes(marker, stale, stale);
+  const results = await Promise.all(Array.from({ length: 12 }, () => acquireLock(lock, { now: Date.now() })));
+  const winners = results.filter(result => typeof result === 'function');
+  assert.equal(winners.length, 1, 'a crashed reclaimer marker plus concurrent claimants still yields one owner');
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  const leftovers = (await readdir(root)).filter(name => name.startsWith('lock.reclaim.'));
+  assert.deepEqual(leftovers, [], 'no aside markers remain');
+  await winners[0]();
 });
