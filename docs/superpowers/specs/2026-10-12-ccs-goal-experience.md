@@ -31,8 +31,9 @@ idempotent commands, private pairing and human publication approval remain in
 force. Existing goals retain their execution contract; no active goal is silently
 migrated and no two engines own the same goal. The updater is unchanged.
 
-The new experience is opt-in during evaluation and uses an explicit persisted
-experience version. Its disposable development entry point must exercise the
+The new experience is the default for a new goal when a supervisor profile is
+configured, and falls back to the planner flow otherwise (amended 2026-10-13 by
+the Goals list spec). It uses an explicit persisted experience version. Its disposable development entry point must exercise the
 same service and UI paths as production composition, with external adapters
 substituted. It must not be a disconnected mockup or a chat overlay on an
 unchanged stop-and-replace planning flow.
