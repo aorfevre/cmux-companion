@@ -111,6 +111,7 @@ export interface RecoveryDecision {
   dueAt: number; state: 'scheduled' | 'applied' | 'superseded';
 }
 export interface RecoveryPolicy {
+  priorEpisodes?: Record<string, number>;
   diagnosisHoldId?: string;
   diagnosisAttemptId?: string;
   version: 1; limit: number; episodeLimit: number; priorSpent: number;
@@ -152,6 +153,7 @@ export interface AgentPort {
 export interface BackgroundPolicy { ceilingMs: number; idleMs: number; maxOutputBytes: number; killGraceMs: number }
 export interface RuntimeClock { schedule(callback: () => void, delayMs: number): unknown; cancel(handle: unknown): void }
 export interface ProcessOutcome {
+  output?: { receivedBytes: number; retainedBytes: number; limitBytes: number; discardedTelemetryBytes: number; discardedTelemetryFrames: number };
   status: 'succeeded' | 'failed';
   workerState: 'stopped' | 'unknown';
   cause: null | { code: string; exitCode: number | null; signal: string | null };

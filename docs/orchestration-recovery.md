@@ -83,6 +83,32 @@ sessions, erase evidence or collect arbitrary files. Resources without verifiabl
 attempt ownership are refused. Any additional retention policy needs its own
 explicit design and ownership checks.
 
+## Native recovery diagnostics
+
+Confirmed stopped terminal-wrapper failures and output-limit failures use the
+same bounded recovery policy as other stopped workers. Authentication and setup
+codes still block. Transport timeouts while a supervisor waits for service state
+retry that observation or the same command receipt without starting a model turn.
+
+Native `outcome.json` receipts retain structured exception diagnostics: phase,
+exception type, error code and transport cause code. Terminal stderr emits
+`native_terminal_outcome`; background workers emit `native_worker_outcome` or
+`native_worker_failed`. These diagnostic events contain operation identity and
+bounded metadata, never exception messages, stacks, credentials or provider output.
+An older `NATIVE_TERMINAL_FAILED` receipt cannot recover its discarded exception.
+
+Background outcome `output` counters report received/retained bytes, the output
+limit and discarded telemetry bytes/frames. Claude `stream-json` thinking-counter
+frames are omitted before enforcing the substantive output limit. Unknown,
+malformed, oversized and partial frames, tool output and final results remain
+subject to the existing limit. Execution and idle deadlines remain enforced.
+
+Historical goal spending remains charged globally. Episode charges follow their
+actual revision and role instead of charging every episode the whole goal total.
+The scheduler records `recovery_history_attributed` once for pre-fix policies with
+no new recovery decisions. Ambiguous histories and older policies already carrying
+new decisions retain conservative accounting and may need a budget decision.
+
 ## Journal retention
 
 Production has no automatic journal pruning timer. The internal

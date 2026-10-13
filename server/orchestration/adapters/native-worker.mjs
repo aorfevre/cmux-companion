@@ -1,3 +1,4 @@
+import { failureDiagnostic } from './failure-diagnostic.mjs';
 import { StoppedSpawnError } from './spawn-failure.mjs';
 import { prepareCcsLaunch } from './ccs-managed-launcher.mjs';
 import { randomUUID } from 'node:crypto';
@@ -46,13 +47,18 @@ export async function runNativeWorker(configPath) {
     const command = prepareCcsLaunch(config.command, config.installation, directory, 'initial');
     writeFileSync(join(directory, 'provider-sent.json'), JSON.stringify({ identity: config.identity }), { mode: 0o600, flag: 'wx' }); sent = true;
     const handle = await startBackgroundProcess(command, {
+      filterThinkingTelemetry: config.command.argv.includes('--output-format') && config.command.argv[config.command.argv.indexOf('--output-format') + 1] === 'stream-json',
       policy: config.policy, signal: controller.signal, identity: () => config.identity,
       ...(config.terminalOutput ? { onOutput: (stream, chunk) => { process[stream].write(chunk); } } : {}),
       onIdentity: async ({ pid }) => { save('provider.json', { identity: config.identity, pid, stamp: await nativeProcessStamp(pid, directory) }); },
     });
-    save('outcome.json', { identity: config.identity, outcome: await handle.result });
+    const outcome = await handle.result;
+    save('outcome.json', { identity: config.identity, outcome });
+    process.stderr.write(JSON.stringify({ event: 'native_worker_outcome', operationId: request.binding.operationId, status: outcome.status, workerState: outcome.workerState, cause: outcome.cause, output: outcome.output }) + '\n');
   } catch (error) {
-    save('outcome.json', { identity: config.identity, outcome: { status: 'failed', workerState: !sent || error instanceof StoppedSpawnError ? 'stopped' : 'unknown', cause: { code: error instanceof StoppedSpawnError ? error.failureCode : error instanceof DomainError ? error.code : 'NATIVE_WORKER_FAILED', exitCode: null, signal: null }, stdout: '', stderr: '' } });
+    const diagnostic = failureDiagnostic(error, sent ? 'provider' : 'preparation');
+    process.stderr.write(JSON.stringify({ event: 'native_worker_failed', operationId: request.binding.operationId, diagnostic }) + '\n');
+    save('outcome.json', { identity: config.identity, diagnostic, outcome: { status: 'failed', workerState: !sent || error instanceof StoppedSpawnError ? 'stopped' : 'unknown', cause: { code: error instanceof StoppedSpawnError ? error.failureCode : error instanceof DomainError ? error.code : 'NATIVE_WORKER_FAILED', exitCode: null, signal: null }, stdout: '', stderr: '' } });
   } finally { process.off('SIGTERM', stop); process.off('SIGINT', stop); }
 }
 

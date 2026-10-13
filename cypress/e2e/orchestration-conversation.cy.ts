@@ -86,6 +86,9 @@ suite('Conversational Goals with the real disposable service', () => {
       expect(goal.conversation!.messages.filter(message => message.text === 'Keep this guidance through reload.')).to.have.length(1);
       expect(evidence.launches.filter(launch => launch.goalId === goal.id && launch.attempt.role === 'planner')).to.have.length(2);
       expect(goal.recoveryPolicy!.decisions.filter(entry => entry.state === 'applied').length).to.be.at.least(3);
+      const causes = goal.recoveryPolicy!.decisions.flatMap(entry => entry.evidence.map(item => item.cause));
+      expect(causes).to.include('NATIVE_TERMINAL_FAILED');
+      expect(causes).to.include('OUTPUT_LIMIT');
       expect(goal.recoveries?.filter(entry => !goal.recoveryPolicy!.decisions.some(decision => decision.holdId === entry.hold.id))).to.have.length(0);
     });
     cy.task('orchestrationRelease', 'siblings');

@@ -181,3 +181,20 @@ test('one idle tool waits through capacity contention without another model turn
   assert.equal(result.conversation.capacityReleased, false);
   assert.ok(submissions.every(command => command.type === 'supervisor_activate'));
 });
+
+test('idle status timeouts preserve the supervisor and wait for the next saved wake', { timeout: 5000 }, async t => {
+  const { createServer } = await import('node:http');
+  const { once } = await import('node:events');
+  let requests = 0;
+  const server = createServer((req, res) => {
+    if (++requests === 1) return; // A real fetch timeout carries numeric DOMException.code=23.
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ experienceVersion: 2, conversation: { wake: 2, paused: false } }));
+  });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const bridge = createBridge({ endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-only', timeoutMs: 100 });
+  const state = await bridge.waitForInput(1);
+  assert.equal(state.conversation.wake, 2);
+  assert.equal(requests, 2, 'transport retry does not submit another model turn');
+});

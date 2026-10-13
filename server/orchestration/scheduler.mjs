@@ -102,6 +102,11 @@ export class Scheduler {
       }
       const review = revisablePlan(goal);
       if (goal.recoveryPolicy) {
+        if (!goal.recoveryPolicy.priorEpisodes && goal.recoveryPolicy.decisions.length === 0 && !['aborted', 'merged', 'delivered'].includes(goal.status)) {
+          this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
+            type: 'attribute_recovery_history', payload: {} }, { kind: 'system' });
+          continue;
+        }
         const recovery = recoveryStatus(goal);
         if (recovery?.state === 'ready') this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
           type: 'schedule_goal_recovery', payload: { now: Date.parse(this.store.now()) } }, { kind: 'system' });

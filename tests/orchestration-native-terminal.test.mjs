@@ -47,6 +47,7 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
   const installation = codex && !options.supervisorTurns ? await probeNativeCapabilities({ ccsBin: bin, claudeBin: bin, direct: true, provider: 'codex' }) : undefined;
   const Inputs = codex ? CodexInputs : NativeInputs;
   const inputs = new Inputs({ supervisorTurns: Boolean(options.supervisorTurns), installation, direct: codex, engine: { provider: codex ? 'codex' : 'default', model: 'fixture' }, capabilities, env: { HOME: root, PATH: process.env.PATH, FIXTURE_CALLS: calls }, describe: () => ({ prompt: 'Fixture planner', supervisor, plannerName: 'DICTEE Planning Onboarding', activation: bridge, bridge }) });
+  let terminalOutput = '';
   let child, creates = 0, starts = 0, opens = 0;
   const terminal = {
     async create(cwd, title) { assert.equal(cwd, worktree); assert.equal(title, 'DICTEE Planning Onboarding'); creates++; return { workspaceId }; },
@@ -56,7 +57,7 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
       const args = process.platform === 'darwin' ? ['-q', '/dev/null', process.execPath, runner, path] : ['-q', '-c', [process.execPath, runner, path].map(value => `'${value.replace(/'/g, `'\\''`)}'`).join(' '), '/dev/null'];
       const relay = fileURLToPath(new URL('./helpers/orchestration/pty-relay.sh', import.meta.url));
       child = spawn('/bin/sh', [relay, '/usr/bin/script', ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
-      let output = ''; child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; }); child.on('exit', code => { if (code) process.stderr.write(`Fixture terminal exited ${code}: ${output}\n`); }); await once(child, 'spawn');
+      let output = ''; child.stdout.on('data', chunk => { output += chunk; terminalOutput += chunk; }); child.stderr.on('data', chunk => { output += chunk; terminalOutput += chunk; }); child.on('exit', code => { if (code) process.stderr.write(`Fixture terminal exited ${code}: ${output}\n`); }); await once(child, 'spawn');
     },
     async open(id) { assert.equal(id, workspaceId); opens++; },
   };
@@ -65,7 +66,7 @@ readline.on('line', line => { if (line.trim() === 'exit') { readline.close(); pr
   t.after(async () => { try { await driver.close(); } finally { if (child) { child.stdin.end(); if (child.exitCode === null) child.kill('SIGTERM'); } await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true }); } });
   const records = async () => (await readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
   const session = async () => JSON.parse(await readFile(join(root, 'native/operation/session.json'), 'utf8'));
-  return { root, driver, request, terminal, records, session, server, input: text => child.stdin.write(text), counts: () => ({ creates, starts, opens }) };
+  return { root, driver, request, terminal, records, session, server, logs: () => terminalOutput, input: text => child.stdin.write(text), counts: () => ({ creates, starts, opens }) };
 }
 
 test('interactive native planner inherits a real PTY, waits for input and resumes the same conversation once', { timeout: 15000 }, async (t) => {
@@ -438,4 +439,26 @@ const fs = require('node:fs');
   await new Reconciler({ service: api.service, ownership: api.service.ownership }).observe('goal', 'planner');
   assert.match(api.store.get('goal').attempts[0].error, /SUPERVISOR_TURN_TIMEOUT/);
   assert.ok(api.store.get('goal').hold);
+});
+
+test('terminal failures retain bridge error identity and phase without logging private responses', { timeout: 15000 }, async t => {
+  const server = createServer((req, res) => {
+    if (req.url.endsWith('/ready')) { res.writeHead(204); res.end(); return; }
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ code: 'FORBIDDEN', error: 'fixture-private-token response body' }));
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const bridge = { endpoint: `http://127.0.0.1:${server.address().port}`, credential: 'fixture-private-token-at-least-32-characters' };
+  const f = await fixture(t, false, NativeTerminal, true, { supervisorTurns: true, bridge });
+  await f.driver.launch(f.request);
+  const path = join(f.root, 'native/operation/outcome.json');
+  const outcome = await waitFor(async () => JSON.parse(await readFile(path, 'utf8')), value => value?.workerState === 'stopped');
+  assert.equal(outcome.code, 'FORBIDDEN', 'plain bridge errors must not become generic terminal failures');
+  assert.deepEqual(outcome.diagnostic, { phase: 'turn_start', name: 'Error', code: 'FORBIDDEN', causeCode: null });
+  assert.ok(!JSON.stringify(outcome).includes('fixture-private-token'));
+  assert.equal((await f.driver.observe('operation')).failureCode, 'FORBIDDEN');
+  assert.equal(f.counts().starts, 1);
+  await waitFor(async () => f.logs(), logs => logs?.includes('native_terminal_outcome'));
+  assert.ok(!f.logs().includes('fixture-private-token'));
 });

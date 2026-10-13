@@ -1,3 +1,4 @@
+import { telemetryFilter } from './telemetry-filter.mjs';
 import { StoppedSpawnError, stoppedSpawnFailure } from './spawn-failure.mjs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -23,10 +24,10 @@ export function backgroundPolicy(input) {
  * public error message. Process completion does not itself prove workflow success
  * or the termination of all provider-owned resources; adapters observe those.
  * @param {{ bin: string; argv: string[]; cwd: string; env: NodeJS.ProcessEnv }} command
- * @param {{ policy: import('../types.d.ts').BackgroundPolicy; signal?: AbortSignal; clock?: import('../types.d.ts').RuntimeClock; identity?: () => string; onOutput?: (stream: 'stdout' | 'stderr', chunk: Buffer) => void; onIdentity: (identity: { identity: string; pid: number }) => void | Promise<void> }} options
+ * @param {{ policy: import('../types.d.ts').BackgroundPolicy; signal?: AbortSignal; clock?: import('../types.d.ts').RuntimeClock; identity?: () => string; filterThinkingTelemetry?: boolean; onOutput?: (stream: 'stdout' | 'stderr', chunk: Buffer) => void; onIdentity: (identity: { identity: string; pid: number }) => void | Promise<void> }} options
  * @returns {Promise<import('../types.d.ts').BackgroundHandle>}
  */
-export function startBackgroundProcess(command, { policy: input, signal, clock: timers = clock, identity = randomUUID, onIdentity, onOutput }) {
+export function startBackgroundProcess(command, { policy: input, signal, clock: timers = clock, identity = randomUUID, onIdentity, onOutput, filterThinkingTelemetry = false }) {
   const policy = backgroundPolicy(input);
   requireValue(process.platform !== 'win32', 'Background execution requires process-group support', 'UNSUPPORTED_CAPABILITY');
   requireValue(command.bin.length > 0 && !command.bin.includes('\0') && command.argv.every((arg) => typeof arg === 'string' && !arg.includes('\0')), 'Invalid process argv');
@@ -65,7 +66,7 @@ export function startBackgroundProcess(command, { policy: input, signal, clock: 
       // replacement characters. StringDecoder.write omits an incomplete suffix.
       const out = new StringDecoder('utf8').write(Buffer.from(Buffer.concat(stdout).toString('utf8')).subarray(0, policy.maxOutputBytes));
       const err = new StringDecoder('utf8').write(Buffer.from(Buffer.concat(stderr).toString('utf8')).subarray(0, policy.maxOutputBytes - Buffer.byteLength(out)));
-      finish({ status: code ? 'failed' : 'succeeded', workerState: stopped ? 'stopped' : 'unknown', cause: code ? { code, exitCode, signal: closeSignal } : null, stdout: out, stderr: err });
+      finish({ status: code ? 'failed' : 'succeeded', workerState: stopped ? 'stopped' : 'unknown', cause: code ? { code, exitCode, signal: closeSignal } : null, stdout: out, stderr: err, output: { receivedBytes, retainedBytes: Buffer.byteLength(out) + Buffer.byteLength(err), limitBytes: policy.maxOutputBytes, discardedTelemetryBytes: filter?.stats.discardedTelemetryBytes ?? 0, discardedTelemetryFrames: filter?.stats.discardedTelemetryFrames ?? 0 } });
     };
     /** @param {NodeJS.Signals} value */
     const kill = (value) => {
@@ -102,8 +103,11 @@ export function startBackgroundProcess(command, { policy: input, signal, clock: 
       bytes += chunk.length;
       if (bytes > policy.maxOutputBytes) stop('OUTPUT_LIMIT');
     };
-    child.stdout.on('data', (chunk) => receive(stdout, chunk));
-    child.stderr.on('data', (chunk) => receive(stderr, chunk));
+    const filter = filterThinkingTelemetry ? telemetryFilter(chunk => receive(stdout, chunk)) : null;
+    let receivedBytes = 0;
+    child.stdout.on('data', chunk => { receivedBytes += chunk.length; activity(); if (filter) filter.write(chunk); else receive(stdout, chunk); });
+    child.stdout.once('end', () => filter?.end());
+    child.stderr.on('data', chunk => { receivedBytes += chunk.length; receive(stderr, chunk); });
     child.once('error', error => { reason ||= 'SPAWN_FAILED'; if (!spawned && !child.pid) spawnFailure = stoppedSpawnFailure(error); });
     child.once('close', (code, signal) => {
       closed = true; exitCode = code; closeSignal = signal;

@@ -70,7 +70,7 @@ for (const [name, change, expected] of [
   ['unclassified failure', g => { delete g.attempts.at(-1).failureCode; g.attempts.at(-1).status = 'failed'; }, 'blocked'],
   ['question', g => { g.clarification = { question: 'Which API?' }; }, 'blocked'],
   ['external effect', g => { g.hold.reasons.push({ kind: 'publication', target: 'push', message: 'Unknown' }); }, 'blocked'],
-  ['episode exhaustion', g => { g.recoveryPolicy.priorSpent = 3; }, 'blocked'],
+  ['episode exhaustion', g => { g.recoveryPolicy.priorSpent = 3; g.recoveryPolicy.priorEpisodes = { 'revision:1:implementer:A': 3 }; }, 'blocked'],
   ['goal exhaustion', g => { g.recoveryPolicy.priorSpent = 12; }, 'blocked'],
 ]) test(`recovery refuses ${name} without spending budget`, () => {
   const f = enabled(); stopped(f); change(f.goal);
@@ -123,7 +123,7 @@ test('rejected plan plus stopped supervisor revise autonomously and still requir
   f.command('publish_contract', { contract: contract() }, f.user);
   f.request('supervisor', 'planner'); f.dispatch('supervisor');
   f.request('review', 'reviewer'); f.dispatch('review'); f.review('review', `contract:${f.goal.generation}:${f.goal.revision}`, true);
-  f.command('record_stopped', { attemptId: 'supervisor' });
+  f.command('record_stopped', { attemptId: 'supervisor', failureCode: 'NATIVE_TERMINAL_FAILED' });
   const decision = schedule(f); assert.equal(decision.strategy, 'repair'); apply(f, decision);
   assert.equal(f.goal.status, 'discovering'); assert.equal(f.goal.approvedRevision, null);
   assert.equal(f.goal.planRevisionCount, 1); assert.equal(f.goal.hold, null);
@@ -226,4 +226,68 @@ test('one explicit budget decision can admit recovery after substantial adopted 
   assert.equal(f.goal.recoveryPolicy.priorSpent, 20);
   assert.equal(f.goal.recoveryPolicy.limit, 23);
   assert.equal(recoveryStatus(f.goal).state, 'ready');
+});
+
+for (const code of ['NATIVE_TERMINAL_FAILED', 'OUTPUT_LIMIT']) test(`confirmed stopped ${code} recovers within the same bounded policy`, () => {
+  const f = enabled(); stopped(f); f.goal.attempts.at(-1).failureCode = code;
+  assert.equal(recoveryStatus(f.goal).state, 'ready');
+  apply(f, schedule(f));
+  assert.equal(f.goal.recoveryPolicy.decisions.length, 1);
+  assert.equal(f.goal.hold, null);
+});
+
+test('historical spending stays goal-wide and only charges the work episode that incurred it', () => {
+  const f = enabled(); stopped(f);
+  delete f.goal.recoveryPolicy.priorEpisodes;
+  f.goal.recoveryPolicy.priorSpent = 4;
+  const original = f.goal.attempts.at(-1);
+  for (let i = 0; i < 5; i++) f.goal.attempts.push({ ...original, id: `previous-${i}`, revision: 0, generation: 1 });
+  f.command('attribute_recovery_history', {});
+  assert.equal(f.goal.recoveryPolicy.priorSpent, 4);
+  assert.equal(recoveryStatus(f.goal).state, 'ready', 'an unrelated revision does not exhaust current work');
+  assert.equal(f.goal.recoveryPolicy.priorEpisodes['planning:implementer:A'], 4);
+  assert.throws(() => f.command('attribute_recovery_history', {}), { code: 'NOT_READY' });
+});
+
+test('historical attribution cannot reset spending after new policy recovery decisions', () => {
+  const f = enabled(); stopped(f); schedule(f); delete f.goal.recoveryPolicy.priorEpisodes;
+  assert.throws(() => f.command('attribute_recovery_history', {}), { code: 'NOT_READY' });
+  assert.throws(() => f.command('attribute_recovery_history', {}, f.user), { code: 'FORBIDDEN' });
+});
+
+test('unattributable adoption history still needs an explicit budget decision', () => {
+  const f = enabled(); stopped(f);
+  delete f.goal.recoveryPolicy.priorEpisodes;
+  f.goal.recoveries = [{}, {}, {}, {}];
+  f.command('attribute_recovery_history', {});
+  assert.equal(f.goal.recoveryPolicy.priorSpent, 4);
+  assert.equal(recoveryStatus(f.goal).state, 'blocked');
+  f.command('extend_recovery_budget', { limit: 12 }, f.user);
+  assert.equal(recoveryStatus(f.goal).state, 'ready');
+  assert.equal(f.goal.recoveryPolicy.priorSpent, 4);
+});
+
+test('recorded spending without matching history cannot become a fresh episode allowance', () => {
+  const f = enabled(); stopped(f);
+  delete f.goal.recoveryPolicy.priorEpisodes; f.goal.recoveryPolicy.priorSpent = 4;
+  f.command('attribute_recovery_history', {});
+  assert.deepEqual(f.goal.recoveryPolicy.priorEpisodes, { '*': 4 });
+  assert.equal(recoveryStatus(f.goal).state, 'blocked');
+});
+
+test('historical review and check receipts remain charged to their own episodes', () => {
+  const f = enabled(); stopped(f);
+  delete f.goal.recoveryPolicy.priorEpisodes;
+  const worker = f.goal.attempts.at(-1);
+  f.goal.reviews.push({ id: 'old-review', attemptId: worker.id, kind: 'task', taskId: 'A' });
+  f.goal.verificationRuns = [{ operationId: 'old-check', revision: 1, attemptId: worker.id }];
+  f.goal.recoveries = [
+    { hold: { reasons: [{ kind: 'review', target: 'old-review' }] } },
+    { hold: { reasons: [{ kind: 'verification', target: 'old-check' }] } },
+  ];
+  f.command('attribute_recovery_history', {});
+  assert.equal(f.goal.recoveryPolicy.priorSpent, 2);
+  assert.equal(f.goal.recoveryPolicy.priorEpisodes['revision:1:review:task:A'], 1);
+  assert.equal(f.goal.recoveryPolicy.priorEpisodes['revision:1:checks:A'], 1);
+  assert.equal(f.goal.recoveryPolicy.priorEpisodes['revision:1:implementer:A'], 0);
 });

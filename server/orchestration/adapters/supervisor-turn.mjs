@@ -74,7 +74,8 @@ export async function supervisorTurnCommand(bridge, type, signal) {
       return await bridge.status(signal);
     } catch (error) {
       signal.throwIfAborted();
-      const code = /** @type {{code?:string}} */ (error).code;
+      const rawCode = /** @type {{code?:unknown}} */ (error).code;
+      const code = typeof rawCode === 'string' ? rawCode : undefined;
       if (code === 'VERSION_CONFLICT' || code === 'CAPACITY_FULL' || code === 'NOT_READY' && type !== 'supervisor_turn_idle') command = null;
       else if (code && code !== 'REQUEST_FAILED') throw error;
       await timers.setTimeout(1000, undefined, { signal });

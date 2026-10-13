@@ -1,3 +1,4 @@
+import { failureDiagnostic } from './failure-diagnostic.mjs';
 import { readSupervisorTurn, supervisorTurnCommand } from './supervisor-turn.mjs';
 import { StoppedSpawnError, stoppedSpawnFailure } from './spawn-failure.mjs';
 import { prepareCcsLaunch } from './ccs-managed-launcher.mjs';
@@ -62,7 +63,8 @@ export async function runNativeTerminal(configPath) {
   const resize = () => signalProvider('SIGWINCH');
   process.on('SIGWINCH', resize);
   process.on('SIGTERM', stop); process.on('SIGHUP', stop); process.on('SIGINT', interrupt);
-  let code = 'ABORTED';
+  let code = 'ABORTED', phase = 'initialize';
+  /** @type {ReturnType<typeof failureDiagnostic> | undefined} */ let diagnostic;
   /** @type {ReturnType<typeof setTimeout> | undefined} */ let turnDeadline;
   /** @type {ReturnType<typeof setInterval> | undefined} */ let outboxTimer;
   /** @type {Promise<void> | null} */ let draining = null;
@@ -76,7 +78,7 @@ export async function runNativeTerminal(configPath) {
     save('handoff.json', { version: 1, identity: config.identity });
     const drain = () => { if (!draining) draining = outbox.drain(bridge).catch(() => {}).finally(() => { draining = null; }); };
     outboxTimer = setInterval(drain, 500); drain();
-    await awaitNativeActivation(config.activation, controller.signal);
+    phase = 'activation'; await awaitNativeActivation(config.activation, controller.signal);
     const codexSession = () => {
       const path = join(directory, 'codex-session.json');
       const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -110,10 +112,12 @@ export async function runNativeTerminal(configPath) {
         argv[index] = '--resume';
         }
       }
+      phase = 'turn_start';
       if (config.supervisorTurns) await supervisorTurnCommand(bridge, 'supervisor_turn_start', controller.signal);
       // Resume is a durable idempotent command, not a new attempt or conversation.
       writeFileSync(join(directory, `run-${runId}.json`), JSON.stringify({ identity: config.identity }), { flag: 'wx', mode: 0o600 });
       if (controller.signal.aborted) break;
+      phase = 'launch';
       const command = prepareCcsLaunch({ ...config.command, argv }, config.installation, directory, runId);
       providerSent = true; providerStopped = false;
       save('session.json', { phase: 'starting', runId });
@@ -122,13 +126,14 @@ export async function runNativeTerminal(configPath) {
         turnDeadline = setTimeout(() => { code = 'SUPERVISOR_TURN_TIMEOUT'; stop(); }, config.turnTimeoutMs);
       }
       const turnOutput = config.supervisorTurns && child.stdout ? readSupervisorTurn(child.stdout, request.binding.conversationId, text => process.stdout.write(text), { provider: config.supervisorProvider ?? 'claude', sessionId: codexSession }) : null;
-      if (turnOutput) void turnOutput.catch(error => { if (!controller.signal.aborted) code = error instanceof DomainError ? error.code : 'SUPERVISOR_PROTOCOL_FAILED'; stop(); });
+      if (turnOutput) void turnOutput.catch(error => { if (!controller.signal.aborted) { diagnostic = failureDiagnostic(error, 'provider_output'); code = error instanceof DomainError ? error.code : 'SUPERVISOR_PROTOCOL_FAILED'; } stop(); });
       const exited = once(child, 'exit'); void exited.catch(() => {});
       try { await once(child, 'spawn'); } catch (error) { providerStopped = !child.pid; throw providerStopped ? new StoppedSpawnError(stoppedSpawnFailure(error)) : error; }
       providerPid = child.pid ?? null;
       save('provider.json', { identity: config.identity, runId, pid: providerPid });
       save('session.json', { phase: 'running', runId });
       if (controller.signal.aborted) signalProvider('SIGTERM');
+      phase = 'provider';
       const [exitCode, exitSignal] = await exited;
       if (turnDeadline) { clearTimeout(turnDeadline); turnDeadline = undefined; }
       const deadline = Date.now() + config.killGraceMs * 2;
@@ -142,8 +147,10 @@ export async function runNativeTerminal(configPath) {
       if (controller.signal.aborted) break;
       save('session.json', { phase: 'paused', runId, exitCode, signal: exitSignal });
       if (config.supervisorTurns) {
+        phase = 'turn_idle';
         const idle = await supervisorTurnCommand(bridge, 'supervisor_turn_idle', controller.signal);
         process.stdout.write('\nSupervisor idle · waiting for a saved goal event.\n');
+        phase = 'wait_for_input';
         const awakened = await bridge.waitForInput(idle.conversation.seenWake, controller.signal);
         runId = `wake-${integer(awakened.conversation.wake, 1)}`;
         continue;
@@ -155,12 +162,16 @@ export async function runNativeTerminal(configPath) {
           requireValue(lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink() && lstatSync(path).size <= 2048, 'Invalid resume receipt');
           const resumed = JSON.parse(readFileSync(path, 'utf8'));
           requireValue(resumed.identity === config.identity && /^[a-zA-Z0-9_-]{1,128}$/.test(resumed.id), 'Resume binding changed');
-          if (!existsSync(join(directory, `run-${resumed.id}.json`))) { runId = resumed.id; await awaitNativeActivation(config.activation, controller.signal); break; }
+          if (!existsSync(join(directory, `run-${resumed.id}.json`))) { runId = resumed.id; phase = 'activation'; await awaitNativeActivation(config.activation, controller.signal); break; }
         }
         await delay(50, undefined, { signal: controller.signal }).catch(() => {});
       }
     }
-  } catch (error) { code = error instanceof StoppedSpawnError ? error.failureCode : error instanceof DomainError ? error.code : 'NATIVE_TERMINAL_FAILED'; }
+  } catch (error) {
+    diagnostic = failureDiagnostic(error, phase);
+    code = controller.signal.aborted ? code : error instanceof StoppedSpawnError ? error.failureCode
+      : typeof diagnostic.code === 'string' ? diagnostic.code : 'NATIVE_TERMINAL_FAILED';
+  }
   finally {
     if (outboxTimer) clearInterval(outboxTimer);
     if (turnDeadline) clearTimeout(turnDeadline);
@@ -170,7 +181,8 @@ export async function runNativeTerminal(configPath) {
       signalProvider('SIGTERM'); await delay(config.killGraceMs); signalProvider('SIGKILL'); await delay(config.killGraceMs);
       providerStopped = nativeGroupState(providerPid) === 'dead';
     }
-    save('outcome.json', { identity: config.identity, workerState: !providerSent || providerStopped ? 'stopped' : 'unknown', code });
+    save('outcome.json', { identity: config.identity, workerState: !providerSent || providerStopped ? 'stopped' : 'unknown', code, ...(diagnostic ? { diagnostic } : {}) });
+    process.stderr.write(JSON.stringify({ event: 'native_terminal_outcome', operationId: request.binding.operationId, phase, code, workerState: !providerSent || providerStopped ? 'stopped' : 'unknown', diagnostic }) + '\n');
     process.off('SIGWINCH', resize);
     process.off('SIGTERM', stop); process.off('SIGHUP', stop); process.off('SIGINT', interrupt);
   }

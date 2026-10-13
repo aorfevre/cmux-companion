@@ -35,7 +35,8 @@ export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
         try { signal?.throwIfAborted(); state = await this.status(signal); }
         catch (error) {
           signal?.throwIfAborted();
-          const code = /** @type {{code?: string}} */ (error).code;
+          const rawCode = /** @type {{code?: unknown}} */ (error).code;
+          const code = typeof rawCode === 'string' ? rawCode : undefined;
           if (code && !['REQUEST_FAILED', 'NOT_READY'].includes(code)) throw error;
           await timers.setTimeout(1000, undefined, { signal }); continue;
         }
@@ -47,7 +48,8 @@ export function createBridge({ endpoint, credential, timeoutMs = 15000 }) {
           try { await this.submit(activation); activation = null; continue; }
           catch (error) {
             signal?.throwIfAborted();
-            const code = /** @type {{code?: string}} */ (error).code;
+            const rawCode = /** @type {{code?: unknown}} */ (error).code;
+            const code = typeof rawCode === 'string' ? rawCode : undefined;
             if (['CAPACITY_FULL', 'VERSION_CONFLICT', 'NOT_READY'].includes(code ?? '')) activation = null;
             else if (code && code !== 'REQUEST_FAILED') throw error;
           }
