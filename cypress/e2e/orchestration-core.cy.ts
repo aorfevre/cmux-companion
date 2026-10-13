@@ -35,7 +35,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       expect(goal.planRevisionCount).to.equal(1);
       expect(evidence.launches.filter(entry => entry.goalId === goal.id && entry.attempt.role === 'implementer')).to.have.length(0);
     });
-    cy.findByRole('button', { name: 'Abort goal' }).click();
+    cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Abort goal' }).click();
     cy.findByRole('button', { name: /Back to Mission Control/ }).click();
     cy.findByRole('button', { name: 'Automatic plan revision' }).should('not.exist');
     cy.findByRole('button', { name: /^Aborted$/ }).click();
@@ -204,8 +204,8 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).click();
     cy.findByRole('tab', { name: 'Waves & sessions' }).click();
     cy.get('[data-task="A"]').should('contain.text', 'running');
-    cy.findByRole('button', { name: 'Abort goal' }).click();
-    cy.findByRole('article', { name: 'Goal detail' }).should('contain.text', 'Aborted');
+    cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Abort goal' }).click();
+    cy.findByRole('region', { name: 'Goal decision' }).should('contain.text', 'Aborted');
     cy.contains('summary', 'Source and technical details').click(); cy.findByRole('button', { name: 'Reconcile workers' }).click();
     cy.task<Evidence>('orchestrationEvidence', { title: 'Abort this fixture', status: 'aborted' }).then(evidence => {
       const goal = evidence.goals.find((entry) => entry.title === 'Abort this fixture')!;

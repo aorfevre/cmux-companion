@@ -6,9 +6,8 @@ import { GoalActivity } from './goal-activity';
 import { CheckEvidence } from './check-evidence';
 import { GoalTeam } from './goal-team';
 import { WaveBoard } from './wave-board';
-import { attention } from './attention';
 import type { Action, Goal } from './goal-board';
-import { goalStage } from './goal-fleet';
+import { DecisionBar } from './decision-bar';
 function LegacyGoalDetail({ goal, disabled, terminal, act, control }: {
   goal: Goal & { contracts: { revision: number; contract: Contract }[] }; disabled: boolean; terminal: boolean;
   act(goal: Goal, action: Action): Promise<boolean>; control(goal: Goal, action: 'terminal' | 'reconcile', attemptId?: string): Promise<void>;
@@ -18,8 +17,6 @@ function LegacyGoalDetail({ goal, disabled, terminal, act, control }: {
   const [feedback, setFeedback] = useState('');
   const [answer, setAnswer] = useState('');
   const clarification = goal.actions.find(action => action.type === 'answer_clarification');
-  const [editingTitle, setEditingTitle] = useState(false), [title, setTitle] = useState(goal.title);
-  const rename = goal.actions.find(action => action.type === 'rename_goal');
   const contract = goal.contracts.find(entry => entry.revision === goal.revision)?.contract;
   const revision = goal.actions.find(action => action.type === 'request_revision');
   const safeLink = goal.pr?.url && /^https:\/\//.test(goal.pr.url) ? goal.pr.url : null;
@@ -28,11 +25,10 @@ function LegacyGoalDetail({ goal, disabled, terminal, act, control }: {
     ? 'Initial plan review is off; the required review must finish before approval.'
     : 'Plan review accepted. Your approval is still required before implementation.';
   return <article className="orch-detail" aria-label="Goal detail">
-    <section className="orch-card"><div className="orch-eyebrow">{goalStage(goal)} · PLAN {goal.revision}</div><h1>{goal.title}</h1>{rename && (editingTitle ? <form onSubmit={event => { event.preventDefault(); void act(goal, { ...rename, payload: { title } }).then(saved => { if (saved) setEditingTitle(false); }); }}><label>Goal title<input value={title} maxLength={100} onChange={event => setTitle(event.target.value)} disabled={disabled} required /></label><button disabled={disabled || !title.trim()}>Save title</button><button type="button" onClick={() => setEditingTitle(false)}>Cancel</button></form> : <button disabled={disabled} onClick={() => { setTitle(goal.title); setEditingTitle(true); }}>Edit title</button>)}
-      <p className="orch-description">{goal.description || goal.title}</p><p>{goal.plannerName}</p>{attention(goal) && <p className="orch-banner">{attention(goal)}</p>}
+    <section className="orch-card"><div className="orch-eyebrow">PLAN {goal.revision}</div>
+      <p className="orch-description">{goal.description || goal.title}</p><p>{goal.plannerName}</p>
       {Boolean(goal.planRevisionCount) && <p role="status">Automatic plan revisions: {goal.planRevisionCount} of 2.{goal.status === 'discovering' ? ' Addressing review findings.' : ''}</p>}
       {goal.planReviewEnabled === false && ['discovering', 'awaiting_approval'].includes(goal.status) && <p>{planReviewMessage}</p>}
-      {goal.hold && goal.recoveryBlocked && <p role="status">{goal.recoveryBlocked}</p>}
       <details><summary>Source and technical details</summary><p>Base branch: {goal.baseBranch}</p><p>Integrated head <code>{goal.integrationHead.slice(0, 12) || 'Preparing fresh base…'}</code></p><button disabled={disabled} onClick={() => void control(goal, 'reconcile')}>Reconcile workers</button></details>
       {safeLink && <a className="orch-pr" href={safeLink} target="_blank" rel="noreferrer">Open pull request #{goal.pr?.number}</a>}
       {goal.status === 'delivered' && <p role="status">{goal.mergeSync?.state === 'closed' ? 'Closed without merging on GitHub.' : goal.mergeSync?.error || 'Waiting for merge on GitHub.'} {goal.mergeSync ? `Last checked ${new Date(goal.mergeSync.checkedAt).toLocaleString()}.` : 'First merge check pending.'} Checks run every 15 minutes while your Mac is online.</p>}
@@ -40,8 +36,6 @@ function LegacyGoalDetail({ goal, disabled, terminal, act, control }: {
       {goal.publication?.observation && <p>Publication: {goal.publication.observation.status}</p>}
       {goal.publication?.observation?.status === 'target_moved' && <p className="orch-banner">The target branch moved to <code>{goal.publication.observation.baseHeadSha?.slice(0, 12) ?? 'an unavailable commit'}</code>. Publishing keeps the reviewed and verified head above unchanged; it does not rebase or merge the target branch.</p>}
       {goal.status === 'awaiting_approval' && goal.team && <p>Approval includes this design, plan, verification and proposed team.</p>}
-      {goal.status === 'awaiting_approval' && goal.approvalBlocked && <p className="orch-banner">{goal.approvalBlocked}</p>}
-      <div className="orch-actions">{goal.actions.filter(action => action.type !== 'send_goal_message' && action.type !== 'request_revision' && action.type !== 'resume_planner' && action.type !== 'rename_goal' && action.type !== 'answer_clarification').map(action => <button key={`${action.type}:${JSON.stringify(action.payload)}`} disabled={disabled} onClick={() => void act(goal, action)}>{action.label}</button>)}</div>
     </section>
     {clarification && <form className="orch-card" onSubmit={event => { event.preventDefault(); void act(goal, { ...clarification, payload: { answer } }).then(saved => { if (saved) setAnswer(''); }); }}><h3>A question from your planner</h3><p>{goal.clarification?.question}</p><label>Your answer<textarea value={answer} onChange={event => setAnswer(event.target.value)} maxLength={8000} disabled={disabled} required /></label><button disabled={disabled || !answer.trim()}>Send answer</button></form>}
     <div className="mission-detail-tabs" role="tablist" aria-label="Goal sections">{tabs.map(name => <button key={name} id={`goal-tab-${tabs.indexOf(name)}`} role="tab" aria-selected={tab === name} aria-controls="goal-section" tabIndex={tab === name ? 0 : -1} onKeyDown={event => { const index = tabs.indexOf(name); const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null; if (next !== null) { event.preventDefault(); setTab(tabs[next]); document.getElementById(`goal-tab-${next}`)?.focus(); } }} onClick={() => setTab(name)}>{name}</button>)}</div>
@@ -70,6 +64,7 @@ function LegacyGoalDetail({ goal, disabled, terminal, act, control }: {
 }
 
 export function GoalDetail(props: Parameters<typeof LegacyGoalDetail>[0]) {
-  if (props.goal.experienceVersion !== 2) return <LegacyGoalDetail {...props} />;
-  return <><GoalConversation goal={props.goal} disabled={props.disabled} act={props.act} /><details className="orch-card"><summary>Technical details, team and full evidence</summary><LegacyGoalDetail {...props} /></details></>;
+  const bar = <DecisionBar goal={props.goal} disabled={props.disabled} act={props.act} />;
+  if (props.goal.experienceVersion !== 2) return <>{bar}<LegacyGoalDetail {...props} /></>;
+  return <>{bar}<GoalConversation goal={props.goal} disabled={props.disabled} act={props.act} /><details className="orch-card"><summary>Technical details, team and full evidence</summary><LegacyGoalDetail {...props} /></details></>;
 }

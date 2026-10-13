@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { GoalConversation } from '../app/orchestration/goal-conversation';
 import { transition } from '../server/orchestration/domain/transitions.mjs';
@@ -18,8 +18,8 @@ test('conversation shows saved delivery and exact proposal approval while steeri
   expect(screen.getByRole('log', { name: 'Conversation messages' })).toBeTruthy();
   expect(screen.getByText('Queued for supervisor')).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Proposal 1' })).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Approve revision 1' }));
-  expect(act).toHaveBeenCalledWith(value, expect.objectContaining({ type: 'approve', payload: { revision: 1 } }));
+  expect(screen.queryByRole('button', { name: 'Approve revision 1' })).toBeNull();
+  expect(screen.getByText('Request changes in the message box below.')).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Message your supervisor'), { target: { value: 'Please narrow the scope.' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
   expect(act).toHaveBeenCalledWith(value, expect.objectContaining({ type: 'send_goal_message', payload: { message: 'Please narrow the scope.' } }));
@@ -39,7 +39,6 @@ test('failed sends retain the draft; pause queues messages and read-only disable
   expect((screen.getByLabelText('Message your supervisor') as HTMLTextAreaElement).value).toBe('Saved steering');
   view.rerender(<GoalConversation goal={value} disabled={true} act={act} />);
   expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByRole('button', { name: 'Approve revision 1' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 test('result evidence and publication approval stay pinned to the integrated commit', () => {
@@ -51,14 +50,48 @@ test('result evidence and publication approval stay pinned to the integrated com
   render(<GoalConversation goal={value} disabled={false} act={act} />);
   expect(screen.getByText('Independent review: accept')).toBeTruthy();
   expect(screen.getByText('unit: Passed')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Approve & publish PR' }));
-  expect(act).toHaveBeenCalledWith(value, value.actions[0]);
+  expect(screen.queryByRole('button', { name: 'Approve & publish PR' })).toBeNull();
   expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
-test('a queued supervisor wake reports capacity waiting instead of working or needing approval', () => {
+test('the conversation keeps no status of its own; the decision bar owns it', () => {
   const value = goal(); value.status = 'discovering';
   value.conversation!.capacityReleased = true; value.conversation!.waiting = false;
   render(<GoalConversation goal={value} disabled={false} act={vi.fn()} />);
-  expect(screen.getByRole('status').textContent).toBe('Supervisor waiting for execution capacity · no action needed');
+  expect(screen.queryByRole('status')).toBeNull();
+  expect(screen.getByRole('log', { name: 'Conversation messages' })).toBeTruthy();
+});
+
+test('the current proposal shows a summary first, old proposals one line, and long messages clamp', () => {
+  const value = goal();
+  const revised = { ...value, revision: 2, contracts: [...value.contracts, { revision: 2, contract: { ...value.contracts[0].contract, outcome: 'Combine modules with care' } }] };
+  revised.conversation = { ...value.conversation!, messages: [
+    ...value.conversation!.messages,
+    { id: 'long', sequence: 3, author: 'supervisor', kind: 'message', text: Array.from({ length: 12 }, (_, i) => `Line ${i + 1}`).join('\n'), revision: 1, delivery: 'delivered' },
+    { id: 'p2', sequence: 4, author: 'supervisor', kind: 'proposal', text: 'Revised proposal', revision: 2, delivery: 'delivered' },
+  ] };
+  sessionStorage.clear();
+  // jsdom has no layout, so the clamp is driven by the measured overflow of the long paragraph only.
+  const heights = { scroll: 0, client: 0 };
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.textContent?.startsWith('Line 1') ? 400 : heights.scroll; });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.textContent?.startsWith('Line 1') ? 160 : heights.client; });
+  render(<GoalConversation goal={revised} disabled={false} act={vi.fn()} />);
+  expect(screen.getByText('Proposal 1 · Superseded by 2')).toBeTruthy();
+  expect(screen.queryByText('Revised proposal')).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Proposal 2' })).toBeTruthy();
+  const current = within(screen.getByRole('region', { name: 'Proposal revision 2' }));
+  expect(current.getByText('Combine modules with care')).toBeTruthy();
+  expect(current.getByText('1 scope item · 1 acceptance criterion · 1 check · 3 tasks')).toBeTruthy();
+  expect(screen.getByText('Proposal 1 · Superseded by 2').closest('details')!.open).toBe(false);
+  const scope = current.getByText('Scope (1)').closest('details')!;
+  expect(scope.open).toBe(false);
+  scope.open = true; fireEvent(scope, new Event('toggle'));
+  expect(sessionStorage.getItem('companion.proposal.goal.Scope')).toBe('open');
+  const long = screen.getByText('Line 1', { exact: false });
+  expect(long.classList.contains('goal-message-clamped')).toBe(true);
+  expect(screen.getAllByRole('button', { name: 'Show more' })).toHaveLength(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+  expect(long.classList.contains('goal-message-clamped')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'Show less' }));
+  expect(long.classList.contains('goal-message-clamped')).toBe(true);
 });

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { GoalBoard } from '../app/orchestration/goal-board';
 import { ApiError, request } from '../app/api-request';
@@ -144,7 +144,8 @@ test('moved publication target shows the observed commit and submits the service
   const { GoalDetail } = await import('../app/orchestration/goal-detail');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
-  const goal = { ...goalView(fixture().goal), contracts: [], actions: [{ type: 'accept_moved_target', label: 'Publish reviewed head against moved target', payload: { operationId: 'publish', baseHeadSha: 'b'.repeat(40) } }],
+  const moved = { type: 'accept_moved_target', label: 'Publish reviewed head against moved target', payload: { operationId: 'publish', baseHeadSha: 'b'.repeat(40) } };
+  const goal = { ...goalView(fixture().goal), contracts: [], actions: [moved], decision: { state: 'The target branch moved.', reason: null, primary: moved },
     publication: { approved: true, branch: 'companion-goals/goal', baseBranch: 'main', baseSha: 'a'.repeat(40), observation: { status: 'target_moved' as const, baseHeadSha: 'b'.repeat(40), pr: null } } };
   const act = vi.fn().mockResolvedValue(true);
   render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
@@ -170,7 +171,8 @@ test('finishing a command for A does not invalidate the selected B detail reques
   });
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: /Goal A/ }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'More' }));
+  fireEvent.click(within(await screen.findByLabelText('More actions')).getByRole('button', { name: 'Abort goal' }));
   fireEvent.click(screen.getByRole('button', { name: /Back to Mission Control/ }));
   fireEvent.click(screen.getByRole('button', { name: /Goal B/ }));
   await waitFor(() => expect(finishB).toBeTypeOf('function'));
@@ -204,7 +206,8 @@ test('goal details preserve the request, edit only the title, and hide empty evi
   expect(screen.queryByText('Independent reviews')).toBeNull();
   expect(screen.queryByRole('region', { name: 'Combined verification' })).toBeNull();
   expect(screen.queryByRole('region', { name: 'Task board' })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Edit title' }));
+  fireEvent.click(screen.getByRole('button', { name: 'More' }));
+  fireEvent.click(within(screen.getByLabelText('More actions')).getByRole('button', { name: 'Rename goal' }));
   fireEvent.change(screen.getByLabelText('Goal title'), { target: { value: 'Better title' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save title' }));
   expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'rename_goal', payload: { title: 'Better title' } }));
@@ -299,7 +302,8 @@ test('a lost response remains retryable inside the goal workspace with the exact
   });
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: /Modal goal/ }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'More' }));
+  fireEvent.click(within(await screen.findByLabelText('More actions')).getByRole('button', { name: 'Abort goal' }));
   const retry = await screen.findByRole('button', { name: 'Retry pending request' });
   expect(retry.closest('.mission-goal-workspace')).not.toBeNull();
   await waitFor(() => expect(retry).toHaveProperty('disabled', false));
@@ -317,7 +321,7 @@ test('held goal shows failure and reconciliation guidance, then submits the exac
   f.command('record_failure', { attemptId: 'planner', uncertain: true, error: 'Lost connection' });
   const act = vi.fn().mockResolvedValue(true);
   const view = render(<GoalDetail goal={{ ...goalView(f.goal), contracts: [] }} disabled={false} terminal={false} act={act} control={vi.fn()} />);
-  expect(screen.getByText(/On hold/)).toBeTruthy();
+  expect(screen.getByText('The goal is on hold.')).toBeTruthy();
   expect(screen.getByText(/Let active workers finish and reconcile/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Recover goal' })).toBeNull();
   f.command('record_stopped', { attemptId: 'planner' });
@@ -412,7 +416,8 @@ test('a delivered goal offers the review round and a running round shows its pha
   const fixing = { ...goalView(f.goal), contracts: [] };
   expect(goalStage(fixing)).toBe('Addressing review');
   render(<GoalDetail goal={fixing} disabled={false} terminal={false} act={act} control={vi.fn()} />);
-  expect(screen.getByText(/Addressing review · PLAN 1/i)).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Goal decision' }).textContent).toContain('Addressing review');
+  expect(screen.getByText('PLAN 1')).toBeTruthy();
   expect(screen.getByRole('status', { name: 'Review round phase' }).textContent).toContain('Fixing 1 thread');
   expect(screen.queryByRole('button', { name: 'Address review comments' })).toBeNull();
   fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
@@ -495,7 +500,8 @@ test('abort retries a definitive supervisor version race without changing its ta
   });
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: /Build modules/ }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Abort goal' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'More' }));
+  fireEvent.click(within(await screen.findByLabelText('More actions')).getByRole('button', { name: 'Abort goal' }));
   await waitFor(() => expect(submissions).toBe(2));
   const sent = api.mock.calls.filter(([url]) => url.endsWith('/commands')).map(([, options]) => JSON.parse(options!.body as string));
   expect(sent[0]).toMatchObject({ goalId: goal.id, type: 'abort', expectedVersion: goal.version });
