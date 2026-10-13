@@ -1,0 +1,95 @@
+# cmux-rejected launch releases its slot — implementation plan
+
+Status: draft for approval. Bug fix; no product decision, so no spec change.
+
+## Problem (observed 2026-10-12)
+
+cmux 0.65 lost its socket password, and every `workspace.create` RPC failed with
+`Error: ERROR: Invalid password` (or `auth_required`). `CmuxTerminal.rpc` throws
+`CMUX_UNAVAILABLE` for every failure, so the adapter cannot tell a rejection from a
+lost response. The planner terminal kept only `create-sent.json`, `observe()`
+returned `unknown` with no identity forever, reconcile and abort could not release
+it, and the attempt held a planner slot until an operator wrote `outcome.json`.
+
+## Outcome
+
+When cmux refuses a launch before it creates a workspace, Companion records a
+failed, stopped attempt with a reason that names the cmux setting. The slot is
+free at once. A lost or unclear response stays uncertain, as today.
+
+## Probe evidence (cmux 0.65.0, read-only `workspace.list`)
+
+| Condition | Exit | Output |
+| --- | --- | --- |
+| Wrong password | 1 | stderr `Error: ERROR: Invalid password` |
+| Password mode, none in Settings | 1 | stderr `Error: ERROR: Password mode is enabled but no socket password is configured in Settings.` |
+| No credential sent | 1 | stderr `Error: auth_required: Authentication required. Send auth <password> first.` |
+| No socket | 1 | stderr `Error: Socket not found at <path>` |
+| Unknown method | 1 | stderr `Error: method_not_found: Unknown method` |
+
+Code review confirmed rows 2 and 3 against a local fake socket: every refusal is the
+first stderr line of a failed exit. On a refused password the CLI stops before it
+sends the request. A refusal therefore counts only when it is the first stderr line
+and the process exited by itself with a failure status. Every other result keeps
+`CMUX_UNAVAILABLE`, including a successful exit, a timeout, a signal, refusal text
+on a later line, and output that is not JSON.
+
+## Phase 1 — interactive planner (5 files)
+
+1. `server/orchestration/adapters/cmux.mjs`: `rpc()` classifies the first stderr
+   line of a failed exit only. The prefixes `Error: auth_required:`,
+   `Error: ERROR: Invalid password` and `Error: ERROR: Password mode is enabled but
+   no socket password is configured` → `CMUX_AUTH_REJECTED`;
+   `Error: Socket not found ` → `CMUX_SOCKET_MISSING`. Messages stay fixed text; raw
+   cmux output never leaves the adapter.
+2. `server/orchestration/domain/launch-recovery.mjs`: export `CMUX_REFUSALS`, the
+   domain owner of the refusal codes, and one predicate
+   `isLaunchFailure(code)` for `PROVIDER_SPAWN_*` plus the two cmux codes, and
+   `launchFailureMessage(code)` for the operator text. cmux codes are not
+   transient: no automatic retry against a refused socket.
+3. `server/orchestration/adapters/native-terminal.mjs`: only around
+   `terminal.create`, a refusal code writes `outcome.json`
+   `{identity, workerState:'stopped', code}` and rethrows. `observe()` uses the
+   shared predicate for `launchFailure`.
+4. `server/orchestration/reconciler.mjs`: records `launchFailureMessage(code)`.
+   `CMUX_AUTH_REJECTED` gives "cmux refused the launch (CMUX_AUTH_REJECTED). Set the
+   socket password in cmux → Settings → Automation, then recover the goal."
+   `CMUX_SOCKET_MISSING` gives "cmux was not reachable (CMUX_SOCKET_MISSING). Start
+   cmux, then recover the goal." Provider codes keep "Provider could not start".
+5. Tests: `tests/orchestration-native-terminal.test.mjs` (fake cmux bin per refusal
+   row, plus the fixture create refusing → stopped observation, `close()` succeeds,
+   lost response still uncertain) and `tests/orchestration-reconciler.test.mjs`
+   (stopped + cmux code → failed attempt, capacity released, no auto retry, hold).
+
+## Phase 2 — background workers (3 files)
+
+1. `server/orchestration/adapters/native-background.mjs`: a refusal at
+   `terminal.create` writes `not-sent.json` with the code and throws that code, not
+   `OWNERSHIP_UNCERTAIN`. `observe()` returns `launchFailure` from `not-sent.json`
+   and uses the shared predicate for `outcome.json`.
+2. `tests/orchestration-native-background.test.mjs`: refusal → stopped with
+   `launchFailure`; generic create error → still uncertain.
+3. This plan file, if text changes during review.
+
+## Non-goals
+
+- The hold text "planner did not finish successfully" (product copy).
+- A refusal at `surface.send_text` after a workspace exists (orphan workspace).
+- Clearing a false hold after a slow `ps` check (separate fix 2).
+- A stale socket file after a cmux crash ("Failed to connect", not yet probed) and a
+  missing cmux binary (`ENOENT`). Both stay `CMUX_UNAVAILABLE` and still strand the
+  attempt; add them as refusal rows after a probe records their exact output.
+- Passing `CMUX_SOCKET_PASSWORD` to the orchestration environment: cmux rejects an
+  env password when its own store is empty, so it would not prevent this failure.
+
+## Verification
+
+Per phase: `node --test` on the touched suites. Final: `npm test`, `npm run test:ui`,
+`npm run lint`, `npm run typecheck`, `npm run verify` (90% line coverage). No
+Cypress: the change has no UI path a fake cmux can reach in the browser harness;
+the reconciler test covers the visible `attempt.error` text.
+
+## Delivery
+
+Branch `fix/cmux-rejected-launch` from `origin/main`, one local commit per phase.
+No push or PR until the owner asks.

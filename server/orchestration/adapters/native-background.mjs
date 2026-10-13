@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdirSync, lstatSync, realpathSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { DomainError, identifier, requireValue } from '../domain/contracts.mjs';
+import { CMUX_REFUSALS, isLaunchFailure } from '../domain/launch-recovery.mjs';
 import { backgroundPolicy } from './agent-runtime.mjs';
 import { nativeResult, requireNativeCapabilities } from './ccs.mjs';
 import { pathExists } from './git.mjs';
@@ -89,7 +90,7 @@ export class NativeBackground {
     const identity = `native:${request.operationId}:${randomUUID()}`;
     writeFileSync(requestPath, JSON.stringify({ schemaVersion: 1, identity, binding, request, bootId: this.boot() }), { mode: 0o600, flag: 'wx' });
     this.managed.add(request.operationId);
-    let sent = false;
+    let sent = false, refused = false;
     try {
       const command = await this.inputs.prepare(request, directory);
       requireValue(!this.stopping, 'Native runtime stopped before launch', 'NOT_READY');
@@ -101,7 +102,13 @@ export class NativeBackground {
       this.inputs.installation?.assertCurrent();
       /** @type {import('node:child_process').ChildProcess | null} */ let child = null;
       if (this.terminal) {
-        const created = await this.terminal.create(request.attempt.worktree ?? '', `Companion ${request.attempt.role}${request.attempt.taskId ? ` · ${request.attempt.taskId}` : ''}`);
+        let created;
+        try { created = await this.terminal.create(request.attempt.worktree ?? '', `Companion ${request.attempt.role}${request.attempt.taskId ? ` · ${request.attempt.taskId}` : ''}`); }
+        catch (error) {
+          // A refused socket created no workspace, so no process was launched.
+          if (error instanceof DomainError && CMUX_REFUSALS.has(error.code)) { this.save(join(directory, 'not-sent.json'), { identity, code: error.code }); refused = true; }
+          throw error;
+        }
         this.save(join(directory, 'workspace.json'), { identity, workspaceId: created.workspaceId });
         requireValue(!this.stopping, 'Native runtime stopped before terminal send', 'NOT_READY');
         await this.terminal.startManaged(created.workspaceId, workerPath);
@@ -126,6 +133,7 @@ export class NativeBackground {
       if (this.stopping) await this.terminate(identity);
       return { identity };
     } catch (error) {
+      if (refused) throw error;
       if (!sent) this.save(join(directory, 'not-sent.json'), { identity, code: error instanceof DomainError ? error.code : 'NATIVE_PREPARATION_FAILED' });
       throw new DomainError(sent ? 'OWNERSHIP_UNCERTAIN' : 'NATIVE_PREPARATION_FAILED', sent ? 'Native launch needs identity reconciliation' : 'Native input preparation failed');
     }
@@ -178,12 +186,15 @@ export class NativeBackground {
     this.managed.add(operationId);
     const currentBoot = this.boot();
     const priorBoot = typeof request.bootId === 'string' && currentBoot && request.bootId !== currentBoot;
-    if (pathExists(join(directory, 'not-sent.json'))) return { status: 'stopped', identity: request.identity };
+    if (pathExists(join(directory, 'not-sent.json'))) {
+      const { code } = this.read(join(directory, 'not-sent.json'));
+      return { status: 'stopped', identity: request.identity, ...(isLaunchFailure(code) ? { launchFailure: code } : {}) };
+    }
     const outcomePath = join(directory, 'outcome.json');
     if (pathExists(outcomePath)) {
       await this.deliver(operationId); const completed = this.read(outcomePath);
       requireValue(completed.identity === request.identity, 'Native outcome identity changed', 'OWNERSHIP_UNCERTAIN');
-      if (completed.outcome.workerState === 'stopped' || priorBoot) return { status: 'stopped', identity: request.identity, ...(completed.outcome.workerState === 'stopped' && /^PROVIDER_SPAWN_(EAGAIN|EMFILE|ENFILE|ENOMEM|ENOENT|EACCES|EPERM|ENOEXEC|FAILED)$/.test(completed.outcome.cause?.code ?? '') ? { launchFailure: completed.outcome.cause.code } : {}) };
+      if (completed.outcome.workerState === 'stopped' || priorBoot) return { status: 'stopped', identity: request.identity, ...(completed.outcome.workerState === 'stopped' && isLaunchFailure(completed.outcome.cause?.code) ? { launchFailure: completed.outcome.cause.code } : {}) };
       // Escaped descendants can outlive the original group. Its disappearance
       // cannot override the executor's durable unknown-termination evidence.
       return { status: 'unknown', identity: request.identity };

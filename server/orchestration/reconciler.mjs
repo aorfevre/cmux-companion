@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isSupervisor } from './domain/conversation.mjs';
 import { ownsWorker } from './domain/transitions.mjs';
 import { requireValue } from './domain/contracts.mjs';
+import { launchFailureMessage } from './domain/launch-recovery.mjs';
 
 export class Reconciler {
   /** @param {{service: import('./service.mjs').OrchestrationService; ownership: {assertOwned(): void}; results?: { drain(): void | Promise<void> }; id?: () => string}} options */
@@ -35,7 +36,7 @@ export class Reconciler {
         this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
       }
       if (!pending && observation.launchFailure && observation.identity && (!attempt.identity || attempt.identity === observation.identity) && attempt.status !== 'succeeded') {
-        this.record(goalId, 'record_failure', { attemptId, confirmedStopped: true, launchFailure: observation.launchFailure, error: `Provider could not start (${observation.launchFailure}).` });
+        this.record(goalId, 'record_failure', { attemptId, confirmedStopped: true, launchFailure: observation.launchFailure, error: launchFailureMessage(observation.launchFailure) });
         this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
       }
       if (pending && ['queued', 'uncertain'].includes(attempt.status)) {
