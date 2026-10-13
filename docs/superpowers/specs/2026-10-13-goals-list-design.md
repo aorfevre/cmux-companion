@@ -122,7 +122,15 @@ nothing; the client helpers `attention()` and `goalStage()` are deleted.
   context above an empty line for the person's guidance.
 - `rank`: 0 when `primary` or `next` is set, 1 for discovering, awaiting
   approval, building, addressing review and ready to publish, 2 for delivered,
-  3 for merged, 4 for aborted.
+  3 for merged, 4 for aborted. A delivered goal whose pull request is open and
+  not conflicting ranks 2 even though "Address review comments" stays offered:
+  it waits on GitHub, not on the person. A closed or conflicting pull request
+  follows the general rule.
+- Delivered states, added to the decision bar ladder before the plain
+  delivered step: a closed pull request reads "The pull request was closed
+  without merging." with reason "Review it on GitHub."; a conflicting pull
+  request reads "The pull request conflicts with its target branch." with
+  reason "A fix round starts automatically at the next merge check."
 - `stage`: the current fleet labels, computed on the server with the same
   rules, plus "On hold" when a hold exists and "Paused" when paused.
 
