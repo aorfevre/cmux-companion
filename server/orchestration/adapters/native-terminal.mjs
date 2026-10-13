@@ -112,7 +112,7 @@ export class NativeTerminal {
     if (existsSync(join(directory, 'outcome.json'))) {
       const result = this.read(join(directory, 'outcome.json')); requireValue(result.identity === saved.identity, 'Terminal result identity changed', 'OWNERSHIP_UNCERTAIN');
       const pendingOutbox = result.workerState === 'stopped' && await this.recoverOutbox(directory);
-      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity, ...(pendingOutbox ? { pendingOutbox: true } : {}), ...(result.workerState === 'stopped' && ['SUPERVISOR_TURN_TIMEOUT', 'SUPERVISOR_PROTOCOL_FAILED', 'SUPERVISOR_TURN_UNSETTLED'].includes(result.code) ? { failureCode: result.code } : {}), ...(result.workerState === 'stopped' && isLaunchFailure(result.code) ? { launchFailure: result.code } : {}) };
+      return { status: result.workerState === 'stopped' ? 'stopped' : 'unknown', identity: saved.identity, ...(pendingOutbox ? { pendingOutbox: true } : {}), ...(result.workerState === 'stopped' && typeof result.code === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(result.code) && !isLaunchFailure(result.code) ? { failureCode: result.code } : {}), ...(result.workerState === 'stopped' && isLaunchFailure(result.code) ? { launchFailure: result.code } : {}) };
     }
     if (!existsSync(join(directory, 'identity.json'))) return { status: 'unknown', identity: null };
     const runner = this.read(join(directory, 'identity.json')), workspace = this.read(join(directory, 'workspace.json'));

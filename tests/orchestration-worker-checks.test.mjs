@@ -9,6 +9,7 @@ import { createBridge } from '../server/orchestration/bridge.mjs';
 import { agentMcpRequest } from '../server/orchestration/agent-mcp.mjs';
 import { createRepositoryFixture } from './helpers/orchestration/fixture.mjs';
 import { FakeAgents } from './helpers/orchestration/fake-agents.mjs';
+import { recoveryStatus } from '../server/orchestration/domain/agent-recovery.mjs';
 
 async function until(read, accept, timeout = 10000) {
   const deadline = Date.now() + timeout;
@@ -78,6 +79,7 @@ test('worker checkpoints, sees a failing approved check, repairs and passes in i
   assert.ok(passed.checks.every(check => check.passed)); assert.equal(passed.runsUsed, 2); assert.equal(passed.budgetLimit, 3);
   const goal = f.runtime.store.get('g');
   assert.equal(goal.verification, null, 'worker checks cannot satisfy final integrated verification');
+  assert.equal(goal.recoveryPolicy.decisions.length, 1, 'the repaired worker check spends one goal recovery action');
   assert.deepEqual(goal.verificationRuns.map(run => run.result.verification.checks.at(-1).passed), [false, true]);
   await access(f.attempt.worktree); await access(join(f.attempt.worktree, 'node_modules'));
   const raw = JSON.stringify({ schemaVersion: 1, ...f.binding, experienceVersion: undefined, output: { headSha: fixed.headSha, summary: 'Repaired A after a failing check', evidence: [] } });
@@ -111,12 +113,16 @@ test('a running check fences commits and abort cancels its owned process without
   assert.equal(f.launches(), 1); await access(f.attempt.worktree);
 });
 
-test('two unchanged failures exhaust a persisted budget and hold instead of looping', { timeout: 30000 }, async t => {
+test('two unchanged check failures hand mixed evidence to a supervisor-selected recovery strategy', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   await f.mcp(f.args('failure-1', f.attempt.baseSha));
   await f.mcp(f.args('failure-2', f.attempt.baseSha));
-  const goal = f.runtime.store.get('g');
-  assert.ok(goal.hold.reasons.some(reason => /repair budget exhausted/.test(reason.message)));
+  const diagnosis = await until(() => f.runtime.store.get('g'), goal => recoveryStatus(goal)?.state === 'strategy');
+  const supervisor = diagnosis.attempts.find(attempt => attempt.id === diagnosis.conversation.supervisorAttemptId);
+  f.execute('supervisor_recovery_strategy', { holdId: diagnosis.hold.id, strategy: 'reconstruct', rationale: 'The unit check failed twice at the same checkpoint. Reconstruct the implementation from its approved acceptance criterion and retained failed check output.' }, { kind: 'agent', goalId: 'g', attemptId: supervisor.id, role: 'planner', generation: supervisor.generation, revision: supervisor.revision });
+  const goal = await until(() => f.runtime.store.get('g'), goal => goal.attempts.find(attempt => attempt.id === f.attempt.id).workerState === 'stopped' && Boolean(goal.recoveries?.length));
+  assert.ok([goal.hold, ...(goal.recoveries ?? []).map(entry => entry.hold)].some(hold => hold?.reasons.some(reason => /repair budget exhausted/.test(reason.message))));
+  assert.ok(goal.recoveries.some(entry => entry.hold.reasons.some(reason => reason.kind === 'verification') && entry.hold.reasons.some(reason => reason.kind === 'attempt')), 'the service recovered mixed check and stopped-worker evidence together');
   assert.equal(goal.verificationRuns.length, 2); assert.equal(f.launches(), 2);
   assert.ok(f.agents.terminations.length || f.runtime.store.operations().some(op => op.kind === 'terminate'));
   assert.equal((await f.mcp(f.args('failure-3', f.attempt.baseSha))).result.isError, true);
@@ -133,9 +139,10 @@ test('three different failing checkpoints exhaust the persisted per-check repair
     assert.equal(result.checks.at(-1).passed, false);
     if (index < 2) assert.equal(f.runtime.store.get('g').hold, undefined);
   }
-  const goal = await until(() => f.runtime.store.get('g'), goal => Boolean(goal.hold) && goal.attempts.find(attempt => attempt.id === f.attempt.id).workerState === 'stopped');
+  const goal = await until(() => f.runtime.store.get('g'), goal => (Boolean(goal.hold) || Boolean(goal.recoveries?.length)) && goal.attempts.find(attempt => attempt.id === f.attempt.id).workerState === 'stopped');
   assert.equal(goal.verificationRuns.length, 3);
-  assert.match(goal.hold.reasons[0].message, /budget exhausted/);
+  assert.ok([goal.hold, ...(goal.recoveries ?? []).map(entry => entry.hold)].some(hold => hold?.reasons.some(reason => /budget exhausted/.test(reason.message))));
+  assert.ok(goal.recoveryPolicy.decisions.length >= 2, 'worker-local repairs share the durable goal budget');
   assert.equal((await f.mcp(f.args('extra', head))).result.isError, true);
   assert.equal(f.launches(), 3);
   f.runtime.bridgeAuth.revoke('g', f.attempt.id);

@@ -16,8 +16,12 @@ export function GoalTechnicalDetails({ goal, disabled, terminal, act, control }:
   return <div className="goal-technical" aria-label="Goal detail">
     <section className="goal-technical-section"><h3>Source</h3><div className="orch-eyebrow">PLAN {goal.revision}</div>
       <p>{goal.plannerName}</p>
+      {goal.experienceVersion !== 2 && !goal.actions.some(action => action.type === 'adopt_agent_recovery') && <p>To enable agent-led recovery, configure a ready planner profile as supervisor and let existing workers and operations settle.</p>}
       {goal.decision.detail && <p>Recorded reason: <code>{goal.decision.detail}</code></p>}
-      {Boolean(goal.planRevisionCount) && <p role="status">Automatic plan revisions: {goal.planRevisionCount} of 2.{goal.status === 'discovering' ? ' Addressing review findings.' : ''}</p>}
+      {Boolean(goal.planRevisionCount) && <p role="status">Automatic plan revisions: {goal.planRevisionCount}{goal.recoveryPolicy ? ' (included in recovery spending)' : ' of 2'}.{goal.status === 'discovering' ? ' Addressing review findings.' : ''}</p>}
+      {goal.recoveryPolicy && <section aria-label="Agent recovery"><h3>Agent recovery</h3><p>{Math.max(0, goal.recoveryPolicy.limit - goal.recoveryPolicy.priorSpent - goal.recoveryPolicy.decisions.length)} of {goal.recoveryPolicy.limit} recovery actions remaining.</p>
+        {goal.recoveryPolicy.decisions.map(entry => <div key={entry.id}><strong>{entry.strategy} · {entry.state}</strong><p>{entry.rationale}</p><p>{entry.evidence.map(item => item.cause).join(', ')}</p>{entry.state === 'scheduled' && <p>Scheduled for {new Date(entry.dueAt).toLocaleString()}.</p>}</div>)}
+      </section>}
       {goal.planReviewEnabled === false && ['discovering', 'awaiting_approval'].includes(goal.status) && <p>{planReviewMessage}</p>}
       <p>Base branch: {goal.baseBranch}</p><p>Integrated head <code>{goal.integrationHead.slice(0, 12) || 'Preparing fresh base…'}</code></p><button disabled={disabled} onClick={() => void control(goal, 'reconcile')}>Reconcile workers</button>
       {goal.status === 'delivered' && <p role="status">{goal.mergeSync?.state === 'closed' ? 'Closed without merging on GitHub.' : goal.mergeSync?.error || 'Waiting for merge on GitHub.'} {goal.mergeSync ? `Last checked ${new Date(goal.mergeSync.checkedAt).toLocaleString()}.` : 'First merge check pending.'} Checks run every 15 minutes while your Mac is online.</p>}

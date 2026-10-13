@@ -8,6 +8,7 @@ export function parseCommand(value) {
 }
 export const USER_COMMANDS = new Set(['override_assignment', 'recover_goal', 'approve_publication', 'rename_goal', 'answer_clarification', 'retry_startup', 'create_goal', 'publish_contract', 'request_revision', 'approve', 'abort', 'authorize_repair', 'retry_task', 'retry_attempt', 'retry_verification', 'retry_integration', 'resume_planner', 'accept_moved_target', 'request_review_fix']);
 for (const type of ['send_goal_message', 'pause_goal', 'resume_goal']) USER_COMMANDS.add(type);
+for (const type of ['adopt_agent_recovery', 'extend_recovery_budget']) USER_COMMANDS.add(type);
 /** @type {Readonly<Record<import('../types.d.ts').Role, ReadonlySet<string>>>} */
 export const AGENT_COMMANDS = Object.freeze({
   planner: new Set(['publish_contract', 'request_clarification', ...SUPERVISOR_COMMANDS]), implementer: new Set(['submit_candidate', 'request_worker_check']),

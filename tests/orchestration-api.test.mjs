@@ -3,6 +3,23 @@ import test from 'node:test';
 import { apiFixture, TOKEN, HEADERS, create } from './helpers/orchestration/api-fixture.mjs';
 const url = '/api/orchestration/commands';
 
+test('recovery authority remains paired, same-origin, read-only aware and user-only for budget changes', async t => {
+  const f = await apiFixture(t), credential = f.planner(2);
+  for (const type of ['adopt_agent_recovery', 'extend_recovery_budget']) {
+    const payload = { id: type, goalId: 'goal', expectedVersion: f.store.get('goal').version, type, payload: { limit: 12 } };
+    assert.equal((await f.app.inject({ method: 'POST', url, payload })).statusCode, 401);
+    assert.equal((await f.app.inject({ method: 'POST', url, headers: { ...HEADERS, origin: 'https://attacker.test' }, payload })).statusCode, 403);
+    assert.equal((await f.app.inject({ method: 'POST', url: '/api/orchestration/agent/commands', headers: { authorization: `Bearer ${credential}` }, payload })).statusCode, 403);
+    assert.equal((await f.app.inject({ method: 'POST', url, headers: HEADERS, payload: { ...payload, expectedVersion: 0 } })).statusCode, 409);
+  }
+  const readonly = await apiFixture(t, { readOnly: true }); readonly.planner(2);
+  assert.equal((await readonly.app.inject({ method: 'POST', url, headers: HEADERS, payload: { id: 'budget', goalId: 'goal', expectedVersion: 3, type: 'extend_recovery_budget', payload: { limit: 12 } } })).statusCode, 403);
+  for (const type of ['schedule_goal_recovery', 'apply_goal_recovery', 'schedule_recovery_diagnosis']) {
+    assert.equal((await f.app.inject({ method: 'POST', url, headers: HEADERS, payload: { id: type, goalId: 'goal', expectedVersion: 3, type, payload: {} } })).statusCode, 403);
+  }
+  assert.equal(f.store.get('goal').version, 3);
+});
+
 test('user mutations require pairing and same origin; agent/system authorities cannot be supplied in the body', async (t) => {
   const { app, store } = await apiFixture(t);
   assert.equal((await app.inject({ method: 'POST', url, payload: create })).statusCode, 401);

@@ -866,7 +866,7 @@ test('conversational planners share global admission while legacy planners retai
   assert.equal(f.store.ownedCapacity('a', 'interactive').total, 2);
 });
 
-test('a proven transient worker launch failure preserves approval and retries its task once', t => {
+test('a transient worker launch failure preserves approval and uses the shared recovery budget', t => {
   const f = fixture(t);
   f.command('g', 'create_goal', { repositoryId: 'repo', title: 'Retry approved task', baseSha: BASE, experienceVersion: 2 }, 'user');
   f.command('g', 'set_plan_review_policy', { enabled: false });
@@ -878,11 +878,14 @@ test('a proven transient worker launch failure preserves approval and retries it
   const first = f.request('g', 'implementer', 'A'); f.dispatch('g', first);
   const failure = attemptId => f.command('g', 'record_failure', { attemptId, confirmedStopped: true, launchFailure: 'PROVIDER_SPAWN_EMFILE', error: 'No provider process started.' });
   failure(first);
+  f.command('g', 'schedule_goal_recovery', { now: 0 });
+  const recovery = f.store.get('g').recoveryPolicy.decisions.at(-1);
+  f.command('g', 'apply_goal_recovery', { decisionId: recovery.id, now: recovery.dueAt });
   assert.equal(f.store.get('g').tasks.find(task => task.id === 'A').status, 'pending');
-  assert.equal(f.store.get('g').approvedRevision, 1); assert.equal(f.store.get('g').hold, undefined);
+  assert.equal(f.store.get('g').approvedRevision, 1); assert.equal(f.store.get('g').hold, null);
   const second = f.request('g', 'implementer', 'A'); f.dispatch('g', second); failure(second);
   const goal = f.store.get('g');
   assert.equal(goal.tasks.find(task => task.id === 'A').status, 'failed'); assert.ok(goal.hold);
-  assert.match(goal.attempts.at(-1).error, /budget exhausted/);
+  assert.equal(goal.recoveryPolicy.decisions.length, 1);
   assert.equal(goal.attempts.at(-1).launchFailure.scheduled, false);
 });

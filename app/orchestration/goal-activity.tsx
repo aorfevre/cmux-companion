@@ -7,6 +7,8 @@ export function activityLabel(kind: string) {
     revision_requested: 'Plan revision requested', review_repair_requested: 'Automatic review repair requested', plan_review_policy_changed: 'Plan review preference updated',
     goal_created: 'Goal created', contract_published: 'Design and plan proposed', goal_approved: 'Plan and team approved',
     goal_dispatch_held: 'Dispatch stopped after a failure', goal_recovery_authorized: 'Manual recovery authorized',
+    agent_recovery_adopted: 'Agent-led recovery enabled', agent_recovery_scheduled: 'Agent recovery scheduled', agent_recovery_applied: 'Agent recovery started',
+    recovery_strategy_selected: 'Supervisor changed recovery strategy', recovery_budget_extended: 'Additional recovery work authorized',
     publication_approved: 'PR publication approved', pr_observed: 'Pull request published', pr_merged: 'Merged on GitHub',
     merge_sync_observed: 'GitHub merge status checked', clarification_requested: 'Planner asked a question',
     clarification_answered: 'Planner question answered', verification_result_recorded: 'Verification results recorded',

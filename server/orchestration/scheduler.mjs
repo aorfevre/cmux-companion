@@ -1,4 +1,5 @@
 import { repairableChecks } from './domain/recovery.mjs';
+import { recoveryStatus, diagnosisAdmission, canScheduleDiagnosis } from './domain/agent-recovery.mjs';
 import { AgentPreparationError } from './agent-preparation-error.mjs';
 import { randomUUID } from 'node:crypto';
 import { DomainError, integer, requireValue } from './domain/contracts.mjs';
@@ -100,6 +101,16 @@ export class Scheduler {
         const latest = this.store.get(goal.id); requireValue(latest, 'Goal disappeared', 'NOT_FOUND'); goal = latest;
       }
       const review = revisablePlan(goal);
+      if (goal.recoveryPolicy) {
+        const recovery = recoveryStatus(goal);
+        if (recovery?.state === 'ready') this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
+          type: 'schedule_goal_recovery', payload: { now: Date.parse(this.store.now()) } }, { kind: 'system' });
+        else if (recovery?.state === 'scheduled' && recovery.pending && recovery.pending.dueAt <= Date.parse(this.store.now())) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
+          type: 'apply_goal_recovery', payload: { decisionId: recovery.pending.id, now: Date.parse(this.store.now()) } }, { kind: 'system' });
+        else if (canScheduleDiagnosis(goal)) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
+          type: 'schedule_recovery_diagnosis', payload: { now: Date.parse(this.store.now()) } }, { kind: 'system' });
+        continue;
+      }
       if (review) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
         type: 'revise_rejected_plan', payload: { reviewId: review.id } }, { kind: 'system' });
       else if (repairableReviews(goal)) this.service.execute({ id: this.id(), goalId: goal.id, expectedVersion: goal.version,
@@ -217,7 +228,7 @@ export class Scheduler {
       this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
       this.store.advanceOperation(operation.id, 'pending', 'completed'); return;
     }
-    if (goal.hold || goal.conversation?.paused) return;
+    if ((goal.hold && !(attempt.role === 'planner' && diagnosisAdmission(goal))) || goal.conversation?.paused) return;
     let launchStarted = false;
     try {
       requireCapability(this.agents, attempt.role, attempt.mode);
@@ -237,7 +248,7 @@ export class Scheduler {
         if (attempt.workerState !== 'stopped') this.reconciler.record(goal.id, 'record_stopped', { attemptId: attempt.id });
         this.store.advanceOperation(operation.id, 'pending', 'completed'); return;
       }
-      if (goal.hold || goal.conversation?.paused) return;
+      if ((goal.hold && !(attempt.role === 'planner' && diagnosisAdmission(goal))) || goal.conversation?.paused) return;
       if (!this.store.advanceOperation(operation.id, 'pending', 'dispatching')) return;
       // All durable intent/resource checks precede the first possible agent launch.
       launchStarted = true;
@@ -250,13 +261,13 @@ export class Scheduler {
       const pending = this.store.operations().find((entry) => entry.id === operation.id);
       if (launchStarted && error instanceof AgentPreparationError) {
         const latest = this.store.get(operation.goalId);
-        if (latest && latest.generation === operation.generation && !['aborted', 'merged'].includes(latest.status)) this.reconciler.record(latest.id, 'record_failure', { attemptId: operation.attemptId, confirmedStopped: true, error: error.message });
+        if (latest && latest.generation === operation.generation && !['aborted', 'merged'].includes(latest.status)) this.reconciler.record(latest.id, 'record_failure', { attemptId: operation.attemptId, confirmedStopped: true, failureCode: 'PREPARATION_FAILED', error: error.message });
         else if (latest) this.reconciler.record(latest.id, 'record_stopped', { attemptId: operation.attemptId });
         this.store.advanceOperation(operation.id, 'dispatching', 'completed'); return;
       }
       if (launchStarted || pending?.status === 'dispatching') { await this.reconciler.observe(operation.goalId, operation.attemptId ?? ''); return; }
       const latest = this.store.get(operation.goalId);
-      if (latest && latest.generation === operation.generation && !['aborted', 'merged'].includes(latest.status)) this.reconciler.record(latest.id, 'record_failure', { attemptId: operation.attemptId, confirmedStopped: true, error: error instanceof DomainError ? error.message : 'Workspace provisioning failed' });
+      if (latest && latest.generation === operation.generation && !['aborted', 'merged'].includes(latest.status)) this.reconciler.record(latest.id, 'record_failure', { attemptId: operation.attemptId, confirmedStopped: true, failureCode: 'PREPARATION_FAILED', error: error instanceof DomainError ? error.message : 'Workspace provisioning failed' });
       else if (latest?.attempts.some((entry) => entry.id === operation.attemptId && entry.workerState !== 'stopped')) this.reconciler.record(latest.id, 'record_stopped', { attemptId: operation.attemptId });
       this.store.advanceOperation(operation.id, 'pending', 'completed');
     }

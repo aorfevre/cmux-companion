@@ -18,6 +18,22 @@ function fixture(t) {
   return { store, service, agents, repositories, scheduler, create, abort };
 }
 
+test('pre-policy stopped failure evidence is classified only from the same recorded native identity', async t => {
+  const f = fixture(t); f.store.now = () => new Date(0).toISOString(); f.create('g', 2);
+  await f.scheduler.start();
+  const attempt = f.store.get('g').attempts[0];
+  let identity = 'different';
+  f.agents.observe = async () => ({ status: 'stopped', identity, failureCode: 'SUPERVISOR_TURN_TIMEOUT' });
+  f.service.execute({ id: 'old_failure', goalId: 'g', expectedVersion: f.store.get('g').version, type: 'record_failure', payload: { attemptId: attempt.id, confirmedStopped: true, error: 'Saved failure predates structured recovery evidence' } }, { kind: 'system' });
+  await f.scheduler.tick();
+  assert.equal(f.store.get('g').attempts[0].failureCode, undefined);
+  assert.equal(f.store.get('g').recoveryPolicy.decisions.length, 0);
+  identity = attempt.identity; await f.scheduler.tick();
+  assert.equal(f.store.get('g').attempts[0].failureCode, 'SUPERVISOR_TURN_TIMEOUT');
+  assert.equal(f.store.get('g').recoveryPolicy.decisions.length, 1);
+  assert.equal(f.agents.launches.length, 1, 'classification does not launch a replacement before its due time');
+});
+
 test('startup discovers persisted ready work, records resources and dispatches once', async (t) => {
   const f = fixture(t); f.create('g'); await f.scheduler.start();
   assert.equal(f.agents.launches.length, 1);
@@ -138,8 +154,9 @@ test('failure after launch completion commit cannot mark a live worker stopped',
   assert.equal(f.agents.launches.length, 1);
 });
 
-for (const exhausted of [false, true]) test(`proven transient provider spawn retries once without human recovery; exhausted=${exhausted}`, async t => {
+for (const exhausted of [false, true]) test(`proven transient provider spawn retries after its persisted delay; repeated=${exhausted}`, async t => {
   const f = fixture(t); f.create('g', 2);
+  let now = 0; f.store.now = () => new Date(now).toISOString();
   const observe = f.agents.observe.bind(f.agents);
   f.agents.observe = async operationId => {
     const worker = await observe(operationId);
@@ -147,12 +164,14 @@ for (const exhausted of [false, true]) test(`proven transient provider spawn ret
       ? { ...worker, status: 'stopped', launchFailure: 'PROVIDER_SPAWN_EAGAIN' } : worker;
   };
   await f.scheduler.start(); await f.scheduler.tick(); await f.scheduler.tick();
+  assert.equal(f.agents.launches.length, 1, 'no retry before the due time');
+  now = 5000; await f.scheduler.tick();
   const goal = f.store.get('g');
   assert.equal(f.agents.launches.length, 2);
   assert.equal(goal.attempts[0].workerState, 'stopped');
-  assert.equal(goal.attempts[0].launchFailure.scheduled, true);
-  assert.equal(goal.attempts[0].launchFailure.limit, 1);
-  assert.match(goal.conversation.messages.find(message => message.text.includes('retry 1 of 1')).text, /no provider process started/);
+  assert.equal(goal.attempts[0].launchFailure.scheduled, false, 'the shared policy owns retries');
+  assert.equal(goal.recoveryPolicy.decisions[0].state, 'applied');
+  assert.equal(goal.recoveryPolicy.decisions[0].dueAt, 5000);
   assert.notEqual(goal.attempts[0].operationId, goal.attempts[1].operationId);
   assert.equal(Boolean(goal.hold), exhausted);
   assert.equal(goal.attempts[1].status, exhausted ? 'failed' : 'running');

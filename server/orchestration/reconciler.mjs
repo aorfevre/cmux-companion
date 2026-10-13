@@ -32,7 +32,7 @@ export class Reconciler {
     if (observation.status === 'stopped') {
       const pending = goal.results?.some((entry) => entry.attemptId === attemptId && entry.status === 'pending');
       if (!pending && ['SUPERVISOR_TURN_TIMEOUT', 'SUPERVISOR_PROTOCOL_FAILED', 'SUPERVISOR_TURN_UNSETTLED'].includes(observation.failureCode ?? '') && observation.identity === attempt.identity && attempt.status !== 'succeeded') {
-        this.record(goalId, 'record_failure', { attemptId, confirmedStopped: true, error: `Supervisor turn stopped (${observation.failureCode}). Review the saved conversation before recovery.` });
+        this.record(goalId, 'record_failure', { attemptId, confirmedStopped: true, failureCode: observation.failureCode, error: `Supervisor turn stopped (${observation.failureCode}). Review the saved conversation before recovery.` });
         this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
       }
       if (!pending && observation.launchFailure && observation.identity && (!attempt.identity || attempt.identity === observation.identity) && attempt.status !== 'succeeded') {
@@ -47,7 +47,7 @@ export class Reconciler {
         this.record(goalId, 'record_dispatch', { attemptId, identity: observation.identity, worktree: attempt.worktree, branch: attempt.branch });
         await this.results?.drain();
       }
-      this.record(goalId, 'record_stopped', { attemptId }); this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
+      this.record(goalId, 'record_stopped', { attemptId, ...(observation.failureCode ? { failureCode: observation.failureCode } : {}) }); this.store.advanceOperation(attempt.operationId, 'dispatching', 'completed'); return;
     }
     if (observation.status === 'running' && observation.identity && (!attempt.identity || attempt.identity === observation.identity)) {
       if (attempt.status === 'queued' || attempt.status === 'uncertain' || (attempt.status === 'succeeded' && attempt.workerState === 'unknown')) {
@@ -62,6 +62,22 @@ export class Reconciler {
   }
   async run() {
     this.ownership.assertOwned();
+    // An explicitly adopted goal can have pre-policy stopped failures. Re-read
+    // only its recorded operation; never infer a code from provider prose.
+    for (const goal of this.store.list()) for (const reason of goal.recoveryPolicy ? goal.hold?.reasons ?? [] : []) {
+      if (reason.kind !== 'attempt') continue;
+      const attempt = goal.attempts.find(entry => entry.id === reason.target);
+      if (!attempt?.identity || attempt.workerState !== 'stopped' || attempt.status === 'succeeded' || attempt.failureCode || attempt.launchFailure) continue;
+      if (!isSupervisor(goal, attempt) && (attempt.generation !== goal.generation || attempt.revision !== goal.revision)) continue;
+      let observation;
+      try { observation = await this.agents.observe(attempt.operationId); } catch { continue; }
+      this.ownership.assertOwned();
+      const code = observation.failureCode ?? observation.launchFailure;
+      if (observation.status === 'stopped' && observation.identity === attempt.identity && code) {
+        const latest = this.store.get(goal.id);
+        if (latest?.hold?.reasons.some(entry => entry.target === attempt.id) && latest.attempts.some(entry => entry.id === attempt.id && !entry.failureCode && entry.workerState === 'stopped')) this.record(goal.id, 'record_stopped_failure_evidence', { attemptId: attempt.id, identity: attempt.identity, failureCode: code });
+      }
+    }
     const operations = this.store.operations();
     for (const goal of this.store.list()) for (const attempt of goal.attempts.filter(ownsWorker)) {
       const operation = operations.find((entry) => entry.id === attempt.operationId);

@@ -249,9 +249,38 @@ test('acquireLock reclaims a stale lock behind a stale reclaim marker and respec
 
 test('bootstrap serializes stale reclamation across concurrent cycles and respects a fresh reclaim marker', async t => {
   const f = await bootstrapFixture(t, 'updater-bootstrap-race-');
+  const release = `${f.marker}.release`;
+  const engine = join(f.paths.companionStore, 'releases', f.sha, 'updater/scripts/local-updater.mjs');
+  // Hold the winner's lock until every competitor has attempted acquisition.
+  // An immediate engine exit lets a late-starting cycle legitimately run next.
+  await writeFile(engine, `import { existsSync, writeFileSync } from 'node:fs';
+import { setTimeout } from 'node:timers/promises';
+writeFileSync(process.env.CMUX_TEST_MARKER, '${f.sha}');
+const deadline = Date.now() + 8000;
+while (!existsSync(process.env.CMUX_TEST_MARKER + '.release')) {
+  if (Date.now() >= deadline) throw new Error('Test did not release the engine');
+  await setTimeout(10);
+}
+`);
   const stale = new Date(Date.now() - 16 * 60_000);
   await mkdir(f.paths.lock, { mode: 0o700 }); await utimes(f.paths.lock, stale, stale);
-  const results = await Promise.all(Array.from({ length: 6 }, () => f.cycle()));
+  const settled = [];
+  const competitors = Promise.withResolvers();
+  const cycles = Array.from({ length: 6 }, () => f.cycle().then(result => {
+    settled.push(result);
+    if (settled.length === 5) competitors.resolve();
+    return result;
+  }));
+  const timeout = setTimeout(() => competitors.reject(new Error('Competing cycles did not settle while the engine held its lock')), 6000);
+  try {
+    await competitors.promise;
+    assert.ok(settled.every(result => result.code === 3), 'all five competitors see the winning engine holding the lock');
+  } finally {
+    clearTimeout(timeout);
+    await writeFile(release, 'release');
+    await Promise.allSettled(cycles);
+  }
+  const results = await Promise.all(cycles);
   const ran = results.filter(result => result.code === 0).length;
   assert.equal(ran, 1, 'exactly one concurrent cycle reclaims and runs the engine');
   assert.ok(results.every(result => [0, 3].includes(result.code)), 'the others report the lock as held');

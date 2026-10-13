@@ -26,6 +26,7 @@ export interface ReviewResult {
 }
 export interface Review extends ReviewResult { id: string; attemptId: string; kind: 'plan' | 'task' | 'integration'; taskId: string | null }
 export interface Attempt {
+  failureCode?: string;
   assignment?: TeamAssignment & { provider: string; model: string; label: string };
   id: string; operationId: string; role: Role; mode: Mode; taskId: string | null;
   target: string; generation: number; revision: number; status: AttemptStatus;
@@ -71,6 +72,7 @@ export interface GoalConversation {
   dispatchApproved: boolean; capacityReleased?: boolean; turnManaged?: boolean; turnWake?: number;
 }
 export interface Goal {
+  recoveryPolicy?: RecoveryPolicy;
   experienceVersion?: 2; conversation?: GoalConversation;
   teamConfiguration?: TeamConfiguration; team?: TeamProposal; teamHistory?: TeamProposal[];
   contractSchema?: 2;
@@ -96,6 +98,24 @@ export interface Goal {
   verificationRuns?: { attemptId?: string; budgetLimit?: number; waveId?: string; checkIds?: string[]; operationId: string; generation: number; revision: number; headSha: string; status: 'pending' | 'complete' | 'uncertain' | 'cancelled'; workerState: 'pending' | 'stopped' | 'unknown'; result?: VerificationRunResult; retryRequested?: boolean }[];
   integrationResults?: { operationId: string; taskId: string | null; headSha: string }[];
   results?: { id: string; attemptId: string; artifactId: string; proofArtifactId?: string; repair?: { effectId: string; integrationOperationId: string; headSha: string }; status: 'pending' | 'accepted' | 'rejected'; code: string | null }[];
+}
+export interface RecoveryEvidence {
+  key: string; fingerprint: string; cause: string; target: string;
+  kind: 'attempt' | 'review' | 'integration' | 'verification';
+}
+export interface RecoveryDecision {
+  chargeKeys?: string[];
+  purpose?: 'diagnosis';
+  id: string; holdId: string; evidence: RecoveryEvidence[];
+  strategy: 'retry' | 'repair' | 'reconstruct'; rationale: string;
+  dueAt: number; state: 'scheduled' | 'applied' | 'superseded';
+}
+export interface RecoveryPolicy {
+  diagnosisHoldId?: string;
+  diagnosisAttemptId?: string;
+  version: 1; limit: number; episodeLimit: number; priorSpent: number;
+  decisions: RecoveryDecision[];
+  strategy?: { holdId: string; strategy: RecoveryDecision['strategy']; rationale: string };
 }
 export interface EvidenceReference { path: string; line: number; description: string }
 export type RoleOutput =

@@ -177,7 +177,7 @@ export class NativeBackground {
     })().finally(() => this.delivering.delete(operationId));
     this.delivering.set(operationId, work); return work;
   }
-  /** @param {string} operationId @returns {Promise<{status:'running'|'stopped'|'unknown';identity:string|null}>} */
+  /** @param {string} operationId @returns {Promise<{status:'running'|'stopped'|'unknown';identity:string|null;failureCode?:string;launchFailure?:string}>} */
   async observe(operationId) {
     const directory = this.path(operationId), requestPath = join(directory, 'request.json');
     if (!pathExists(requestPath)) return { status: 'unknown', identity: null };
@@ -188,13 +188,19 @@ export class NativeBackground {
     const priorBoot = typeof request.bootId === 'string' && currentBoot && request.bootId !== currentBoot;
     if (pathExists(join(directory, 'not-sent.json'))) {
       const { code } = this.read(join(directory, 'not-sent.json'));
-      return { status: 'stopped', identity: request.identity, ...(isLaunchFailure(code) ? { launchFailure: code } : {}) };
+      return { status: 'stopped', identity: request.identity, ...(isLaunchFailure(code) ? { launchFailure: code } : { failureCode: 'NATIVE_PREPARATION_FAILED' }) };
     }
     const outcomePath = join(directory, 'outcome.json');
     if (pathExists(outcomePath)) {
       await this.deliver(operationId); const completed = this.read(outcomePath);
       requireValue(completed.identity === request.identity, 'Native outcome identity changed', 'OWNERSHIP_UNCERTAIN');
-      if (completed.outcome.workerState === 'stopped' || priorBoot) return { status: 'stopped', identity: request.identity, ...(completed.outcome.workerState === 'stopped' && isLaunchFailure(completed.outcome.cause?.code) ? { launchFailure: completed.outcome.cause.code } : {}) };
+      if (completed.outcome.workerState === 'stopped' || priorBoot) {
+        const delivery = pathExists(join(directory, 'delivery.json')) ? this.read(join(directory, 'delivery.json')) : null;
+        const code = delivery?.code ?? completed.outcome.cause?.code;
+        return { status: 'stopped', identity: request.identity,
+          ...(completed.outcome.workerState === 'stopped' && isLaunchFailure(code) ? { launchFailure: code }
+            : typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(code) ? { failureCode: code } : {}) };
+      }
       // Escaped descendants can outlive the original group. Its disappearance
       // cannot override the executor's durable unknown-termination evidence.
       return { status: 'unknown', identity: request.identity };

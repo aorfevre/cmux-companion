@@ -1,12 +1,16 @@
 import { join } from 'node:path';
 import { JournalConsumer } from '../orchestration/event-consumers.mjs';
+import { recoveryStatus } from '../orchestration/domain/agent-recovery.mjs';
 import { NotificationStore, digest } from './store.mjs';
 import { createPushTransport } from './transport.mjs';
 import { registerNotificationRoutes } from './routes.mjs';
 
 export function attention(goal) {
   if (!goal || ['merged','aborted','delivered'].includes(goal.status)) return null;
-  if (goal.hold) return `hold:${goal.hold.id}`;
+  if (goal.hold) {
+    const recovery = recoveryStatus(goal);
+    return recovery && recovery.state !== 'blocked' ? null : `hold:${goal.hold.id}`;
+  }
   if (goal.startup?.status === 'failed') return `startup:${goal.generation}`;
   if (goal.clarification && goal.clarification.answer === undefined) return `question:${goal.generation}`;
   if (goal.status === 'awaiting_approval') return `plan:${goal.revision}`;

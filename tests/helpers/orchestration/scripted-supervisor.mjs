@@ -43,7 +43,8 @@ export async function runScriptedSupervisor({ bridge, contract, signal }) {
       }
     }
     const latest = await state();
-    if (latest.status === 'discovering' && latest.planningRequest && !queued.length) await send('propose', { contract });
+    if (latest.recovery?.state === 'strategy') await send('recovery_strategy', { holdId: latest.hold.id, strategy: 'reconstruct', rationale: 'Reconstruct from the saved contract and failure evidence instead of repeating the previous attempt.' });
+    else if (latest.status === 'discovering' && latest.planningRequest && !queued.length) await send('propose', { contract });
     else if (latest.status === 'building' && !latest.hold && !latest.conversation.dispatchApproved) await send('dispatch', {});
     else if (!latest.conversation.waiting) await send('wait', { throughWake: latest.conversation.wake });
     await delay(100, undefined, { signal });

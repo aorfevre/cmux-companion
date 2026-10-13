@@ -1,4 +1,5 @@
 import { isSupervisor, ownsExecution } from './conversation.mjs';
+import { episodeSpent } from './agent-recovery.mjs';
 import { PLAN_REVISION_LIMIT, repairableReviews } from './review-repairs.mjs';
 import { requireValue } from './contracts.mjs';
 
@@ -35,7 +36,12 @@ export function captureFailureHold(before, change, commandId) {
     const history = goal.verificationRuns?.filter(entry => entry.attemptId === run.attemptId && entry.checkIds?.some(id => run.checkIds?.includes(id))) ?? [];
     const unchanged = history.filter(entry => entry.headSha === run.headSha && entry.result?.verification.checks.some(check => !check.passed));
     const needsDecision = run.result.verification.checks.some(check => !check.passed && (check.id === 'prepare' || check.code !== 'EXIT_FAILED'));
-    if (!needsDecision && history.length < (run.budgetLimit ?? 3) && unchanged.length < 2) continue;
+    const policy = goal.recoveryPolicy;
+    const worker = goal.attempts.find(attempt => attempt.id === run.attemptId);
+    const key = `revision:${goal.approvedRevision}:checks:${worker?.taskId ?? 'integration'}`;
+    const exhausted = policy && (policy.priorSpent + policy.decisions.length >= policy.limit
+      || episodeSpent(policy, key) >= policy.episodeLimit);
+    if (!needsDecision && !exhausted && history.length < (run.budgetLimit ?? 3) && unchanged.length < 2) continue;
     reasons.push({ kind: 'verification', target: run.operationId, message: needsDecision ? 'Worker check setup or execution needs attention. Inspect the saved output before recovery.' : 'Worker check repair budget exhausted. Review its output and recover or revise the goal.' });
     const attempt = goal.attempts.find(attempt => attempt.id === run.attemptId);
     if (attempt?.identity && attempt.workerState !== 'stopped') change.intents.push({ id: `${commandId}_${attempt.id}`, kind: 'terminate', goalId: goal.id, generation: goal.generation, revision: goal.revision, attemptId: attempt.id, payload: { identity: attempt.identity } });

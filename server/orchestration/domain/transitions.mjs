@@ -1,4 +1,5 @@
 import { recordLaunchFailure } from './launch-recovery.mjs';
+import { newRecoveryPolicy, adoptionSpending, recoveryStatus, scheduleRecovery, dueRecovery, scheduleDiagnosis, diagnosisAdmission, reserveWorkerRepair, episodeSpent } from './agent-recovery.mjs';
 import { isSupervisor, ownsExecution, SUPERVISOR_COMMANDS, CONVERSATION_COMMANDS, appendMessage, conversationCommand, wakeConversation } from './conversation.mjs';
 import { DomainError, identifier, identifiers, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
@@ -98,6 +99,7 @@ export function transition(before, command, authority) {
     requireValue(input.experienceVersion === undefined || input.experienceVersion === 2, 'Unsupported goal experience');
     if (input.experienceVersion === 2) {
       goal.experienceVersion = 2;
+      goal.recoveryPolicy = newRecoveryPolicy();
       goal.conversation = { messages: [], supervisorAttemptId: null, wake: 1, seenWake: 0, waiting: false, paused: false, dispatchApproved: false };
       appendMessage(goal, command.id, 'user', 'message', goal.description ?? goal.title);
     }
@@ -118,7 +120,7 @@ export function transition(before, command, authority) {
   requireValue(before.version === command.expectedVersion, 'Goal version changed', 'VERSION_CONFLICT');
   requireValue(!['aborted', 'merged'].includes(before.status) || ['record_stopped', 'record_dispatch', 'record_provision', 'record_pr', 'record_publication_observation', 'record_integration', 'record_integration_conflict', 'record_integration_failure', 'cancel_integration', 'settle_repair_result', 'cancel_repair_result', 'record_verification_result', 'cancel_verification', 'verification_uncertain', 'receive_role_result', 'reject_role_result'].includes(command.type), 'Goal is terminal', 'TERMINAL_GOAL');
   requireValue(!before.startup || before.startup.status === 'ready' || ['record_startup', 'fail_startup', 'retry_startup', 'rename_goal', 'abort', 'send_goal_message', 'pause_goal', 'resume_goal'].includes(command.type), 'Fetch the goal base before planning', 'NOT_READY');
-  requireValue(!before.hold || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_worker_check', 'request_publication', 'approve_publication', 'approve', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair'].includes(command.type), 'Goal is on hold; use manual recovery', 'NOT_READY');
+  requireValue(!before.hold || (command.type === 'request_attempt' && input.role === 'planner' && diagnosisAdmission(before)) || !['request_attempt', 'request_integration', 'resume_integration', 'request_verification', 'request_worker_check', 'request_publication', 'approve_publication', 'approve', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair'].includes(command.type), 'Goal is on hold; use manual recovery', 'NOT_READY');
   requireValue(!before.hold || !['publish_contract', 'supervisor_propose'].includes(command.type) || authority.kind === 'user', 'Request a revision before replacing the held plan', 'NOT_READY');
   const goal = structuredClone(before);
   /** @type {Transition} */
@@ -129,6 +131,92 @@ export function transition(before, command, authority) {
   const intent = (kind, id, attemptId, payload) => result.intents.push({ id, kind, goalId: goal.id, generation: goal.generation, revision: goal.revision, attemptId, payload });
   if (CONVERSATION_COMMANDS.has(command.type)) result.events.push(conversationCommand(goal, command, authority));
   else switch (command.type) {
+    case 'adopt_agent_recovery': {
+      requireAuthority(authority, 'user');
+      requireValue(!goal.recoveryPolicy, 'Agent recovery is already enabled', 'NOT_READY');
+      if (goal.experienceVersion !== 2) {
+        requireValue(goal.teamConfiguration && assignmentFor(goal, 'planner', null), 'A configured conversational supervisor is required before adoption', 'NOT_READY');
+        requireValue(!goal.attempts.some(attempt => attempt.workerState !== 'stopped') && !goal.integration && !goal.publication
+          && !goal.results?.some(result => result.status === 'pending') && !goal.verificationRuns?.some(run => run.workerState !== 'stopped'), 'Reconcile existing workers and operations before adoption', 'OWNERSHIP_UNCERTAIN');
+        goal.experienceVersion = 2;
+        const prior = goal.attempts.filter(attempt => attempt.role === 'planner').at(-1);
+        if (prior) prior.retryRequested = true;
+        goal.conversation = { messages: [], supervisorAttemptId: prior?.id ?? null, wake: 1, seenWake: 0, waiting: false, paused: false, dispatchApproved: goal.approvedRevision === goal.revision };
+        appendMessage(goal, `${command.id}_context`, 'user', 'message', goal.description ?? goal.title);
+      }
+      requireValue(goal.conversation, 'A configured conversational supervisor is required before adoption', 'NOT_READY');
+      goal.recoveryPolicy = newRecoveryPolicy();
+      goal.recoveryPolicy.priorSpent = adoptionSpending(goal);
+      appendMessage(goal, command.id, 'service', 'decision', `Agent-led recovery enabled. ${goal.recoveryPolicy.priorSpent} previous recovery actions remain charged to the budget.`);
+      emit('agent_recovery_adopted'); break;
+    }
+    case 'extend_recovery_budget': {
+      requireAuthority(authority, 'user');
+      const policy = goal.recoveryPolicy;
+      requireValue(policy && recoveryStatus(goal)?.reason.startsWith('The recovery budget is exhausted') && input.limit === policy.limit, 'Recovery budget changed or is not exhausted', 'NOT_READY');
+      policy.limit = Math.max(policy.limit, policy.priorSpent + policy.decisions.length) + 3;
+      policy.episodeLimit = Math.max(policy.episodeLimit, ...(recoveryStatus(goal)?.evidence ?? []).map(item => episodeSpent(policy, item.key))) + 1;
+      appendMessage(goal, command.id, 'service', 'decision', 'Authorized up to three additional recovery actions, at most one more per failing work item. Previous failures and spending are retained.');
+      emit('recovery_budget_extended'); break;
+    }
+    case 'supervisor_recovery_strategy': {
+      const policy = goal.recoveryPolicy, status = recoveryStatus(goal);
+      requireValue(policy && goal.hold && ['ready', 'strategy'].includes(status?.state ?? '') && !goal.conversation?.paused, 'No recovery strategy is needed', 'NOT_READY');
+      requireValue(input.holdId === goal.hold.id, 'The failure hold changed', 'STALE_TARGET');
+      requireValue(['retry', 'repair', 'reconstruct'].includes(String(input.strategy)), 'Unknown recovery strategy');
+      const strategy = /** @type {import('../types.d.ts').RecoveryDecision['strategy']} */ (input.strategy);
+      requireValue(strategy === 'reconstruct' || (strategy === 'repair' ? status?.evidence.some(entry => entry.kind !== 'attempt') : status?.evidence.every(entry => entry.kind === 'attempt')), 'Strategy does not match the saved failure evidence', 'NOT_READY');
+      policy.strategy = { holdId: goal.hold.id, strategy, rationale: text(input.rationale, 2000) };
+      requireValue(recoveryStatus(goal)?.state === 'ready', 'Select a different strategy after repeated unchanged failures', 'NOT_READY');
+      appendMessage(goal, command.id, 'supervisor', 'decision', policy.strategy.rationale);
+      emit('recovery_strategy_selected'); break;
+    }
+    case 'schedule_goal_recovery': {
+      requireAuthority(authority, 'system');
+      scheduleRecovery(goal, command.id, integer(input.now));
+      const status = recoveryStatus(goal);
+      appendMessage(goal, command.id, 'service', 'progress', status?.pending ? `Agent recovery scheduled: ${status.pending.rationale} ${status.remaining} actions remain after this reservation.` : 'Failure evidence changed; reassessing recovery.');
+      emit('agent_recovery_scheduled'); break;
+    }
+    case 'schedule_recovery_diagnosis': {
+      requireAuthority(authority, 'system');
+      scheduleDiagnosis(goal, command.id, integer(input.now));
+      appendMessage(goal, command.id, 'service', 'progress', 'Restarting the supervisor to diagnose repeated failure while execution stays on hold.');
+      emit('agent_recovery_scheduled'); break;
+    }
+    case 'apply_goal_recovery': {
+      requireAuthority(authority, 'system');
+      const decision = dueRecovery(goal, input.decisionId, integer(input.now));
+      if (decision.purpose === 'diagnosis') {
+        requireValue(goal.recoveryPolicy, 'Missing recovery policy');
+        goal.recoveryPolicy.diagnosisHoldId = decision.holdId;
+        delete goal.recoveryPolicy.diagnosisAttemptId;
+        const supervisor = goal.attempts.find(attempt => isSupervisor(goal, attempt));
+        requireValue(!supervisor || supervisor.workerState === 'stopped', 'Previous supervisor must be stopped', 'OWNERSHIP_UNCERTAIN');
+        if (supervisor) supervisor.retryRequested = true;
+        decision.state = 'applied'; emit('agent_recovery_applied', { decisionId: decision.id }); break;
+      }
+      const plan = goal.hold?.reasons.some(reason => reason.kind === 'review' && goal.reviews.some(review => review.id === reason.target && review.kind === 'plan'));
+      if (plan) {
+        requireValue(goal.status === 'awaiting_approval' && goal.approvedRevision === null && !goal.integration && !goal.publication, 'Plan recovery is not available', 'NOT_READY');
+        const hold = goal.hold;
+        requireValue(hold, 'Recovery hold disappeared');
+        // Set retry flags for stopped attempts through the shared recovery rules.
+        goal.hold = { ...hold, reasons: hold.reasons.filter(reason => reason.kind !== 'review' || !goal.reviews.some(review => review.id === reason.target && review.kind === 'plan')) };
+        recoverGoal(goal, hold.id, command.id);
+        const saved = goal.recoveries?.at(-1); requireValue(saved, 'Recovery receipt missing'); saved.hold = hold;
+        goal.planRevisionCount = (goal.planRevisionCount ?? 0) + 1;
+        goal.generation++; goal.status = 'discovering';
+        goal.planningRequest = { message: `Address the saved plan review findings within the user's scope. ${decision.rationale} Publish a revised proposal for independent review and user approval.`, basedOnRevision: goal.revision };
+        if (goal.conversation) goal.conversation.dispatchApproved = false;
+        proposeTeam(goal);
+        emit('revision_requested', { automatic: true, basedOnRevision: goal.revision, count: goal.planRevisionCount });
+      } else recoverGoal(goal, decision.holdId, command.id);
+      decision.state = 'applied';
+      if (goal.recoveryPolicy) { delete goal.recoveryPolicy.diagnosisHoldId; delete goal.recoveryPolicy.diagnosisAttemptId; }
+      appendMessage(goal, command.id, 'service', 'progress', `Agents are recovering the goal: ${decision.rationale}`);
+      emit('agent_recovery_applied', { decisionId: decision.id }); break;
+    }
     case 'set_plan_review_policy': {
       requireAuthority(authority, 'system');
       requireValue(['discovering', 'awaiting_approval'].includes(goal.status) && typeof input.enabled === 'boolean', 'Plan review policy cannot change here', 'NOT_READY');
@@ -137,6 +225,7 @@ export function transition(before, command, authority) {
     }
     case 'repair_review_findings': {
       requireAuthority(authority, 'system');
+      requireValue(!goal.recoveryPolicy, 'Use the persisted recovery budget', 'NOT_READY');
       requireValue(goal.hold && repairableReviews(goal) && goal.hold.id === input.holdId, 'Review findings are not eligible for automatic repair', 'NOT_READY');
       (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold });
       goal.hold = null;
@@ -144,6 +233,7 @@ export function transition(before, command, authority) {
     }
     case 'repair_failed_checks': {
       requireAuthority(authority, 'system');
+      requireValue(!goal.recoveryPolicy, 'Use the persisted recovery budget', 'NOT_READY');
       requireValue(goal.hold && goal.hold.id === input.holdId && repairableChecks(goal), 'Check failure is not eligible for automatic repair', 'NOT_READY');
       (goal.recoveries ??= []).push({ commandId: command.id, hold: goal.hold });
       goal.hold = null;
@@ -297,7 +387,7 @@ export function transition(before, command, authority) {
       submission.status = 'rejected'; submission.code = identifier(input.code);
       const attempt = goal.attempts.find((entry) => entry.id === submission.attemptId);
       if (attempt && !goal.results?.some((entry) => entry.id !== submission.id && entry.attemptId === attempt.id && entry.repair) && attempt.generation === goal.generation && attempt.revision === goal.revision && ['queued', 'running', 'uncertain'].includes(attempt.status)) {
-        attempt.status = 'failed'; attempt.error = 'Agent result was rejected; inspect the saved evidence';
+        attempt.status = 'failed'; attempt.failureCode = 'INVALID_RESULT'; attempt.error = 'Agent result was rejected; inspect the saved evidence';
         if (attempt.role === 'implementer' && attempt.taskId) {
           const task = taskById(goal, attempt.taskId); if (task.status === 'running') task.status = 'failed';
         }
@@ -314,6 +404,7 @@ export function transition(before, command, authority) {
       requireValue(authority.kind === revisionAuthority[command.type], 'Revision authority required', 'FORBIDDEN');
       const rejected = automatic ? revisablePlan(goal) : null;
       if (automatic) requireValue(rejected && rejected.id === input.reviewId, 'Plan review is not eligible for automatic revision', 'NOT_READY');
+      if (automatic) requireValue(!goal.recoveryPolicy, 'Use the persisted recovery budget', 'NOT_READY');
       requireValue(!goal.clarification || goal.clarification.answer !== undefined, 'Answer the pending planner question first', 'NOT_READY');
       requireValue(goal.status !== 'delivered' && goal.status !== 'addressing_review', 'Delivered goals require a new goal', 'INVALID_STATE');
       requireValue(!goal.integration && (!goal.publication || !goal.publication.approval), 'Reconcile the external operation before revising', 'OWNERSHIP_UNCERTAIN');
@@ -434,6 +525,7 @@ export function transition(before, command, authority) {
       const assignment = assignmentFor(goal, role, taskId); if (assignment) attempt.assignment = assignment;
       goal.attempts.push(attempt);
       if (role === 'planner' && goal.conversation) {
+        if (goal.recoveryPolicy && diagnosisAdmission(goal)) goal.recoveryPolicy.diagnosisAttemptId = attempt.id;
         if (goal.conversation.supervisorAttemptId) appendMessage(goal, command.id, 'service', 'progress', 'Restarting supervision from the saved conversation after confirmed termination and recovery authorization. The previous native session remains in the attempt history.');
         goal.conversation.supervisorAttemptId = attempt.id;
         goal.conversation.capacityReleased = false;
@@ -484,6 +576,7 @@ export function transition(before, command, authority) {
       attempt.workerState = input.uncertain === true ? 'unknown' : 'stopped';
       if (attempt.status !== 'succeeded') attempt.status = input.uncertain === true ? 'uncertain' : 'failed';
       attempt.error = text(input.error, 2000);
+      if (input.failureCode !== undefined) attempt.failureCode = identifier(input.failureCode);
       if (attempt.role === 'implementer' && attempt.taskId && attempt.status === 'failed') {
         const task = taskById(goal, attempt.taskId);
         if (task.status === 'running') task.status = 'failed';
@@ -491,11 +584,21 @@ export function transition(before, command, authority) {
       if (input.launchFailure !== undefined) recordLaunchFailure(goal, attempt, input.launchFailure, command.id);
       emit('attempt_failed', { attemptId: attempt.id, uncertain: attempt.status === 'uncertain' }); break;
     }
+    case 'record_stopped_failure_evidence': {
+      requireAuthority(authority, 'system');
+      const attempt = attemptById(goal, input.attemptId);
+      requireValue(goal.recoveryPolicy && goal.hold?.reasons.some(reason => reason.kind === 'attempt' && reason.target === attempt.id)
+        && attempt.workerState === 'stopped' && attempt.status !== 'succeeded' && !attempt.failureCode
+        && attempt.identity && input.identity === attempt.identity, 'Stopped failure evidence changed', 'STALE_ATTEMPT');
+      attempt.failureCode = identifier(input.failureCode);
+      emit('stopped_failure_classified', { attemptId: attempt.id, code: attempt.failureCode }); break;
+    }
     case 'record_stopped': {
       requireAuthority(authority, 'system');
       const attempt = goal.attempts.find((entry) => entry.id === input.attemptId);
       requireValue(attempt && ownsWorker(attempt), 'No owned live attempt');
       attempt.workerState = 'stopped';
+      if (attempt.status !== 'succeeded') attempt.failureCode ??= input.failureCode === undefined ? 'STOPPED_WITHOUT_RESULT' : identifier(input.failureCode);
       // A verified process exit releases capacity, but pending asynchronous
       // result verification retains lifecycle eligibility until disposition.
       const pendingResult = attempt.status === 'running' && attempt.generation === goal.generation && attempt.revision === goal.revision
@@ -634,6 +737,7 @@ export function transition(before, command, authority) {
       requireValue(prior.length < 3, 'This check exhausted its three-run budget; request recovery', 'REPAIR_BUDGET_EXHAUSTED');
       requireValue(prior.filter(run => run.headSha === headSha && run.result?.verification.checks.some(check => !check.passed)).length < 2, 'Repeated unchanged failure requires recovery', 'REPAIR_BUDGET_EXHAUSTED');
       requireValue(!goal.verificationRuns?.some(run => run.operationId === operationId), 'Check operation is already recorded', 'IDEMPOTENCY_CONFLICT');
+      reserveWorkerRepair(goal, command.id, attempt, prior.at(-1));
       (goal.verificationRuns ??= []).push({ operationId, attemptId: attempt.id, budgetLimit: 3, checkIds: [checkId], generation: goal.generation, revision: goal.revision, headSha, status: 'pending', workerState: 'pending' });
       intent('verify', operationId, attempt.id, { headSha, checks: [{ id: check.id, argv: check.argv }] });
       emit('worker_check_requested', { operationId, attemptId: attempt.id, checkId, headSha }); break;
@@ -939,6 +1043,9 @@ export function transition(before, command, authority) {
     }
   }
   captureFailureHold(before, result, command.id);
+  for (const decision of goal.recoveryPolicy?.decisions ?? []) {
+    if (decision.state === 'scheduled' && decision.holdId !== goal.hold?.id) decision.state = 'superseded';
+  }
   wakeConversation(goal, result.events);
   goal.version++;
   return result;

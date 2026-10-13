@@ -1,4 +1,5 @@
 import { integratedWaveReady } from './waves.mjs';
+import { diagnosisAdmission } from './agent-recovery.mjs';
 import { readyTasks } from './graph.mjs';
 import { ownsWorker, planTarget, hasPendingRepairResult } from './transitions.mjs';
 import { requiresPlanReview } from './review-repairs.mjs';
@@ -10,7 +11,12 @@ import { currentReviews } from './review.mjs';
  */
 export function readyWork(goal) {
   if (goal.conversation?.paused) return [];
-  if (goal.hold) return [];
+  if (goal.hold) {
+    if (!diagnosisAdmission(goal)) return [];
+    const supervisor = goal.attempts.find(attempt => attempt.id === goal.conversation?.supervisorAttemptId);
+    return !supervisor || (supervisor.workerState === 'stopped' && supervisor.retryRequested)
+      ? [{ key: 'planner::' + planTarget(goal), role: 'planner', taskId: null, target: planTarget(goal) }] : [];
+  }
   if (goal.startup && goal.startup.status !== 'ready') return [];
   if (['aborted', 'merged'].includes(goal.status)) return [];
   /** @type {ReadyWork[]} */
