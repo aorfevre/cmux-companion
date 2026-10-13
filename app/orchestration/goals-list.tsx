@@ -4,14 +4,16 @@ import type { Action, Goal } from './goal-board';
 import { activityLabel } from './goal-activity';
 import { DecisionActions, type NextStep } from './decision-bar';
 
-export const CHIPS = ['All', 'Needs you', 'Active', 'Done'] as const;
+export const CHIPS = ['All', 'Needs you', 'Active', 'Done', 'Aborted'] as const;
 export type Chip = typeof CHIPS[number];
-const inChip = (goal: Goal, chip: Chip) => chip === 'All' || (chip === 'Needs you' ? goal.decision.rank === 0 : chip === 'Active' ? goal.decision.rank === 1 : goal.decision.rank >= 2);
+// Aborted goals are history: they show only under their own chip.
+const inChip = (goal: Goal, chip: Chip) => chip === 'Aborted' ? goal.decision.rank === 4 : goal.decision.rank !== 4 && (chip === 'All' || (chip === 'Needs you' ? goal.decision.rank === 0 : chip === 'Active' ? goal.decision.rank === 1 : goal.decision.rank >= 2));
 const EMPTY: Record<Chip, [string, string]> = {
   All: ['Your first goal starts here', 'Choose a project and describe the outcome you want.'],
   'Needs you': ['Nothing needs you', 'Decisions, questions and recovery steps appear here when they are yours to take.'],
   Active: ['No active goals', 'Goals that agents are planning or building appear here.'],
-  Done: ['No finished goals', 'Delivered, merged and aborted goals appear here.'],
+  Done: ['No finished goals', 'Delivered and merged goals appear here.'],
+  Aborted: ['No aborted goals', 'Goals you stopped appear here with their evidence.'],
 };
 
 /** One list, decisions first. Every row reads the same projected decision as the goal page. */
