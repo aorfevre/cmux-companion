@@ -77,7 +77,9 @@ export function decisionView(goal, projected = actionView(goal)) {
   const primary = PRIMARY_ORDER.map(type => offered.find(action => action.type === type)).find(Boolean) ?? null;
   const next = nextStep(goal, actions, primary);
   const stage = stageOf(goal);
-  const rank = /** @type {Decision['rank']} */ (primary || next ? 0 : goal.status === 'delivered' ? 2 : goal.status === 'merged' ? 3 : goal.status === 'aborted' ? 4 : 1);
+  // A delivered PR waits on GitHub, not on the person, unless it was closed or conflicts; its review fix stays offered but does not rank as a decision.
+  const deliveredQuiet = goal.status === 'delivered' && goal.mergeSync?.state !== 'closed' && goal.mergeSync?.mergeable !== 'conflicting';
+  const rank = /** @type {Decision['rank']} */ ((primary || next) && !deliveredQuiet ? 0 : goal.status === 'delivered' ? 2 : goal.status === 'merged' ? 3 : goal.status === 'aborted' ? 4 : 1);
   /** @param {string} state @param {string | null} [reason] @param {boolean} [keep] @param {string | null} [detail] @returns {Decision} */
   const decision = (state, reason = null, keep = true, detail = null) => ({ state, reason, detail, primary: keep ? primary : null, next: keep ? next : null, rank, stage });
   if (goal.startup?.status === 'failed') return decision(goal.startup.error || 'Could not prepare the base branch.');
@@ -99,6 +101,7 @@ export function decisionView(goal, projected = actionView(goal)) {
   if (goal.status === 'merged') return decision('Merged on GitHub.', null, false);
   if (goal.status === 'aborted') return decision('Aborted. Evidence is retained.', null, false);
   if (goal.status === 'delivered' && goal.mergeSync?.state === 'closed') return decision('The pull request was closed without merging.', 'Review it on GitHub.');
+  if (goal.status === 'delivered' && goal.mergeSync?.mergeable === 'conflicting') return decision('The pull request conflicts with its target branch.', 'A fix round starts automatically at the next merge check.');
   if (goal.status === 'addressing_review' && goal.reviewRound?.state === 'unknown') return decision('The fix push outcome is uncertain.', 'Companion is confirming the remote branch.', false);
   if (goal.status === 'delivered') return decision('Pull request published. Waiting for merge.', goal.mergeSync?.error ?? null);
   const working = current.filter(attempt => attempt.workerState === 'running' && !isSupervisor(goal, attempt)).length;

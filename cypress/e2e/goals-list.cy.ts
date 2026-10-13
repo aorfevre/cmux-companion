@@ -5,7 +5,7 @@ describe('Goals list', () => {
   const base = goalView(fixture().goal);
   const goals = [
     { ...base, id: 'design', title: 'Design ingestion', status: 'awaiting_approval', planReviewPending: false, contracts: [], actions: [{ type: 'approve', label: 'Approve revision 1', payload: { revision: 1 } }], decision: { ...base.decision, state: 'Your plan is ready to approve.', primary: { type: 'approve', label: 'Approve revision 1', payload: { revision: 1 } }, rank: 0 as const, stage: 'Needs approval' } },
-    { ...base, id: 'waiting', title: 'Publish dashboard', status: 'delivered', contracts: [], pr: { number: 7, url: 'https://github.com/example/project/pull/7', headSha: base.baseSha }, mergeSync: { checkedAt: 1789470000000, state: 'open', error: null }, decision: { ...base.decision, state: 'Pull request published. Waiting for merge.', rank: 2 as const, stage: 'Waiting for merge' } },
+    { ...base, id: 'waiting', title: 'Publish dashboard', status: 'delivered', contracts: [], pr: { number: 7, url: 'https://github.com/example/project/pull/7', headSha: base.baseSha }, mergeSync: { checkedAt: 1789470000000, state: 'open', error: null }, decision: (() => { const f = fixture(); f.deliver(); return goalView(f.goal).decision; })() },
     { ...base, id: 'complete', title: 'Improve search', status: 'merged', contracts: [], decision: { ...base.decision, state: 'Merged on GitHub.', rank: 3 as const, stage: 'Complete' } },
   ];
   for (const width of [1440, 390]) it(`ranks decisions first, acts from a row and lands Needs you from the retired route at ${width}px`, () => {

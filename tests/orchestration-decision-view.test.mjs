@@ -148,8 +148,15 @@ test('ranks and stages order decisions, active work, delivered, merged and abort
   assert.equal(decisionView(approved.goal).rank, 1);
   assert.equal(decisionView(approved.goal).stage, 'In progress');
   const delivered = fixture(); delivered.deliver();
-  assert.equal(decisionView(delivered.goal).rank, 0, 'addressing review comments is an offered decision');
+  assert.equal(decisionView(delivered.goal).rank, 2, 'a PR waiting on GitHub is not a decision even though a review fix stays offered');
+  assert.equal(decisionView(delivered.goal).primary?.type, 'request_review_fix');
   assert.equal(decisionView(delivered.goal).stage, 'Waiting for merge');
+  delivered.goal.mergeSync = { checkedAt: 1, state: 'open', error: null, mergeable: 'conflicting' };
+  assert.equal(decisionView(delivered.goal).rank, 0, 'a conflicting PR is a decision');
+  assert.equal(decisionView(delivered.goal).state, 'The pull request conflicts with its target branch.');
+  assert.equal(decisionView(delivered.goal).reason, 'A fix round starts automatically at the next merge check.');
+  delivered.goal.mergeSync = { checkedAt: 1, state: 'closed', error: null };
+  assert.equal(decisionView(delivered.goal).rank, 2, 'a closed PR offers nothing to decide');
   delivered.goal.mergeSync = { checkedAt: 1, state: 'merged', error: null };
   const merged = { ...delivered.goal, status: 'merged' };
   assert.equal(decisionView(merged).rank, 3); assert.equal(decisionView(merged).stage, 'Complete');
@@ -160,4 +167,21 @@ test('ranks and stages order decisions, active work, delivered, merged and abort
 test('every hold kind and recovery refusal has a translation', () => {
   for (const kind of ['attempt', 'review', 'integration', 'verification', 'publication', 'review_fix']) assert.equal(typeof HOLD_TRANSLATIONS[kind], 'function', kind);
   for (const message of ['Let active workers finish and reconcile uncertain ownership before recovery', 'Request a plan revision to address the blocking review', 'Wait for submitted results to settle before recovery', 'Confirm the fix push outcome before recovery', 'The failure hold changed']) assert.equal(typeof REFUSAL_TRANSLATIONS[message], 'string', message);
+});
+
+test('a held conversational goal whose recovery is refused offers the supervisor composer as the next step', t => {
+  const store = new OrchestrationStore({ path: ':memory:' }); t.after(() => store.close());
+  let next = 0; const user = { kind: 'user' }, system = { kind: 'system' };
+  const command = (type, payload = {}, authority = user) => store.apply({ id: `n${++next}`, goalId: 'g', expectedVersion: store.get('g')?.version ?? 0, type, payload }, authority);
+  command('create_goal', { repositoryId: 'repo', title: 'Held', baseSha: BASE, experienceVersion: 2 });
+  command('request_attempt', { attemptId: 'supervisor', operationId: 'launch', role: 'planner', conversationId: 'native' }, system);
+  command('record_dispatch', { attemptId: 'supervisor', identity: 'owned', worktree: '/tmp/s', branch: 'goal/s' }, system);
+  command('supervisor_propose', { contract: contract() }, { kind: 'agent', goalId: 'g', attemptId: 'supervisor', role: 'planner', generation: 1, revision: 0 });
+  command('request_attempt', { attemptId: 'review', operationId: 'review_launch', role: 'reviewer', conversationId: 'review_native' }, system);
+  command('record_dispatch', { attemptId: 'review', identity: 'review_owned', worktree: '/tmp/r', branch: 'goal/r' }, system);
+  command('record_stopped', { attemptId: 'supervisor' }, system);
+  const d = goalView(store.get('g')).decision;
+  assert.equal(d.primary, null);
+  assert.deepEqual(d.next, { type: 'send_goal_message', label: 'Message supervisor' });
+  assert.equal(d.rank, 0);
 });

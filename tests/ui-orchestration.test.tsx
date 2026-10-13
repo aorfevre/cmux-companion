@@ -480,6 +480,7 @@ test('a conflicted pull request with no active round keeps its review fix as the
   f.command('record_merge_sync', { number: f.goal.pr.number, url: f.goal.pr.url, checkedAt: 1, state: 'open', mergeable: 'conflicting' }, f.system);
   const goal = goalView(f.goal);
   expect(goal.decision.rank).toBe(0);
+  expect(goal.decision.state).toBe('The pull request conflicts with its target branch.');
   expect(goal.decision.primary?.type).toBe('request_review_fix');
 });
 
