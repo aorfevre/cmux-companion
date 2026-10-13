@@ -1,4 +1,5 @@
 import { isSupervisor } from './conversation.mjs';
+import { recoveryStatus } from './agent-recovery.mjs';
 import { validateAssignmentOverride } from './teams.mjs';
 import { transition, planTarget } from './transitions.mjs';
 
@@ -9,10 +10,12 @@ export function actionView(goal) {
   /** @type {{type:string;label:string;payload:Record<string,unknown>}[]} */ const actions = [];
   /** @param {string} type @param {string} label @param {Record<string,unknown>} payload */
   const offer = (type, label, payload) => {
-    try { transition(goal, { id: 'projection', goalId: goal.id, expectedVersion: goal.version, type, payload }, { kind: 'user' }); actions.push({ type, label, payload }); return null; }
+    try { transition(goal, { id: 'projection', goalId: goal.id, expectedVersion: goal.version, type, payload }, { kind: 'user' }); if (!actions.some(action => action.type === type && JSON.stringify(action.payload) === JSON.stringify(payload))) actions.push({ type, label, payload }); return null; }
     catch (error) { return error instanceof Error ? error.message : 'Action unavailable'; }
   };
+  offer('adopt_agent_recovery', 'Enable agent-led recovery', {});
   if (goal.experienceVersion === 2) {
+    if (goal.recoveryPolicy) offer('extend_recovery_budget', 'Authorize more recovery work', { limit: goal.recoveryPolicy.limit });
     offer('send_goal_message', 'Send message', { message: 'Your message' });
     offer(goal.conversation?.paused ? 'resume_goal' : 'pause_goal', goal.conversation?.paused ? 'Resume goal' : 'Pause goal', {});
     const supervisor = goal.attempts.find(attempt => isSupervisor(goal, attempt));
@@ -25,8 +28,10 @@ export function actionView(goal) {
   offer('request_revision', 'Request revision', { message: 'Revision feedback' });
   offer('abort', 'Abort goal', {});
   offer('request_review_fix', 'Address review comments', {});
-  const recoveryBlocked = goal.hold ? offer('recover_goal', 'Recover goal', { holdId: goal.hold.id }) : null;
-  if (goal.hold) offer('recover_goal', 'Retry verification & resume', { holdId: goal.hold.id, mode: 'retry_verification' });
+  const autonomous = recoveryStatus(goal);
+  const manual = !autonomous || autonomous.state === 'blocked';
+  const recoveryBlocked = goal.hold && manual ? offer('recover_goal', 'Recover goal', { holdId: goal.hold.id }) : null;
+  if (goal.hold && manual) offer('recover_goal', 'Retry verification & resume', { holdId: goal.hold.id, mode: 'retry_verification' });
   offer('retry_startup', 'Retry startup', {});
   if (goal.publication) offer('approve_publication', 'Approve & publish PR', { operationId: goal.publication.operationId, headSha: goal.publication.headSha });
   if (goal.integration) offer('retry_integration', 'Retry integration', { operationId: goal.integration.operationId });

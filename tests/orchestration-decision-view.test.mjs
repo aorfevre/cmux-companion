@@ -66,7 +66,7 @@ test('a held goal explains a refusal, recovers through the plain recovery action
   assert.deepEqual(core(decisionView(f.goal)), { state: 'Work continues automatically. No action needed.', reason: null, primary: null });
 });
 
-test('the observed supervisor scenario recovers, then approves the reviewed revision, and pause offers resume', t => {
+test('a stopped supervisor recovers automatically, then approval and pause remain user decisions', t => {
   const store = new OrchestrationStore({ path: ':memory:' }); t.after(() => store.close());
   let next = 0; const user = { kind: 'user' }, system = { kind: 'system' };
   const command = (type, payload = {}, authority = user) => store.apply({ id: `c${++next}`, goalId: 'g', expectedVersion: store.get('g')?.version ?? 0, type, payload }, authority);
@@ -78,14 +78,14 @@ test('the observed supervisor scenario recovers, then approves the reviewed revi
   command('record_dispatch', { attemptId: 'review', identity: 'review_owned', worktree: '/tmp/r', branch: 'goal/r' }, system);
   command('record_review', { attemptId: 'review', reviewId: 'r1', review: { schemaVersion: 1, target: planTarget(store.get('g')), disposition: 'accept', findings: [] } }, system);
   command('record_stopped', { attemptId: 'supervisor' }, system);
-  assert.equal(goalView(store.get('g')).decision.reason, 'Workers are still running. Recovery opens when they stop.', 'the reviewer still owns a worker');
+  assert.equal(goalView(store.get('g')).decision.reason, 'Companion is settling worker ownership and results before recovery.', 'the reviewer still owns a worker');
   command('record_stopped', { attemptId: 'review' }, system);
   const held = goalView(store.get('g')).decision;
-  assert.equal(held.state, 'The goal is on hold.');
-  assert.equal(held.reason, 'The supervisor stopped before it finished. Recover to run it again.');
-  assert.equal(held.detail, 'planner did not finish successfully.');
-  assert.equal(held.primary.label, 'Recover goal');
-  command('recover_goal', held.primary.payload);
+  assert.equal(held.state, 'Agents are diagnosing the failure.');
+  assert.equal(held.primary, null); assert.equal(held.rank, 1);
+  command('schedule_goal_recovery', { now: 0 }, system);
+  const scheduled = store.get('g').recoveryPolicy.decisions.at(-1);
+  command('apply_goal_recovery', { decisionId: scheduled.id, now: scheduled.dueAt }, system);
   const recovered = goalView(store.get('g'));
   assert.equal(recovered.decision.state, 'Your plan is ready to approve.');
   assert.equal(recovered.decision.primary.label, `Approve revision ${recovered.revision}`);
@@ -171,7 +171,7 @@ test('every hold kind and recovery refusal has a translation', () => {
   for (const message of ['Let active workers finish and reconcile uncertain ownership before recovery', 'Request a plan revision to address the blocking review', 'Wait for submitted results to settle before recovery', 'Confirm the fix push outcome before recovery', 'The failure hold changed']) assert.equal(typeof REFUSAL_TRANSLATIONS[message], 'string', message);
 });
 
-test('a held conversational goal whose recovery is refused offers the supervisor composer as the next step', t => {
+test('ownership reconciliation does not ask the user to recover or message the supervisor', t => {
   const store = new OrchestrationStore({ path: ':memory:' }); t.after(() => store.close());
   let next = 0; const user = { kind: 'user' }, system = { kind: 'system' };
   const command = (type, payload = {}, authority = user) => store.apply({ id: `n${++next}`, goalId: 'g', expectedVersion: store.get('g')?.version ?? 0, type, payload }, authority);
@@ -184,6 +184,7 @@ test('a held conversational goal whose recovery is refused offers the supervisor
   command('record_stopped', { attemptId: 'supervisor' }, system);
   const d = goalView(store.get('g')).decision;
   assert.equal(d.primary, null);
-  assert.deepEqual(d.next, { type: 'send_goal_message', label: 'Message supervisor' });
-  assert.equal(d.rank, 0);
+  assert.equal(d.next, null);
+  assert.equal(d.rank, 1);
+  assert.equal(d.stage, 'Recovering');
 });

@@ -25,6 +25,13 @@ remain as documented in `orchestration-native-adapters.md`.
 
 ## Automatic review repair
 
+New conversational goals use the [agent-led recovery contract](superpowers/specs/2026-10-13-agent-led-goal-recovery.md).
+The goal shows automatic recovery in Active and reserves manual actions for
+blockers. In an existing goal, choose **More → Enable agent-led recovery** to
+adopt it explicitly. Technical details retain decisions and budget spending.
+Legacy goals require a configured planner profile and settled workers before
+adoption. The existing policy below continues to govern goals that have not adopted it.
+
 Review repair policy, budgets, approval gates and the Settings toggle are defined
 in the [automatic review repair contract](superpowers/specs/2026-09-15-mission-control-redesign.md#automatic-review-repair-and-optional-plan-review--2026-09-15).
 

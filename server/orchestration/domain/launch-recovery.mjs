@@ -25,7 +25,7 @@ export function recordLaunchFailure(goal, attempt, value, commandId) {
   const prior = goal.attempts.filter(entry => entry.id !== attempt.id && entry.generation === attempt.generation
     && entry.revision === attempt.revision && entry.role === attempt.role && entry.taskId === attempt.taskId
     && entry.target === attempt.target && entry.launchFailure).length;
-  const scheduled = goal.experienceVersion === 2 && transient.has(code) && prior < 1 && !goal.hold
+  const scheduled = !goal.recoveryPolicy && goal.experienceVersion === 2 && transient.has(code) && prior < 1 && !goal.hold
     && attempt.generation === goal.generation && attempt.revision === goal.revision
     && !['aborted', 'merged', 'delivered'].includes(goal.status)
     && !goal.attempts.some(entry => entry.workerState === 'unknown')

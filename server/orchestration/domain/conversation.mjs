@@ -17,6 +17,7 @@ export function isSupervisor(goal, attempt) {
 export const ownsExecution = (goal, attempt) => attempt.workerState !== 'stopped' && !(isSupervisor(goal, attempt) && attempt.workerState === 'running' && attempt.status === 'running');
 
 export const SUPERVISOR_COMMANDS = new Set(['supervisor_reply', 'supervisor_question',
+  'supervisor_recovery_strategy',
   'supervisor_ack', 'supervisor_turn_start', 'supervisor_turn_idle', 'supervisor_turn_defer', 'supervisor_activate', 'supervisor_wait', 'supervisor_propose', 'supervisor_revise', 'supervisor_dispatch']);
 export const CONVERSATION_COMMANDS = new Set(['send_goal_message', 'pause_goal', 'resume_goal',
   'supervisor_reply', 'supervisor_question', 'supervisor_ack', 'supervisor_turn_start', 'supervisor_turn_idle', 'supervisor_turn_defer', 'supervisor_activate', 'supervisor_wait', 'supervisor_dispatch']);
@@ -108,6 +109,7 @@ export function conversationCommand(goal, command, authority) {
 }
 
 const WAKE_EVENTS = new Set(['goal_approved', 'revision_requested', 'attempt_stopped',
+  'agent_recovery_adopted', 'agent_recovery_scheduled', 'agent_recovery_applied', 'recovery_budget_extended',
   'candidate_verified', 'task_integrated', 'review_completed', 'verification_recorded', 'attempt_failed',
   'integration_failed', 'integration_conflict', 'integration_repaired', 'verification_uncertain',
   'goal_dispatch_held', 'goal_recovery_authorized', 'goal_base_pinned', 'goal_startup_failed',

@@ -96,6 +96,13 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
           if (browserHarness) {
             const launch = agents.launch.bind(agents), injected = new Set();
             agents.launch = async request => {
+              const stoppedKey = `${request.goalId}:${request.attempt.role}`;
+              if (['planner', 'reviewer'].includes(request.attempt.role) && !injected.has(stoppedKey) && existsSync(join(directory, `release-stop-${request.attempt.role}`))) {
+                injected.add(stoppedKey);
+                const result = agents.beginLaunch(request);
+                agents.workers.set(request.operationId, { ...result, status: 'stopped', failureCode: 'STOPPED_WITHOUT_RESULT' });
+                return result;
+              }
               if (request.attempt.role === 'implementer' && !injected.has(request.goalId) && existsSync(join(directory, 'release-launch-transient'))) {
                 injected.add(request.goalId);
                 const result = agents.beginLaunch(request);

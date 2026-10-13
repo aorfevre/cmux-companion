@@ -1,4 +1,5 @@
 import { isSupervisor } from './conversation.mjs';
+import { recoveryStatus } from './agent-recovery.mjs';
 import { actionView } from './action-view.mjs';
 
 /** The browser shows one state, one plain reason, one primary action or one
@@ -7,7 +8,7 @@ import { actionView } from './action-view.mjs';
  * @typedef {{ type: string; label: string; payload: Record<string, unknown> }} ProjectedAction
  * @typedef {{ type: 'request_revision'; label: string; context: string } | { type: 'answer_clarification' | 'send_goal_message'; label: string }} NextStep
  * @typedef {{ state: string; reason: string | null; detail: string | null; primary: ProjectedAction | null; next: NextStep | null; rank: 0 | 1 | 2 | 3 | 4; stage: string }} Decision */
-const PRIMARY_ORDER = ['retry_startup', 'recover_goal', 'approve', 'accept_moved_target', 'approve_publication', 'request_review_fix', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair', 'resume_goal'];
+const PRIMARY_ORDER = ['retry_startup', 'extend_recovery_budget', 'recover_goal', 'approve', 'accept_moved_target', 'approve_publication', 'request_review_fix', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair', 'resume_goal'];
 /** @type {Record<string, string>} */
 const ROLE_WORDS = { planner: 'planner', implementer: 'implementer', reviewer: 'reviewer', integrator: 'integrator', review_fixer: 'review fixer' };
 
@@ -83,6 +84,16 @@ export function decisionView(goal, projected = actionView(goal)) {
   /** @param {string} state @param {string | null} [reason] @param {boolean} [keep] @param {string | null} [detail] @returns {Decision} */
   const decision = (state, reason = null, keep = true, detail = null) => ({ state, reason, detail, primary: keep ? primary : null, next: keep ? next : null, rank, stage });
   if (goal.startup?.status === 'failed') return decision(goal.startup.error || 'Could not prepare the base branch.');
+  const recovery = recoveryStatus(goal);
+  if (recovery) {
+    const detail = `${recovery.evidence.map(entry => `${entry.cause}: ${entry.target}`).join('; ')} ${recovery.remaining} recovery actions remaining.`;
+    if (recovery.state !== 'blocked') return {
+      state: recovery.state === 'scheduled' ? 'Agents are recovering the goal.' : recovery.state === 'waiting' ? (goal.conversation?.paused ? 'Paused.' : 'Companion is reconciling workers.') : 'Agents are diagnosing the failure.',
+      reason: recovery.reason, detail, primary: goal.conversation?.paused ? primary : null,
+      next: null, rank: goal.conversation?.paused ? 0 : 1, stage: goal.conversation?.paused ? 'Paused' : 'Recovering',
+    };
+    return { ...decision('The goal needs your attention.', recovery.reason, true, detail), rank: 0 };
+  }
   if (goal.hold) {
     const detail = recoveryBlocked ?? goal.hold.reasons.map(reason => reason.message).join(' ');
     const reason = recoveryBlocked ? (REFUSAL_TRANSLATIONS[recoveryBlocked] ?? recoveryBlocked) : goal.hold.reasons.map(entry => HOLD_TRANSLATIONS[entry.kind]?.(entry, goal) ?? entry.message).join(' ');
