@@ -99,10 +99,20 @@ nothing; the client helpers `attention()` and `goalStage()` are deleted.
     confirm it on GitHub."
   - review_fix: "Addressing review comments failed. Recover to try again." or
     "The fix push outcome is uncertain. Companion is confirming the branch."
-  When recovery is refused, the reason is the refusal translated: "Workers are
-  still running. Recovery opens when they stop." for ownership, "A plan
-  revision is required before recovery." for a blocking plan review, and the
-  raw refusal otherwise. Non-hold reasons keep their current wording.
+  When recovery is refused, the reason is the refusal translated, keyed by the
+  refusal message:
+  - "Let active workers finish and reconcile uncertain ownership before
+    recovery" → "Workers are still running. Recovery opens when they stop."
+  - "Request a plan revision to address the blocking review" → "A plan
+    revision is required before recovery." (and `next` is the revision)
+  - "Wait for submitted results to settle before recovery" → "A worker's
+    result is still being recorded. Recovery opens when it settles."
+  - "Confirm the fix push outcome before recovery" → "Companion is confirming
+    the fix push. Recovery opens when it is confirmed."
+  - "The failure hold changed" → "The goal changed. Reload to see its current
+    state."
+  Any other refusal keeps its raw text. Non-hold ladder steps keep their
+  current wording.
 - `next`: set only when `primary` is null and the action list offers it. One of
   `{ type: 'request_revision', label: 'Request revision', context: string }`,
   `{ type: 'answer_clarification', label: 'Answer question' }` or
