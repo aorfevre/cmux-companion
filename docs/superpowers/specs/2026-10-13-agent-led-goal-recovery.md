@@ -1,7 +1,7 @@
 # Agent-led goal recovery and execution decisions
 
 Date: 2026-10-13
-Status: Awaiting human review of this committed spec before the implementation plan.
+Status: Approved by the user's “approved” after review request for commit `782785a7`.
 Owner: the implementing agent, responsible for domain, service, adapters, UI,
 verification and disposable-resource cleanup.
 
