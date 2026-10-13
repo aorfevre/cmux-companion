@@ -85,3 +85,14 @@ test('native turn controller defers paused capacity and replays uncertain start 
   t.mock.timers.tick(1000); await flush(); await pending;
   assert.deepEqual(commands.at(-1), first);
 });
+
+test('turn command retries a numeric transport timeout with its original receipt', { timeout: 5000 }, async () => {
+  const commands = [];
+  const bridge = {
+    status: async () => ({ id: 'goal', version: 1, conversation: { paused: false, wake: 1 } }),
+    submit: async command => { commands.push(command); if (commands.length === 1) throw new DOMException('Private response', 'TimeoutError'); },
+  };
+  await supervisorTurnCommand(bridge, 'supervisor_turn_idle', new AbortController().signal);
+  assert.equal(commands.length, 2);
+  assert.deepEqual(commands[0], commands[1]);
+});

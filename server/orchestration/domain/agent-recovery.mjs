@@ -8,16 +8,16 @@ import { requireValue } from './contracts.mjs';
 /** Codes originate in adapters/domain validation, never in provider prose. */
 const SETUP = new Set(['CMUX_AUTH_REJECTED', 'CMUX_SOCKET_MISSING', 'PROVIDER_SPAWN_ENOENT',
   'PROVIDER_SPAWN_EACCES', 'PROVIDER_SPAWN_EPERM', 'PROVIDER_SPAWN_ENOEXEC', 'FORBIDDEN',
-  'UNSUPPORTED_CAPABILITY', 'PREPARATION_FAILED', 'NATIVE_PREPARATION_FAILED']);
+  'UNAUTHORIZED', 'UNSUPPORTED_CAPABILITY', 'PREPARATION_FAILED', 'NATIVE_PREPARATION_FAILED']);
 const RETRY = new Set(['PROVIDER_SPAWN_EAGAIN', 'PROVIDER_SPAWN_EMFILE', 'PROVIDER_SPAWN_ENFILE',
   'PROVIDER_SPAWN_ENOMEM', 'STOPPED_WITHOUT_RESULT', 'SUPERVISOR_TURN_TIMEOUT',
-  'SUPERVISOR_PROTOCOL_FAILED', 'SUPERVISOR_TURN_UNSETTLED', 'INVALID_RESULT', 'EXIT_FAILED', 'CEILING_LIMIT', 'IDLE_LIMIT', 'SIGNALLED', 'RESULT_ACCEPTED']);
+  'SUPERVISOR_PROTOCOL_FAILED', 'SUPERVISOR_TURN_UNSETTLED', 'INVALID_RESULT', 'NATIVE_TERMINAL_FAILED', 'OUTPUT_LIMIT', 'EXIT_FAILED', 'CEILING_LIMIT', 'IDLE_LIMIT', 'SIGNALLED', 'RESULT_ACCEPTED']);
 
 /** @returns {import('../types.d.ts').RecoveryPolicy} */
-export const newRecoveryPolicy = () => ({ version: 1, limit: 12, episodeLimit: 3, priorSpent: 0, decisions: [] });
+export const newRecoveryPolicy = () => ({ version: 1, limit: 12, episodeLimit: 3, priorSpent: 0, priorEpisodes: {}, decisions: [] });
 
 /** @param {import('../types.d.ts').RecoveryPolicy} policy @param {string} key */
-export const episodeSpent = (policy, key) => policy.priorSpent + policy.decisions.filter(entry => (entry.chargeKeys ?? entry.evidence.map(item => item.key)).includes(key)).length;
+export const episodeSpent = (policy, key) => (policy.priorEpisodes ? policy.priorEpisodes[key] ?? policy.priorEpisodes['*'] ?? 0 : policy.priorSpent) + policy.decisions.filter(entry => (entry.chargeKeys ?? entry.evidence.map(item => item.key)).includes(key)).length;
 /** @param {Goal} goal */
 const supervisorKey = goal => `${goal.approvedRevision === null ? 'planning' : `revision:${goal.approvedRevision}`}:supervisor:`;
 
@@ -36,6 +36,58 @@ export function adoptionSpending(goal) {
   }
   const replacements = [...attempts.values()].reduce((sum, count) => sum + Math.max(0, count - 1), 0);
   return Math.max(recoveries, repairs + planRepairs, replacements) + launchRetries + workerRepairs;
+}
+
+/** Attribute pre-policy work to its actual revision and role. Total historical
+ * spending stays unchanged; unrelated episodes do not each inherit that total.
+ * @param {Goal} goal */
+export function adoptionEpisodes(goal) {
+  /** @type {Record<string,number>} */ const episodes = {};
+  /** @type {Record<string,number>} */ const counts = {};
+  /** @param {import('../types.d.ts').Attempt} attempt */
+  const keyFor = attempt => `${goal.approvedRevision === null || attempt.revision === 0 || attempt.target.startsWith('contract:') ? 'planning' : `revision:${attempt.revision}`}:${goal.experienceVersion === 2 && attempt.role === 'planner' ? 'supervisor' : attempt.role}:${attempt.taskId ?? ''}`;
+  for (const attempt of goal.attempts) {
+    const key = keyFor(attempt);
+    counts[key] = (counts[key] ?? 0) + 1;
+    episodes[key] = Math.max(episodes[key] ?? 0, counts[key] - 1);
+  }
+  for (const attempt of goal.attempts) if (attempt.launchFailure?.scheduled) {
+    const key = keyFor(attempt); episodes[key] = (episodes[key] ?? 0) + 1;
+  }
+  const receiptCounts = new Map();
+  let ambiguous = false;
+  for (const receipt of goal.recoveries ?? []) {
+    if (!receipt.hold?.reasons.length) { ambiguous = true; continue; }
+    const keys = new Set();
+    for (const reason of receipt.hold.reasons) {
+      let key;
+      if (reason.kind === 'attempt') {
+        const attempt = goal.attempts.find(entry => entry.id === reason.target);
+        if (attempt) key = keyFor(attempt);
+      } else if (reason.kind === 'review') {
+        const review = goal.reviews.find(entry => entry.id === reason.target);
+        const attempt = goal.attempts.find(entry => entry.id === review?.attemptId);
+        if (review && attempt) key = `${review.kind === 'plan' ? 'planning' : `revision:${attempt.revision}`}:review:${review.kind}:${review.taskId ?? ''}`;
+      } else if (reason.kind === 'verification') {
+        const run = goal.verificationRuns?.find(entry => entry.operationId === reason.target || entry.headSha === reason.target);
+        const attempt = goal.attempts.find(entry => entry.id === run?.attemptId);
+        if (run && (!run.attemptId || attempt)) key = `revision:${run.revision}:checks:${attempt?.taskId ?? 'integration'}`;
+      }
+      if (key) keys.add(key); else ambiguous = true;
+    }
+    for (const key of keys) receiptCounts.set(key, (receiptCounts.get(key) ?? 0) + 1);
+  }
+  for (const run of goal.verificationRuns ?? []) if (run.attemptId && run.result?.verification.checks.some(check => !check.passed)) {
+    const attempt = goal.attempts.find(entry => entry.id === run.attemptId);
+    if (attempt) { const key = `revision:${run.revision}:checks:${attempt.taskId ?? 'integration'}`; episodes[key] = (episodes[key] ?? 0) + 1; }
+  }
+  const lineage = goal.approvedRevision === null ? 'planning' : `revision:${goal.approvedRevision}`;
+  episodes['planning:review:plan:'] = goal.planRevisionCount ?? 0;
+  for (const task of goal.tasks) episodes[`${lineage}:review:task:${task.id}`] = task.repairCount;
+  episodes[`${lineage}:review:integration:`] = goal.finalRepairCount;
+  for (const [key, count] of receiptCounts) episodes[key] = Math.max(episodes[key] ?? 0, count);
+  if (ambiguous || (adoptionSpending(goal) > 0 && !Object.values(episodes).some(value => value > 0))) return { '*': adoptionSpending(goal) };
+  return episodes;
 }
 
 /** @param {Goal} goal */

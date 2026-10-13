@@ -889,3 +889,22 @@ test('a transient worker launch failure preserves approval and uses the shared r
   assert.equal(goal.recoveryPolicy.decisions.length, 1);
   assert.equal(goal.attempts.at(-1).launchFailure.scheduled, false);
 });
+
+test('scheduler durably attributes pre-fix recovery history once before scheduling a stopped supervisor', t => {
+  const f = fixture(t);
+  f.command('g', 'create_goal', { repositoryId: 'repo', title: 'Legacy policy', baseSha: BASE, experienceVersion: 2 }, 'user');
+  const planner = f.request('g', 'planner'); f.dispatch('g', planner);
+  f.command('g', 'record_stopped', { attemptId: planner, failureCode: 'NATIVE_TERMINAL_FAILED' });
+  const old = f.store.get('g'); delete old.recoveryPolicy.priorEpisodes;
+  f.store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(old), 'g');
+  const scheduler = new Scheduler({ service: f.service, repositories: {}, ownership: { assertOwned() {} } });
+  scheduler.stopped = false;
+  scheduler.revisePlans();
+  assert.ok(f.store.get('g').recoveryPolicy.priorEpisodes);
+  assert.equal(f.store.get('g').recoveryPolicy.decisions.length, 0);
+  scheduler.revisePlans();
+  assert.equal(f.store.get('g').recoveryPolicy.decisions.length, 1);
+  const restarted = new Scheduler({ service: f.service, repositories: {}, ownership: { assertOwned() {} } });
+  restarted.stopped = false; restarted.revisePlans();
+  assert.equal(f.store.get('g').recoveryPolicy.decisions.length, 1, 'restart retains the same reserved recovery');
+});

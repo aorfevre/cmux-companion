@@ -1,5 +1,5 @@
 import { recordLaunchFailure } from './launch-recovery.mjs';
-import { newRecoveryPolicy, adoptionSpending, recoveryStatus, scheduleRecovery, dueRecovery, scheduleDiagnosis, diagnosisAdmission, reserveWorkerRepair, episodeSpent } from './agent-recovery.mjs';
+import { newRecoveryPolicy, adoptionSpending, adoptionEpisodes, recoveryStatus, scheduleRecovery, dueRecovery, scheduleDiagnosis, diagnosisAdmission, reserveWorkerRepair, episodeSpent } from './agent-recovery.mjs';
 import { isSupervisor, ownsExecution, SUPERVISOR_COMMANDS, CONVERSATION_COMMANDS, appendMessage, conversationCommand, wakeConversation } from './conversation.mjs';
 import { DomainError, identifier, identifiers, integer, object, requireValue, sha, text, array, branchName } from './contracts.mjs';
 import { projectCode, shortGoalTitle, planningName } from './goal-presentation.mjs';
@@ -147,8 +147,19 @@ export function transition(before, command, authority) {
       requireValue(goal.conversation, 'A configured conversational supervisor is required before adoption', 'NOT_READY');
       goal.recoveryPolicy = newRecoveryPolicy();
       goal.recoveryPolicy.priorSpent = adoptionSpending(goal);
+      goal.recoveryPolicy.priorEpisodes = adoptionEpisodes(goal);
       appendMessage(goal, command.id, 'service', 'decision', `Agent-led recovery enabled. ${goal.recoveryPolicy.priorSpent} previous recovery actions remain charged to the budget.`);
       emit('agent_recovery_adopted'); break;
+    }
+    case 'attribute_recovery_history': {
+      requireAuthority(authority, 'system');
+      const policy = goal.recoveryPolicy;
+      requireValue(policy && !policy.priorEpisodes && policy.decisions.length === 0, 'Historical recovery boundary is ambiguous', 'NOT_READY');
+      const evidencedSpent = adoptionSpending(goal);
+      const missingHistory = policy.priorSpent > evidencedSpent;
+      policy.priorSpent = Math.max(policy.priorSpent, evidencedSpent);
+      policy.priorEpisodes = missingHistory ? { '*': policy.priorSpent } : adoptionEpisodes(goal);
+      emit('recovery_history_attributed', { priorSpent: policy.priorSpent }); break;
     }
     case 'extend_recovery_budget': {
       requireAuthority(authority, 'user');

@@ -34,7 +34,7 @@ test('recorded operation identity precedes launch acknowledgement and bounded re
   const handle = await start(t, "process.stdout.write('result'); process.stderr.write('progress');", { onIdentity: (value) => { recorded = value; } });
   assert.deepEqual(recorded, { identity: handle.identity, pid: handle.pid });
   assert.ok(handle.identity.length >= 16);
-  assert.deepEqual(await handle.result, { status: 'succeeded', workerState: 'stopped', cause: null, stdout: 'result', stderr: 'progress' });
+  assert.deepEqual(await handle.result, { status: 'succeeded', workerState: 'stopped', cause: null, stdout: 'result', stderr: 'progress', output: { receivedBytes: 14, retainedBytes: 14, limitBytes: 1024, discardedTelemetryBytes: 0, discardedTelemetryFrames: 0 } });
 });
 
 test('identity persistence failure terminates the owned process before rejecting launch', async () => {
@@ -126,7 +126,7 @@ test('escaped descendant holding output pipes cannot outlive the bounded drain d
   const clock = new FakeClock();
   const descendant = "process.send('ready'); setInterval(() => {}, 1000);";
   const script = `const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { detached: true, stdio: ['ignore',1,2,'ipc'] }); child.on('message', () => { process.stdout.write(String(child.pid)); child.disconnect(); child.unref(); });`;
-  const handle = await start(t, script, { clock });
+  const handle = await start(t, script, { clock, filterThinkingTelemetry: true });
   await clock.scheduled(3);
   clock.advance(policy.ceilingMs + 2 * policy.killGraceMs);
   const result = await handle.result;
@@ -165,4 +165,26 @@ test('interactive planning keeps native driver lifecycle, conversation identity 
   await runtime.terminate(launched.identity);
   assert.equal((await runtime.observe('op')).status, 'stopped');
   await assert.rejects(runtime.launch({ ...request, attempt: { ...request.attempt, role: 'implementer' } }), { code: 'UNSUPPORTED_CAPABILITY' });
+});
+
+test('Claude progress telemetry cannot exhaust substantive output budget and is counted in diagnostics', async t => {
+  const frame = JSON.stringify({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 1, estimated_tokens_delta: 1 }) + '\n';
+  const script = `process.stdout.write(${JSON.stringify(frame)}.repeat(100)); process.stdout.write('accepted-result\\n');`;
+  const handle = await start(t, script, { filterThinkingTelemetry: true });
+  const result = await handle.result;
+  assert.equal(result.status, 'succeeded');
+  assert.equal(result.stdout, 'accepted-result\n');
+  assert.equal(result.output.discardedTelemetryFrames, 100);
+  assert.equal(result.output.discardedTelemetryBytes, Buffer.byteLength(frame) * 100);
+  assert.ok(result.output.receivedBytes > policy.maxOutputBytes);
+  const ordinary = await start(t, script);
+  assert.equal((await ordinary.result).cause.code, 'OUTPUT_LIMIT', 'non-provider output keeps its original bound');
+});
+
+test('filtered native streams still stop on excessive substantive output', async t => {
+  const handle = await start(t, `process.stdout.write('x'.repeat(10000));`, { filterThinkingTelemetry: true });
+  const result = await handle.result;
+  assert.equal(result.cause.code, 'OUTPUT_LIMIT');
+  assert.equal(result.stdout.length, policy.maxOutputBytes);
+  assert.equal(result.output.discardedTelemetryBytes, 0);
 });
