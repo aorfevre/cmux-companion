@@ -23,6 +23,7 @@ beforeEach(() => {
     if (!paired) throw new ApiError('Unauthorized', 401, 'UNAUTHORIZED');
     if (url.endsWith('/configuration')) return { ...config, readOnly };
     if (url.endsWith('/snapshot')) return { goals: [], cursor: 0, journalId: 'journal', readOnly };
+    if (url.endsWith('/supervisors')) return { recommendedId: null, profiles: [], capturedAt: 'now' };
     if (options?.method === 'POST') return {};
     throw new Error(`Unexpected ${url}`);
   });
@@ -518,3 +519,27 @@ test('an automatically retried launch stays out of Needs you until its retry bud
   expect(decisionView(goal).state).toBe('Temporary resource failure');
 });
 
+
+test('the composer uses the supervisor flow by default when a profile exists', async () => {
+  const original = api.getMockImplementation()!;
+  api.mockImplementation(async (url, options) => url.endsWith('/supervisors') ? { recommendedId: 'codex', capturedAt: 'now', profiles: [{ id: 'codex', label: 'Codex', model: 'gpt', ready: true, reason: 'Ready', capacity: { reason: '' } }] } : original(url, options));
+  await start();
+  expect(screen.queryByLabelText('Try conversational Goals (evaluation)')).toBeNull();
+  await waitFor(() => expect((screen.getByLabelText('Supervisor') as HTMLSelectElement).value).toBe('codex'));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', false));
+  fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('/api/orchestration/commands', expect.objectContaining({ method: 'POST' })));
+  const sent = JSON.parse(String(api.mock.calls.filter(([url]) => url.endsWith('/commands')).at(-1)![1]!.body));
+  expect(sent.payload).toMatchObject({ experienceVersion: 2, supervisorProfileId: 'codex' });
+});
+
+test('the composer falls back to the planner flow with a Setup note when no supervisor exists', async () => {
+  await start();
+  const note = await screen.findByText(/Add a supervisor in/);
+  expect(within(note).getByRole('link', { name: 'Setup' }).getAttribute('href')).toBe('/settings');
+  expect(screen.queryByLabelText('Supervisor')).toBeNull();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', false));
+  fireEvent.click(screen.getByRole('button', { name: 'Start goal' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('/api/orchestration/commands', expect.objectContaining({ method: 'POST' })));
+  expect(JSON.parse(String(api.mock.calls.filter(([url]) => url.endsWith('/commands')).at(-1)![1]!.body)).payload.experienceVersion).toBeUndefined();
+});
