@@ -131,13 +131,14 @@
 .decision-reason { margin:0; color:var(--muted); font-size:13px; grid-column:1; }
 .decision-controls { display:flex; align-items:center; gap:10px; grid-column:2; grid-row:1 / span 2; }
 .decision-menu { position:relative; }
-.decision-menu [role=menu] { position:absolute; right:0; top:calc(100% + 6px); min-width:220px; display:grid; gap:4px; padding:6px; border:1px solid var(--line); border-radius:10px; background:var(--panel-raised); box-shadow:0 10px 30px #0006; z-index:4; }
-.decision-menu [role=menuitem] { width:100%; text-align:left; border:0; background:none; min-height:40px; }
-.decision-menu [role=menuitem]:hover,.decision-menu [role=menuitem]:focus-visible { background:var(--panel); }
+.decision-more { position:absolute; right:0; top:calc(100% + 6px); min-width:220px; display:grid; gap:4px; padding:6px; border:1px solid var(--line); border-radius:10px; background:var(--panel-raised); box-shadow:0 10px 30px #0006; z-index:4; }
+.decision-more button { width:100%; text-align:left; border:0; background:none; min-height:40px; }
+.decision-more button:hover,.decision-more button:focus-visible { background:var(--panel); }
 .decision-rename { display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap; margin-top:12px; }
 .decision-rename label { flex:1; min-width:200px; margin:0; } .decision-rename input { margin:8px 0 0; }
-@media(max-width:700px) { .decision-body { grid-template-columns:minmax(0,1fr); } .decision-controls { grid-column:1; grid-row:auto; width:100%; } .decision-controls .decision-primary { flex:1; } .decision-reason { grid-column:1; } .decision-menu { position:static; } .decision-menu [role=menu] { left:18px; right:18px; min-width:0; } }
+@media(max-width:700px) { .decision-body { grid-template-columns:minmax(0,1fr); } .decision-controls { grid-column:1; grid-row:auto; width:100%; } .decision-controls .decision-primary { flex:1; } .decision-reason { grid-column:1; } .decision-menu { position:static; } .decision-more { left:18px; right:18px; min-width:0; } }
 .goal-proposal-outcome { font-weight:600; margin:8px 0 4px; }
 .goal-proposal-counts { color:var(--muted); font-size:13px; margin:0 0 10px; }
 .goal-message details { border-top:1px solid var(--line); padding:8px 0; } .goal-message summary { cursor:pointer; font-weight:600; }
+.goal-message-clamped { display:-webkit-box; -webkit-line-clamp:8; -webkit-box-orient:vertical; overflow:hidden; }
 .goal-message-more { min-height:32px!important; padding:4px 10px!important; font-size:13px!important; margin-top:4px; }

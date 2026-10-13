@@ -34,7 +34,7 @@ suite('Conversational Goals with the real disposable service', () => {
     });
     cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve revision 2', timeout: 20000 }).should('be.enabled');
     cy.get('.goal-conversation').contains('summary', 'Proposal 1 · Superseded by 2').should('be.visible');
-    cy.findByRole('button', { name: 'More' }).click(); cy.findByRole('menuitem', { name: 'Pause goal' }).click();
+    cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Pause goal' }).click();
     cy.findByRole('region', { name: 'Goal decision' }).within(() => {
       cy.findByRole('status').should('have.text', 'Your plan is ready to approve.');
       cy.findByRole('button', { name: 'Approve revision 2' }).should('be.enabled');
@@ -46,7 +46,7 @@ suite('Conversational Goals with the real disposable service', () => {
     });
     cy.reload();
     cy.get('.goal-conversation').contains('Keep this guidance through reload.').should('be.visible');
-    cy.findByRole('button', { name: 'More' }).click(); cy.findByRole('menuitem', { name: 'Resume goal' }).click();
+    cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Resume goal' }).click();
     cy.get('.goal-conversation').contains('Keep this guidance through reload.').closest('section').contains('Answered', { timeout: 10000 });
     cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve revision 2' }).should('be.enabled').click();
     cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve revision 2' }).should('not.exist');
@@ -105,7 +105,7 @@ suite('Conversational Goals with the real disposable service', () => {
       expect(evidence.prCreates).to.have.length(1);
       cy.get('@publishedHead').then(head => expect(goal.pr!.headSha).to.equal(head));
     });
-    cy.findByRole('button', { name: 'More' }).click(); cy.findByRole('menuitem', { name: 'Abort goal' }).click();
+    cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Abort goal' }).click();
     cy.findByRole('region', { name: 'Goal decision' }).findByRole('status').should('have.text', 'Aborted. Evidence is retained.');
   });
 });

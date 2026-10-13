@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { GoalBoard } from '../app/orchestration/goal-board';
 import { ApiError, request } from '../app/api-request';
@@ -172,7 +172,7 @@ test('finishing a command for A does not invalidate the selected B detail reques
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: /Goal A/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'More' }));
-  fireEvent.click(await screen.findByRole('menuitem', { name: 'Abort goal' }));
+  fireEvent.click(within(await screen.findByLabelText('More actions')).getByRole('button', { name: 'Abort goal' }));
   fireEvent.click(screen.getByRole('button', { name: /Back to Mission Control/ }));
   fireEvent.click(screen.getByRole('button', { name: /Goal B/ }));
   await waitFor(() => expect(finishB).toBeTypeOf('function'));
@@ -207,7 +207,7 @@ test('goal details preserve the request, edit only the title, and hide empty evi
   expect(screen.queryByRole('region', { name: 'Combined verification' })).toBeNull();
   expect(screen.queryByRole('region', { name: 'Task board' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'More' }));
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Rename goal' }));
+  fireEvent.click(within(screen.getByLabelText('More actions')).getByRole('button', { name: 'Rename goal' }));
   fireEvent.change(screen.getByLabelText('Goal title'), { target: { value: 'Better title' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save title' }));
   expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'rename_goal', payload: { title: 'Better title' } }));
@@ -303,7 +303,7 @@ test('a lost response remains retryable inside the goal workspace with the exact
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: /Modal goal/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'More' }));
-  fireEvent.click(await screen.findByRole('menuitem', { name: 'Abort goal' }));
+  fireEvent.click(within(await screen.findByLabelText('More actions')).getByRole('button', { name: 'Abort goal' }));
   const retry = await screen.findByRole('button', { name: 'Retry pending request' });
   expect(retry.closest('.mission-goal-workspace')).not.toBeNull();
   await waitFor(() => expect(retry).toHaveProperty('disabled', false));
@@ -501,7 +501,7 @@ test('abort retries a definitive supervisor version race without changing its ta
   render(<GoalBoard />);
   fireEvent.click(await screen.findByRole('button', { name: /Build modules/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'More' }));
-  fireEvent.click(await screen.findByRole('menuitem', { name: 'Abort goal' }));
+  fireEvent.click(within(await screen.findByLabelText('More actions')).getByRole('button', { name: 'Abort goal' }));
   await waitFor(() => expect(submissions).toBe(2));
   const sent = api.mock.calls.filter(([url]) => url.endsWith('/commands')).map(([, options]) => JSON.parse(options!.body as string));
   expect(sent[0]).toMatchObject({ goalId: goal.id, type: 'abort', expectedVersion: goal.version });

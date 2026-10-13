@@ -21,6 +21,13 @@ test('startup failure, approval, delivery and abort pick the first offered prima
   const delivered = fixture(); delivered.deliver();
   assert.equal(decisionView(delivered.goal).state, 'Pull request published. Waiting for merge.');
   assert.equal(primary(delivered.goal), 'request_review_fix', 'addressing review comments stays one click away after delivery');
+  delivered.goal.mergeSync = { checkedAt: 1, state: 'closed', error: null };
+  assert.deepEqual(decisionView(delivered.goal), { state: 'The pull request was closed without merging.', reason: 'Review it on GitHub.', primary: null }, 'a closed PR offers no review fix, so the bar explains instead of pretending');
+  delivered.goal.mergeSync = null;
+  delivered.command('request_review_fix', {}, delivered.user);
+  delivered.goal.reviewRound.state = 'unknown';
+  assert.deepEqual(decisionView(delivered.goal), { state: 'The fix push outcome is uncertain.', reason: 'Companion is confirming the remote branch.', primary: null });
+  delivered.goal.reviewRound.state = 'fixing';
   delivered.command('abort', {}, delivered.user);
   assert.deepEqual(decisionView(delivered.goal), { state: 'Aborted. Evidence is retained.', reason: null, primary: null });
 });

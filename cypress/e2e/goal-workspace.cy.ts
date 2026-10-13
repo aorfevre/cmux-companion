@@ -1,12 +1,13 @@
 describe('Goal workspace navigation', () => {
   it('preserves creation drafts and opens the complete request on desktop and phone', () => {
     const base = { repositoryId: 'example', version: 1, generation: 0, title: '', revision: 0, approvedRevision: null, integrationHead: 'a'.repeat(40), baseBranch: 'main', pr: null, verification: null, publication: null, tasks: [], attempts: [], reviews: [], reviewRound: null, reviewRounds: [], verificationRuns: [], actions: [], approvalBlocked: null, decision: { state: 'Your plan is ready to approve.', reason: null, primary: null } };
+    const approve = { type: 'approve', label: 'Approve revision 1', payload: { revision: 1 } }, abort = { type: 'abort', label: 'Abort goal', payload: {} };
     const goals = (['discovering', 'awaiting_approval', 'building', 'ready_to_publish', 'merged'] as const).map((status, i) => ({ ...base, planReviewPending: false, id: `board-${i}`, status, title: `Outcome ${i}`, description: `Full request ${i}\nhttps://example.com/design`, plannerName: `EXAMPLE Planning Outcome ${i}`, contracts: [] }));
     cy.intercept('GET', '**/api/orchestration/snapshot', { goals, cursor: 1, journalId: 'kanban', readOnly: false });
     cy.intercept('GET', '**/api/orchestration/configuration', { readOnly: false, terminal: false, limits: { global: 4, perGoal: 2, planners: 1 }, capabilities: [{ role: 'planner', mode: 'interactive' }], repositories: [{ id: base.repositoryId, name: 'Example', baseSha: null, baseBranch: 'main', error: null }] });
     cy.intercept('POST', '**/api/settings/dev-repos/reconcile', { scans: {} });
     cy.intercept('GET', '**/api/settings/favorites', { revision: 0, ids: [] });
-    cy.intercept('GET', '**/api/orchestration/goals/board-1', goals[1]);
+    cy.intercept('GET', '**/api/orchestration/goals/board-1', { ...goals[1], actions: [approve, abort], decision: { ...goals[1].decision, primary: approve } });
     cy.viewport(390, 844); cy.visit('/orchestration');
     cy.findByRole('navigation', { name: 'Main navigation' }).find('a').should('have.length', 5);
     cy.findByLabelText('What should we accomplish?').should('not.exist');
@@ -24,8 +25,11 @@ describe('Goal workspace navigation', () => {
     cy.findByRole('article', { name: 'Goal detail' }).should('contain.text', 'EXAMPLE Planning Outcome 1');
     cy.findByRole('region', { name: 'Goal decision' }).within(() => {
       cy.findByRole('status').should('be.visible').and('have.text', 'Your plan is ready to approve.');
-      // The stubbed goal offers no actions, so neither a primary button nor More renders.
-      cy.get('button').should('have.length', 0);
+      cy.findByRole('button', { name: 'Approve revision 1' }).should('be.visible').and('be.enabled');
+      cy.findByRole('button', { name: 'More' }).should('be.visible').click();
+      cy.findByLabelText('More actions').findByRole('button', { name: 'Abort goal' }).should('be.visible');
+      cy.findByRole('button', { name: 'More' }).click();
+      cy.findByLabelText('More actions').should('not.exist');
     });
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
     cy.findByRole('button', { name: /Back to Mission Control/ }).click();

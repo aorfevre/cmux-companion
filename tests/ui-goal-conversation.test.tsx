@@ -71,8 +71,13 @@ test('the current proposal shows a summary first, old proposals one line, and lo
     { id: 'p2', sequence: 4, author: 'supervisor', kind: 'proposal', text: 'Revised proposal', revision: 2, delivery: 'delivered' },
   ] };
   sessionStorage.clear();
+  // jsdom has no layout, so the clamp is driven by the measured overflow of the long paragraph only.
+  const heights = { scroll: 0, client: 0 };
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.textContent?.startsWith('Line 1') ? 400 : heights.scroll; });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.textContent?.startsWith('Line 1') ? 160 : heights.client; });
   render(<GoalConversation goal={revised} disabled={false} act={vi.fn()} />);
   expect(screen.getByText('Proposal 1 · Superseded by 2')).toBeTruthy();
+  expect(screen.queryByText('Revised proposal')).toBeNull();
   expect(screen.getByRole('heading', { name: 'Proposal 2' })).toBeTruthy();
   const current = within(screen.getByRole('region', { name: 'Proposal revision 2' }));
   expect(current.getByText('Combine modules with care')).toBeTruthy();
@@ -82,10 +87,11 @@ test('the current proposal shows a summary first, old proposals one line, and lo
   expect(scope.open).toBe(false);
   scope.open = true; fireEvent(scope, new Event('toggle'));
   expect(sessionStorage.getItem('companion.proposal.goal.Scope')).toBe('open');
-  expect(screen.getByText('Line 1', { exact: false }).textContent).toContain('Line 8');
-  expect(screen.getByText('Line 1', { exact: false }).textContent).not.toContain('Line 12');
+  const long = screen.getByText('Line 1', { exact: false });
+  expect(long.classList.contains('goal-message-clamped')).toBe(true);
+  expect(screen.getAllByRole('button', { name: 'Show more' })).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-  expect(screen.getByText('Line 12', { exact: false })).toBeTruthy();
+  expect(long.classList.contains('goal-message-clamped')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Show less' }));
-  expect(screen.queryByText('Line 12', { exact: false })).toBeNull();
+  expect(long.classList.contains('goal-message-clamped')).toBe(true);
 });

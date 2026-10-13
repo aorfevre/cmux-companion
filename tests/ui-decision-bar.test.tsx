@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { DecisionBar } from '../app/orchestration/decision-bar';
 import { attention } from '../app/orchestration/attention';
@@ -23,11 +23,11 @@ test('the bar shows stage, state, the primary action and secondary actions behin
   fireEvent.click(screen.getByRole('button', { name: 'Approve revision 3' }));
   expect(act).toHaveBeenCalledWith(goal, goal.actions[0]);
   fireEvent.click(screen.getByRole('button', { name: 'More' }));
-  expect(screen.queryByRole('menuitem', { name: 'Send message' })).toBeNull();
-  expect(screen.queryByRole('menuitem', { name: 'Approve revision 3' })).toBeNull();
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Abort goal' }));
+  expect(within(screen.getByLabelText('More actions')).queryByRole('button', { name: 'Send message' })).toBeNull();
+  expect(within(screen.getByLabelText('More actions')).queryByRole('button', { name: 'Approve revision 3' })).toBeNull();
+  fireEvent.click(within(screen.getByLabelText('More actions')).getByRole('button', { name: 'Abort goal' }));
   expect(act).toHaveBeenCalledWith(goal, goal.actions[4]);
-  expect(screen.queryByRole('menu')).toBeNull();
+  expect(screen.queryByLabelText('More actions')).toBeNull();
 });
 
 test('a refused action renders as the reason with no primary button, and the menu closes on an outside click', () => {
@@ -38,9 +38,21 @@ test('a refused action renders as the reason with no primary button, and the men
   expect(screen.getByText('Let active workers finish and reconcile uncertain ownership before recovery')).toBeTruthy();
   expect(screen.getByRole('region', { name: 'Goal decision' }).querySelector('.decision-primary')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'More' }));
-  expect(screen.getByRole('menu')).toBeTruthy();
+  expect(screen.getByLabelText('More actions')).toBeTruthy();
   fireEvent.mouseDown(document.body);
-  expect(screen.queryByRole('menu')).toBeNull();
+  expect(screen.queryByLabelText('More actions')).toBeNull();
+});
+
+test('an open More panel closes and its items disable when controls become unavailable', () => {
+  const goal: Goal = { ...base(), decision: { state: 'Work continues automatically. No action needed.', reason: null, primary: null }, actions: [{ type: 'abort', label: 'Abort goal', payload: {} }] };
+  const act = vi.fn();
+  const view = render(<DecisionBar goal={goal} disabled={false} act={act} />);
+  fireEvent.click(screen.getByRole('button', { name: 'More' }));
+  expect(screen.getByLabelText('More actions')).toBeTruthy();
+  view.rerender(<DecisionBar goal={goal} disabled={true} act={act} />);
+  expect(screen.queryByLabelText('More actions')).toBeNull();
+  expect((screen.getByRole('button', { name: 'More' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(act).not.toHaveBeenCalled();
 });
 
 test('Edit title opens the inline form and saves through the rename action', async () => {
@@ -49,7 +61,7 @@ test('Edit title opens the inline form and saves through the rename action', asy
   const act = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
   render(<DecisionBar goal={goal} disabled={false} act={act} />);
   fireEvent.click(screen.getByRole('button', { name: 'More' }));
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Edit title' }));
+  fireEvent.click(within(screen.getByLabelText('More actions')).getByRole('button', { name: 'Edit title' }));
   fireEvent.change(screen.getByLabelText('Goal title'), { target: { value: 'Better title' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save title' }));
   expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'rename_goal', payload: { title: 'Better title' } }));
@@ -58,7 +70,7 @@ test('Edit title opens the inline form and saves through the rename action', asy
   fireEvent.click(screen.getByRole('button', { name: 'Save title' }));
   await vi.waitFor(() => expect(screen.queryByLabelText('Goal title')).toBeNull());
   fireEvent.click(screen.getByRole('button', { name: 'More' }));
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Edit title' }));
+  fireEvent.click(within(screen.getByLabelText('More actions')).getByRole('button', { name: 'Edit title' }));
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(screen.queryByLabelText('Goal title')).toBeNull();
 });

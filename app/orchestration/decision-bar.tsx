@@ -8,7 +8,9 @@ const COMPOSER_TYPES = new Set(['send_goal_message', 'request_revision', 'answer
 const sameAction = (a: Action, b: Action) => a.type === b.type && JSON.stringify(a.payload) === JSON.stringify(b.payload);
 
 export function DecisionBar({ goal, disabled, act }: { goal: Goal; disabled: boolean; act(goal: Goal, action: Action): Promise<boolean> }) {
-  const [open, setOpen] = useState(false);
+  const [requested, setOpen] = useState(false);
+  // Controls that become unavailable must not keep an open panel of live buttons.
+  const open = requested && !disabled;
   const [editing, setEditing] = useState(false), [title, setTitle] = useState(goal.title);
   const menu = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -36,8 +38,8 @@ export function DecisionBar({ goal, disabled, act }: { goal: Goal; disabled: boo
       <div className="decision-controls">
         {primary && <button className="primary-button decision-primary" disabled={disabled} onClick={() => void act(goal, primary)}>{primary.label}</button>}
         {secondary.length > 0 && <div className="decision-menu" ref={menu}>
-          <button aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen(current => !current)}>More</button>
-          {open && <div role="menu" aria-label="More actions">{secondary.map(action => <button type="button" role="menuitem" key={`${action.type}:${JSON.stringify(action.payload)}`} onClick={() => choose(action)}>{action.label}</button>)}</div>}
+          <button aria-expanded={open} aria-controls="decision-more" disabled={disabled} onClick={() => setOpen(current => !current)}>More</button>
+          {open && <div id="decision-more" className="decision-more" aria-label="More actions">{secondary.map(action => <button type="button" key={`${action.type}:${JSON.stringify(action.payload)}`} disabled={disabled} onClick={() => choose(action)}>{action.label}</button>)}</div>}
         </div>}
       </div>
       {decision.reason && <p className="decision-reason">{decision.reason}</p>}

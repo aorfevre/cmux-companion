@@ -1,5 +1,5 @@
 "use client";
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Contract } from '../../server/orchestration/types';
 import type { Action, Goal } from './goal-board';
 import { GoalChanges } from './goal-changes';
@@ -14,10 +14,20 @@ function Section({ goalId, name, count, children }: { goalId: string; name: stri
 }
 
 function ClampedText({ text }: { text: string }) {
-  const lines = text.split('\n');
   const [expanded, setExpanded] = useState(false);
-  if (lines.length <= 8) return <p className="goal-message-text">{text}</p>;
-  return <><p className="goal-message-text">{expanded ? text : lines.slice(0, 8).join('\n')}</p><button type="button" className="goal-message-more" aria-expanded={expanded} onClick={() => setExpanded(current => !current)}>{expanded ? 'Show less' : 'Show more'}</button></>;
+  const [overflows, setOverflows] = useState(false);
+  const paragraph = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    const element = paragraph.current;
+    if (!element || expanded) return;
+    const measure = () => setOverflows(element.scrollHeight > element.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure); observer.observe(element);
+    return () => observer.disconnect();
+  }, [expanded, text]);
+  return <><p ref={paragraph} className={`goal-message-text${expanded ? '' : ' goal-message-clamped'}`}>{text}</p>
+    {(overflows || expanded) && <button type="button" className="goal-message-more" aria-expanded={expanded} onClick={() => setExpanded(current => !current)}>{expanded ? 'Show less' : 'Show more'}</button>}</>;
 }
 
 function ProposalBody({ goalId, proposal }: { goalId: string; proposal: Contract }) {
@@ -48,7 +58,7 @@ export function GoalConversation({ goal, disabled, act }: {
         const proposal = entry.kind === 'proposal' ? goal.contracts.find(saved => saved.revision === entry.revision)?.contract : null;
         return <section className={`orch-card goal-message goal-message-${entry.author}`} key={entry.id} aria-label={`${entry.author} ${entry.kind}`}>
           <p className="orch-eyebrow">{entry.author === 'user' ? 'You' : entry.author === 'supervisor' ? 'Supervisor' : 'Companion'}{entry.kind === 'question' ? ' · Question' : ''}</p>
-          <ClampedText text={entry.text} />
+          {!proposal && <ClampedText text={entry.text} />}
           {entry.author === 'user' && <small aria-label="Message delivery">{entry.delivery === 'queued' ? 'Queued for supervisor' : entry.delivery === 'delivered' ? 'Delivered to supervisor' : 'Answered'}</small>}
           {proposal && (entry.revision !== goal.revision
             ? <details aria-label={`Proposal revision ${entry.revision}`}><summary>Proposal {entry.revision} · Superseded by {goal.revision}</summary><ProposalBody goalId={goal.id} proposal={proposal} /></details>

@@ -30,6 +30,8 @@ export function decisionView(goal, projected = actionView(goal)) {
   if (goal.conversation?.paused) return decision('Paused.', 'Your messages stay queued.');
   if (goal.status === 'merged') return decision('Merged on GitHub.', null, false);
   if (goal.status === 'aborted') return decision('Aborted. Evidence is retained.', null, false);
+  if (goal.status === 'delivered' && goal.mergeSync?.state === 'closed') return decision('The pull request was closed without merging.', 'Review it on GitHub.');
+  if (goal.status === 'addressing_review' && goal.reviewRound?.state === 'unknown') return decision('The fix push outcome is uncertain.', 'Companion is confirming the remote branch.', false);
   if (goal.status === 'delivered') return decision('Pull request published. Waiting for merge.', goal.mergeSync?.error ?? null);
   const working = current.filter(attempt => attempt.workerState === 'running' && !isSupervisor(goal, attempt)).length;
   return decision(working ? `${working} agent${working === 1 ? '' : 's'} working.` : 'Work continues automatically. No action needed.', null, false);
