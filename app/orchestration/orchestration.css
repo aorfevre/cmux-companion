@@ -134,3 +134,7 @@
 .goal-row footer { grid-column:1 / -1; display:flex; align-items:center; gap:12px; color:var(--muted); font-size:12px; }
 .goal-row .decision-rename { grid-column:1 / -1; }
 @media(max-width:700px) { .goal-row { grid-template-columns:minmax(0,1fr); } .goal-row-actions { grid-column:1; grid-row:auto; } .goal-row-actions .decision-controls { width:100%; } .goal-row-actions .decision-primary { flex:1; } }
+.goal-technical-details > summary { cursor:pointer; font-weight:600; }
+.goal-technical-section { padding:16px 0; border-top:1px solid var(--line); }
+.goal-technical-section:first-of-type { border-top:0; }
+.orchestration .goal-technical-section h3 { margin:0 0 12px; }

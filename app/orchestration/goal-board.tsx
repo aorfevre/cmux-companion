@@ -8,7 +8,7 @@ import type { Contract } from '../../server/orchestration/types';
 import { MissionShell } from '../mission-shell';
 import { ProjectPicker } from './project-picker';
 import { SupervisorPicker } from './supervisor-picker';
-import { GoalDetail } from './goal-detail';
+import { GoalPage as GoalDetail } from './goal-page';
 import { GoalsList, type Chip } from './goals-list';
 import type { NextStep } from './decision-bar';
 

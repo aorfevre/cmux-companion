@@ -124,24 +124,24 @@ test('stream resync refreshes authoritative state and unmount closes the stream'
 });
 
 test('failed revision feedback remains editable until the service confirms success', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture();
   const goal = { ...goalView(f.goal), contracts: [], actions: [{ type: 'request_revision', label: 'Request revision', payload: {} }] };
   const act = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
   render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
-  const feedback = screen.getByLabelText('Revision feedback');
+  const feedback = screen.getByLabelText('Request a revision');
   fireEvent.change(feedback, { target: { value: 'Preserve this detailed correction' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Request revision' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send revision request' }));
   await waitFor(() => expect(act).toHaveBeenCalledTimes(1));
   expect(feedback).toHaveProperty('value', 'Preserve this detailed correction');
-  fireEvent.click(screen.getByRole('button', { name: 'Request revision' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send revision request' }));
   await waitFor(() => expect(feedback).toHaveProperty('value', ''));
 });
 
 test('moved publication target shows the observed commit and submits the service-projected acceptance', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const moved = { type: 'accept_moved_target', label: 'Publish reviewed head against moved target', payload: { operationId: 'publish', baseHeadSha: 'b'.repeat(40) } };
@@ -196,7 +196,7 @@ test('automatic discovery keeps disabled repositories visible and reports partia
 });
 
 test('goal details preserve the request, edit only the title, and hide empty evidence', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const goal = { ...goalView(fixture().goal), title: 'Short title', description: 'Complete request\nhttps://example.com/design', contracts: [], actions: [{ type: 'rename_goal', label: 'Rename goal', payload: { title: 'Short title' } }] };
@@ -245,7 +245,7 @@ test('creation submits a full request from main without the current checkout SHA
 });
 
 test('clarification answers preserve feedback on failure and use the projected action', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const base = goalView(fixture().goal);
@@ -312,7 +312,7 @@ test('a lost response remains retryable inside the goal workspace with the exact
 });
 
 test('held goal shows failure and reconciliation guidance, then submits the exact recovery action', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture(); f.request('planner', 'planner'); f.dispatch('planner');
@@ -330,13 +330,13 @@ test('held goal shows failure and reconciliation guidance, then submits the exac
 });
 
 test('execution agents expose their service-owned terminal control inside Waves & sessions', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture(); f.approve(); f.request('implementation', 'implementer', 'A'); f.dispatch('implementation');
   const goal = { ...goalView(f.goal), contracts: f.goal.contracts }, control = vi.fn().mockResolvedValue(undefined);
   render(<GoalDetail goal={goal} disabled={false} terminal={true} act={vi.fn()} control={control} pendingNext={null} onNextConsumed={vi.fn()} />);
-  fireEvent.click(screen.getByRole('tab', { name: 'Waves & sessions' }));
+  (screen.getByRole('group', { name: 'Technical details' }) as HTMLDetailsElement).open = true;
   fireEvent.click(screen.getByText('Agent session'));
   fireEvent.click(screen.getByRole('button', { name: 'Open implementer terminal' }));
   expect(control).toHaveBeenCalledWith(goal, 'terminal', 'implementation');
@@ -398,7 +398,7 @@ test('wave view shows the active barrier, waiting tasks and retained checked out
 });
 
 test('a delivered goal offers the review round and a running round shows its phase and card', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture(); f.deliver();
@@ -417,13 +417,13 @@ test('a delivered goal offers the review round and a running round shows its pha
   expect(screen.getByText('PLAN 1')).toBeTruthy();
   expect(screen.getByRole('status', { name: 'Review round phase' }).textContent).toContain('Fixing 1 thread');
   expect(screen.queryByRole('button', { name: 'Address review comments' })).toBeNull();
-  fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
+  (screen.getByRole('group', { name: 'Technical details' }) as HTMLDetailsElement).open = true;
   expect(screen.getByRole('heading', { name: 'Review rounds' })).toBeTruthy();
   expect(screen.getByText(/coderabbitai/)).toBeTruthy();
 });
 
 test('a settled round lists each thread action and an unconfirmed reply', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture, HEAD_B } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture(); f.deliver();
@@ -431,14 +431,14 @@ test('a settled round lists each thread action and an unconfirmed reply', async 
     threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }, { id: 'PRRT_2', path: null, line: null, author: 'alex', body: 'Nit.', isBot: false }],
     replies: [{ threadId: 'PRRT_1', action: 'fixed' as const, body: 'Fixed.' }, { threadId: 'PRRT_2', action: 'declined' as const, body: 'Out of scope.' }], posted: ['PRRT_2'], unconfirmed: ['PRRT_1'], resolved: ['PRRT_1'] }] };
   render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
-  fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
+  (screen.getByRole('group', { name: 'Technical details' }) as HTMLDetailsElement).open = true;
   expect(screen.getByText(/Addressed · 2 threads · new head dddddddddddd/)).toBeTruthy();
   expect(screen.getByText(/fixed · resolved · reply unconfirmed/)).toBeTruthy();
   expect(screen.getByText(/^declined$/)).toBeTruthy();
 });
 
 test('an automatic round shows its merge evidence and conflicted paths', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture, HEAD_B } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture(); f.deliver();
@@ -448,16 +448,16 @@ test('an automatic round shows its merge evidence and conflicted paths', async (
     threads: [],
   } };
   render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
-  fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
+  (screen.getByRole('group', { name: 'Technical details' }) as HTMLDetailsElement).open = true;
   expect(screen.getByText(/Fixing 0 threads and 2 conflicts/)).toBeTruthy();
   expect(screen.getByText(/Started automatically by an observed merge conflict/)).toBeTruthy();
-  expect(screen.getByText(/src\/a\.mjs/)).toBeTruthy();
+  expect(screen.getAllByText(/src\/a\.mjs/).length).toBeGreaterThan(0);
   expect(screen.getByText(/package-lock\.json/)).toBeTruthy();
   expect(screen.getByText(/eeeeeeeeeeee/)).toBeTruthy();
 });
 
 test('a round with no merge shows no merge evidence', async () => {
-  const { GoalDetail } = await import('../app/orchestration/goal-detail');
+  const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture, HEAD_B } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture(); f.deliver();
@@ -466,7 +466,7 @@ test('a round with no merge shows no merge evidence', async () => {
     trigger: 'user' as const, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }],
   } };
   render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
-  fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
+  (screen.getByRole('group', { name: 'Technical details' }) as HTMLDetailsElement).open = true;
   expect(screen.getByText(/Fixing 1 thread/)).toBeTruthy();
   expect(screen.queryByText(/Started automatically by an observed merge conflict/)).toBeNull();
   expect(screen.queryByText(/Merged target/)).toBeNull();

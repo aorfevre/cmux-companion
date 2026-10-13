@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import type { NextStep } from './decision-bar';
 import type { Contract } from '../../server/orchestration/types';
 import type { Action, Goal } from './goal-board';
 import { GoalChanges } from './goal-changes';
@@ -43,23 +44,44 @@ function ProposalBody({ goalId, proposal }: { goalId: string; proposal: Contract
   </>;
 }
 
-export function GoalConversation({ goal, disabled, act }: {
+type Entry = { id: string; author: 'user' | 'supervisor' | 'service'; kind: string; text: string; revision: number; delivery?: string; request?: boolean };
+
+export function GoalConversation({ goal, disabled, act, next, onNextConsumed }: {
   goal: Goal & { contracts: { revision: number; contract: Contract }[] }; disabled: boolean;
-  act(goal: Goal, action: Action): Promise<boolean>;
+  act(goal: Goal, action: Action): Promise<boolean>; next: NextStep | null; onNextConsumed(): void;
 }) {
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState(''), [answer, setAnswer] = useState('');
+  const composer = useRef<HTMLTextAreaElement>(null), answerBox = useRef<HTMLTextAreaElement>(null);
   const conversation = goal.conversation;
-  if (!conversation) return null;
   const send = goal.actions.find(action => action.type === 'send_goal_message');
+  const revision = goal.actions.find(action => action.type === 'request_revision');
+  const clarification = !conversation && goal.clarification && goal.clarification.answer === undefined ? goal.actions.find(action => action.type === 'answer_clarification') : undefined;
+  // A legacy goal has no thread: show the original request, then each contract as a proposal.
+  const entries: Entry[] = conversation ? conversation.messages : [
+    { id: 'request', author: 'user', kind: 'message', text: goal.description || goal.title, revision: 0, request: true },
+    ...goal.contracts.map(entry => ({ id: `contract-${entry.revision}`, author: 'supervisor' as const, kind: 'proposal', text: '', revision: entry.revision })),
+  ];
+  const composerAction = conversation ? send : revision;
+  // A next step is applied during render, not in an effect: the context is adopted once, then the step is consumed.
+  const [applied, setApplied] = useState<NextStep | null>(null);
+  if (next && next !== applied) {
+    setApplied(next);
+    if (next.type === 'request_revision' && next.context) setMessage(`${next.context}\n\n`);
+  }
+  useEffect(() => {
+    if (!next) return;
+    (next.type === 'answer_clarification' ? answerBox : composer).current?.focus();
+    onNextConsumed();
+  }, [next, onNextConsumed]);
   const active = goal.attempts.filter(attempt => attempt.current && attempt.role !== 'planner' && attempt.workerState !== 'stopped');
   return <article className="goal-conversation" aria-label="Goal conversation">
     <div className="goal-thread" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions">
-      {conversation.messages.map(entry => {
+      {entries.map(entry => {
         const proposal = entry.kind === 'proposal' ? goal.contracts.find(saved => saved.revision === entry.revision)?.contract : null;
-        return <section className={`orch-card goal-message goal-message-${entry.author}`} key={entry.id} aria-label={`${entry.author} ${entry.kind}`}>
-          <p className="orch-eyebrow">{entry.author === 'user' ? 'You' : entry.author === 'supervisor' ? 'Supervisor' : 'Companion'}{entry.kind === 'question' ? ' · Question' : ''}</p>
+        return <section className={`orch-card goal-message goal-message-${entry.author}`} key={entry.id} aria-label={entry.request ? 'Your request' : `${entry.author} ${entry.kind}`}>
+          <p className="orch-eyebrow">{entry.request ? 'Your request' : entry.author === 'user' ? 'You' : entry.author === 'supervisor' ? 'Supervisor' : 'Companion'}{entry.kind === 'question' ? ' · Question' : ''}</p>
           {!proposal && <ClampedText text={entry.text} />}
-          {entry.author === 'user' && <small aria-label="Message delivery">{entry.delivery === 'queued' ? 'Queued for supervisor' : entry.delivery === 'delivered' ? 'Delivered to supervisor' : 'Answered'}</small>}
+          {entry.author === 'user' && !entry.request && <small aria-label="Message delivery">{entry.delivery === 'queued' ? 'Queued for supervisor' : entry.delivery === 'delivered' ? 'Delivered to supervisor' : 'Answered'}</small>}
           {proposal && (entry.revision !== goal.revision
             ? <details aria-label={`Proposal revision ${entry.revision}`}><summary>Proposal {entry.revision} · Superseded by {goal.revision}</summary><ProposalBody goalId={goal.id} proposal={proposal} /></details>
             : <section aria-label={`Proposal revision ${entry.revision}`}><h2>Proposal {entry.revision}</h2><ProposalBody goalId={goal.id} proposal={proposal} />
@@ -81,10 +103,11 @@ export function GoalConversation({ goal, disabled, act }: {
       {goal.verification?.headSha === goal.integrationHead && goal.verification.checks.map(check => <div key={check.id}><p>{check.id}: {check.passed ? 'Passed' : 'Failed'}</p><CheckEvidence goalId={goal.id} artifactId={check.artifactId} /></div>)}
       {goal.pr?.url && /^https:\/\//.test(goal.pr.url) && <a href={goal.pr.url} target="_blank" rel="noreferrer">Open pull request #{goal.pr.number}</a>}
     </section>}
-    <form className="orch-card goal-composer" onSubmit={event => { event.preventDefault(); if (send && message.trim() && !disabled) void act(goal, { ...send, payload: { message: message.trim() } }).then(saved => { if (saved) setMessage(''); }); }}>
-      <label htmlFor="goal-message">Message your supervisor</label><textarea id="goal-message" rows={3} maxLength={8000} value={message} onChange={event => setMessage(event.target.value)} disabled={disabled || !send} placeholder="Answer a question, clarify scope, or request changes…" />
-      <button type="submit" className="primary-button" disabled={disabled || !send || !message.trim()}>Send message</button>
-      {conversation.paused && <small>Messages remain saved while the goal is paused.</small>}
-    </form>
+    {clarification && <form className="orch-card" onSubmit={event => { event.preventDefault(); void act(goal, { ...clarification, payload: { answer } }).then(saved => { if (saved) setAnswer(''); }); }}><h3>A question from your planner</h3><p>{goal.clarification?.question}</p><label htmlFor="goal-answer">Your answer</label><textarea id="goal-answer" ref={answerBox} value={answer} onChange={event => setAnswer(event.target.value)} maxLength={8000} disabled={disabled} required /><button disabled={disabled || !answer.trim()}>Send answer</button></form>}
+    {(conversation || revision) && <form className="orch-card goal-composer" onSubmit={event => { event.preventDefault(); if (composerAction && message.trim() && !disabled) void act(goal, { ...composerAction, payload: { message: message.trim() } }).then(saved => { if (saved) setMessage(''); }); }}>
+      <label htmlFor="goal-message">{conversation ? 'Message your supervisor' : 'Request a revision'}</label><textarea id="goal-message" ref={composer} rows={3} maxLength={8000} value={message} onChange={event => setMessage(event.target.value)} disabled={disabled || !composerAction} placeholder={conversation ? 'Answer a question, clarify scope, or request changes…' : 'Tell the planner what to change in the next revision…'} />
+      <button type="submit" className="primary-button" disabled={disabled || !composerAction || !message.trim()}>{conversation ? 'Send message' : 'Send revision request'}</button>
+      {conversation?.paused && <small>Messages remain saved while the goal is paused.</small>}
+    </form>}
   </article>;
 }
