@@ -13,7 +13,7 @@ test('diagnostics retain bounded exception identity and transport cause without 
 
 test('telemetry framing works across chunks and retains unknown, oversized and partial output', () => {
   const telemetry = JSON.stringify({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 1, estimated_tokens_delta: 1 }) + '\n';
-  const retained = [JSON.stringify({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 1, estimated_tokens_delta: 1, message: 'keep' }) + '\n',
+  const retained = [...['uuid', 'session_id'].map(key => JSON.stringify({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 1, estimated_tokens_delta: 1, [key]: { invalid: true } }) + '\n'), JSON.stringify({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 1, estimated_tokens_delta: 1, message: 'keep' }) + '\n',
     JSON.stringify({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 'invalid' }) + '\n', 'x'.repeat(9000) + '\n', 'Résumé\n', 'partial'];
   const output = [], filter = telemetryFilter(chunk => output.push(chunk));
   const data = Buffer.from(telemetry + retained.join(''));

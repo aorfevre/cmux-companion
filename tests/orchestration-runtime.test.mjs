@@ -126,7 +126,7 @@ test('escaped descendant holding output pipes cannot outlive the bounded drain d
   const clock = new FakeClock();
   const descendant = "process.send('ready'); setInterval(() => {}, 1000);";
   const script = `const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { detached: true, stdio: ['ignore',1,2,'ipc'] }); child.on('message', () => { process.stdout.write(String(child.pid)); child.disconnect(); child.unref(); });`;
-  const handle = await start(t, script, { clock });
+  const handle = await start(t, script, { clock, filterThinkingTelemetry: true });
   await clock.scheduled(3);
   clock.advance(policy.ceilingMs + 2 * policy.killGraceMs);
   const result = await handle.result;

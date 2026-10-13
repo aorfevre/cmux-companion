@@ -61,6 +61,7 @@ export function startBackgroundProcess(command, { policy: input, signal, clock: 
         child.stdout.destroy(); child.stderr.destroy(); child.unref();
       }
       if (!spawned) reject(stopped && !child.pid ? new StoppedSpawnError(spawnFailure) : new DomainError('SPAWN_FAILED', 'Background process could not start'));
+      filter?.end();
       const code = reason || (!stopped ? 'TERMINATION_UNCERTAIN' : closeSignal ? 'SIGNALLED' : exitCode === 0 ? '' : 'EXIT_FAILED');
       // Truncated/invalid UTF-8 must not expand the returned byte budget through
       // replacement characters. StringDecoder.write omits an incomplete suffix.

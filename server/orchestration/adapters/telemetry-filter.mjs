@@ -21,6 +21,7 @@ export function telemetryFilter(emit) {
             let telemetry = false;
             try { const value = JSON.parse(pending.toString('utf8')); telemetry = value.type === 'system' && value.subtype === 'thinking_tokens'
               && Object.keys(value).every(key => ['type', 'subtype', 'estimated_tokens', 'estimated_tokens_delta', 'session_id', 'uuid'].includes(key))
+              && ['uuid', 'session_id'].every(key => !(key in value) || typeof value[key] === 'string')
               && Number.isFinite(value.estimated_tokens) && Number.isFinite(value.estimated_tokens_delta); } catch { /* Retain unknown output. */ }
             if (telemetry) { stats.discardedTelemetryBytes += pending.length; stats.discardedTelemetryFrames++; }
             else emit(pending);

@@ -45,7 +45,7 @@ export function adoptionEpisodes(goal) {
   /** @type {Record<string,number>} */ const episodes = {};
   /** @type {Record<string,number>} */ const counts = {};
   /** @param {import('../types.d.ts').Attempt} attempt */
-  const keyFor = attempt => `${attempt.revision === 0 ? 'planning' : `revision:${attempt.revision}`}:${goal.experienceVersion === 2 && attempt.role === 'planner' ? 'supervisor' : attempt.role}:${attempt.taskId ?? ''}`;
+  const keyFor = attempt => `${goal.approvedRevision === null || attempt.revision === 0 || attempt.target.startsWith('contract:') ? 'planning' : `revision:${attempt.revision}`}:${goal.experienceVersion === 2 && attempt.role === 'planner' ? 'supervisor' : attempt.role}:${attempt.taskId ?? ''}`;
   for (const attempt of goal.attempts) {
     const key = keyFor(attempt);
     counts[key] = (counts[key] ?? 0) + 1;

@@ -291,3 +291,21 @@ test('historical review and check receipts remain charged to their own episodes'
   assert.equal(f.goal.recoveryPolicy.priorEpisodes['revision:1:checks:A'], 1);
   assert.equal(f.goal.recoveryPolicy.priorEpisodes['revision:1:implementer:A'], 0);
 });
+
+
+test('pre-approval reviewer retries consume the planning episode budget', () => {
+  const f = enabled({ approved: false });
+  f.command('publish_contract', { contract: contract() }, f.user);
+  f.request('reviewer', 'reviewer'); f.dispatch('reviewer');
+  f.command('record_stopped', { attemptId: 'reviewer' });
+  const attempt = f.goal.attempts.at(-1);
+  attempt.failureCode = 'NATIVE_TERMINAL_FAILED';
+  assert.equal(attempt.revision, 1);
+  assert.equal(f.goal.approvedRevision, null);
+  for (let i = 0; i < 3; i++) f.goal.attempts.push({ ...attempt, id: `old-reviewer-${i}` });
+  delete f.goal.recoveryPolicy.priorEpisodes;
+  f.command('attribute_recovery_history', {});
+  assert.equal(f.goal.recoveryPolicy.priorEpisodes['planning:reviewer:'], 3);
+  assert.equal(f.goal.recoveryPolicy.priorSpent, 3);
+  assert.equal(recoveryStatus(f.goal).state, 'blocked');
+});
