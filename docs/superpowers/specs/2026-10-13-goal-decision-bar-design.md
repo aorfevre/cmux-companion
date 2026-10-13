@@ -64,8 +64,8 @@ Shape:
 - `primary`: one action from the projected action list, or null.
 
 The primary action is the first offered action whose type appears in this
-ordered list: `retry_startup`, `recover_goal`, `approve`, `approve_publication`,
-`accept_moved_target`, `request_review_fix`, `retry_task`, `retry_attempt`,
+ordered list: `retry_startup`, `recover_goal`, `approve`, `accept_moved_target`,
+`approve_publication`, `request_review_fix`, `retry_task`, `retry_attempt`,
 `retry_integration`, `retry_verification`, `authorize_repair`, `resume_goal`.
 The first offered `recover_goal` action is the plain "Recover goal" action.
 
@@ -80,20 +80,26 @@ The state and reason follow this ladder. The first matching step wins.
    to approve." Reason: null.
 5. Status awaiting approval and approval refused. State: "Your plan waits on a
    blocker." Reason: the refusal message.
-6. Status ready to publish and publication not yet approved. State: "The
+6. Status ready to publish and the target branch moved. State: "The target
+   branch moved after review." Reason: "Publishing keeps the reviewed head
+   unchanged; it does not rebase or merge the target." Primary: the moved
+   target acceptance.
+7. Status ready to publish and publication not yet approved. State: "The
    verified result waits for your publication approval." Reason: null.
-7. A current attempt failed, or its ownership is unknown. State: the attempt
+8. A current attempt failed, or its ownership is unknown. State: the attempt
    error, or "An agent needs a retry.", or "Agent ownership needs
    reconciliation." Reason: null.
-8. A task failed. State: "A task needs a retry." Reason: null.
-9. Paused conversation. State: "Paused." Reason: "Your messages stay queued."
-10. Merged. State: "Merged on GitHub." Aborted. State: "Aborted. Evidence is
+9. A task failed. State: "A task needs a retry." Reason: null.
+10. Paused conversation. State: "Paused." Reason: "Your messages stay queued."
+11. Merged. State: "Merged on GitHub." Aborted. State: "Aborted. Evidence is
     retained." Reason: null.
-11. Delivered. State: "Pull request published. Waiting for merge." Reason: the
+12. Delivered. State: "Pull request published. Waiting for merge." Reason: the
     merge sync error, or null.
-12. Everything else. State: a progress sentence: "N agents working." when
+13. Everything else. State: a progress sentence: "N agents working." when
     workers run, otherwise "Work continues automatically. No action needed."
     Reason: null.
+
+
 
 A refused action never renders as a disabled primary button. The refusal text
 becomes the reason and the primary is absent.
