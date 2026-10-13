@@ -9,7 +9,6 @@ export function GoalTechnicalDetails({ goal, disabled, terminal, act, control }:
   goal: Goal & { contracts: { revision: number; contract: Contract }[] }; disabled: boolean; terminal: boolean;
   act(goal: Goal, action: Action): Promise<boolean>; control(goal: Goal, action: 'terminal' | 'reconcile', attemptId?: string): Promise<void>;
 }) {
-  const safeLink = goal.pr?.url && /^https:\/\//.test(goal.pr.url) ? goal.pr.url : null;
   let planReviewMessage = 'Plan review is off. Review the plan yourself before approving implementation.';
   if (goal.planReviewRequired) planReviewMessage = goal.planReviewPending
     ? 'Initial plan review is off; the required review must finish before approval.'
@@ -20,7 +19,6 @@ export function GoalTechnicalDetails({ goal, disabled, terminal, act, control }:
       {Boolean(goal.planRevisionCount) && <p role="status">Automatic plan revisions: {goal.planRevisionCount} of 2.{goal.status === 'discovering' ? ' Addressing review findings.' : ''}</p>}
       {goal.planReviewEnabled === false && ['discovering', 'awaiting_approval'].includes(goal.status) && <p>{planReviewMessage}</p>}
       <p>Base branch: {goal.baseBranch}</p><p>Integrated head <code>{goal.integrationHead.slice(0, 12) || 'Preparing fresh base…'}</code></p><button disabled={disabled} onClick={() => void control(goal, 'reconcile')}>Reconcile workers</button>
-      {safeLink && <a className="orch-pr" href={safeLink} target="_blank" rel="noreferrer">Open pull request #{goal.pr?.number}</a>}
       {goal.status === 'delivered' && <p role="status">{goal.mergeSync?.state === 'closed' ? 'Closed without merging on GitHub.' : goal.mergeSync?.error || 'Waiting for merge on GitHub.'} {goal.mergeSync ? `Last checked ${new Date(goal.mergeSync.checkedAt).toLocaleString()}.` : 'First merge check pending.'} Checks run every 15 minutes while your Mac is online.</p>}
       {goal.status === 'addressing_review' && goal.reviewRound && <p role="status" aria-label="Review round phase">{goal.reviewRound.phase}{goal.reviewRound.error ? ` · ${goal.reviewRound.error}` : ''}</p>}
       {goal.publication?.observation && <p>Publication: {goal.publication.observation.status}</p>}
