@@ -19,7 +19,8 @@ test('startup failure, approval, delivery and abort pick the first offered prima
   assert.equal(decisionView(ready.goal).state, 'Your plan is ready to approve.');
   assert.equal(decisionView(ready.goal).primary.label, 'Approve revision 1');
   const delivered = fixture(); delivered.deliver();
-  assert.deepEqual(decisionView(delivered.goal), { state: 'Pull request published. Waiting for merge.', reason: null, primary: null });
+  assert.equal(decisionView(delivered.goal).state, 'Pull request published. Waiting for merge.');
+  assert.equal(primary(delivered.goal), 'request_review_fix', 'addressing review comments stays one click away after delivery');
   delivered.command('abort', {}, delivered.user);
   assert.deepEqual(decisionView(delivered.goal), { state: 'Aborted. Evidence is retained.', reason: null, primary: null });
 });
