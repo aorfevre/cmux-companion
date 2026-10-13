@@ -7,7 +7,7 @@ import { CheckEvidence } from './check-evidence';
 import { GoalTeam } from './goal-team';
 import { WaveBoard } from './wave-board';
 import type { Action, Goal } from './goal-board';
-import { DecisionBar } from './decision-bar';
+import { DecisionBar, type NextStep } from './decision-bar';
 function LegacyGoalDetail({ goal, disabled, terminal, act, control }: {
   goal: Goal & { contracts: { revision: number; contract: Contract }[] }; disabled: boolean; terminal: boolean;
   act(goal: Goal, action: Action): Promise<boolean>; control(goal: Goal, action: 'terminal' | 'reconcile', attemptId?: string): Promise<void>;
@@ -63,8 +63,8 @@ function LegacyGoalDetail({ goal, disabled, terminal, act, control }: {
   </article>;
 }
 
-export function GoalDetail(props: Parameters<typeof LegacyGoalDetail>[0]) {
-  const bar = <DecisionBar goal={props.goal} disabled={props.disabled} act={props.act} />;
+export function GoalDetail(props: Parameters<typeof LegacyGoalDetail>[0] & { pendingNext: NextStep | null; onNextConsumed(): void }) {
+  const bar = <DecisionBar goal={props.goal} disabled={props.disabled} act={props.act} openNext={() => props.onNextConsumed()} />;
   if (props.goal.experienceVersion !== 2) return <>{bar}<LegacyGoalDetail {...props} /></>;
   return <>{bar}<GoalConversation goal={props.goal} disabled={props.disabled} act={props.act} /><details className="orch-card"><summary>Technical details, team and full evidence</summary><LegacyGoalDetail {...props} /></details></>;
 }

@@ -9,7 +9,8 @@ import { MissionShell } from '../mission-shell';
 import { ProjectPicker } from './project-picker';
 import { SupervisorPicker } from './supervisor-picker';
 import { GoalDetail } from './goal-detail';
-import { GoalFleet, type GoalFilter } from './goal-fleet';
+import { GoalsList, type Chip } from './goals-list';
+import type { NextStep } from './decision-bar';
 
 export type Goal = ReturnType<typeof goalView> & { lastActivity?: { kind: string; createdAt: string } | null };
 export type Action = Goal['actions'][number];
@@ -28,13 +29,15 @@ const subscribeLocation = (changed: () => void) => { window.addEventListener('po
 export function GoalBoard() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [configuration, setConfiguration] = useState<Configuration | null>(null);
   const search = useSyncExternalStore(subscribeLocation, () => window.location.search, () => '');
-  const [fleetFilter, setFleetFilter] = useState<GoalFilter>('All');
+  const [chip, setChip] = useState<Chip>(() => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'needs' ? 'Needs you' : 'All');
+  const [pendingNext, setPendingNext] = useState<NextStep | null>(null);
   const [selectionOverride, setSelected] = useState<string | null | undefined>();
   const selected = selectionOverride === undefined ? new URLSearchParams(search).get('goal') : selectionOverride;
   const [detail, setDetail] = useState<(Goal & { contracts: { revision: number; contract: Contract }[] }) | null>(null);
   const [auth, setAuth] = useState<'loading' | 'paired' | 'unpaired' | 'unavailable'>('loading');
   const [token, setToken] = useState(''), [title, setTitle] = useState(''), [repository, setRepository] = useState('');
-  const needsOnly = new URLSearchParams(search).get('view') === 'needs';
+  // The retired Needs You destination lands on the list with its chip selected.
+  useEffect(() => { const url = new URL(location.href); if (url.searchParams.get('view') === 'needs') { url.searchParams.delete('view'); history.replaceState(null, '', url); } }, []);
   const [brief, setBrief] = useState('');
   const [conversational, setConversational] = useState(false);
   const [supervisorId, setSupervisorId] = useState(''), [supervisorReady, setSupervisorReady] = useState(false);
@@ -138,10 +141,10 @@ export function GoalBoard() {
   const readOnly = Boolean(snapshot?.readOnly || configuration?.readOnly), disabled = busy || readingFiles || readOnly || Boolean(pending);
   const chosenRepo = configuration?.repositories.find(entry => entry.id === repository);
   const pendingRecovery = pending && <div className="orch-banner">The request outcome is uncertain. Retry the same request to reconcile its receipt. <button disabled={busy || readOnly} onClick={() => void submit(pending)}>Retry pending request</button></div>;
-  return <MissionShell className="orchestration" active={needsOnly ? 'needs' : 'goals'}>
+  return <MissionShell className="orchestration" active="goals">
     <header className="orch-header"><a href="/">cmux companion</a><span role="status">{auth === 'paired' ? connected ? 'Live updates' : 'Reconnecting · polling' : 'Connect your Mac'}</span></header>
     {discoveryNotice && <p role="status">{discoveryNotice} <a href="/settings#dev-repos">Review Dev repos</a></p>}
-    {!selected && <div className="orch-heading"><div><p className="orch-eyebrow">{selected ? "GOAL WORKSPACE" : needsOnly ? "DECISIONS" : "OPERATIONS / FLEET"}</p><h1>{selected ? "Goal workspace" : needsOnly ? "Needs You" : "Mission Control"}</h1><p>{selected ? "Plan, supervise and review delivery." : needsOnly ? "Questions, approvals and recovery decisions." : "Every goal, decision and active worker in one place."}</p></div></div>}
+    {!selected && <div className="orch-heading"><div><p className="orch-eyebrow">GOALS</p><h1>Goals</h1><p>Every decision first, then everything in flight.</p></div></div>}
     {connectionError && <div role="alert" className="orch-error"><p>{connectionError}</p><button onClick={() => void refresh()}>Try again</button></div>}
     {!selected && <>{error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}</>}
     {auth === 'unpaired' ? <form className="orch-card" onSubmit={async event => {
@@ -151,7 +154,6 @@ export function GoalBoard() {
     }}><h2>Pair this device</h2><p className="pairing-help">The pairing code is the private token stored on your Mac. In a terminal on the Mac, run <code>npm run status -- --show-token</code> from the Companion checkout to print it. Do not share this code.</p><label>Pairing code<input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></label><button disabled={busy}>Pair this device</button></form> : auth === 'unavailable' ? <section className="orch-card"><h2>Goals are unavailable</h2><p>Check your connection to the Mac and try again. If this is a new installation, complete <a href="/onboarding">goal setup</a>.</p></section> : auth === 'loading' ? <p>Connecting to your Mac…</p> : <>
       {readOnly && <p className="orch-banner">{configuration?.suspensionReason || 'Read-only mode · controls are disabled.'}</p>}
       {!selected && pendingRecovery}
-      {!selected && <details className="orch-capacity"><summary>Execution capacity</summary>{configuration?.limits.global} execution agents · {configuration?.limits.perGoal} per goal · {configuration?.limits.planners} planners</details>}
       {Boolean(configuration?.repositories.length) && !configuration?.capabilities.some(entry => entry.role === 'planner') && <p className="orch-banner">Your planning agent is not ready. <a href="/settings#agents">Choose an agent</a> to start a goal.</p>}
       {!selected && <button ref={createButton} className="primary-button" aria-expanded={creating} aria-controls="goal-create" disabled={disabled} onClick={() => setCreating(true)}>Start a goal</button>}
       {creating && (configuration?.repositories.length ? <form id="goal-create" className="orch-card orch-create" onSubmit={event => { event.preventDefault(); if (!chosenRepo || disabled || conversational && !supervisorReady) return; void submit({ id: crypto.randomUUID(), goalId: crypto.randomUUID(), expectedVersion: 0, type: 'create_goal', payload: { ...(title.trim() ? { title: title.trim() } : {}), description: brief, ...(conversational ? { experienceVersion: 2, supervisorProfileId: supervisorId } : {}), ...(attachments.length ? { attachments } : {}), repositoryId: chosenRepo.id, baseBranch: baseBranch.trim() || 'main' } }); }}>
@@ -180,8 +182,8 @@ export function GoalBoard() {
         {attachments.length > 0 && <ul aria-label="Selected references">{attachments.map((file, index) => <li key={`${index}:${file.name}`}>{file.name} <button type="button" disabled={disabled} onClick={() => setAttachments(current => current.filter((_, position) => position !== index))}>Remove {file.name}</button></li>)}</ul>}
         <button type="submit" className="primary-button" disabled={disabled || (conversational && !supervisorReady) || !chosenRepo || Boolean(chosenRepo?.error) || !configuration?.capabilities.some(entry => entry.role === 'planner')}>Start goal</button> <button type="button" disabled={busy || Boolean(pending)} onClick={closeCreation}>Cancel</button>
       </form> : <section id="goal-create" className="orch-card"><h2 ref={createHeading} tabIndex={-1}>Start with your first goal</h2><p>Choose your repositories and an agent, then describe what you want done.</p><a className="primary-button" href="/onboarding">Set up goals</a> <button onClick={closeCreation}>Cancel</button></section>)}
-      {!selected && <GoalFleet selectedFilter={fleetFilter} onFilterChange={setFleetFilter} goals={snapshot?.goals ?? []} needsOnly={needsOnly} select={id => { setSelected(id); setDetail(null); const url = new URL(location.href); url.searchParams.set('goal', id); history.replaceState(null, '', url); }} projectName={id => configuration?.repositories.find(repo => repo.id === id)?.name || id} />}
-      {selected && <section className="mission-goal-workspace"><button onClick={() => { setSelected(null); setDetail(null); const url = new URL(location.href); url.searchParams.delete('goal'); history.replaceState(null, '', url); }}>← Back to {needsOnly ? 'Needs You' : 'Mission Control'}</button>{pendingRecovery}{error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}{detail ? <GoalDetail key={detail.id} goal={detail} disabled={disabled} terminal={Boolean(configuration?.terminal)} act={act} control={control} /> : <p>Loading goal…</p>}</section>}
+      {!selected && <GoalsList goals={snapshot?.goals ?? []} chip={chip} onChip={setChip} disabled={disabled} act={act} select={id => { setSelected(id); setDetail(null); const url = new URL(location.href); url.searchParams.set('goal', id); history.replaceState(null, '', url); }} openNext={(id, next) => { setPendingNext(next); setSelected(id); setDetail(null); const url = new URL(location.href); url.searchParams.set('goal', id); history.replaceState(null, '', url); }} projectName={id => configuration?.repositories.find(repo => repo.id === id)?.name || id} />}
+      {selected && <section className="mission-goal-workspace"><button onClick={() => { setSelected(null); setDetail(null); const url = new URL(location.href); url.searchParams.delete('goal'); history.replaceState(null, '', url); }}>← Back to Goals</button>{pendingRecovery}{error && <p role="alert" className="orch-error">{error}</p>}{notice && <p role="status">{notice}</p>}{detail ? <GoalDetail key={detail.id} goal={detail} disabled={disabled} terminal={Boolean(configuration?.terminal)} act={act} control={control} pendingNext={pendingNext} onNextConsumed={() => setPendingNext(null)} /> : <p>Loading goal…</p>}</section>}
 
     </>}
   </MissionShell>;

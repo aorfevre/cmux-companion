@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GoalActivity } from '../app/orchestration/goal-activity';
 import { CheckEvidence } from '../app/orchestration/check-evidence';
-import { GoalFleet } from '../app/orchestration/goal-fleet';
+import { GoalsList } from '../app/orchestration/goals-list';
 import { goalView } from '../server/orchestration/domain/state-view.mjs';
 import { fixture } from './helpers/orchestration/domain-fixture.mjs';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -46,8 +46,8 @@ test('check evidence is fetched only on inspection and output is escaped, bounde
   fireEvent.click(screen.getByRole('button', { name: 'Hide check output' }));
   expect(screen.queryByLabelText('Check output')).toBeNull();
 });
-test('fleet shows the last recorded meaningful action without inventing elapsed progress', () => {
-  render(<GoalFleet goals={[{ ...goalView(fixture().goal), lastActivity: { kind: 'contract_published', createdAt: '2026-09-15T12:00:00Z' } }]} select={vi.fn()} projectName={() => 'Example'} />);
+test('the list shows the last recorded meaningful action without inventing elapsed progress', () => {
+  render(<GoalsList goals={[{ ...goalView(fixture().goal), lastActivity: { kind: 'contract_published', createdAt: '2026-09-15T12:00:00Z' } }]} chip="All" onChip={vi.fn()} disabled={false} act={vi.fn()} select={vi.fn()} openNext={vi.fn()} projectName={() => 'Example'} />);
   expect(screen.getByText(/Design and plan proposed/)).toBeTruthy();
   expect(document.querySelector('time')?.getAttribute('dateTime')).toBe('2026-09-15T12:00:00Z');
 });

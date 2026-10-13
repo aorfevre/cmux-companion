@@ -130,7 +130,7 @@ test('failed revision feedback remains editable until the service confirms succe
   const f = fixture();
   const goal = { ...goalView(f.goal), contracts: [], actions: [{ type: 'request_revision', label: 'Request revision', payload: {} }] };
   const act = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
-  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   const feedback = screen.getByLabelText('Revision feedback');
   fireEvent.change(feedback, { target: { value: 'Preserve this detailed correction' } });
   fireEvent.click(screen.getByRole('button', { name: 'Request revision' }));
@@ -148,7 +148,7 @@ test('moved publication target shows the observed commit and submits the service
   const goal = { ...goalView(fixture().goal), contracts: [], actions: [moved], decision: { state: 'The target branch moved.', reason: null, detail: null, primary: moved, next: null, rank: 0 as const, stage: 'Ready to publish' },
     publication: { approved: true, branch: 'companion-goals/goal', baseBranch: 'main', baseSha: 'a'.repeat(40), observation: { status: 'target_moved' as const, baseHeadSha: 'b'.repeat(40), pr: null } } };
   const act = vi.fn().mockResolvedValue(true);
-  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByText('bbbbbbbbbbbb')).toBeTruthy();
   expect(screen.getByText(/Publishing keeps the reviewed and verified head/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Publish reviewed head against moved target' }));
@@ -173,7 +173,7 @@ test('finishing a command for A does not invalidate the selected B detail reques
   fireEvent.click(await screen.findByRole('button', { name: /Goal A/ }));
   fireEvent.click(await screen.findByRole('button', { name: 'More' }));
   fireEvent.click(within(await screen.findByLabelText('More actions')).getByRole('button', { name: 'Abort goal' }));
-  fireEvent.click(screen.getByRole('button', { name: /Back to Mission Control/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Back to Goals/ }));
   fireEvent.click(screen.getByRole('button', { name: /Goal B/ }));
   await waitFor(() => expect(finishB).toBeTypeOf('function'));
   finishCommand({});
@@ -201,7 +201,7 @@ test('goal details preserve the request, edit only the title, and hide empty evi
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const goal = { ...goalView(fixture().goal), title: 'Short title', description: 'Complete request\nhttps://example.com/design', contracts: [], actions: [{ type: 'rename_goal', label: 'Rename goal', payload: { title: 'Short title' } }] };
   const act = vi.fn().mockResolvedValue(true);
-  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByText(/Complete request/).textContent).toContain('https://example.com/design');
   expect(screen.queryByText('Independent reviews')).toBeNull();
   expect(screen.queryByRole('region', { name: 'Combined verification' })).toBeNull();
@@ -251,7 +251,7 @@ test('clarification answers preserve feedback on failure and use the projected a
   const base = goalView(fixture().goal);
   const goal = { ...base, contracts: [], clarification: { question: 'Which audience?' }, actions: [{ type: 'answer_clarification', label: 'Answer', payload: {} }] };
   const act = vi.fn().mockResolvedValue(false);
-  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   fireEvent.change(screen.getByLabelText('Your answer'), { target: { value: 'New learners' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send answer' }));
   await waitFor(() => expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'answer_clarification', payload: { answer: 'New learners' } })));
@@ -259,24 +259,22 @@ test('clarification answers preserve feedback on failure and use the projected a
 });
 
 
-test('terminal goals retain their result without stale attention from unanswered questions', async () => {
-  const { attention } = await import('../app/orchestration/attention');
-  const { GoalFleet } = await import('../app/orchestration/goal-fleet');
+test('terminal goals keep their stage and never rank as decisions despite unanswered questions', async () => {
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
-  const base = goalView(fixture().goal);
-  const goals = (['merged', 'aborted'] as const).map(status => ({ ...base, id: status, status, clarification: { question: 'Historical question' } }));
-  for (const goal of goals) expect(attention(goal)).toBeNull();
-  render(<GoalFleet goals={goals} select={vi.fn()} projectName={() => 'Example'} />);
-  expect(screen.getByText('Aborted')).toBeTruthy();
-  expect(screen.queryByText(/Needs attention/)).toBeNull();
+  for (const status of ['merged', 'aborted'] as const) {
+    const goal = goalView({ ...fixture().goal, status, clarification: { question: 'Historical question' } });
+    expect(goal.decision.rank).toBeGreaterThanOrEqual(3);
+    expect(goal.decision.stage).toBe(status === 'merged' ? 'Complete' : 'Aborted');
+  }
 });
 
 
-test('Mission Control opens first and cancelling creation restores focus and retains the draft', async () => {
+
+test('the Goals list opens first and cancelling creation restores focus and retains the draft', async () => {
   render(<GoalBoard />);
   const startButton = await screen.findByRole('button', { name: 'Start a goal' });
-  expect(screen.getByRole('region', { name: 'Goal fleet' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Goals' })).toBeTruthy();
   expect(screen.queryByLabelText('What should we accomplish?')).toBeNull();
   fireEvent.click(startButton);
   expect(screen.getByRole('heading', { name: 'Start a goal' })).toBe(document.activeElement);
@@ -320,13 +318,13 @@ test('held goal shows failure and reconciliation guidance, then submits the exac
   const f = fixture(); f.request('planner', 'planner'); f.dispatch('planner');
   f.command('record_failure', { attemptId: 'planner', uncertain: true, error: 'Lost connection' });
   const act = vi.fn().mockResolvedValue(true);
-  const view = render(<GoalDetail goal={{ ...goalView(f.goal), contracts: [] }} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  const view = render(<GoalDetail goal={{ ...goalView(f.goal), contracts: [] }} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByText('The goal is on hold.')).toBeTruthy();
   expect(screen.getByText('Workers are still running. Recovery opens when they stop.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Recover goal' })).toBeNull();
   f.command('record_stopped', { attemptId: 'planner' });
   const goal = { ...goalView(f.goal), contracts: [] };
-  view.rerender(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  view.rerender(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   fireEvent.click(screen.getByRole('button', { name: 'Recover goal' }));
   expect(act).toHaveBeenCalledWith(goal, goal.actions.find(action => action.type === 'recover_goal'));
 });
@@ -337,7 +335,7 @@ test('execution agents expose their service-owned terminal control inside Waves 
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture(); f.approve(); f.request('implementation', 'implementer', 'A'); f.dispatch('implementation');
   const goal = { ...goalView(f.goal), contracts: f.goal.contracts }, control = vi.fn().mockResolvedValue(undefined);
-  render(<GoalDetail goal={goal} disabled={false} terminal={true} act={vi.fn()} control={control} />);
+  render(<GoalDetail goal={goal} disabled={false} terminal={true} act={vi.fn()} control={control} pendingNext={null} onNextConsumed={vi.fn()} />);
   fireEvent.click(screen.getByRole('tab', { name: 'Waves & sessions' }));
   fireEvent.click(screen.getByText('Agent session'));
   fireEvent.click(screen.getByRole('button', { name: 'Open implementer terminal' }));
@@ -401,21 +399,20 @@ test('wave view shows the active barrier, waiting tasks and retained checked out
 
 test('a delivered goal offers the review round and a running round shows its phase and card', async () => {
   const { GoalDetail } = await import('../app/orchestration/goal-detail');
-  const { goalStage } = await import('../app/orchestration/goal-fleet');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture(); f.deliver();
   const delivered = { ...goalView(f.goal), contracts: [] };
   const act = vi.fn().mockResolvedValue(true);
-  const { unmount } = render(<GoalDetail goal={delivered} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  const { unmount } = render(<GoalDetail goal={delivered} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   fireEvent.click(screen.getByRole('button', { name: 'Address review comments' }));
   expect(act).toHaveBeenCalledWith(delivered, delivered.actions.find(action => action.type === 'request_review_fix'));
   unmount();
   f.command('request_review_fix', {}, f.user);
   f.command('record_review_threads', { roundId: f.goal.reviewRound.id, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }], mergeable: 'mergeable' });
   const fixing = { ...goalView(f.goal), contracts: [] };
-  expect(goalStage(fixing)).toBe('Addressing review');
-  render(<GoalDetail goal={fixing} disabled={false} terminal={false} act={act} control={vi.fn()} />);
+  expect(fixing.decision.stage).toBe('Addressing review');
+  render(<GoalDetail goal={fixing} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByRole('region', { name: 'Goal decision' }).textContent).toContain('Addressing review');
   expect(screen.getByText('PLAN 1')).toBeTruthy();
   expect(screen.getByRole('status', { name: 'Review round phase' }).textContent).toContain('Fixing 1 thread');
@@ -433,7 +430,7 @@ test('a settled round lists each thread action and an unconfirmed reply', async 
   const view = { ...goalView(f.goal), contracts: [], reviewRounds: [{ id: 'r1', prHeadSha: HEAD_B, startedAt: 1, settledAt: 2, state: 'settled' as const, phase: 'Round complete', outcome: 'addressed' as const, fixHeadSha: 'd'.repeat(40),
     threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }, { id: 'PRRT_2', path: null, line: null, author: 'alex', body: 'Nit.', isBot: false }],
     replies: [{ threadId: 'PRRT_1', action: 'fixed' as const, body: 'Fixed.' }, { threadId: 'PRRT_2', action: 'declined' as const, body: 'Out of scope.' }], posted: ['PRRT_2'], unconfirmed: ['PRRT_1'], resolved: ['PRRT_1'] }] };
-  render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} />);
+  render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
   expect(screen.getByText(/Addressed · 2 threads · new head dddddddddddd/)).toBeTruthy();
   expect(screen.getByText(/fixed · resolved · reply unconfirmed/)).toBeTruthy();
@@ -450,7 +447,7 @@ test('an automatic round shows its merge evidence and conflicted paths', async (
     trigger: 'conflict' as const, mergedBaseSha: 'e'.repeat(40), mergeCommitSha: 'f'.repeat(40), conflictPaths: ['src/a.mjs', 'package-lock.json'],
     threads: [],
   } };
-  render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} />);
+  render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
   expect(screen.getByText(/Fixing 0 threads and 2 conflicts/)).toBeTruthy();
   expect(screen.getByText(/Started automatically by an observed merge conflict/)).toBeTruthy();
@@ -468,22 +465,23 @@ test('a round with no merge shows no merge evidence', async () => {
     id: 'r1', prHeadSha: HEAD_B, startedAt: 1, state: 'fixing' as const, phase: 'Fixing 1 thread',
     trigger: 'user' as const, threads: [{ id: 'PRRT_1', path: 'src/a.mjs', line: 1, author: 'coderabbitai', body: 'Return two.', isBot: true }],
   } };
-  render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} />);
+  render(<GoalDetail goal={view} disabled={false} terminal={false} act={vi.fn()} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   fireEvent.click(screen.getByRole('tab', { name: 'Run report' }));
   expect(screen.getByText(/Fixing 1 thread/)).toBeTruthy();
   expect(screen.queryByText(/Started automatically by an observed merge conflict/)).toBeNull();
   expect(screen.queryByText(/Merged target/)).toBeNull();
 });
 
-test('a conflicted pull request with no active round needs attention', async () => {
-  const { attention } = await import('../app/orchestration/attention');
+test('a conflicted pull request with no active round keeps its review fix as the decision', async () => {
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const f = fixture(); f.deliver();
   f.command('record_merge_sync', { number: f.goal.pr.number, url: f.goal.pr.url, checkedAt: 1, state: 'open', mergeable: 'conflicting' }, f.system);
-  const goal = { ...goalView(f.goal), contracts: [] };
-  expect(attention(goal)).toBe('The PR conflicts with its target branch. A round starts automatically at the next merge check.');
+  const goal = goalView(f.goal);
+  expect(goal.decision.rank).toBe(0);
+  expect(goal.decision.primary?.type).toBe('request_review_fix');
 });
+
 
 
 test('abort retries a definitive supervisor version race without changing its target', async () => {
@@ -509,14 +507,14 @@ test('abort retries a definitive supervisor version race without changing its ta
   expect(sent[1].id).not.toBe(sent[0].id);
 });
 
-test('an automatically retried launch stays out of Needs You until its retry budget is exhausted', async () => {
-  const { attention } = await import('../app/orchestration/attention');
-  const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
+test('an automatically retried launch stays out of Needs you until its retry budget is exhausted', async () => {
+  const { decisionView } = await import('../server/orchestration/domain/decision-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
-  const goal = goalView(fixture().goal);
-  goal.attempts = [{ id: 'launch', role: 'planner', taskId: null, assignment: null, current: true, mode: 'interactive', status: 'failed', workerState: 'stopped', target: 'contract:0', error: 'Temporary resource failure', launchFailure: { code: 'PROVIDER_SPAWN_EAGAIN', retry: 1, limit: 1, scheduled: true } }];
+  const goal = fixture().goal;
+  goal.attempts = [{ id: 'launch', operationId: 'op', role: 'planner', mode: 'interactive', taskId: null, target: 'contract:1:0', generation: goal.generation, revision: goal.revision, status: 'failed', workerState: 'stopped', identity: null, baseSha: goal.baseSha, worktree: null, branch: null, conversationId: 'c', error: 'Temporary resource failure', launchFailure: { code: 'PROVIDER_SPAWN_EAGAIN', retry: 1, limit: 1, scheduled: true } } as never];
   goal.status = 'discovering';
-  expect(attention(goal)).toBeNull();
+  expect(decisionView(goal).state).toBe('Work continues automatically. No action needed.');
   goal.attempts[0].launchFailure!.scheduled = false;
-  expect(attention(goal)).toBe('Temporary resource failure');
+  expect(decisionView(goal).state).toBe('Temporary resource failure');
 });
+
