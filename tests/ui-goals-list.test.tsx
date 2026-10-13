@@ -23,7 +23,7 @@ const props = { chip: 'All' as const, onChip: vi.fn(), disabled: false, act: vi.
 test('rows sort decisions first by newest activity, show one state, one reason and one button, and act without opening', () => {
   const act = vi.fn().mockResolvedValue(true), select = vi.fn(), openNext = vi.fn();
   render(<GoalsList {...props} goals={goals()} act={act} select={select} openNext={openNext} />);
-  expect(screen.getAllByRole('article').map(row => row.getAttribute('aria-label'))).toEqual(['Needs revision', 'Held goal', 'Active goal', 'Merged goal', 'Aborted goal']);
+  expect(screen.getAllByRole('article').map(row => row.getAttribute('aria-label'))).toEqual(['Needs revision', 'Held goal', 'Active goal', 'Merged goal']);
   const held = screen.getByRole('article', { name: 'Held goal' });
   expect(within(held).getByText('The goal is on hold.')).toBeTruthy();
   expect(within(held).getByText('The planner stopped before it finished. Recover to run it again.')).toBeTruthy();
@@ -46,7 +46,11 @@ test('chips filter by rank and empty states name the chip', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Done' }));
   expect(onChip).toHaveBeenCalledWith('Done');
   view.rerender(<GoalsList {...props} goals={goals()} chip="Done" onChip={onChip} />);
-  expect(screen.getAllByRole('article').map(row => row.getAttribute('aria-label'))).toEqual(['Merged goal', 'Aborted goal']);
+  expect(screen.getAllByRole('article').map(row => row.getAttribute('aria-label'))).toEqual(['Merged goal']);
+  view.rerender(<GoalsList {...props} goals={goals()} chip="Aborted" onChip={onChip} />);
+  expect(screen.getAllByRole('article').map(row => row.getAttribute('aria-label'))).toEqual(['Aborted goal']);
+  view.rerender(<GoalsList {...props} goals={goals().filter(goal => goal.id !== 'aborted')} chip="Aborted" onChip={onChip} />);
+  expect(screen.getByText('No aborted goals')).toBeTruthy();
   view.rerender(<GoalsList {...props} goals={goals()} chip="Active" onChip={onChip} />);
   expect(screen.getAllByRole('article').map(row => row.getAttribute('aria-label'))).toEqual(['Active goal']);
   view.rerender(<GoalsList {...props} goals={[goals()[0]]} chip="Needs you" onChip={onChip} />);

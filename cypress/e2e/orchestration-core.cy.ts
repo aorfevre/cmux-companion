@@ -40,13 +40,12 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     });
     cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Abort goal' }).click();
     cy.findByRole('button', { name: /Back to Goals/ }).click();
-    cy.findByRole('button', { name: /^Active$/ }).click();
     cy.findByRole('article', { name: 'Automatic plan revision' }).should('not.exist');
-    cy.findByRole('button', { name: /^Done$/ }).click();
+    cy.findByRole('button', { name: /^Aborted$/ }).click();
     cy.findByRole('button', { name: 'Open Automatic plan revision' }).click();
     cy.findByRole('heading', { name: 'Automatic plan revision' }).should('be.visible');
     cy.findByRole('button', { name: /Back to Goals/ }).click();
-    cy.findByRole('button', { name: /^Done$/ }).should('have.attr', 'aria-pressed', 'true');
+    cy.findByRole('button', { name: /^Aborted$/ }).should('have.attr', 'aria-pressed', 'true');
     cy.screenshot('aborted-fleet-phone');
     cy.viewport(1200, 1000); cy.screenshot('aborted-fleet-desktop');
   });

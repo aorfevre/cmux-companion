@@ -88,7 +88,7 @@ export function decisionView(goal, projected = actionView(goal)) {
     const reason = recoveryBlocked ? (REFUSAL_TRANSLATIONS[recoveryBlocked] ?? recoveryBlocked) : goal.hold.reasons.map(entry => HOLD_TRANSLATIONS[entry.kind]?.(entry, goal) ?? entry.message).join(' ');
     return decision('The goal is on hold.', reason, true, detail);
   }
-  if (goal.clarification && goal.clarification.answer === undefined) return decision(goal.clarification.question);
+  if (goal.clarification && goal.clarification.answer === undefined && !['merged', 'aborted'].includes(goal.status)) return decision(goal.clarification.question);
   if (goal.status === 'awaiting_approval') return approvalBlocked ? decision('Your plan waits on a blocker.', approvalBlocked, false) : decision('Your plan is ready to approve.');
   if (goal.status === 'ready_to_publish' && goal.publication?.observation?.status === 'target_moved') return decision('The target branch moved after review.', 'Publishing keeps the reviewed head unchanged; it does not rebase or merge the target.');
   if (goal.status === 'ready_to_publish' && !goal.publication?.approval) return decision('The verified result waits for your publication approval.');

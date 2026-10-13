@@ -75,7 +75,8 @@ The state and reason follow this ladder. The first matching step wins.
 2. Hold. State: "The goal is on hold." Reason: the hold messages joined by a
    space. When recovery is refused, the reason is the refusal message instead,
    for example the running worker message.
-3. An open clarification question. State: the question. Reason: null.
+3. An open clarification question on a goal that is not merged or aborted.
+   State: the question. Reason: null.
 4. Status awaiting approval and approval offered. State: "Your plan is ready
    to approve." Reason: null.
 5. Status awaiting approval and approval refused. State: "Your plan waits on a

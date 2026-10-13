@@ -65,16 +65,18 @@ unchanged. Existing goals keep their experience version; nothing migrates.
 - Route `/orchestration`. `?view=needs` redirects to `/orchestration` with the
   "Needs you" chip selected. Navigation shows one "Goals" link; "Mission
   Control" and "Needs You" links are removed.
-- Heading "Goals", the "Start a goal" button, a search box and three chips:
-  "Needs you" (rank 0), "Active" (rank 1), "Done" (ranks 2 to 4). No KPI tiles
-  and no execution capacity disclosure; capacity stays in Setup.
+- Heading "Goals", the "Start a goal" button, a search box and five chips:
+  "All" (ranks 0 to 3), "Needs you" (rank 0), "Active" (rank 1), "Done"
+  (ranks 2 and 3) and "Aborted" (rank 4). Aborted goals never appear under
+  "All" or "Done"; they are history, reachable only through their own chip.
+  No KPI tiles and no execution capacity disclosure; capacity stays in Setup.
 - Rows sort by `decision.rank`, then by last activity, newest first.
 - Each row: title, project, `decision.state`, `decision.reason`, the primary or
   next-step button, "More" with the secondary actions, and a footer with
   `decision.stage` and the last activity time. The row body opens the goal;
   the buttons act without navigation. Aborted goals show a grey stage badge.
 - Empty states per chip: "Nothing needs you", "No active goals", "No finished
-  goals", and "No matching goals" with a search.
+  goals", "No aborted goals", and "No matching goals" with a search.
 
 ## Decision view
 

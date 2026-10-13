@@ -141,6 +141,8 @@ test('a clarification offers the answer form as the next step', () => {
   assert.equal(d.rank, 0);
   asked.goal.clarification.answer = 'A';
   assert.equal(decisionView(asked.goal).next, null);
+  const stopped = fixture(); stopped.goal.clarification = { question: 'Historical question' }; stopped.goal.status = 'aborted';
+  assert.equal(decisionView(stopped.goal).state, 'Aborted. Evidence is retained.', 'a stopped goal never shows a stale question');
 });
 
 test('ranks and stages order decisions, active work, delivered, merged and aborted', () => {
