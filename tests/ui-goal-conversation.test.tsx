@@ -14,7 +14,7 @@ function goal() {
 }
 test('conversation shows saved delivery and exact proposal approval while steering stays in one composer', async () => {
   const value = goal(), act = vi.fn().mockResolvedValue(true);
-  render(<GoalConversation goal={value} disabled={false} act={act} />);
+  render(<GoalConversation goal={value} disabled={false} act={act} next={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByRole('log', { name: 'Conversation messages' })).toBeTruthy();
   expect(screen.getByText('Queued for supervisor')).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Proposal 1' })).toBeTruthy();
@@ -30,14 +30,14 @@ test('failed sends retain the draft; pause queues messages and read-only disable
   const value = goal(), act = vi.fn().mockResolvedValue(false);
   value.conversation!.paused = true;
   value.conversation!.messages[0].delivery = 'answered';
-  const view = render(<GoalConversation goal={value} disabled={false} act={act} />);
+  const view = render(<GoalConversation goal={value} disabled={false} act={act} next={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByText('Answered')).toBeTruthy();
   expect(screen.getByText('Messages remain saved while the goal is paused.')).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Message your supervisor'), { target: { value: 'Saved steering' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
   await waitFor(() => expect(act).toHaveBeenCalledTimes(1));
   expect((screen.getByLabelText('Message your supervisor') as HTMLTextAreaElement).value).toBe('Saved steering');
-  view.rerender(<GoalConversation goal={value} disabled={true} act={act} />);
+  view.rerender(<GoalConversation goal={value} disabled={true} act={act} next={null} onNextConsumed={vi.fn()} />);
   expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
@@ -47,7 +47,7 @@ test('result evidence and publication approval stay pinned to the integrated com
   value.verification = { headSha: value.integrationHead, checks: [{ id: 'unit', passed: true, artifactId: 'b'.repeat(64) }] };
   value.reviews = [{ id: 'review', kind: 'integration', taskId: null, target: value.integrationHead, disposition: 'accept', findings: [] }];
   value.actions = [{ type: 'approve_publication', label: 'Approve & publish PR', payload: { operationId: 'publish', headSha: value.integrationHead } }];
-  render(<GoalConversation goal={value} disabled={false} act={act} />);
+  render(<GoalConversation goal={value} disabled={false} act={act} next={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByText('Independent review: accept')).toBeTruthy();
   expect(screen.getByText('unit: Passed')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Approve & publish PR' })).toBeNull();
@@ -57,7 +57,7 @@ test('result evidence and publication approval stay pinned to the integrated com
 test('the conversation keeps no status of its own; the decision bar owns it', () => {
   const value = goal(); value.status = 'discovering';
   value.conversation!.capacityReleased = true; value.conversation!.waiting = false;
-  render(<GoalConversation goal={value} disabled={false} act={vi.fn()} />);
+  render(<GoalConversation goal={value} disabled={false} act={vi.fn()} next={null} onNextConsumed={vi.fn()} />);
   expect(screen.queryByRole('status')).toBeNull();
   expect(screen.getByRole('log', { name: 'Conversation messages' })).toBeTruthy();
 });
@@ -75,7 +75,7 @@ test('the current proposal shows a summary first, old proposals one line, and lo
   const heights = { scroll: 0, client: 0 };
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.textContent?.startsWith('Line 1') ? 400 : heights.scroll; });
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.textContent?.startsWith('Line 1') ? 160 : heights.client; });
-  render(<GoalConversation goal={revised} disabled={false} act={vi.fn()} />);
+  render(<GoalConversation goal={revised} disabled={false} act={vi.fn()} next={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByText('Proposal 1 · Superseded by 2')).toBeTruthy();
   expect(screen.queryByText('Revised proposal')).toBeNull();
   expect(screen.getByRole('heading', { name: 'Proposal 2' })).toBeTruthy();

@@ -39,7 +39,8 @@ export async function startOrchestrationDemo({ port = 0, readOnly = false, brows
           if (command.type !== 'create_goal') return;
           object(command.payload).teamConfiguration = fixtureTeam;
         },
-        supervisorChoices: async () => ({ ...fixtureTeam, recommendedId: 'claude' }),
+        // The legacy planner journeys ask for no supervisor; a browser release marker empties the choices.
+        supervisorChoices: async () => browserHarness && existsSync(join(directory, 'release-no-supervisors')) ? { ...fixtureTeam, profiles: [], recommendedId: null } : { ...fixtureTeam, recommendedId: 'claude' },
         prepareGoal: goal => fixtureRemote.fetchBase(goal.repositoryId, goal.baseBranch),
         createAgents: ({ onResult, describe }) => {
           const agents = new ScriptedAgents({

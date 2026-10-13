@@ -110,7 +110,7 @@ describe("licence usage", () => {
       cy.findByRole('link', { name: 'Account usage' }).should('have.attr', 'aria-current', 'page');
       cy.get('.settings-categories').should('not.exist');
       account('work@example.test').should('contain.text', '82% remaining').and('contain.text', '18% used');
-      cy.findByRole('link', { name: 'Mission Control' }).should('have.attr', 'href', '/orchestration');
+      cy.findByRole('link', { name: 'Goals' }).should('have.attr', 'href', '/orchestration');
       cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width));
       cy.get('.usage-page-head').should($head => expect($head[0].getBoundingClientRect().right).to.be.at.most(width));
       cy.findByRole('heading', { name: 'Account usage' }).should('have.css', 'color', 'rgb(23, 40, 32)');

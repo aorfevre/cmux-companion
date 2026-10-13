@@ -13,8 +13,8 @@ it('lands on Account usage for home and campaign URLs, preserving explicit legac
   act(() => { history.replaceState(null, '', '/'); window.dispatchEvent(new PopStateEvent('popstate')); }); expect(screen.getByRole('heading').textContent).toBe('Account usage landing');
   act(() => { history.replaceState(null, '', '/?goal=one'); window.dispatchEvent(new PopStateEvent('popstate')); }); expect(screen.getByRole('heading').textContent).toBe('Goals landing');
 });
-it('shows the five primary destinations and keeps Sessions independent', () => {
+it('shows the four primary destinations and keeps Sessions independent', () => {
   render(<AppNavigation active="sessions" />);
-  expect(screen.getAllByRole('link').map(link => link.textContent)).toEqual(['◴Account usage', '▤Mission Control', '◇Needs You', '▣Sessions', '⚙Setup']);
-  expect(screen.getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page'); expect(screen.getByRole('link', { name: 'Mission Control' }).getAttribute('aria-current')).toBeNull();
+  expect(screen.getAllByRole('link').map(link => link.textContent)).toEqual(['◴Account usage', '▤Goals', '▣Sessions', '⚙Setup']);
+  expect(screen.getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page'); expect(screen.getByRole('link', { name: 'Goals' }).getAttribute('aria-current')).toBeNull();
 });

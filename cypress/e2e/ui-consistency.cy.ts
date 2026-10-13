@@ -19,10 +19,10 @@ describe('Interface consistency matrix', () => {
     fixtures(); cy.viewport(width, 900);
     for (const route of routes) {
       cy.visit(route); cy.findByRole('navigation', { name: 'Main navigation' }).should('be.visible');
-      cy.findByRole('link', { name: 'Mission Control' }).should('have.attr', 'href', '/orchestration');
+      cy.findByRole('link', { name: 'Goals' }).should('have.attr', 'href', '/orchestration');
       cy.findByRole('link', { name: 'Setup' }).should('have.attr', 'href', '/settings');
       cy.get('main h1').should('be.visible');
-      if (route === '/orchestration') { cy.findByRole('button', { name: 'Start a goal' }).should('be.visible'); cy.findByRole('region', { name: 'Goal fleet' }).should('be.visible'); }
+      if (route === '/orchestration') { cy.findByRole('button', { name: 'Start a goal' }).should('be.visible'); cy.findByRole('region', { name: 'Goals' }).should('be.visible'); }
       if (route.includes('/settings#')) cy.get('.settings-content h2').should('be.visible');
       cy.document().then(doc => { expect(doc.documentElement.scrollWidth, route).to.be.at.most(width); });
       cy.screenshot(`consistency-${width}-${route.replace(/[^a-z]+/g, '-')}`, { capture: 'viewport' });

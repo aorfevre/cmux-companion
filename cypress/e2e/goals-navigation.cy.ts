@@ -7,11 +7,11 @@ for (const width of [390, 1440]) {
     cy.intercept('GET', '**/api/orchestration/configuration', req => req.reply(paired ? configuration : { statusCode: 401, body: { error: 'Pair this device' } }));
     cy.intercept('POST', '**/api/orchestration/pair', req => { paired = true; req.reply({ paired: true }); }).as('pairGoal');
     cy.intercept('GET', '**/api/orchestration/stream', { statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: '' });
-    cy.visit('/'); cy.findByRole('heading', { name: 'Mission Control' }).should('be.visible');
+    cy.visit('/'); cy.findByRole('heading', { name: 'Goals' }).should('be.visible');
     cy.findByLabelText('Pairing code').type('  disposable-code  '); cy.findByRole('button', { name: 'Pair this device' }).click();
     cy.wait('@pairGoal').its('request.body').should('deep.equal', { token: 'disposable-code' });
     cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('link', { name: 'Set up goals' }).should('be.visible');
-    cy.findByRole('navigation', { name: 'Main navigation' }).within(() => { cy.findByRole('link', { name: 'Mission Control' }).should('have.attr', 'aria-current', 'page'); cy.findByRole('link', { name: 'Sessions' }).should('be.visible'); });
+    cy.findByRole('navigation', { name: 'Main navigation' }).within(() => { cy.findByRole('link', { name: 'Goals' }).should('have.attr', 'aria-current', 'page'); cy.findByRole('link', { name: 'Sessions' }).should('be.visible'); });
     cy.findByRole('link', { name: 'Sessions' }).should('have.attr', 'href', '/?view=sessions');
     cy.screenshot(`goals-empty-${width}`, { capture: 'viewport' });
   });

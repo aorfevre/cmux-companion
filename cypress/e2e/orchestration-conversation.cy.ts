@@ -14,7 +14,6 @@ suite('Conversational Goals with the real disposable service', () => {
     cy.findByRole('button', { name: /^Project / }).click();
     cy.findByRole('button', { name: /Show all projects/ }).click();
     cy.get('.project-choice').first().click();
-    cy.findByLabelText('Try conversational Goals (evaluation)').check();
     cy.findByLabelText('Supervisor').should('be.enabled').select('codex');
     cy.findByLabelText('Title (optional)').type('Conversation fixture');
     cy.findByLabelText('What should we accomplish?').type('Build the disposable modules.');

@@ -1,15 +1,15 @@
 describe('Goal workspace navigation', () => {
   it('preserves creation drafts and opens the complete request on desktop and phone', () => {
-    const base = { repositoryId: 'example', version: 1, generation: 0, title: '', revision: 0, approvedRevision: null, integrationHead: 'a'.repeat(40), baseBranch: 'main', pr: null, verification: null, publication: null, tasks: [], attempts: [], reviews: [], reviewRound: null, reviewRounds: [], verificationRuns: [], actions: [], approvalBlocked: null, decision: { state: 'Your plan is ready to approve.', reason: null, primary: null } };
+    const base = { repositoryId: 'example', version: 1, generation: 0, title: '', revision: 0, approvedRevision: null, integrationHead: 'a'.repeat(40), baseBranch: 'main', pr: null, verification: null, publication: null, tasks: [], attempts: [], reviews: [], reviewRound: null, reviewRounds: [], verificationRuns: [], actions: [], approvalBlocked: null, decision: { state: 'Your plan is ready to approve.', reason: null, detail: null, primary: null, next: null, rank: 1, stage: 'Needs approval' } };
     const approve = { type: 'approve', label: 'Approve revision 1', payload: { revision: 1 } }, abort = { type: 'abort', label: 'Abort goal', payload: {} };
-    const goals = (['discovering', 'awaiting_approval', 'building', 'ready_to_publish', 'merged'] as const).map((status, i) => ({ ...base, planReviewPending: false, id: `board-${i}`, status, title: `Outcome ${i}`, description: `Full request ${i}\nhttps://example.com/design`, plannerName: `EXAMPLE Planning Outcome ${i}`, contracts: [] }));
+    const goals = (['discovering', 'awaiting_approval', 'building', 'ready_to_publish', 'merged'] as const).map((status, i) => ({ ...base, planReviewPending: false, id: `board-${i}`, status, title: `Outcome ${i}`, decision: { ...base.decision, rank: (status === 'awaiting_approval' ? 0 : status === 'merged' ? 3 : 1) as 0 | 1 | 3, stage: status === 'awaiting_approval' ? 'Needs approval' : status === 'merged' ? 'Complete' : 'In progress' }, description: `Full request ${i}\nhttps://example.com/design`, plannerName: `EXAMPLE Planning Outcome ${i}`, contracts: [] }));
     cy.intercept('GET', '**/api/orchestration/snapshot', { goals, cursor: 1, journalId: 'kanban', readOnly: false });
     cy.intercept('GET', '**/api/orchestration/configuration', { readOnly: false, terminal: false, limits: { global: 4, perGoal: 2, planners: 1 }, capabilities: [{ role: 'planner', mode: 'interactive' }], repositories: [{ id: base.repositoryId, name: 'Example', baseSha: null, baseBranch: 'main', error: null }] });
     cy.intercept('POST', '**/api/settings/dev-repos/reconcile', { scans: {} });
     cy.intercept('GET', '**/api/settings/favorites', { revision: 0, ids: [] });
     cy.intercept('GET', '**/api/orchestration/goals/board-1', { ...goals[1], actions: [approve, abort], decision: { ...goals[1].decision, primary: approve } });
     cy.viewport(390, 844); cy.visit('/orchestration');
-    cy.findByRole('navigation', { name: 'Main navigation' }).find('a').should('have.length', 5);
+    cy.findByRole('navigation', { name: 'Main navigation' }).find('a').should('have.length', 4);
     cy.findByLabelText('What should we accomplish?').should('not.exist');
     cy.findByRole('button', { name: 'Start a goal' }).click();
     cy.findByRole('heading', { name: 'Start a goal' }).should('have.focus');
@@ -19,10 +19,10 @@ describe('Goal workspace navigation', () => {
     cy.findByLabelText('What should we accomplish?').should('have.value', 'Keep this request');
     cy.findByRole('button', { name: 'Cancel' }).click();
     cy.findByRole('button', { name: 'Needs you' }).click();
-    cy.contains('.mission-goal-link', 'Outcome 0').should('not.exist');
-    cy.contains('.mission-goal-link', 'Outcome 1').click();
-    cy.findByRole('article', { name: 'Goal detail' }).should('contain.text', 'https://example.com/design');
-    cy.findByRole('article', { name: 'Goal detail' }).should('contain.text', 'EXAMPLE Planning Outcome 1');
+    cy.findByRole('article', { name: 'Outcome 0' }).should('not.exist');
+    cy.findByRole('button', { name: 'Open Outcome 1' }).click();
+    cy.findByRole('region', { name: 'Your request' }).should('contain.text', 'https://example.com/design');
+    cy.findByLabelText('Technical details').should('contain.text', 'EXAMPLE Planning Outcome 1');
     cy.findByRole('region', { name: 'Goal decision' }).within(() => {
       cy.findByRole('status').should('be.visible').and('have.text', 'Your plan is ready to approve.');
       cy.findByRole('button', { name: 'Approve revision 1' }).should('be.visible').and('be.enabled');
@@ -32,14 +32,14 @@ describe('Goal workspace navigation', () => {
       cy.findByLabelText('More actions').should('not.exist');
     });
     cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(390));
-    cy.findByRole('button', { name: /Back to Mission Control/ }).click();
+    cy.findByRole('button', { name: /Back to Goals/ }).click();
     cy.viewport(1200, 900);
     cy.findByRole('button', { name: 'All' }).click();
-    cy.contains('.mission-goal-link', 'Outcome 0').should('be.visible');
-    cy.contains('.mission-goal-link', 'Outcome 4').should('be.visible');
-    cy.contains('.mission-goal-link', 'Outcome 1').click();
-    cy.findByRole('tab', { name: 'Run report' }).click();
+    cy.findByRole('article', { name: 'Outcome 0' }).should('be.visible');
+    cy.findByRole('article', { name: 'Outcome 4' }).should('be.visible');
+    cy.findByRole('button', { name: 'Open Outcome 1' }).click();
+    cy.contains('summary', 'Technical details').click();
     cy.findByRole('heading', { name: 'No review or verification evidence yet' }).should('be.visible');
-    cy.findByRole('button', { name: /Back to Mission Control/ }).click();
+    cy.findByRole('button', { name: /Back to Goals/ }).click();
   });
 });
