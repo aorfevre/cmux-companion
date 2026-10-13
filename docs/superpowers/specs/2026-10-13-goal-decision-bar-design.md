@@ -93,9 +93,14 @@ The state and reason follow this ladder. The first matching step wins.
 10. Paused conversation. State: "Paused." Reason: "Your messages stay queued."
 11. Merged. State: "Merged on GitHub." Aborted. State: "Aborted. Evidence is
     retained." Reason: null.
-12. Delivered. State: "Pull request published. Waiting for merge." Reason: the
+12. Delivered and the pull request was closed on GitHub. State: "The pull
+    request was closed without merging." Reason: "Review it on GitHub."
+13. Addressing review and the fix push outcome is unknown. State: "The fix
+    push outcome is uncertain." Reason: "Companion is confirming the remote
+    branch."
+14. Delivered. State: "Pull request published. Waiting for merge." Reason: the
     merge sync error, or null.
-13. Everything else. State: a progress sentence: "N agents working." when
+15. Everything else. State: a progress sentence: "N agents working." when
     workers run, otherwise "Work continues automatically. No action needed."
     Reason: null.
 
@@ -107,8 +112,9 @@ becomes the reason and the primary is absent.
 Secondary actions are the remaining offered actions, read by the client from
 the existing action list, minus the primary type and the composer-only types
 (`send_goal_message`, `request_revision`, `answer_clarification`,
-`override_assignment`). The client shows them in the "More" menu in the
-projected order. `rename_goal` renders as "Edit title" and opens the inline
+`override_assignment`). The client shows them in a "More" disclosure of
+native buttons, in the projected order. Every item follows the page's disabled
+state, and the disclosure closes when controls become disabled. `rename_goal` renders as "Edit title" and opens the inline
 title form under the bar.
 
 ## Observed scenario
@@ -133,8 +139,12 @@ and is unchanged.
   a click to open the same summary and sections.
 - The card has no buttons. It ends with "Request changes in the message box
   below." An approved revision shows "Approved."
-- A supervisor message longer than eight lines shows its first eight lines and
-  a "Show more" control. The first line stays visible.
+- A supervisor message that renders taller than eight text lines, whether by
+  newlines or by wrapping, is clamped to eight visual lines with a "Show more"
+  control. The first line stays visible.
+- A proposal entry renders the contract summary in place of its message text,
+  so the summary is the first thing in the card and a superseded proposal's
+  text stays inside its collapsed disclosure.
 
 ## Pages
 
@@ -175,9 +185,10 @@ and is unchanged.
 5. Both goal pages render the bar with title, stage, state, primary and "More".
    A refused action renders as a reason and no primary button. Verification:
    Vitest `tests/ui-decision-bar.test.tsx`.
-6. At 390 pixels wide the bar shows the state, the primary button and "More",
-   with the reason below the primary button. Verification: Cypress
-   `goal-workspace.cy.ts` at a 390 pixel viewport.
+6. At 390 pixels wide the bar shows the state, an offered primary button and
+   an operable "More" disclosure, with the reason below the primary button.
+   Verification: Cypress `goal-workspace.cy.ts` at a 390 pixel viewport with a
+   fixture that offers both actions.
 7. The current proposal card shows the outcome and counts first, with sections
    closed; superseded proposals render one line; a message over eight lines
    shows "Show more". Verification: Vitest `tests/ui-goal-conversation.test.tsx`.
