@@ -6,7 +6,7 @@ import { actionView } from './action-view.mjs';
  * offered, and this view only chooses which offered action leads.
  * @typedef {{ type: string; label: string; payload: Record<string, unknown> }} ProjectedAction
  * @typedef {{ state: string; reason: string | null; primary: ProjectedAction | null }} Decision */
-const PRIMARY_ORDER = ['retry_startup', 'recover_goal', 'approve', 'approve_publication', 'accept_moved_target', 'request_review_fix', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair', 'resume_goal'];
+const PRIMARY_ORDER = ['retry_startup', 'recover_goal', 'approve', 'accept_moved_target', 'approve_publication', 'request_review_fix', 'retry_task', 'retry_attempt', 'retry_integration', 'retry_verification', 'authorize_repair', 'resume_goal'];
 
 /** @param {import('../types.d.ts').Goal} goal @param {ReturnType<typeof actionView>} [projected] @returns {Decision} */
 export function decisionView(goal, projected = actionView(goal)) {
@@ -20,6 +20,7 @@ export function decisionView(goal, projected = actionView(goal)) {
   if (goal.hold) return decision('The goal is on hold.', recoveryBlocked ?? goal.hold.reasons.map(reason => reason.message).join(' '));
   if (goal.clarification && goal.clarification.answer === undefined) return decision(goal.clarification.question, null, false);
   if (goal.status === 'awaiting_approval') return approvalBlocked ? decision('Your plan waits on a blocker.', approvalBlocked, false) : decision('Your plan is ready to approve.');
+  if (goal.status === 'ready_to_publish' && goal.publication?.observation?.status === 'target_moved') return decision('The target branch moved after review.', 'Publishing keeps the reviewed head unchanged; it does not rebase or merge the target.');
   if (goal.status === 'ready_to_publish' && !goal.publication?.approval) return decision('The verified result waits for your publication approval.');
   const current = goal.attempts.filter(attempt => isSupervisor(goal, attempt) || (attempt.generation === goal.generation && attempt.revision === goal.revision));
   const latest = new Map(current.map(attempt => [JSON.stringify([attempt.role, attempt.taskId, attempt.target]), attempt]));
