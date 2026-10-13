@@ -137,3 +137,7 @@
 .decision-rename { display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap; margin-top:12px; }
 .decision-rename label { flex:1; min-width:200px; margin:0; } .decision-rename input { margin:8px 0 0; }
 @media(max-width:700px) { .decision-body { grid-template-columns:minmax(0,1fr); } .decision-controls { grid-column:1; grid-row:auto; width:100%; } .decision-controls .decision-primary { flex:1; } .decision-reason { grid-column:1; } }
+.goal-proposal-outcome { font-weight:600; margin:8px 0 4px; }
+.goal-proposal-counts { color:var(--muted); font-size:13px; margin:0 0 10px; }
+.goal-message details { border-top:1px solid var(--line); padding:8px 0; } .goal-message summary { cursor:pointer; font-weight:600; }
+.goal-message-more { min-height:32px!important; padding:4px 10px!important; font-size:13px!important; margin-top:4px; }
