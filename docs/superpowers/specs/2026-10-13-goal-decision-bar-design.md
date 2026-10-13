@@ -1,7 +1,9 @@
 # Goal decision bar
 
 Date: 2026-10-13
-Status: Draft for human review.
+Status: Approved for implementation by the user's "do the specs and build it"
+after presentation of the design sections. Amended before the plan: the
+observed hold was not stale, see "Observed scenario".
 Owner: the implementing agent, accountable for the complete journey and cleanup.
 
 ## Outcome
@@ -10,15 +12,13 @@ A person who opens a goal page sees one state, one reason and one primary action
 at the top of the page, without a scroll. Approval, recovery, retry and
 publication decisions are one click from the top on both goal pages. The
 proposal card shows a summary first. Old revisions and long messages collapse.
-A restarted supervisor no longer leaves a stale hold that blocks approval.
 
 Observed problem on goal `6cdb5464` (2026-10-12): the status line said "planner
 did not finish successfully", a line far below said "Goal is on hold; use manual
 recovery", the Working agents card said "Claude · running", and no approve or
-recover control sat near either line. The hold reason was a cancelled planner
-attempt superseded by the restart. The page measured about 7,600 pixels; the
-open proposal alone measured about 3,800 pixels. Approval needed two clicks
-("Recover goal", then "Approve revision 3") that the page did not place together.
+recover control sat near either line. The page measured about 7,600 pixels; the
+open proposal alone measured about 3,800 pixels. The two needed clicks
+("Recover goal", then "Approve revision 3") were far apart and far from the top.
 
 ## Relationship to existing contracts
 
@@ -26,8 +26,8 @@ This contract refines journey steps 4 and 8 of the CCS-based conversational
 Goals spec (2026-10-12): review and approval of a proposal, and approval of
 publication. It refines the Mission Control redesign's goal workspace header. It
 does not change the Needs You list, the goal fleet, the action authority, the
-command set, pairing, worktree isolation or publication approval. Independent
-plan review and the human publication gate remain in force.
+command set, the transition rules, pairing, worktree isolation or publication
+approval. Independent plan review and the human publication gate remain in force.
 
 ## User journey
 
@@ -55,51 +55,64 @@ plan review and the human publication gate remain in force.
 A pure function `decisionView(goal)` in `server/orchestration/domain/` sits
 next to the action projection. The state view includes its result as
 `goal.decision`. The browser renders it and keeps no decision logic of its own.
+The stage badge stays in the client fleet helper, which both pages already use.
 
 Shape:
 
-- `stage`: the badge text. The fleet's client stage helper moves to the server
-  and the client reads this field.
 - `state`: one sentence.
 - `reason`: one line, or null.
 - `primary`: one action from the projected action list, or null.
-- `secondary`: the remaining user actions, in a fixed order: pause or resume,
-  request revision, retry actions, recover actions, edit title, abort.
 
-Priority ladder, most urgent first. The first matching step wins.
+The primary action is the first offered action whose type appears in this
+ordered list: `retry_startup`, `recover_goal`, `approve`, `approve_publication`,
+`accept_moved_target`, `request_review_fix`, `retry_task`, `retry_attempt`,
+`retry_integration`, `retry_verification`, `authorize_repair`, `resume_goal`.
+The first offered `recover_goal` action is the plain "Recover goal" action.
 
-1. Startup failed. State: the startup error. Primary: Retry startup.
-2. Hold, and the recover action is offered. State: "The goal is on hold."
-   Reason: the hold messages joined. Primary: Recover goal.
-3. Hold, and the recover action is refused. State: "The goal is on hold."
-   Reason: the refusal message, for example the running worker. Primary: none.
-4. An open supervisor question or clarification. State: the question. Primary:
-   none; the message box or the answer form is the answer path.
-5. Status awaiting approval, review done, approval offered. State: "Your plan
-   is ready to approve." Primary: Approve revision N.
-6. Status awaiting approval, approval refused for another reason. State: "Your
-   plan waits on a blocker." Reason: the refusal message. Primary: none.
-7. Status ready to publish, not yet approved. State: "The verified result waits
-   for your publication approval." Primary: Approve & publish PR.
-8. A failed task or a failed current attempt with a retry offered. State: the
-   attempt error or "A task needs a retry." Primary: that retry action.
-9. Paused conversation. State: "Paused." Primary: Resume goal.
-10. Merged or aborted. State: the stage. Primary: none. Secondary: Edit title only.
-11. Everything else. State: a progress sentence from the stage and the running
-    workers, for example "Claude implements task 2. No action needed." Primary:
-    none.
+The state and reason follow this ladder. The first matching step wins.
+
+1. Startup failed. State: the startup error. Reason: null.
+2. Hold. State: "The goal is on hold." Reason: the hold messages joined by a
+   space. When recovery is refused, the reason is the refusal message instead,
+   for example the running worker message.
+3. An open clarification question. State: the question. Reason: null.
+4. Status awaiting approval and approval offered. State: "Your plan is ready
+   to approve." Reason: null.
+5. Status awaiting approval and approval refused. State: "Your plan waits on a
+   blocker." Reason: the refusal message.
+6. Status ready to publish and publication not yet approved. State: "The
+   verified result waits for your publication approval." Reason: null.
+7. A current attempt failed, or its ownership is unknown. State: the attempt
+   error, or "An agent needs a retry.", or "Agent ownership needs
+   reconciliation." Reason: null.
+8. A task failed. State: "A task needs a retry." Reason: null.
+9. Paused conversation. State: "Paused." Reason: "Your messages stay queued."
+10. Merged. State: "Merged on GitHub." Aborted. State: "Aborted. Evidence is
+    retained." Reason: null.
+11. Delivered. State: "Pull request published. Waiting for merge." Reason: the
+    merge sync error, or null.
+12. Everything else. State: a progress sentence: "N agents working." when
+    workers run, otherwise "Work continues automatically. No action needed."
+    Reason: null.
 
 A refused action never renders as a disabled primary button. The refusal text
 becomes the reason and the primary is absent.
 
-## Stale hold rule
+Secondary actions are the remaining offered actions, read by the client from
+the existing action list, minus the primary type and the composer-only types
+(`send_goal_message`, `request_revision`, `answer_clarification`,
+`override_assignment`). The client shows them in the "More" menu in the
+projected order. `rename_goal` renders as "Edit title" and opens the inline
+title form under the bar.
 
-In the domain transition for `retry_attempt` on a supervisor attempt: when
-every hold reason has kind `attempt` and targets an attempt of that supervisor
-that the restart supersedes, the transition clears the hold. The cleared hold
-goes into the recoveries list with the restart command id, as a manual recovery
-does today. A hold with any reason of another kind, or that targets another
-attempt, stays in place.
+## Observed scenario
+
+On goal `6cdb5464` the hold reason targets the current supervisor attempt,
+which was cancelled after a restart. The hold is correct, not stale. Recovery
+marks the supervisor for relaunch and clears the hold; approval is then offered
+because the reviewer accepted revision 3. The decision bar therefore shows
+"Recover goal" first, then "Approve revision 3". Both clicks are at the top of
+the page. No transition rule changes.
 
 ## Proposal card and thread
 
@@ -127,46 +140,48 @@ and is unchanged.
 - Legacy page: the bar replaces the top card's title, attention banner and
   generic action button row. The rename form moves behind "More · Edit title".
   The tabs and their content stay.
+- Browser checks that click a secondary action open the "More" menu first.
 - The fleet and the Needs You list keep the client `attention()` helper and
   are unchanged.
 
 ## Non-goals
 
 - No change to the Needs You list, fleet rows or decision count.
-- No new commands, no change to action authority or the transition rules other
-  than the stale hold rule.
+- No new commands, no change to action authority or transition rules.
 - No change to legacy tab content, review rounds or evidence rendering.
 - No parsing of supervisor prose into structured decisions.
 - No change to the settings, onboarding or updater.
 
 ## Acceptance criteria
 
-1. `decisionView` returns the ladder step for each listed step, with fixtures
-   for each. Verification: node test `tests/orchestration-decision-view.test.mjs`.
+1. `decisionView` returns the ladder step and primary for each listed step,
+   with a fixture for each. Verification: node test
+   `tests/orchestration-decision-view.test.mjs`.
 2. For every goal fixture where the client `attention()` helper returns text,
-   `decisionView` returns a primary action or a question state. Verification:
-   node test in the same file over the shared UI fixtures.
-3. A replay of the observed scenario (planner cancelled, supervisor restarted
-   by `retry_attempt`, reviewer succeeded on revision 3) ends with no hold,
-   the restart command id in recoveries, and primary "Approve revision 3".
-   Verification: node test `tests/orchestration-recovery.test.mjs`.
-4. A hold with a review reason stays after a supervisor restart. Verification:
-   the same node test file.
+   `decisionView` returns a primary action, a question state or a hold state.
+   Verification: Vitest `tests/ui-decision-bar.test.tsx` over shared fixtures.
+3. A replay of the observed scenario (supervisor cancelled, reviewer accepted
+   revision 3) gives primary "Recover goal" with the hold reason. After the
+   recovery command the primary is "Approve revision 3". Verification: node
+   test `tests/orchestration-decision-view.test.mjs`.
+4. A hold while a worker still runs gives no primary and the refusal reason.
+   Verification: the same node test file.
 5. Both goal pages render the bar with title, stage, state, primary and "More".
    A refused action renders as a reason and no primary button. Verification:
-   Vitest `tests/ui-orchestration.test.tsx`.
+   Vitest `tests/ui-decision-bar.test.tsx`.
 6. At 390 pixels wide the bar shows the state, the primary button and "More",
-   with the reason below the primary button. Verification: Vitest viewport test.
+   with the reason below the primary button. Verification: Cypress
+   `goal-workspace.cy.ts` at a 390 pixel viewport.
 7. The current proposal card shows the outcome and counts first, with sections
    closed; superseded proposals render one line; a message over eight lines
-   shows "Show more". Verification: Vitest `tests/ui-orchestration.test.tsx`.
+   shows "Show more". Verification: Vitest `tests/ui-goal-conversation.test.tsx`.
 8. Approving a plan through the bar against the disposable backend advances
    the goal, and the Needs You count before and after matches the current
-   behaviour. Verification: Cypress orchestration spec, `npm run test:e2e:local`.
+   behaviour. Verification: Cypress orchestration specs, `npm run test:e2e:local`.
 9. `npm run verify` passes with coverage at or above 90%. Verification: CI.
 
 ## Success measure
 
-On goal `6cdb5464` as observed, approval takes one click from the top of the
-page with no scroll, and the page measures under 2,000 pixels before any
-section is opened.
+On goal `6cdb5464` as observed, recovery and approval take two clicks from the
+top of the page with no scroll, and the page measures under 2,000 pixels before
+any section is opened.
