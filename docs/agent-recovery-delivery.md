@@ -78,6 +78,14 @@ Failures investigated during development:
 5. The mixed-check fixture initially waited for recovery without supplying the
    required changed agent strategy. It now drives that scoped supervisor command
    and checks that the mixed hold is retained in the automatic recovery receipt.
+6. The first remote Verify run failed in the existing updater bootstrap contention
+   test before reaching the build. Its immediately exiting fixture allowed a late
+   contender to legitimately acquire the released lock, producing two successes.
+   The fixture now holds the winning engine until all five competitors report
+   lock-held, then releases it and checks exactly one successful cycle. An early
+   fixture assertion also raced engine startup; the marker is checked after the
+   winner exits. The corrected contention test passed ten consecutive runs.
+   Updater production code and coverage thresholds are unchanged.
 
 No coverage threshold was lowered. The ordinary backend suite's pre-existing
 skipped path remains explicitly reported by the runner. Full logs and raw browser
