@@ -51,7 +51,7 @@ for (const [width, height] of [[390, 844], [1440, 900]]) {
       cy.findByRole("button", { name: "Pair securely" }).should("be.enabled").click();
       cy.wait("@pair").its("request.body").should("deep.equal", { token: "fixture-pairing-code-0123456789abcdef" });
       cy.wait("@bootstrap");
-      cy.findByRole("link", { name: "Mission Control" }).should("have.attr", "href", "/orchestration");
+      cy.findByRole("link", { name: "Goals" }).should("have.attr", "href", "/orchestration");
       cy.findByRole("navigation", { name: "Main navigation" }).should("be.visible");
       cy.contains("Pairing Mac").should("be.visible");
       cy.findByPlaceholderText("Pairing code").should("not.exist");
@@ -113,7 +113,7 @@ describe("Pairing failures and offline", () => {
     cy.intercept("GET", "**/api/auth/status", { paired: true }).as("onlineStatus");
     cy.findByRole("button", { name: "Try again" }).click();
     cy.wait("@onlineStatus");
-    cy.findByRole("link", { name: "Mission Control" }).should("have.attr", "href", "/orchestration");
+    cy.findByRole("link", { name: "Goals" }).should("have.attr", "href", "/orchestration");
   });
 
   it("unpairs from Settings and returns to the pair screen without reloading", () => {

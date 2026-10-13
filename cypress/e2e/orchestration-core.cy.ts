@@ -5,6 +5,8 @@ suite('Mobile orchestration with real service and disposable Git', () => {
   beforeEach(() => {
     cy.viewport(390, 844);
     cy.task('orchestrationRelease', 'reset');
+    // These journeys exercise the planner flow; the conversation spec covers the supervisor default.
+    cy.task('orchestrationRelease', 'no-supervisors');
     cy.visit('/orchestration');
     cy.task<string>('orchestrationPairing', null, { log: false }).then(token => {
       cy.findByLabelText('Pairing code').type(token, { log: false });
@@ -27,8 +29,9 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.findByLabelText('Title (optional)').type('Automatic plan revision');
     cy.findByLabelText('What should we accomplish?').type('Revise the rejected fixture plan before asking me to approve.');
     cy.findByRole('button', { name: 'Start goal' }).click();
-    cy.findByRole('button', { name: 'Automatic plan revision', timeout: 20000 }).find('.mission-workers').click();
+    cy.findByRole('button', { name: 'Open Automatic plan revision', timeout: 20000 }).click();
     cy.findByRole('button', { name: 'Approve revision 2', timeout: 30000 }).should('be.enabled');
+    cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.contains('Automatic plan revisions: 1 of 2.').should('be.visible');
     cy.task<Evidence>('orchestrationEvidence').then(evidence => {
       const goal = evidence.goals.find(entry => entry.title === 'Automatic plan revision')!;
@@ -36,13 +39,14 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       expect(evidence.launches.filter(entry => entry.goalId === goal.id && entry.attempt.role === 'implementer')).to.have.length(0);
     });
     cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Abort goal' }).click();
-    cy.findByRole('button', { name: /Back to Mission Control/ }).click();
-    cy.findByRole('button', { name: 'Automatic plan revision' }).should('not.exist');
-    cy.findByRole('button', { name: /^Aborted$/ }).click();
-    cy.findByRole('button', { name: 'Automatic plan revision' }).find('.mission-workers').click();
+    cy.findByRole('button', { name: /Back to Goals/ }).click();
+    cy.findByRole('button', { name: /^Active$/ }).click();
+    cy.findByRole('article', { name: 'Automatic plan revision' }).should('not.exist');
+    cy.findByRole('button', { name: /^Done$/ }).click();
+    cy.findByRole('button', { name: 'Open Automatic plan revision' }).click();
     cy.findByRole('heading', { name: 'Automatic plan revision' }).should('be.visible');
-    cy.findByRole('button', { name: /Back to Mission Control/ }).click();
-    cy.findByRole('button', { name: /^Aborted$/ }).should('have.attr', 'aria-pressed', 'true');
+    cy.findByRole('button', { name: /Back to Goals/ }).click();
+    cy.findByRole('button', { name: /^Done$/ }).should('have.attr', 'aria-pressed', 'true');
     cy.screenshot('aborted-fleet-phone');
     cy.viewport(1200, 1000); cy.screenshot('aborted-fleet-desktop');
   });
@@ -56,25 +60,22 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     ]);
     cy.findByRole('button', { name: 'Remove design.png' }).should('be.visible');
     cy.findByRole('button', { name: 'Start goal' }).click();
-    cy.contains('.mission-goal-link', 'Build the parallel fixture', { timeout: 20000 }).click();
+    cy.findByRole('button', { name: 'Open Build the parallel fixture', timeout: 20000 }).click();
+    cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.findByRole('link', { name: 'design.svg' }).then(link => {
       cy.request(link.attr('href')!).then(response => { expect(response.headers['content-type']).to.include('text/plain'); expect(response.body).to.equal('<svg>Read as source</svg>'); });
     });
     cy.findByRole('link', { name: 'design.png' }).should('be.visible');
-    cy.findByRole('tab', { name: 'Team & models' }).click();
+    cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.findByLabelText('Profile for Implementation A').select('codex');
     cy.contains('summary', 'Manual override · Why').should('be.visible');
-    cy.get('[role=tablist] [role=tab]').then(tabs => {
-      const rectangles = [...tabs].map(tab => tab.getBoundingClientRect());
-      rectangles.slice(1).forEach((rectangle, index) => expect(rectangle.left).to.be.at.least(rectangles[index].right));
-      [...tabs].forEach(tab => expect(tab.scrollWidth).to.be.at.most(tab.clientWidth + 1));
-    });
+    cy.get('.goal-technical-section h3').then(headings => { [...headings].forEach(heading => expect(heading.scrollWidth).to.be.at.most(heading.clientWidth + 1)); });
     cy.screenshot('team-proposal-phone');
     cy.viewport(1200, 1000); cy.screenshot('team-proposal-desktop');
     cy.document().then(doc => { expect(doc.documentElement.scrollWidth).to.be.at.most(1200); });
     cy.viewport(390, 844);
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).should('be.enabled').click();
-    cy.findByRole('tab', { name: 'Waves & sessions' }).click();
+    cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.get('[data-task="B"]').should('contain.text', 'running');
     cy.get('[data-task="C"]').should('contain.text', 'pending').and('contain.text', 'Waiting for the prior wave barrier');
@@ -90,10 +91,10 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       expect(evidence.overlaps).to.include(goal.id);
       expect(evidence.launches.filter((entry) => entry.goalId === goal.id && entry.attempt.taskId === 'C')).to.have.length(0);
     });
-    cy.reload(); cy.findByRole('tab', { name: 'Waves & sessions' }).click();
+    cy.reload(); cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.task('orchestrationRelease', 'siblings');
-    cy.findByRole('tab', { name: 'Run report' }).click();
+    cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.contains('Blocking: Composition does not add its inputs', { timeout: 30000 }).should('be.visible');
     // Task review findings repair automatically; verification failures still require recovery.
     cy.findByRole('region', { name: 'Combined verification', timeout: 30000 }).contains('p', 'injected_dependencies', { timeout: 30000 }).should('contain.text', 'Failed');
@@ -151,7 +152,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.task('orchestrationRelease', 'seed-threads');
     cy.findByRole('button', { name: 'Address review comments', timeout: 30000 }).should('be.enabled').click();
     cy.findByRole('button', { name: 'Address review comments', timeout: 60000 }).should('be.enabled');
-    cy.findByRole('tab', { name: 'Run report' }).click();
+    cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.findByRole('heading', { name: 'Review rounds' }).should('be.visible');
     cy.contains(/Addressed · 2 threads/).should('be.visible');
     cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', status: 'delivered' }).then(evidence => {
@@ -178,7 +179,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.findByRole('button', { name: 'Address review comments', timeout: 30000 }).should('be.enabled').click();
     cy.findByLabelText('Review round phase', { timeout: 30000 }).invoke('text').should('match', /Merging the target branch|conflict/);
     cy.findByRole('button', { name: 'Address review comments', timeout: 60000 }).should('be.enabled');
-    cy.findByRole('tab', { name: 'Run report' }).click();
+    cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.contains(/Merged target [0-9a-f]+.*resolved 1 conflict: src\/a\.mjs/).should('be.visible');
     cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', status: 'delivered' }).then(evidence => {
       const goal = evidence.goals.find(entry => entry.title === 'Build the parallel fixture')!;
@@ -200,13 +201,13 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.findByRole('button', { name: /^Project / }).click(); cy.findByRole('button', { name: /Show all projects/ }).click(); cy.get('.project-choice').first().click();
     cy.findByLabelText('What should we accomplish?').type('Abort this fixture');
     cy.findByRole('button', { name: 'Start goal' }).click();
-    cy.contains('.mission-goal-link', 'Abort this fixture', { timeout: 20000 }).click();
+    cy.findByRole('button', { name: 'Open Abort this fixture', timeout: 20000 }).click();
     cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).click();
-    cy.findByRole('tab', { name: 'Waves & sessions' }).click();
+    cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Abort goal' }).click();
     cy.findByRole('region', { name: 'Goal decision' }).should('contain.text', 'Aborted');
-    cy.contains('summary', 'Source and technical details').click(); cy.findByRole('button', { name: 'Reconcile workers' }).click();
+    cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; }); cy.findByRole('button', { name: 'Reconcile workers' }).click();
     cy.task<Evidence>('orchestrationEvidence', { title: 'Abort this fixture', status: 'aborted' }).then(evidence => {
       const goal = evidence.goals.find((entry) => entry.title === 'Abort this fixture')!;
       expect(goal.status).to.equal('aborted');

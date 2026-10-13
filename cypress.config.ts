@@ -66,7 +66,7 @@ export default defineConfig({
           orchestrationRelease(stage: string) {
             // A fault barrier is also cleared on its own, so one journey can
             // observe a failure and then the recovered path.
-            const stages = ['siblings', 'final', 'reject-plan', 'seed-threads', 'threads-offline', 'threads-uncapable', 'conflict', 'launch-transient'];
+            const stages = ['siblings', 'final', 'reject-plan', 'seed-threads', 'threads-offline', 'threads-uncapable', 'conflict', 'launch-transient', 'no-supervisors'];
             const clear = stage.startsWith('clear-'), name = clear ? stage.slice(6) : stage;
             if (!stages.includes(name) && stage !== 'reset') throw new Error('Unknown fixture barrier');
             for (const entry of stage === 'reset' ? stages : [name]) {
