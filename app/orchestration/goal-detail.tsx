@@ -16,6 +16,7 @@ export function GoalTechnicalDetails({ goal, disabled, terminal, act, control }:
   return <div className="goal-technical" aria-label="Goal detail">
     <section className="goal-technical-section"><h3>Source</h3><div className="orch-eyebrow">PLAN {goal.revision}</div>
       <p>{goal.plannerName}</p>
+      {goal.decision.detail && <p>Recorded reason: <code>{goal.decision.detail}</code></p>}
       {Boolean(goal.planRevisionCount) && <p role="status">Automatic plan revisions: {goal.planRevisionCount} of 2.{goal.status === 'discovering' ? ' Addressing review findings.' : ''}</p>}
       {goal.planReviewEnabled === false && ['discovering', 'awaiting_approval'].includes(goal.status) && <p>{planReviewMessage}</p>}
       <p>Base branch: {goal.baseBranch}</p><p>Integrated head <code>{goal.integrationHead.slice(0, 12) || 'Preparing fresh base…'}</code></p><button disabled={disabled} onClick={() => void control(goal, 'reconcile')}>Reconcile workers</button>

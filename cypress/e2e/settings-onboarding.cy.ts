@@ -31,7 +31,7 @@ settingsSuite('Named Dev repos and unified settings with a real disposable servi
     cy.visit('/settings#agents'); cy.findByLabelText('Default provider').should('have.value', 'codex');
     cy.visit('/settings#dev-repos'); cy.get('.repository-row').should('have.length', 2); cy.findByLabelText('Search repositories').type('karven'); cy.get('.repository-row').should('have.length', 1);
     for (const width of [360, 390, 1440]) { cy.viewport(width, 900); cy.document().then(doc => expect(doc.documentElement.scrollWidth).to.be.at.most(width)); cy.screenshot(`settings-dev-repos-${width}`, { capture: "viewport" }); }
-    cy.visit('/'); cy.findByRole('heading', { name: /^Goals$/ }).should('be.visible'); cy.findByRole('navigation', { name: 'Main navigation' }).find('a').should('have.length', 4); cy.findByRole('link', { name: 'Sessions' }).click(); cy.location('search').should('equal', '?view=sessions'); cy.findByRole('link', { name: 'Mission Control' }).click(); cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('button', { name: /^Project / }).click();
+    cy.visit('/'); cy.findByRole('heading', { name: /^Goals$/ }).should('be.visible'); cy.findByRole('navigation', { name: 'Main navigation' }).find('a').should('have.length', 4); cy.findByRole('link', { name: 'Sessions' }).click(); cy.location('search').should('equal', '?view=sessions'); cy.findByRole('link', { name: 'Goals' }).click(); cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('button', { name: /^Project / }).click();
     cy.findByRole('button', { name: 'My project karven' }).should('not.exist');
     cy.findByRole('button', { name: /Show all projects/ }).click();
     cy.findByRole('button', { name: 'My project karven' }).should('be.visible');

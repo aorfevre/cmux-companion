@@ -41,6 +41,7 @@ export function GoalBoard() {
   const [brief, setBrief] = useState('');
   // The supervisor flow is the default whenever a supervisor profile exists; undefined means the check is still running.
   const [supervisors, setSupervisors] = useState<SupervisorChoices | null | undefined>(undefined);
+  const [supervisorsRetry, setSupervisorsRetry] = useState(0);
   const conversational = Boolean(supervisors?.profiles.length);
   const [supervisorId, setSupervisorId] = useState(''), [supervisorReady, setSupervisorReady] = useState(false);
   const [attachments, setAttachments] = useState<{ name: string; data: string }[]>([]);
@@ -48,12 +49,6 @@ export function GoalBoard() {
   const [creating, setCreating] = useState(false);
   const createButton = useRef<HTMLButtonElement>(null), createHeading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (creating) createHeading.current?.focus(); }, [creating]);
-  useEffect(() => {
-    if (!creating || supervisors !== undefined) return;
-    let active = true;
-    void request<SupervisorChoices | null>(`${prefix}/supervisors`).then(value => { if (active) setSupervisors(value ?? null); }).catch(() => { if (active) setSupervisors(null); });
-    return () => { active = false; };
-  }, [creating, supervisors]);
   const restoreCreateFocus = useRef(false);
   const closeCreation = () => { restoreCreateFocus.current = true; setCreating(false); };
   const [baseBranch, setBaseBranch] = useState('main');
@@ -61,6 +56,12 @@ export function GoalBoard() {
   const [connectionError, setConnectionError] = useState('');
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false), [connected, setConnected] = useState(false);
   const [pending, setPending] = useState<Command | null>(null);
+  useEffect(() => {
+    if (!creating || supervisors !== undefined) return;
+    let active = true;
+    void request<SupervisorChoices | null>(`${prefix}/supervisors`).then(value => { if (active) setSupervisors(value ?? null); }).catch(cause => { if (active) { setSupervisors(undefined); setError(cause instanceof Error ? `Could not check your supervisors: ${cause.message}` : 'Could not check your supervisors.'); } });
+    return () => { active = false; };
+  }, [creating, supervisors, supervisorsRetry]);
   useEffect(() => { if (!creating && !busy && restoreCreateFocus.current) { createButton.current?.focus(); restoreCreateFocus.current = false; } }, [creating, busy]);
   const submitting = useRef(false);
   const sequence = useRef(0), mounted = useRef(false), selection = useRef(selected);
@@ -168,7 +169,7 @@ export function GoalBoard() {
         <h2 ref={createHeading} tabIndex={-1}>Start a goal</h2><p>The agent will inspect the project and propose a plan with suitable verification checks.</p><p><a href="/settings">Manage projects and providers</a></p>{!configuration?.repositories.length && <p>Add your first project in <a href="/onboarding">setup</a> to start a goal.</p>}<ProjectPicker repositories={configuration.repositories} selected={repository} onSelect={setRepository} disabled={disabled} />
         <p className="project-context">Starts from freshly fetched {baseBranch.trim() || 'main'} in an isolated worktree.</p><details><summary>Advanced</summary><label>Base branch<input value={baseBranch} onChange={event => setBaseBranch(event.target.value)} disabled={disabled} placeholder="main" /></label></details>
         {chosenRepo?.error && <p role="alert">{chosenRepo.error} <a href={`/settings?repository=${encodeURIComponent(chosenRepo.id)}#dev-repos`}>Configure repository</a></p>}
-        {supervisors === undefined && <p role="status">Checking your supervisors…</p>}
+        {supervisors === undefined && <p role="status">Checking your supervisors… <button type="button" disabled={disabled} onClick={() => setSupervisorsRetry(value => value + 1)}>Retry</button></p>}
         {conversational && <><p>Planning, questions and progress stay in one conversation with your supervisor.</p><SupervisorPicker selected={supervisorId} onSelect={setSupervisorId} onReady={setSupervisorReady} disabled={disabled} /></>}
         {supervisors !== undefined && !conversational && <p>Add a supervisor in <a href="/settings">Setup</a> for conversational goals.</p>}
         <label>Title (optional)<input value={title} maxLength={120} onChange={event => setTitle(event.target.value)} disabled={disabled} placeholder="A short name for this goal" /></label>

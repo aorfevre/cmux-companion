@@ -544,3 +544,16 @@ test('the composer falls back to the planner flow with a Setup note when no supe
   await waitFor(() => expect(api).toHaveBeenCalledWith('/api/orchestration/commands', expect.objectContaining({ method: 'POST' })));
   expect(JSON.parse(String(api.mock.calls.filter(([url]) => url.endsWith('/commands')).at(-1)![1]!.body)).payload.experienceVersion).toBeUndefined();
 });
+
+test('a failed supervisor lookup keeps creation blocked with a retry instead of silently choosing the planner flow', async () => {
+  const original = api.getMockImplementation()!;
+  let lookups = 0;
+  api.mockImplementation(async (url, options) => { if (url.endsWith('/supervisors') && lookups++ === 0) throw new Error('Connection lost'); return original(url, options); });
+  await start();
+  expect(await screen.findByText('Could not check your supervisors: Connection lost')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', true);
+  expect(screen.queryByText(/Add a supervisor in/)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByText(/Add a supervisor in/)).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Start goal' })).toHaveProperty('disabled', false));
+});
