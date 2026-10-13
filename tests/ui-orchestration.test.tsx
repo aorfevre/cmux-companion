@@ -145,7 +145,7 @@ test('moved publication target shows the observed commit and submits the service
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
   const moved = { type: 'accept_moved_target', label: 'Publish reviewed head against moved target', payload: { operationId: 'publish', baseHeadSha: 'b'.repeat(40) } };
-  const goal = { ...goalView(fixture().goal), contracts: [], actions: [moved], decision: { state: 'The target branch moved.', reason: null, primary: moved },
+  const goal = { ...goalView(fixture().goal), contracts: [], actions: [moved], decision: { state: 'The target branch moved.', reason: null, detail: null, primary: moved, next: null, rank: 0 as const, stage: 'Ready to publish' },
     publication: { approved: true, branch: 'companion-goals/goal', baseBranch: 'main', baseSha: 'a'.repeat(40), observation: { status: 'target_moved' as const, baseHeadSha: 'b'.repeat(40), pr: null } } };
   const act = vi.fn().mockResolvedValue(true);
   render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} />);
@@ -322,7 +322,7 @@ test('held goal shows failure and reconciliation guidance, then submits the exac
   const act = vi.fn().mockResolvedValue(true);
   const view = render(<GoalDetail goal={{ ...goalView(f.goal), contracts: [] }} disabled={false} terminal={false} act={act} control={vi.fn()} />);
   expect(screen.getByText('The goal is on hold.')).toBeTruthy();
-  expect(screen.getByText(/Let active workers finish and reconcile/)).toBeTruthy();
+  expect(screen.getByText('Workers are still running. Recovery opens when they stop.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Recover goal' })).toBeNull();
   f.command('record_stopped', { attemptId: 'planner' });
   const goal = { ...goalView(f.goal), contracts: [] };

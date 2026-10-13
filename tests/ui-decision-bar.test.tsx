@@ -9,10 +9,11 @@ import type { Goal } from '../app/orchestration/goal-board';
 
 afterEach(cleanup);
 const base = (): Goal => goalView(fixture().goal);
+const decision = (over: Partial<Goal['decision']>): Goal['decision'] => ({ state: 'Work continues automatically. No action needed.', reason: null, detail: null, primary: null, next: null, rank: 1, stage: 'In progress', ...over });
 
 test('the bar shows stage, state, the primary action and secondary actions behind More', () => {
   const goal: Goal = { ...base(), title: 'Session in mobile', status: 'awaiting_approval', planReviewPending: false,
-    decision: { state: 'Your plan is ready to approve.', reason: null, primary: { type: 'approve', label: 'Approve revision 3', payload: { revision: 3 } } },
+    decision: decision({ state: 'Your plan is ready to approve.', primary: { type: 'approve', label: 'Approve revision 3', payload: { revision: 3 } }, rank: 0, stage: 'Needs approval' }),
     actions: [{ type: 'approve', label: 'Approve revision 3', payload: { revision: 3 } }, { type: 'pause_goal', label: 'Pause goal', payload: {} }, { type: 'send_goal_message', label: 'Send message', payload: {} }, { type: 'rename_goal', label: 'Edit title', payload: { title: 'Session in mobile' } }, { type: 'abort', label: 'Abort goal', payload: {} }] };
   const act = vi.fn().mockResolvedValue(true);
   render(<DecisionBar goal={goal} disabled={false} act={act} />);
@@ -32,7 +33,7 @@ test('the bar shows stage, state, the primary action and secondary actions behin
 
 test('a refused action renders as the reason with no primary button, and the menu closes on an outside click', () => {
   const goal: Goal = { ...base(), hold: { id: 'hold', reasons: [{ kind: 'attempt', target: 'planner', message: 'planner did not finish successfully.' }] },
-    decision: { state: 'The goal is on hold.', reason: 'Let active workers finish and reconcile uncertain ownership before recovery', primary: null }, actions: [{ type: 'abort', label: 'Abort goal', payload: {} }] };
+    decision: decision({ state: 'The goal is on hold.', reason: 'Let active workers finish and reconcile uncertain ownership before recovery', rank: 1, stage: 'On hold' }), actions: [{ type: 'abort', label: 'Abort goal', payload: {} }] };
   render(<DecisionBar goal={goal} disabled={false} act={vi.fn()} />);
   expect(screen.getByRole('status').textContent).toBe('The goal is on hold.');
   expect(screen.getByText('Let active workers finish and reconcile uncertain ownership before recovery')).toBeTruthy();
@@ -44,7 +45,7 @@ test('a refused action renders as the reason with no primary button, and the men
 });
 
 test('an open More panel closes and its items disable when controls become unavailable', () => {
-  const goal: Goal = { ...base(), decision: { state: 'Work continues automatically. No action needed.', reason: null, primary: null }, actions: [{ type: 'abort', label: 'Abort goal', payload: {} }] };
+  const goal: Goal = { ...base(), decision: decision({}), actions: [{ type: 'abort', label: 'Abort goal', payload: {} }] };
   const act = vi.fn();
   const view = render(<DecisionBar goal={goal} disabled={false} act={act} />);
   fireEvent.click(screen.getByRole('button', { name: 'More' }));
@@ -56,7 +57,7 @@ test('an open More panel closes and its items disable when controls become unava
 });
 
 test('Edit title opens the inline form and saves through the rename action', async () => {
-  const goal: Goal = { ...base(), title: 'Short title', decision: { state: 'Work continues automatically. No action needed.', reason: null, primary: null },
+  const goal: Goal = { ...base(), title: 'Short title', decision: decision({}),
     actions: [{ type: 'rename_goal', label: 'Edit title', payload: { title: 'Short title' } }] };
   const act = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
   render(<DecisionBar goal={goal} disabled={false} act={act} />);
