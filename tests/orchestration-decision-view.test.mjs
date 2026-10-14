@@ -19,7 +19,7 @@ test('startup failure, approval, delivery and abort pick the first offered prima
   assert.deepEqual(core(decisionView(ready.goal)), { state: 'Your plan waits on a blocker.', reason: 'Independent plan review must accept this revision', primary: null });
   ready.request('plan_review', 'reviewer'); ready.dispatch('plan_review'); ready.review('plan_review', planTarget(ready.goal));
   assert.equal(decisionView(ready.goal).state, 'Your plan is ready to approve.');
-  assert.equal(decisionView(ready.goal).primary.label, 'Approve revision 1');
+  assert.equal(decisionView(ready.goal).primary.label, 'Approve plan & start work');
   const delivered = fixture(); delivered.deliver();
   assert.equal(decisionView(delivered.goal).state, 'Pull request published. Waiting for merge.');
   assert.equal(primary(delivered.goal), 'request_review_fix', 'addressing review comments stays one click away after delivery');
@@ -88,7 +88,7 @@ test('a stopped supervisor recovers automatically, then approval and pause remai
   command('apply_goal_recovery', { decisionId: scheduled.id, now: scheduled.dueAt }, system);
   const recovered = goalView(store.get('g'));
   assert.equal(recovered.decision.state, 'Your plan is ready to approve.');
-  assert.equal(recovered.decision.primary.label, `Approve revision ${recovered.revision}`);
+  assert.equal(recovered.decision.primary.label, 'Approve plan & start work');
   command('pause_goal', {});
   const paused = goalView(store.get('g')).decision;
   assert.equal(paused.state, 'Your plan is ready to approve.', 'approval outranks the paused state');
@@ -187,4 +187,59 @@ test('ownership reconciliation does not ask the user to recover or message the s
   assert.equal(d.next, null);
   assert.equal(d.rank, 1);
   assert.equal(d.stage, 'Recovering');
+});
+
+test('approval and publication describe their effect while preserving the exact authorized payload', () => {
+  const f = fixture(); f.approve();
+  f.command('publish_contract', { contract: contract() }, f.user);
+  f.goal.planReviewEnabled = false;
+  const approval = decisionView(f.goal);
+  assert.equal(approval.outcome, contract().outcome);
+  assert.match(approval.effect, /Starts implementation of plan 2/);
+  assert.match(approval.effect, /separate approval/);
+  assert.deepEqual(approval.primary.payload, { revision: 2 });
+  const published = fixture(); published.deliver();
+  published.goal.status = 'ready_to_publish'; published.goal.pr = null;
+  published.goal.publication.observation = { status: 'target_moved', baseHeadSha: HEAD_A };
+  const moved = decisionView(published.goal);
+  assert.equal(moved.primary.type, 'accept_moved_target');
+  assert.equal(moved.primary.label, 'Create PR with reviewed code');
+  assert.deepEqual(moved.primary.payload, { operationId: published.goal.publication.operationId, baseHeadSha: HEAD_A });
+  assert.match(moved.effect, /without incorporating the newer changes on main/);
+  assert.match(moved.effect, /does not merge or deploy/);
+  delete published.goal.publication.approval;
+  published.goal.publication.observation = null;
+  assert.match(decisionView(published.goal).effect, /Creates a pull request to main/);
+});
+
+for (const autonomous of [false, true]) test(`unsupported current checks offer a revision instead of an unchanged retry (automatic recovery ${autonomous})`, () => {
+  const f = fixture(); f.approve();
+  if (autonomous) {
+    f.goal.experienceVersion = 2;
+    f.goal.conversation = { messages: [], supervisorAttemptId: null, wake: 1, seenWake: 0, waiting: false, paused: false, dispatchApproved: true };
+    f.command('adopt_agent_recovery', {}, f.user);
+  }
+  const check = { id: 'unit', passed: false, code: 'UNSUPPORTED_CAPABILITY', artifactId: 'check-proof' };
+  f.goal.verificationRuns = [{ operationId: 'bad-check', generation: f.goal.generation, revision: f.goal.revision, status: 'complete', workerState: 'stopped', headSha: BASE, result: { verification: { headSha: BASE, checks: [check] } } }];
+  f.goal.hold = { id: 'setup-hold', reasons: [{ kind: 'verification', target: 'bad-check', message: 'Check setup needs attention' }] };
+  const before = JSON.stringify(f.goal), decision = decisionView(f.goal);
+  assert.equal(decision.primary, null);
+  assert.equal(decision.next.type, 'request_revision');
+  assert.equal(decision.next.label, 'Fix verification plan');
+  assert.match(decision.next.context, /unit: \["node","--test"\]/);
+  assert.deepEqual(decision.checks, [{ id: 'unit', argv: ['node', '--test'], code: 'UNSUPPORTED_CAPABILITY', artifactId: 'check-proof' }]);
+  assert.equal(JSON.stringify(f.goal), before);
+  f.goal.clarification = { question: 'Which check should verify the spec?' };
+  assert.notEqual(decisionView(f.goal).next?.label, 'Fix verification plan', 'an unanswered clarification keeps its priority');
+  delete f.goal.clarification;
+  if (autonomous) {
+    f.goal.conversation.paused = true;
+    assert.equal(decisionView(f.goal).next, null, 'paused recovery must not invite a revision');
+    f.goal.conversation.paused = false;
+    f.goal.verificationRuns[0].workerState = 'unknown';
+    assert.equal(decisionView(f.goal).next, null, 'worker reconciliation must settle first');
+    f.goal.verificationRuns[0].workerState = 'stopped';
+  }
+  f.goal.verificationRuns[0].revision--;
+  assert.equal(decisionView(f.goal).checks, undefined, 'historical failures do not become current decisions');
 });

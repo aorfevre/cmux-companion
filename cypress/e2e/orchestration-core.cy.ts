@@ -30,7 +30,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.findByLabelText('What should we accomplish?').type('Revise the rejected fixture plan before asking me to approve.');
     cy.findByRole('button', { name: 'Start goal' }).click();
     cy.findByRole('button', { name: 'Open Automatic plan revision', timeout: 20000 }).click();
-    cy.findByRole('button', { name: 'Approve revision 2', timeout: 30000 }).should('be.enabled');
+    cy.findByRole('button', { name: 'Approve plan & start work', timeout: 30000 }).should('be.enabled');
     cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.contains('Automatic plan revisions: 1 of 2.').should('be.visible');
     cy.task<Evidence>('orchestrationEvidence').then(evidence => {
@@ -73,7 +73,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.viewport(1200, 1000); cy.screenshot('team-proposal-desktop');
     cy.document().then(doc => { expect(doc.documentElement.scrollWidth).to.be.at.most(1200); });
     cy.viewport(390, 844);
-    cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).should('be.enabled').click();
+    cy.findByRole('button', { name: 'Approve plan & start work', timeout: 20000 }).should('be.enabled').click();
     cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.get('[data-task="B"]').should('contain.text', 'running');
@@ -105,7 +105,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.task<string>('orchestrationAdvanceTarget').as('movedTarget');
     cy.task('orchestrationRelease', 'final');
     cy.findByRole('button', { name: 'Recover goal', timeout: 30000 }).should('be.enabled').click();
-    cy.findByRole('button', { name: 'Approve & publish PR', timeout: 30000 }).should('be.enabled').click();
+    cy.findByRole('button', { name: 'Create pull request', timeout: 30000 }).should('be.enabled').click();
     cy.contains('The target branch moved to', { timeout: 30000 }).should('be.visible');
     cy.findByRole('link', { name: /Open pull request/ }).should('not.exist');
     cy.task<Evidence>('orchestrationEvidence').then(evidence => {
@@ -116,7 +116,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       expect(evidence.prCreates).to.have.length(0);
     });
     cy.reload();
-    cy.findByRole('button', { name: 'Publish reviewed head against moved target' }).should('be.enabled').click();
+    cy.findByRole('button', { name: 'Create PR with reviewed code' }).should('be.enabled').click();
     cy.findByRole('link', { name: 'Open pull request #1', timeout: 30000 }).should('be.visible');
     cy.task<Evidence>('orchestrationEvidence', { title: 'Build the parallel fixture', status: 'delivered' }).then(evidence => {
       const goal = evidence.goals.find((entry) => entry.title === 'Build the parallel fixture')!;
@@ -166,7 +166,13 @@ suite('Mobile orchestration with real service and disposable Git', () => {
       expect(fixRun, 'the fix head is verified by its own run').to.not.equal(undefined);
       expect(fixRun.result!.verification.checks.map(check => check.id)).to.include('unit');
       expect(fixRun.result!.verification.checks.every(check => check.passed)).to.equal(true);
-      expect(goal.mergeSync).to.equal(undefined);
+      // A push clears the old observation (covered by the domain test), but
+      // the scheduler can already have checked the PR again by this snapshot.
+      if (goal.mergeSync) {
+        expect(goal.mergeSync.checkedAt).to.be.at.least(goal.reviewRounds!.at(-1)!.settledAt!);
+        expect(goal.mergeSync.state).to.equal('open');
+        expect(goal.mergeSync.mergeable).to.equal('mergeable');
+      }
       expect(evidence.replies).to.have.length(2);
       expect(evidence.resolutions).to.have.length(1);
       cy.task<string>('orchestrationGit', { branch: evidence.pulls[0].branch, file: 'src/a.mjs' }).should('include', 'addressed review');
@@ -201,7 +207,7 @@ suite('Mobile orchestration with real service and disposable Git', () => {
     cy.findByLabelText('What should we accomplish?').type('Abort this fixture');
     cy.findByRole('button', { name: 'Start goal' }).click();
     cy.findByRole('button', { name: 'Open Abort this fixture', timeout: 20000 }).click();
-    cy.findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).click();
+    cy.findByRole('button', { name: 'Approve plan & start work', timeout: 20000 }).click();
     cy.get('details.goal-technical-details').then($d => { ($d[0] as HTMLDetailsElement).open = true; });
     cy.get('[data-task="A"]').should('contain.text', 'running');
     cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Abort goal' }).click();

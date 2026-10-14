@@ -116,16 +116,18 @@ describe("Pairing failures and offline", () => {
     cy.findByRole("link", { name: "Goals" }).should("have.attr", "href", "/orchestration");
   });
 
-  it("unpairs from Settings and returns to the pair screen without reloading", () => {
+  it("unpairs from Settings and returns to the pair screen on the home page", () => {
     fixtures(true);
     cy.intercept("POST", "**/api/auth/logout", { paired: false }).as("logout");
     cy.intercept("GET", "**/api/auth/status", { paired: false });
     cy.intercept("GET", "**/api/orchestration/*", { statusCode: 401, body: { error: "Pair this device" } });
+    cy.intercept("GET", "**/api/account-usage", { statusCode: 401, body: { error: "Pair this device" } }).as("unpairedHome");
     cy.visit("/settings#general");
     cy.wait("@bootstrap");
     cy.findByRole("heading", { name: "Setup" }).should("be.visible");
     cy.findByRole("button", { name: "Unpair this device" }).click();
     cy.wait("@logout").its("request.body").should("deep.equal", {});
+    cy.wait("@unpairedHome");
     cy.findByRole("heading", { name: "Pair this device" }).should("be.visible");
     cy.findByRole("navigation", { name: "Main navigation" }).should("be.visible");
     cy.findByLabelText("Pairing code").should("have.value", "");

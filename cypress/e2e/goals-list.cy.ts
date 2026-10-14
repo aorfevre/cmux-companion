@@ -4,7 +4,7 @@ import { fixture } from '../../tests/helpers/orchestration/domain-fixture.mjs';
 describe('Goals list', () => {
   const base = goalView(fixture().goal);
   const goals = [
-    { ...base, id: 'design', title: 'Design ingestion', status: 'awaiting_approval', planReviewPending: false, contracts: [], actions: [{ type: 'approve', label: 'Approve revision 1', payload: { revision: 1 } }], decision: { ...base.decision, state: 'Your plan is ready to approve.', primary: { type: 'approve', label: 'Approve revision 1', payload: { revision: 1 } }, rank: 0 as const, stage: 'Needs approval' } },
+    { ...base, id: 'design', title: 'Design ingestion', status: 'awaiting_approval', planReviewPending: false, contracts: [], actions: [{ type: 'approve', label: 'Approve plan & start work', payload: { revision: 1 } }], decision: { ...base.decision, state: 'Your plan is ready to approve.', primary: { type: 'approve', label: 'Approve plan & start work', payload: { revision: 1 } }, rank: 0 as const, stage: 'Needs approval' } },
     { ...base, id: 'waiting', title: 'Publish dashboard', status: 'delivered', contracts: [], pr: { number: 7, url: 'https://github.com/example/project/pull/7', headSha: base.baseSha }, mergeSync: { checkedAt: 1789470000000, state: 'open', error: null }, decision: (() => { const f = fixture(); f.deliver(); return goalView(f.goal).decision; })() },
     { ...base, id: 'complete', title: 'Improve search', status: 'merged', contracts: [], decision: { ...base.decision, state: 'Merged on GitHub.', rank: 3 as const, stage: 'Complete' } },
   ];
@@ -100,6 +100,7 @@ describe('Goals list', () => {
     cy.findByRole('button', { name: 'Newer activity' }).click(); cy.contains('PR publication approved').should('be.visible');
     cy.screenshot(`goal-activity-${width}`, { capture: 'fullPage' });
     cy.get('@checkEvidence.all').should('have.length', 0);
+    cy.findByRole('region', { name: 'Goal result' }).contains('summary', 'Review and check evidence').click();
     cy.findByRole('region', { name: 'Goal result' }).findByRole('button', { name: 'Inspect check output' }).click(); cy.wait('@checkEvidence');
     cy.findByLabelText('Check output').should('contain.text', '<script>unsafe()</script>').and('contain.text', 'All checks passed.');
     cy.findByLabelText('Check output').find('script').should('not.exist');

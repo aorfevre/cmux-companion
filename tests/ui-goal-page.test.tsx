@@ -69,3 +69,42 @@ test('a conversational goal keeps its thread and supervisor composer', () => {
   expect(screen.queryByRole('region', { name: 'Your request' })).toBeNull();
   expect(screen.getByText('Hello')).toBeTruthy();
 });
+
+test('fixing an unsupported check prepares a revision without approving or retrying, even for conversational goals', async () => {
+  const f = fixture(); f.approve();
+  f.goal.experienceVersion = 2;
+  f.goal.conversation = { messages: [], supervisorAttemptId: null, wake: 1, seenWake: 0, waiting: false, paused: false, dispatchApproved: true };
+  f.command('adopt_agent_recovery', {}, f.user);
+  f.goal.verificationRuns = [{ operationId: 'bad-check', generation: f.goal.generation, revision: f.goal.revision, status: 'complete', workerState: 'stopped', headSha: f.goal.integrationHead, result: { verification: { headSha: f.goal.integrationHead, checks: [{ id: 'unit', passed: false, code: 'UNSUPPORTED_CAPABILITY', artifactId: 'proof' }] } } }];
+  f.goal.hold = { id: 'setup', reasons: [{ kind: 'verification', target: 'bad-check', message: 'Check setup needs attention' }] };
+  const goal = { ...goalView(f.goal), contracts: f.goal.contracts }, act = vi.fn(async () => true);
+  render(<GoalPage {...props} goal={goal} act={act} />);
+  const bar = screen.getByRole('region', { name: 'Goal decision' });
+  expect(within(bar).getByText(/Retrying the unchanged plan/)).toBeTruthy();
+  const evidence = screen.getByRole('region', { name: 'Blocked checks' });
+  expect(within(evidence).getByText('["node","--test"]')).toBeTruthy();
+  expect(within(evidence).getByText('UNSUPPORTED_CAPABILITY')).toBeTruthy();
+  expect(within(evidence).getByRole('button', { name: 'Inspect check output' })).toBeTruthy();
+  fireEvent.click(within(bar).getByRole('button', { name: 'Fix verification plan' }));
+  expect(act).not.toHaveBeenCalled();
+  const draft = screen.getByLabelText('Request a revision') as HTMLTextAreaElement;
+  expect(document.activeElement).toBe(draft);
+  expect(draft.value).toContain('unit: ["node","--test"]');
+  fireEvent.click(screen.getByRole('button', { name: 'Send revision request' }));
+  expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'request_revision', payload: { message: draft.value.trim() } }));
+  await vi.waitFor(() => expect(screen.getByLabelText('Message your supervisor')).toHaveProperty('value', ''));
+});
+
+test('blocked commands preserve script and path argument boundaries and preparation has a fallback', () => {
+  const f = fixture();
+  const goal = { ...goalView(f.goal), contracts: f.goal.contracts };
+  const argv = ['node', '-e', 'console.log("two words")', 'docs/a b.md'];
+  goal.decision.checks = [
+    { id: 'script', argv, code: 'CHECK_FAILED', artifactId: 'script-proof' },
+    { id: 'prepare', argv: [], code: 'PREPARE_FAILED', artifactId: 'prepare-proof' },
+  ];
+  render(<GoalPage {...props} goal={goal} />);
+  const evidence = within(screen.getByRole('region', { name: 'Blocked checks' }));
+  expect(JSON.parse(evidence.getByText(JSON.stringify(argv)).textContent!)).toEqual(argv);
+  expect(evidence.getByText('Dependency preparation')).toBeTruthy();
+});
