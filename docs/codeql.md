@@ -4,7 +4,7 @@ The `CodeQL` workflow scans JavaScript and TypeScript with the `security-extende
 query suite on pull requests to `main`, pushes to `main`, every Tuesday, and manual
 workflow dispatch. It includes backend `.mjs`, frontend TS/TSX, worker, scripts,
 installer and test source; only dependencies and generated output are excluded.
-It complements CodeRabbit review and the separate npm dependency audit.
+It complements human review and the separate npm dependency audit.
 
 Analysis uses `build-mode: none`: it does not install npm packages, execute package
 scripts or start Companion. Actions are pinned to upstream commits and maintained
@@ -49,12 +49,12 @@ constraint. No scan, license change, merge or deployment is implied by configura
 
 Human, goal-generated and Dependabot PRs use the same pipeline. Goal PRs start as
 drafts and become ready only after the existing completion and publication gates.
-For a ready PR, GitHub CI, CodeQL and CodeRabbit run independently. Before merge,
+For a ready PR, GitHub CI and CodeQL run independently. Before merge,
 require successful current-head `macos`, `verify`, and `Analyze JavaScript and
-TypeScript` checks, an actual current-head CodeRabbit approval, resolved review
+TypeScript` checks, a current-head human approval, resolved review
 conversations, and GitHub code-scanning protection against high/critical alerts.
-A successful or skipped CodeRabbit status is not an approval; a skipped CodeQL job
-is not a scan. Do not activate automatic merging until these protections are active.
+A skipped CodeQL job is not a scan. Do not activate automatic merging until these
+protections are active.
 
 A failing check or requested change leaves the PR open. A cmux agent can repair
 its branch, push the fix, and send that new head through the complete pipeline

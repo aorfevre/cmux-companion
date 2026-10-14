@@ -1,11 +1,17 @@
-# CodeRabbit and protected auto-merge
+# Human review and protected auto-merge
 
-`.coderabbit.yaml` selects assertive review, but asks reviewers to focus blocking
-feedback on correctness, security and observable behavior. It enables summaries in
-PR descriptions, incremental reviews and approval after CodeRabbit's findings are
-resolved. Drafts are excluded. AGENTS.md and path-specific guidance cover the UI,
-server, updater, tests, dependencies and workflow security. Generated output is
-excluded; source, tests, manifests and lockfiles remain reviewable.
+CodeRabbit was removed from the PR process at the user's request on 2026-10-14.
+`.coderabbit.yaml` explicitly disables automatic and incremental reviews, review
+and commit status reporting, summaries, change-request workflow and chat replies.
+Keep the opt-out file: deleting it can restore the installed app's defaults.
+Automation does not request CodeRabbit reviews, and its approval or status is
+not a merge requirement. Historical review evidence remains available.
+
+Human review and the existing CI, security and coverage checks remain. Protected
+auto-merge requires an approval of the current commit from a human other than the
+PR author, respecting the configured approval count and GitHub's final protection
+decision. The goal service's independent review and human publication gates are
+unchanged. No account-wide app uninstall is performed by repository configuration.
 
 ## Goal publication
 
@@ -71,16 +77,14 @@ only to resolve a reported conflict.
 
 The trusted default-branch `Review and auto-merge` workflow runs every 15 minutes and on manual dispatch from `main`. It never checks out PR code or downloads PR artifacts. It does not use
 `workflow_run` or other privileged PR-completion triggers. GitHub CLI runs from
-a fixed OS installation path with a restricted subprocess PATH. For bot
-authors such as Dependabot it requests one CodeRabbit review per head: CodeRabbit
-can report a successful status for a skipped bot review, which is not approval.
+a fixed OS installation path with a restricted subprocess PATH. Human-authored,
+goal-generated and Dependabot PRs follow the same CI and human-review gates.
 
 Before activation, configure GitHub repository settings:
 
 - Enable **Allow auto-merge**.
 - Protect `main`, including administrators, with strict/up-to-date required
-  `macos` and `verify` checks from GitHub Actions (app ID 15368), and the
-  `CodeRabbit` status.
+  `macos` and `verify` checks from GitHub Actions (app ID 15368).
 - Require at least one approval, dismiss stale approvals, require approval of the
   most recent push, and require resolved conversations.
 - Install a dedicated merge GitHub App on this repository with contents and pull
@@ -88,28 +92,28 @@ Before activation, configure GitHub repository settings:
   statuses read.
   Set Actions variable `AUTO_MERGE_APP_ID` and secret `AUTO_MERGE_APP_PRIVATE_KEY`.
   The workflow creates a short-lived token scoped to this repository and revokes
-  it after the run. These are the merge app's credentials, not CodeRabbit's or a
-  personal CLI credential; never put keys in source or logs.
+  it after the run. These are the merge app's credentials, not a personal CLI
+  credential; never put keys in source or logs.
 
 The separate credential preserves the resulting main push workflow. Merges made
 with the default `GITHUB_TOKEN` can suppress downstream workflows, leaving the
 installed updater without main verification evidence. It is used only for
 protection inspection and native protected merge/auto-merge; the default workflow
-token requests reviews and reads PR/CI state.
+token only reads PR/CI state.
 
 Admission requires a non-draft, mergeable PR to main, successful current Verify,
-all reported checks settled without failures, an actual CodeRabbit approval for
-the current head, no change requests and no unresolved review threads. Missing or
+all reported checks settled without failures, the configured count of human
+approvals for the current head, no change requests and no unresolved review threads. Missing or
 paginated evidence fails closed. GitHub then enforces protection at merge time;
 the command pins the expected head and never uses an administrator bypass.
 Merge commits preserve the existing verified-tree reuse policy. Deployment remains
 a separate installed-updater policy and authorization.
 
-At configuration time this repository was private on a plan that rejected branch
-protection (HTTP 403) and left auto-merge disabled. Upgrade the GitHub plan or
-complete the separate publication privacy work first. CodeRabbit's free
-open-source entitlement likewise depends on repository visibility and its plan;
-a green skipped-review status does not establish that a review ran.
+The 2026-10-14 read-only inspection found a public repository, no main branch
+protection (HTTP 404), no rulesets and auto-merge disabled. No GitHub protection
+change is needed to remove a CodeRabbit requirement from this repository.
+Protected automation remains inactive until the prerequisites above are configured;
+this removal does not enable it or change other installed integrations.
 
 Dry-run inspection (no comments or merges):
 

@@ -402,6 +402,6 @@ requires a supported Home Screen installation.
 ## Pull request review
 
 Goal PRs are created as drafts and promoted after completed, reviewed, verified
-work and human publication approval. CodeRabbit reviews ready PRs; protected
-auto-merge additionally requires current CI, its approval and resolved discussions.
+work and human publication approval. Protected auto-merge additionally requires
+current CI, a human approval on the current commit and resolved discussions.
 See [review configuration and activation](docs/code-review-workflow.md).

@@ -9,15 +9,15 @@ export function mergeEligible(pr, protection, repository, verified) {
     || !protection.required_conversation_resolution?.enabled
     || !protection.required_pull_request_reviews?.dismiss_stale_reviews
     || !protection.required_pull_request_reviews?.require_last_push_approval
-    || !required.some(check => check.context === 'CodeRabbit')
     || (protection.required_pull_request_reviews.required_approving_review_count ?? 0) < 1
     || !['macos', 'verify'].every(name => required.some(check => check.context === name && check.app_id === 15368))) return false;
-  if (pr.isDraft || pr.baseRefName !== 'main' || pr.mergeable !== 'MERGEABLE' || !verified
+  if (pr.isDraft || !pr.author?.login || pr.baseRefName !== 'main' || pr.mergeable !== 'MERGEABLE' || !verified
     || pr.reviews.pageInfo.hasPreviousPage || pr.reviewThreads.pageInfo.hasNextPage
     || pr.reviewThreads.nodes.some(thread => !thread.isResolved)) return false;
   const latest = new Map(pr.reviews.nodes.filter(review => review.author).map(review => [review.author.login, review]));
-  const rabbit = latest.get('coderabbitai');
-  if (!rabbit || rabbit.author.__typename !== 'Bot' || rabbit.state !== 'APPROVED' || rabbit.commit?.oid !== pr.headRefOid
+  const approvals = [...latest.values()].filter(review => review.author.__typename === 'User'
+    && review.author.login !== pr.author?.login && review.state === 'APPROVED' && review.commit?.oid === pr.headRefOid);
+  if (approvals.length < protection.required_pull_request_reviews.required_approving_review_count
     || [...latest.values()].some(review => review.state === 'CHANGES_REQUESTED')) return false;
   const contexts = pr.commits.nodes.at(-1)?.commit.statusCheckRollup?.contexts;
   return Boolean(contexts && !contexts.pageInfo.hasNextPage && contexts.nodes.length
@@ -55,15 +55,6 @@ function main() {
   catch { console.log('Auto-merge unavailable: main branch protection cannot be verified.'); }
   for (const pr of pulls.nodes) {
     if (pr.isDraft) continue;
-    // CodeRabbit normally skips bot authors. Request one review per exact head.
-    if (pr.author?.__typename === 'Bot' && !pr.reviews.nodes.some(review => review.author?.login === 'coderabbitai' && review.author.__typename === 'Bot' && review.commit?.oid === pr.headRefOid)) {
-      const marker = `<!-- companion-review-request:${pr.headRefOid} -->`;
-      const comments = api(`repos/${slug}/issues/${pr.number}/comments?per_page=100`);
-      if (comments.length < 100 && !comments.some(comment => comment.body?.includes(marker))) {
-        if (!dryRun) api(`repos/${slug}/issues/${pr.number}/comments`, { body: `@coderabbitai review\n\n${marker}` });
-        console.log(`${dryRun ? 'Would request' : 'Requested'} CodeRabbit review for #${pr.number}.`);
-      }
-    }
     const runs = api(`repos/${slug}/actions/workflows/verify.yml/runs?event=pull_request&head_sha=${pr.headRefOid}&per_page=100`).workflow_runs;
     const latest = runs.filter(run => run.head_sha === pr.headRefOid).sort((a, b) => b.id - a.id)[0];
     if (!mergeEligible(pr, protection, repository, latest?.conclusion === 'success')) continue;
