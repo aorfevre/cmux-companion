@@ -70,7 +70,7 @@ export function GoalConversation({ goal, disabled, act, next, onNextConsumed }: 
     setApplied(next);
     if (next.type === 'request_revision' && next.context) setMessage(`${next.context}\n\n`);
   }
-  const revising = applied?.type === 'request_revision' && Boolean(revision);
+  const revising = applied?.type === 'request_revision';
   const composerAction = revising || !conversation ? revision : send;
   useEffect(() => {
     if (!next) return;

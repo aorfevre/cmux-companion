@@ -125,3 +125,19 @@ and remote CI are separate from the local evidence above.
 The fixes will affect the reported URLs only after an authorized release/install.
 The mobile goal's immutable command additionally needs its reviewed revision;
 this work does not claim that goal has recovered or completed.
+
+## PR review follow-up
+
+The user subsequently authorized merging PR #196. After marking it ready,
+CodeRabbit identified two valid issues: losing a revision action during refresh
+could dispatch the retained draft as an ordinary supervisor message, and joining
+command arguments with spaces obscured their actual boundaries. Revision mode
+now stays selected with submission disabled when its action is unavailable;
+blocked checks display JSON argv, including quoted script/path arguments.
+
+Regression validation passed: 15 conversation/page UI tests, lint, type checks,
+and all 7 workspace Cypress journeys. The command-boundary test includes a script
+with quotes/spaces and a path with spaces; the stale-action test verifies that
+no command is submitted until revision authority returns. The phone evidence was
+refreshed. Current-head remote CI and CodeRabbit review are checked again before
+merging; this authorization does not extend to an installed-service update.

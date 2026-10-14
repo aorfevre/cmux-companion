@@ -82,7 +82,7 @@ test('fixing an unsupported check prepares a revision without approving or retry
   const bar = screen.getByRole('region', { name: 'Goal decision' });
   expect(within(bar).getByText(/Retrying the unchanged plan/)).toBeTruthy();
   const evidence = screen.getByRole('region', { name: 'Blocked checks' });
-  expect(within(evidence).getByText('node --test')).toBeTruthy();
+  expect(within(evidence).getByText('["node","--test"]')).toBeTruthy();
   expect(within(evidence).getByText('UNSUPPORTED_CAPABILITY')).toBeTruthy();
   expect(within(evidence).getByRole('button', { name: 'Inspect check output' })).toBeTruthy();
   fireEvent.click(within(bar).getByRole('button', { name: 'Fix verification plan' }));
@@ -93,4 +93,18 @@ test('fixing an unsupported check prepares a revision without approving or retry
   fireEvent.click(screen.getByRole('button', { name: 'Send revision request' }));
   expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'request_revision', payload: { message: draft.value.trim() } }));
   await vi.waitFor(() => expect(screen.getByLabelText('Message your supervisor')).toHaveProperty('value', ''));
+});
+
+test('blocked commands preserve script and path argument boundaries and preparation has a fallback', () => {
+  const f = fixture();
+  const goal = { ...goalView(f.goal), contracts: f.goal.contracts };
+  const argv = ['node', '-e', 'console.log("two words")', 'docs/a b.md'];
+  goal.decision.checks = [
+    { id: 'script', argv, code: 'CHECK_FAILED', artifactId: 'script-proof' },
+    { id: 'prepare', argv: [], code: 'PREPARE_FAILED', artifactId: 'prepare-proof' },
+  ];
+  render(<GoalPage {...props} goal={goal} />);
+  const evidence = within(screen.getByRole('region', { name: 'Blocked checks' }));
+  expect(JSON.parse(evidence.getByText(JSON.stringify(argv)).textContent!)).toEqual(argv);
+  expect(evidence.getByText('Dependency preparation')).toBeTruthy();
 });

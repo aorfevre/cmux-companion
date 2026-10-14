@@ -89,9 +89,9 @@ describe('Goal decision clarity', () => {
       cy.screenshot(`decision-${scenario}-${width}`, { capture: 'fullPage' });
       if (scenario === 'setup') {
         cy.findByRole('region', { name: 'Blocked checks' }).within(() => {
-          cy.contains('/usr/bin/test -s docs/spec.md').should('be.visible');
+          cy.contains('["/usr/bin/test","-s","docs/spec.md"]').should('be.visible');
           cy.contains('e2e-sessions').should('be.visible');
-          cy.contains('npm run test:e2e:local').should('be.visible');
+          cy.contains('["npm","run","test:e2e:local"]').should('be.visible');
           cy.findAllByRole('button', { name: 'Inspect check output' }).first().click();
           cy.findByLabelText('Check output').should('contain.text', 'Executable /usr/bin/test is unavailable.');
         });

@@ -20,7 +20,7 @@ export function GoalPage({ goal, disabled, terminal, act, control, pendingNext, 
   return <>
     <DecisionBar goal={goal} disabled={disabled} act={act} openNext={setLocal} />
     {Boolean(goal.decision.checks?.length) && <section className="orch-card goal-blocked-checks" aria-label="Blocked checks"><h2>What stopped this goal</h2>
-      {goal.decision.checks?.map(check => <div className="goal-blocked-check" key={check.artifactId}><h3>{check.id}</h3><p><code>{check.argv.join(' ') || 'Dependency preparation'}</code></p><p>{check.code}</p><CheckEvidence goalId={goal.id} artifactId={check.artifactId} /></div>)}
+      {goal.decision.checks?.map(check => <div className="goal-blocked-check" key={check.artifactId}><h3>{check.id}</h3><p><code>{check.argv.length ? JSON.stringify(check.argv) : 'Dependency preparation'}</code></p><p>{check.code}</p><CheckEvidence goalId={goal.id} artifactId={check.artifactId} /></div>)}
     </section>}
     <GoalConversation goal={goal} disabled={disabled} act={act} next={pendingNext ?? local} onNextConsumed={consume} />
     <details className="orch-card goal-technical-details" aria-label="Technical details"><summary>Technical details</summary><GoalTechnicalDetails goal={goal} disabled={disabled} terminal={terminal} act={act} control={control} /></details>

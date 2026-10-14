@@ -116,3 +116,24 @@ test('publication opens with result evidence and keeps the approved plan collaps
   expect(screen.getByRole('article', { name: 'Goal conversation' }).firstElementChild).toBe(screen.getByRole('region', { name: 'Goal result' }));
   expect(screen.getByText('Approved plan 1').closest('details')?.open).toBe(false);
 });
+
+test('a retained revision draft cannot become a supervisor message when refresh removes revision authority', async () => {
+  const value = goal(), act = vi.fn().mockResolvedValue(true), onNextConsumed = vi.fn();
+  const next = { type: 'request_revision' as const, label: 'Fix verification plan', context: 'Correct the unavailable spec check.' };
+  const view = render(<GoalConversation goal={value} disabled={false} act={act} next={next} onNextConsumed={onNextConsumed} />);
+  fireEvent.change(screen.getByLabelText('Request a revision'), { target: { value: 'Keep this revision guidance.' } });
+  const refreshed = { ...value, version: value.version + 1, actions: value.actions.filter(action => action.type !== 'request_revision') };
+  expect(refreshed.actions.some(action => action.type === 'send_goal_message')).toBe(true);
+  view.rerender(<GoalConversation goal={refreshed} disabled={false} act={act} next={null} onNextConsumed={onNextConsumed} />);
+  const draft = screen.getByLabelText('Request a revision') as HTMLTextAreaElement;
+  expect(draft.value).toBe('Keep this revision guidance.');
+  expect(draft.disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Send revision request' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Send message' })).toBeNull();
+  fireEvent.submit(draft.closest('form')!);
+  expect(act).not.toHaveBeenCalled();
+  view.rerender(<GoalConversation goal={value} disabled={false} act={act} next={null} onNextConsumed={onNextConsumed} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Send revision request' }));
+  expect(act).toHaveBeenCalledWith(value, expect.objectContaining({ type: 'request_revision', payload: { message: 'Keep this revision guidance.' } }));
+  await waitFor(() => expect(screen.getByLabelText('Message your supervisor')).toHaveProperty('value', ''));
+});
