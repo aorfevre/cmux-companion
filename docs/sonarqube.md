@@ -38,7 +38,7 @@ its quality gate on new code before making it mandatory; do not weaken existing
 local checks to match an external report.
 
 Fork and Dependabot scans are skipped because their workflows do not receive this
-secret. Their tests, local coverage gates, CodeRabbit and eligible CodeQL scans
+secret. Their tests, local coverage gates, human review and eligible CodeQL scans
 continue independently. No privileged PR-target workflow or untrusted-code rerun
 is used to work around this restriction. Skipped Sonar jobs are not passed scans;
 do not claim this implements a universal Sonar merge gate for every PR author.
