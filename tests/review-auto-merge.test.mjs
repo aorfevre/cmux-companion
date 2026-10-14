@@ -46,6 +46,6 @@ test('the installed bot is explicitly opted out and automation cannot request pr
   const script = readFileSync(new URL('../scripts/review-auto-merge.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(script, /coderabbit|issues\/|companion-review-request/i);
   const workflow = readFileSync(new URL('../.github/workflows/review-auto-merge.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /^  pull-requests: read$/m);
+  assert.match(workflow, /^ {2}pull-requests: read$/m);
   assert.doesNotMatch(workflow, /Request reviews/);
 });
