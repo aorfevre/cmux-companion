@@ -1,5 +1,61 @@
 # Goal decision bar
 
+## 2026-10-14 correction: explain the decision before the action
+
+Status: Prepared for human review following the report on goals `b4efd4f2`,
+`ba689fe4` and `6cdb5464`. This correction supersedes the chronological default
+layout and the approval labels below, including the corresponding layout in
+`2026-10-13-goals-list-design.md`.
+
+Outcome: opening a goal explains what needs a decision, what clicking does,
+and the relevant proposal or result without reading its history.
+
+User journey:
+
+1. The decision area shows the current contract outcome, current revision and
+   the consequence of the offered primary action. Plan approval reads
+   "Approve plan & start work" and authorizes that revision's scope, checks and
+   team. Publication reads "Create pull request". A moved target reads
+   "Create PR with reviewed code" and explains that the target changed since
+   review, the tested commit stays unchanged, and publication does not merge
+   or deploy. The server projects this wording for both list and detail.
+2. The current proposal appears first, with its existing expandable sections;
+   a completed result appears first when publication is the decision. The
+   composer follows the current work. Earlier messages and superseded proposals
+   remain available together under a closed "Conversation history" disclosure.
+   The latest non-proposal message remains visible; questions and message
+   delivery remain available. No evidence is deleted or summarized away.
+3. A held verification shows the failed check name, approved command and
+   structured failure code beside its output control. An unsupported check
+   offers "Fix verification plan", opening the existing revision composer with
+   the failing command as context. Manual recovery stays a secondary action;
+   it is not presented as a fix for an unchanged setup failure.
+
+Non-goals: changing command authority, automatically approving revised checks,
+publishing these goals, merging, deploying, replacing unavailable executables
+with guessed alternatives, changing recovery budgets or restarting live work.
+
+Acceptance criteria (one verification each):
+
+| Outcome | Verification |
+| --- | --- |
+| Plan, publication and moved-target actions explain their distinct effect and retain their exact command payload. | `tests/orchestration-decision-view.test.mjs` |
+| The current proposal/result precedes history and history starts closed for both goal versions. | `tests/ui-goal-conversation.test.tsx` |
+| A setup failure names its check and opens a revision draft without executing recovery or approving a new plan. | `tests/ui-goal-page.test.tsx` |
+| A 32-message goal at 390px and 1440px exposes its current decision and consequence without scrolling through history; history can be expanded and no horizontal overflow occurs. | `cypress/e2e/goal-workspace.cy.ts` |
+
+Success measure: in the three reported states, a person can identify the
+decision and its effect from the initial viewport; a closed-history goal is
+under 2,000px tall at 390px and 1440px before opening evidence.
+
+Verification defect to repair under the existing execution contract: the local
+runner must preserve the resolved environment's actual CI status instead of
+inventing `CI=true` on the Mac. Missing executable failures must retain the
+resolver's diagnostic in saved evidence. Existing immutable approved commands
+remain unchanged; the mobile goal's `/usr/bin/test` requires a reviewed revision.
+Verify these repairs in `tests/orchestration-verification.test.mjs` and
+`tests/goal-verification.test.mjs`, keeping real CI refusal intact.
+
 Date: 2026-10-13
 Status: Approved for implementation by the user's "do the specs and build it"
 after presentation of the design sections. Amended before the plan: the
