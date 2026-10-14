@@ -12,19 +12,19 @@ const decision = (over: Partial<Goal['decision']>): Goal['decision'] => ({ state
 
 test('the bar shows stage, state, the primary action and secondary actions behind More', () => {
   const goal: Goal = { ...base(), title: 'Session in mobile', status: 'awaiting_approval', planReviewPending: false,
-    decision: decision({ state: 'Your plan is ready to approve.', primary: { type: 'approve', label: 'Approve revision 3', payload: { revision: 3 } }, rank: 0, stage: 'Needs approval' }),
-    actions: [{ type: 'approve', label: 'Approve revision 3', payload: { revision: 3 } }, { type: 'pause_goal', label: 'Pause goal', payload: {} }, { type: 'send_goal_message', label: 'Send message', payload: {} }, { type: 'rename_goal', label: 'Edit title', payload: { title: 'Session in mobile' } }, { type: 'abort', label: 'Abort goal', payload: {} }] };
+    decision: decision({ state: 'Your plan is ready to approve.', primary: { type: 'approve', label: 'Approve plan & start work', payload: { revision: 3 } }, rank: 0, stage: 'Needs approval' }),
+    actions: [{ type: 'approve', label: 'Approve plan & start work', payload: { revision: 3 } }, { type: 'pause_goal', label: 'Pause goal', payload: {} }, { type: 'send_goal_message', label: 'Send message', payload: {} }, { type: 'rename_goal', label: 'Edit title', payload: { title: 'Session in mobile' } }, { type: 'abort', label: 'Abort goal', payload: {} }] };
   const act = vi.fn().mockResolvedValue(true);
   render(<DecisionBar goal={goal} disabled={false} act={act} openNext={vi.fn()} />);
   expect(screen.getByRole('region', { name: 'Goal decision' }).textContent).toContain('Needs approval');
   expect(screen.getByRole('heading', { name: 'Session in mobile' })).toBeTruthy();
   expect(screen.getByRole('status').textContent).toBe('Your plan is ready to approve.');
   expect(screen.queryByRole('button', { name: 'Pause goal' })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Approve revision 3' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Approve plan & start work' }));
   expect(act).toHaveBeenCalledWith(goal, goal.actions[0]);
   fireEvent.click(screen.getByRole('button', { name: 'More' }));
   expect(within(screen.getByLabelText('More actions')).queryByRole('button', { name: 'Send message' })).toBeNull();
-  expect(within(screen.getByLabelText('More actions')).queryByRole('button', { name: 'Approve revision 3' })).toBeNull();
+  expect(within(screen.getByLabelText('More actions')).queryByRole('button', { name: 'Approve plan & start work' })).toBeNull();
   fireEvent.click(within(screen.getByLabelText('More actions')).getByRole('button', { name: 'Abort goal' }));
   expect(act).toHaveBeenCalledWith(goal, goal.actions[4]);
   expect(screen.queryByLabelText('More actions')).toBeNull();
@@ -99,4 +99,15 @@ test('a next step renders as the primary button and opens the composer instead o
   expect(openNext).toHaveBeenCalledWith(next);
   expect(act).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'More' })).toBeNull();
+});
+
+test('the action is described by the current plan consequence beside its outcome', () => {
+  const f = fixture(); f.command('publish_contract', { contract: contract() }, f.user); f.goal.planReviewEnabled = false;
+  const goal = goalView(f.goal), act = vi.fn();
+  render(<DecisionBar goal={goal} disabled={false} act={act} openNext={vi.fn()} />);
+  expect(screen.getByText(contract().outcome)).toBeTruthy();
+  const button = screen.getByRole('button', { name: 'Approve plan & start work' });
+  expect(document.getElementById(button.getAttribute('aria-describedby')!)?.textContent).toContain('Starts implementation of plan 1');
+  fireEvent.click(button);
+  expect(act).toHaveBeenCalledWith(goal, expect.objectContaining({ type: 'approve', payload: { revision: 1 } }));
 });

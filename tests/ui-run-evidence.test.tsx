@@ -51,3 +51,11 @@ test('the list shows the last recorded meaningful action without inventing elaps
   expect(screen.getByText(/Design and plan proposed/)).toBeTruthy();
   expect(document.querySelector('time')?.getAttribute('dateTime')).toBe('2026-09-15T12:00:00Z');
 });
+
+test('a setup error displays its diagnostic even when no process could produce output', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => reply({ checkId: 'spec-present', headSha: 'a'.repeat(40), code: 'UNSUPPORTED_CAPABILITY', message: 'Executable /missing/test is unavailable.', stdout: '', stderr: '', truncated: false })));
+  render(<CheckEvidence goalId="setup" artifactId="setup-proof" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect check output' }));
+  await screen.findByText('Executable /missing/test is unavailable.');
+  expect(screen.queryByText('No output recorded.')).toBeNull();
+});

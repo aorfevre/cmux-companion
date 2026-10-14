@@ -200,7 +200,7 @@ test('check output is bound to the selected goal and exact head, bounded and exc
   service.execute(create, { kind: 'user' });
   service.execute({ ...create, id: 'other', goalId: 'other' }, { kind: 'user' });
   const headSha = 'a'.repeat(40);
-  const evidence = { checkId: 'unit', headSha, environment: { secret: 'private-environment' }, activation: 'private-bridge', code: '', outcome: { stdout: '<script>unsafe()</script>', stderr: 'x'.repeat(262145) } };
+  const evidence = { checkId: 'unit', headSha, environment: { secret: 'private-environment' }, activation: 'private-bridge', code: '', message: 'Executable unavailable. ' + 'm'.repeat(4000), outcome: { stdout: '<script>unsafe()</script>', stderr: 'x'.repeat(262145) } };
   const artifact = artifacts.put(JSON.stringify(evidence));
   const goal = store.get('goal'); goal.verification = { headSha, checks: [{ id: 'unit', passed: true, artifactId: artifact.id }] };
   store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(goal), goal.id);
@@ -208,7 +208,7 @@ test('check output is bound to the selected goal and exact head, bounded and exc
   assert.equal((await app.inject({ url: path })).statusCode, 401);
   assert.equal((await app.inject({ url: path.replace('/goal/', '/other/'), headers: HEADERS })).statusCode, 404);
   const response = await app.inject({ url: path, headers: HEADERS }); assert.equal(response.statusCode, 200);
-  const body = response.json(); assert.equal(body.stdout, evidence.outcome.stdout); assert.equal(body.stderr.length, 262144); assert.equal(body.truncated, true);
+  const body = response.json(); assert.equal(body.stdout, evidence.outcome.stdout); assert.equal(body.stderr.length, 262144); assert.equal(body.truncated, true); assert.equal(body.message.length, 4000); assert.match(body.message, /Executable unavailable/);
   assert.ok(!response.body.includes('private-environment')); assert.ok(!response.body.includes('private-bridge'));
   goal.verification = null; goal.verificationRuns = [{ operationId: 'historical', result: { verification: { headSha, checks: [{ id: 'unit', passed: true, artifactId: artifact.id }] } } }];
   store.db.prepare('UPDATE goals SET state=? WHERE id=?').run(JSON.stringify(goal), goal.id);

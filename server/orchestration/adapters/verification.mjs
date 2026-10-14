@@ -85,7 +85,7 @@ export class VerificationRunner {
     /** @type {(import('../types.d.ts').Check & { resolved: ResolvedCheck | null })[]} */
     const plan = [...(prepare ? [{ id: 'prepare', argv: ['prepare'], resolved: prepare }] : []), ...checks.map((check) => ({ ...check, resolved: null }))];
     for (const check of plan) {
-      let resolved, outcome = null, code = '', environment = null;
+      let resolved, outcome = null, code = '', message = '', environment = null;
       if (workerState === 'unknown') code = 'PRIOR_WORKER_UNCERTAIN';
       else if (signal?.aborted) code = 'ABORTED';
       else if (prepareFailed) code = 'PREPARE_FAILED';
@@ -96,7 +96,7 @@ export class VerificationRunner {
           else requireValue(isAbsolute(resolved.bin) && resolved.environmentId.length > 0 && JSON.stringify(resolved.argv) === JSON.stringify(check.argv.slice(1)), 'Repository policy did not resolve the approved argv', 'UNSUPPORTED_CAPABILITY');
           backgroundPolicy(resolved.policy);
           requireValue(resolved.policy.maxOutputBytes <= 2 * 1024 * 1024, 'Verification output budget exceeds supervisor transport limit', 'UNSUPPORTED_CAPABILITY');
-          const env = { ...resolved.env, ...(this.cache?.environment() ?? {}), HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: join(home, 'cache'), TMPDIR: temp, CI: 'true' };
+          const env = { ...resolved.env, ...(this.cache?.environment() ?? {}), HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: join(home, 'cache'), TMPDIR: temp };
           environment = { id: resolved.environmentId, bin: resolved.bin, argv: resolved.argv, platform: process.platform, architecture: process.arch, nodeVersion: process.version, environmentHash: createHash('sha256').update(JSON.stringify(env)).digest('hex') };
           await assertCheckout();
           requireValue(await this.repositories.checkCheckout(recorded, !prepare) === headSha, 'Verification target changed', 'STALE_TARGET');
@@ -116,13 +116,14 @@ export class VerificationRunner {
         } catch (error) {
           if (!(error instanceof DomainError)) throw error;
           code = error.code;
+          message = error.message.slice(0, 4000);
           // A launch without a recorded completion is not stopped proof.
           if (!outcome && pathExists(join(directory, `${check.id}.launch.json`))) workerState = 'unknown';
         }
       }
       const passed = !code && outcome?.status === 'succeeded' && workerState === 'stopped';
       if (check.id === 'prepare' && !passed) prepareFailed = true;
-      const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, checkId: check.id, headSha, argv: check.argv, environment, code, outcome }));
+      const artifact = this.repositories.artifacts.put(JSON.stringify({ schemaVersion: 1, operationId, checkId: check.id, headSha, argv: check.argv, environment, code, message, outcome }));
       outcomes.push({ id: check.id, passed, artifactId: artifact.id, ...(code ? { code } : {}) });
       this.save(join(directory, `${check.id}.result.json`), { ...outcomes.at(-1), workerState }); this.failpoint('check_recorded');
     }

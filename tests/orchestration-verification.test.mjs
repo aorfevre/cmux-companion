@@ -271,3 +271,26 @@ test('a plan may not name a check called prepare', async (t) => {
   const f = await fixture(t);
   await assert.rejects(f.runner.run({ ...f.input, checks: [{ id: 'prepare', argv: ['node', '-e', '0'] }] }), /reserved/);
 });
+
+for (const ci of [undefined, 'true']) test(`verification preserves the resolved CI environment (${ci ?? 'local'})`, async t => {
+  const f = await fixture(t);
+  const runner = new VerificationRunner({ ...f.options, resolveCheck: (_repository, check) => ({
+    bin: process.execPath, argv: check.argv.slice(1), env: { PATH: process.env.PATH, ...(ci ? { CI: ci } : {}) }, environmentId: 'ci-environment', policy,
+  }) });
+  const result = await runner.run({ ...f.input, checks: [{ id: 'local-only', argv: ['node', '-e', "if (process.env.CI) { console.error('local-only refuses CI'); process.exit(1); } console.log('local check ran')"] }] });
+  const evidence = JSON.parse(f.artifacts.get(result.verification.checks[0].artifactId).toString());
+  assert.equal(result.verification.checks[0].passed, !ci);
+  assert.match(ci ? evidence.outcome.stderr : evidence.outcome.stdout, ci ? /local-only refuses CI/ : /local check ran/);
+});
+
+test('an unavailable executable keeps its diagnostic without inventing process output', async t => {
+  const f = await fixture(t);
+  const runner = new VerificationRunner({ ...f.options, resolveCheck: () => { throw new DomainError('UNSUPPORTED_CAPABILITY', 'Check spec-present cannot run: executable /missing/test is unavailable.'); } });
+  const result = await runner.run(f.input);
+  const evidence = JSON.parse(f.artifacts.get(result.verification.checks[0].artifactId).toString());
+  assert.equal(evidence.message, 'Check spec-present cannot run: executable /missing/test is unavailable.');
+  assert.equal(evidence.outcome, null);
+  assert.equal(result.workerState, 'stopped');
+  assert.equal(result.verification.checks[0].passed, false);
+  assert.deepEqual(await runner.run(f.input), result);
+});

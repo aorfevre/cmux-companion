@@ -62,3 +62,13 @@ test('a delivered goal outside a verifying round resolves no check', () => {
   assert.equal(f.goal.reviewRound.state, 'fetching');
   assert.throws(() => resolve(f.goal), { code: 'NOT_READY' });
 });
+
+test('a missing absolute executable names the check and requires revision instead of substituting a command', () => {
+  const f = fixture(), plan = contract();
+  plan.verification[0] = { id: 'spec-present', argv: ['/missing/system/test', '-s', 'spec.md'] };
+  plan.criteria[0].verification = 'spec-present';
+  f.approve(plan);
+  assert.throws(() => resolve(f.goal, plan.verification[0]), error => error.code === 'UNSUPPORTED_CAPABILITY'
+    && error.message.includes('spec-present') && error.message.includes('/missing/system/test') && error.message.includes('Request a plan revision'));
+  assert.deepEqual(f.goal.contracts.at(-1).contract.verification[0], plan.verification[0]);
+});

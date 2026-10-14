@@ -17,8 +17,8 @@ test('conversation shows saved delivery and exact proposal approval while steeri
   render(<GoalConversation goal={value} disabled={false} act={act} next={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByRole('log', { name: 'Conversation messages' })).toBeTruthy();
   expect(screen.getByText('Queued for supervisor')).toBeTruthy();
-  expect(screen.getByRole('heading', { name: 'Proposal 1' })).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Approve revision 1' })).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Plan 1 · For your approval' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Approve plan & start work' })).toBeNull();
   expect(screen.getByText('Request changes in the message box below.')).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Message your supervisor'), { target: { value: 'Please narrow the scope.' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
@@ -46,11 +46,11 @@ test('result evidence and publication approval stay pinned to the integrated com
   value.status = 'ready_to_publish';
   value.verification = { headSha: value.integrationHead, checks: [{ id: 'unit', passed: true, artifactId: 'b'.repeat(64) }] };
   value.reviews = [{ id: 'review', kind: 'integration', taskId: null, target: value.integrationHead, disposition: 'accept', findings: [] }];
-  value.actions = [{ type: 'approve_publication', label: 'Approve & publish PR', payload: { operationId: 'publish', headSha: value.integrationHead } }];
+  value.actions = [{ type: 'approve_publication', label: 'Create pull request', payload: { operationId: 'publish', headSha: value.integrationHead } }];
   render(<GoalConversation goal={value} disabled={false} act={act} next={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByText('Independent review: accept')).toBeTruthy();
   expect(screen.getByText('unit: Passed')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Approve & publish PR' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Create pull request' })).toBeNull();
   expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
@@ -78,7 +78,7 @@ test('the current proposal shows a summary first, old proposals one line, and lo
   render(<GoalConversation goal={revised} disabled={false} act={vi.fn()} next={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByText('Proposal 1 · Superseded by 2')).toBeTruthy();
   expect(screen.queryByText('Revised proposal')).toBeNull();
-  expect(screen.getByRole('heading', { name: 'Proposal 2' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Plan 2 · For your approval' })).toBeTruthy();
   const current = within(screen.getByRole('region', { name: 'Proposal revision 2' }));
   expect(current.getByText('Combine modules with care')).toBeTruthy();
   expect(current.getByText('1 scope item · 1 acceptance criterion · 1 check · 3 tasks')).toBeTruthy();
@@ -94,4 +94,25 @@ test('the current proposal shows a summary first, old proposals one line, and lo
   expect(long.classList.contains('goal-message-clamped')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Show less' }));
   expect(long.classList.contains('goal-message-clamped')).toBe(true);
+});
+
+test('a long thread opens with the current plan and keeps earlier messages in closed history', () => {
+  const value = goal();
+  value.conversation!.messages.push(...Array.from({ length: 31 }, (_, i) => ({ id: `history-${i}`, sequence: i + 10, author: 'supervisor' as const, kind: 'progress' as const, text: `Progress update ${i}`, revision: 1, delivery: 'delivered' as const })));
+  render(<GoalConversation goal={value} disabled={false} act={vi.fn()} next={null} onNextConsumed={vi.fn()} />);
+  const article = screen.getByRole('article', { name: 'Goal conversation' });
+  expect(article.firstElementChild).toBe(screen.getByRole('region', { name: 'Proposal revision 1' }));
+  const history = screen.getByLabelText('Conversation history') as HTMLDetailsElement;
+  expect(history.open).toBe(false);
+  expect(within(history).getByText('Progress update 0')).toBeTruthy();
+  expect(within(history).queryByText('Progress update 30')).toBeNull();
+  expect(within(screen.getByRole('log')).getByText('Progress update 30')).toBeTruthy();
+  expect(history.querySelector('[aria-label="Proposal revision 1"]')).toBeNull();
+});
+
+test('publication opens with result evidence and keeps the approved plan collapsed', () => {
+  const value = goal(); value.status = 'ready_to_publish'; value.approvedRevision = value.revision;
+  render(<GoalConversation goal={value} disabled={false} act={vi.fn()} next={null} onNextConsumed={vi.fn()} />);
+  expect(screen.getByRole('article', { name: 'Goal conversation' }).firstElementChild).toBe(screen.getByRole('region', { name: 'Goal result' }));
+  expect(screen.getByText('Approved plan 1').closest('details')?.open).toBe(false);
 });

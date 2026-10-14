@@ -68,7 +68,7 @@ export async function createSettingsRuntime({ settings, directory, token, create
     }
     (await owners.get(project.id)).assertOwned();
   }
-  const environment = () => ({ PATH: process.env.PATH, HOME: process.env.HOME, SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK });
+  const environment = () => ({ PATH: process.env.PATH, HOME: process.env.HOME, SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK, CI: process.env.CI });
   function publication(goalId) {
     if (!publications.has(goalId)) {
       const config = configured(goalId), project = config.project;

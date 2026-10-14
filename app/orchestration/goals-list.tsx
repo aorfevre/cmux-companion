@@ -37,6 +37,7 @@ export function GoalsList({ goals, chip, onChip, disabled, act, select, openNext
           <strong>{goal.title}</strong><small>{projectName(goal.repositoryId)}</small>
           <p className="decision-state">{goal.decision.state}</p>
           {goal.decision.reason && <p className="decision-reason">{goal.decision.reason}</p>}
+          {goal.decision.effect && <p className="decision-effect" id={`decision-effect-${goal.id}`}>{goal.decision.effect}</p>}
         </button>
         <div className="goal-row-actions"><DecisionActions goal={goal} disabled={disabled} act={act} openNext={next => openNext(goal.id, next)} /></div>
         <footer><span className={`mission-badge ${goal.decision.rank === 0 ? 'attention' : goal.status === 'merged' ? 'complete' : ''}`}>{goal.decision.stage}</span>{goal.lastActivity && <small>{activityLabel(goal.lastActivity.kind)} · <time dateTime={goal.lastActivity.createdAt}>{new Date(goal.lastActivity.createdAt).toLocaleString()}</time></small>}</footer>

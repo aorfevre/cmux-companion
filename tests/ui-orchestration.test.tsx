@@ -145,14 +145,14 @@ test('moved publication target shows the observed commit and submits the service
   const { GoalPage: GoalDetail } = await import('../app/orchestration/goal-page');
   const { goalView } = await import('../server/orchestration/domain/state-view.mjs');
   const { fixture } = await import('./helpers/orchestration/domain-fixture.mjs');
-  const moved = { type: 'accept_moved_target', label: 'Publish reviewed head against moved target', payload: { operationId: 'publish', baseHeadSha: 'b'.repeat(40) } };
+  const moved = { type: 'accept_moved_target', label: 'Create PR with reviewed code', payload: { operationId: 'publish', baseHeadSha: 'b'.repeat(40) } };
   const goal = { ...goalView(fixture().goal), contracts: [], actions: [moved], decision: { state: 'The target branch moved.', reason: null, detail: null, primary: moved, next: null, rank: 0 as const, stage: 'Ready to publish' },
     publication: { approved: true, branch: 'companion-goals/goal', baseBranch: 'main', baseSha: 'a'.repeat(40), observation: { status: 'target_moved' as const, baseHeadSha: 'b'.repeat(40), pr: null } } };
   const act = vi.fn().mockResolvedValue(true);
   render(<GoalDetail goal={goal} disabled={false} terminal={false} act={act} control={vi.fn()} pendingNext={null} onNextConsumed={vi.fn()} />);
   expect(screen.getByText('bbbbbbbbbbbb')).toBeTruthy();
   expect(screen.getByText(/Publishing keeps the reviewed and verified head/)).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Publish reviewed head against moved target' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create PR with reviewed code' }));
   expect(act).toHaveBeenCalledWith(goal, goal.actions[0]);
 });
 

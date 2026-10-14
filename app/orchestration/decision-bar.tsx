@@ -31,8 +31,8 @@ export function DecisionActions({ goal, disabled, act, openNext }: { goal: Goal;
   };
   return <>
     <div className="decision-controls">
-      {primary && <button className="primary-button decision-primary" disabled={disabled} onClick={() => void act(goal, primary)}>{primary.label}</button>}
-      {!primary && next && <button className="primary-button decision-primary" disabled={disabled} onClick={() => openNext(next)}>{next.label}</button>}
+      {primary && <button className="primary-button decision-primary" aria-describedby={goal.decision.effect ? `decision-effect-${goal.id}` : undefined} disabled={disabled} onClick={() => void act(goal, primary)}>{primary.label}</button>}
+      {!primary && next && <button className="primary-button decision-primary" aria-describedby={goal.decision.effect ? `decision-effect-${goal.id}` : undefined} disabled={disabled} onClick={() => openNext(next)}>{next.label}</button>}
       {secondary.length > 0 && <div className="decision-menu" ref={menu}>
         <button aria-expanded={open} aria-controls={panelId} disabled={disabled} onClick={() => setOpen(current => !current)}>More</button>
         {open && <div id={panelId} className="decision-more" aria-label="More actions">{secondary.map(action => <button type="button" key={`${action.type}:${JSON.stringify(action.payload)}`} disabled={disabled} onClick={() => choose(action)}>{action.label}</button>)}</div>}
@@ -54,8 +54,10 @@ export function DecisionBar({ goal, disabled, act, openNext }: { goal: Goal; dis
     </div>
     <div className="decision-body">
       <p role="status" className="decision-state">{decision.state}</p>
-      <DecisionActions goal={goal} disabled={disabled} act={act} openNext={openNext} />
+      {decision.outcome && <p className="decision-outcome">{decision.outcome}</p>}
       {decision.reason && <p className="decision-reason">{decision.reason}</p>}
+      {decision.effect && <p className="decision-effect" id={`decision-effect-${goal.id}`}>{decision.effect}</p>}
+      <DecisionActions goal={goal} disabled={disabled} act={act} openNext={openNext} />
     </div>
   </section>;
 }

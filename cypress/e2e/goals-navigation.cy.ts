@@ -7,7 +7,7 @@ for (const width of [390, 1440]) {
     cy.intercept('GET', '**/api/orchestration/configuration', req => req.reply(paired ? configuration : { statusCode: 401, body: { error: 'Pair this device' } }));
     cy.intercept('POST', '**/api/orchestration/pair', req => { paired = true; req.reply({ paired: true }); }).as('pairGoal');
     cy.intercept('GET', '**/api/orchestration/stream', { statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: '' });
-    cy.visit('/'); cy.findByRole('heading', { name: 'Goals' }).should('be.visible');
+    cy.visit('/orchestration'); cy.findByRole('heading', { name: 'Goals' }).should('be.visible');
     cy.findByLabelText('Pairing code').type('  disposable-code  '); cy.findByRole('button', { name: 'Pair this device' }).click();
     cy.wait('@pairGoal').its('request.body').should('deep.equal', { token: 'disposable-code' });
     cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('link', { name: 'Set up goals' }).should('be.visible');
@@ -18,8 +18,9 @@ for (const width of [390, 1440]) {
 }
 it('recovers from an unavailable Mac without routing through Sessions', () => {
   cy.intercept('**/api/**', { statusCode: 503, body: { error: 'Mac is offline' } });
-  cy.visit('/'); cy.findByRole('heading', { name: 'Goals are unavailable' }).should('be.visible');
+  cy.visit('/orchestration'); cy.findByRole('heading', { name: 'Goals are unavailable' }).should('be.visible');
   cy.intercept('GET', '**/api/orchestration/snapshot', { goals: [], cursor: 0, journalId: 'fixture', readOnly: false });
   cy.intercept('GET', '**/api/orchestration/configuration', configuration);
+  cy.intercept('GET', '**/api/orchestration/supervisors', { profiles: [], recommendedId: null });
   cy.findByRole('button', { name: 'Try again' }).click(); cy.findByRole('button', { name: 'Start a goal' }).click(); cy.findByRole('link', { name: 'Set up goals' }).should('be.visible'); cy.contains('Mac is offline').should('not.exist');
 });

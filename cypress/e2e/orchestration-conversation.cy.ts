@@ -39,18 +39,21 @@ suite('Conversational Goals with the real disposable service', () => {
       cy.findByRole('button', { name: 'Send message' }).click();
     });
     // Decisions live in the bar above the conversation, never inside a proposal card.
-    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve revision 1', timeout: 20000 }).should('be.enabled');
+    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve plan & start work', timeout: 20000 }).should('be.enabled');
     cy.get('.goal-conversation').within(() => {
       cy.findByRole('region', { name: 'Proposal revision 1' }).should('contain.text', 'Request changes in the message box below.');
       cy.findByLabelText('Message your supervisor').type('Please revise the plan.');
       cy.findByRole('button', { name: 'Send message' }).click();
     });
-    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve revision 2', timeout: 20000 }).should('be.enabled');
+    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve plan & start work', timeout: 20000 }).should('be.enabled');
+    cy.findByRole('region', { name: 'Proposal revision 2', timeout: 20000 }).should('be.visible');
+    cy.findByLabelText('Conversation history').find('summary').first().click();
     cy.get('.goal-conversation').contains('summary', 'Proposal 1 · Superseded by 2').should('be.visible');
+    cy.findByLabelText('Conversation history').find('summary').first().click();
     cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Pause goal' }).click();
     cy.findByRole('region', { name: 'Goal decision' }).within(() => {
       cy.findByRole('status').should('have.text', 'Your plan is ready to approve.');
-      cy.findByRole('button', { name: 'Approve revision 2' }).should('be.enabled');
+      cy.findByRole('button', { name: 'Approve plan & start work' }).should('be.enabled');
     });
     cy.get('.goal-conversation').within(() => {
       cy.findByLabelText('Message your supervisor').type('Keep this guidance through reload.');
@@ -60,10 +63,15 @@ suite('Conversational Goals with the real disposable service', () => {
     cy.reload();
     cy.get('.goal-conversation').contains('Keep this guidance through reload.').should('be.visible');
     cy.findByRole('button', { name: 'More' }).click(); cy.findByLabelText('More actions').findByRole('button', { name: 'Resume goal' }).click();
+    cy.findByLabelText('Conversation history').find('summary').first().click();
     cy.get('.goal-conversation').contains('Keep this guidance through reload.').closest('section').contains('Answered', { timeout: 10000 });
     settledSupervisor();
-    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve revision 2' }).should('be.enabled').click();
-    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve revision 2' }).should('not.exist');
+    // The service can settle after the last browser snapshot; refresh before
+    // approving that version, since approvals deliberately do not auto-rebase.
+    cy.reload();
+    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve plan & start work' }).should('be.enabled').click();
+    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve plan & start work' }).should('not.exist');
+    cy.findByLabelText('Conversation history').find('summary').first().click();
     cy.get('.goal-conversation').within(() => {
       cy.contains('Agent recovery scheduled:', { timeout: 20000 }).should('be.visible');
       cy.findByRole('heading', { name: 'Working agents', timeout: 20000 }).should('be.visible');
@@ -95,6 +103,7 @@ suite('Conversational Goals with the real disposable service', () => {
     cy.task('orchestrationRelease', 'final');
     cy.get('.goal-conversation').within(() => {
       cy.findByRole('heading', { name: 'Result', timeout: 60000 }).should('be.visible');
+      cy.contains('summary', 'Review and check evidence').click();
       cy.contains('summary', 'Worker checks and repair budgets').click();
       cy.contains('unit · run 1 of 3').should('be.visible');
       cy.contains('unit · run 2 of 3').should('be.visible');
@@ -103,7 +112,7 @@ suite('Conversational Goals with the real disposable service', () => {
       cy.findByRole('button', { name: 'Inspect changes' }).click();
       cy.findByLabelText('Integrated diff').should('contain.text', 'aSource() + bSource()');
     });
-    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve & publish PR' }).should('be.enabled');
+    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Create pull request' }).should('be.enabled');
     cy.task<{ goals: Goal[]; prCreates: unknown[] }>('orchestrationEvidence').then(evidence => {
       const goal = evidence.goals.find(entry => entry.title === 'Conversation fixture')!;
       expect(goal.verificationRuns!.filter(run => run.attemptId)).to.have.length(2);
@@ -117,7 +126,8 @@ suite('Conversational Goals with the real disposable service', () => {
     cy.viewport(1440, 1000); cy.screenshot('conversation-result-desktop');
     cy.viewport(390, 844); cy.screenshot('conversation-result-phone');
     settledSupervisor();
-    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Approve & publish PR' }).click();
+    cy.reload();
+    cy.findByRole('region', { name: 'Goal decision' }).findByRole('button', { name: 'Create pull request' }).click();
     cy.get('.goal-conversation').findByRole('link', { name: /Open pull request #/, timeout: 30000 }).should('be.visible');
     cy.reload();
     cy.get('.goal-conversation').findByRole('link', { name: /Open pull request #/, timeout: 10000 }).should('be.visible');

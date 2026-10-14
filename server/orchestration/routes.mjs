@@ -106,6 +106,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
     // Explicit projection: never return the execution environment or agent result
     // envelopes. Check output is displayed only on deliberate user inspection.
     return { checkId: String(evidence.checkId), headSha: verification.headSha, code: typeof evidence.code === 'string' ? evidence.code : '',
+      message: typeof evidence.message === 'string' ? evidence.message.slice(0, 4000) : '',
       stdout: typeof evidence.outcome?.stdout === 'string' ? evidence.outcome.stdout.slice(0, 262144) : '',
       stderr: typeof evidence.outcome?.stderr === 'string' ? evidence.outcome.stderr.slice(0, 262144) : '',
       truncated: [evidence.outcome?.stdout, evidence.outcome?.stderr].some(value => typeof value === 'string' && value.length > 262144) };
@@ -227,6 +228,7 @@ export function registerOrchestrationRoutes(app, { service, token, bridgeAuth, r
         const stdout = typeof evidence.outcome?.stdout === 'string' ? evidence.outcome.stdout : '';
         const stderr = typeof evidence.outcome?.stderr === 'string' ? evidence.outcome.stderr : '';
         return { id: check.id, passed: check.passed, artifactId: check.artifactId, code: typeof evidence.code === 'string' ? evidence.code : '',
+          message: typeof evidence.message === 'string' ? evidence.message.slice(0, 4000) : '',
           stdout: stdout.slice(-16000), stderr: stderr.slice(-16000), truncated: stdout.length > 16000 || stderr.length > 16000 };
       }) };
   });

@@ -21,7 +21,7 @@ export function resolveGoalCheck({ goal, repositoryId, check, env, environmentId
   requireValue(!['sh', 'bash', 'zsh', 'fish', 'csh', 'dash', 'env', 'cmux'].includes(basename(executable)),
     'Use a direct verification executable, without shell wrappers or cmux RPC', 'UNSUPPORTED_CAPABILITY');
   const bin = resolveExecutable(executable);
-  requireValue(bin, 'Planned verification executable is unavailable', 'UNSUPPORTED_CAPABILITY');
+  requireValue(bin, `Check "${check.id}" cannot run: executable "${executable}" is unavailable. Request a plan revision with an available direct executable.`, 'UNSUPPORTED_CAPABILITY');
   return { bin, argv, env, environmentId: `${environmentId}-goal-${goal.id}-revision-${goal.revision}`, policy };
 }
 
