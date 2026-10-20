@@ -276,6 +276,32 @@ revocation interface. Never include these files or credentials in public reports
 Report vulnerabilities through [SECURITY.md](SECURITY.md). See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor entry point.
 
+## Local development
+
+Prerequisites: Node.js 22.23.1 from `.nvmrc` (`package.json` requires
+`>=22.23.1 <23`) and npm with the checked-in `package-lock.json`. Tests, lint,
+type checks and the build do not need cmux, Tailscale, CCS or `gh`.
+
+```sh
+nvm install && nvm use      # select the Node version in .nvmrc
+npm ci                      # install from the lockfile
+npm run dev -- --port "$PORT"
+```
+
+`vinext dev` reads the port only from `--port`; without it the server uses 3000.
+Only `npm start` (`vinext start`) also reads the `PORT` environment variable.
+The dev server proxies `/api` to `CMUX_COMPANION_API`, or to
+`http://127.0.0.1:3210` when that is unset. For a disposable backend and pairing,
+see [Development](#development).
+
+```sh
+npm test              # backend Node tests
+npm run test:ui       # Vitest UI tests
+npm run lint
+npm run typecheck
+npm run build         # production build in dist/
+```
+
 ## Development
 
 Use Node 22.23.1 from `.nvmrc` (`nvm install && nvm use`), then `npm ci`.
