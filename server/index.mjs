@@ -19,6 +19,7 @@ import { CmuxClient } from "./cmux-client.mjs";
 import { RepoCatalog } from "./repo-catalog.mjs";
 import { openRepoIdentityStore } from "./repo-identity-store.mjs";
 import { ensureToken } from "./security.mjs";
+import { ensureConnectAttemptTimeout } from "./network-defaults.mjs";
 
 const DEFAULT_TOKEN_PATH = join(homedir(), ".config", "cmux-companion", "token");
 
@@ -31,6 +32,7 @@ export async function startServer({
   cmuxClient = null,
 } = {}) {
   if (!["127.0.0.1", "localhost", "::1"].includes(host)) throw new Error("Companion must bind to loopback");
+  ensureConnectAttemptTimeout();
   const directory = dataDirectory;
   const settingsPath = process.env.CMUX_COMPANION_SETTINGS_DB || join(directory, "settings.sqlite");
   const config = !existsSync(settingsPath) && legacyConfigPath ? loadProductionConfig(legacyConfigPath) : null;
