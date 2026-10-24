@@ -82,3 +82,19 @@ test('parses Retry-After delta seconds and dates without accepting invalid or pa
     assert.equal(retryAfterAt(value, instant), null, String(value));
   }
 });
+
+test('a load that never settles times out, frees its key and cannot overwrite a later value', async () => {
+  let now = instant, calls = 0, finishOrphan;
+  const cache = new AccountPollCache({ now: () => now, deadlineMs: 5 });
+  const orphan = () => { calls++; return new Promise(resolve => { finishOrphan = resolve; }); };
+  const timedOut = await cache.read('claude:usage:a', orphan);
+  assert.deepEqual(timedOut, { success: false, windows: [], failureReason: 'timeout' });
+  assert.equal(await cache.read('claude:usage:a', () => assert.fail('Timeout bypassed the minute')), timedOut);
+  now += 60_000;
+  const fresh = { success: true, lastUpdated: now };
+  assert.equal(await cache.read('claude:usage:a', () => { calls++; return fresh; }), fresh);
+  finishOrphan({ success: true, lastUpdated: instant });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(await cache.read('claude:usage:a', () => assert.fail('Cache bypassed')), fresh);
+  assert.equal(calls, 2);
+});
