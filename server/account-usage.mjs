@@ -3,10 +3,13 @@ import { accessSync, constants, existsSync, readFileSync, readdirSync, realpathS
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
-import { AccountPollCache, retryAfterAt } from './account-poll-cache.mjs';
+import { AccountPollCache, LOAD_DEADLINE_MS, retryAfterAt, withDeadline } from './account-poll-cache.mjs';
 import { claudeResetInventory, codexResetInventory, normalizeResetInventory } from './reset-inventory.mjs';
 
 const CACHE_MS = 60_000;
+// Every per-account read is bounded by LOAD_DEADLINE_MS; this also bounds the
+// CCS source loader so the shared pending snapshot always settles.
+const SNAPSHOT_DEADLINE_MS = LOAD_DEADLINE_MS + 10_000;
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1";
 const CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const PLAN_CACHE_MS = 15 * 60_000;
@@ -17,10 +20,11 @@ const PROVIDERS = [
 ];
 
 export class AccountUsage {
-  constructor({ sourceLoader, cacheMs = CACHE_MS } = {}) {
+  constructor({ sourceLoader, cacheMs = CACHE_MS, deadlineMs = SNAPSHOT_DEADLINE_MS } = {}) {
     const polls = new AccountPollCache();
     this.sourceLoader = sourceLoader ?? (() => loadCcsSource(polls));
     this.cacheMs = cacheMs;
+    this.deadlineMs = deadlineMs;
     this.cache = null;
     this.pending = null;
     this.generation = 0;
@@ -30,7 +34,7 @@ export class AccountUsage {
     if (!refresh && this.cache && Date.now() - this.cache.at < this.cacheMs) return this.cache.value;
     if (this.pending) return this.pending;
     const generation = this.generation;
-    const pending = this.#load();
+    const pending = withDeadline(this.#load(), this.deadlineMs, unavailableResponse);
     this.pending = pending;
     try {
       const value = await pending;
@@ -93,9 +97,13 @@ export class AccountUsage {
       ));
       return response(providers, true);
     } catch {
-      return response(PROVIDERS.map((provider) => ({ ...provider, available: false, accounts: [] })), false);
+      return unavailableResponse();
     }
   }
+}
+
+function unavailableResponse() {
+  return response(PROVIDERS.map((provider) => ({ ...provider, available: false, accounts: [] })), false);
 }
 
 function response(providers, available) {
@@ -175,6 +183,7 @@ function quotaFailureMessage(reason) {
     'rate-limited': 'Usage temporarily rate-limited by the provider. Try again later.',
     'missing-credentials': 'No matching saved login found in CCS.',
     'no-windows': 'Provider did not report usage limits.',
+    timeout: 'Provider did not answer in time. Try again later.',
   })[reason] || 'Quota is currently unavailable';
 }
 

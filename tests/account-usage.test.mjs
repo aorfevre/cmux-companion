@@ -705,3 +705,21 @@ test('Codex unavailable or zero counts skip expiry reads; network detail failure
   }
   assert.equal(requests.length, 4);
 });
+
+test("settles a snapshot whose source never answers and shows timed-out accounts", async () => {
+  let loads = 0;
+  const hung = new AccountUsage({ sourceLoader: () => loads++ === 0 ? new Promise(() => {}) : source(), deadlineMs: 5 });
+  const value = await Promise.all([hung.snapshot({ refresh: true }), hung.snapshot({ refresh: true })]);
+  assert.equal(value[0], value[1]);
+  assert.equal(value[0].available, false);
+  assert.equal(hung.pending, null);
+  assert.equal((await hung.snapshot({ refresh: true })).available, true);
+
+  const slow = source();
+  slow.getProviderAccounts = (provider) => provider === "claude" ? [{ id: "one@example.test", email: "one@example.test" }] : [];
+  slow.fetchAllClaudeQuotas = async () => [{ account: "one@example.test", quota: { success: false, windows: [], failureReason: "timeout" } }];
+  slow.fetchAllCodexQuotas = async () => [];
+  const account = (await new AccountUsage({ sourceLoader: async () => slow }).snapshot({ refresh: true })).providers[0].accounts[0];
+  assert.equal(account.status, "unavailable");
+  assert.equal(account.message, "Provider did not answer in time. Try again later.");
+});
