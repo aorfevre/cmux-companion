@@ -707,11 +707,13 @@ test('Codex unavailable or zero counts skip expiry reads; network detail failure
 });
 
 test("settles a snapshot whose source never answers and shows timed-out accounts", async () => {
-  const hung = new AccountUsage({ sourceLoader: () => new Promise(() => {}), deadlineMs: 5 });
+  let loads = 0;
+  const hung = new AccountUsage({ sourceLoader: () => loads++ === 0 ? new Promise(() => {}) : source(), deadlineMs: 5 });
   const value = await Promise.all([hung.snapshot({ refresh: true }), hung.snapshot({ refresh: true })]);
   assert.equal(value[0], value[1]);
   assert.equal(value[0].available, false);
   assert.equal(hung.pending, null);
+  assert.equal((await hung.snapshot({ refresh: true })).available, true);
 
   const slow = source();
   slow.getProviderAccounts = (provider) => provider === "claude" ? [{ id: "one@example.test", email: "one@example.test" }] : [];
